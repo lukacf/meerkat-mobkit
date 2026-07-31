@@ -601,10 +601,13 @@ mod tests {
         );
     }
 
+    /// A pre-ledger file (bare mobkit_metadata table, no meerkat_schema row)
+    /// is refused typed at open with its rows left untouched and no ledger
+    /// stamped: pre-ledger corpora are below the mobkit 0.8.8 floor, and the
+    /// 0.8.11 reset retired silent pre-floor convergence (this test pinned
+    /// that convergence until then).
     #[tokio::test]
-    async fn legacy_metadata_file_converges_and_preserves_cursor() {
-        // A pre-ledger file (bare mobkit_metadata table, no meerkat_schema
-        // row) opens, is stamped, and keeps its rows.
+    async fn legacy_metadata_file_is_refused_with_rows_preserved() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mobkit-metadata.sqlite");
         {
@@ -621,16 +624,28 @@ mod tests {
             )
             .unwrap();
         }
-        let store = SqliteMetadataStore::open(&path).unwrap();
-        assert_eq!(
-            store.get_subscription_cursor("mob-legacy").await.unwrap(),
-            Some(314),
-            "legacy cursor must survive the port"
+        assert!(
+            SqliteMetadataStore::open(&path).is_err(),
+            "opening a pre-ledger metadata database must refuse typed: unledgered owned \
+             tables are below the mobkit 0.8.8 floor and must never be silently converged"
         );
         let probe = Connection::open(&path).unwrap();
+        let preserved: String = probe
+            .query_row(
+                "SELECT value FROM mobkit_metadata \
+                 WHERE mob_id = 'mob-legacy' AND key = 'subscription_cursor'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            preserved, "314",
+            "the refusal must leave legacy rows untouched"
+        );
         assert_eq!(
             meerkat_sqlite::domain_version(&probe, "mobkit-metadata").unwrap(),
-            Some(1)
+            None,
+            "a refused open must not stamp the ledger"
         );
     }
 

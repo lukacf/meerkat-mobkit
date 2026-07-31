@@ -1828,6 +1828,14 @@ mod tests {
         let conn = Connection::open(path).expect("create fixture db");
         conn.execute_batch(LEGACY_CONTINUITY_DDL)
             .expect("apply legacy ddl");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS meerkat_schema (
+                domain TEXT PRIMARY KEY,
+                version INTEGER NOT NULL
+            );
+            INSERT INTO meerkat_schema (domain, version) VALUES ('mobkit-continuity', 1);",
+        )
+        .expect("stamp fixture ledger at the v1 floor");
         conn
     }
 
@@ -2087,9 +2095,12 @@ mod tests {
 
         let report = migrate_state_dir(state, MigrateMode::DryRun, None);
         assert!(!report.has_errors(), "{:?}", report.errors);
+        // The fixture carries its v1 floor ledger row (pre-ledger files are
+        // refused typed since the 0.8.11 reset), so dry-run records it
+        // rather than promising a stamp.
         assert_eq!(
             ledger_entry(&report, "continuity.db", "mobkit-continuity").action,
-            LedgerBaselineAction::WouldStamp
+            LedgerBaselineAction::Recorded
         );
         assert_eq!(
             ledger_entry(&report, "sessions.db", "session-store").action,
@@ -2156,6 +2167,16 @@ mod tests {
             conn.pragma_update(None, "journal_mode", "wal")
                 .expect("wal mode");
             conn.execute_batch(LEGACY_CONTINUITY_DDL).expect("ddl");
+            // Ledgered at the v1 floor like `create_legacy_continuity`:
+            // pre-ledger files refuse typed since the 0.8.11 reset.
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS meerkat_schema (
+                    domain TEXT PRIMARY KEY,
+                    version INTEGER NOT NULL
+                );
+                INSERT INTO meerkat_schema (domain, version) VALUES ('mobkit-continuity', 1);",
+            )
+            .expect("stamp fixture ledger at the v1 floor");
             insert_record(&conn, "test:alice", &sid);
             insert_snapshot(&conn, &sid, "test:alice", &legacy_bytes);
             // Leak the connection: the -wal file persists on disk.

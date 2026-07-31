@@ -1005,9 +1005,26 @@ fn materialize_head_canonical_session(
         .map(|bytes| serde_json::from_slice::<meerkat_core::types::Message>(bytes))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("strand row does not decode: {error}"))?;
-    head.clone()
-        .into_session(messages)
-        .map_err(|error| error.to_string())
+    let loaded = messages.len();
+    head.clone().into_session(messages).map_err(|error| {
+        format!(
+            "{error} (strand '{}' served {loaded} row(s), head expects {}, rewrite_count {}, \
+             row prefix {}, lineage anchor {})",
+            head.strand,
+            head.message_count,
+            head.rewrite_count,
+            if head.message_row_prefix.is_some() {
+                "present"
+            } else {
+                "absent"
+            },
+            if head.row_lineage_anchor.is_some() {
+                "present"
+            } else {
+                "absent"
+            },
+        )
+    })
 }
 
 /// Which session-bearing store a compatibility census sweeps.

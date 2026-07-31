@@ -1104,11 +1104,12 @@ impl ContinuitySessionStoreAdapter {
         let id = session.id();
         let live = session.messages();
         let token = meerkat_core::session_store::session_head_cas_token(&write.stored)?;
-        let strand = match shape {
+        let adopted = match shape {
             HeadCanonicalShape::PlainAppend => {
                 let prev_count = usize::try_from(write.stored.message_count)
                     .map_err(|_| meerkat_store::SessionStoreError::Corrupted(id.clone()))?;
-                if live.len() > prev_count {
+                let appended = &live[prev_count..];
+                if !appended.is_empty() {
                     write
                         .channel
                         .append_messages(
@@ -1116,25 +1117,72 @@ impl ContinuitySessionStoreAdapter {
                             id,
                             &write.stored.strand,
                             write.stored.message_count,
-                            &live[prev_count..],
+                            appended,
                         )
                         .await?;
                 }
-                write.stored.strand.clone()
+                let strand = write.stored.strand.clone();
+                // The successor head must commit to the EXACT durable row
+                // bytes. Rows 0..prev_count keep the serialization they were
+                // written with, which need not equal re-encoding the same
+                // typed Messages today, so the stored commitment is EXTENDED
+                // by only the appended rows' bytes - mirrors meerkat-core
+                // `SessionHead::from_session_with_proved_inline_storage_authority`,
+                // the published seam for "a retained runtime boundary whose
+                // exact row bytes may use an older representation than
+                // reserializing the same typed Messages today". Re-minting
+                // via `from_session` breaks `SessionHead::into_session`'s
+                // byte-exact prefix verification on the next cold
+                // materialization.
+                match write.stored.message_row_prefix.clone() {
+                    Some(prefix) => {
+                        let appended_serialized = appended
+                            .iter()
+                            .map(|message| {
+                                serde_json::to_vec(message)
+                                    .map_err(meerkat_store::SessionStoreError::from)
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let proved = prefix.extend_serialized_rows(&appended_serialized)?;
+                        meerkat_core::session_store::SessionHead::from_session_with_proved_inline_storage_authority(
+                            session,
+                            strand,
+                            write.stored.rewrite_prefix.clone(),
+                            proved,
+                        )?
+                    }
+                    None => {
+                        // A pre-0.8.11 head whose row identity was never
+                        // proved stays unproved: inventing a commitment the
+                        // stored rows may not satisfy would corrupt the next
+                        // materialization instead of leaving it on the
+                        // explicit full-verification conversion lane.
+                        let mut head = meerkat_core::session_store::SessionHead::from_session(
+                            session,
+                            strand,
+                            write.stored.rewrite_count,
+                        )?;
+                        head.message_row_prefix = None;
+                        head.row_lineage_anchor = None;
+                        head
+                    }
+                }
             }
             HeadCanonicalShape::Rebase(rebased) => {
                 write
                     .channel
                     .append_messages(&self.write_cursor(id, &write.state), id, &rebased, 0, live)
                     .await?;
-                rebased
+                // A fresh strand: every row was just written from these
+                // exact instances, so the minted commitment matches the
+                // durable bytes.
+                meerkat_core::session_store::SessionHead::from_session(
+                    session,
+                    rebased,
+                    write.stored.rewrite_count,
+                )?
             }
         };
-        let adopted = meerkat_core::session_store::SessionHead::from_session(
-            session,
-            strand,
-            write.stored.rewrite_count,
-        )?;
         write
             .channel
             .save_head(

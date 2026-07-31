@@ -3837,12 +3837,14 @@ mod tests {
         Ok(())
     }
 
-    /// Stores created before the `ever_quarantined`/`taint` columns existed
-    /// migrate on open, with the conservative backfill: currently-quarantined
-    /// rows flagged directly, tombstoned rows flagged through their audit
-    /// trail (the tombstone apply nulled the `quarantined` status_detail).
+    /// A pre-ledger realm file (full historical DDL, no meerkat_schema row)
+    /// is refused typed at first realm use with its rows left untouched and
+    /// no ledger stamped: pre-ledger corpora are below the mobkit 0.8.8
+    /// floor (`MOBKIT_MEMORY_DOMAIN` allows only version 2), and the 0.8.11
+    /// reset retired silent pre-floor convergence. Until then this test
+    /// pinned the `ever_quarantined` backfill that convergence ran.
     #[tokio::test]
-    async fn ever_quarantined_migration_backfills_old_stores() -> Result<(), Box<dyn Error>> {
+    async fn pre_ledger_memory_file_is_refused_with_rows_preserved() -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let db_path = {
             let store = SqliteAgentMemoryStore::open(dir.path())?;
@@ -3917,38 +3919,31 @@ mod tests {
             )?;
         }
         let store = SqliteAgentMemoryStore::open(dir.path())?;
-        // Any realm operation opens the connection and runs the migration;
-        // pending_proposals also exercises the proposals `taint` migration.
-        assert!(store.pending_proposals("family", 4).await?.is_empty());
-        let conn = store.realm_connection("family")?;
-        let guard = conn
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let flag = |id: &str| -> Result<bool, Box<dyn Error>> {
-            Ok(guard.query_row(
-                "SELECT ever_quarantined FROM records WHERE memory_id = ?1",
-                params![id],
-                |row| row.get(0),
-            )?)
-        };
-        assert!(!flag("mem-clean")?);
-        assert!(flag("mem-quarantined")?);
-        assert!(flag("mem-tombstoned-was-quarantined")?);
+        // Any realm operation opens the connection and runs the ledger
+        // preflight, which must refuse the unledgered owned tables.
         assert!(
-            !flag("mem-tombstoned-clean")?,
-            "ordinary tombstones must not be poisoned by the backfill"
+            store.pending_proposals("family", 4).await.is_err(),
+            "first realm use over a pre-ledger file must refuse typed"
+        );
+        let probe = Connection::open(&db_path)?;
+        let preserved: i64 =
+            probe.query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))?;
+        assert_eq!(preserved, 4, "the refusal must leave legacy rows untouched");
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-memory")?,
+            None,
+            "a refused open must not stamp the ledger"
         );
         Ok(())
     }
 
-    /// The proposals `taint` migration conservatively marks still-live
-    /// (pending/held) proposals tainted: the propose-time taint fact lived
-    /// only in the in-memory tracker and is unrecoverable after the restart
-    /// that accompanies the upgrade, so a plain steward accept downgrades
-    /// to the operator gate instead of clean-accepting a possibly-tainted
-    /// pre-migration proposal.
+    /// A pre-ledger realm file holding ONLY a historical `proposals` table
+    /// is refused the same way (the floor refusal is per owned object, not
+    /// per complete schema). Until the 0.8.11 reset this test pinned the
+    /// proposals `taint` conservative backfill that pre-floor convergence
+    /// ran.
     #[tokio::test]
-    async fn proposal_taint_migration_marks_live_proposals_tainted() -> Result<(), Box<dyn Error>> {
+    async fn pre_ledger_proposals_only_file_is_refused() -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let db_path = {
             let store = SqliteAgentMemoryStore::open(dir.path())?;
@@ -3993,34 +3988,19 @@ mod tests {
             insert("prop-rejected", "rejected")?;
         }
         let store = SqliteAgentMemoryStore::open(dir.path())?;
-        let proposals = store.pending_proposals("family", 8).await?;
-        assert_eq!(proposals.len(), 2, "{proposals:?}");
-        for proposal in &proposals {
-            let taint = proposal.taint.as_deref().unwrap_or_else(|| {
-                panic!(
-                    "live pre-migration proposal '{}' must be conservatively tainted",
-                    proposal.proposal_id
-                )
-            });
-            assert!(taint.contains("pre-migration"), "{taint}");
-        }
-        // Terminal statuses are never re-verdicted: the backfill leaves them
-        // alone.
-        let conn = store.realm_connection("family")?;
-        let guard = conn
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for id in ["prop-accepted", "prop-rejected"] {
-            let taint: Option<String> = guard.query_row(
-                "SELECT taint FROM proposals WHERE proposal_id = ?1",
-                params![id],
-                |row| row.get(0),
-            )?;
-            assert!(
-                taint.is_none(),
-                "terminal proposal '{id}' must stay untouched: {taint:?}"
-            );
-        }
+        assert!(
+            store.pending_proposals("family", 8).await.is_err(),
+            "first realm use over a pre-ledger proposals table must refuse typed"
+        );
+        let probe = Connection::open(&db_path)?;
+        let preserved: i64 =
+            probe.query_row("SELECT COUNT(*) FROM proposals", [], |row| row.get(0))?;
+        assert_eq!(preserved, 4, "the refusal must leave legacy rows untouched");
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-memory")?,
+            None,
+            "a refused open must not stamp the ledger"
+        );
         Ok(())
     }
 
@@ -4041,13 +4021,15 @@ mod tests {
         Ok(())
     }
 
-    /// A pre-ledger, pre-`ever_quarantined`/`taint` file converges through
-    /// migrations 0001+0002 on open, is stamped, preserves its rows, and
-    /// writes the load-bearing taint sentinel BYTE-FOR-BYTE — operator
-    /// flows key on the exact string.
+    /// A pre-ledger, pre-`ever_quarantined`/`taint` file (records AND
+    /// proposals, the fullest historical shape) is refused typed at first
+    /// realm use, rows preserved, no ledger stamped. Until the 0.8.11 reset
+    /// this test pinned the byte-for-byte taint sentinel that pre-floor
+    /// convergence wrote; the sentinel string itself remains pinned by
+    /// `migration_0002_quarantine_and_taint_columns`, which fresh
+    /// `initialize_current` composition still executes.
     #[tokio::test]
-    async fn legacy_file_converges_and_writes_taint_sentinel_byte_for_byte()
-    -> Result<(), Box<dyn Error>> {
+    async fn pre_ledger_records_and_proposals_file_is_refused() -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let db_path = {
             let store = SqliteAgentMemoryStore::open(dir.path())?;
@@ -4112,39 +4094,26 @@ mod tests {
             }
         }
         let store = SqliteAgentMemoryStore::open(dir.path())?;
-        let conn = store.realm_connection("family")?;
-        let guard = conn
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(
-            meerkat_sqlite::domain_version(&guard, "mobkit-memory")?,
-            Some(2),
-            "legacy file must be stamped after convergence"
+        assert!(
+            store.realm_connection("family").is_err(),
+            "opening a pre-ledger realm connection must refuse typed"
         );
-        let quarantined: i64 = guard.query_row(
-            "SELECT ever_quarantined FROM records WHERE memory_id = 'mem-q'",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(quarantined, 1, "legacy quarantined row must be backfilled");
-        let taint = |id: &str| -> Result<Option<String>, Box<dyn Error>> {
-            Ok(guard.query_row(
-                "SELECT taint FROM proposals WHERE proposal_id = ?1",
-                params![id],
-                |row| row.get(0),
-            )?)
-        };
-        for id in ["prop-pending", "prop-held"] {
-            assert_eq!(
-                taint(id)?.as_deref(),
-                Some("pre-migration proposal: propose-time taint fact unrecoverable"),
-                "sentinel must be preserved byte-for-byte for '{id}'"
-            );
-        }
+        let probe = Connection::open(&db_path)?;
+        let records: i64 = probe.query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))?;
         assert_eq!(
-            taint("prop-accepted")?,
+            records, 1,
+            "the refusal must leave legacy records untouched"
+        );
+        let proposals: i64 =
+            probe.query_row("SELECT COUNT(*) FROM proposals", [], |row| row.get(0))?;
+        assert_eq!(
+            proposals, 3,
+            "the refusal must leave legacy proposals untouched"
+        );
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-memory")?,
             None,
-            "terminal proposals stay untouched"
+            "a refused open must not stamp the ledger"
         );
         Ok(())
     }

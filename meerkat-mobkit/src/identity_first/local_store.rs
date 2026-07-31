@@ -1541,7 +1541,7 @@ fn write_head_canonical_session_in_txn(
         && meerkat_core::transcript_messages_digest(&live[..prev_count])
             .map_err(SessionStoreError::from)?
             == head.head_revision;
-    let strand = if plain_append {
+    let new_head = if plain_append {
         if live.len() > prev_count {
             insert_strand_rows_in_txn(
                 tx,
@@ -1553,15 +1553,50 @@ fn write_head_canonical_session_in_txn(
                 generation,
             )?;
         }
-        head.strand.clone()
+        // The successor head must commit to the EXACT durable row bytes.
+        // Rows 0..prev_count keep the serialization they were written with,
+        // which need not equal re-encoding the same typed Messages today, so
+        // the stored commitment is EXTENDED by only the appended rows' bytes
+        // - mirrors meerkat-core
+        // `SessionHead::from_session_with_proved_inline_storage_authority`, the
+        // published seam for retained boundaries whose exact row bytes may
+        // use an older representation. Re-minting via `from_session` breaks
+        // `SessionHead::into_session`'s byte-exact prefix verification on
+        // the next cold materialization.
+        match head.message_row_prefix.clone() {
+            Some(prefix) => {
+                let appended_serialized = live[prev_count..]
+                    .iter()
+                    .map(|message| serde_json::to_vec(message).map_err(SessionStoreError::from))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let proved = prefix.extend_serialized_rows(&appended_serialized)?;
+                SessionHead::from_session_with_proved_inline_storage_authority(
+                    session,
+                    head.strand.clone(),
+                    head.rewrite_prefix.clone(),
+                    proved,
+                )?
+            }
+            None => {
+                // A pre-0.8.11 head whose row identity was never proved
+                // stays unproved rather than inventing a commitment the
+                // stored rows may not satisfy.
+                let mut unproved =
+                    SessionHead::from_session(session, head.strand.clone(), head.rewrite_count)?;
+                unproved.message_row_prefix = None;
+                unproved.row_lineage_anchor = None;
+                unproved
+            }
+        }
     } else {
         let live_digest =
             meerkat_core::transcript_messages_digest(live).map_err(SessionStoreError::from)?;
         let rebased = TranscriptStrandId::rebase(&live_digest);
         insert_strand_rows_in_txn(tx, id, &rebased, 0, live, identity, generation)?;
-        rebased
+        // A fresh strand: every row was just written from these exact
+        // instances, so the minted commitment matches the durable bytes.
+        SessionHead::from_session(session, rebased, head.rewrite_count)?
     };
-    let new_head = SessionHead::from_session(session, strand, head.rewrite_count)?;
     write_head_row_in_txn(tx, &new_head, identity, generation, version, fencing_token)?;
     Ok(())
 }
@@ -2979,10 +3014,13 @@ mod tests {
         );
     }
 
+    /// A pre-ledger file (historical two-table DDL, no meerkat_schema table)
+    /// is refused typed at open with its rows left untouched and no ledger
+    /// stamped: pre-ledger corpora are below the mobkit 0.8.8 floor, and the
+    /// 0.8.11 reset retired silent pre-floor convergence (this test pinned
+    /// that convergence until then).
     #[tokio::test]
-    async fn legacy_file_opens_converges_and_preserves_rows() {
-        // A pre-ledger file (historical two-table DDL, no meerkat_schema
-        // table) must open, be stamped, and keep its rows readable.
+    async fn legacy_file_is_refused_with_rows_preserved() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("continuity.sqlite3");
         let identity = AgentIdentity::parse("triage:main").unwrap();
@@ -3004,27 +3042,31 @@ mod tests {
             .expect("legacy snapshot");
         }
 
-        let store = LocalContinuityStore::open(&path).expect("open legacy");
-        let resolved = store
-            .resolve_many(std::slice::from_ref(&identity))
-            .await
-            .expect("resolve");
-        match resolved.get(&identity) {
-            Some(ContinuityResolveState::Ready { record }) => {
-                assert_eq!(record.generation.get(), 3);
-                assert_eq!(record.checkpoint_version.get(), 5);
-            }
-            other => panic!("legacy record must survive the port: {other:?}"),
-        }
-        assert_eq!(
-            store.max_fencing_token().expect("floor"),
-            9,
-            "fencing floor spans both legacy tables"
+        assert!(
+            LocalContinuityStore::open(&path).is_err(),
+            "opening a pre-ledger continuity database must refuse typed: unledgered owned \
+             tables are below the mobkit 0.8.8 floor and must never be silently converged"
         );
         let probe = Connection::open(&path).expect("probe");
+        let (generation, checkpoint): (i64, i64) = probe
+            .query_row(
+                "SELECT generation, checkpoint_version FROM continuity_records \
+                 WHERE identity = ?1",
+                rusqlite::params![identity.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("legacy record preserved");
+        assert_eq!((generation, checkpoint), (3, 5));
+        let snapshots: i64 = probe
+            .query_row("SELECT COUNT(*) FROM session_snapshots", [], |row| {
+                row.get(0)
+            })
+            .expect("legacy snapshots preserved");
+        assert_eq!(snapshots, 1, "the refusal must leave legacy rows untouched");
         assert_eq!(
             meerkat_sqlite::domain_version(&probe, "mobkit-continuity").expect("ledger"),
-            Some(1)
+            None,
+            "a refused open must not stamp the ledger"
         );
     }
 
@@ -5044,6 +5086,23 @@ mod tests {
             SessionHead::from_session(source, TranscriptStrandId::root(), 0).expect("head");
         head.message_count = messages.len() as u64;
         head.head_revision = meerkat_core::transcript_messages_digest(&messages).expect("digest");
+        // meerkat 0.8.11: `SessionHead::into_session` verifies the byte-exact
+        // row-prefix commitment against the rows it materializes (mirrors
+        // meerkat-core `SessionHead::into_session_with_serialized_rows`), so
+        // the fabricated head must commit to the REPLACEMENT rows. The
+        // source-derived lineage anchor cannot describe them (its fields are
+        // store-private), so it is cleared - `None` is the accepted
+        // unactivated shape at materialization.
+        let serialized = messages
+            .iter()
+            .map(|message| serde_json::to_vec(message).expect("serialize replacement row"))
+            .collect::<Vec<_>>();
+        head.message_row_prefix = Some(
+            meerkat_core::session_store::SessionMessageRowPrefixAccumulator::empty()
+                .extend_serialized_rows(&serialized)
+                .expect("recommit row prefix"),
+        );
+        head.row_lineage_anchor = None;
         head.into_session(messages).expect("rebuild")
     }
 }
