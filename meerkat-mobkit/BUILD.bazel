@@ -49,6 +49,8 @@ rust_library(
         "src/memory/hygienist_prompt_v0.md",
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
@@ -93,6 +95,8 @@ rust_test(
         "src/memory/hygienist_prompt_v0.md",
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
@@ -144,6 +148,8 @@ rust_binary(
         "src/memory/hygienist_prompt_v0.md",
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
@@ -185,6 +191,8 @@ rust_binary(
         "src/memory/hygienist_prompt_v0.md",
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
@@ -226,6 +234,8 @@ rust_binary(
         "src/memory/hygienist_prompt_v0.md",
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
@@ -267,6 +277,8 @@ rust_binary(
         "src/memory/hygienist_prompt_v0.md",
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
@@ -308,6 +320,8 @@ rust_binary(
         "src/memory/hygienist_prompt_v0.md",
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
@@ -349,6 +363,8 @@ rust_binary(
         "src/memory/hygienist_prompt_v0.md",
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
@@ -390,6 +406,8 @@ rust_binary(
         "src/memory/hygienist_prompt_v0.md",
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
@@ -431,6 +449,8 @@ rust_binary(
         "src/memory/hygienist_prompt_v0.md",
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
@@ -472,6 +492,8 @@ rust_binary(
         "src/memory/hygienist_prompt_v0.md",
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
@@ -513,6 +535,8 @@ rust_binary(
         "src/memory/hygienist_prompt_v0.md",
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
@@ -564,6 +588,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/access_control.rs",
@@ -627,6 +653,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/agent_events_identity_resolution.rs",
@@ -690,6 +718,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/agent_lifecycle.rs",
@@ -757,6 +787,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/bigquery_adapter.rs",
@@ -821,6 +853,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/bigquery_gc.rs",
@@ -885,6 +919,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/builder_api.rs",
@@ -948,6 +984,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/classic_agent_memory.rs",
@@ -1011,6 +1049,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/console_customization_fixtures.rs",
@@ -1073,6 +1113,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/console_experience.rs",
@@ -1136,6 +1178,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/console_route_auth.rs",
@@ -1201,6 +1245,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/core_types_and_rpc.rs",
@@ -1264,6 +1310,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/cross_mob_signed.rs",
@@ -1327,6 +1375,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/cross_mob_tcp.rs",
@@ -1390,6 +1440,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/cross_mob_uds.rs",
@@ -1453,6 +1505,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/discovery_bootstrap.rs",
@@ -1516,6 +1570,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/distiller_eval_harness.rs",
@@ -1582,6 +1638,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/e2e_sdk_wire.rs",
@@ -1644,6 +1702,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/e2e_target_contracts.rs",
@@ -1711,6 +1771,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/edge_wiring_reconcile.rs",
@@ -1774,6 +1836,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/event_log_recovery.rs",
@@ -1839,6 +1903,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/external_boundary.rs",
@@ -1902,6 +1968,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/gateway_concurrent_dispatch.rs",
@@ -1965,6 +2033,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/gateway_external.rs",
@@ -2028,6 +2098,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/gateway_live.rs",
@@ -2090,6 +2162,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/gateway_memory_config.rs",
@@ -2155,6 +2229,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/gating_policy.rs",
@@ -2222,6 +2298,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/governance_contracts.rs",
@@ -2287,6 +2365,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/hooks.rs",
@@ -2350,6 +2430,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/http_router.rs",
@@ -2413,6 +2495,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/hygienist_eval_harness.rs",
@@ -2479,6 +2563,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_boundary.rs",
@@ -2542,6 +2628,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_builder.rs",
@@ -2605,6 +2693,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_choke.rs",
@@ -2668,6 +2758,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_cold_restart_continuity.rs",
@@ -2731,6 +2823,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_completion_cursor.rs",
@@ -2794,6 +2888,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_contracts.rs",
@@ -2857,6 +2953,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_e2e.rs",
@@ -2919,6 +3017,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_head_canonical_resume.rs",
@@ -2984,6 +3084,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_kitchen_sink.rs",
@@ -3050,6 +3152,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_lazy_recall_continuity.rs",
@@ -3115,6 +3219,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_ob3_smoke.rs",
@@ -3181,6 +3287,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_respawn_continuity.rs",
@@ -3244,6 +3352,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_resume_pair_coherence.rs",
@@ -3307,6 +3417,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_runtime.rs",
@@ -3373,6 +3485,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_subprocess_reboot.rs",
@@ -3438,6 +3552,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/identity_first_types.rs",
@@ -3501,6 +3617,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/idle_cpu_gate.rs",
@@ -3564,6 +3682,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/incident_command_center_pack.rs",
@@ -3627,6 +3747,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/judgment_plane_deweld.rs",
@@ -3690,6 +3812,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/jwks_cache_and_auth.rs",
@@ -3753,6 +3877,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/jwt_oidc_auth.rs",
@@ -3816,6 +3942,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/jwt_rsa.rs",
@@ -3879,6 +4007,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/legacy_session_resume.rs",
@@ -3942,6 +4072,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/list_flows_run_flow.rs",
@@ -4005,6 +4137,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/list_runs.rs",
@@ -4068,6 +4202,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/mcp_boundary.rs",
@@ -4135,6 +4271,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/memory_comms_taint_contract.rs",
@@ -4198,6 +4336,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/memory_store.rs",
@@ -4261,6 +4401,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/mob_events_cursor_persistence.rs",
@@ -4324,6 +4466,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/mob_events_ingestion.rs",
@@ -4387,6 +4531,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/mob_events_query.rs",
@@ -4450,6 +4596,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/mob_events_query_ledger.rs",
@@ -4513,6 +4661,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/mob_events_streaming.rs",
@@ -4576,6 +4726,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/mob_run_labels.rs",
@@ -4639,6 +4791,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/mobkit_gateway_bootstrap.rs",
@@ -4706,6 +4860,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/module_restart.rs",
@@ -4769,6 +4925,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/reference_app.rs",
@@ -4835,6 +4993,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/routing_delivery.rs",
@@ -4901,6 +5061,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/rpc_builtins.rs",
@@ -4964,6 +5126,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/runtime_bootstrap.rs",
@@ -5027,6 +5191,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/schedule_dispatch.rs",
@@ -5090,6 +5256,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/schedule_store_text_carry.rs",
@@ -5153,6 +5321,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/sdk_parity.rs",
@@ -5219,6 +5389,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/sdk_productization.rs",
@@ -5285,6 +5457,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/selector_eval_harness.rs",
@@ -5351,6 +5525,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/session_compaction_wiring.rs",
@@ -5414,6 +5590,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/session_store_jsonl.rs",
@@ -5478,6 +5656,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/shutdown_drain.rs",
@@ -5541,6 +5721,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/sse_auth_gate.rs",
@@ -5604,6 +5786,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/steward_eval_harness.rs",
@@ -5670,6 +5854,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/storage_doctor_gateway.rs",
@@ -5733,6 +5919,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/storage_gate.rs",
@@ -5798,6 +5986,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/storage_health_gateway.rs",
@@ -5861,6 +6051,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/storage_layout_boot.rs",
@@ -5928,6 +6120,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/storage_migrate_cli.rs",
@@ -5993,6 +6187,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/storage_wire.rs",
@@ -6056,6 +6252,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/studio_k_asks.rs",
@@ -6119,6 +6317,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/swarm_integration.rs",
@@ -6185,6 +6385,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/tool_event_stream_contracts.rs",
@@ -6248,6 +6450,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/topology_control.rs",
@@ -6313,6 +6517,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/unified_console.rs",
@@ -6376,6 +6582,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/wildcard_routes.rs",
@@ -6443,6 +6651,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/workgraph_e2e.rs",
@@ -6505,6 +6715,8 @@ rust_test(
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
         "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
     ],
     srcs = [
         "tests/workgraph_rpc.rs",
