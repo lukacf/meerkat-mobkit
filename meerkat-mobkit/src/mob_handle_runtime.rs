@@ -7671,6 +7671,15 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+        async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+            _authority: &meerkat_core::CommittedSessionBoundaryAuthority,
+        ) -> Result<(), SessionError> {
+            Err(SessionError::Unsupported(
+                "test double does not acknowledge store-owned runtime boundaries".to_string(),
+            ))
+        }
         async fn load_session_for_resume(
             &self,
             session_id: &meerkat_core::types::SessionId,
@@ -7978,6 +7987,15 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+            _authority: &meerkat_core::CommittedSessionBoundaryAuthority,
+        ) -> Result<(), SessionError> {
+            Err(SessionError::Unsupported(
+                "test double does not acknowledge store-owned runtime boundaries".to_string(),
+            ))
+        }
         async fn load_session_for_resume(
             &self,
             session_id: &meerkat_core::types::SessionId,
@@ -9491,9 +9509,9 @@ image_generation = true
             system_prompt: Some("system".to_string()),
             event_tx: None,
             runtime: meerkat_core::service::StartTurnRuntimeSemantics {
+                input_identity: None,
                 handling_mode: meerkat_core::types::HandlingMode::Steer,
                 turn_tool_overlay: None,
-                pre_turn_context_appends: Vec::new(),
                 typed_turn_appends: Vec::new(),
                 // Render metadata now lives only on the typed turn-metadata
                 // carrier (meerkat 0.7).

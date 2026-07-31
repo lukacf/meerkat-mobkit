@@ -4027,14 +4027,13 @@ mod tests {
             .await
             .expect("boundary save of the authority");
 
-        // The intra-turn checkpointer persists a STAMPED head strictly ahead
-        // of the boundary commit; the host dies before the boundary lands.
+        // The intra-turn checkpointer persists a head strictly ahead of the
+        // boundary commit; the host dies before the boundary lands. (0.8.11:
+        // the retired runtime-checkpoint provenance stamp no longer exists;
+        // the rollback guard under test is provenance-independent.)
         let mut stamped_head = authority.clone();
         stamped_head
             .append_external_user_content(meerkat_core::ContentInput::Text("mid-turn".to_string()));
-        stamped_head
-            .set_runtime_checkpoint_provenance()
-            .expect("stamp legacy runtime checkpoint provenance");
         meerkat::SessionStore::save(&adapter, &stamped_head)
             .await
             .expect("checkpointer save of the stamped head");
@@ -4149,9 +4148,6 @@ mod tests {
         let mut stamped_fork = base.clone();
         stamped_fork
             .append_external_user_content(meerkat_core::ContentInput::Text("forked".to_string()));
-        stamped_fork
-            .set_runtime_checkpoint_provenance()
-            .expect("stamp legacy runtime checkpoint provenance");
         meerkat::SessionStore::save(&adapter, &stamped_fork)
             .await
             .expect("seed the stamped head");

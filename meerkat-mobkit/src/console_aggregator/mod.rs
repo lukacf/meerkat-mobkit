@@ -5611,6 +5611,17 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MobSessionService for DelayedHistorySessionService {
+        async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+            authority: &meerkat_core::CommittedSessionBoundaryAuthority,
+        ) -> Result<(), meerkat_core::service::SessionError> {
+            self.inner
+                .acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
+                    session_id, authority,
+                )
+                .await
+        }
         async fn load_session_for_resume(
             &self,
             session_id: &meerkat_core::types::SessionId,
@@ -5850,59 +5861,18 @@ mod tests {
                 .await
         }
 
-        async fn apply_runtime_context_appends(
-            &self,
-            session_id: &SessionId,
-            run_id: meerkat_core::RunId,
-            appends: Vec<meerkat_core::PendingSystemContextAppend>,
-            contributing_input_ids: Vec<meerkat_core::InputId>,
-        ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
-            self.inner
-                .apply_runtime_context_appends(session_id, run_id, appends, contributing_input_ids)
-                .await
-        }
-
-        async fn apply_runtime_context_appends_with_boundary(
-            &self,
-            session_id: &SessionId,
-            run_id: meerkat_core::RunId,
-            appends: Vec<meerkat_core::PendingSystemContextAppend>,
-            boundary: meerkat_core::lifecycle::run_primitive::RunApplyBoundary,
-            contributing_input_ids: Vec<meerkat_core::InputId>,
-        ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
-            self.inner
-                .apply_runtime_context_appends_with_boundary(
-                    session_id,
-                    run_id,
-                    appends,
-                    boundary,
-                    contributing_input_ids,
-                )
-                .await
-        }
-
-        async fn apply_runtime_system_context_for_turn(
-            &self,
-            session_id: &SessionId,
-            appends: Vec<meerkat_core::PendingSystemContextAppend>,
-        ) -> Result<(), SessionError> {
-            self.inner
-                .apply_runtime_system_context_for_turn(session_id, appends)
-                .await
-        }
-
-        async fn prepare_runtime_system_context_for_active_turn(
+        async fn prepare_transient_turn_context_for_active_turn(
             &self,
             session_id: &SessionId,
             expected_run_id: &meerkat_core::RunId,
-            appends: Vec<meerkat_core::PendingSystemContextAppend>,
+            contexts: Vec<meerkat_core::lifecycle::run_primitive::TurnRequestContext>,
         ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError>
         {
             self.inner
-                .prepare_runtime_system_context_for_active_turn(
+                .prepare_transient_turn_context_for_active_turn(
                     session_id,
                     expected_run_id,
-                    appends,
+                    contexts,
                 )
                 .await
         }
@@ -5910,7 +5880,7 @@ mod tests {
         async fn checkpoint_committed_runtime_session_snapshot(
             &self,
             session_id: &SessionId,
-            session_snapshot: &[u8],
+            session_snapshot: std::sync::Arc<Vec<u8>>,
         ) -> Result<(), SessionError> {
             self.inner
                 .checkpoint_committed_runtime_session_snapshot(session_id, session_snapshot)
@@ -5930,7 +5900,7 @@ mod tests {
         async fn checkpoint_committed_runtime_session_snapshot_under_turn_finalization_boundary(
             &self,
             session_id: &SessionId,
-            session_snapshot: &[u8],
+            session_snapshot: std::sync::Arc<Vec<u8>>,
         ) -> Result<(), SessionError> {
             self.inner
                 .checkpoint_committed_runtime_session_snapshot_under_turn_finalization_boundary(

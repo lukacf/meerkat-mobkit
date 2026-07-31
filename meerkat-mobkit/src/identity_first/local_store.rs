@@ -3926,7 +3926,7 @@ mod tests {
         // The v1-shaped reader the lockout protects: it must still open.
         {
             let probe = Connection::open(&path).expect("probe");
-            meerkat_sqlite::refuse_future_schema(&probe, &V0_8_5_CONTINUITY_DOMAIN).expect(
+            refuse_future_schema_model(&probe, &V0_8_5_CONTINUITY_DOMAIN).expect(
                 "a previous release must still open a file whose only head-canonical \
                  content is rows no head adopts",
             );
@@ -3980,7 +3980,7 @@ mod tests {
         );
         {
             let probe = Connection::open(&path).expect("probe");
-            match meerkat_sqlite::refuse_future_schema(&probe, &V0_8_5_CONTINUITY_DOMAIN) {
+            match refuse_future_schema_model(&probe, &V0_8_5_CONTINUITY_DOMAIN) {
                 Err(meerkat_sqlite::SqliteStoreError::SchemaFromTheFuture { domain, .. }) => {
                     assert_eq!(domain, "mobkit-continuity");
                 }
@@ -4808,7 +4808,32 @@ mod tests {
             name: "base-schema",
             apply: migration_0001_continuity_schema,
         }],
+        initialize_current: migration_0001_continuity_schema,
+        allowed_existing_versions: &[1],
+        released_predecessors: &[],
+        owned_objects: RELEASED_V1_CONTINUITY_OBJECTS,
+        retired_objects: &[],
     };
+
+    /// Local model of the retired `meerkat_sqlite::refuse_future_schema`
+    /// check the previous release ran at open: read the ledger row, refuse
+    /// when it exceeds the modeled version ceiling.
+    fn refuse_future_schema_model(
+        conn: &Connection,
+        domain: &meerkat_sqlite::SchemaDomain,
+    ) -> Result<(), meerkat_sqlite::SqliteStoreError> {
+        let supported = domain.supported_version();
+        match meerkat_sqlite::domain_version(conn, domain.name)? {
+            Some(found) if found > supported => {
+                Err(meerkat_sqlite::SqliteStoreError::SchemaFromTheFuture {
+                    domain: domain.name.to_string(),
+                    found,
+                    supported,
+                })
+            }
+            _ => Ok(()),
+        }
+    }
 
     /// A stand-in for a release that predates the head-canonical channel:
     /// it supports `mobkit-continuity` up to v1 and reads sessions ONLY from
@@ -4820,7 +4845,7 @@ mod tests {
     /// lockout without needing the old binary on disk.
     fn v1_shaped_binary_opens(path: &Path) -> Result<(), meerkat_sqlite::SqliteStoreError> {
         let conn = Connection::open(path).expect("probe");
-        meerkat_sqlite::refuse_future_schema(&conn, &V0_8_5_CONTINUITY_DOMAIN)
+        refuse_future_schema_model(&conn, &V0_8_5_CONTINUITY_DOMAIN)
     }
 
     /// N1-INTERACTION PIN: keeping the file at v1 for an append that adopts
@@ -4939,11 +4964,10 @@ mod tests {
 
     /// Rebuild a session document on the SAME id with a different transcript.
     fn rebuild_with_messages(source: &Session, messages: Vec<meerkat_core::Message>) -> Session {
-        let head = SessionHead {
-            message_count: messages.len() as u64,
-            head_revision: meerkat_core::transcript_messages_digest(&messages).expect("digest"),
-            ..SessionHead::from_session(source, TranscriptStrandId::root(), 0).expect("head")
-        };
+        let mut head =
+            SessionHead::from_session(source, TranscriptStrandId::root(), 0).expect("head");
+        head.message_count = messages.len() as u64;
+        head.head_revision = meerkat_core::transcript_messages_digest(&messages).expect("digest");
         head.into_session(messages).expect("rebuild")
     }
 }

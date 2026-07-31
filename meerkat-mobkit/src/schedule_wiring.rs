@@ -1594,6 +1594,7 @@ mod tests {
         HostRunnableInvocation {
             occurrence_id: meerkat::OccurrenceId::new(),
             schedule_id: meerkat::ScheduleId::new(),
+            delivery_idempotency_key: "conformance-callback-key".to_string(),
             runnable: runnable_name(runnable),
             trigger_time: chrono::Utc::now(),
             params: params_json
@@ -1916,7 +1917,6 @@ mod tests {
                 owner_id: "carry-test".to_string(),
                 limit: 8,
                 lease_duration: chrono::Duration::seconds(60),
-                live_waiter_occurrence_ids: Default::default(),
             })
             .await
             .expect("claim must tolerate the poisoned neighbor (meerkat >= 0.7.19)");
@@ -2578,7 +2578,6 @@ schedule = true
                     owner_id: "runaway-probe".to_string(),
                     limit: 8,
                     lease_duration: chrono::Duration::seconds(60),
-                    live_waiter_occurrence_ids: Default::default(),
                 })
                 .await;
             {

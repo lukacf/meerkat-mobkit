@@ -1527,6 +1527,15 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for AdmissionStoreProbe {
+        async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+            _authority: &meerkat_core::CommittedSessionBoundaryAuthority,
+        ) -> Result<(), meerkat_core::service::SessionError> {
+            Err(meerkat_core::service::SessionError::Unsupported(
+                "test double does not acknowledge store-owned runtime boundaries".to_string(),
+            ))
+        }
         async fn load_session_for_resume(
             &self,
             session_id: &meerkat_core::types::SessionId,
@@ -1687,6 +1696,15 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for SwitchableStore {
+        async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+            _authority: &meerkat_core::CommittedSessionBoundaryAuthority,
+        ) -> Result<(), meerkat_core::service::SessionError> {
+            Err(meerkat_core::service::SessionError::Unsupported(
+                "test double does not acknowledge store-owned runtime boundaries".to_string(),
+            ))
+        }
         async fn load_session_for_resume(
             &self,
             session_id: &meerkat_core::types::SessionId,

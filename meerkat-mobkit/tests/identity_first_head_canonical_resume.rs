@@ -65,7 +65,7 @@ const RUNTIME_INSTANCE: &str = "head-canonical-resume";
 /// Serializes every test in this binary.
 ///
 /// `steady_state_head_canonical_turns_stay_inside_the_boundary_encode_envelope`
-/// reads `meerkat_core::checkpoint::global_session_encode_bytes()`, a
+/// reads `meerkat_core::global_session_encode_bytes()`, a
 /// PROCESS-GLOBAL counter of whole-session boundary serializations.
 /// Integration tests in one binary share one process, so a sibling test
 /// running concurrently would bleed its own boundary encodes into the
@@ -1124,7 +1124,7 @@ async fn archived_session_reads_as_archived_never_as_missing() {
 /// `serde_json::to_vec` whole-blob path all land their pages there. This is
 /// the acceptance signal.
 ///
-/// SECONDARY signal: `meerkat_core::checkpoint::global_session_encode_bytes()`
+/// SECONDARY signal: `meerkat_core::global_session_encode_bytes()`
 /// — whole-session serializations minted by core's own seams only
 /// (`BoundSessionCommit::sealed` in `meerkat-core/src/lifecycle/core_executor.rs`
 /// and the stamped-snapshot install in `meerkat-session/src/persistent.rs`).
@@ -1223,7 +1223,7 @@ async fn steady_state_head_canonical_turns_stay_inside_the_boundary_encode_envel
     // the window is the gross write volume of exactly these turns.
     truncate_continuity_wal(&state);
     let substrate_baseline = continuity_substrate_bytes(&state);
-    let encode_baseline = meerkat_core::checkpoint::global_session_encode_bytes();
+    let encode_baseline = meerkat_core::global_session_encode_bytes();
     for offset in 1..=MEASURED_TURNS {
         let turn = WARMUP_TURNS + offset;
         identity_runtime
@@ -1250,7 +1250,7 @@ async fn steady_state_head_canonical_turns_stay_inside_the_boundary_encode_envel
     let substrate_grown = i64::try_from(continuity_substrate_bytes(&state))
         .expect("substrate size fits")
         - i64::try_from(substrate_baseline).expect("substrate baseline fits");
-    let encoded = meerkat_core::checkpoint::global_session_encode_bytes() - encode_baseline;
+    let encoded = meerkat_core::global_session_encode_bytes() - encode_baseline;
     let measured_turns = i64::try_from(MEASURED_TURNS).expect("measured turn count fits");
     let per_turn_durable = substrate_grown / measured_turns;
     let per_turn_encoded =
@@ -1327,7 +1327,7 @@ async fn steady_state_head_canonical_turns_stay_inside_the_boundary_encode_envel
     truncate_continuity_wal(&state);
     let inflated_baseline = continuity_substrate_bytes(&state);
     let runtime_store_baseline = runtime_substrate_bytes(&state);
-    let inflated_encode_baseline = meerkat_core::checkpoint::global_session_encode_bytes();
+    let inflated_encode_baseline = meerkat_core::global_session_encode_bytes();
     for _ in 1..=MEASURED_TURNS {
         turn += 1;
         identity_runtime
@@ -1357,8 +1357,7 @@ async fn steady_state_head_canonical_turns_stay_inside_the_boundary_encode_envel
     let runtime_store_grown = i64::try_from(runtime_substrate_bytes(&state))
         .expect("runtime store size fits")
         - i64::try_from(runtime_store_baseline).expect("runtime store baseline fits");
-    let inflated_encoded =
-        meerkat_core::checkpoint::global_session_encode_bytes() - inflated_encode_baseline;
+    let inflated_encoded = meerkat_core::global_session_encode_bytes() - inflated_encode_baseline;
     let inflated_per_turn = inflated_grown / measured_turns;
     let inflated_proxy_bytes = capture.last().map_or(0, |request| request.len());
     eprintln!(

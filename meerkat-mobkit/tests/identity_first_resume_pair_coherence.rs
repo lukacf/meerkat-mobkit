@@ -574,8 +574,7 @@ async fn persisted_prompt_probe(
         .expect("decode transcript history state")
         .map(|state| {
             state
-                .commits
-                .iter()
+                .commits()
                 .map(|commit| commit.revision.clone())
                 .collect()
         })

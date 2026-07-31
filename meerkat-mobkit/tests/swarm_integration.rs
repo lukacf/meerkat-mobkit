@@ -163,6 +163,18 @@ impl MobSessionService for CheckpointerCancelProbeSessionService {
             .await
     }
 
+    async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
+        &self,
+        session_id: &SessionId,
+        authority: &meerkat_core::CommittedSessionBoundaryAuthority,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
+                session_id, authority,
+            )
+            .await
+    }
+
     async fn load_session_for_resume(
         &self,
         session_id: &SessionId,

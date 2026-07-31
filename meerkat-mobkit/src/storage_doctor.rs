@@ -2021,7 +2021,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn continuity_census_counts_unstamped_snapshots_per_identity() {
+    async fn continuity_census_classifies_current_and_undecodable_payloads() {
         let temp = tempfile::tempdir().unwrap();
         let state = temp.path();
         let db_path = state.join("continuity.db");
@@ -2036,18 +2036,13 @@ mod tests {
         }
 
         let diagnosis = diagnose_state_dir(&scope(&[state])).await;
-        let legacy = diagnosis
-            .findings
-            .iter()
-            .find(|f| f.code == FINDING_LEGACY_UNVERIFIED_CONTINUITY_SNAPSHOTS)
-            .expect("legacy census finding");
-        assert_eq!(legacy.severity, FindingSeverity::Warning);
+        // Current-format documents census clean: no released-envelope
+        // finding (the retired stamped/legacy census is gone with the
+        // 0.8.11 vocabulary reset).
         assert!(
-            legacy.message.starts_with("2 legacy-unverified"),
-            "{}",
-            legacy.message
+            !codes(&diagnosis).contains(&FINDING_RELEASED_0810_CONTINUITY_SNAPSHOTS),
+            "{diagnosis:?}"
         );
-        assert_eq!(legacy.realm.as_deref(), Some("domain:security"));
         let undecodable = diagnosis
             .findings
             .iter()
@@ -2057,75 +2052,11 @@ mod tests {
 
         // The realm filter narrows the census to one identity.
         let filtered = diagnose_state_dir(&scope(&[state]).with_realm("domain:ops")).await;
-        assert!(
-            !codes(&filtered).contains(&FINDING_LEGACY_UNVERIFIED_CONTINUITY_SNAPSHOTS),
-            "{filtered:?}"
-        );
         assert!(codes(&filtered).contains(&FINDING_CONTINUITY_SNAPSHOT_UNDECODABLE));
     }
 
-    /// A session with a verified root checkpoint stamp installed.
-    fn stamped_session() -> Session {
-        let mut session = Session::new();
-        session.push(Message::User(UserMessage::text("stamped")));
-        let stamp = meerkat_core::SessionCheckpointStamp::root(
-            &session,
-            meerkat_core::SessionCheckpointProvenance::SessionCreated,
-        )
-        .expect("root stamp");
-        session
-            .install_checkpoint_stamp(stamp)
-            .expect("install stamp");
-        session
-    }
-
-    #[tokio::test]
-    async fn continuity_census_verifies_stamped_checkpoint_digests() {
-        let temp = tempfile::tempdir().unwrap();
-        let state = temp.path();
-        let db_path = state.join("continuity.db");
-        create_db_with_table(&db_path, CONTINUITY_DDL);
-
-        // One verified stamped snapshot, and one whose content changed after
-        // stamping — structurally stamped, but the digest no longer matches
-        // the bytes (restore rejects it; the doctor must not call it clean).
-        let good = stamped_session();
-        let (good_sid, good_bytes) = (
-            good.id().to_string(),
-            serde_json::to_vec(&good).expect("serialize"),
-        );
-        let mut tampered = stamped_session();
-        tampered.push(Message::User(UserMessage::text("tampered after stamping")));
-        let (bad_sid, bad_bytes) = (
-            tampered.id().to_string(),
-            serde_json::to_vec(&tampered).expect("serialize"),
-        );
-        {
-            let conn = Connection::open(&db_path).unwrap();
-            insert_snapshot(&conn, &good_sid, "domain:good", &good_bytes);
-            insert_snapshot(&conn, &bad_sid, "domain:bad", &bad_bytes);
-        }
-
-        let diagnosis = diagnose_state_dir(&scope(&[state])).await;
-        let mismatches: Vec<_> = diagnosis
-            .findings
-            .iter()
-            .filter(|f| f.code == FINDING_CHECKPOINT_DIGEST_MISMATCH)
-            .collect();
-        assert_eq!(mismatches.len(), 1, "{diagnosis:?}");
-        assert_eq!(mismatches[0].severity, FindingSeverity::Error);
-        assert!(
-            mismatches[0].message.contains(&bad_sid),
-            "the finding must name the session: {}",
-            mismatches[0].message
-        );
-        assert_eq!(mismatches[0].realm.as_deref(), Some("domain:bad"));
-        assert!(!mismatches[0].message.contains(&good_sid));
-        assert!(diagnosis.has_errors());
-    }
-
     /// M4b: a head-canonical continuity file censuses its head rows (with
-    /// the same stamp verification the blob path pays), reports the ledger at
+    /// the same full materialization the blob path pays), reports the ledger at
     /// the head-canonical version, and reports the shadowed blob row as a
     /// frozen archive instead of censusing a document nothing serves.
     #[tokio::test]
@@ -2140,7 +2071,11 @@ mod tests {
         let state = temp.path();
         let db_path = state.join("continuity.sqlite3");
         let identity = AgentIdentity::parse("domain:stamped").unwrap();
-        let stamped = stamped_session();
+        let stamped = {
+            let mut session = Session::new();
+            session.push(Message::User(UserMessage::text("stamped")));
+            session
+        };
         let session_id = stamped.id().clone();
         // The archived blob is the pre-stamp precursor of the same session:
         // same id, same transcript, no checkpoint stamp.
@@ -2224,8 +2159,8 @@ mod tests {
             "a verified head-canonical session must census clean: {diagnosis:?}"
         );
         assert!(
-            !codes(&diagnosis).contains(&FINDING_LEGACY_UNVERIFIED_CONTINUITY_SNAPSHOTS),
-            "the shadowed archive must not be censused as a live legacy document: {diagnosis:?}"
+            !codes(&diagnosis).contains(&FINDING_RELEASED_0810_CONTINUITY_SNAPSHOTS),
+            "the shadowed archive must not be censused as a live released document: {diagnosis:?}"
         );
         let archived = diagnosis
             .findings
