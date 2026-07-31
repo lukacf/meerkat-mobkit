@@ -1512,6 +1512,37 @@ pub fn epoch_tracking_runtime_store(
     (store, SessionWriteEpochsHandle { epochs })
 }
 
+/// [`epoch_tracking_runtime_store`] plus the durable session projection and
+/// (optionally) every-boot runtime-authority re-minting.
+///
+/// At meerkat 0.8.11 the session service keeps no plain `SessionStore` write
+/// path of its own (WholeBlob session authority lives only in the
+/// `RuntimeStore`), so an externally-composed runtime that pairs a durable
+/// `session_store` with its runtime store MUST wrap through this seam or
+/// committed session boundaries never reach that store. `mint_on_absent`
+/// must be true only when `inner` is a DECLARED-ephemeral in-memory store
+/// whose durable truth lives in `session_store` (the pod-scratch shape);
+/// durable SQLite/provider-backed runtime stores never mint.
+pub fn epoch_tracking_runtime_store_with_durable_projection(
+    inner: Arc<dyn meerkat_runtime::RuntimeStore>,
+    session_store: Arc<dyn SessionStore>,
+    mint_on_absent: bool,
+) -> (
+    Arc<dyn meerkat_runtime::RuntimeStore>,
+    SessionWriteEpochsHandle,
+) {
+    let epochs = Arc::new(SessionSnapshotWriteEpochs::default());
+    let store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+        SessionStoreBackedRuntimeStore::with_write_epochs_and_durable_projection(
+            inner,
+            Arc::clone(&epochs),
+            session_store,
+            mint_on_absent,
+        ),
+    );
+    (store, SessionWriteEpochsHandle { epochs })
+}
+
 /// Absorbs repeated authoritative session-document reads while the session's
 /// durable authority is unchanged.
 ///
@@ -1617,16 +1648,61 @@ impl SessionDocumentReadAbsorber {
 struct SessionStoreBackedRuntimeStore {
     inner: Arc<dyn meerkat_runtime::RuntimeStore>,
     write_epochs: Option<Arc<SessionSnapshotWriteEpochs>>,
+    /// The injected durable session/continuity store this facade keeps in
+    /// sync with the inner runtime store.
+    ///
+    /// Write side (every shape that carries one): committed session
+    /// boundaries project into it via
+    /// [`Self::project_committed_session_to_durable`]. Read side (only when
+    /// [`Self::mint_on_absent`]): it is the durable source for every-boot
+    /// runtime-authority re-minting.
+    session_store: Option<Arc<dyn SessionStore>>,
+    /// Whether an absent inner authority record may be re-minted from the
+    /// durable session store.
+    ///
+    /// True only where the inner RuntimeStore is DECLARED ephemeral (pod
+    /// scratch) and the durable truth lives in the session/continuity
+    /// domain. Ruled in-design by the meerkat lead (2026-07-31):
+    /// deterministic reconstruction from the same durable facts on every
+    /// boot, fail-closed on absent facts - and durable (SQLite/provider)
+    /// inner stores never mint, so a record they genuinely lack (e.g. a
+    /// destroyed session) stays absent.
+    mint_on_absent: bool,
+    /// Single-flight fence over authority re-minting: concurrent cold
+    /// activations racing the three authority reads must collapse to ONE
+    /// committed seed, and a late seed must never overwrite a boundary a
+    /// real turn has already advanced (the in-lock re-read serves the
+    /// current record instead of seeding).
+    mint_flight: tokio::sync::Mutex<()>,
 }
 
 impl SessionStoreBackedRuntimeStore {
     fn new(
         inner: Arc<dyn meerkat_runtime::RuntimeStore>,
-        _session_store: Arc<dyn SessionStore>,
+        session_store: Arc<dyn SessionStore>,
     ) -> Self {
         Self {
             inner,
             write_epochs: None,
+            session_store: Some(session_store),
+            mint_on_absent: true,
+            mint_flight: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Projection-only facade over a DURABLE (remote-authoritative) inner
+    /// store: committed boundaries write through to the injected session
+    /// store, but absent inner records are never re-minted.
+    fn durable_projection(
+        inner: Arc<dyn meerkat_runtime::RuntimeStore>,
+        session_store: Arc<dyn SessionStore>,
+    ) -> Self {
+        Self {
+            inner,
+            write_epochs: None,
+            session_store: Some(session_store),
+            mint_on_absent: false,
+            mint_flight: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -1637,7 +1713,109 @@ impl SessionStoreBackedRuntimeStore {
         Self {
             inner,
             write_epochs: Some(write_epochs),
+            session_store: None,
+            mint_on_absent: false,
+            mint_flight: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// [`Self::with_write_epochs`] plus the durable session projection, for
+    /// the persistent composition where one epoch-observing facade fronts
+    /// both the machine and the session service. `mint_on_absent` must be
+    /// true only when the inner store is the DECLARED-ephemeral in-memory
+    /// one.
+    fn with_write_epochs_and_durable_projection(
+        inner: Arc<dyn meerkat_runtime::RuntimeStore>,
+        write_epochs: Arc<SessionSnapshotWriteEpochs>,
+        session_store: Arc<dyn SessionStore>,
+        mint_on_absent: bool,
+    ) -> Self {
+        Self {
+            inner,
+            write_epochs: Some(write_epochs),
+            session_store: Some(session_store),
+            mint_on_absent,
+            mint_flight: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Re-mint store-issued runtime authority from durable session facts for
+    /// a runtime the (ephemeral) inner store has no record of.
+    ///
+    /// The durable session is read through the IMPORTING session-store loader
+    /// (a released 0.8.10 envelope imports in this same activation), then
+    /// committed into the inner store, whose atomic commit mints the current
+    /// store-issued authority - nothing is fabricated facade-side. Returns
+    /// false (and mints nothing) when no durable facts exist, keeping the
+    /// upstream refusal fail-closed.
+    async fn mint_runtime_authority_from_durable(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
+        if !self.mint_on_absent {
+            return Ok(false);
+        }
+        let Some(session_store) = self.session_store.as_ref() else {
+            return Ok(false);
+        };
+        // The seed verb is a WholeBlob session-control snapshot; a store
+        // declaring any other persistence profile must not be seeded
+        // through it.
+        if self.inner.session_persistence_profile()
+            != meerkat_runtime::store::RuntimeSessionPersistenceProfile::WholeBlobV1
+        {
+            return Ok(false);
+        }
+        let raw = runtime_id.0.as_str();
+        let candidate = raw.strip_prefix("rt:session:").unwrap_or(raw);
+        let Ok(session_id) = meerkat_core::types::SessionId::parse(candidate) else {
+            return Ok(false);
+        };
+        // Single-flight: exactly one racer seeds; the rest converge on the
+        // in-lock re-read below. A record that appeared while waiting -
+        // including one a real turn has already advanced past the seed -
+        // WINS: the current record is served and nothing is overwritten.
+        let _flight = self.mint_flight.lock().await;
+        if self
+            .inner
+            .load_whole_blob_store_authority(runtime_id)
+            .await?
+            .is_some()
+        {
+            return Ok(true);
+        }
+        let session = session_store.load(&session_id).await.map_err(|e| {
+            meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                "durable session read for runtime-authority mint: {e}"
+            ))
+        })?;
+        let Some(session) = session else {
+            return Ok(false);
+        };
+        let bytes = session.to_persisted_bytes().map_err(|e| {
+            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                "durable session encode for runtime-authority mint: {e}"
+            ))
+        })?;
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .commit_session_snapshot(
+                runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(bytes),
+                },
+            )
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result?;
+        tracing::info!(
+            runtime_id = %runtime_id,
+            session_id = %session_id,
+            "runtime authority re-minted from durable session facts \
+             (ephemeral runtime-store activation)"
+        );
+        Ok(true)
     }
 
     /// Bump the write epoch. Called BEFORE the inner write (a failed write
@@ -1649,6 +1827,65 @@ impl SessionStoreBackedRuntimeStore {
         if let Some(epochs) = self.write_epochs.as_ref() {
             epochs.advance(runtime_id);
         }
+    }
+
+    /// Write-side complement of
+    /// [`Self::mint_runtime_authority_from_durable`]: after a committing
+    /// verb succeeds on the (ephemeral) inner store, project the
+    /// store-issued committed WholeBlob session into the durable session
+    /// store.
+    ///
+    /// At meerkat 0.8.11 the session service keeps no plain `SessionStore`
+    /// write path of its own (`PersistentSessionService::new_with_capacities`
+    /// retains only the store's incremental capability; WholeBlob authority
+    /// lives only in `RuntimeStore`), and the `RuntimeStore` contract
+    /// assigns backing-medium sync to the store implementation ("for stores
+    /// that physically share a `SessionStore` table, writes that table in
+    /// the same transaction" - `RuntimeStore::atomic_apply`). This facade's
+    /// shared medium is the injected store, so it projects after the inner
+    /// commit. The committed snapshot is re-read from the inner store so the
+    /// projected document is store-issued bytes, never facade-interpreted
+    /// input; a projection racing a newer commit converges toward the newer
+    /// committed state.
+    ///
+    /// Fails closed: a projection failure fails the committing verb, so a
+    /// reported commit never claims durability the injected store did not
+    /// accept. The inner (scratch) store may then run ahead of durable
+    /// truth; the next activation's mint re-seeds from the durable row, so
+    /// an unacknowledged boundary is lost whole rather than resurrected
+    /// torn.
+    async fn project_committed_session_to_durable(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        let Some(session_store) = self.session_store.as_ref() else {
+            return Ok(());
+        };
+        // HeadCanonical media write the session store through its own
+        // incremental capability; only the WholeBlob shape needs the
+        // facade-owned projection (mirrors the mint's profile gate).
+        if self.inner.session_persistence_profile()
+            != meerkat_runtime::store::RuntimeSessionPersistenceProfile::WholeBlobV1
+        {
+            return Ok(());
+        }
+        let Some(snapshot) = self
+            .inner
+            .load_committed_whole_blob_snapshot(runtime_id)
+            .await?
+        else {
+            // Receipt-only boundary before any committed snapshot exists:
+            // nothing durable to project yet.
+            return Ok(());
+        };
+        session_store
+            .save_authoritative_projection(snapshot.session())
+            .await
+            .map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                    "durable session projection after runtime boundary commit: {e}"
+                ))
+            })
     }
 }
 
@@ -1709,7 +1946,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .commit_session_snapshot(runtime_id, session_delta)
             .await;
         self.note_session_scoped_write(runtime_id);
-        result
+        result?;
+        self.project_committed_session_to_durable(runtime_id).await
     }
 
     async fn commit_prepared_session_boundary(
@@ -1726,7 +1964,10 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .commit_prepared_session_boundary(runtime_id, request)
             .await;
         self.note_session_scoped_write(runtime_id);
-        result
+        let result = result?;
+        self.project_committed_session_to_durable(runtime_id)
+            .await?;
+        Ok(result)
     }
 
     async fn load_session_boundary_authority(
@@ -1736,6 +1977,16 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         Option<meerkat_runtime::store::RuntimeSessionAuthority>,
         meerkat_runtime::store::RuntimeStoreError,
     > {
+        if let Some(authority) = self
+            .inner
+            .load_session_boundary_authority(runtime_id)
+            .await?
+        {
+            return Ok(Some(authority));
+        }
+        if !self.mint_runtime_authority_from_durable(runtime_id).await? {
+            return Ok(None);
+        }
         self.inner.load_session_boundary_authority(runtime_id).await
     }
 
@@ -1746,6 +1997,16 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         Option<meerkat_runtime::store::WholeBlobStoreAuthority>,
         meerkat_runtime::store::RuntimeStoreError,
     > {
+        if let Some(authority) = self
+            .inner
+            .load_whole_blob_store_authority(runtime_id)
+            .await?
+        {
+            return Ok(Some(authority));
+        }
+        if !self.mint_runtime_authority_from_durable(runtime_id).await? {
+            return Ok(None);
+        }
         self.inner.load_whole_blob_store_authority(runtime_id).await
     }
 
@@ -1756,6 +2017,16 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         Option<meerkat_runtime::store::CommittedWholeBlobSnapshot>,
         meerkat_runtime::store::RuntimeStoreError,
     > {
+        if let Some(snapshot) = self
+            .inner
+            .load_committed_whole_blob_snapshot(runtime_id)
+            .await?
+        {
+            return Ok(Some(snapshot));
+        }
+        if !self.mint_runtime_authority_from_durable(runtime_id).await? {
+            return Ok(None);
+        }
         self.inner
             .load_committed_whole_blob_snapshot(runtime_id)
             .await
@@ -1775,7 +2046,17 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .commit_prepared_whole_blob_snapshot_cas(runtime_id, prepared)
             .await;
         self.note_session_scoped_write(runtime_id);
-        result
+        let outcome = result?;
+        // A Conflict outcome committed nothing; only a committed successor
+        // projects.
+        if matches!(
+            outcome,
+            meerkat_runtime::store::WholeBlobSnapshotCasOutcome::Committed(_)
+        ) {
+            self.project_committed_session_to_durable(runtime_id)
+                .await?;
+        }
+        Ok(outcome)
     }
 
     async fn commit_prepared_whole_blob_rewrite_boundary(
@@ -1792,7 +2073,10 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .commit_prepared_whole_blob_rewrite_boundary(runtime_id, boundary)
             .await;
         self.note_session_scoped_write(runtime_id);
-        result
+        let authority = result?;
+        self.project_committed_session_to_durable(runtime_id)
+            .await?;
+        Ok(authority)
     }
 
     async fn delete_runtime_session_catalog_entry(
@@ -2021,6 +2305,7 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         input_updates: Vec<InputStatePersistenceRecord>,
         session_store_key: Option<meerkat_core::types::SessionId>,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        let committed_snapshot = session_delta.is_some();
         self.note_session_scoped_write(runtime_id);
         let result = self
             .inner
@@ -2033,7 +2318,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             )
             .await;
         self.note_session_scoped_write(runtime_id);
-        result
+        result?;
+        if committed_snapshot {
+            self.project_committed_session_to_durable(runtime_id)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn atomic_apply_with_machine_lifecycle(
@@ -2058,7 +2348,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             )
             .await;
         self.note_session_scoped_write(runtime_id);
-        result
+        result?;
+        self.project_committed_session_to_durable(runtime_id).await
     }
 
     async fn load_input_states(
@@ -2231,7 +2522,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .replace_session_snapshot_if_current(runtime_id, expected_current, replacement)
             .await;
         self.note_session_scoped_write(runtime_id);
-        result
+        let replaced = result?;
+        if replaced {
+            self.project_committed_session_to_durable(runtime_id)
+                .await?;
+        }
+        Ok(replaced)
     }
 
     async fn clear_session_snapshot_if_current(
@@ -4728,12 +5024,20 @@ impl MobBootstrapSpec {
         // One epoch-observing facade fronts BOTH the machine and the session
         // service, so every session-scoped durable write this process performs
         // invalidates the session-document read absorber installed below.
+        // The facade also owns the durable session projection: at meerkat
+        // 0.8.11 the session service keeps no plain SessionStore write path,
+        // so committed boundaries reach the caller's store only through this
+        // write-through. Minting stays confined to the declared-ephemeral
+        // runtime store; durable SQLite/provider stores never mint.
         let session_read_epochs = Arc::new(SessionSnapshotWriteEpochs::default());
-        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-            Arc::new(SessionStoreBackedRuntimeStore::with_write_epochs(
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            SessionStoreBackedRuntimeStore::with_write_epochs_and_durable_projection(
                 runtime_store,
                 Arc::clone(&session_read_epochs),
-            ));
+                session_store.clone(),
+                ephemeral_runtime_store,
+            ),
+        );
         let runtime_adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
             Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
@@ -5009,8 +5313,18 @@ impl MobBootstrapSpec {
             if let Some(provider) = provider_meerkat_stores.as_ref() {
                 // M4b single-bundle: runtime authority rides the composite
                 // provider's meerkat-level bundle (the remote-authoritative
-                // scratch shape), not process-local memory.
-                Arc::clone(&provider.runtime_store)
+                // scratch shape), not process-local memory. An injected
+                // session store still receives the committed-boundary
+                // projection, but the provider store is durable authority,
+                // so nothing mints.
+                if let Some(custom_session_store) = custom_session_store.clone() {
+                    Arc::new(SessionStoreBackedRuntimeStore::durable_projection(
+                        Arc::clone(&provider.runtime_store),
+                        custom_session_store,
+                    ))
+                } else {
+                    Arc::clone(&provider.runtime_store)
+                }
             } else if let Some(custom_session_store) = custom_session_store.clone() {
                 Arc::new(SessionStoreBackedRuntimeStore::new(
                     Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
@@ -8311,6 +8625,64 @@ realm_profile = "worker-v2"
         assert!(
             matches!(error, SessionError::Unsupported(ref detail) if detail == "synthetic cancel rejection"),
             "unexpected fail-closed cancellation error: {error}"
+        );
+    }
+
+    /// Cold-activation authority mint (OB3 ephemeral runtime store, ruled
+    /// in-design 2026-07-31): racers over the authority reads on a COLD
+    /// store collapse to one committed seed under the single-flight fence
+    /// and both observe the same store-issued authority; the seed is the
+    /// current committed record the next boundary CAS chains off.
+    #[tokio::test]
+    async fn cold_activation_mints_single_runtime_authority_from_durable_session() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(dir.path().join("sessions.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let mut session = meerkat_core::Session::new();
+        session.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("durable turn"),
+        ));
+        session_store
+            .save(&session)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> =
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(inner, session_store));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(session.id());
+
+        let authority_read = {
+            let store = Arc::clone(&store);
+            let runtime_id = runtime_id.clone();
+            async move {
+                meerkat_runtime::RuntimeStore::load_whole_blob_store_authority(&*store, &runtime_id)
+                    .await
+            }
+        };
+        let snapshot_read = {
+            let store = Arc::clone(&store);
+            let runtime_id = runtime_id.clone();
+            async move {
+                meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(
+                    &*store,
+                    &runtime_id,
+                )
+                .await
+            }
+        };
+        let (authority, snapshot) = tokio::join!(authority_read, snapshot_read);
+        let authority = authority
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("racer A must observe the minted authority"));
+        let snapshot = snapshot
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("racer B must observe the minted snapshot"));
+        assert_eq!(
+            &authority,
+            snapshot.authority(),
+            "both racers must converge on ONE store-issued authority"
         );
     }
 

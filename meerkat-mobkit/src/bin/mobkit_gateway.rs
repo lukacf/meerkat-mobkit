@@ -450,9 +450,16 @@ fn build_persistent_session_service(
     // capture the store; the witness threads to the bootstrap spec so the
     // console session-history epoch gate works on this externally-composed
     // path (mirrors rpc_gateway.rs — without it the 5s discovery loop
-    // re-reads whole session documents forever).
+    // re-reads whole session documents forever). The facade also owns the
+    // durable session projection at meerkat 0.8.11 (the session service no
+    // longer writes the SessionStore itself); this runtime store is durable
+    // SQLite, so nothing mints.
     let (runtime_store, session_write_epochs) =
-        meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store(runtime_store);
+        meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store_with_durable_projection(
+            runtime_store,
+            session_store.clone() as Arc<dyn meerkat::SessionStore>,
+            false,
+        );
     let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
         Arc::clone(&runtime_store),
         Arc::clone(&blob_store),

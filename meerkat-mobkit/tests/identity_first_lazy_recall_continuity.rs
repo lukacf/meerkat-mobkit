@@ -55,8 +55,9 @@ use meerkat_core::types::StopReason;
 use meerkat_mob::{MobDefinition, ProfileName};
 use meerkat_mobkit::identity_first::contracts::{AgentCustomizer, RosterProvider};
 use meerkat_mobkit::identity_first::{
-    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, CustomizerError,
-    DurableAgentSpec, IdentityLifecycleState, RosterContext, RosterError,
+    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, ContinuityResolveState,
+    ContinuitySessionStoreAdapter, ContinuityStore, CustomizerError, DurableAgentSpec,
+    FencingToken, IdentityLifecycleState, LocalContinuityStore, RosterContext, RosterError,
 };
 use meerkat_mobkit::storage_layout::MobKitStorageLayout;
 use meerkat_mobkit::{IdentityBootstrapMode, UnifiedRuntimeBuilder};
@@ -538,6 +539,13 @@ async fn wait_for_turn(capture: &CaptureClient, want: usize, what: &str) {
 /// returning `(session_id, observed_count)`. The row is written by the same
 /// boundary save that persists the transcript, so once it shows the growth the
 /// turn is durable and the restart below cannot race it.
+///
+/// Both per-session canonical representations count (`local_store.rs`'s
+/// canonical-representation rule): a `continuity_session_heads` row carries
+/// its count directly; a whole-blob `session_snapshots` row - what the
+/// meerkat 0.8.11 composition persists for a session with no durable head,
+/// via the runtime-store facade's committed-boundary projection - is decoded
+/// to count its messages.
 async fn wait_for_durable_document_at_least(state: &Path, floor: i64, what: &str) -> (String, i64) {
     let db = continuity_db(state);
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -548,10 +556,33 @@ async fn wait_for_durable_document_at_least(state: &Path, floor: i64, what: &str
         {
             return (session.clone(), *count);
         }
+        if census.heads.is_empty() {
+            let mut ids = census.snapshots.clone();
+            ids.dedup(); // census orders by session_id
+            if let [session] = ids.as_slice() {
+                let conn = rusqlite::Connection::open(&db).expect("open continuity db");
+                conn.busy_timeout(Duration::from_secs(5))
+                    .expect("set snapshot decode busy timeout");
+                let data: Vec<u8> = conn
+                    .query_row(
+                        "SELECT data FROM session_snapshots WHERE session_id = ?1 \
+                         ORDER BY generation DESC, checkpoint_version DESC LIMIT 1",
+                        rusqlite::params![session],
+                        |row| row.get(0),
+                    )
+                    .expect("read snapshot row");
+                if let Ok(decoded) = meerkat_core::Session::from_persisted_bytes(&data) {
+                    let count = i64::try_from(decoded.messages().len()).unwrap_or(0);
+                    if count >= floor {
+                        return (session.clone(), count);
+                    }
+                }
+            }
+        }
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for {what}: want one durable head with >= {floor} messages, \
-             census: {census:?}"
+            "timed out waiting for {what}: want one durable session document with >= {floor} \
+             messages, census: {census:?}"
         );
         sleep(Duration::from_millis(100)).await;
     }
@@ -1139,4 +1170,229 @@ async fn lazy_resume_after_a_mid_turn_kill_is_loud_or_recalls_never_silently_emp
     }
 
     runtime.shutdown().await;
+}
+
+/// OB3 release-critical regression (2026-07-31), the v2-row variant of the
+/// every-boot runtime-authority mint: an identity whose durable truth is a
+/// RELEASED 0.8.10 whole-blob envelope must, on one cold activation, (1) mint
+/// store-issued runtime authority (the ephemeral RuntimeStore has no record
+/// of the runtime), (2) import the released envelope through the adapter
+/// load inside that same activation, (3) resume and run a REAL turn whose
+/// request replays the released transcript, and (4) commit that turn's
+/// boundary - the first post-mint boundary CAS chains off the minted seed,
+/// and the facade write-through advances the durable row to a document the
+/// CURRENT decoder accepts. A doc note is not this proof; only the turn is.
+///
+/// The fixture is a frozen 0.8.10-written document
+/// (tests/fixtures/README.md); current code cannot and must not mint it.
+///
+/// Harness note: unlike the lazy tests above, this boots with the runtime
+/// store DECLARED ephemeral (`ephemeral_runtime_store(true)`) - the OB3
+/// pod-scratch shape the mint exists for. Durable truth lives in the
+/// continuity store; runtime authority reconstructs on every boot. With a
+/// persistent (SQLite) runtime store the facade correctly refuses to mint,
+/// and this released-row activation would stay refused by design.
+async fn boot_scratch_runtime(
+    state: &Path,
+    capture: CaptureClient,
+) -> meerkat_mobkit::UnifiedRuntime {
+    let builder = UnifiedRuntimeBuilder::default()
+        .definition(definition())
+        .persistent_state(state)
+        .continuity_from_state_dir(state)
+        .await
+        .expect("open the state-dir identity substrate")
+        .roster_provider(Arc::new(OneMemberRoster))
+        .agent_customizer(Arc::new(MarkerPromptCustomizer))
+        .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+        .identity_runtime_instance_id(RUNTIME_INSTANCE)
+        .comms(true)
+        .ephemeral_runtime_store(true)
+        .default_llm_client(Arc::new(capture));
+    Box::pin(builder.build())
+        .await
+        .expect("build the OB3-scratch-shaped UnifiedRuntime")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn released_v2_document_mints_authority_imports_and_takes_a_turn() {
+    if proxied_to_memo_free_child("released_v2_document_mints_authority_imports_and_takes_a_turn") {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    const RELEASED: &[u8] = include_bytes!("fixtures/v0_8_10_released_session.json");
+    // A marker only the released transcript carries: the fixture's system
+    // prompt. Resume authors nothing (the bridge clears the prompt
+    // override), so its presence in post-mint request bytes proves the
+    // imported document reached the model's working context.
+    const RELEASED_MARKER: &str = "OB3 Summary Agent";
+    let raw: serde_json::Value = serde_json::from_slice(RELEASED).expect("fixture JSON");
+    let released_session_id =
+        meerkat_core::types::SessionId::parse(raw["id"].as_str().expect("fixture id"))
+            .expect("fixture session id");
+    let released_message_count = raw["messages"].as_array().expect("fixture messages").len();
+    // The released envelope is exactly what the current decoder refuses -
+    // nothing below can go green without the import + mint path.
+    assert!(meerkat_core::Session::from_persisted_bytes(RELEASED).is_err());
+
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    let member = id(MEMBER);
+
+    // --- Boot 1: one real turn through the PUBLIC flow, so the continuity
+    // record carries a production-shaped runtime id (the forging idiom of
+    // `never_persisted_continuity_head_fresh_spawns_instead_of_wedging`). ---
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot_scratch_runtime(&state, capture.clone()).await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text(
+                    "seed a production-shaped continuity record".to_string(),
+                ),
+            )
+            .await
+            .expect("send boot 1's record-seeding turn");
+        wait_for_turn(&capture, 1, "boot 1's record-seeding turn").await;
+        wait_for_durable_document_at_least(&state, 2, "boot 1's turn to commit").await;
+        runtime.shutdown().await;
+    }
+
+    // --- Forge the released field shape offline: rebind the record to the
+    // fixture session and seed the raw 0.8.10 row exactly as that release
+    // left it - a durable row never routed through current encoders. ---
+    let db = continuity_db(&state);
+    {
+        let store = LocalContinuityStore::open(&db).expect("open continuity store for the forge");
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&member))
+            .await
+            .expect("resolve the member after boot 1");
+        let record = match resolved.get(&member).expect("member state") {
+            ContinuityResolveState::Ready { record } => record.clone(),
+            other => panic!("expected Ready after boot 1, got {other:?}"),
+        };
+        let boot1_session_id = record.session_id.clone();
+        let mut forged = record;
+        forged.session_id = released_session_id.clone();
+        store
+            .upsert_continuity_record(&forged, FencingToken::new(1))
+            .await
+            .expect("rebind the record to the released session");
+        let conn = rusqlite::Connection::open(&db).expect("seed connection");
+        // The released document was written by ANOTHER deployment (OB3's
+        // summarizer), and resume validates the persisted comms identity
+        // against the current member. The seed therefore adopts this
+        // harness's own persisted comms_name from boot 1's durable
+        // document. The envelope ENCODING - the property under test - is
+        // untouched, and the decode-refusal guard below re-proves it on
+        // the exact seeded bytes.
+        let boot1_doc: Vec<u8> = conn
+            .query_row(
+                "SELECT data FROM session_snapshots WHERE session_id = ?1 \
+                 ORDER BY generation DESC, checkpoint_version DESC LIMIT 1",
+                rusqlite::params![boot1_session_id.to_string()],
+                |row| row.get(0),
+            )
+            .expect("read boot 1's durable document");
+        let boot1_json: serde_json::Value =
+            serde_json::from_slice(&boot1_doc).expect("boot 1 document JSON");
+        let harness_comms_name = boot1_json["metadata"]["session_metadata"]["comms_name"]
+            .as_str()
+            .expect("boot 1's document carries this harness's comms_name")
+            .to_string();
+        let mut seeded = raw.clone();
+        seeded["metadata"]["session_metadata"]["comms_name"] =
+            serde_json::Value::String(harness_comms_name);
+        let seeded_bytes =
+            serde_json::to_vec(&seeded).expect("encode the seeded released document");
+        assert!(
+            meerkat_core::Session::from_persisted_bytes(&seeded_bytes).is_err(),
+            "the seeded released envelope must still be refused by the current decoder"
+        );
+        conn.execute(
+            "INSERT INTO session_snapshots \
+             (session_id, identity, generation, checkpoint_version, fencing_token, data) \
+             VALUES (?1, ?2, 0, 1, 1, ?3)",
+            rusqlite::params![
+                released_session_id.to_string(),
+                member.to_string(),
+                seeded_bytes
+            ],
+        )
+        .expect("seed the released snapshot row");
+    }
+
+    // --- Boot 2: a cold ephemeral RuntimeStore over the released row. The
+    // first send must mint, import, resume, and run a REAL turn. ---
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot_scratch_runtime(&state, capture.clone()).await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        let before = identity_runtime
+            .status(&member)
+            .await
+            .expect("dormant identity is inspectable after the forge");
+        assert_eq!(
+            before.state,
+            IdentityLifecycleState::Dormant,
+            "boot 2 must take the lazy arm so the SEND is what activates the released row; \
+             status: {before:?}"
+        );
+
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("What is your job?".to_string()),
+            )
+            .await
+            .expect(
+                "the released v2 document must mint runtime authority and resume; a refusal \
+                 here is the OB3 cold-activation wall",
+            );
+        wait_for_turn(&capture, 1, "the post-mint turn").await;
+        let last = capture.last().expect("a post-mint request was captured");
+        assert!(
+            last.contains(RELEASED_MARKER),
+            "the post-mint LLM request must replay the imported released transcript (marker \
+             {RELEASED_MARKER}); request: {last}"
+        );
+        let after = identity_runtime
+            .status(&member)
+            .await
+            .expect("status after the post-mint send");
+        assert_eq!(
+            after.session_id.as_ref().map(ToString::to_string),
+            Some(released_session_id.to_string()),
+            "the mint must RESUME the released session, not create a fresh one; status: {after:?}"
+        );
+        runtime.shutdown().await;
+    }
+
+    // --- The boundary commit: the turn's first post-mint boundary chained
+    // off the minted store-issued seed, and the write-through projection
+    // advanced the durable row to a CURRENT-decodable document. ---
+    {
+        let store = Arc::new(LocalContinuityStore::open(&db).expect("reopen continuity store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store);
+        let resumed = meerkat::SessionStore::load(&adapter, &released_session_id)
+            .await
+            .expect("the post-turn durable row must load under the current decoder")
+            .expect("the post-turn durable row must exist");
+        assert!(
+            resumed.messages().len() >= released_message_count + 2,
+            "the post-mint turn's boundary commit must extend the released transcript \
+             durably (have {}, want >= {})",
+            resumed.messages().len(),
+            released_message_count + 2
+        );
+    }
 }
