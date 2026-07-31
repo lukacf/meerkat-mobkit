@@ -1191,9 +1191,85 @@ fn blob_session_in_txn(
     let Some(data) = data else {
         return Ok(None);
     };
-    let session: Session = serde_json::from_slice(&data)
-        .map_err(|error| SessionStoreError::Serialization(error.to_string()))?;
-    Ok(Some(session))
+    match serde_json::from_slice::<Session>(&data) {
+        Ok(session) => Ok(Some(session)),
+        Err(decode_error) => import_released_blob_in_txn(tx, id, &data, &decode_error).map(Some),
+    }
+}
+
+/// Same-transaction one-time import of a released 0.8.10 blob row.
+///
+/// Per the banked 0.8.11 import contract: the public core importer is the
+/// sole boundary allowed to interpret released evidence, the non-Clone
+/// receipt is consumed by the adoption, the source blob SHA is re-proved
+/// against the exact bytes read, nothing mints the retired vocabulary, and
+/// every proof failure fails closed. The durable adoption rewrites the
+/// payload bytes INSIDE the caller's transaction; the row's cursor custody
+/// columns stay exactly as observed. A read-only transaction (the read-pool
+/// fallbacks) serves the imported document without adoption - the first
+/// write-path decode (head-canonical conversion, delta writes) adopts.
+fn import_released_blob_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    source: &[u8],
+    decode_error: &serde_json::Error,
+) -> Result<Session, SessionStoreError> {
+    use sha2::Digest as _;
+
+    let imported = meerkat_core::import_released_0810_session(source).map_err(|import| {
+        SessionStoreError::Serialization(format!(
+            "continuity blob {id} decodes neither as a current document ({decode_error}) nor as              a released 0.8.10 envelope ({import})"
+        ))
+    })?;
+    let (session, receipt) = imported.into_parts();
+    let observed_sha256: [u8; 32] = sha2::Sha256::digest(source).into();
+    if receipt.source_document_sha256() != &observed_sha256 {
+        return Err(SessionStoreError::Serialization(format!(
+            "continuity blob {id} changed during exact released-0.8.10 import"
+        )));
+    }
+    if receipt.session_id() != id {
+        return Err(SessionStoreError::Serialization(format!(
+            "continuity blob key {id} contains released session {}",
+            receipt.session_id()
+        )));
+    }
+    let current = session
+        .to_persisted_bytes()
+        .map_err(|e| SessionStoreError::Serialization(e.to_string()))?;
+    // The receipt is consumed by this durable adoption inside the caller's
+    // transaction.
+    drop(receipt);
+    let changed = match tx.execute(
+        "UPDATE session_snapshots SET data = ?2 WHERE session_id = ?1",
+        rusqlite::params![id.to_string(), current],
+    ) {
+        Ok(changed) => changed,
+        Err(rusqlite::Error::SqliteFailure(failure, _))
+            if failure.code == rusqlite::ErrorCode::ReadOnly =>
+        {
+            // Read-pool fallback: serve the imported document; the first
+            // write-path decode (head-canonical conversion, delta writes)
+            // performs the durable adoption.
+            tracing::info!(
+                session_id = %id,
+                "released 0.8.10 blob imported on a read-only connection; durable adoption \
+                 follows the first write-path decode"
+            );
+            return Ok(session);
+        }
+        Err(e) => return Err(sqlite_session_err("adopt imported released snapshot", e)),
+    };
+    if changed != 1 {
+        return Err(SessionStoreError::Corrupted(id.clone()));
+    }
+    tracing::info!(
+        session_id = %id,
+        source_bytes = source.len(),
+        current_bytes = current.len(),
+        "released 0.8.10 blob imported and durably adopted in-transaction"
+    );
+    Ok(session)
 }
 
 /// Full-vector projection of the 0.8.11 splice-based [`StrandLayout`].

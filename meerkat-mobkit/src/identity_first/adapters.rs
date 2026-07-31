@@ -1649,18 +1649,104 @@ impl ContinuitySessionStoreAdapter {
                 // recorded for these exact bytes, so resume-side guards and
                 // checkpoint verifications stay O(delta) instead of paying
                 // an O(document) reseed per read (flat-curve boundary).
-                let session = meerkat_core::Session::from_persisted_bytes(&snap.data)
-                    .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
+                let (session, data) = match meerkat_core::Session::from_persisted_bytes(&snap.data)
+                {
+                    Ok(session) => (session, snap.data),
+                    Err(decode_error) => {
+                        // Released 0.8.10 envelope (v2): interpretable only
+                        // through the explicit one-time importer. This is the
+                        // one path EVERY external whole-blob store traverses,
+                        // so the import-on-load lives here rather than in
+                        // each store (OB3 field finding: an external corpus
+                        // of v2 rows was otherwise unreadable at turn-time
+                        // resume).
+                        self.import_released_snapshot_on_load(id, snap.data, &decode_error)
+                            .await?
+                    }
+                };
                 if session.id() != id {
                     return Err(meerkat_store::SessionStoreError::Serialization(format!(
                         "continuity snapshot key {id} contains session {}",
                         session.id()
                     )));
                 }
-                Ok(Some((session, snap.data)))
+                Ok(Some((session, data)))
             }
             None => Ok(None),
         }
+    }
+
+    /// One-time import of a released 0.8.10 session envelope observed on the
+    /// continuity load path, with durable current-format adoption.
+    ///
+    /// Per the banked 0.8.11 import contract: the public core importer is the
+    /// sole boundary allowed to interpret released evidence; the non-Clone
+    /// receipt is consumed by the adoption; the source blob SHA is re-proved
+    /// against the exact bytes read; nothing ever mints the retired
+    /// vocabulary; every proof failure fails closed (the original decode
+    /// refusal is surfaced, never a healed reading).
+    ///
+    /// External stores expose no transaction, so the same-transaction
+    /// requirement maps to this adapter's own write discipline: a REGISTERED
+    /// session adopts durably through the registered-cursor CAS write
+    /// (version advance under the same generation/fence — the write every
+    /// later read observes, making the second load take the already-current
+    /// path). A not-yet-registered session serves the imported document
+    /// without adoption; the durable conversion lands with registration or
+    /// the first registered write, exactly like every other pre-registration
+    /// write on this adapter.
+    async fn import_released_snapshot_on_load(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        source: Vec<u8>,
+        decode_error: &serde_json::Error,
+    ) -> Result<(meerkat_core::Session, Vec<u8>), meerkat_store::SessionStoreError> {
+        use sha2::Digest as _;
+
+        let imported = meerkat_core::import_released_0810_session(&source).map_err(|import| {
+            meerkat_store::SessionStoreError::Serialization(format!(
+                "continuity snapshot {id} decodes neither as a current document \
+                 ({decode_error}) nor as a released 0.8.10 envelope ({import})"
+            ))
+        })?;
+        let (session, receipt) = imported.into_parts();
+        let observed_sha256: [u8; 32] = sha2::Sha256::digest(&source).into();
+        if receipt.source_document_sha256() != &observed_sha256 {
+            return Err(meerkat_store::SessionStoreError::Serialization(format!(
+                "continuity snapshot {id} changed during exact released-0.8.10 import"
+            )));
+        }
+        if receipt.session_id() != id {
+            return Err(meerkat_store::SessionStoreError::Serialization(format!(
+                "continuity snapshot key {id} contains released session {}",
+                receipt.session_id()
+            )));
+        }
+        let data = self.encode_whole_document(&session, WholeDocumentPass::BlobCanonicalPersist)?;
+        match self.lookup_session(&id.to_string()) {
+            Some(state) => {
+                // The receipt is consumed by this durable adoption: the CAS
+                // write below is the store-authorized conversion, after which
+                // every load decodes current bytes directly.
+                drop(receipt);
+                self.save_registered_snapshot(id, data.clone(), state)
+                    .await?;
+                tracing::info!(
+                    session_id = %id,
+                    source_bytes = source.len(),
+                    current_bytes = data.len(),
+                    "released 0.8.10 session envelope imported and durably adopted on load"
+                );
+            }
+            None => {
+                tracing::info!(
+                    session_id = %id,
+                    "released 0.8.10 session envelope imported for an unregistered read; \
+                     durable adoption follows the first registered write"
+                );
+            }
+        }
+        Ok((session, data))
     }
 
     async fn load_previous_session_for_save(
@@ -2977,6 +3063,117 @@ mod tests {
         ) -> Result<(), ContinuityStoreError> {
             Ok(())
         }
+    }
+
+    /// OB3 release-critical regression (2026-07-31): a released 0.8.10
+    /// session envelope (v2) held by a continuity store must import exactly
+    /// once on the adapter load path - the seam every external whole-blob
+    /// store traverses - and adopt durably, so the second load takes the
+    /// already-current path. The fixture is a frozen 0.8.10-written document
+    /// (tests/fixtures/README.md); current code cannot and must not mint it.
+    #[tokio::test]
+    async fn released_v2_snapshot_imports_once_on_adapter_load() {
+        const RELEASED: &[u8] =
+            include_bytes!("../../tests/fixtures/v0_8_10_released_session.json");
+        let raw: serde_json::Value = serde_json::from_slice(RELEASED).expect("fixture JSON");
+        let session_id =
+            meerkat_core::types::SessionId::parse(raw["id"].as_str().expect("fixture id"))
+                .expect("fixture session id");
+        // The released envelope is exactly what the current decoder refuses.
+        assert!(meerkat_core::Session::from_persisted_bytes(RELEASED).is_err());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("continuity.sqlite3");
+        let store = Arc::new(LocalContinuityStore::open(&db_path).expect("store"));
+        let identity = AgentIdentity::parse("agent:released-import").expect("identity");
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:released-import:0")
+                .expect("runtime id"),
+            session_id: session_id.clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(1),
+        };
+        let fencing_token = FencingToken::new(3);
+        store
+            .upsert_continuity_record(&record, fencing_token)
+            .await
+            .expect("seed record");
+        // Seed the released bytes exactly as a 0.8.10-era deployment left
+        // them: a raw durable row, never routed through current encoders.
+        {
+            let conn = rusqlite::Connection::open(&db_path).expect("seed connection");
+            conn.execute(
+                "INSERT INTO session_snapshots \
+                 (session_id, identity, generation, checkpoint_version, fencing_token, data) \
+                 VALUES (?1, ?2, 0, 1, 3, ?3)",
+                rusqlite::params![session_id.to_string(), identity.to_string(), RELEASED],
+            )
+            .expect("seed released snapshot row");
+        }
+
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        adapter
+            .register_session(
+                &session_id,
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    fencing_token,
+                    checkpoint_version: CheckpointVersion::new(1),
+                },
+            )
+            .await
+            .expect("register");
+
+        let cursor_of = |resolved: &std::collections::BTreeMap<
+            AgentIdentity,
+            ContinuityResolveState,
+        >| match resolved.get(&identity) {
+            Some(ContinuityResolveState::Ready { record }) => record.checkpoint_version,
+            other => panic!("expected a ready continuity record, got {other:?}"),
+        };
+
+        // First load: imports the released envelope and durably adopts it.
+        let loaded = meerkat::SessionStore::load(&adapter, &session_id)
+            .await
+            .expect("first load imports the released envelope")
+            .expect("session present");
+        assert_eq!(loaded.id(), &session_id);
+        assert!(
+            !loaded.messages().is_empty(),
+            "the released transcript resumes with its content"
+        );
+        let after_first = cursor_of(
+            &store
+                .resolve_many(std::slice::from_ref(&identity))
+                .await
+                .expect("resolve after import"),
+        );
+        assert!(
+            after_first > CheckpointVersion::new(1),
+            "the import must adopt durably under an advanced registered cursor, got \
+             {after_first:?}"
+        );
+
+        // Second load: the already-current path - same content, no new
+        // adoption write.
+        let reloaded = meerkat::SessionStore::load(&adapter, &session_id)
+            .await
+            .expect("second load")
+            .expect("session present");
+        assert_eq!(reloaded.id(), &session_id);
+        assert_eq!(reloaded.messages().len(), loaded.messages().len());
+        let after_second = cursor_of(
+            &store
+                .resolve_many(std::slice::from_ref(&identity))
+                .await
+                .expect("resolve after second load"),
+        );
+        assert_eq!(
+            after_second, after_first,
+            "a second load must take the already-current path and adopt nothing"
+        );
     }
 
     #[tokio::test]
