@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING: meerkat dependencies repinned `=0.8.10` → `=0.8.11`** (all 19
+  meerkat crates in `meerkat-mobkit`, all 5 in `mobkit-store-conformance`).
+  0.8.11 is the store-owned session-authority reset; the visible behavior
+  changes for MobKit embedders:
+
+  - **Resume authors nothing.** The transcript is ordered rows; System
+    messages are ordinary ordered `Message::System` entries preserved
+    byte-for-byte across resumes. The per-boot "resume-system-prompt-refresh"
+    rewrite is retired (and with it the 60-100x transcript-history revision
+    bloat it minted). Per-turn System instructions ride the new explicit
+    carrier: `WorkSpec.system_prompt` through the mob deliver path
+    (`SessionBridge::deliver_with_mode_context_and_system_prompt` →
+    `RuntimeTurnMetadata.system_prompts`), appended as ONE ordered System row
+    at that turn's boundary.
+
+  - **Pre-ledger storage refuses typed.** Databases written before the
+    mobkit 0.8.8 schema-ledger floor (no `meerkat_schema` row for an owned
+    domain) are refused at open with rows left untouched — across continuity,
+    memory, metadata, and console stores. The former silent pre-floor
+    convergence is retired; upgrade stepwise through a 0.8.8-0.8.10 binary
+    first.
+
+  - **Released 0.8.10 session envelopes import exactly once on load.** The
+    continuity adapter's load path is the sole importer
+    (`import_released_0810_session`); ordinary decoding rejects released
+    carriers. Zero-rewrite released histories (the universal mob-supervisor
+    shape: transcript graph with zero commits and a singleton live-head body)
+    import via the upstream d6cafd405 acceptance; divergent bodies still
+    refuse.
+
 - **Profile-declared fields are auto-marked as resume overrides** ("profile
   declares it, profile means it"). Durable session metadata restores `model`,
   `provider`, and `provider_params` on resume, so a profile edit was inert on
@@ -61,6 +91,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   supervisor read a silent-but-working migration as a hang, and a week of
   panic-hook lines went to `/dev/null` — these four legs are why.
 
+### Removed
+
+- **BREAKING: checkpoint adoption tooling.** The 0.8.11 reset retired the
+  checkpoint vocabulary meerkat no longer reads: the
+  `storage-adopt-checkpoints` maintenance walk, checkpoint adoption module,
+  digest-format marker stamping, and their tests are deleted.
+
+- **BREAKING: storage doctor finding codes**
+  `legacy-unverified-continuity-snapshots`, `checkpoint-digest-mismatch`, and
+  `checkpoint-metadata-invalid` are removed (their subjects no longer exist at
+  0.8.11). Replacements: `released-0810-continuity-snapshots` (censuses
+  released-format rows awaiting one-time import) and
+  `continuity-head-materialization-failed` (a head-canonical session whose
+  slim materialization fails, now reported with strand, row counts, rewrite
+  count, and prefix/anchor presence). Operator tooling keying on the removed
+  codes must migrate.
+
 ### Added
 
 - **Host-rejected builds park typed instead of Broken-with-continuous-repair**
@@ -83,12 +130,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   metadata restores a `model`/`provider` that differs from the profile's
   declaration and no `resume_overrides` mask covers the field, the identity
   session bridge logs an INFO line with both values, the profile name, and the
-  identity — once per identity per boot. After declared-field auto-mark this
-  fires only for mask-off cases (realm-ref profiles, pre-existing persisted
-  profile snapshots) and future restored fields.
+  identity — once per identity per boot. After declared-field auto-mark the
+  only case that can fire today is an inline profile whose declared model
+  resolves no coherent provider; realm-ref profile declarations are NOT
+  visible to the tripwire (the realm profile store is not threaded into the
+  session bridge), so a realm-profile edit that loses to durable metadata is
+  currently silent — threading the realm store is a tracked follow-up.
 
-## [0.8.8] - 2026-07-29
 ### Fixed
+
+- **Ephemeral-runtime durability round trip is now facade-owned** (the OB3
+  pod-scratch shape: durable truth in an injected session/continuity store,
+  runtime store on ephemeral pod scratch). At 0.8.11 the session service
+  keeps no plain `SessionStore` write path (WholeBlob session authority lives
+  only in the `RuntimeStore`), so `SessionStoreBackedRuntimeStore` now owns
+  both halves of durable interop: committed session boundaries WRITE THROUGH
+  to the injected store after every committing verb (fail-closed: an external
+  write failure fails the commit, and a retry of the same prepared boundary
+  converges from the already-current inner successor), and cold activations
+  RE-MINT store-issued runtime authority from the durable row (per-runtime
+  single-flight fencing; a late seed never overwrites an advanced boundary).
+  The mint arms on EVERY composition carrying a durable session source,
+  durable SQLite/provider runtime stores included: an absent runtime record
+  over a durable inner store is either a never-persisted session (the mint
+  declines, the typed refusal stands) or a reset/lost runtime store — the
+  sanctioned recovery path, which now reseeds instead of refusing every
+  resume. Destroyed sessions cannot resurrect through it because identity
+  deletion removes the durable row under the identity fence. Both gateway
+  binaries and the persistent/identity-first compositions thread the same
+  facade (`epoch_tracking_runtime_store_with_durable_projection`).
+
+- **Migrated head-canonical sessions no longer fail cold materialization
+  after one 0.8.11 turn.** Both head-canonical plain-append writers (the
+  continuity adapter and the local store) re-minted the head's byte-exact
+  row commitment from TODAY's re-serialization while durable rows keep the
+  bytes they were written with; `SessionHead::into_session` verifies that
+  commitment at 0.8.11, so every fleet session migrated by the 0.8.10
+  head-canonical bump would refuse to materialize after its first
+  post-upgrade turn. The successor head now extends the STORED commitment
+  with only the appended rows' bytes
+  (`SessionHead::from_session_with_proved_inline_storage_authority`).
+
+- **Deleting an identity now deletes its durable session row** (CAS-delete
+  under the advanced identity fence inside the delete transaction, after
+  projection writes are quiesced). Previously the row outlived the identity,
+  and on the ephemeral-runtime shape the activation mint would faithfully
+  resurrect the deleted transcript on the next cold boot or identity reuse.
+  Stores that cannot support session-scoped deletion are surfaced loudly and
+  keep the record-scoped deletion contract.
+
+- **Schedule deliveries to identity-first members carry the driver's stable
+  delivery identity.** The internal delivery sink rewrote the receipt
+  correlation to the member id, which 0.8.11's `validate_dispatch_receipt`
+  rejects — every intercepted member delivery errored AFTER the turn ran
+  (false Misfire + `DriverTickFailed` per fire; duplicate turns under
+  catch-up windows). The sink now echoes `ScheduleDeliveryIdentity`'s
+  occurrence correlation exactly and stages the idempotency key on
+  `DispatchInput`. NOTE: admission-boundary dedup for the internal member
+  lane is still absent (the staged key has no reader yet) — crash-redelivery
+  dedup is a tracked follow-up needing an upstream seam decision.
 
 - **Sender-side conversation view now renders outgoing peer communications
   after a history rebuild.** An outgoing peer send exists in the sender's
@@ -106,6 +206,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the provider-minted tool_use_id). Regression coverage runs the two-member
   scenario through both projection sources (live drain and history-only
   rebuild) in `unified_console`.
+
+## [0.8.8] - 2026-07-29
 
 Observability release. No behaviour changes to storage, resume, or provisioning
 — every change here makes an existing path *report itself*. Cut in response to
