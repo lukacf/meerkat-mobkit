@@ -175,6 +175,10 @@ impl MobSessionService for CheckpointerCancelProbeSessionService {
             .await
     }
 
+    async fn prepare_session_for_resume(&self, session_id: &SessionId) -> Result<(), SessionError> {
+        self.inner.prepare_session_for_resume(session_id).await
+    }
+
     async fn load_session_for_resume(
         &self,
         session_id: &SessionId,

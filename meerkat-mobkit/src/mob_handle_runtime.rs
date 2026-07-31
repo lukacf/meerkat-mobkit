@@ -1654,6 +1654,14 @@ impl SessionStoreBackedRuntimeStore {
 
 #[async_trait]
 impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
+    // The complete store-owned session-authority seam is carried by the
+    // backend; this decorator forwards the one required accessor and keeps
+    // its intentional per-operation overrides below (write-epoch bumps on
+    // every session-scoped mutation) observable on the RuntimeStore surface.
+    fn session_authority_ops(&self) -> &dyn meerkat_runtime::store::RuntimeSessionAuthorityOps {
+        self.inner.session_authority_ops()
+    }
+
     fn session_persistence_profile(
         &self,
     ) -> meerkat_runtime::store::RuntimeSessionPersistenceProfile {
@@ -2910,6 +2918,18 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
                 self.inner.load_session_for_resume(session_id).await
             }
+            async fn prepare_session_for_resume(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<(), SessionError> {
+                self.inner.prepare_session_for_resume(session_id).await
+            }
+            async fn materialize_session_for_resume(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
+                self.inner.materialize_session_for_resume(session_id).await
+            }
 
             async fn create_session_under_runtime_turn_boundary(
                 &self,
@@ -3062,13 +3082,13 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
                 self.inner.load_persisted_session_metadata(session_id).await
             }
-            async fn promote_revivable_retired_session(
+            async fn authorize_revivable_retired_session(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
                 authority: meerkat_runtime::PreparedArchivedResumeCommitLease,
-            ) -> Result<meerkat_runtime::PromotedArchivedResumeCommitLease, SessionError> {
+            ) -> Result<meerkat_runtime::AuthorizedArchivedResumeCommitLease, SessionError> {
                 self.inner
-                    .promote_revivable_retired_session(session_id, authority)
+                    .authorize_revivable_retired_session(session_id, authority)
                     .await
             }
             async fn create_session_with_machine_archived_resume_authority(
@@ -3612,6 +3632,18 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
         self.inner.load_session_for_resume(session_id).await
     }
+    async fn prepare_session_for_resume(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), SessionError> {
+        self.inner.prepare_session_for_resume(session_id).await
+    }
+    async fn materialize_session_for_resume(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
+        self.inner.materialize_session_for_resume(session_id).await
+    }
 
     async fn create_session_under_runtime_turn_boundary(
         &self,
@@ -3759,13 +3791,13 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
         self.inner.load_persisted_session_metadata(session_id).await
     }
-    async fn promote_revivable_retired_session(
+    async fn authorize_revivable_retired_session(
         &self,
         session_id: &meerkat_core::types::SessionId,
         authority: meerkat_runtime::PreparedArchivedResumeCommitLease,
-    ) -> Result<meerkat_runtime::PromotedArchivedResumeCommitLease, SessionError> {
+    ) -> Result<meerkat_runtime::AuthorizedArchivedResumeCommitLease, SessionError> {
         self.inner
-            .promote_revivable_retired_session(session_id, authority)
+            .authorize_revivable_retired_session(session_id, authority)
             .await
     }
     async fn create_session_with_machine_archived_resume_authority(
@@ -7671,6 +7703,12 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+        async fn prepare_session_for_resume(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<(), SessionError> {
+            Ok(())
+        }
         async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
             &self,
             _session_id: &meerkat_core::types::SessionId,
@@ -7987,6 +8025,12 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        async fn prepare_session_for_resume(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<(), SessionError> {
+            Ok(())
+        }
         async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
             &self,
             _session_id: &meerkat_core::types::SessionId,

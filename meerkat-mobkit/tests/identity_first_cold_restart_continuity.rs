@@ -562,7 +562,7 @@ async fn identity_first_cold_restart_turnless_resume_chain_preserves_transcript(
 /// rollback did to HomeCore's members. On meerkat ≤0.7.28 the next resume
 /// answered `missing durable session snapshot` forever (retire is terminal);
 /// on ≥0.7.29 the ordinary resume path must AUTO-REVIVE the
-/// retired-with-intact-snapshot session (`promote_revivable_retired_session`)
+/// retired-with-intact-snapshot session (`authorize_revivable_retired_session`)
 /// with the transcript intact — no operator row surgery, no mobkit revive
 /// call.
 ///

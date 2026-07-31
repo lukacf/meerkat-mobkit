@@ -1150,12 +1150,13 @@ mod tests {
         assert_eq!(journal, "wal", "console store gains WAL for the first time");
     }
 
-    /// A pre-ledger console database (historical DDL, no meerkat_schema)
-    /// opens, converges, is stamped, and keeps its frames and watermarks —
-    /// including the AUTOINCREMENT cursor sequence continuing past the
-    /// preserved rows.
+    /// A pre-ledger console database (historical DDL, no meerkat_schema) is
+    /// refused typed at open with its rows left untouched and no ledger
+    /// stamped: pre-ledger corpora are below the mobkit 0.8.8 floor, and the
+    /// 0.8.11 reset retired silent pre-floor convergence (this test pinned
+    /// that convergence until then).
     #[tokio::test]
-    async fn legacy_console_file_converges_and_preserves_rows() {
+    async fn legacy_console_file_is_refused_with_rows_preserved() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("mobkit_console.sqlite3");
         {
@@ -1202,34 +1203,36 @@ mod tests {
             .expect("legacy rows");
         }
 
-        let store = SqliteConsoleLogStore::open(&path).expect("open legacy");
-        let legacy = store
-            .frame_by_dedupe_key("dedupe-legacy")
-            .await
-            .expect("query")
-            .expect("legacy frame preserved");
-        assert_eq!(legacy.id, "frame-legacy");
-        assert_eq!(
-            store
-                .source_watermark("runtime-a", ConsoleFrameSourceKind::ConsoleEvent)
-                .await
-                .expect("watermark"),
-            Some("7".to_string()),
-            "legacy watermark must hydrate the open-time cache"
-        );
-        let appended = store
-            .append_if_absent(sample_frame("dedupe-new", "identity:a"))
-            .await
-            .expect("append after convergence");
         assert!(
-            cursor_seq(&appended.frame.cursor).expect("cursor")
-                > cursor_seq(&legacy.cursor).expect("legacy cursor"),
-            "cursor sequence must continue past preserved rows"
+            SqliteConsoleLogStore::open(&path).is_err(),
+            "opening a pre-ledger console database must refuse typed: unledgered owned \
+             tables are below the mobkit 0.8.8 floor and must never be silently converged"
         );
+
         let probe = Connection::open(&path).expect("probe");
+        let (id, dedupe): (String, String) = probe
+            .query_row(
+                "SELECT id, dedupe_key FROM console_frames WHERE id = 'frame-legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("legacy frame preserved");
+        assert_eq!(
+            (id.as_str(), dedupe.as_str()),
+            ("frame-legacy", "dedupe-legacy")
+        );
+        let watermark: String = probe
+            .query_row(
+                "SELECT source_cursor FROM console_source_watermarks WHERE runtime_key = 'runtime-a'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy watermark preserved");
+        assert_eq!(watermark, "7");
         assert_eq!(
             meerkat_sqlite::domain_version(&probe, "mobkit-console").expect("ledger"),
-            Some(1)
+            None,
+            "the refusal must not stamp a ledger onto a file it refused to own"
         );
     }
 

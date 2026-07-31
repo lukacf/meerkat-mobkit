@@ -5611,6 +5611,19 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MobSessionService for DelayedHistorySessionService {
+        async fn prepare_session_for_resume(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<(), meerkat_core::service::SessionError> {
+            self.inner.prepare_session_for_resume(session_id).await
+        }
+        async fn materialize_session_for_resume(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::ResumeSessionLoad, meerkat_core::service::SessionError> {
+            self.inner.materialize_session_for_resume(session_id).await
+        }
+
         async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
             &self,
             session_id: &meerkat_core::types::SessionId,
@@ -5689,13 +5702,13 @@ mod tests {
                 .await
         }
 
-        async fn promote_revivable_retired_session(
+        async fn authorize_revivable_retired_session(
             &self,
             session_id: &SessionId,
             authority: meerkat_runtime::PreparedArchivedResumeCommitLease,
-        ) -> Result<meerkat_runtime::PromotedArchivedResumeCommitLease, SessionError> {
+        ) -> Result<meerkat_runtime::AuthorizedArchivedResumeCommitLease, SessionError> {
             self.inner
-                .promote_revivable_retired_session(session_id, authority)
+                .authorize_revivable_retired_session(session_id, authority)
                 .await
         }
 
