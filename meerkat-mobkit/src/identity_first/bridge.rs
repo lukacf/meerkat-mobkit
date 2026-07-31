@@ -443,10 +443,59 @@ impl ActorAdmissionDeadline {
     }
 }
 
+/// Build the internal-delivery [`WorkSpec`] for one member turn.
+///
+/// Pure by design so the threading is unit-testable: every optional carrier
+/// on the deliver surface must reach the spec unchanged.
+///
+/// - Ask 1: `injected_context` rides as separate typed bodies rather than
+///   being fused into the user's message text; WorkSpec carries it to the
+///   StartTurnRequest, where meerkat stamps each entry as the
+///   InjectedContext transcript role (excluded from compaction indexing).
+/// - meerkat 0.8.11: `system_prompt` is one ordinary System message authored
+///   for this exact turn (never member/session configuration); WorkSpec
+///   carries it to the member StartTurnRequest, where meerkat appends it at
+///   the turn's admitted transcript boundary.
+/// - meerkat 0.7.25 ask 15 addendum: a host-supplied interaction id rides
+///   WorkSpec into runtime admission, so this turn's live events AND its
+///   committed transcript messages carry the SAME id the console minted at
+///   send time — the exact live↔history join the console dedup needs. Only
+///   UUID-form ids exist here (the identity-first console send mints v5
+///   UUIDs); anything else is skipped rather than corrupted.
+fn internal_bridge_work_spec(
+    content: &meerkat_core::ContentInput,
+    system_prompt: Option<&str>,
+    injected_context: &[meerkat_core::ContentInput],
+    interaction_id: Option<&str>,
+) -> WorkSpec {
+    let mut spec = WorkSpec::new(content.clone(), WorkOrigin::Internal);
+    if let Some(system_prompt) = system_prompt {
+        spec = spec.with_system_prompt(system_prompt);
+    }
+    if !injected_context.is_empty() {
+        spec = spec.with_injected_context(injected_context.to_vec());
+    }
+    if let Some(raw) = interaction_id {
+        match raw.parse::<uuid::Uuid>() {
+            Ok(id) => {
+                spec = spec.with_interaction_id(meerkat_core::interaction::InteractionId(id));
+            }
+            Err(_) => {
+                tracing::debug!(
+                    interaction_id = %raw,
+                    "non-UUID interaction id not threaded into runtime admission"
+                );
+            }
+        }
+    }
+    spec
+}
+
 async fn submit_internal_bridge_work(
     handle: &MobHandle,
     member_id: &MobAgentIdentity,
     content: &meerkat_core::ContentInput,
+    system_prompt: Option<&str>,
     injected_context: &[meerkat_core::ContentInput],
     handling_mode: HandlingMode,
     interaction_id: Option<&str>,
@@ -461,33 +510,7 @@ async fn submit_internal_bridge_work(
         .await?
         .map_err(|err| BridgeError::Mob(err.to_string()))?
         .ok_or_else(|| BridgeError::Mob(format!("member not found: {member_id}")))?;
-    // Ask 1: attach ambient memory recall as a separate typed injected-context
-    // body rather than fusing it into the user's message text. WorkSpec carries
-    // it to the StartTurnRequest, where meerkat stamps each entry as the
-    // InjectedContext transcript role (excluded from compaction indexing).
-    let mut spec = WorkSpec::new(content.clone(), WorkOrigin::Internal);
-    if !injected_context.is_empty() {
-        spec = spec.with_injected_context(injected_context.to_vec());
-    }
-    // meerkat 0.7.25 ask 15 addendum: a host-supplied interaction id rides
-    // WorkSpec into runtime admission, so this turn's live events AND its
-    // committed transcript messages carry the SAME id the console minted at
-    // send time — the exact live↔history join the console dedup needs. Only
-    // UUID-form ids exist here (the identity-first console send mints v5
-    // UUIDs); anything else is skipped rather than corrupted.
-    if let Some(raw) = interaction_id {
-        match raw.parse::<uuid::Uuid>() {
-            Ok(id) => {
-                spec = spec.with_interaction_id(meerkat_core::interaction::InteractionId(id));
-            }
-            Err(_) => {
-                tracing::debug!(
-                    interaction_id = %raw,
-                    "non-UUID interaction id not threaded into runtime admission"
-                );
-            }
-        }
-    }
+    let spec = internal_bridge_work_spec(content, system_prompt, injected_context, interaction_id);
     deadline
         .bound(
             "deliver.submit_work",
@@ -719,6 +742,34 @@ pub trait SessionBridge: Send + Sync {
         let _ = interaction_id;
         self.deliver_with_mode(runtime_id, content, handling_mode)
             .await
+    }
+
+    /// Deliver content plus one ordinary System message authored for this
+    /// exact turn (meerkat 0.8.11: `WorkSpec::system_prompt`, appended at the
+    /// turn's admitted transcript boundary — per-turn content, never
+    /// member/session configuration), alongside the optional injected
+    /// context and interaction identity of
+    /// [`Self::deliver_with_mode_and_context`]. Bridges that do not carry
+    /// per-turn System authorship fall back to context delivery, dropping
+    /// the System message.
+    async fn deliver_with_mode_context_and_system_prompt(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        content: &meerkat_core::ContentInput,
+        system_prompt: Option<&str>,
+        injected_context: &[meerkat_core::ContentInput],
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        let _ = system_prompt;
+        self.deliver_with_mode_and_context(
+            runtime_id,
+            content,
+            injected_context,
+            handling_mode,
+            interaction_id,
+        )
+        .await
     }
 
     /// Checkpoint the current session state for a mob member.
@@ -2311,6 +2362,7 @@ impl SessionBridge for MobSessionBridge {
             &self.handle,
             &mid,
             content,
+            None,
             &[],
             HandlingMode::Queue,
             None,
@@ -2343,6 +2395,7 @@ impl SessionBridge for MobSessionBridge {
                     &self.handle,
                     &mid,
                     content,
+                    None,
                     &[],
                     HandlingMode::Queue,
                     None,
@@ -2378,6 +2431,26 @@ impl SessionBridge for MobSessionBridge {
         &self,
         runtime_id: &AgentRuntimeId,
         content: &meerkat_core::ContentInput,
+        injected_context: &[meerkat_core::ContentInput],
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        self.deliver_with_mode_context_and_system_prompt(
+            runtime_id,
+            content,
+            None,
+            injected_context,
+            handling_mode,
+            interaction_id,
+        )
+        .await
+    }
+
+    async fn deliver_with_mode_context_and_system_prompt(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        content: &meerkat_core::ContentInput,
+        system_prompt: Option<&str>,
         injected_context: &[meerkat_core::ContentInput],
         handling_mode: HandlingMode,
         interaction_id: Option<&str>,
@@ -2434,6 +2507,7 @@ impl SessionBridge for MobSessionBridge {
             &self.handle,
             &mid,
             content,
+            system_prompt,
             injected_context,
             handling_mode,
             interaction_id,
@@ -2466,6 +2540,7 @@ impl SessionBridge for MobSessionBridge {
                     &self.handle,
                     &mid,
                     content,
+                    system_prompt,
                     injected_context,
                     handling_mode,
                     interaction_id,
@@ -2725,6 +2800,41 @@ impl SessionBridge for MobSessionBridge {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::sync::Arc;
+
+    /// 8a threading pin: every optional carrier on the internal deliver
+    /// surface reaches the WorkSpec unchanged - in particular the per-turn
+    /// System message (meerkat 0.8.11 `WorkSpec::system_prompt`), threaded
+    /// exactly like `injected_context`.
+    #[test]
+    fn internal_bridge_work_spec_threads_every_carrier() {
+        let content = meerkat_core::ContentInput::Text("turn content".to_string());
+        let injected = vec![meerkat_core::ContentInput::Text(
+            "ambient recall".to_string(),
+        )];
+        let interaction = uuid::Uuid::new_v4();
+
+        let spec = super::internal_bridge_work_spec(
+            &content,
+            Some("per-turn system message"),
+            &injected,
+            Some(&interaction.to_string()),
+        );
+        assert_eq!(
+            spec.system_prompt.as_deref(),
+            Some("per-turn system message")
+        );
+        assert_eq!(spec.injected_context, injected);
+        assert_eq!(
+            spec.interaction_id,
+            Some(meerkat_core::interaction::InteractionId(interaction))
+        );
+        assert!(matches!(spec.origin, meerkat_mob::WorkOrigin::Internal));
+
+        let bare = super::internal_bridge_work_spec(&content, None, &[], None);
+        assert_eq!(bare.system_prompt, None, "absent carrier stays absent");
+        assert!(bare.injected_context.is_empty());
+        assert_eq!(bare.interaction_id, None);
+    }
 
     use async_trait::async_trait;
     use meerkat_core::agent::AgentToolDispatcher;
