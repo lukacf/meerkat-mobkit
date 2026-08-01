@@ -2049,6 +2049,123 @@ impl ContinuitySessionStoreAdapter {
         self.publish_lifecycle(session_id, SessionLifecycle::DurableObserved);
     }
 
+    /// The projection body, under the caller-held session lock (see
+    /// [`Self::save_authoritative_projection`]).
+    async fn save_authoritative_projection_locked(
+        &self,
+        session: &meerkat_core::Session,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        // Capability before serialization, same rule as `save`. The
+        // authoritative projection asserts that the incoming document IS the
+        // truth (the service's rollback repair), so there is no save guard —
+        // exactly as meerkat-store's head-canonical path — but it still lands
+        // as delta rows plus a small head, never as a blob.
+        match self.resolve_persistence_capability(session.id()).await? {
+            PersistenceCapability::HeadCanonical(write) => {
+                let shape = head_canonical_shape(session, &write.stored)?;
+                return self
+                    .write_head_canonical_document(session, &write, shape)
+                    .await;
+            }
+            PersistenceCapability::HeadCanonicalBirth(write) => {
+                return self.birth_head_canonical_document(session, &write).await;
+            }
+            PersistenceCapability::BlobCanonical => {}
+        }
+        let data = self.encode_whole_document(session, WholeDocumentPass::BlobCanonicalPersist)?;
+        let sid_str = session.id().to_string();
+        match self.lookup_session(&sid_str) {
+            Some(state) => {
+                self.save_registered_snapshot(session.id(), data, state)
+                    .await?;
+            }
+            None => {
+                self.ensure_unregistered_park_allowed(session.id()).await?;
+                let mut pending = self
+                    .pending_unregistered
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                pending.insert(sid_str, data);
+            }
+        }
+        Ok(())
+    }
+
+    /// Absorb a projection write refused because the identity's continuity
+    /// record has ADVANCED PAST this session (the LIVE reset/reprofile
+    /// shape).
+    ///
+    /// Live reset replaces the identity's record (new generation, new
+    /// session) FIRST and retires the superseded runtime through deferred
+    /// cleanup debt afterwards — deliberately, per the reset contract: the
+    /// old bridge projection is rollback authority until the replacement
+    /// commits, and reset must not wait on a hung old retire
+    /// (`reset_records_exact_cleanup_debt_without_waiting_for_hung_old_retire`).
+    /// In that window the OLD runtime session is still live, and any
+    /// boundary it commits fails its durable projection with the store's
+    /// cursor refusal — which, propagated, fails the committing verb,
+    /// escalates the runtime to repair-blocked retention, wedges the
+    /// deferred retire behind it, and blows the gateway's bounded shutdown
+    /// horizon (the PR #304 CI wedge).
+    ///
+    /// A record that names a NEWER binding for the same identity IS the
+    /// supersede fact, discovered lazily under the identity fence — the
+    /// same fact `abandon_superseded_session` records eagerly. The absorbed
+    /// write takes the exact semantics the superseded-session pins already
+    /// establish (terminal writes drop without parking). Deliberately NO
+    /// persistent supersede mark is set: a reset that FAILS after the
+    /// record replacement rolls the record back, after which this session's
+    /// cursor enforces cleanly again — a lingering mark would silently drop
+    /// its writes forever. Every other projection failure propagates
+    /// fail-closed exactly as before.
+    async fn absorb_projection_superseded_by_identity_advance(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        result: Result<(), meerkat_store::SessionStoreError>,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        let Err(error) = result else {
+            return result;
+        };
+        let Some(state) = self.lookup_session(&session_id.to_string()) else {
+            return Err(error);
+        };
+        let resolved = match self
+            .store
+            .resolve_many(std::slice::from_ref(&state.identity))
+            .await
+        {
+            Ok(resolved) => resolved,
+            Err(resolve_error) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    identity = %state.identity,
+                    error = %resolve_error,
+                    "projection supersede probe could not resolve the identity record; \
+                     surfacing the original projection failure"
+                );
+                return Err(error);
+            }
+        };
+        let advanced_past_this_session = match resolved.get(&state.identity) {
+            Some(super::types::ContinuityResolveState::Ready { record }) => {
+                record.session_id != *session_id || record.generation.get() > state.generation.get()
+            }
+            _ => false,
+        };
+        if !advanced_past_this_session {
+            return Err(error);
+        }
+        tracing::info!(
+            session_id = %session_id,
+            identity = %state.identity,
+            refused = %error,
+            "durable projection dropped: the identity's continuity record has advanced past \
+             this session (live reset supersede); the superseded runtime retires through the \
+             reset cleanup debt"
+        );
+        Ok(())
+    }
+
     /// Record positive durable-evidence authority from an OBSERVATION — a
     /// head row read back from the substrate — as opposed to a write this
     /// process acknowledged.
@@ -2373,40 +2490,9 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
             return Ok(());
         }
         self.ensure_session_mutation_allowed(session.id())?;
-        // Capability before serialization, same rule as `save`. The
-        // authoritative projection asserts that the incoming document IS the
-        // truth (the service's rollback repair), so there is no save guard —
-        // exactly as meerkat-store's head-canonical path — but it still lands
-        // as delta rows plus a small head, never as a blob.
-        match self.resolve_persistence_capability(session.id()).await? {
-            PersistenceCapability::HeadCanonical(write) => {
-                let shape = head_canonical_shape(session, &write.stored)?;
-                return self
-                    .write_head_canonical_document(session, &write, shape)
-                    .await;
-            }
-            PersistenceCapability::HeadCanonicalBirth(write) => {
-                return self.birth_head_canonical_document(session, &write).await;
-            }
-            PersistenceCapability::BlobCanonical => {}
-        }
-        let data = self.encode_whole_document(session, WholeDocumentPass::BlobCanonicalPersist)?;
-        let sid_str = session.id().to_string();
-        match self.lookup_session(&sid_str) {
-            Some(state) => {
-                self.save_registered_snapshot(session.id(), data, state)
-                    .await?;
-            }
-            None => {
-                self.ensure_unregistered_park_allowed(session.id()).await?;
-                let mut pending = self
-                    .pending_unregistered
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                pending.insert(sid_str, data);
-            }
-        }
-        Ok(())
+        let result = self.save_authoritative_projection_locked(session).await;
+        self.absorb_projection_superseded_by_identity_advance(session.id(), result)
+            .await
     }
 
     async fn save_authoritative_projection_if_current_revision(
@@ -3797,6 +3883,140 @@ mod tests {
             )
             .await
             .expect("register");
+    }
+
+    /// The PR #304 CI wedge, pinned at the adapter seam: LIVE reset replaces
+    /// the identity's continuity record (new generation, new session, new
+    /// fence) FIRST and retires the superseded runtime through deferred
+    /// cleanup debt - deliberately, per the reset contract. In that window
+    /// the superseded session's runtime still commits boundaries, and its
+    /// durable projection used to propagate the cursor refusal ("continuity
+    /// record not found"), failing the committing verb, escalating the
+    /// runtime to repair-blocked retention, wedging the deferred retire
+    /// behind it, and blowing the gateway's bounded shutdown horizon. The
+    /// projection now drops with the superseded-terminal-write semantics -
+    /// and with NO persistent mark, so a reset ROLLBACK re-enforces the same
+    /// session's writes cleanly.
+    #[tokio::test]
+    async fn live_reset_superseded_projection_drops_instead_of_wedging() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let session = meerkat_core::Session::new();
+        let identity = AgentIdentity::parse("agent:live-reset").expect("identity");
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:live-reset:0").expect("runtime id"),
+            session_id: session.id().clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        store
+            .upsert_continuity_record(&record, FencingToken::new(3))
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    fencing_token: FencingToken::new(3),
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .expect("register");
+        let mut doc = session.clone();
+        doc.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("turn 1"),
+        ));
+        meerkat::SessionStore::save(&adapter, &doc)
+            .await
+            .expect("initial save");
+
+        // THE LIVE RESET SHAPE: the identity's record advances (generation,
+        // session, fence) while the old session stays registered and its
+        // runtime keeps committing.
+        let new_session = meerkat_core::Session::new();
+        store
+            .upsert_continuity_record(
+                &ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:agent:live-reset:1")
+                        .expect("runtime id"),
+                    session_id: new_session.id().clone(),
+                    generation: ContinuityGeneration::new(1),
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+                FencingToken::new(4),
+            )
+            .await
+            .expect("reset-shape record replacement");
+
+        let mut post_reset = doc.clone();
+        post_reset.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("in-flight turn tail"),
+        ));
+        meerkat::SessionStore::save_authoritative_projection(&adapter, &post_reset)
+            .await
+            .expect(
+                "a projection superseded by a live reset must DROP, not fail the committing \
+                 verb into repair-blocked retention (the gateway shutdown wedge)",
+            );
+        let durable = meerkat::SessionStore::load(&adapter, session.id())
+            .await
+            .expect("post-drop load")
+            .expect("post-drop document");
+        assert_eq!(
+            durable.messages().len(),
+            1,
+            "the dropped projection must not have written"
+        );
+
+        // NO POISON: the drop is scoped to the superseded session only. The
+        // reset's REPLACEMENT session (the live generation) registers and
+        // writes normally - a wedged-or-poisoned adapter would refuse here.
+        // (A same-session "rollback" is not a store-level operation: durable
+        // head rows are generation-stamped and only the reset machinery's own
+        // compensation may migrate them; that flow is exercised end-to-end by
+        // the gateway reset tests.)
+        adapter
+            .register_session(
+                new_session.id(),
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: ContinuityGeneration::new(1),
+                    fencing_token: FencingToken::new(4),
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .expect("replacement-session registration at the live generation");
+        let mut replacement_doc = new_session.clone();
+        replacement_doc.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("first turn on the replacement"),
+        ));
+        meerkat::SessionStore::save_authoritative_projection(&adapter, &replacement_doc)
+            .await
+            .expect("the live generation's projection must enforce and write after the drop");
+        let durable = meerkat::SessionStore::load(&adapter, new_session.id())
+            .await
+            .expect("replacement load")
+            .expect("replacement document");
+        assert_eq!(
+            durable.messages().len(),
+            1,
+            "the replacement projection must land durably (drop poisoned nothing)"
+        );
+        let old = meerkat::SessionStore::load(&adapter, session.id())
+            .await
+            .expect("superseded load")
+            .expect("superseded document");
+        assert_eq!(
+            old.messages().len(),
+            1,
+            "the superseded session's durable state stays exactly pre-reset"
+        );
     }
 
     /// The HomeCore boot-2 exactly-once violation, pinned on their REAL head

@@ -1969,6 +1969,80 @@ comms = true
     }
 }
 
+/// The PR #304 CI wedge, mirrored at the gateway shape (the Python
+/// `test_real_gateway_reset_reprofile_materializes_shell_tools` sequence):
+/// an identity with an ACTIVE session takes a LIVE reset (the continuity
+/// record is replaced while the superseded runtime session is still live in
+/// this process; its retirement is deferred cleanup debt BY DESIGN), a real
+/// turn runs on the fresh session, and shutdown completes within a bounded
+/// horizon. Before the supersede-absorbing projection, the superseded
+/// session's next boundary commit (its shutdown checkpoint at the latest)
+/// failed the durable write-through with the store's cursor refusal, the
+/// runtime escalated to repair-blocked retention, the deferred retire
+/// wedged behind it, and gateway shutdown blew its 310s bounded horizon.
+#[tokio::test(flavor = "multi_thread")]
+async fn live_reset_takes_a_turn_and_shuts_down_within_horizon() {
+    if proxied_to_memo_free_child("live_reset_takes_a_turn_and_shuts_down_within_horizon") {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    let member = id(MEMBER);
+    let capture = CaptureClient::default();
+    let runtime = boot_scratch_runtime(&state, capture.clone()).await;
+    let identity_runtime = runtime
+        .identity_runtime()
+        .expect("identity runtime")
+        .clone();
+    identity_runtime
+        .send(
+            &member,
+            &meerkat_core::ContentInput::Text("turn on the ORIGINAL session".to_string()),
+        )
+        .await
+        .expect("the pre-reset turn");
+    wait_for_turn(&capture, 1, "the pre-reset turn").await;
+    let before = identity_runtime
+        .status(&member)
+        .await
+        .expect("status before reset");
+    let old_session = before
+        .session_id
+        .as_ref()
+        .map(ToString::to_string)
+        .expect("a bound session before reset");
+
+    let record = identity_runtime
+        .reset(&member)
+        .await
+        .expect("the LIVE reset");
+    assert_ne!(
+        record.session_id.to_string(),
+        old_session,
+        "reset must mint a fresh session"
+    );
+
+    identity_runtime
+        .send(
+            &member,
+            &meerkat_core::ContentInput::Text("turn on the FRESH session".to_string()),
+        )
+        .await
+        .expect("the post-reset turn on the fresh session");
+    wait_for_turn(&capture, 2, "the post-reset turn").await;
+
+    // The horizon pin. In the field the superseded session's failed
+    // projection held teardown in retain-for-retry past the gateway's 310s
+    // bounded horizon; a healthy teardown completes in seconds.
+    tokio::time::timeout(std::time::Duration::from_mins(1), runtime.shutdown())
+        .await
+        .expect(
+            "shutdown must complete within the bounded horizon; a timeout here is the \
+             superseded-session repair-blocked retention wedge",
+        );
+}
+
 /// Regression (a) of the every-boot mint acceptance: a durable
 /// CURRENT-encoding session row and an EMPTY (pod-scratch) runtime store -
 /// the first send mints store-issued authority from the durable row,

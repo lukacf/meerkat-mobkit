@@ -139,6 +139,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Live reset/reprofile no longer wedges the gateway when the superseded
+  session commits a boundary mid-replacement.** Live reset replaces the
+  identity's continuity record first and retires the superseded runtime
+  through deferred cleanup debt - deliberately, per the reset contract (the
+  old bridge projection is rollback authority until the replacement
+  commits, and reset must not wait on a hung old retire). In that window
+  the superseded session's runtime is still live, and any boundary it
+  committed failed its durable write-through projection with the store's
+  cursor refusal ("continuity record not found"); propagated, that failed
+  the committing verb, escalated the runtime into repair-blocked retention,
+  wedged the deferred retire behind it, and blew the gateway's bounded
+  shutdown horizon (caught by PR CI's Python gateway test - the local
+  pytest gap had hidden it). A record that names a newer binding for the
+  same identity IS the supersede fact, discovered lazily under the identity
+  fence, so the projection now drops such a write with the exact semantics
+  the superseded-session pins already establish (terminal writes drop
+  without parking) - with NO persistent supersede mark, so a reset that
+  rolls back re-enforces the same session's writes cleanly. Every other
+  projection failure stays fail-closed. Retire-before-replace was
+  considered and excluded: it is structurally contrary to the reset
+  contract's own pinned tests.
+
 - **Zero-semantic-change boots no longer rewrite session heads (exactly-once
   adoption restored).** Upstream projects `ToolNameSet` (a HashSet) through
   serde when stamping `session_tool_visibility_state_v1`, so a session
