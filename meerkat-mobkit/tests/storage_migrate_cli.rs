@@ -115,6 +115,9 @@ fn migrate_dry_run_is_the_default_and_never_mutates() {
     let report = report_json(&run.stdout);
     assert_eq!(report["mode"], "dry_run");
     assert_eq!(report["renames"][0]["action"], "would-rename");
+    // The fixture carries its v1 floor ledger row (pre-ledger files refuse
+    // typed since the 0.8.11 reset), so dry-run RECORDS it rather than
+    // promising a stamp.
     assert_eq!(
         report["ledger"]
             .as_array()
@@ -122,7 +125,7 @@ fn migrate_dry_run_is_the_default_and_never_mutates() {
             .iter()
             .find(|entry| entry["domain"] == "mobkit-continuity")
             .expect("continuity ledger entry")["action"],
-        "would-stamp"
+        "recorded"
     );
 
     assert!(legacy.is_file(), "dry-run must not rename");

@@ -476,9 +476,95 @@ struct PreBuildMobSessionService {
     /// identity reconcile loop's repeated authoritative reads of unchanged
     /// session documents (see `SessionDocumentReadAbsorber`).
     session_read_absorber: Option<Arc<SessionDocumentReadAbsorber>>,
+    /// RuntimeStore whose store-owned lifecycle facts overlay the resume-seam
+    /// read (persistent runtime-backed path only).
+    ///
+    /// At meerkat 0.8.11 the archive protocol never rewrites session BODIES
+    /// to carry archive authority — the absorbing terminal is a
+    /// RuntimeStore-owned fact (the catalog entry committed with the physical
+    /// authority, or the Retired/Destroyed machine lifecycle row) — while the
+    /// mob resume seam still classifies from the body terminal. Without this
+    /// overlay a runtime-archived session reads as `Revivable` WITHOUT its
+    /// archived terminal, which is exactly the "archived collapses into
+    /// active/absent" host confusion the typed seam exists to prevent (hosts
+    /// rotated identities off intact preserved transcripts, the 0.8.6 field
+    /// failure).
+    archived_terminal_authority: Option<Arc<dyn meerkat_runtime::RuntimeStore>>,
 }
 
 impl PreBuildMobSessionService {
+    /// Whether an `Unsupported` boundary acknowledgement from the inner
+    /// service is completed by this wrapper: true exactly on the
+    /// bounded-bridge shape, where `runtime_adapter_override` installs the
+    /// machine that owns the committed boundary and the inner (ephemeral)
+    /// service has no durable projection of its own to fence.
+    fn absorbs_unsupported_boundary_acknowledgement(&self) -> bool {
+        self.runtime_adapter_override.is_some()
+    }
+
+    /// Project the RuntimeStore-owned archived terminal onto a revivable
+    /// resume read (see `archived_terminal_authority`). Read-side only: the
+    /// returned document copy carries the store-owned fact; nothing is
+    /// written. The probe mirrors meerkat-session's
+    /// `session_archived_by_runtime_store_authority`: the catalog entry's
+    /// committed terminal, else the Retired/Destroyed machine lifecycle row.
+    async fn overlay_runtime_archived_terminal(
+        &self,
+        load: meerkat_mob::ResumeSessionLoad,
+    ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
+        let meerkat_mob::ResumeSessionLoad::Revivable(mut session) = load else {
+            return Ok(load);
+        };
+        if session.lifecycle_terminal().is_some() {
+            return Ok(meerkat_mob::ResumeSessionLoad::Revivable(session));
+        }
+        let Some(store) = self.archived_terminal_authority.as_ref() else {
+            return Ok(meerkat_mob::ResumeSessionLoad::Revivable(session));
+        };
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(session.id());
+        let store_error = |detail: String| {
+            SessionError::Agent(meerkat_core::error::AgentError::InternalError(detail))
+        };
+        let archived_by_catalog = store
+            .load_runtime_session_catalog_entry(&runtime_id)
+            .await
+            .map_err(|e| {
+                store_error(format!(
+                    "archived-terminal overlay: runtime catalog read for session {}: {e}",
+                    session.id()
+                ))
+            })?
+            .is_some_and(|entry| {
+                entry.lifecycle_terminal() == Some(meerkat_core::SessionLifecycleTerminal::Archived)
+            });
+        let archived = archived_by_catalog
+            || matches!(
+                meerkat_runtime::store::load_runtime_state(store.as_ref(), &runtime_id)
+                    .await
+                    .map_err(|e| {
+                        store_error(format!(
+                            "archived-terminal overlay: runtime lifecycle read for session {}: {e}",
+                            session.id()
+                        ))
+                    })?,
+                Some(
+                    meerkat_runtime::RuntimeState::Retired
+                        | meerkat_runtime::RuntimeState::Destroyed
+                )
+            );
+        if archived {
+            session
+                .set_lifecycle_terminal(meerkat_core::SessionLifecycleTerminal::Archived)
+                .map_err(|e| {
+                    store_error(format!(
+                        "archived-terminal overlay: terminal projection for session {}: {e}",
+                        session.id()
+                    ))
+                })?;
+        }
+        Ok(meerkat_mob::ResumeSessionLoad::Revivable(session))
+    }
+
     async fn prepare_create_request(
         &self,
         mut req: CreateSessionRequest,
@@ -1679,6 +1765,13 @@ struct SessionStoreBackedRuntimeStore {
     mint_flights: std::sync::Mutex<
         std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
     >,
+    /// Runtimes whose present committed authority has been checked once this
+    /// process against the durable session row (see
+    /// [`Self::freshen_stale_runtime_authority_from_durable`]). Staleness is
+    /// a boot condition — a runtime store file restored from backup — so one
+    /// check per runtime per process suffices, and the set is bounded by the
+    /// runtimes this process activates.
+    freshened: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl SessionStoreBackedRuntimeStore {
@@ -1691,6 +1784,7 @@ impl SessionStoreBackedRuntimeStore {
             write_epochs: None,
             session_store: Some(session_store),
             mint_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
+            freshened: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -1703,6 +1797,7 @@ impl SessionStoreBackedRuntimeStore {
             write_epochs: Some(write_epochs),
             session_store: None,
             mint_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
+            freshened: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -1719,6 +1814,7 @@ impl SessionStoreBackedRuntimeStore {
             write_epochs: Some(write_epochs),
             session_store: Some(session_store),
             mint_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
+            freshened: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -1778,6 +1874,19 @@ impl SessionStoreBackedRuntimeStore {
         {
             return Ok(true);
         }
+        // An absent snapshot WITH a catalog entry is a lifecycle fact the
+        // inner store is stating (archived/cleared mid-flow), not a cold or
+        // reset store - re-seeding would overwrite that statement (e.g.
+        // read an archived session back to life). Only a store that knows
+        // NOTHING about the runtime mints.
+        if self
+            .inner
+            .load_runtime_session_catalog_entry(runtime_id)
+            .await?
+            .is_some()
+        {
+            return Ok(false);
+        }
         let session = session_store.load(&session_id).await.map_err(|e| {
             meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
                 "durable session read for runtime-authority mint: {e}"
@@ -1810,6 +1919,165 @@ impl SessionStoreBackedRuntimeStore {
              (ephemeral runtime-store activation)"
         );
         Ok(true)
+    }
+
+    /// Advisory Form 1 (the 0.8.9 stale-runtime-snapshot failure, recurred
+    /// at the 0.8.11 store-owned repin): a runtime store file restored from
+    /// backup or rolled back mid-fleet holds committed authority STRICTLY
+    /// BEHIND the durable continuity row this facade projects every
+    /// committed boundary into. Store-owned reads then serve the stale
+    /// snapshot — resume silently drops durably recorded turns — and the
+    /// next committed boundary tries to project that regression back over
+    /// the newer durable document.
+    ///
+    /// The write-through projection makes "durable strictly newer than
+    /// committed runtime authority" impossible in normal operation: a failed
+    /// projection fails its committing verb, so the runtime side may only
+    /// run AHEAD by one unacknowledged boundary, never behind. Observing the
+    /// inversion therefore proves runtime-store loss, and the durable row —
+    /// every byte of it projected from a store-issued committed boundary —
+    /// is the recovery source, exactly like the absent-record mint above.
+    /// Newness is the monotonic pair (transcript rewrite generation, message
+    /// count): rewrites advance the generation, ordinary turns extend the
+    /// messages within one, so a compacted-shorter durable document still
+    /// orders ahead of the pre-rewrite snapshot it superseded.
+    ///
+    /// Runs once per runtime per process (staleness is a boot condition, and
+    /// the probe costs one durable document read), under the same
+    /// single-flight fence the mint uses. Before reseeding, the boundary
+    /// save guard runs HERE, against the exact committed snapshot: genuine
+    /// divergence (a durable row that orders newer but does not extend the
+    /// committed document) is refused typed rather than silently adopted in
+    /// either direction. The guard cannot be left to the inner seed verb —
+    /// `commit_session_snapshot` treats a session it has no legacy previous
+    /// row for as first-save ADOPTION, which is exactly the pick-a-winner
+    /// this refusal exists to prevent. A catalog entry carrying a lifecycle
+    /// terminal is left untouched: terminal lifecycle facts outrank content
+    /// recovery.
+    async fn freshen_stale_runtime_authority_from_durable(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        let Some(session_store) = self.session_store.as_ref() else {
+            return Ok(());
+        };
+        if self.inner.session_persistence_profile()
+            != meerkat_runtime::store::RuntimeSessionPersistenceProfile::WholeBlobV1
+        {
+            return Ok(());
+        }
+        if self
+            .freshened
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(runtime_id.0.as_str())
+        {
+            return Ok(());
+        }
+        let raw = runtime_id.0.as_str();
+        let candidate = raw.strip_prefix("rt:session:").unwrap_or(raw);
+        let Ok(session_id) = meerkat_core::types::SessionId::parse(candidate) else {
+            return Ok(());
+        };
+        let flight = self.mint_flight_for(runtime_id);
+        let _flight = flight.lock().await;
+        let mark_fresh = || {
+            self.freshened
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(runtime_id.0.clone());
+        };
+        if self
+            .freshened
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(runtime_id.0.as_str())
+        {
+            return Ok(());
+        }
+        if self
+            .inner
+            .load_runtime_session_catalog_entry(runtime_id)
+            .await?
+            .is_some_and(|entry| entry.lifecycle_terminal().is_some())
+        {
+            mark_fresh();
+            return Ok(());
+        }
+        let Some(committed) = self
+            .inner
+            .load_committed_whole_blob_snapshot(runtime_id)
+            .await?
+        else {
+            // Nothing committed to be stale; the absent-record mint owns
+            // this shape.
+            mark_fresh();
+            return Ok(());
+        };
+        let durable = session_store.load(&session_id).await.map_err(|e| {
+            meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                "durable session read for runtime-authority freshness probe: {e}"
+            ))
+        })?;
+        let Some(durable) = durable else {
+            mark_fresh();
+            return Ok(());
+        };
+        let order_of = |session: &meerkat_core::Session| {
+            session
+                .transcript_rewrite_generation()
+                .map(|generation| (generation, session.messages().len()))
+                .map_err(|e| {
+                    meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                        "transcript rewrite generation for runtime-authority freshness probe: {e}"
+                    ))
+                })
+        };
+        let durable_order = order_of(&durable)?;
+        let committed_order = order_of(committed.session())?;
+        if durable_order <= committed_order {
+            mark_fresh();
+            return Ok(());
+        }
+        meerkat_core::session_store::run_boundary_snapshot_save_guard(
+            &durable,
+            Some(committed.session()),
+        )
+        .map_err(|e| {
+            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                "durable session row for runtime {runtime_id} orders ahead of the committed \
+                 runtime authority but does not extend it; refusing to adopt either side: {e}"
+            ))
+        })?;
+        let bytes = durable.to_persisted_bytes().map_err(|e| {
+            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                "durable session encode for runtime-authority freshen: {e}"
+            ))
+        })?;
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .commit_session_snapshot(
+                runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(bytes),
+                },
+            )
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result?;
+        tracing::warn!(
+            runtime_id = %runtime_id,
+            session_id = %session_id,
+            stale_rewrite_generation = committed_order.0,
+            stale_message_count = committed_order.1,
+            durable_rewrite_generation = durable_order.0,
+            durable_message_count = durable_order.1,
+            "stale committed runtime authority re-seeded from the durable session row \
+             (runtime store rollback/restore detected)"
+        );
+        mark_fresh();
+        Ok(())
     }
 
     /// Bump the write epoch. Called BEFORE the inner write (a failed write
@@ -2005,6 +2273,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         Option<meerkat_runtime::store::RuntimeSessionAuthority>,
         meerkat_runtime::store::RuntimeStoreError,
     > {
+        self.freshen_stale_runtime_authority_from_durable(runtime_id)
+            .await?;
         if let Some(authority) = self
             .inner
             .load_session_boundary_authority(runtime_id)
@@ -2025,6 +2295,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         Option<meerkat_runtime::store::WholeBlobStoreAuthority>,
         meerkat_runtime::store::RuntimeStoreError,
     > {
+        self.freshen_stale_runtime_authority_from_durable(runtime_id)
+            .await?;
         if let Some(authority) = self
             .inner
             .load_whole_blob_store_authority(runtime_id)
@@ -2045,6 +2317,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         Option<meerkat_runtime::store::CommittedWholeBlobSnapshot>,
         meerkat_runtime::store::RuntimeStoreError,
     > {
+        self.freshen_stale_runtime_authority_from_durable(runtime_id)
+            .await?;
         if let Some(snapshot) = self
             .inner
             .load_committed_whole_blob_snapshot(runtime_id)
@@ -3240,7 +3514,8 @@ macro_rules! delegate_mob_session_service {
                 &self,
                 session_id: &meerkat_core::types::SessionId,
             ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
-                self.inner.load_session_for_resume(session_id).await
+                let load = self.inner.load_session_for_resume(session_id).await?;
+                self.overlay_runtime_archived_terminal(load).await
             }
             async fn prepare_session_for_resume(
                 &self,
@@ -3579,12 +3854,39 @@ macro_rules! delegate_mob_session_service {
                 session_id: &meerkat_core::types::SessionId,
                 authority: &meerkat_core::CommittedSessionBoundaryAuthority,
             ) -> Result<(), SessionError> {
-                self.inner
+                match self
+                    .inner
                     .acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
                         session_id,
                         authority,
                     )
                     .await
+                {
+                    // The bounded-bridge shape (an ephemeral session service
+                    // paired with a runtime machine via
+                    // `runtime_adapter_override`): meerkat-mob's ephemeral
+                    // impl refuses on principle - it cannot speak for a
+                    // store it does not own - but on THIS composition the
+                    // machine IS the store owner and the boundary is
+                    // already committed when this acknowledgement runs; the
+                    // ephemeral service holds no durable projection whose
+                    // fencing it would advance. Refusing here fails every
+                    // runtime-backed ephemeral turn AFTER its boundary
+                    // committed, so the wrapper completes the
+                    // acknowledgement instead. Scope is deliberately
+                    // EXACT (lead-approved 2026-07-31): only this one typed
+                    // refusal on only this shape - any other error, any
+                    // other Unsupported, propagates untouched.
+                    Err(SessionError::Unsupported(ref detail))
+                        if detail
+                            == "ephemeral session service cannot acknowledge store-owned \
+                                runtime boundaries"
+                            && self.absorbs_unsupported_boundary_acknowledgement() =>
+                    {
+                        Ok(())
+                    }
+                    other => other,
+                }
             }
             async fn acquire_runtime_turn_finalization_guard(
                 &self,
@@ -4396,6 +4698,7 @@ impl MobBootstrapSpec {
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
+            archived_terminal_authority: None,
         }) as Arc<dyn MobSessionService>;
         Self {
             definition,
@@ -4560,6 +4863,7 @@ impl MobBootstrapSpec {
             after_create_hook: None,
             runtime_adapter_override: Some(adapter),
             session_read_absorber: None,
+            archived_terminal_authority: None,
         });
         self
     }
@@ -4603,6 +4907,35 @@ impl MobBootstrapSpec {
             session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
                 &epochs.epochs,
             )))),
+            archived_terminal_authority: None,
+        });
+        self
+    }
+
+    /// Overlay the RuntimeStore-owned archived terminal onto resume-seam
+    /// reads on an externally-composed spec (both gateway binaries roll
+    /// their own session services, so the stock persistent constructor's
+    /// wiring does not reach them).
+    ///
+    /// At meerkat 0.8.11 archive never rewrites session bodies; the
+    /// absorbing terminal lives in the runtime store's catalog entry or its
+    /// Retired/Destroyed lifecycle row. Without this overlay,
+    /// `load_session_for_resume` on a runtime-archived session returns
+    /// `Revivable` with no archived terminal and hosts rotate identities off
+    /// intact preserved transcripts. Hand it the SAME store the machine and
+    /// session service share.
+    #[must_use]
+    pub fn with_runtime_archived_terminal_authority(
+        mut self,
+        runtime_store: Arc<dyn meerkat_runtime::RuntimeStore>,
+    ) -> Self {
+        self.session_service = Arc::new(PreBuildMobSessionService {
+            inner: self.session_service,
+            hook: no_op_pre_build_hook(),
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: Some(runtime_store),
         });
         self
     }
@@ -4768,6 +5101,7 @@ impl MobBootstrapSpec {
             after_create_hook,
             runtime_adapter_override: effective_runtime_adapter.clone(),
             session_read_absorber: None,
+            archived_terminal_authority: None,
         }) as Arc<dyn MobSessionService>;
         let (
             agent_mob_mcp_state,
@@ -5154,6 +5488,7 @@ impl MobBootstrapSpec {
                     ),
                 }
             };
+        let archived_terminal_authority = Arc::clone(&runtime_store);
         let concrete_session_service = Arc::new(meerkat_session::PersistentSessionService::new(
             builder,
             max_sessions,
@@ -5181,6 +5516,7 @@ impl MobBootstrapSpec {
             session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
                 &session_read_epochs,
             )))),
+            archived_terminal_authority: Some(archived_terminal_authority),
         }) as Arc<dyn MobSessionService>;
         let (
             agent_mob_mcp_state,
@@ -5465,6 +5801,7 @@ impl MobBootstrapSpec {
             after_create_hook: Some(combined_after_create_hook),
             runtime_adapter_override: Some(runtime_adapter.clone()),
             session_read_absorber: None,
+            archived_terminal_authority: None,
         }) as Arc<dyn MobSessionService>;
         let (
             agent_mob_mcp_state,
@@ -7856,6 +8193,7 @@ realm_profile = "worker-v2"
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
+            archived_terminal_authority: None,
         };
 
         let req = CreateSessionRequest {
@@ -8135,6 +8473,7 @@ realm_profile = "worker-v2"
             session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
                 &epochs,
             )))),
+            archived_terminal_authority: None,
         };
 
         // A converged idle window issues many reads; only the first may reach
@@ -8495,6 +8834,7 @@ realm_profile = "worker-v2"
             after_create_hook: None,
             runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
             session_read_absorber: None,
+            archived_terminal_authority: None,
         };
         let session_id = meerkat_core::types::SessionId::new();
         let run_id = meerkat_core::lifecycle::RunId::new();
@@ -8622,6 +8962,7 @@ realm_profile = "worker-v2"
             after_create_hook: None,
             runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
             session_read_absorber: None,
+            archived_terminal_authority: None,
         };
         let session_id = meerkat_core::types::SessionId::new();
         let run_id = meerkat_core::lifecycle::RunId::new();
@@ -8941,6 +9282,102 @@ realm_profile = "worker-v2"
             converged.messages().len(),
             third.messages().len(),
             "the durable projection must converge on the latest committed document"
+        );
+    }
+
+    /// Direction pin for the staleness freshen (advisory Form 1, third
+    /// leg). Durable strictly newer reseeds (the stale-runtime-snapshot
+    /// lanes) and a runtime legitimately ahead stays untouched (the
+    /// projection-failure regression above); this test pins the remaining
+    /// direction: GENUINE DIVERGENCE — a durable row that orders newer but
+    /// does not extend the committed snapshot — surfaces the inner store's
+    /// typed boundary-guard refusal, loudly and repeatably, never a silent
+    /// pick-a-winner adoption in either direction.
+    #[tokio::test]
+    async fn freshen_refuses_divergent_durable_row_typed_instead_of_adopting() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(dir.path().join("sessions.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        // The boundary save guard lives in the store; the SQLite runtime
+        // store enforces it on every snapshot commit (InMemory does not),
+        // so the refusal under test is the real store-issued one.
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(dir.path().join("runtime.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        // One session identity, two documents that share no common tail:
+        // the committed runtime authority holds [committed turn], the
+        // durable row holds [divergent turn, divergent follow-up] — newer
+        // by the (rewrite generation, message count) order, but a fork.
+        let seed = meerkat_core::Session::new();
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(seed.id());
+        let mut committed = seed.clone();
+        committed.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("committed turn"),
+        ));
+        let mut divergent = seed;
+        divergent.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("divergent turn"),
+        ));
+        divergent.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("divergent follow-up"),
+        ));
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        committed
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        session_store
+            .save(&divergent)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&session_store),
+        ));
+        for attempt in ["first read", "retry"] {
+            let refused = meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(
+                &*store,
+                &runtime_id,
+            )
+            .await
+            .expect_err("a divergent durable row must refuse the freshen typed, not adopt");
+            assert!(
+                refused.to_string().contains("not a continuation"),
+                "the {attempt} refusal must be the boundary guard's continuity violation: {refused}"
+            );
+        }
+        // Neither side was silently rewritten by the refused freshen.
+        let retained = inner
+            .load_committed_whole_blob_snapshot(&runtime_id)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the committed runtime authority must survive"));
+        assert_eq!(
+            retained.session().messages().len(),
+            1,
+            "the committed runtime document must be untouched"
+        );
+        let durable = session_store
+            .load(committed.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must survive"));
+        assert_eq!(
+            durable.messages().len(),
+            2,
+            "the durable document must be untouched"
         );
     }
 

@@ -272,14 +272,23 @@ fn runtime_snapshot_message_count(state: &Path, session_id: &str) -> Option<i64>
     let conn = rusqlite::Connection::open(&db).expect("open runtime store");
     conn.busy_timeout(Duration::from_secs(5))
         .expect("set runtime store busy timeout");
+    // meerkat 0.8.11: whole-blob boundary commits land in the
+    // runtime_whole_blob_authority + runtime_whole_blob_bodies pair; the
+    // runtime_session_snapshots table is the pre-0.8.11 legacy
+    // representation and current commits never write it.
     assert!(
-        table_exists(&conn, "runtime_session_snapshots"),
-        "runtime store {} has no runtime_session_snapshots table — the divergence probe is \
-         reading the wrong store",
+        table_exists(&conn, "runtime_whole_blob_authority"),
+        "runtime store {} has no runtime_whole_blob_authority table — the divergence probe \
+         is reading the wrong store",
         db.display()
     );
     let mut stmt = conn
-        .prepare("SELECT session_snapshot FROM runtime_session_snapshots")
+        .prepare(
+            "SELECT bodies.session_snapshot \
+             FROM runtime_whole_blob_authority AS authority \
+             JOIN runtime_whole_blob_bodies AS bodies \
+               ON bodies.blob_sha256 = authority.blob_sha256",
+        )
         .expect("prepare runtime snapshots");
     let blobs = stmt
         .query_map([], |row| row.get::<_, Vec<u8>>(0))

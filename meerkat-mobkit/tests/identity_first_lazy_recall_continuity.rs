@@ -542,10 +542,10 @@ async fn wait_for_turn(capture: &CaptureClient, want: usize, what: &str) {
 ///
 /// Both per-session canonical representations count (`local_store.rs`'s
 /// canonical-representation rule): a `continuity_session_heads` row carries
-/// its count directly; a whole-blob `session_snapshots` row - what the
-/// meerkat 0.8.11 composition persists for a session with no durable head,
-/// via the runtime-store facade's committed-boundary projection - is decoded
-/// to count its messages.
+/// its count directly (registered sessions birth head-canonical on their
+/// first committed-boundary projection); a whole-blob `session_snapshots`
+/// row - unregistered sessions and substrates without the incremental
+/// channel - is decoded to count its messages.
 async fn wait_for_durable_document_at_least(state: &Path, floor: i64, what: &str) -> (String, i64) {
     let db = continuity_db(state);
     let deadline = Instant::now() + Duration::from_secs(30);

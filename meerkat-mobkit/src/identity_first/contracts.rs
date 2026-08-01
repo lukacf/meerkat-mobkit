@@ -320,6 +320,28 @@ pub trait ContinuityIncrementalSessions: Send + Sync {
         expected: meerkat_core::session_store::SessionHeadCas,
     ) -> Result<(), meerkat_core::SessionStoreError>;
 
+    /// Head-path sibling of `ContinuityStore::session_snapshot_matches_current`:
+    /// does `head` equal the persisted head row for this session while
+    /// `fencing_token` is STILL the identity's current write authority (same
+    /// session binding and generation the mutating verbs enforce)?
+    ///
+    /// This is the ONLY probe that may turn an exact head resave into a
+    /// no-op. A stale fence must report `false` — never a masked no-op — so
+    /// the caller falls through to the fencing write verb and surfaces the
+    /// ordinary stale-fence refusal a fenced-out writer must hear.
+    /// Conservative default: `false` (callers take the ordinary guarded
+    /// write path).
+    async fn session_head_matches_current(
+        &self,
+        _identity: &AgentIdentity,
+        _session_id: &meerkat_core::types::SessionId,
+        _generation: ContinuityGeneration,
+        _fencing_token: FencingToken,
+        _head: &meerkat_core::session_store::SessionHead,
+    ) -> Result<bool, meerkat_core::SessionStoreError> {
+        Ok(false)
+    }
+
     /// The head a reader should see: the persisted head row, or — for a
     /// session still stored as a legacy blob — the deterministic read-only
     /// synthesis of one (never a write). Mirrors meerkat's `load_head`.

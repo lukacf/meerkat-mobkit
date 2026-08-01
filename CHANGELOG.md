@@ -139,6 +139,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A restored/rolled-back runtime store no longer serves stale committed
+  authority over the newer durable continuity row** (advisory Form 1, the
+  0.8.9 stale-runtime-snapshot failure recurring at the 0.8.11 store-owned
+  repin). The write-through projection makes "durable strictly newer than
+  committed runtime authority" impossible in normal operation, so observing
+  the inversion proves runtime-store loss; the facade now probes once per
+  runtime per process on the store-owned read verbs and re-seeds the
+  committed runtime authority from the durable session row (ordering on the
+  monotonic pair: transcript rewrite generation, then message count, so a
+  compacted-shorter durable document still orders ahead). Resume replays the
+  full committed head instead of silently dropping durably recorded turns,
+  and the following boundary can no longer project the regression back over
+  the durable document. Catalog entries carrying a lifecycle terminal are
+  left untouched.
+
+- **A divergent runtime reseed refuses typed instead of silently adopting
+  the durable side.** The staleness freshen above initially left fork
+  detection to the inner store's seed verb, but `commit_session_snapshot`
+  consults its LEGACY previous-row table for the boundary save guard - empty
+  on 0.8.11 store shapes - so a durable row that ordered newer WITHOUT
+  extending the committed document was classified as first-save adoption and
+  silently replaced the committed runtime authority (the pick-a-winner
+  data-loss class; fleet operators restoring runtime stores from backups hit
+  this path). The boundary save guard now runs facade-side against the exact
+  committed snapshot before any reseed: genuine divergence surfaces the
+  guard's typed continuity refusal, repeatably, with both documents left
+  untouched. Caught by the direction pin written for the freshen, not by the
+  suite.
+
+- **Archived sessions read as archived through the resume seam again.** At
+  meerkat 0.8.11 the archive protocol never rewrites session BODIES to carry
+  archive authority - the absorbing terminal is a RuntimeStore-owned fact
+  (catalog entry or Retired/Destroyed lifecycle row) - while the mob resume
+  seam still classifies from the body terminal, so a retired member's intact
+  preserved document read back `Revivable` with no archived terminal (the
+  0.8.6 field failure shape: hosts rotated identities off preserved
+  transcripts). The session-service facade now overlays the store-owned
+  terminal onto `load_session_for_resume` reads; both gateway binaries and
+  the persistent library composition thread the shared runtime store as the
+  overlay authority (`with_runtime_archived_terminal_authority` for
+  externally-composed specs).
+
+- **A byte-exact head resave no longer masks a stale fencing token.** The
+  head-path exact-resave noop (which keeps a zero-change save from minting a
+  checkpoint version) now requires the store-side
+  `session_head_matches_current` probe - head equality AND current write
+  authority, the head-path mirror of the whole-blob match probe's fence
+  predicate - so a fenced-out writer falls through to the fencing write verb
+  and hears the ordinary stale-fence refusal instead of a silent `Ok`.
+
+- **An unregistered save refused over a durable head-canonical document now
+  publishes positive lifecycle authority.** The refusal path recorded
+  nothing, leaving the session's lifecycle to be re-inferred from absence; it
+  now records `DurableObserved` (observation-grade: newer in-flight evidence
+  wins), keeping the head-canonical refusal on the same lifecycle footing as
+  the blob parking guard.
+
 - **Ephemeral-runtime durability round trip is now facade-owned** (the OB3
   pod-scratch shape: durable truth in an injected session/continuity store,
   runtime store on ephemeral pod scratch). At 0.8.11 the session service
@@ -158,7 +215,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   resume. Destroyed sessions cannot resurrect through it because identity
   deletion removes the durable row under the identity fence. Both gateway
   binaries and the persistent/identity-first compositions thread the same
-  facade (`epoch_tracking_runtime_store_with_durable_projection`).
+  facade (`epoch_tracking_runtime_store_with_durable_projection`). On
+  incremental-capable substrates the continuity adapter BIRTHS the
+  head-canonical representation on a registered session's first projected
+  boundary (strand rows + initial head under a create-CAS; legacy/imported
+  blobs convert via the synthesizing head read), so the O(delta) steady
+  state engages for new sessions exactly as it did when the 0.8.10 service
+  drove the incremental channel - head birth moved seams, it did not
+  disappear. The bounded-bridge composition (ephemeral session service +
+  runtime machine) completes the post-commit boundary acknowledgement the
+  upstream ephemeral service refuses on principle, so runtime-backed
+  ephemeral turns no longer fail after their boundary committed.
 
 - **Migrated head-canonical sessions no longer fail cold materialization
   after one 0.8.11 turn.** Both head-canonical plain-append writers (the

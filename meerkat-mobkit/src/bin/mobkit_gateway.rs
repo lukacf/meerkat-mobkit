@@ -59,6 +59,7 @@ type PersistentSessionServiceParts = (
     meerkat_mobkit::storage_health::ResolvedStorageSummary,
     meerkat_mobkit::mob_handle_runtime::SessionWriteEpochsHandle,
     Arc<dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer>,
+    Arc<dyn meerkat_runtime::RuntimeStore>,
 );
 
 #[derive(Debug, Deserialize)]
@@ -606,6 +607,7 @@ fn build_persistent_session_service(
         .with_slots(slots),
         session_write_epochs,
         committed_boundary_recoverer,
+        runtime_store,
     ))
 }
 
@@ -1168,6 +1170,7 @@ async fn run() -> anyhow::Result<()> {
             resolved_storage,
             session_write_epochs,
             committed_boundary_recoverer,
+            runtime_store,
         ) = build_persistent_session_service(
             &layout,
             runtime_root.clone(),
@@ -1190,6 +1193,10 @@ async fn run() -> anyhow::Result<()> {
         // the default ephemeral branch below is the one that was actually broken.
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
             .with_session_write_epochs(&session_write_epochs)
+            // Resume-seam reads must carry the runtime store's archived
+            // terminal (at 0.8.11 archive stamps the catalog/lifecycle row,
+            // never the session body).
+            .with_runtime_archived_terminal_authority(runtime_store)
             .with_session_runtime_adapter(adapter.clone())
             .with_workgraph_service(workgraph_service.clone());
         spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);

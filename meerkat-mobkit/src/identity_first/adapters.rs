@@ -485,9 +485,18 @@ enum PersistenceCapability {
     /// The substrate's delta channel is this session's canonical durable
     /// representation.
     HeadCanonical(Box<HeadCanonicalWrite>),
+    /// A REGISTERED session with no durable representation at all on an
+    /// incremental-capable substrate: this write BIRTHS the head-canonical
+    /// representation (strand rows from 0 + the initial head under
+    /// `SessionHeadCas::Create`). Head birth lived in the 0.8.10 service's
+    /// incremental-channel drive; meerkat 0.8.11 removed the service's
+    /// store writes, so the adapter owns it - without this, every new
+    /// session would persist as O(document) whole-blob rows and the
+    /// head-canonical steady state (O(delta) appends) would never engage.
+    HeadCanonicalBirth(Box<HeadCanonicalBirthWrite>),
     /// The whole document is the unit of persistence: the substrate
-    /// advertises no delta channel, or this session is not (yet)
-    /// head-canonical.
+    /// advertises no delta channel, the session is unregistered (park /
+    /// supervisor discipline), or parked pre-registration state owns it.
     BlobCanonical,
 }
 
@@ -497,6 +506,14 @@ enum PersistenceCapability {
 struct HeadCanonicalWrite {
     channel: Arc<dyn super::contracts::ContinuityIncrementalSessions>,
     stored: meerkat_core::session_store::SessionHead,
+    state: SessionRuntimeState,
+}
+
+/// Everything a head-canonical BIRTH needs: the channel and the registered
+/// continuity cursor state. There is no stored head to CAS against - the
+/// birth head commits under `SessionHeadCas::Create`.
+struct HeadCanonicalBirthWrite {
+    channel: Arc<dyn super::contracts::ContinuityIncrementalSessions>,
     state: SessionRuntimeState,
 }
 
@@ -1059,10 +1076,37 @@ impl ContinuitySessionStoreAdapter {
         let parked = self.parked_deltas.is_parked(id);
         let stored = channel.load_canonical_head(id).await?;
         match (parked, stored) {
-            // Creation window, or a session that has simply never taken a
-            // delta write: whole document, and the park/registration
-            // discipline downstream owns it.
-            (_, None) => Ok(PersistenceCapability::BlobCanonical),
+            // Parked pre-registration state owns the creation window: the
+            // registration flush downstream replays it.
+            (true, None) => Ok(PersistenceCapability::BlobCanonical),
+            // No persisted canonical head. For a REGISTERED session, the
+            // SYNTHESIZING read decides: a legacy/imported blob synthesizes
+            // a head and converts on this very write (the 0.8.10
+            // lazy-migration dance - the store migrates the blob inside the
+            // first delta write's transaction), while a truly fresh session
+            // BIRTHS the head-canonical representation. Unregistered
+            // sessions keep the whole-document park discipline (the
+            // supervisor's sessions are never identity-registered).
+            (false, None) => {
+                let Some(state) = self.lookup_session(&id.to_string()) else {
+                    return Ok(PersistenceCapability::BlobCanonical);
+                };
+                match channel.load_head(id).await? {
+                    Some(stored) => Ok(PersistenceCapability::HeadCanonical(Box::new(
+                        HeadCanonicalWrite {
+                            channel: Arc::clone(channel),
+                            stored,
+                            state,
+                        },
+                    ))),
+                    None => Ok(PersistenceCapability::HeadCanonicalBirth(Box::new(
+                        HeadCanonicalBirthWrite {
+                            channel: Arc::clone(channel),
+                            state,
+                        },
+                    ))),
+                }
+            }
             (true, Some(_)) => Err(meerkat_store::SessionStoreError::Internal(format!(
                 "session {id} holds parked pre-registration delta state while the continuity \
                  substrate already serves a durable head row; refusing to persist against a \
@@ -1071,6 +1115,13 @@ impl ContinuitySessionStoreAdapter {
             ))),
             (false, Some(stored)) => {
                 let Some(state) = self.lookup_session(&id.to_string()) else {
+                    // The head row just read IS positive durable evidence.
+                    // Publishing it here keeps this refusal on the same
+                    // lifecycle footing as the blob parking guard: without
+                    // it, the session's lifecycle stays unobserved and a
+                    // later probe could reinterpret the same durable
+                    // document as a creation window.
+                    self.mark_session_durably_observed(id);
                     return Err(meerkat_store::SessionStoreError::Internal(format!(
                         "session {id} is head-canonical on the continuity substrate but its \
                          owning identity is not registered; refusing to degrade a head-canonical \
@@ -1086,6 +1137,41 @@ impl ContinuitySessionStoreAdapter {
                 )))
             }
         }
+    }
+
+    /// BIRTH the head-canonical representation for a registered session
+    /// with no durable state: the live transcript lands as root-strand rows
+    /// (base 0) and the initial head commits under
+    /// [`SessionHeadCas::Create`], so a concurrent birth loses the CAS
+    /// instead of forking representation. Every row is written from these
+    /// exact instances, so the head minted by `from_session` commits to the
+    /// same bytes (the Rebase-arm reasoning in
+    /// [`Self::write_head_canonical_document`]).
+    async fn birth_head_canonical_document(
+        &self,
+        session: &meerkat_core::Session,
+        write: &HeadCanonicalBirthWrite,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        let id = session.id();
+        let live = session.messages();
+        let strand = meerkat_core::session_store::TranscriptStrandId::root();
+        if !live.is_empty() {
+            write
+                .channel
+                .append_messages(&self.write_cursor(id, &write.state), id, &strand, 0, live)
+                .await?;
+        }
+        let head = meerkat_core::session_store::SessionHead::from_session(session, strand, 0)?;
+        write
+            .channel
+            .save_head(
+                &self.write_cursor(id, &write.state),
+                &head,
+                meerkat_core::session_store::SessionHeadCas::Create,
+            )
+            .await?;
+        self.mark_session_durably_written(id);
+        Ok(())
     }
 
     /// Persist an incoming document on the head-canonical path: delta rows
@@ -1183,6 +1269,29 @@ impl ContinuitySessionStoreAdapter {
                 )?
             }
         };
+        // Exact-resave noop (the head-path mirror of the whole-blob
+        // byte-equality probe): a document identical to the stored head
+        // appended nothing above and would re-mint a checkpoint version for
+        // zero durable change. The store-side probe additionally requires
+        // the registered fence to be the CURRENT write authority — exactly
+        // like the blob probe's `continuity.fencing_token = ?` predicate —
+        // so a fenced-out writer's exact bytes never mask the stale-fence
+        // refusal `save_head` below must surface.
+        if adopted == write.stored
+            && write
+                .channel
+                .session_head_matches_current(
+                    &write.state.identity,
+                    id,
+                    write.state.generation,
+                    write.state.fencing_token,
+                    &write.stored,
+                )
+                .await?
+        {
+            self.mark_session_durably_written(id);
+            return Ok(());
+        }
         write
             .channel
             .save_head(
@@ -1853,6 +1962,22 @@ impl ContinuitySessionStoreAdapter {
         self.publish_lifecycle(session_id, SessionLifecycle::DurableObserved);
     }
 
+    /// Record positive durable-evidence authority from an OBSERVATION — a
+    /// head row read back from the substrate — as opposed to a write this
+    /// process acknowledged.
+    ///
+    /// `or_insert`, not `insert`: evidence established while the observing
+    /// read was in flight (an acknowledged write, a removal) is newer than
+    /// the read and must win, exactly as the probe in
+    /// [`Self::resolve_session_lifecycle`] yields.
+    fn mark_session_durably_observed(&self, session_id: &meerkat_core::types::SessionId) {
+        self.session_lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(session_id.to_string())
+            .or_insert(SessionLifecycle::DurableObserved);
+    }
+
     /// Record that this session's durable document was explicitly removed.
     ///
     /// This is the deletion marker whose absence made a cold-restored session
@@ -2089,6 +2214,9 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
             PersistenceCapability::HeadCanonical(write) => {
                 self.save_head_canonical_document(session, *write).await
             }
+            PersistenceCapability::HeadCanonicalBirth(write) => {
+                self.birth_head_canonical_document(session, &write).await
+            }
             PersistenceCapability::BlobCanonical => {
                 self.save_blob_canonical_document(session).await
             }
@@ -2116,6 +2244,11 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
                     .save_head_canonical_transcript_rewrite(session, commit, *write)
                     .await;
             }
+            // A rewrite as a session's FIRST persistence has no head to
+            // rewrite; it lands whole-document below (guarded against the
+            // absent predecessor) rather than fabricating a birth-plus-
+            // rewrite composite.
+            PersistenceCapability::HeadCanonicalBirth(_) => {}
             PersistenceCapability::BlobCanonical => {}
         }
         let previous = self.load_previous_session_for_save(session.id()).await?;
@@ -2164,6 +2297,9 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
                 return self
                     .write_head_canonical_document(session, &write, shape)
                     .await;
+            }
+            PersistenceCapability::HeadCanonicalBirth(write) => {
+                return self.birth_head_canonical_document(session, &write).await;
             }
             PersistenceCapability::BlobCanonical => {}
         }
@@ -2222,6 +2358,16 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
                 return self
                     .write_head_canonical_document(session, &write, shape)
                     .await;
+            }
+            PersistenceCapability::HeadCanonicalBirth(write) => {
+                // No durable representation exists: the CAS predicate must
+                // expect exactly that, then the write births head-canonical.
+                meerkat_core::session_store::authoritative_projection_current_revision_guard(
+                    session,
+                    None,
+                    expected_current_revision.as_deref(),
+                )?;
+                return self.birth_head_canonical_document(session, &write).await;
             }
             PersistenceCapability::BlobCanonical => {}
         }
@@ -3221,6 +3367,95 @@ mod tests {
         assert_eq!(
             after_second, after_first,
             "a second load must take the already-current path and adopt nothing"
+        );
+    }
+
+    /// The FIRST birth, pinned explicitly (lead requirement 2026-07-31): a
+    /// registered session's first save on an incremental-capable substrate
+    /// CREATES the head-canonical representation - one canonical head row
+    /// (committed under the create-CAS) whose byte-exact commitment the
+    /// store's own materialization satisfies (the document round-trips),
+    /// with NO whole-blob row written. This is the birth half of the
+    /// O(delta) contract; the steady state is pinned by the idle/encode
+    /// gates and `identity_first_head_canonical_resume`.
+    #[tokio::test]
+    async fn first_registered_save_births_head_canonical() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("continuity.sqlite3");
+        let store = Arc::new(LocalContinuityStore::open(&db_path).expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let mut session = meerkat_core::Session::new();
+        session.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("first turn"),
+        ));
+        let identity = AgentIdentity::parse("agent:first-birth").expect("identity");
+        let token = FencingToken::new(1);
+        store
+            .upsert_continuity_record(
+                &ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:agent:first-birth:0")
+                        .expect("runtime id"),
+                    session_id: session.id().clone(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+                token,
+            )
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity,
+                    generation: ContinuityGeneration::new(0),
+                    fencing_token: token,
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .expect("register");
+
+        meerkat::SessionStore::save(&adapter, &session)
+            .await
+            .expect("the first registered save must birth head-canonical");
+
+        let conn = rusqlite::Connection::open(&db_path).expect("probe connection");
+        let (heads, head_count): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(message_count), -1) \
+                 FROM continuity_session_heads WHERE session_id = ?1",
+                rusqlite::params![session.id().to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("head census");
+        assert_eq!(heads, 1, "birth must create exactly one canonical head row");
+        assert_eq!(
+            head_count,
+            session.messages().len() as i64,
+            "the born head must describe the live transcript"
+        );
+        let blobs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_snapshots WHERE session_id = ?1",
+                rusqlite::params![session.id().to_string()],
+                |row| row.get(0),
+            )
+            .expect("blob census");
+        assert_eq!(blobs, 0, "birth must not write a whole-blob row");
+
+        // Byte-exact commitment: the store's own materialization (which
+        // verifies the head's row-prefix commitment via
+        // `SessionHead::into_session`) round-trips the document.
+        let loaded = meerkat::SessionStore::load(&adapter, session.id())
+            .await
+            .expect("load after birth")
+            .expect("born session present");
+        assert_eq!(
+            loaded.messages(),
+            session.messages(),
+            "the born representation must materialize the exact transcript"
         );
     }
 
@@ -6841,9 +7076,17 @@ mod tests {
         let refused = meerkat::SessionStore::save(&cold, &session)
             .await
             .expect_err("an unregistered save over durable state must refuse, not park");
+        // Two fail-closed vocabularies are legal here, decided by the
+        // durable representation the seed produced: a blob-canonical
+        // session refuses through the parking guard; a head-canonical one
+        // (the registered seed births heads since the 0.8.11 repin) refuses
+        // through the capability rule's registered-owner requirement. Both
+        // refuse rather than park, which is the property under test.
+        let text = refused.to_string();
         assert!(
-            refused.to_string().contains("refusing to park"),
-            "the refusal must speak the parking guard's vocabulary: {refused}"
+            text.contains("refusing to park")
+                || text.contains("refusing to degrade a head-canonical session"),
+            "the refusal must speak a fail-closed guard's vocabulary: {refused}"
         );
         assert_eq!(
             cold.recorded_lifecycle(session.id()),

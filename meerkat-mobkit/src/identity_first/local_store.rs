@@ -2816,6 +2816,61 @@ impl ContinuityIncrementalSessions for LocalContinuityStore {
         .await
     }
 
+    async fn session_head_matches_current(
+        &self,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+        generation: ContinuityGeneration,
+        fencing_token: FencingToken,
+        head: &SessionHead,
+    ) -> Result<bool, SessionStoreError> {
+        let identity = identity.clone();
+        let session_id = session_id.clone();
+        let head = head.clone();
+        self.delta_read(
+            "continuity session_head_matches_current",
+            move |tx, head_tables| {
+                if !head_tables {
+                    return Ok(false);
+                }
+                let Some((stored, _token)) = head_row_in_txn(tx, &session_id)? else {
+                    return Ok(false);
+                };
+                if stored != head {
+                    return Ok(false);
+                }
+                // Fence currency, same shape `enforce_continuity_cursor_in_txn`
+                // validates on the mutating verbs: the identity's CURRENT
+                // record must bind this session and generation, and its fence
+                // must EQUAL the presented one. An advanced durable fence
+                // makes this probe false so the caller's fencing write verb
+                // surfaces the ordinary stale-fence refusal.
+                let record = tx
+                    .query_row(
+                        "SELECT session_id, generation, fencing_token
+                         FROM continuity_records WHERE identity = ?1",
+                        rusqlite::params![identity.as_str()],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, u64>(1)?,
+                                row.get::<_, u64>(2)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|e| sqlite_session_err("query continuity record", e))?;
+                let Some((record_session, record_generation, record_token)) = record else {
+                    return Ok(false);
+                };
+                Ok(record_session == session_id.to_string()
+                    && record_generation == generation.get()
+                    && record_token == fencing_token.get())
+            },
+        )
+        .await
+    }
+
     async fn load_head(
         &self,
         id: &meerkat_core::types::SessionId,

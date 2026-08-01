@@ -7495,6 +7495,10 @@ external_addressable = true
         let session_service: Arc<dyn meerkat_mob::MobSessionService> = concrete_service;
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
             .with_session_write_epochs(&session_write_epochs)
+            // Resume-seam reads must carry the runtime store's archived
+            // terminal (at 0.8.11 archive stamps the catalog/lifecycle row,
+            // never the session body).
+            .with_runtime_archived_terminal_authority(Arc::clone(&runtime_store))
             .with_session_runtime_adapter(adapter.clone())
             // Order matters: workgraph before agent mob tools so child mobs
             // inherit the service at mob-state install time.
