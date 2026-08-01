@@ -263,6 +263,12 @@ pub trait ContinuityStore: Send + Sync {
 /// generation come from the session registry the identity runtime publishes,
 /// `checkpoint_version` is minted by the adapter's one version allocator, and
 /// `fencing_token` is the registered lease token.
+/// The session envelope version every released 0.8.10 writer stamped into
+/// its persisted documents and head rows. Not exported by the meerkat pin's
+/// public surface; the one-time importer re-validates it, so this constant
+/// only ROUTES refusals into the import/adoption lanes.
+pub(crate) const RELEASED_0810_SESSION_ENVELOPE_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContinuityWriteCursor {
     pub identity: AgentIdentity,
@@ -319,6 +325,32 @@ pub trait ContinuityIncrementalSessions: Send + Sync {
         head: &meerkat_core::session_store::SessionHead,
         expected: meerkat_core::session_store::SessionHeadCas,
     ) -> Result<(), meerkat_core::SessionStoreError>;
+
+    /// One-time durable adoption of a RELEASED 0.8.10 head-canonical
+    /// document, authorized by the sanctioned import proof instead of by the
+    /// stored head.
+    ///
+    /// A released head with retained rewrites structurally cannot authorize a
+    /// current mutation (its rewrite-generation authority predates the
+    /// compact graph/rewrite-prefix carriers; `session_head_cas_token`
+    /// refuses it typed), so the ordinary write arms are unreachable for it.
+    /// Implementations must, inside ONE write transaction: re-prove the
+    /// stored released document through the one-time importer (the import
+    /// receipt is the authorization), verify `session` is a legal successor
+    /// of that imported reading (equal or append-extension; genuine
+    /// divergence refuses typed), then replace the released representation
+    /// wholesale with the current-format layout of `session`. Conservative
+    /// default: refuse (external channels without the released corpus never
+    /// take this lane).
+    async fn adopt_released_head_document(
+        &self,
+        _cursor: &ContinuityWriteCursor,
+        _session: &meerkat_core::Session,
+    ) -> Result<(), meerkat_core::SessionStoreError> {
+        Err(meerkat_core::SessionStoreError::Internal(
+            "this continuity channel does not support released head-canonical adoption".to_string(),
+        ))
+    }
 
     /// Head-path sibling of `ContinuityStore::session_snapshot_matches_current`:
     /// does `head` equal the persisted head row for this session while

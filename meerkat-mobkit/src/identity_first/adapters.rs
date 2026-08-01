@@ -1189,7 +1189,37 @@ impl ContinuitySessionStoreAdapter {
     ) -> Result<(), meerkat_store::SessionStoreError> {
         let id = session.id();
         let live = session.messages();
-        let token = meerkat_core::session_store::session_head_cas_token(&write.stored)?;
+        let token = match meerkat_core::session_store::session_head_cas_token(&write.stored) {
+            Ok(token) => token,
+            Err(refusal)
+                if write.stored.version
+                    == super::contracts::RELEASED_0810_SESSION_ENVELOPE_VERSION =>
+            {
+                // A released 0.8.10 head with retained rewrites structurally
+                // cannot authorize a current mutation (its rewrite-generation
+                // authority predates the compact graph/rewrite-prefix
+                // carriers), so every ordinary arm below is unreachable for
+                // it - the 17/17 fleet boot failure at the first projected
+                // boundary. The sanctioned adoption replaces the released
+                // representation wholesale, authorized by the in-store
+                // import proof instead of by the released head; genuine
+                // divergence from the imported reading refuses typed inside
+                // the store.
+                tracing::info!(
+                    session_id = %id,
+                    refusal = %refusal,
+                    "released head cannot authorize a current mutation; taking the sanctioned \
+                     adoption lane"
+                );
+                write
+                    .channel
+                    .adopt_released_head_document(&self.write_cursor(id, &write.state), session)
+                    .await?;
+                self.mark_session_durably_written(id);
+                return Ok(());
+            }
+            Err(refusal) => return Err(refusal),
+        };
         let adopted = match shape {
             HeadCanonicalShape::PlainAppend => {
                 let prev_count = usize::try_from(write.stored.message_count)
@@ -3562,6 +3592,282 @@ mod tests {
         meerkat::SessionStore::save(&adapter, &healthy)
             .await
             .expect("an unrelated session must keep working on the same store");
+    }
+
+    /// Released strand rows in the FROZEN 0.8.10 wire shapes, with a head
+    /// commitment minted by the pin's own released digest recomputation, so
+    /// the import proof chain is exercised end to end.
+    ///
+    /// FIXTURE PROVENANCE (documented schema-level synthesis, lead-authorized
+    /// 2026-08-01): the row bytes follow the frozen released decoders in
+    /// meerkat import_0810.rs but were NOT minted by a released binary - the
+    /// released realms committed under tests/fixtures carry no
+    /// rewrite-carrying heads (rewrite_count is 0 in all four), and the
+    /// failing fleet shape is exactly a rewrite-carrying released head.
+    /// Replace with the HomeCore forensic bundle when it lands.
+    fn seed_released_rewrite_carrying_head(
+        db_path: &std::path::Path,
+        session_id: &meerkat_core::types::SessionId,
+        identity: &AgentIdentity,
+    ) -> Vec<Vec<u8>> {
+        let rows: Vec<Vec<u8>> = vec![
+            br#"{"role":"system","content":"released prompt","mutation_kind":"explicit_build","created_at":"2026-06-01T00:00:00Z"}"#.to_vec(),
+            br#"{"role":"user","content":"released question","created_at":"2026-06-01T00:00:01Z"}"#.to_vec(),
+        ];
+        let head_revision = meerkat_core::released_0810_transcript_serialized_rows_digest(&rows)
+            .expect("released digest recomputation");
+        let head_json = serde_json::json!({
+            "id": session_id.to_string(),
+            "version": 2u32,
+            "strand": "root",
+            "head_revision": head_revision,
+            "message_count": 2u64,
+            "rewrite_count": 2u64,
+            "created_at": {"secs_since_epoch": 1_780_000_000u64, "nanos_since_epoch": 0u32},
+            "updated_at": {"secs_since_epoch": 1_780_000_000u64, "nanos_since_epoch": 0u32},
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_tokens": null,
+                "cache_read_tokens": null
+            },
+            "metadata": {},
+        });
+        let conn = rusqlite::Connection::open(db_path).expect("seed connection");
+        // The released deployment's file already carries the head-canonical
+        // tables and the ledger stamp (the HomeCore closure's ledger row is
+        // mobkit-continuity=2); a freshly opened store creates them lazily on
+        // the first delta write, so the seed converges the schema itself.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS continuity_session_heads (
+                session_id     TEXT PRIMARY KEY,
+                identity       TEXT NOT NULL,
+                generation     INTEGER NOT NULL,
+                checkpoint_version INTEGER NOT NULL,
+                fencing_token  INTEGER NOT NULL,
+                head_revision  TEXT NOT NULL,
+                message_count  INTEGER NOT NULL,
+                rewrite_count  INTEGER NOT NULL,
+                head_json      BLOB NOT NULL,
+                cas_token      TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS continuity_strand_messages (
+                session_id     TEXT NOT NULL,
+                strand         TEXT NOT NULL,
+                seq            INTEGER NOT NULL,
+                message_json   BLOB NOT NULL,
+                identity       TEXT NOT NULL,
+                generation     INTEGER NOT NULL,
+                created_at_ms  INTEGER NOT NULL,
+                PRIMARY KEY (session_id, strand, seq)
+            );
+            CREATE TABLE IF NOT EXISTS continuity_session_rewrites (
+                session_id     TEXT NOT NULL,
+                rewrite_idx    INTEGER NOT NULL,
+                parent_strand  TEXT NOT NULL,
+                parent_len     INTEGER NOT NULL,
+                strand         TEXT NOT NULL,
+                strand_len     INTEGER NOT NULL,
+                commit_json    BLOB NOT NULL,
+                identity       TEXT NOT NULL,
+                generation     INTEGER NOT NULL,
+                created_at_ms  INTEGER NOT NULL,
+                PRIMARY KEY (session_id, rewrite_idx)
+            );
+            INSERT INTO meerkat_schema (domain, version) VALUES ('mobkit-continuity', 2)
+              ON CONFLICT(domain) DO UPDATE SET version = MAX(version, 2);",
+        )
+        .expect("converge released head-canonical schema for the seed");
+        conn.execute(
+            "INSERT INTO continuity_session_heads \
+             (session_id, identity, generation, checkpoint_version, fencing_token, \
+              head_revision, message_count, rewrite_count, head_json, cas_token) \
+             VALUES (?1, ?2, 0, 1, 3, ?3, 2, 2, ?4, 'released-cas-token')",
+            rusqlite::params![
+                session_id.to_string(),
+                identity.to_string(),
+                head_revision,
+                serde_json::to_vec(&head_json).expect("head json"),
+            ],
+        )
+        .expect("seed released head row");
+        for (seq, row) in rows.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO continuity_strand_messages \
+                 (session_id, strand, seq, message_json, identity, generation, created_at_ms) \
+                 VALUES (?1, 'root', ?2, ?3, ?4, 0, 0)",
+                rusqlite::params![
+                    session_id.to_string(),
+                    seq as i64,
+                    row,
+                    identity.to_string()
+                ],
+            )
+            .expect("seed released strand row");
+        }
+        rows
+    }
+
+    async fn register_released_adoption_session(
+        store: &Arc<LocalContinuityStore>,
+        adapter: &ContinuitySessionStoreAdapter,
+        session_id: &meerkat_core::types::SessionId,
+        identity: &AgentIdentity,
+        runtime_id: &str,
+    ) {
+        store
+            .upsert_continuity_record(
+                &ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse(runtime_id).expect("runtime id"),
+                    session_id: session_id.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(1),
+                },
+                FencingToken::new(3),
+            )
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                session_id,
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    fencing_token: FencingToken::new(3),
+                    checkpoint_version: CheckpointVersion::new(1),
+                },
+            )
+            .await
+            .expect("register");
+    }
+
+    /// The HomeCore class-3 binding failure, pinned: a released 0.8.10 head
+    /// that RETAINS REWRITES cannot authorize a current mutation
+    /// (`session_head_cas_token` refuses "rewritten current head has no
+    /// compact graph-prefix authority" - the rewrite-generation authority
+    /// predates the compact graph/rewrite-prefix carriers), so before the
+    /// adoption lane the FIRST projected boundary write at boot failed
+    /// 17/17: the head-lane import made the corpus readable and the
+    /// write-back made it a dead end. The released realms in the R1 lane all
+    /// carry rewrite_count 0, which is why that lane stayed green across
+    /// this failure class.
+    #[tokio::test]
+    async fn released_rewrite_carrying_head_adopts_on_first_projected_write() {
+        let identity = AgentIdentity::parse("agent:released-adoption").expect("identity");
+        let session_id = meerkat_core::types::SessionId::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("continuity.sqlite3");
+        let store = Arc::new(LocalContinuityStore::open(&db_path).expect("store"));
+        seed_released_rewrite_carrying_head(&db_path, &session_id, &identity);
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        register_released_adoption_session(
+            &store,
+            &adapter,
+            &session_id,
+            &identity,
+            "rt:agent:released-adoption:0",
+        )
+        .await;
+
+        // Read side (the class-2 lane, already green): the released head
+        // imports on load.
+        let imported = meerkat::SessionStore::load(&adapter, &session_id)
+            .await
+            .expect("import-on-load")
+            .expect("imported document");
+        assert_eq!(imported.messages().len(), 2);
+
+        // The boot shape: the first projected boundary writes the imported
+        // reading back. Before the adoption lane this refused with the fleet
+        // error; now the released representation is adopted wholesale.
+        meerkat::SessionStore::save_authoritative_projection(&adapter, &imported)
+            .await
+            .expect("the first projected write must ADOPT the released head, not refuse");
+        let adopted_head =
+            super::super::contracts::ContinuityIncrementalSessions::load_canonical_head(
+                store.as_ref(),
+                &session_id,
+            )
+            .await
+            .expect("adopted head read")
+            .expect("adopted head present");
+        assert_ne!(
+            adopted_head.version,
+            super::super::contracts::RELEASED_0810_SESSION_ENVELOPE_VERSION,
+            "adoption must leave a CURRENT head, not the released one"
+        );
+        assert_eq!(
+            adopted_head.rewrite_count, 0,
+            "the imported reading carries no retained history; the adopted head starts a \
+             current lineage"
+        );
+        let readable = meerkat::SessionStore::load(&adapter, &session_id)
+            .await
+            .expect("post-adoption load")
+            .expect("post-adoption document");
+        assert_eq!(
+            readable.messages().len(),
+            imported.messages().len(),
+            "adoption must preserve the imported document"
+        );
+
+        // The ordinary arms own the session from here: a plain append works
+        // and no longer routes through adoption.
+        let mut extended = readable.clone();
+        extended.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("post-adoption turn"),
+        ));
+        meerkat::SessionStore::save(&adapter, &extended)
+            .await
+            .expect("ordinary append after adoption");
+
+        // Divergence direction pin: a document that is NOT a successor of
+        // the imported reading refuses typed inside the adoption lane, and
+        // the released representation survives untouched.
+        let fork_id = meerkat_core::types::SessionId::new();
+        let fork_identity = AgentIdentity::parse("agent:released-adoption-fork").expect("identity");
+        seed_released_rewrite_carrying_head(&db_path, &fork_id, &fork_identity);
+        register_released_adoption_session(
+            &store,
+            &adapter,
+            &fork_id,
+            &fork_identity,
+            "rt:agent:released-adoption-fork:0",
+        )
+        .await;
+        let imported_fork = meerkat::SessionStore::load(&adapter, &fork_id)
+            .await
+            .expect("fork import-on-load")
+            .expect("fork imported document");
+        let mut doc: serde_json::Value = serde_json::from_slice(
+            &imported_fork
+                .to_persisted_bytes()
+                .expect("fork document bytes"),
+        )
+        .expect("fork document JSON");
+        doc["messages"][1]["content"] = serde_json::Value::String("FORKED".to_string());
+        let fork = meerkat_core::Session::from_persisted_bytes(
+            &serde_json::to_vec(&doc).expect("fork bytes"),
+        )
+        .expect("fork decodes");
+        let refused = meerkat::SessionStore::save_authoritative_projection(&adapter, &fork)
+            .await
+            .expect_err("a non-successor of the imported reading must refuse typed");
+        assert!(
+            refused.to_string().contains("not a continuation"),
+            "the adoption lane's refusal must be the boundary guard's continuity violation: \
+             {refused}"
+        );
+        let preserved = meerkat::SessionStore::load(&adapter, &fork_id)
+            .await
+            .expect("post-refusal load")
+            .expect("post-refusal document");
+        assert_eq!(
+            preserved.messages().len(),
+            2,
+            "the refused adoption must leave the released document untouched"
+        );
     }
 
     #[tokio::test]

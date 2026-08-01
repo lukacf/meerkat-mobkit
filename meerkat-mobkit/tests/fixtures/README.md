@@ -42,3 +42,25 @@ regression shipped past a synthetic 26-chain test for that reason).
                       messages); rewrite_count is 0 - the released binary
                       minted no resume rewrites for an unchanged system
                       prompt
+
+- homecore_ledgerv1_closure/ - HomeCore forensic bundle (2026-08-01): the
+  byte-lossless continuity closure of the exact fleet session cited in the
+  class-2 and class-3 0.8.11 binding verdicts (domain:calendar,
+  019fae11-4dd7-7301-9754-67b646603fb3 - the fleet's max-depth 26-rewrite
+  chain; gen-20 production continuity byte-copy). JSON encoding: every
+  TEXT/BLOB value is lossless base64 {b64,len}, numbers/nulls verbatim,
+  per-table column lists; sha256 pinned in checksums.sha256, source DDL in
+  continuity-schema.sql. Consumed by
+  identity_first_lazy_recall_continuity.rs
+  (homecore_rewrite_carrying_closure_adopts_resumes_and_takes_a_turn),
+  which reconstitutes it at test time VERBATIM - every row of every table
+  through the bundle's own DDL, zero document surgery - and boots the
+  harness under the bundle's OWN identity space (mob homecore, profile
+  domain, member domain:calendar), so the persisted mob_member_binding and
+  comms_name match the booting mob by construction (lead ruling: fix the
+  harness, never the bundle). The class-3 property the
+  head carries: released envelope version 2, rewrite_count 26, and NONE of
+  the current authority fields (graph_prefix / rewrite_prefix /
+  message_row_prefix) - a head that structurally cannot authorize a current
+  mutation and must be ADOPTED under the import receipt on the first
+  projected write.

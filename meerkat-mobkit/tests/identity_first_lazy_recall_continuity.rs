@@ -1397,6 +1397,296 @@ async fn released_v2_document_mints_authority_imports_and_takes_a_turn() {
     }
 }
 
+/// HomeCore's class-3 binding leg on their REAL bytes: the byte-lossless
+/// continuity closure of the exact fleet session both binding verdicts
+/// cited (domain:calendar, 019fae11-4dd7-7301-9754-67b646603fb3 - the
+/// fleet's max-depth 26-rewrite chain, 57-message head, 191 strand rows).
+///
+/// The class-3 shape, preserved from their cross-team note: a released HEAD
+/// ROW EXISTS (created by a later delta write) while the compact
+/// graph/rewrite-prefix strata do not - so adoption must key on the
+/// RELEASED HEAD's inability to authorize a mutation, never on
+/// head-absence. Before the adoption lane, the first projected boundary at
+/// boot refused fleet-wide: "rewrite rejected: rewritten current head has
+/// no compact graph-prefix authority" (17/17 identities degraded pending
+/// retry; the fail-closed side held).
+///
+/// BYTE-LOSSLESS PRINCIPLE (lead ruling): the bundle is reconstituted
+/// verbatim - every row of every table, through the bundle's own DDL - and
+/// the HARNESS adopts the bundle's identity space instead (mob `homecore`,
+/// profile `domain`, member `domain:calendar`), so the persisted
+/// `mob_member_binding` and `comms_name` match the booting mob without a
+/// single byte of document surgery. The first execution of the patched-
+/// metadata variant of this leg proved why: the identity-binding guard
+/// refuses a foreign-deployment document BEFORE adoption is reached.
+///
+/// This leg boots that composition over the reconstitution with NO runtime
+/// store: the mint reads through the head-lane importer, resume spawns, the
+/// boundary projection ADOPTS under the import receipt, the identity is
+/// ACTIVE, the fleet transcript replays, and a real turn extends the
+/// adopted (current-format) head durably.
+///
+/// FIXTURE PROVENANCE: fixtures/homecore_ledgerv1_closure/ - HomeCore
+/// forensic bundle (2026-08-01, sha256 197c2f6e...), a gen-20 production
+/// continuity byte-copy delivered for exactly this leg.
+#[tokio::test(flavor = "multi_thread")]
+async fn homecore_rewrite_carrying_closure_adopts_resumes_and_takes_a_turn() {
+    if proxied_to_memo_free_child(
+        "homecore_rewrite_carrying_closure_adopts_resumes_and_takes_a_turn",
+    ) {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    const CLOSURE: &[u8] =
+        include_bytes!("fixtures/homecore_ledgerv1_closure/calendar-continuity-closure.json");
+    const CLOSURE_DDL: &str =
+        include_str!("fixtures/homecore_ledgerv1_closure/continuity-schema.sql");
+    /// A phrase only the fleet transcript carries (their domain system role).
+    const FLEET_MARKER: &str = "household domain specialist";
+    const FLEET_MEMBER: &str = "domain:calendar";
+
+    fn closure_bytes(value: &serde_json::Value) -> Vec<u8> {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(value["b64"].as_str().expect("closure {b64} value"))
+            .expect("closure base64 payload")
+    }
+
+    /// Reconstitute the ENTIRE closure verbatim: the bundle's own DDL, then
+    /// every row of every table. TEXT and BLOB columns are distinguished so
+    /// SQLite storage classes match the source file (a TEXT value inserted
+    /// as a blob would change the storage class the store reads back).
+    fn reconstitute_closure(db: &std::path::Path, closure: &serde_json::Value) {
+        std::fs::create_dir_all(db.parent().expect("continuity db parent"))
+            .expect("create state dir");
+        let conn = rusqlite::Connection::open(db).expect("reconstitution connection");
+        conn.execute_batch(CLOSURE_DDL).expect("closure DDL");
+        const BLOB_COLUMNS: [&str; 4] = ["head_json", "message_json", "commit_json", "data"];
+        for (table, spec) in closure["tables"].as_object().expect("closure tables") {
+            let columns: Vec<&str> = spec["columns"]
+                .as_array()
+                .expect("closure columns")
+                .iter()
+                .map(|c| c.as_str().expect("closure column name"))
+                .collect();
+            let placeholders = (1..=columns.len())
+                .map(|i| format!("?{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "INSERT INTO {table} ({}) VALUES ({placeholders})",
+                columns.join(", ")
+            );
+            for row in spec["rows"].as_array().expect("closure rows") {
+                let params: Vec<Box<dyn rusqlite::ToSql>> = columns
+                    .iter()
+                    .zip(row.as_array().expect("closure row"))
+                    .map(|(column, value)| -> Box<dyn rusqlite::ToSql> {
+                        if value.is_null() {
+                            Box::new(rusqlite::types::Null)
+                        } else if let Some(number) = value.as_i64() {
+                            Box::new(number)
+                        } else {
+                            let bytes = closure_bytes(value);
+                            if BLOB_COLUMNS.contains(column) {
+                                Box::new(bytes)
+                            } else {
+                                Box::new(
+                                    String::from_utf8(bytes).expect("closure TEXT value UTF-8"),
+                                )
+                            }
+                        }
+                    })
+                    .collect();
+                conn.execute(
+                    &sql,
+                    rusqlite::params_from_iter(
+                        params.iter().map(|p| p.as_ref() as &dyn rusqlite::ToSql),
+                    ),
+                )
+                .unwrap_or_else(|error| panic!("reconstitute {table} row: {error}"));
+            }
+        }
+    }
+
+    let closure: serde_json::Value = serde_json::from_slice(CLOSURE).expect("closure JSON");
+    let released_session_id = meerkat_core::types::SessionId::parse(
+        closure["meta"]["session_id"]
+            .as_str()
+            .expect("meta session id"),
+    )
+    .expect("closure session id");
+    let heads = &closure["tables"]["continuity_session_heads"];
+    let head_columns: Vec<&str> = heads["columns"]
+        .as_array()
+        .expect("head columns")
+        .iter()
+        .map(|c| c.as_str().expect("head column"))
+        .collect();
+    let head_row = heads["rows"][0].as_array().expect("head row");
+    let head_value = |name: &str| {
+        &head_row[head_columns
+            .iter()
+            .position(|c| *c == name)
+            .expect("head column present")]
+    };
+    let released_message_count = head_value("message_count")
+        .as_i64()
+        .expect("head message count");
+    let head_json: serde_json::Value =
+        serde_json::from_slice(&closure_bytes(head_value("head_json"))).expect("head_json");
+    // The class-3 property, pinned on the exact fleet bytes: a RELEASED
+    // envelope with retained rewrites and NONE of the current authority
+    // carriers.
+    assert_eq!(
+        head_json["version"].as_u64(),
+        Some(2),
+        "released head envelope version"
+    );
+    assert_eq!(
+        head_value("rewrite_count").as_i64(),
+        Some(26),
+        "the fleet's max-depth rewrite chain"
+    );
+    for absent in ["graph_prefix", "rewrite_prefix", "message_row_prefix"] {
+        assert!(
+            head_json.get(absent).is_none(),
+            "the released head must NOT carry the current authority field {absent}"
+        );
+    }
+
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    reconstitute_closure(&continuity_db(&state), &closure);
+
+    // The bundle's identity space, adopted by the harness.
+    let fleet_definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "homecore"
+
+[profiles.domain]
+model = "gpt-5.5"
+external_addressable = true
+runtime_mode = "turn_driven"
+
+[profiles.domain.tools]
+comms = true
+"#,
+    )
+    .expect("parse the homecore-shaped mob definition");
+    struct CalendarRoster;
+    #[async_trait]
+    impl RosterProvider for CalendarRoster {
+        async fn roster(
+            &self,
+            _context: &RosterContext,
+        ) -> Result<Vec<DurableAgentSpec>, RosterError> {
+            Ok(vec![DurableAgentSpec {
+                identity: id(FLEET_MEMBER),
+                profile: ProfileName::from("domain"),
+                addressability: AgentAddressability::Addressable,
+                display_name: None,
+                labels: BTreeMap::new(),
+                context: None,
+                additional_instructions: Vec::new(),
+                initial_message: None,
+                runtime_mode_override: None,
+                backend: None,
+                binding: None,
+            }])
+        }
+    }
+
+    let member = id(FLEET_MEMBER);
+    let capture = CaptureClient::default();
+    let runtime = {
+        let builder = UnifiedRuntimeBuilder::default()
+            .definition(fleet_definition)
+            .persistent_state(&state)
+            .continuity_from_state_dir(&state)
+            .await
+            .expect("open the reconstituted identity substrate")
+            .roster_provider(Arc::new(CalendarRoster))
+            .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+            .identity_runtime_instance_id("homecore-closure")
+            .comms(true)
+            .ephemeral_runtime_store(true)
+            .default_llm_client(Arc::new(capture.clone()));
+        Box::pin(builder.build())
+            .await
+            .expect("build the homecore-shaped UnifiedRuntime over the closure")
+    };
+    let identity_runtime = runtime
+        .identity_runtime()
+        .expect("identity runtime")
+        .clone();
+    identity_runtime
+        .send(
+            &member,
+            &meerkat_core::ContentInput::Text("What did we schedule?".to_string()),
+        )
+        .await
+        .expect(
+            "the fleet closure must import, mint, resume, and ADOPT; a refusal here is the \
+             class-3 boot dead end (17/17)",
+        );
+    wait_for_turn(&capture, 1, "the post-adoption turn").await;
+    let last = capture
+        .last()
+        .expect("a post-adoption request was captured");
+    assert!(
+        last.contains(FLEET_MARKER),
+        "the post-adoption LLM request must replay the fleet transcript (marker \
+         {FLEET_MARKER:?})"
+    );
+    let after = identity_runtime
+        .status(&member)
+        .await
+        .expect("status after the post-adoption send");
+    assert_eq!(
+        after.state,
+        IdentityLifecycleState::Active,
+        "the closure identity must come back ACTIVE, not degraded; status: {after:?}"
+    );
+    assert_eq!(
+        after.session_id.as_ref().map(ToString::to_string),
+        Some(released_session_id.to_string()),
+        "the mint must RESUME the fleet session, not rotate; status: {after:?}"
+    );
+    runtime.shutdown().await;
+
+    // The adoption landed durably: the head is CURRENT (no longer the
+    // released envelope), the transcript extended, and it loads under the
+    // current decoder without the importer.
+    let db = continuity_db(&state);
+    let store = Arc::new(LocalContinuityStore::open(&db).expect("reopen continuity store"));
+    let adopted_head =
+        meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions::load_canonical_head(
+            store.as_ref(),
+            &released_session_id,
+        )
+        .await
+        .expect("adopted head read")
+        .expect("adopted head present");
+    assert_ne!(
+        adopted_head.version, 2,
+        "the boundary projection must ADOPT the released head into a current one"
+    );
+    let adapter = ContinuitySessionStoreAdapter::new(store);
+    let resumed = meerkat::SessionStore::load(&adapter, &released_session_id)
+        .await
+        .expect("the adopted durable document must load under the current decoder")
+        .expect("the adopted durable document must exist");
+    assert!(
+        resumed.messages().len() >= (released_message_count as usize) + 2,
+        "the post-adoption turn must extend the fleet transcript durably \
+         (have {}, want >= {})",
+        resumed.messages().len(),
+        released_message_count + 2
+    );
+}
+
 /// Regression (a) of the every-boot mint acceptance: a durable
 /// CURRENT-encoding session row and an EMPTY (pod-scratch) runtime store -
 /// the first send mints store-issued authority from the durable row,

@@ -1529,18 +1529,19 @@ fn materialize_slim_in_txn(
         // unreadable at resume (HomeCore binding, 17/17 identities:
         // "failed to restore session from head row: ... expected current 3,
         // got 2").
-        Err(restore_error) if head.version == RELEASED_0810_SESSION_ENVELOPE_VERSION => {
-            import_released_head_in_txn(tx, id, head, &restore_error)
+        Err(restore_error)
+            if head.version == super::contracts::RELEASED_0810_SESSION_ENVELOPE_VERSION =>
+        {
+            import_released_head_in_txn(
+                tx,
+                id,
+                head,
+                &format!("failed current materialization ({restore_error})"),
+            )
         }
         Err(err) => Err(err),
     }
 }
-
-/// The session envelope version every released 0.8.10 writer stamped into
-/// its head rows. Not exported by the pin's public surface; the importer
-/// re-validates it, so this constant only routes the refusal into the
-/// import lane.
-const RELEASED_0810_SESSION_ENVELOPE_VERSION: u32 = 2;
 
 /// Serialized-verbatim released envelope, reassembled from the exact durable
 /// parts a released 0.8.10 head row commits to. `messages` embeds the exact
@@ -1586,7 +1587,7 @@ fn import_released_head_in_txn(
     tx: &Transaction<'_>,
     id: &meerkat_core::types::SessionId,
     head: &SessionHead,
-    restore_error: &SessionStoreError,
+    refusal_context: &str,
 ) -> Result<Session, SessionStoreError> {
     use sha2::Digest as _;
 
@@ -1594,13 +1595,13 @@ fn import_released_head_in_txn(
     let released_digest = meerkat_core::released_0810_transcript_serialized_rows_digest(&raw_rows)
         .map_err(|digest_error| {
             SessionStoreError::Serialization(format!(
-                "continuity head row {id} failed current materialization ({restore_error}) and \
+                "continuity head row {id} {refusal_context} and \
                  its strand rows do not admit the released 0.8.10 digest ({digest_error})"
             ))
         })?;
     if released_digest != head.head_revision {
         return Err(SessionStoreError::Serialization(format!(
-            "continuity head row {id} failed current materialization ({restore_error}) and its \
+            "continuity head row {id} {refusal_context} and its \
              strand rows do not match the released head commitment (released digest \
              {released_digest}, head revision {})",
             head.head_revision
@@ -1629,8 +1630,8 @@ fn import_released_head_in_txn(
     .map_err(|e| SessionStoreError::Serialization(e.to_string()))?;
     let imported = meerkat_core::import_released_0810_session(&envelope).map_err(|import| {
         SessionStoreError::Serialization(format!(
-            "continuity head row {id} materializes neither as a current document \
-             ({restore_error}) nor as a released 0.8.10 head-canonical document ({import})"
+            "continuity head row {id} {refusal_context} and does not interpret as a \
+             released 0.8.10 head-canonical document either ({import})"
         ))
     })?;
     let (session, receipt) = imported.into_parts();
@@ -1654,6 +1655,74 @@ fn import_released_head_in_txn(
          the first write-path decode"
     );
     Ok(session)
+}
+
+/// One-time durable adoption of a released 0.8.10 head-canonical document,
+/// inside the caller's WRITE transaction (see
+/// `ContinuityIncrementalSessions::adopt_released_head_document`).
+///
+/// A released head with retained rewrites cannot authorize a current
+/// mutation - its rewrite-generation authority predates the compact
+/// graph/rewrite-prefix carriers, so `session_head_cas_token` refuses it
+/// typed and every ordinary write arm is unreachable. Authorization here is
+/// the import proof: the stored released document is re-proved through
+/// [`import_released_head_in_txn`] (byte proof against the released head
+/// commitment + the sanctioned importer + receipt re-proof), `incoming` must
+/// be a legal successor of that imported reading (equal or append-extension;
+/// the boundary guard refuses genuine divergence typed), and only then is the
+/// released representation replaced wholesale with the current-format layout
+/// of `incoming` - the same strand/rewrite/head writer the legacy-blob
+/// migration uses, so rewrite-carrying documents lay out identically to a
+/// converted blob.
+fn adopt_released_head_in_txn(
+    tx: &Transaction<'_>,
+    incoming: &Session,
+    identity: &AgentIdentity,
+    generation: ContinuityGeneration,
+    version: CheckpointVersion,
+    fencing_token: FencingToken,
+) -> Result<(), SessionStoreError> {
+    let id = incoming.id();
+    let Some((stored, _token)) = head_row_in_txn(tx, id)? else {
+        return Err(SessionStoreError::Internal(format!(
+            "released head adoption for session {id} found no durable head row; the adoption \
+             lane is only reachable from a stored released head"
+        )));
+    };
+    if stored.version != super::contracts::RELEASED_0810_SESSION_ENVELOPE_VERSION {
+        return Err(SessionStoreError::Internal(format!(
+            "released head adoption for session {id} found a current head (envelope version \
+             {}); refusing to re-adopt a document the ordinary write arms already own",
+            stored.version
+        )));
+    }
+    let imported =
+        import_released_head_in_txn(tx, id, &stored, "is being adopted on the write path")?;
+    meerkat_core::session_store::append_only_save_guard(incoming, Some(&imported))?;
+    // The released rows are being REPLACED wholesale inside this transaction;
+    // nothing can observe the intermediate state, and the imported reading
+    // above is the receipt-proved successor source. The head row itself is
+    // upserted by `write_head_row_in_txn`.
+    delete_orphan_head_canonical_rows_in_txn(tx, id)?;
+    let started = std::time::Instant::now();
+    let (layout, head) = layout_for_blob_session(incoming)?;
+    for (strand, rows) in &layout.strands {
+        insert_strand_rows_in_txn(tx, id, strand, 0, rows, identity, generation)?;
+    }
+    for (idx, rewrite) in layout.rewrites.iter().enumerate() {
+        insert_rewrite_row_in_txn(tx, id, idx as u64, rewrite, identity, generation)?;
+    }
+    write_head_row_in_txn(tx, &head, identity, generation, version, fencing_token)?;
+    tracing::info!(
+        session_id = %id,
+        released_rows = stored.message_count,
+        released_rewrite_count = stored.rewrite_count,
+        adopted_rows = head.message_count,
+        adopted_rewrite_count = head.rewrite_count,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "released 0.8.10 head-canonical document durably adopted on the write path"
+    );
+    Ok(())
 }
 
 /// Head-canonical compat write for a WHOLE-document verb: delta-append when
@@ -2946,6 +3015,30 @@ impl ContinuityIncrementalSessions for LocalContinuityStore {
                     cursor.fencing_token,
                 )?;
                 Ok(())
+            },
+        )
+        .await
+    }
+
+    async fn adopt_released_head_document(
+        &self,
+        cursor: &ContinuityWriteCursor,
+        session: &meerkat_core::Session,
+    ) -> Result<(), SessionStoreError> {
+        let session = session.clone();
+        self.delta_write(
+            "continuity adopt_released_head_document",
+            cursor,
+            session.id().clone(),
+            move |tx, cursor| {
+                adopt_released_head_in_txn(
+                    tx,
+                    &session,
+                    &cursor.identity,
+                    cursor.generation,
+                    cursor.checkpoint_version,
+                    cursor.fencing_token,
+                )
             },
         )
         .await

@@ -139,6 +139,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Released rewrite-carrying heads adopt on the first projected write
+  instead of dead-ending the boot.** A released 0.8.10 head that RETAINS
+  REWRITES structurally cannot authorize a current mutation: its
+  rewrite-generation authority predates the compact graph/rewrite-prefix
+  carriers, so `session_head_cas_token` refuses it typed ("rewritten current
+  head has no compact graph-prefix authority") and every ordinary write arm
+  is unreachable. The head-lane import (below) made such corpora READABLE,
+  but the first projected boundary write at boot - the resume-spawn control
+  snapshot - still failed fleet-wide (17/17 identities degraded pending
+  retry; fail-closed held, durable rows preserved). The write path now takes
+  a sanctioned adoption lane: the stored released document is re-proved
+  through the one-time importer inside the write transaction (the import
+  receipt is the authorization, never the released head), the incoming
+  document must be a legal successor of that imported reading (genuine
+  divergence refuses typed), and the released representation is replaced
+  wholesale with the current-format layout - the same strand/rewrite/head
+  writer the legacy-blob migration uses. Released heads with
+  `rewrite_count = 0` (the committed R1 realms' shape) keep their ordinary
+  write arms unchanged. Transcript-rewrite commits over a released head
+  remain fail-closed by design: at 0.8.11 resume authors nothing, so the
+  first projection always adopts before any rewrite can arrive.
+
 - **Released 0.8.10 HEAD-CANONICAL continuity documents import on load**
   (the head-row lane of the released-envelope import). The one-time importer
   covered whole-blob rows only, while every 0.8.10-written head row carries a
