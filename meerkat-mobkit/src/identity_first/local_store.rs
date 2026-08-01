@@ -1518,7 +1518,142 @@ fn materialize_slim_in_txn(
     head: &SessionHead,
 ) -> Result<Session, SessionStoreError> {
     let messages = strand_messages_in_txn(tx, id, &head.strand, 0..head.message_count)?;
-    head.clone().into_session(messages)
+    match head.clone().into_session(messages) {
+        Ok(session) => Ok(session),
+        // Released 0.8.10 HEAD ROW (session envelope v2): interpretable only
+        // through the explicit one-time importer — the head-row lane of the
+        // same contract `import_released_blob_in_txn` implements for whole
+        // blobs. Every 0.8.10-written head refuses current materialization
+        // (`Session::from_head_parts` fails typed on the envelope version),
+        // so without this lane an entire released head-canonical fleet is
+        // unreadable at resume (HomeCore binding, 17/17 identities:
+        // "failed to restore session from head row: ... expected current 3,
+        // got 2").
+        Err(restore_error) if head.version == RELEASED_0810_SESSION_ENVELOPE_VERSION => {
+            import_released_head_in_txn(tx, id, head, &restore_error)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// The session envelope version every released 0.8.10 writer stamped into
+/// its head rows. Not exported by the pin's public surface; the importer
+/// re-validates it, so this constant only routes the refusal into the
+/// import lane.
+const RELEASED_0810_SESSION_ENVELOPE_VERSION: u32 = 2;
+
+/// Serialized-verbatim released envelope, reassembled from the exact durable
+/// parts a released 0.8.10 head row commits to. `messages` embeds the exact
+/// strand row bytes (`RawValue`), never a re-serialization, so the importer
+/// interprets precisely what the released writer persisted.
+#[derive(serde::Serialize)]
+struct ReleasedHeadEnvelope0810<'a> {
+    version: u32,
+    id: &'a meerkat_core::types::SessionId,
+    messages: &'a [Box<serde_json::value::RawValue>],
+    created_at: std::time::SystemTime,
+    updated_at: std::time::SystemTime,
+    metadata: &'a serde_json::Map<String, serde_json::Value>,
+    usage: &'a meerkat_core::Usage,
+}
+
+/// One-time released-0.8.10 import for a HEAD-CANONICAL continuity document.
+///
+/// Same banked import contract as [`import_released_blob_in_txn`], adapted to
+/// the head representation: the public core importer is the sole boundary
+/// allowed to interpret released evidence, and every proof failure fails
+/// closed with the original refusal surfaced (never a healed reading).
+///
+/// Proof chain, in order:
+/// 1. The exact durable strand rows must be the rows the released head
+///    committed to: `released_0810_transcript_serialized_rows_digest` (the
+///    byte-faithful recomputation of the released transcript digest) must
+///    equal `head.head_revision`.
+/// 2. The released envelope is reassembled from those exact bytes plus the
+///    head's own envelope facts (a released head inlines its full metadata
+///    map — `metadata_identity` is a 0.8.11 concept), and handed to
+///    `import_released_0810_session`, which re-validates the envelope
+///    version and every released metadata shape.
+/// 3. The receipt's source digest is re-proved against the exact bytes
+///    interpreted, and its session id against the row key.
+///
+/// This runs on the read pool, so like the blob lane's read-only fallback it
+/// serves the imported document WITHOUT durable adoption: the first
+/// write-path decode observes the released head, fails its prefix-digest
+/// probe against the current algorithm, and rebases the strand under a
+/// current-format head — the durable adoption every later read observes.
+fn import_released_head_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    head: &SessionHead,
+    restore_error: &SessionStoreError,
+) -> Result<Session, SessionStoreError> {
+    use sha2::Digest as _;
+
+    let raw_rows = strand_row_bytes_in_txn(tx, id, &head.strand, 0..head.message_count)?;
+    let released_digest = meerkat_core::released_0810_transcript_serialized_rows_digest(&raw_rows)
+        .map_err(|digest_error| {
+            SessionStoreError::Serialization(format!(
+                "continuity head row {id} failed current materialization ({restore_error}) and \
+                 its strand rows do not admit the released 0.8.10 digest ({digest_error})"
+            ))
+        })?;
+    if released_digest != head.head_revision {
+        return Err(SessionStoreError::Serialization(format!(
+            "continuity head row {id} failed current materialization ({restore_error}) and its \
+             strand rows do not match the released head commitment (released digest \
+             {released_digest}, head revision {})",
+            head.head_revision
+        )));
+    }
+    let messages = raw_rows
+        .into_iter()
+        .map(|bytes| {
+            String::from_utf8(bytes)
+                .map_err(|_| SessionStoreError::Corrupted(id.clone()))
+                .and_then(|row| {
+                    serde_json::value::RawValue::from_string(row)
+                        .map_err(|_| SessionStoreError::Corrupted(id.clone()))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let envelope = serde_json::to_vec(&ReleasedHeadEnvelope0810 {
+        version: head.version,
+        id,
+        messages: &messages,
+        created_at: head.created_at,
+        updated_at: head.updated_at,
+        metadata: &head.metadata,
+        usage: &head.usage,
+    })
+    .map_err(|e| SessionStoreError::Serialization(e.to_string()))?;
+    let imported = meerkat_core::import_released_0810_session(&envelope).map_err(|import| {
+        SessionStoreError::Serialization(format!(
+            "continuity head row {id} materializes neither as a current document \
+             ({restore_error}) nor as a released 0.8.10 head-canonical document ({import})"
+        ))
+    })?;
+    let (session, receipt) = imported.into_parts();
+    let observed_sha256: [u8; 32] = sha2::Sha256::digest(&envelope).into();
+    if receipt.source_document_sha256() != &observed_sha256 {
+        return Err(SessionStoreError::Serialization(format!(
+            "continuity head row {id} changed during exact released-0.8.10 import"
+        )));
+    }
+    if receipt.session_id() != id {
+        return Err(SessionStoreError::Serialization(format!(
+            "continuity head key {id} contains released session {}",
+            receipt.session_id()
+        )));
+    }
+    drop(receipt);
+    tracing::info!(
+        session_id = %id,
+        released_rows = head.message_count,
+        "released 0.8.10 head-canonical document imported on load; durable adoption follows \
+         the first write-path decode"
+    );
+    Ok(session)
 }
 
 /// Head-canonical compat write for a WHOLE-document verb: delta-append when

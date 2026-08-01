@@ -139,6 +139,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Released 0.8.10 HEAD-CANONICAL continuity documents import on load**
+  (the head-row lane of the released-envelope import). The one-time importer
+  covered whole-blob rows only, while every 0.8.10-written head row carries a
+  v2 session envelope that current materialization refuses typed
+  ("failed to restore session from head row: ... expected current 3, got
+  2") - so an entire released head-canonical fleet was unreadable at resume
+  (field: 17/17 identities degraded on the reset-mint leg; the fail-closed
+  side held, durable rows preserved). `materialize_slim_in_txn` now routes a
+  v2 head into `import_released_head_in_txn`: the exact durable strand rows
+  are first proved against the released head commitment
+  (`released_0810_transcript_serialized_rows_digest` must equal
+  `head_revision`), the released envelope is reassembled from those exact
+  bytes plus the head's inline envelope facts, and the sanctioned
+  `import_released_0810_session` boundary interprets it (receipt digest and
+  session id re-proved). Read-side interpret only: durable adoption follows
+  the first write-path decode, which rebases the strand under a
+  current-format head. Regression drives the committed released baseline
+  realm with its runtime store deleted - HomeCore's exact binding leg.
+
 - **A restored/rolled-back runtime store no longer serves stale committed
   authority over the newer durable continuity row** (advisory Form 1, the
   0.8.9 stale-runtime-snapshot failure recurring at the 0.8.11 store-owned
@@ -273,6 +292,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the provider-minted tool_use_id). Regression coverage runs the two-member
   scenario through both projection sources (live drain and history-only
   rebuild) in `unified_console`.
+
+### Known Issues
+
+- Gateway retire/respawn of idle members can hang intermittently (upstream
+  meerkat-mob actor defect family, filed as S4 alongside S2/S3; admin-path
+  operation, not exercised by fleet acceptance flows). The pinning test is
+  `#[ignore]`d with its run records and re-arms on the upstream fix.
 
 ## [0.8.8] - 2026-07-29
 

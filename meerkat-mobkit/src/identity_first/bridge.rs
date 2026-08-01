@@ -491,14 +491,20 @@ fn internal_bridge_work_spec(
     spec
 }
 
+/// Spec-shaping inputs for one internal bridge delivery, grouped so the
+/// submit path carries them as a unit rather than four loose parameters.
+struct InternalBridgeWork<'a> {
+    content: &'a meerkat_core::ContentInput,
+    system_prompt: Option<&'a str>,
+    injected_context: &'a [meerkat_core::ContentInput],
+    interaction_id: Option<&'a str>,
+}
+
 async fn submit_internal_bridge_work(
     handle: &MobHandle,
     member_id: &MobAgentIdentity,
-    content: &meerkat_core::ContentInput,
-    system_prompt: Option<&str>,
-    injected_context: &[meerkat_core::ContentInput],
+    work: InternalBridgeWork<'_>,
     handling_mode: HandlingMode,
-    interaction_id: Option<&str>,
     deadline: &ActorAdmissionDeadline,
 ) -> Result<(), BridgeError> {
     let entry = deadline
@@ -510,7 +516,12 @@ async fn submit_internal_bridge_work(
         .await?
         .map_err(|err| BridgeError::Mob(err.to_string()))?
         .ok_or_else(|| BridgeError::Mob(format!("member not found: {member_id}")))?;
-    let spec = internal_bridge_work_spec(content, system_prompt, injected_context, interaction_id);
+    let spec = internal_bridge_work_spec(
+        work.content,
+        work.system_prompt,
+        work.injected_context,
+        work.interaction_id,
+    );
     deadline
         .bound(
             "deliver.submit_work",
@@ -2367,11 +2378,13 @@ impl SessionBridge for MobSessionBridge {
         match submit_internal_bridge_work(
             &self.handle,
             &mid,
-            content,
-            None,
-            &[],
+            InternalBridgeWork {
+                content,
+                system_prompt: None,
+                injected_context: &[],
+                interaction_id: None,
+            },
             HandlingMode::Queue,
-            None,
             &deadline,
         )
         .await
@@ -2400,11 +2413,13 @@ impl SessionBridge for MobSessionBridge {
                 submit_internal_bridge_work(
                     &self.handle,
                     &mid,
-                    content,
-                    None,
-                    &[],
+                    InternalBridgeWork {
+                        content,
+                        system_prompt: None,
+                        injected_context: &[],
+                        interaction_id: None,
+                    },
                     HandlingMode::Queue,
-                    None,
                     &deadline,
                 )
                 .await?;
@@ -2512,11 +2527,13 @@ impl SessionBridge for MobSessionBridge {
         match submit_internal_bridge_work(
             &self.handle,
             &mid,
-            content,
-            system_prompt,
-            injected_context,
+            InternalBridgeWork {
+                content,
+                system_prompt,
+                injected_context,
+                interaction_id,
+            },
             handling_mode,
-            interaction_id,
             &deadline,
         )
         .await
@@ -2545,11 +2562,13 @@ impl SessionBridge for MobSessionBridge {
                 submit_internal_bridge_work(
                     &self.handle,
                     &mid,
-                    content,
-                    system_prompt,
-                    injected_context,
+                    InternalBridgeWork {
+                        content,
+                        system_prompt,
+                        injected_context,
+                        interaction_id,
+                    },
                     handling_mode,
-                    interaction_id,
                     &deadline,
                 )
                 .await?;

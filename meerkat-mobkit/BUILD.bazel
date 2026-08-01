@@ -4963,6 +4963,73 @@ rust_test(
 )
 
 rust_test(
+    name = "released_realm_upgrade_drive_test",
+    aliases = aliases(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    crate_name = "released_realm_upgrade_drive",
+    crate_root = "tests/released_realm_upgrade_drive.rs",
+    crate_features = [],
+    edition = "2024",
+    compile_data = [
+        "Cargo.toml",
+        "assets/release-targets.json",
+        "console-dist/console-app.css",
+        "console-dist/console-app.js",
+        "console-dist/index.html",
+        "examples/library_mode_reference.rs",
+        "flow-editor-dist/flow-editor.css",
+        "flow-editor-dist/flow-editor.js",
+        "flow-editor-dist/index.html",
+        "flow-editor-dist/react-globals.js",
+        "src/adaptive_layer_decision.schema.json",
+        "src/memory/distiller_prompt_v0.md",
+        "src/memory/hygienist_prompt_v0.md",
+        "src/memory/selector_prompt_v0.md",
+        "src/memory/steward_prompt_v0.md",
+        "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
+    ],
+    srcs = [
+        "tests/released_realm_upgrade_drive.rs",
+    ],
+    visibility = ["//visibility:public"],
+    rustc_env = {
+        "CARGO_PKG_VERSION": "0.8.8",
+        "CARGO_BIN_NAME": "released_realm_upgrade_drive",
+        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+    },
+    tags = [
+        "fast",
+    ],
+    size = "small",
+    data = [
+        ":package_runfiles",
+    ],
+    env = {
+        "RUST_MIN_STACK": "16777216",
+    },
+    proc_macro_deps = all_crate_deps(
+        package_name = "meerkat-mobkit",
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [
+        "//meerkat-mobkit:meerkat_mobkit",
+    ] + all_crate_deps(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
     name = "routing_delivery_test",
     aliases = aliases(
         package_name = "meerkat-mobkit",
@@ -6817,6 +6884,7 @@ test_suite(
         ":mobkit_gateway_bootstrap_test",
         ":module_restart_test",
         ":reference_app_test",
+        ":released_realm_upgrade_drive_test",
         ":rpc_builtins_test",
         ":runtime_bootstrap_test",
         ":schedule_dispatch_test",
