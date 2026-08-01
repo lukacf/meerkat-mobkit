@@ -71,3 +71,15 @@ retries = 2
 [[profile.default.overrides]]
 filter = 'package(meerkat-mobkit) & (test(live_event_burst_reaches_store_while_slow_backfill_is_running) + test(refresh_session_history_parallelizes_slow_member_backfills_at_scale))'
 retries = 2
+
+# The idle CPU gate measures the gateway's CPU-time over real 30s windows;
+# sibling tests on the same runner inflate the reading (it failed 2x on
+# GitHub's shared 2-core runners inside the parallel suite while passing solo
+# every time, including once under deliberate local load). threads-required =
+# num-cpus makes nextest schedule it EXCLUSIVELY - the in-suite equivalent of
+# the solo-run disposition protocol - instead of weakening the CPU budget,
+# which is a real production assertion (it caught the 0.8.9 wave's O(document)
+# regression).
+[[profile.default.overrides]]
+filter = 'package(meerkat-mobkit) & test(converged_idle_gateway_consumes_near_zero_cpu)'
+threads-required = "num-cpus"
