@@ -2305,7 +2305,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat-mobkit"
-version = "0.8.8"
+version = "0.8.9"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2694,7 +2694,7 @@ dependencies = [
 
 [[package]]
 name = "mobkit-store-conformance"
-version = "0.8.8"
+version = "0.8.9"
 dependencies = [
  "async-trait",
  "base64",
