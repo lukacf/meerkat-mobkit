@@ -1599,92 +1599,374 @@ comms = true
     }
 
     let member = id(FLEET_MEMBER);
-    let capture = CaptureClient::default();
-    let runtime = {
-        let builder = UnifiedRuntimeBuilder::default()
-            .definition(fleet_definition)
-            .persistent_state(&state)
-            .continuity_from_state_dir(&state)
+    // Boot 1 in its own scope: every runtime handle (including the topology
+    // control flock) must drop before boot 2 opens the same state dir.
+    {
+        let capture = CaptureClient::default();
+        let runtime = {
+            let builder = UnifiedRuntimeBuilder::default()
+                .definition(fleet_definition)
+                .persistent_state(&state)
+                .continuity_from_state_dir(&state)
+                .await
+                .expect("open the reconstituted identity substrate")
+                .roster_provider(Arc::new(CalendarRoster))
+                .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+                .identity_runtime_instance_id("homecore-closure")
+                .comms(true)
+                .ephemeral_runtime_store(true)
+                .default_llm_client(Arc::new(capture.clone()));
+            Box::pin(builder.build())
+                .await
+                .expect("build the homecore-shaped UnifiedRuntime over the closure")
+        };
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("What did we schedule?".to_string()),
+            )
             .await
-            .expect("open the reconstituted identity substrate")
-            .roster_provider(Arc::new(CalendarRoster))
-            .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
-            .identity_runtime_instance_id("homecore-closure")
-            .comms(true)
-            .ephemeral_runtime_store(true)
-            .default_llm_client(Arc::new(capture.clone()));
-        Box::pin(builder.build())
-            .await
-            .expect("build the homecore-shaped UnifiedRuntime over the closure")
-    };
-    let identity_runtime = runtime
-        .identity_runtime()
-        .expect("identity runtime")
-        .clone();
-    identity_runtime
-        .send(
-            &member,
-            &meerkat_core::ContentInput::Text("What did we schedule?".to_string()),
-        )
-        .await
-        .expect(
-            "the fleet closure must import, mint, resume, and ADOPT; a refusal here is the \
+            .expect(
+                "the fleet closure must import, mint, resume, and ADOPT; a refusal here is the \
              class-3 boot dead end (17/17)",
-        );
-    wait_for_turn(&capture, 1, "the post-adoption turn").await;
-    let last = capture
-        .last()
-        .expect("a post-adoption request was captured");
-    assert!(
-        last.contains(FLEET_MARKER),
-        "the post-adoption LLM request must replay the fleet transcript (marker \
+            );
+        wait_for_turn(&capture, 1, "the post-adoption turn").await;
+        let last = capture
+            .last()
+            .expect("a post-adoption request was captured");
+        assert!(
+            last.contains(FLEET_MARKER),
+            "the post-adoption LLM request must replay the fleet transcript (marker \
          {FLEET_MARKER:?})"
-    );
-    let after = identity_runtime
-        .status(&member)
-        .await
-        .expect("status after the post-adoption send");
-    assert_eq!(
-        after.state,
-        IdentityLifecycleState::Active,
-        "the closure identity must come back ACTIVE, not degraded; status: {after:?}"
-    );
-    assert_eq!(
-        after.session_id.as_ref().map(ToString::to_string),
-        Some(released_session_id.to_string()),
-        "the mint must RESUME the fleet session, not rotate; status: {after:?}"
-    );
-    runtime.shutdown().await;
+        );
+        let after = identity_runtime
+            .status(&member)
+            .await
+            .expect("status after the post-adoption send");
+        assert_eq!(
+            after.state,
+            IdentityLifecycleState::Active,
+            "the closure identity must come back ACTIVE, not degraded; status: {after:?}"
+        );
+        assert_eq!(
+            after.session_id.as_ref().map(ToString::to_string),
+            Some(released_session_id.to_string()),
+            "the mint must RESUME the fleet session, not rotate; status: {after:?}"
+        );
+        runtime.shutdown().await;
+    }
 
     // The adoption landed durably: the head is CURRENT (no longer the
     // released envelope), the transcript extended, and it loads under the
     // current decoder without the importer.
     let db = continuity_db(&state);
-    let store = Arc::new(LocalContinuityStore::open(&db).expect("reopen continuity store"));
-    let adopted_head =
-        meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions::load_canonical_head(
-            store.as_ref(),
-            &released_session_id,
+    let (adopted_head, live_after_boot_1) = {
+        let store = Arc::new(LocalContinuityStore::open(&db).expect("reopen continuity store"));
+        let adopted_head =
+            meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions::load_canonical_head(
+                store.as_ref(),
+                &released_session_id,
+            )
+            .await
+            .expect("adopted head read")
+            .expect("adopted head present");
+        assert_ne!(
+            adopted_head.version, 2,
+            "the boundary projection must ADOPT the released head into a current one"
+        );
+        let adapter = ContinuitySessionStoreAdapter::new(store);
+        // The turn's durable projection can lag its completion signal under
+        // full-suite load; poll with the file's standard 30s bound instead of
+        // asserting on a single immediate read (a longer wait can only reduce
+        // flakes - the floor assertion below still gates the outcome).
+        let turn_floor = (released_message_count as usize) + 2;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let resumed = loop {
+            let loaded = meerkat::SessionStore::load(&adapter, &released_session_id)
+                .await
+                .expect("the adopted durable document must load under the current decoder")
+                .expect("the adopted durable document must exist");
+            if loaded.messages().len() >= turn_floor || Instant::now() >= deadline {
+                break loaded;
+            }
+            sleep(Duration::from_millis(100)).await;
+        };
+        assert!(
+            resumed.messages().len() >= turn_floor,
+            "the post-adoption turn must extend the fleet transcript durably \
+             (have {}, want >= {})",
+            resumed.messages().len(),
+            released_message_count + 2
+        );
+        (adopted_head, resumed)
+    };
+
+    // --- SQUASH INVARIANTS (0.8.11 one-time transcript-history squash) -----
+    //
+    // The adoption deliberately consumes the released rewrite graph: retired
+    // revision bodies are the point of the transcript-history redesign, so
+    // the pinned expectations are the POST-SQUASH values, never the
+    // pre-upgrade ones. What must hold regardless is the LIVE transcript:
+    // every released head-strand row survives content-faithful at its exact
+    // position (typed comparison; the typed decode of both sides drops the
+    // released `mutation_kind` provenance annotation identically).
+    {
+        // Live content, row by row, against the closure's exact bytes.
+        let head_strand = head_json["strand"].as_str().expect("released head strand");
+        let strands = &closure["tables"]["continuity_strand_messages"];
+        let strand_columns: Vec<&str> = strands["columns"]
+            .as_array()
+            .expect("strand columns")
+            .iter()
+            .map(|c| c.as_str().expect("strand column"))
+            .collect();
+        let strand_idx = |name: &str| {
+            strand_columns
+                .iter()
+                .position(|c| *c == name)
+                .expect("strand column present")
+        };
+        let mut released_rows: Vec<(i64, Vec<u8>)> = strands["rows"]
+            .as_array()
+            .expect("strand rows")
+            .iter()
+            .map(|r| r.as_array().expect("strand row"))
+            .filter(|r| {
+                String::from_utf8(closure_bytes(&r[strand_idx("strand")])).expect("strand id")
+                    == head_strand
+            })
+            .map(|r| {
+                (
+                    r[strand_idx("seq")].as_i64().expect("strand seq"),
+                    closure_bytes(&r[strand_idx("message_json")]),
+                )
+            })
+            .collect();
+        released_rows.sort_by_key(|(seq, _)| *seq);
+        assert_eq!(
+            released_rows.len(),
+            released_message_count as usize,
+            "the closure's head strand must carry exactly the released live transcript"
+        );
+        for (index, (_, released_bytes)) in released_rows.iter().enumerate() {
+            let released_message: meerkat_core::types::Message =
+                serde_json::from_slice(released_bytes)
+                    .expect("released row decodes as a current Message");
+            assert_eq!(
+                &live_after_boot_1.messages()[index],
+                &released_message,
+                "post-adoption live transcript row {index} must be content-faithful to the \
+                 released row"
+            );
+        }
+        // Post-squash representation counts: the released 26-rewrite graph is
+        // consumed whole (no history state key in this head's metadata, so
+        // the imported reading retains no history), and the adopted document
+        // lives on one strand.
+        let conn = rusqlite::Connection::open(&db).expect("squash census connection");
+        let rewrite_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM continuity_session_rewrites WHERE session_id = ?1",
+                rusqlite::params![released_session_id.to_string()],
+                |row| row.get(0),
+            )
+            .expect("count rewrite rows");
+        assert_eq!(
+            rewrite_rows, 0,
+            "the one-time squash must consume the released rewrite graph whole (26 -> 0)"
+        );
+        assert_eq!(
+            adopted_head.rewrite_count, 0,
+            "the adopted head starts a current lineage at generation 0"
+        );
+        let live_strands: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT strand) FROM continuity_strand_messages \
+                 WHERE session_id = ?1",
+                rusqlite::params![released_session_id.to_string()],
+                |row| row.get(0),
+            )
+            .expect("count distinct strands");
+        assert_eq!(
+            live_strands, 1,
+            "the adoption purges superseded strands; the adopted document lives on ONE strand"
+        );
+    }
+
+    // --- Boot 2: ZERO-TURN, EAGER materialization - HomeCore's reconcile
+    // boot shape (resume-spawn + control-snapshot boundary + projection,
+    // no turn). EXACTLY-ONCE adoption demands ZERO head writes here: the
+    // adopted head is current (the released-adoption arm keys on envelope
+    // version 2), and a zero-semantic-change projection must land on the
+    // exact-resave noop - including the per-boot updated_at touch and the
+    // set-order re-stamp of any tool-visibility filter (the
+    // domain:security violation: a byte-different head every boot). ---
+    let head_row_snapshot = |phase: &str| -> (String, i64, Vec<u8>) {
+        let conn = rusqlite::Connection::open(&db).expect("head snapshot connection");
+        conn.query_row(
+            "SELECT cas_token, checkpoint_version, head_json FROM continuity_session_heads \
+             WHERE session_id = ?1",
+            rusqlite::params![released_session_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
-        .await
-        .expect("adopted head read")
-        .expect("adopted head present");
-    assert_ne!(
-        adopted_head.version, 2,
-        "the boundary projection must ADOPT the released head into a current one"
+        .unwrap_or_else(|error| panic!("head row snapshot ({phase}): {error}"))
+    };
+    let before_zero_turn_boot = head_row_snapshot("before the zero-turn boot");
+    {
+        let capture = CaptureClient::default();
+        let runtime = {
+            let builder = UnifiedRuntimeBuilder::default()
+                .definition(
+                    MobDefinition::from_toml(
+                        r#"
+[mob]
+id = "homecore"
+
+[profiles.domain]
+model = "gpt-5.5"
+external_addressable = true
+runtime_mode = "turn_driven"
+
+[profiles.domain.tools]
+comms = true
+"#,
+                    )
+                    .expect("parse the homecore-shaped mob definition (zero-turn boot)"),
+                )
+                .persistent_state(&state)
+                .continuity_from_state_dir(&state)
+                .await
+                .expect("reopen the adopted identity substrate (zero-turn boot)")
+                .roster_provider(Arc::new(CalendarRoster))
+                .identity_bootstrap_mode(IdentityBootstrapMode::EagerMaterialize)
+                .identity_runtime_instance_id("homecore-closure")
+                .comms(true)
+                .ephemeral_runtime_store(true)
+                .default_llm_client(Arc::new(capture.clone()));
+            Box::pin(builder.build())
+                .await
+                .expect("build the zero-turn eager boot over the adopted state")
+        };
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        let status = identity_runtime
+            .status(&member)
+            .await
+            .expect("status after the eager zero-turn boot");
+        assert_eq!(
+            status.state,
+            IdentityLifecycleState::Active,
+            "the eager boot must resume the adopted session; status: {status:?}"
+        );
+        runtime.shutdown().await;
+    }
+    let after_zero_turn_boot = head_row_snapshot("after the zero-turn boot");
+    assert_eq!(
+        before_zero_turn_boot, after_zero_turn_boot,
+        "EXACTLY-ONCE violated: a zero-turn boot performed a head write \
+         (cas_token/checkpoint/bytes changed) - the domain:security per-boot \
+         rewrite class"
     );
-    let adapter = ContinuitySessionStoreAdapter::new(store);
-    let resumed = meerkat::SessionStore::load(&adapter, &released_session_id)
-        .await
-        .expect("the adopted durable document must load under the current decoder")
-        .expect("the adopted durable document must exist");
-    assert!(
-        resumed.messages().len() >= (released_message_count as usize) + 2,
-        "the post-adoption turn must extend the fleet transcript durably \
-         (have {}, want >= {})",
-        resumed.messages().len(),
-        released_message_count + 2
-    );
+
+    // --- Boot 3: a real turn extends through the ORDINARY arms - same
+    // strand, same envelope version, no rebase, plain appends only. ---
+    {
+        let capture = CaptureClient::default();
+        let runtime = {
+            let builder = UnifiedRuntimeBuilder::default()
+                .definition(
+                    MobDefinition::from_toml(
+                        r#"
+[mob]
+id = "homecore"
+
+[profiles.domain]
+model = "gpt-5.5"
+external_addressable = true
+runtime_mode = "turn_driven"
+
+[profiles.domain.tools]
+comms = true
+"#,
+                    )
+                    .expect("parse the homecore-shaped mob definition (boot 2)"),
+                )
+                .persistent_state(&state)
+                .continuity_from_state_dir(&state)
+                .await
+                .expect("reopen the adopted identity substrate")
+                .roster_provider(Arc::new(CalendarRoster))
+                .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+                .identity_runtime_instance_id("homecore-closure")
+                .comms(true)
+                .ephemeral_runtime_store(true)
+                .default_llm_client(Arc::new(capture.clone()));
+            Box::pin(builder.build())
+                .await
+                .expect("build boot 2 over the adopted state")
+        };
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("And the week after?".to_string()),
+            )
+            .await
+            .expect("boot 3 must resume the ADOPTED document through the ordinary arms");
+        wait_for_turn(&capture, 1, "boot 3's turn").await;
+        runtime.shutdown().await;
+
+        let store = Arc::new(LocalContinuityStore::open(&db).expect("reopen after boot 2"));
+        let boot2_head =
+            meerkat_mobkit::identity_first::contracts::ContinuityIncrementalSessions::load_canonical_head(
+                store.as_ref(),
+                &released_session_id,
+            )
+            .await
+            .expect("boot 2 head read")
+            .expect("boot 2 head present");
+        assert_eq!(
+            boot2_head.strand, adopted_head.strand,
+            "EXACTLY-ONCE adoption violated: boot 2 switched the head strand again \
+             (the domain:security double-adoption class)"
+        );
+        assert_eq!(
+            boot2_head.version, adopted_head.version,
+            "boot 2 must not change the envelope version again"
+        );
+        assert_eq!(
+            boot2_head.rewrite_count, adopted_head.rewrite_count,
+            "boot 2 must not mint or consume rewrites"
+        );
+        assert!(
+            boot2_head.message_count >= adopted_head.message_count + 2,
+            "boot 2's turn must extend the adopted strand by plain appends \
+             (have {}, want >= {})",
+            boot2_head.message_count,
+            adopted_head.message_count + 2
+        );
+        let adapter = ContinuitySessionStoreAdapter::new(store);
+        let after_boot_2 = meerkat::SessionStore::load(&adapter, &released_session_id)
+            .await
+            .expect("boot 2 durable document loads")
+            .expect("boot 2 durable document exists");
+        for (index, message) in live_after_boot_1.messages().iter().enumerate() {
+            assert_eq!(
+                &after_boot_2.messages()[index],
+                message,
+                "boot 2 changed already-durable transcript row {index}"
+            );
+        }
+    }
 }
 
 /// Regression (a) of the every-boot mint acceptance: a durable

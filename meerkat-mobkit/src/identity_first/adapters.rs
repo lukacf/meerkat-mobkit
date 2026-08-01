@@ -540,6 +540,63 @@ enum HeadCanonicalShape {
 /// `head.head_revision`. `Session::transcript_prefix_digest` answers that from
 /// the session's own boundary ring on an ordinary turn, so the steady-state
 /// decision costs O(delta), not O(document).
+/// Equality for the exact-resave noop: strict head equality, loosened by
+/// EXACTLY two facts that are zero durable change by construction.
+///
+/// (a) `updated_at`: a timestamp-only difference re-mints nothing durable —
+/// the noop's own charter ("would re-mint a checkpoint version for zero
+/// durable change"). Every content-bearing field (messages, usage, every
+/// other metadata value, prefixes, counts) stays byte-strict.
+///
+/// (b) The ORDER of `session_tool_visibility_state_v1`'s Allow/Deny arrays:
+/// upstream projects `ToolNameSet` (a HashSet) through serde, so the same
+/// visibility fact re-stamps as a differently-ordered array every boot —
+/// per-process hash order, frozen into the session metadata. Equality on
+/// that field is SET equality by the type's own semantics; comparing the
+/// arrays order-sensitively made every zero-turn boot rewrite the head of
+/// any session carrying a multi-tool filter (HomeCore domain:security, the
+/// boot-2 exactly-once violation: same content, same length, shuffled
+/// bytes, checkpoint churn every boot). Only these two arrays are
+/// canonicalized; no other array in the document is touched (arrays are
+/// order-bearing everywhere else). Filed upstream: durable bytes minted
+/// from HashSet iteration.
+fn head_equal_for_exact_resave(
+    adopted: &meerkat_core::session_store::SessionHead,
+    stored: &meerkat_core::session_store::SessionHead,
+) -> bool {
+    if adopted == stored {
+        return true;
+    }
+    let mut adopted = adopted.clone();
+    let mut stored = stored.clone();
+    stored.updated_at = adopted.updated_at;
+    canonicalize_tool_visibility_order(&mut adopted.metadata);
+    canonicalize_tool_visibility_order(&mut stored.metadata);
+    adopted == stored
+}
+
+/// Sort the set-semantics tool arrays inside
+/// `session_tool_visibility_state_v1` (see [`head_equal_for_exact_resave`]).
+fn canonicalize_tool_visibility_order(metadata: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(state) = metadata.get_mut("session_tool_visibility_state_v1") else {
+        return;
+    };
+    for filter_key in ["active_filter", "staged_filter"] {
+        let Some(filter) = state.get_mut(filter_key) else {
+            continue;
+        };
+        for tag in ["Allow", "Deny"] {
+            if let Some(serde_json::Value::Array(names)) = filter.get_mut(tag) {
+                names.sort_by(|a, b| {
+                    a.as_str()
+                        .unwrap_or_default()
+                        .cmp(b.as_str().unwrap_or_default())
+                });
+            }
+        }
+    }
+}
+
 fn head_canonical_shape(
     session: &meerkat_core::Session,
     stored: &meerkat_core::session_store::SessionHead,
@@ -1307,7 +1364,7 @@ impl ContinuitySessionStoreAdapter {
         // like the blob probe's `continuity.fencing_token = ?` predicate —
         // so a fenced-out writer's exact bytes never mask the stale-fence
         // refusal `save_head` below must surface.
-        if adopted == write.stored
+        if head_equal_for_exact_resave(&adopted, &write.stored)
             && write
                 .channel
                 .session_head_matches_current(
@@ -3740,6 +3797,62 @@ mod tests {
             )
             .await
             .expect("register");
+    }
+
+    /// The HomeCore boot-2 exactly-once violation, pinned on their REAL head
+    /// rows (fixtures/homecore_security_idempotency/, sha256 9f5fdb6b...,
+    /// domain:security 019fae11-4e87-...): two consecutive boots of the same
+    /// binary wrote two byte-different heads for an unchanged document. The
+    /// diffs are exactly `updated_at` plus the ORDER of the tool-visibility
+    /// Allow arrays (upstream projects `ToolNameSet`, a HashSet, through
+    /// serde - per-process hash order). Strict equality must SEE the drift
+    /// (else this fixture rotted) while the exact-resave equality must
+    /// recognize it as zero durable change - the pin that stops the
+    /// per-boot head rewrite.
+    #[test]
+    fn homecore_security_boot_drift_is_zero_durable_change() {
+        const BUNDLE: &[u8] = include_bytes!(
+            "../../tests/fixtures/homecore_security_idempotency/security-head-evolution.json"
+        );
+        let bundle: serde_json::Value = serde_json::from_slice(BUNDLE).expect("bundle JSON");
+        let head_of = |state: &str| -> meerkat_core::session_store::SessionHead {
+            use base64::Engine as _;
+            let table = &bundle[state]["continuity_session_heads"];
+            let columns: Vec<&str> = table["columns"]
+                .as_array()
+                .expect("bundle columns")
+                .iter()
+                .map(|c| c.as_str().expect("bundle column"))
+                .collect();
+            let row = table["rows"][0].as_array().expect("bundle row");
+            let head_json = base64::engine::general_purpose::STANDARD
+                .decode(
+                    row[columns
+                        .iter()
+                        .position(|c| *c == "head_json")
+                        .expect("head_json column")]["b64"]
+                        .as_str()
+                        .expect("head_json b64"),
+                )
+                .expect("head_json base64");
+            serde_json::from_slice(&head_json).expect("bundle head deserializes")
+        };
+        let boot1 = head_of("post_boot1_fresh");
+        let boot2 = head_of("post_boot2");
+        assert_ne!(
+            boot1, boot2,
+            "the fleet drift must be visible to strict equality; if the two rows became \
+             identical, the fixture (or upstream's stamp) changed and this pin needs re-deriving"
+        );
+        assert!(
+            head_equal_for_exact_resave(&boot1, &boot2),
+            "the exact-resave equality must recognize the fleet's boot drift as zero durable \
+             change (updated_at + visibility set order only)"
+        );
+        assert!(
+            head_equal_for_exact_resave(&boot2, &boot1),
+            "zero-durable-change recognition must be symmetric"
+        );
     }
 
     /// The HomeCore class-3 binding failure, pinned: a released 0.8.10 head

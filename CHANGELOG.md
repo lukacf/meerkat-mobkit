@@ -139,6 +139,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Zero-semantic-change boots no longer rewrite session heads (exactly-once
+  adoption restored).** Upstream projects `ToolNameSet` (a HashSet) through
+  serde when stamping `session_tool_visibility_state_v1`, so a session
+  carrying a multi-tool Allow filter re-stamps the SAME visibility fact as a
+  differently-ordered array every boot (per-process hash order), and the
+  boot also touches `updated_at` - the strict exact-resave equality saw a
+  changed head and rewrote it every boot (field: one fleet session's head
+  churned bytes/checkpoint on every boot after its one-time adoption,
+  violating exactly-once). The exact-resave equality now recognizes
+  precisely those two facts as zero durable change: `updated_at`
+  (timestamps are not durable content) and the ORDER of the
+  tool-visibility Allow/Deny arrays (set semantics by the type's own
+  definition; no other array in the document is touched). Pinned on the
+  fleet's real consecutive-boot head rows and by a zero-turn eager-boot leg
+  over the adopted closure that asserts ZERO head writes. Filed upstream:
+  durable bytes minted from HashSet iteration order.
+
 - **Released rewrite-carrying heads adopt on the first projected write
   instead of dead-ending the boot.** A released 0.8.10 head that RETAINS
   REWRITES structurally cannot authorize a current mutation: its
@@ -321,6 +338,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   meerkat-mob actor defect family, filed as S4 alongside S2/S3; admin-path
   operation, not exercised by fleet acceptance flows). The pinning test is
   `#[ignore]`d with its run records and re-arms on the upstream fix.
+
+- Zero-turn boots re-stamp `session_tool_visibility_state_v1` from a
+  HashSet (per-process order) and touch `updated_at` upstream, so session
+  head BYTES are not boot-idempotent on their own - fleet operators
+  comparing raw DB digests across boots will see byte drift on sessions
+  carrying multi-tool filters. The scoped exact-resave equality (above)
+  keeps the durable row untouched on zero-semantic-change boots; filed
+  upstream as S5 (durable bytes minted from HashSet iteration order).
 
 ## [0.8.8] - 2026-07-29
 

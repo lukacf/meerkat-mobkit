@@ -64,3 +64,14 @@ regression shipped past a synthetic 26-chain test for that reason).
   message_row_prefix) - a head that structurally cannot authorize a current
   mutation and must be ADOPTED under the import receipt on the first
   projected write.
+
+- homecore_security_idempotency/ - HomeCore forensic bundle (2026-08-01):
+  the lossless three-state head+snapshot evolution of domain:security
+  (019fae11-4e87-7482-8796-54b2dac1f410) - untouched gen-20 corpus, the row
+  after ONE boot of the fixed binary on a fresh seed, and the row after a
+  SECOND boot (the exactly-once violation: identical head_revision, same
+  length, different bytes). sha256 pinned in checksums.sha256. Consumed by
+  identity_first::adapters::tests::homecore_security_boot_drift_is_zero_durable_change,
+  which pins that strict head equality SEES the two-boot drift (updated_at +
+  the HashSet-ordered tool-visibility Allow arrays, filed upstream as S5)
+  while the scoped exact-resave equality reads it as zero durable change.
