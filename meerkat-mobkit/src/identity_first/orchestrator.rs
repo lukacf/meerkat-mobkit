@@ -1622,6 +1622,14 @@ pub async fn lazy_register_flow(
             .status(identity)
             .await
             .is_ok_and(|status| status.state == IdentityLifecycleState::Active);
+        // Terminal heal verdict (2026-07-29 incident): while it stands, lazy
+        // reconcile must not soften this identity's Broken projection to
+        // Dormant — that cosmetic "heal" is what materialization re-Breaks.
+        let terminal_verdict = if currently_active {
+            None
+        } else {
+            runtime.continuity_unrecoverable(identity).await
+        };
         let draft = AgentBuildDraft {
             model: None,
             system_prompt: None,
@@ -1652,6 +1660,24 @@ pub async fn lazy_register_flow(
             ContinuityResolveState::Ready { record } => {
                 if currently_active {
                     runtime.update_spec(spec.clone()).await?;
+                } else if let Some(verdict) = terminal_verdict {
+                    // 2026-07-29 incident: re-registering a heal-unprovable
+                    // identity as Dormant is the cosmetic "heal" that the
+                    // next on-demand materialization immediately re-Breaks.
+                    // Keep the Broken projection and its typed terminal
+                    // reason; delivery keeps refusing loudly (REQ-13) until
+                    // an operator intervenes.
+                    runtime.update_spec(spec.clone()).await?;
+                    outcomes.insert(
+                        identity.clone(),
+                        RestoreOutcome::Broken(ContinuityFailure {
+                            identity: identity.clone(),
+                            kind: ContinuityFailureKind::CheckpointUnrecoverable,
+                            record: Some(record),
+                            detail: verdict.reason,
+                        }),
+                    );
+                    continue;
                 } else {
                     runtime
                         .register(
@@ -1671,7 +1697,24 @@ pub async fn lazy_register_flow(
                 );
             }
             ContinuityResolveState::Broken { failure } => {
-                if matches!(failure.kind, ContinuityFailureKind::SnapshotMissing)
+                if let Some(verdict) = terminal_verdict
+                    && matches!(failure.kind, ContinuityFailureKind::SnapshotMissing)
+                    && failure.record.is_some()
+                {
+                    // Same guard as the Ready arm above: a store-visible
+                    // Broken shape must not be softened to Dormant while the
+                    // heal authority's terminal verdict stands.
+                    runtime.update_spec(spec.clone()).await?;
+                    outcomes.insert(
+                        identity.clone(),
+                        RestoreOutcome::Broken(ContinuityFailure {
+                            identity: identity.clone(),
+                            kind: ContinuityFailureKind::CheckpointUnrecoverable,
+                            record: failure.record.clone(),
+                            detail: verdict.reason,
+                        }),
+                    );
+                } else if matches!(failure.kind, ContinuityFailureKind::SnapshotMissing)
                     && let Some(record) = failure.record.clone()
                 {
                     if currently_active {

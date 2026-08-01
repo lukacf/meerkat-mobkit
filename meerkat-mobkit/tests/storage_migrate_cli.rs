@@ -39,6 +39,13 @@ const LEGACY_DDL: &str = "CREATE TABLE continuity_records (
 fn seed_legacy_continuity(path: &Path) -> String {
     let conn = rusqlite::Connection::open(path).expect("create fixture db");
     conn.execute_batch(LEGACY_DDL).expect("apply legacy ddl");
+    // Ledgered at the v1 floor: pre-ledger fixtures are below the mobkit
+    // 0.8.8 floor and refuse typed since the 0.8.11 reset.
+    conn.execute_batch(
+        "CREATE TABLE meerkat_schema (domain TEXT PRIMARY KEY, version INTEGER NOT NULL);
+         INSERT INTO meerkat_schema (domain, version) VALUES ('mobkit-continuity', 1);",
+    )
+    .expect("v1 ledger row");
     let session = meerkat_core::Session::new();
     let sid = session.id().to_string();
     let legacy = serde_json::to_vec(&session).expect("serialize legacy session");
@@ -108,6 +115,9 @@ fn migrate_dry_run_is_the_default_and_never_mutates() {
     let report = report_json(&run.stdout);
     assert_eq!(report["mode"], "dry_run");
     assert_eq!(report["renames"][0]["action"], "would-rename");
+    // The fixture carries its v1 floor ledger row (pre-ledger files refuse
+    // typed since the 0.8.11 reset), so dry-run RECORDS it rather than
+    // promising a stamp.
     assert_eq!(
         report["ledger"]
             .as_array()
@@ -115,9 +125,8 @@ fn migrate_dry_run_is_the_default_and_never_mutates() {
             .iter()
             .find(|entry| entry["domain"] == "mobkit-continuity")
             .expect("continuity ledger entry")["action"],
-        "would-stamp"
+        "recorded"
     );
-    assert_eq!(report["adoption"]["report"]["adopted"], 1);
 
     assert!(legacy.is_file(), "dry-run must not rename");
     assert_eq!(
@@ -145,12 +154,12 @@ fn migrate_apply_renames_stamps_adopts_and_is_idempotent() {
     assert_eq!(first.code, 0, "stderr: {}", first.stderr);
     let report = report_json(&first.stdout);
     assert_eq!(report["renames"][0]["action"], "renamed");
-    assert_eq!(report["adoption"]["report"]["adopted"], 1);
 
     let canonical = dir.path().join("continuity.sqlite3");
     assert!(canonical.is_file(), "renamed to the canonical spelling");
     assert!(!legacy.exists());
-    // The adopted document is verified, at the observed cursor.
+    // The snapshot payload survives byte-for-byte: the retired adoption
+    // walk no longer rewrites documents (0.8.11 reset).
     {
         let conn = rusqlite::Connection::open(&canonical).expect("reopen");
         let data: Vec<u8> = conn
@@ -159,13 +168,9 @@ fn migrate_apply_renames_stamps_adopts_and_is_idempotent() {
                 [&sid],
                 |row| row.get(0),
             )
-            .expect("adopted row");
-        let session: meerkat_core::Session =
-            serde_json::from_slice(&data).expect("decode adopted document");
-        assert!(matches!(
-            session.try_checkpoint_state().expect("checkpoint state"),
-            meerkat_core::SessionCheckpointState::Verified(_)
-        ));
+            .expect("snapshot row");
+        let _session: meerkat_core::Session =
+            serde_json::from_slice(&data).expect("decode current-format document");
     }
     // The rename marker is a registered backup artifact prune can see.
     let marker = report["renames"][0]["marker"]
@@ -186,8 +191,6 @@ fn migrate_apply_renames_stamps_adopts_and_is_idempotent() {
     );
     assert_eq!(second.code, 0, "stderr: {}", second.stderr);
     let report = report_json(&second.stdout);
-    assert_eq!(report["adoption"]["report"]["already_stamped"], 1);
-    assert_eq!(report["adoption"]["report"]["adopted"], 0);
     assert!(report["renames"].as_array().unwrap().is_empty());
     assert_eq!(
         file_digest(&canonical),

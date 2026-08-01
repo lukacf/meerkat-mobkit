@@ -11,15 +11,13 @@ use meerkat_core::lifecycle::core_executor::{
     CoreExecutorInterruptHandle, CoreExecutorPostStopCleanupHandle, CoreExecutorPublicationHandle,
     CoreExecutorTurnFinalizationBoundaryHandle,
 };
-use meerkat_core::lifecycle::run_primitive::{
-    ConversationContextAppend, RunApplyBoundary, RunPrimitive,
-};
+use meerkat_core::lifecycle::run_primitive::{RunApplyBoundary, RunPrimitive, TurnRequestContext};
 use meerkat_core::service::{
     CreateSessionRequest, InitialTurnPolicy, SessionBuildOptions, SessionError, SessionService,
     StartTurnRequest, StartTurnRuntimeSemantics,
 };
 use meerkat_core::types::{ContentInput, HandlingMode, SessionId};
-use meerkat_core::{Config, PendingSystemContextAppend, Session};
+use meerkat_core::{Config, Session};
 use meerkat_mob::MobSessionService;
 use meerkat_mob_mcp::{AgentMobToolSurfaceFactory, MobMcpState};
 use meerkat_runtime::MeerkatMachine;
@@ -167,13 +165,17 @@ impl CoreExecutorBoundaryHandle for TargetCoreBoundaryHandle {
             .map_err(|error| CoreExecutorError::control_failed_runtime(error.to_string()))
     }
 
-    async fn prepare_system_context_at_boundary(
+    async fn prepare_transient_turn_context_at_boundary(
         &self,
         expected_run_id: &RunId,
-        appends: Vec<PendingSystemContextAppend>,
+        contexts: Vec<TurnRequestContext>,
     ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError> {
         self.service
-            .prepare_live_system_context_boundary(&self.session_id, expected_run_id, appends)
+            .prepare_live_transient_turn_context_boundary(
+                &self.session_id,
+                expected_run_id,
+                contexts,
+            )
             .await
     }
 }
@@ -255,14 +257,6 @@ impl CoreExecutor for TargetCoreExecutor {
             ));
         }
         let metadata = primitive.turn_metadata();
-        let pre_turn_context_appends = match &primitive {
-            RunPrimitive::StagedInput(staged)
-                if primitive.is_peer_response_terminal_context_and_run() =>
-            {
-                pending_system_context_appends(&staged.context_appends)
-            }
-            _ => Vec::new(),
-        };
         // Supervisor-bridge deliveries arrive as typed system notices. Their
         // durable authorship stays in `typed_turn_appends`; only the preview
         // uses the provider-facing projection so remote work is visible in
@@ -288,7 +282,6 @@ impl CoreExecutor for TargetCoreExecutor {
                     .and_then(|meta| meta.handling_mode)
                     .unwrap_or(HandlingMode::Queue),
                 metadata.and_then(|meta| meta.turn_tool_overlay.clone()),
-                pre_turn_context_appends,
                 metadata.cloned(),
             )
             .with_typed_turn_appends(primitive.typed_turn_appends()),
@@ -330,7 +323,7 @@ impl CoreExecutor for TargetCoreExecutor {
 
     async fn checkpoint_committed_session_snapshot(
         &mut self,
-        session_snapshot: &[u8],
+        session_snapshot: Arc<Vec<u8>>,
     ) -> Result<(), CoreExecutorError> {
         self.service
             .checkpoint_committed_runtime_session_snapshot_under_runtime_turn_boundary(
@@ -381,25 +374,6 @@ impl CoreExecutor for TargetCoreExecutor {
         .cleanup_after_runtime_stop_terminalized()
         .await
     }
-}
-
-fn pending_system_context_appends(
-    appends: &[ConversationContextAppend],
-) -> Vec<PendingSystemContextAppend> {
-    let accepted_at = meerkat_core::time_compat::SystemTime::now();
-    appends
-        .iter()
-        .map(|append| PendingSystemContextAppend {
-            // meerkat 0.7: the append carries typed renderable content; the
-            // one lowering to prompt text happens at the render seam.
-            content: append.content.clone(),
-            source: Some(append.key.clone()),
-            idempotency_key: Some(append.key.clone()),
-            source_kind: meerkat_core::session::SystemContextSource::default(),
-            peer_response_terminal: None,
-            accepted_at,
-        })
-        .collect()
 }
 
 fn parse_args() -> anyhow::Result<Args> {

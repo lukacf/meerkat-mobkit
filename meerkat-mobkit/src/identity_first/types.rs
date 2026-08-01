@@ -428,6 +428,12 @@ pub enum ContinuityFailureKind {
     /// a transcript-continuity rejection). The identity → session binding is
     /// intact; the identity is degraded until a reconcile retry succeeds.
     ResumeRejected,
+    /// The heal authority returned a terminal verdict: the durable session
+    /// head cannot be proven strict-resume-acceptable (proof inputs absent).
+    /// Unlike `ResumeRejected` this is NOT retried by the continuity repair
+    /// supervisor — retrying is exactly the 2026-07-29 heal/re-Break loop.
+    /// The identity stays Broken until an operator intervenes.
+    CheckpointUnrecoverable,
 }
 
 /// A typed failure payload for broken continuity.
@@ -437,6 +443,41 @@ pub struct ContinuityFailure {
     pub kind: ContinuityFailureKind,
     pub record: Option<ContinuityRecord>,
     pub detail: String,
+}
+
+/// Terminal heal verdict recorded against a Broken identity.
+///
+/// Minted when the session bridge's heal authority reports that the durable
+/// session head is provably NOT recoverable to a strict-resume-acceptable
+/// committed boundary (`CommittedBoundaryRepair::Unprovable`). The verdict is
+/// stable across calls, so the continuity repair supervisor must not
+/// retry-loop it: before this marker existed, every repair pass cosmetically
+/// re-registered the identity and the next materialization re-Broke it
+/// (measured in production on 2026-07-29 as an infinite heal/re-Break cycle).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinuityUnrecoverable {
+    /// The heal authority's reason, verbatim, for operators.
+    pub reason: String,
+}
+
+/// Typed park for a build the HOST deterministically rejected (the
+/// candidate-mode effect gate class).
+///
+/// The app-side `callback/build_agent` round trip COMPLETED and the host
+/// answered with an error, so retrying the SAME spec re-asks the same gate
+/// the same question — each attempt burning a full member build plus a
+/// callback round trip (the herd-investigation churn: Broken with continuous
+/// repair at 30s→10min forever). While parked, materialization fails fast
+/// with a typed error (no bridge call) and the continuity repair supervisor
+/// skips the identity. The park clears when the identity's roster spec
+/// CHANGES (digest mismatch) or via operator clear; it is in-memory, so a
+/// gateway restart re-attempts once and re-parks if the gate still rejects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostRejectedBuildPark {
+    /// The host's rejection, verbatim, for operators.
+    pub reason: String,
+    /// Digest of the exact [`DurableAgentSpec`] whose build was rejected.
+    pub spec_digest: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -931,6 +972,12 @@ pub struct IdentityStatus {
     pub checkpoint_version: Option<CheckpointVersion>,
     pub lease: Option<LeaseInfo>,
     pub continuity_health: Option<ContinuityHealth>,
+    /// Terminal heal verdict for a Broken identity (2026-07-29 incident):
+    /// present when the heal authority proved the durable head unrecoverable
+    /// and the continuity repair supervisor has parked the identity. Additive
+    /// and optional on the wire; SDK parsers ignore unknown keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuity_unrecoverable: Option<ContinuityUnrecoverable>,
 }
 
 // ---------------------------------------------------------------------------

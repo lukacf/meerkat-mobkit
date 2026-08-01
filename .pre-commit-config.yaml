@@ -28,8 +28,12 @@ repos:
     hooks:
       - id: trailing-whitespace
         stages: [pre-push]
+        # Byte-lossless corpus fixtures (release-minted realms, forensic
+        # bundles with checksum manifests) must never be text-normalized.
+        exclude: ^meerkat-mobkit/tests/fixtures/
       - id: end-of-file-fixer
         stages: [pre-push]
+        exclude: ^meerkat-mobkit/tests/fixtures/
       - id: check-yaml
         stages: [pre-push]
       - id: check-toml

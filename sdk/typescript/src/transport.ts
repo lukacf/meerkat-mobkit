@@ -7,6 +7,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { closeSync, openSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import type { ChildProcess } from "node:child_process";
@@ -233,6 +234,7 @@ export async function stopChildProcess(
 export class PersistentTransport {
   private _process: ChildProcess | null = null;
   private _stopping: Promise<void> | null = null;
+  private _stderrFd: number | null = null;
   private readonly _env: Record<string, string>;
   private readonly _timeout: number;
   private _callbackHandler: CallbackHandler | null = null;
@@ -271,7 +273,7 @@ export class PersistentTransport {
     this._shutdownHorizonMs = PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS;
     this._process = spawn(this.gatewayBin, ["--persistent"], {
       env: this._env,
-      stdio: ["pipe", "pipe", "ignore"],
+      stdio: ["pipe", "pipe", this._stderrDisposition()],
     });
 
     const child = this._process;
@@ -503,6 +505,10 @@ export class PersistentTransport {
         (childTerminated || childHasExited(child))
       ) {
         this._process = null;
+        if (this._stderrFd !== null) {
+          closeSync(this._stderrFd);
+          this._stderrFd = null;
+        }
       }
       if (this._stopping === stopping) this._stopping = null;
     });
@@ -512,6 +518,33 @@ export class PersistentTransport {
 
   isRunning(): boolean {
     return this._process !== null && this._process.exitCode === null;
+  }
+
+  /**
+   * Gateway stderr disposition (tracing lines, panic hooks, migration
+   * progress). Default: `"inherit"` — the child's stderr flows to the host
+   * process's stderr; the old `"ignore"` default silently discarded a week
+   * of panic-hook lines in one production fleet. Opt-outs, mirroring the
+   * Python SDK:
+   *
+   * - `MOBKIT_GATEWAY_STDERR_FILE=<path>`: append gateway stderr to a file.
+   * - `MOBKIT_GATEWAY_STDERR=devnull`: discard (the pre-0.8.9 default).
+   */
+  private _stderrDisposition(): "inherit" | "ignore" | number {
+    if (this._stderrFd !== null) {
+      closeSync(this._stderrFd);
+      this._stderrFd = null;
+    }
+    const stderrPath = (this._env.MOBKIT_GATEWAY_STDERR_FILE ?? "").trim();
+    if (stderrPath) {
+      this._stderrFd = openSync(stderrPath, "a");
+      return this._stderrFd;
+    }
+    const optOut = (this._env.MOBKIT_GATEWAY_STDERR ?? "").trim().toLowerCase();
+    if (optOut === "devnull") {
+      return "ignore";
+    }
+    return "inherit";
   }
 
   private _ensureRunning(): void {

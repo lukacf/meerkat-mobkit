@@ -3,7 +3,6 @@
 pub mod adapters;
 pub mod agent_memory;
 pub mod bridge;
-pub mod checkpoint_adoption;
 pub mod contracts;
 pub mod gateway_bridges;
 pub mod local_lease;
@@ -25,13 +24,9 @@ pub use agent_memory::{
     MEMORY_TOOL_NAME, MarkdownAgentMemoryStore, NewAgentMemory,
 };
 pub use bridge::{
-    BridgeError, MemberInspection, MobSessionBridge, ResumeFallbackReason, ResumeRejectionKind,
-    ResumeSessionOutcome, SessionBridge,
-};
-pub use checkpoint_adoption::{
-    AdoptionMode, AdoptionRefusal, ContinuityAdoptionError, ContinuityAdoptionReport,
-    adopt_continuity_snapshots, adopt_continuity_snapshots_already_fenced,
-    adopt_continuity_snapshots_blocking,
+    BridgeError, CommittedBoundaryRecoverer, CommittedBoundaryRepair, MemberInspection,
+    MobSessionBridge, ResumeFallbackReason, ResumeRejectionKind, ResumeSessionOutcome,
+    SessionBridge,
 };
 pub use contracts::*;
 pub use gateway_bridges::{

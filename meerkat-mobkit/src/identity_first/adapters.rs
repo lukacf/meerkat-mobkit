@@ -392,19 +392,6 @@ enum ParkedFlush {
     Empty,
 }
 
-/// The structural H3 adoption probe: is this document legacy-unverified,
-/// the only shape `adopt_legacy_session` will stamp?
-///
-/// Metadata-only, no digest verification, no serialization — cheap enough
-/// to gate the byte materialization adoption needs, which is why callers
-/// run it BEFORE producing those bytes.
-fn session_is_legacy_unverified(session: &meerkat_core::Session) -> bool {
-    matches!(
-        meerkat_core::session_checkpoint_metadata_state(session.id(), session.metadata()),
-        Ok(meerkat_core::SessionCheckpointMetadataState::LegacyUnverified { .. })
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Whole-document accounting
 // ---------------------------------------------------------------------------
@@ -414,8 +401,8 @@ fn session_is_legacy_unverified(session: &meerkat_core::Session) -> bool {
 /// The continuity layer's O(delta) claim is a claim about the ordinary turn:
 /// a head-canonical steady-state save must not serialize, hash or copy the
 /// whole document. It is not a claim that whole-document work never happens —
-/// migration, recovery replay, legacy adoption and removal compare-tokens are
-/// all inherently O(document). Every such pass therefore names itself here,
+/// migration, recovery replay and removal compare-tokens are all inherently
+/// O(document). Every such pass therefore names itself here,
 /// and the counters behind [`ContinuitySessionStoreAdapter::whole_document_passes`]
 /// make the distinction observable instead of asserted.
 ///
@@ -434,9 +421,6 @@ enum WholeDocumentPass {
     /// Registration replaying a parked creation-window document onto a
     /// session that already carries a durable head (recovery reconciliation).
     ParkedFlushAdoption,
-    /// H3 lazy adoption of a legacy-unverified checkpoint document
-    /// (migration).
-    LegacyCheckpointAdoption,
     /// A whole-document compare token for a removal or projection CAS. The
     /// token is `sha256(serialize(document))` inside meerkat, so the pass is
     /// counted even though this adapter never holds the bytes.
@@ -448,7 +432,6 @@ impl WholeDocumentPass {
         match self {
             Self::BlobCanonicalPersist => "blob_canonical_persist",
             Self::ParkedFlushAdoption => "parked_flush_adoption",
-            Self::LegacyCheckpointAdoption => "legacy_checkpoint_adoption",
             Self::ProjectionCompareToken => "projection_compare_token",
         }
     }
@@ -502,9 +485,18 @@ enum PersistenceCapability {
     /// The substrate's delta channel is this session's canonical durable
     /// representation.
     HeadCanonical(Box<HeadCanonicalWrite>),
+    /// A REGISTERED session with no durable representation at all on an
+    /// incremental-capable substrate: this write BIRTHS the head-canonical
+    /// representation (strand rows from 0 + the initial head under
+    /// `SessionHeadCas::Create`). Head birth lived in the 0.8.10 service's
+    /// incremental-channel drive; meerkat 0.8.11 removed the service's
+    /// store writes, so the adapter owns it - without this, every new
+    /// session would persist as O(document) whole-blob rows and the
+    /// head-canonical steady state (O(delta) appends) would never engage.
+    HeadCanonicalBirth(Box<HeadCanonicalBirthWrite>),
     /// The whole document is the unit of persistence: the substrate
-    /// advertises no delta channel, or this session is not (yet)
-    /// head-canonical.
+    /// advertises no delta channel, the session is unregistered (park /
+    /// supervisor discipline), or parked pre-registration state owns it.
     BlobCanonical,
 }
 
@@ -514,6 +506,14 @@ enum PersistenceCapability {
 struct HeadCanonicalWrite {
     channel: Arc<dyn super::contracts::ContinuityIncrementalSessions>,
     stored: meerkat_core::session_store::SessionHead,
+    state: SessionRuntimeState,
+}
+
+/// Everything a head-canonical BIRTH needs: the channel and the registered
+/// continuity cursor state. There is no stored head to CAS against - the
+/// birth head commits under `SessionHeadCas::Create`.
+struct HeadCanonicalBirthWrite {
+    channel: Arc<dyn super::contracts::ContinuityIncrementalSessions>,
     state: SessionRuntimeState,
 }
 
@@ -540,6 +540,63 @@ enum HeadCanonicalShape {
 /// `head.head_revision`. `Session::transcript_prefix_digest` answers that from
 /// the session's own boundary ring on an ordinary turn, so the steady-state
 /// decision costs O(delta), not O(document).
+/// Equality for the exact-resave noop: strict head equality, loosened by
+/// EXACTLY two facts that are zero durable change by construction.
+///
+/// (a) `updated_at`: a timestamp-only difference re-mints nothing durable —
+/// the noop's own charter ("would re-mint a checkpoint version for zero
+/// durable change"). Every content-bearing field (messages, usage, every
+/// other metadata value, prefixes, counts) stays byte-strict.
+///
+/// (b) The ORDER of `session_tool_visibility_state_v1`'s Allow/Deny arrays:
+/// upstream projects `ToolNameSet` (a HashSet) through serde, so the same
+/// visibility fact re-stamps as a differently-ordered array every boot —
+/// per-process hash order, frozen into the session metadata. Equality on
+/// that field is SET equality by the type's own semantics; comparing the
+/// arrays order-sensitively made every zero-turn boot rewrite the head of
+/// any session carrying a multi-tool filter (HomeCore domain:security, the
+/// boot-2 exactly-once violation: same content, same length, shuffled
+/// bytes, checkpoint churn every boot). Only these two arrays are
+/// canonicalized; no other array in the document is touched (arrays are
+/// order-bearing everywhere else). Filed upstream: durable bytes minted
+/// from HashSet iteration.
+fn head_equal_for_exact_resave(
+    adopted: &meerkat_core::session_store::SessionHead,
+    stored: &meerkat_core::session_store::SessionHead,
+) -> bool {
+    if adopted == stored {
+        return true;
+    }
+    let mut adopted = adopted.clone();
+    let mut stored = stored.clone();
+    stored.updated_at = adopted.updated_at;
+    canonicalize_tool_visibility_order(&mut adopted.metadata);
+    canonicalize_tool_visibility_order(&mut stored.metadata);
+    adopted == stored
+}
+
+/// Sort the set-semantics tool arrays inside
+/// `session_tool_visibility_state_v1` (see [`head_equal_for_exact_resave`]).
+fn canonicalize_tool_visibility_order(metadata: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(state) = metadata.get_mut("session_tool_visibility_state_v1") else {
+        return;
+    };
+    for filter_key in ["active_filter", "staged_filter"] {
+        let Some(filter) = state.get_mut(filter_key) else {
+            continue;
+        };
+        for tag in ["Allow", "Deny"] {
+            if let Some(serde_json::Value::Array(names)) = filter.get_mut(tag) {
+                names.sort_by(|a, b| {
+                    a.as_str()
+                        .unwrap_or_default()
+                        .cmp(b.as_str().unwrap_or_default())
+                });
+            }
+        }
+    }
+}
+
 fn head_canonical_shape(
     session: &meerkat_core::Session,
     stored: &meerkat_core::session_store::SessionHead,
@@ -633,14 +690,6 @@ pub struct ContinuitySessionStoreAdapter {
     /// load/guard/write transitions. Weak values let inactive locks be reclaimed
     /// without ever creating a second lock while an operation or waiter exists.
     session_locks: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
-    /// H3 lazy-at-restore checkpoint adoption: when a load under a registered
-    /// continuity cursor decodes legacy-unverified, stamp it via
-    /// `meerkat_core::adopt_legacy_session` with that observed cursor and
-    /// persist the adopted bytes through the store's own CAS at the next
-    /// checkpoint version. Off by default; the identity-first gateway
-    /// wirings enable it via [`Self::with_lazy_checkpoint_adoption`] (it is
-    /// the fleet-unbrick behavior for 0.7.x-era snapshot bytes).
-    lazy_checkpoint_adoption: bool,
     /// Whole-document passes this adapter has performed (see
     /// [`WholeDocumentPass`]). Per-adapter, not process-global, so a test can
     /// observe exactly its own adapter without racing the rest of the suite.
@@ -674,7 +723,6 @@ impl ContinuitySessionStoreAdapter {
             superseded_sessions: Mutex::new(HashSet::new()),
             session_lifecycle: Mutex::new(HashMap::new()),
             session_locks: Mutex::new(HashMap::new()),
-            lazy_checkpoint_adoption: false,
             whole_document_passes: AtomicU64::new(0),
             whole_document_encode_bytes: AtomicU64::new(0),
             no_incremental_channel_warned: std::sync::atomic::AtomicBool::new(false),
@@ -686,9 +734,8 @@ impl ContinuitySessionStoreAdapter {
     ///
     /// The O(delta) continuity contract, made observable: a head-canonical
     /// STEADY-STATE save must not move this counter. Every value it can take
-    /// names a migration, recovery, legacy-adoption, removal or
-    /// blob-canonical persist — never an ordinary turn on a head-canonical
-    /// session.
+    /// names a migration, recovery, removal or blob-canonical persist —
+    /// never an ordinary turn on a head-canonical session.
     #[must_use]
     pub fn whole_document_passes(&self) -> u64 {
         self.whole_document_passes.load(Ordering::Relaxed)
@@ -720,7 +767,7 @@ impl ContinuitySessionStoreAdapter {
     /// The ONE adapter-side whole-session encode.
     ///
     /// Every caller names the reason it is legal — migration, recovery,
-    /// legacy adoption, or genuinely blob-canonical persistence. There is
+    /// or genuinely blob-canonical persistence. There is
     /// deliberately no reason value for "ordinary turn": a head-canonical
     /// save that reached here would be the silent degradation this seam
     /// exists to prevent, so the head-canonical paths refuse typed instead of
@@ -752,19 +799,6 @@ impl ContinuitySessionStoreAdapter {
         let token = meerkat_core::session_store::session_projection_cas_token(session)?;
         self.record_whole_document_pass(session.id(), WholeDocumentPass::ProjectionCompareToken, 0);
         Ok(token)
-    }
-
-    /// Enable (or disable) H3 lazy-at-restore checkpoint adoption. A named,
-    /// greppable wiring decision: on identity-first gateways the continuity
-    /// store is the session authority, and without adoption a 0.7.x-era
-    /// snapshot hard-fails every resume. On fleets whose continuity rows
-    /// record a nonzero generation floor this observed-cursor path must run
-    /// before meerkat's own INITIAL-cursor lazy migration first touches the
-    /// session (a prematurely stamped lower generation is sticky).
-    #[must_use]
-    pub fn with_lazy_checkpoint_adoption(mut self, enabled: bool) -> Self {
-        self.lazy_checkpoint_adoption = enabled;
-        self
     }
 
     fn session_lock(
@@ -1099,10 +1133,37 @@ impl ContinuitySessionStoreAdapter {
         let parked = self.parked_deltas.is_parked(id);
         let stored = channel.load_canonical_head(id).await?;
         match (parked, stored) {
-            // Creation window, or a session that has simply never taken a
-            // delta write: whole document, and the park/registration
-            // discipline downstream owns it.
-            (_, None) => Ok(PersistenceCapability::BlobCanonical),
+            // Parked pre-registration state owns the creation window: the
+            // registration flush downstream replays it.
+            (true, None) => Ok(PersistenceCapability::BlobCanonical),
+            // No persisted canonical head. For a REGISTERED session, the
+            // SYNTHESIZING read decides: a legacy/imported blob synthesizes
+            // a head and converts on this very write (the 0.8.10
+            // lazy-migration dance - the store migrates the blob inside the
+            // first delta write's transaction), while a truly fresh session
+            // BIRTHS the head-canonical representation. Unregistered
+            // sessions keep the whole-document park discipline (the
+            // supervisor's sessions are never identity-registered).
+            (false, None) => {
+                let Some(state) = self.lookup_session(&id.to_string()) else {
+                    return Ok(PersistenceCapability::BlobCanonical);
+                };
+                match channel.load_head(id).await? {
+                    Some(stored) => Ok(PersistenceCapability::HeadCanonical(Box::new(
+                        HeadCanonicalWrite {
+                            channel: Arc::clone(channel),
+                            stored,
+                            state,
+                        },
+                    ))),
+                    None => Ok(PersistenceCapability::HeadCanonicalBirth(Box::new(
+                        HeadCanonicalBirthWrite {
+                            channel: Arc::clone(channel),
+                            state,
+                        },
+                    ))),
+                }
+            }
             (true, Some(_)) => Err(meerkat_store::SessionStoreError::Internal(format!(
                 "session {id} holds parked pre-registration delta state while the continuity \
                  substrate already serves a durable head row; refusing to persist against a \
@@ -1111,6 +1172,13 @@ impl ContinuitySessionStoreAdapter {
             ))),
             (false, Some(stored)) => {
                 let Some(state) = self.lookup_session(&id.to_string()) else {
+                    // The head row just read IS positive durable evidence.
+                    // Publishing it here keeps this refusal on the same
+                    // lifecycle footing as the blob parking guard: without
+                    // it, the session's lifecycle stays unobserved and a
+                    // later probe could reinterpret the same durable
+                    // document as a creation window.
+                    self.mark_session_durably_observed(id);
                     return Err(meerkat_store::SessionStoreError::Internal(format!(
                         "session {id} is head-canonical on the continuity substrate but its \
                          owning identity is not registered; refusing to degrade a head-canonical \
@@ -1128,6 +1196,41 @@ impl ContinuitySessionStoreAdapter {
         }
     }
 
+    /// BIRTH the head-canonical representation for a registered session
+    /// with no durable state: the live transcript lands as root-strand rows
+    /// (base 0) and the initial head commits under
+    /// [`SessionHeadCas::Create`], so a concurrent birth loses the CAS
+    /// instead of forking representation. Every row is written from these
+    /// exact instances, so the head minted by `from_session` commits to the
+    /// same bytes (the Rebase-arm reasoning in
+    /// [`Self::write_head_canonical_document`]).
+    async fn birth_head_canonical_document(
+        &self,
+        session: &meerkat_core::Session,
+        write: &HeadCanonicalBirthWrite,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        let id = session.id();
+        let live = session.messages();
+        let strand = meerkat_core::session_store::TranscriptStrandId::root();
+        if !live.is_empty() {
+            write
+                .channel
+                .append_messages(&self.write_cursor(id, &write.state), id, &strand, 0, live)
+                .await?;
+        }
+        let head = meerkat_core::session_store::SessionHead::from_session(session, strand, 0)?;
+        write
+            .channel
+            .save_head(
+                &self.write_cursor(id, &write.state),
+                &head,
+                meerkat_core::session_store::SessionHeadCas::Create,
+            )
+            .await?;
+        self.mark_session_durably_written(id);
+        Ok(())
+    }
+
     /// Persist an incoming document on the head-canonical path: delta rows
     /// through the delta channel, one small head row through CAS.
     ///
@@ -1143,12 +1246,43 @@ impl ContinuitySessionStoreAdapter {
     ) -> Result<(), meerkat_store::SessionStoreError> {
         let id = session.id();
         let live = session.messages();
-        let token = meerkat_core::session_store::session_head_cas_token(&write.stored)?;
-        let strand = match shape {
+        let token = match meerkat_core::session_store::session_head_cas_token(&write.stored) {
+            Ok(token) => token,
+            Err(refusal)
+                if write.stored.version
+                    == super::contracts::RELEASED_0810_SESSION_ENVELOPE_VERSION =>
+            {
+                // A released 0.8.10 head with retained rewrites structurally
+                // cannot authorize a current mutation (its rewrite-generation
+                // authority predates the compact graph/rewrite-prefix
+                // carriers), so every ordinary arm below is unreachable for
+                // it - the 17/17 fleet boot failure at the first projected
+                // boundary. The sanctioned adoption replaces the released
+                // representation wholesale, authorized by the in-store
+                // import proof instead of by the released head; genuine
+                // divergence from the imported reading refuses typed inside
+                // the store.
+                tracing::info!(
+                    session_id = %id,
+                    refusal = %refusal,
+                    "released head cannot authorize a current mutation; taking the sanctioned \
+                     adoption lane"
+                );
+                write
+                    .channel
+                    .adopt_released_head_document(&self.write_cursor(id, &write.state), session)
+                    .await?;
+                self.mark_session_durably_written(id);
+                return Ok(());
+            }
+            Err(refusal) => return Err(refusal),
+        };
+        let adopted = match shape {
             HeadCanonicalShape::PlainAppend => {
                 let prev_count = usize::try_from(write.stored.message_count)
                     .map_err(|_| meerkat_store::SessionStoreError::Corrupted(id.clone()))?;
-                if live.len() > prev_count {
+                let appended = &live[prev_count..];
+                if !appended.is_empty() {
                     write
                         .channel
                         .append_messages(
@@ -1156,25 +1290,95 @@ impl ContinuitySessionStoreAdapter {
                             id,
                             &write.stored.strand,
                             write.stored.message_count,
-                            &live[prev_count..],
+                            appended,
                         )
                         .await?;
                 }
-                write.stored.strand.clone()
+                let strand = write.stored.strand.clone();
+                // The successor head must commit to the EXACT durable row
+                // bytes. Rows 0..prev_count keep the serialization they were
+                // written with, which need not equal re-encoding the same
+                // typed Messages today, so the stored commitment is EXTENDED
+                // by only the appended rows' bytes - mirrors meerkat-core
+                // `SessionHead::from_session_with_proved_inline_storage_authority`,
+                // the published seam for "a retained runtime boundary whose
+                // exact row bytes may use an older representation than
+                // reserializing the same typed Messages today". Re-minting
+                // via `from_session` breaks `SessionHead::into_session`'s
+                // byte-exact prefix verification on the next cold
+                // materialization.
+                match write.stored.message_row_prefix.clone() {
+                    Some(prefix) => {
+                        let appended_serialized = appended
+                            .iter()
+                            .map(|message| {
+                                serde_json::to_vec(message)
+                                    .map_err(meerkat_store::SessionStoreError::from)
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let proved = prefix.extend_serialized_rows(&appended_serialized)?;
+                        meerkat_core::session_store::SessionHead::from_session_with_proved_inline_storage_authority(
+                            session,
+                            strand,
+                            write.stored.rewrite_prefix.clone(),
+                            proved,
+                        )?
+                    }
+                    None => {
+                        // A pre-0.8.11 head whose row identity was never
+                        // proved stays unproved: inventing a commitment the
+                        // stored rows may not satisfy would corrupt the next
+                        // materialization instead of leaving it on the
+                        // explicit full-verification conversion lane.
+                        let mut head = meerkat_core::session_store::SessionHead::from_session(
+                            session,
+                            strand,
+                            write.stored.rewrite_count,
+                        )?;
+                        head.message_row_prefix = None;
+                        head.row_lineage_anchor = None;
+                        head
+                    }
+                }
             }
             HeadCanonicalShape::Rebase(rebased) => {
                 write
                     .channel
                     .append_messages(&self.write_cursor(id, &write.state), id, &rebased, 0, live)
                     .await?;
-                rebased
+                // A fresh strand: every row was just written from these
+                // exact instances, so the minted commitment matches the
+                // durable bytes.
+                meerkat_core::session_store::SessionHead::from_session(
+                    session,
+                    rebased,
+                    write.stored.rewrite_count,
+                )?
             }
         };
-        let adopted = meerkat_core::session_store::SessionHead::from_session(
-            session,
-            strand,
-            write.stored.rewrite_count,
-        )?;
+        // Exact-resave noop (the head-path mirror of the whole-blob
+        // byte-equality probe): a document identical to the stored head
+        // appended nothing above and would re-mint a checkpoint version for
+        // zero durable change. The store-side probe additionally requires
+        // the registered fence to be the CURRENT write authority — exactly
+        // like the blob probe's `continuity.fencing_token = ?` predicate —
+        // so a fenced-out writer's exact bytes never mask the stale-fence
+        // refusal `save_head` below must surface.
+        if head_equal_for_exact_resave(&adopted, &write.stored)
+            && write
+                .channel
+                .session_head_matches_current(
+                    &write.state.identity,
+                    id,
+                    write.state.generation,
+                    write.state.fencing_token,
+                    &write.stored,
+                )
+                .await?
+        {
+            self.mark_session_durably_written(id);
+            return Ok(());
+        }
         write
             .channel
             .save_head(
@@ -1689,98 +1893,104 @@ impl ContinuitySessionStoreAdapter {
                 // recorded for these exact bytes, so resume-side guards and
                 // checkpoint verifications stay O(delta) instead of paying
                 // an O(document) reseed per read (flat-curve boundary).
-                let session = meerkat_core::Session::from_persisted_bytes(&snap.data)
-                    .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
+                let (session, data) = match meerkat_core::Session::from_persisted_bytes(&snap.data)
+                {
+                    Ok(session) => (session, snap.data),
+                    Err(decode_error) => {
+                        // Released 0.8.10 envelope (v2): interpretable only
+                        // through the explicit one-time importer. This is the
+                        // one path EVERY external whole-blob store traverses,
+                        // so the import-on-load lives here rather than in
+                        // each store (OB3 field finding: an external corpus
+                        // of v2 rows was otherwise unreadable at turn-time
+                        // resume).
+                        self.import_released_snapshot_on_load(id, snap.data, &decode_error)
+                            .await?
+                    }
+                };
                 if session.id() != id {
                     return Err(meerkat_store::SessionStoreError::Serialization(format!(
                         "continuity snapshot key {id} contains session {}",
                         session.id()
                     )));
                 }
-                Ok(Some((session, snap.data)))
+                Ok(Some((session, data)))
             }
             None => Ok(None),
         }
     }
 
-    /// H3 lazy-at-restore adoption of one legacy-unverified snapshot, called
-    /// under the session lock from `load`. The observed cursor is the
-    /// registered continuity tuple (registration precedes resume, so the
-    /// cursor is in hand before the first load). The adopted bytes persist
-    /// through the store's own CAS at the NEXT checkpoint version — the
-    /// version bump is the sanctioned lazy-shape trade-off (the trait cannot
-    /// rewrite in place at the same version); the stamp inside the bytes
-    /// still binds the observed cursor. Every failure passes the raw legacy
-    /// document through unchanged so upstream keeps its typed fail-closed
-    /// behavior; nothing is ever half-adopted.
-    async fn lazy_adopt_legacy_snapshot(
+    /// One-time import of a released 0.8.10 session envelope observed on the
+    /// continuity load path, with durable current-format adoption.
+    ///
+    /// Per the banked 0.8.11 import contract: the public core importer is the
+    /// sole boundary allowed to interpret released evidence; the non-Clone
+    /// receipt is consumed by the adoption; the source blob SHA is re-proved
+    /// against the exact bytes read; nothing ever mints the retired
+    /// vocabulary; every proof failure fails closed (the original decode
+    /// refusal is surfaced, never a healed reading).
+    ///
+    /// External stores expose no transaction, so the same-transaction
+    /// requirement maps to this adapter's own write discipline: a REGISTERED
+    /// session adopts durably through the registered-cursor CAS write
+    /// (version advance under the same generation/fence — the write every
+    /// later read observes, making the second load take the already-current
+    /// path). A not-yet-registered session serves the imported document
+    /// without adoption; the durable conversion lands with registration or
+    /// the first registered write, exactly like every other pre-registration
+    /// write on this adapter.
+    async fn import_released_snapshot_on_load(
         &self,
         id: &meerkat_core::types::SessionId,
-        session: meerkat_core::Session,
-        raw: &[u8],
-    ) -> meerkat_core::Session {
-        // Cheap structural probe first: only legacy-unverified documents are
-        // candidates, and this avoids a full canonical-digest verification on
-        // every ordinary load of an already-typed document.
-        if !session_is_legacy_unverified(&session) {
-            return session;
+        source: Vec<u8>,
+        decode_error: &serde_json::Error,
+    ) -> Result<(meerkat_core::Session, Vec<u8>), meerkat_store::SessionStoreError> {
+        use sha2::Digest as _;
+
+        let imported = meerkat_core::import_released_0810_session(&source).map_err(|import| {
+            meerkat_store::SessionStoreError::Serialization(format!(
+                "continuity snapshot {id} decodes neither as a current document \
+                 ({decode_error}) nor as a released 0.8.10 envelope ({import})"
+            ))
+        })?;
+        let (session, receipt) = imported.into_parts();
+        let observed_sha256: [u8; 32] = sha2::Sha256::digest(&source).into();
+        if receipt.source_document_sha256() != &observed_sha256 {
+            return Err(meerkat_store::SessionStoreError::Serialization(format!(
+                "continuity snapshot {id} changed during exact released-0.8.10 import"
+            )));
         }
-        let Some(state) = self.lookup_session(&id.to_string()) else {
-            // No registered cursor to observe. Pass the legacy document
-            // through; meerkat's resolver owns the INITIAL-cursor migration
-            // for cursorless reads.
-            return session;
-        };
-        let observed_generation = meerkat_core::SessionGeneration::new(state.generation.get());
-        // The observed revision is the DURABLE cursor the runtime registered
-        // from the continuity record — never the in-memory version allocator,
-        // which advances before persistence: after a failed save the
-        // allocator sits ahead of the durable row, and stamping from it would
-        // certify the legacy bytes under a revision that never committed.
-        // The allocator's only role here is minting the NEXT version inside
-        // `save_registered_snapshot` for the store's own CAS write.
-        let observed_revision =
-            meerkat_core::SessionCheckpointRevision::new(state.checkpoint_version.get());
-        let adopted =
-            match meerkat_core::adopt_legacy_session(raw, observed_generation, observed_revision) {
-                Ok(adopted) => adopted,
-                Err(error) => {
-                    tracing::warn!(
-                        session_id = %id,
-                        %error,
-                        "lazy checkpoint adoption refused; passing the legacy document through"
-                    );
-                    return session;
-                }
-            };
-        match self
-            .save_registered_snapshot(id, adopted.serialized, state)
-            .await
-        {
-            Ok(committed_version) => {
+        if receipt.session_id() != id {
+            return Err(meerkat_store::SessionStoreError::Serialization(format!(
+                "continuity snapshot key {id} contains released session {}",
+                receipt.session_id()
+            )));
+        }
+        let data = self.encode_whole_document(&session, WholeDocumentPass::BlobCanonicalPersist)?;
+        match self.lookup_session(&id.to_string()) {
+            Some(state) => {
+                // The receipt is consumed by this durable adoption: the CAS
+                // write below is the store-authorized conversion, after which
+                // every load decodes current bytes directly.
+                drop(receipt);
+                self.save_registered_snapshot(id, data.clone(), state)
+                    .await?;
                 tracing::info!(
                     session_id = %id,
-                    observed_generation = observed_generation.get(),
-                    observed_checkpoint_revision = observed_revision.get(),
-                    committed_version = committed_version.get(),
-                    "lazy checkpoint adoption stamped a legacy continuity snapshot at restore"
+                    source_bytes = source.len(),
+                    current_bytes = data.len(),
+                    "released 0.8.10 session envelope imported and durably adopted on load"
                 );
-                adopted.session
             }
-            Err(error) => {
-                // Persisting failed: behave exactly as if adoption were off.
-                // Returning the adopted document over a still-legacy durable
-                // row would hand upstream a verified authority the store
-                // cannot corroborate.
-                tracing::warn!(
+            None => {
+                tracing::info!(
                     session_id = %id,
-                    %error,
-                    "lazy checkpoint adoption could not persist the adopted bytes; \
-                     passing the legacy document through"
+                    "released 0.8.10 session envelope imported for an unregistered read; \
+                     durable adoption follows the first registered write"
                 );
-                session
             }
         }
+        Ok((session, data))
     }
 
     async fn load_previous_session_for_save(
@@ -1837,6 +2047,139 @@ impl ContinuitySessionStoreAdapter {
     /// refused afterwards.
     fn mark_session_durably_written(&self, session_id: &meerkat_core::types::SessionId) {
         self.publish_lifecycle(session_id, SessionLifecycle::DurableObserved);
+    }
+
+    /// The projection body, under the caller-held session lock (see
+    /// [`Self::save_authoritative_projection`]).
+    async fn save_authoritative_projection_locked(
+        &self,
+        session: &meerkat_core::Session,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        // Capability before serialization, same rule as `save`. The
+        // authoritative projection asserts that the incoming document IS the
+        // truth (the service's rollback repair), so there is no save guard —
+        // exactly as meerkat-store's head-canonical path — but it still lands
+        // as delta rows plus a small head, never as a blob.
+        match self.resolve_persistence_capability(session.id()).await? {
+            PersistenceCapability::HeadCanonical(write) => {
+                let shape = head_canonical_shape(session, &write.stored)?;
+                return self
+                    .write_head_canonical_document(session, &write, shape)
+                    .await;
+            }
+            PersistenceCapability::HeadCanonicalBirth(write) => {
+                return self.birth_head_canonical_document(session, &write).await;
+            }
+            PersistenceCapability::BlobCanonical => {}
+        }
+        let data = self.encode_whole_document(session, WholeDocumentPass::BlobCanonicalPersist)?;
+        let sid_str = session.id().to_string();
+        match self.lookup_session(&sid_str) {
+            Some(state) => {
+                self.save_registered_snapshot(session.id(), data, state)
+                    .await?;
+            }
+            None => {
+                self.ensure_unregistered_park_allowed(session.id()).await?;
+                let mut pending = self
+                    .pending_unregistered
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                pending.insert(sid_str, data);
+            }
+        }
+        Ok(())
+    }
+
+    /// Absorb a projection write refused because the identity's continuity
+    /// record has ADVANCED PAST this session (the LIVE reset/reprofile
+    /// shape).
+    ///
+    /// Live reset replaces the identity's record (new generation, new
+    /// session) FIRST and retires the superseded runtime through deferred
+    /// cleanup debt afterwards — deliberately, per the reset contract: the
+    /// old bridge projection is rollback authority until the replacement
+    /// commits, and reset must not wait on a hung old retire
+    /// (`reset_records_exact_cleanup_debt_without_waiting_for_hung_old_retire`).
+    /// In that window the OLD runtime session is still live, and any
+    /// boundary it commits fails its durable projection with the store's
+    /// cursor refusal — which, propagated, fails the committing verb,
+    /// escalates the runtime to repair-blocked retention, wedges the
+    /// deferred retire behind it, and blows the gateway's bounded shutdown
+    /// horizon (the PR #304 CI wedge).
+    ///
+    /// A record that names a NEWER binding for the same identity IS the
+    /// supersede fact, discovered lazily under the identity fence — the
+    /// same fact `abandon_superseded_session` records eagerly. The absorbed
+    /// write takes the exact semantics the superseded-session pins already
+    /// establish (terminal writes drop without parking). Deliberately NO
+    /// persistent supersede mark is set: a reset that FAILS after the
+    /// record replacement rolls the record back, after which this session's
+    /// cursor enforces cleanly again — a lingering mark would silently drop
+    /// its writes forever. Every other projection failure propagates
+    /// fail-closed exactly as before.
+    async fn absorb_projection_superseded_by_identity_advance(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        result: Result<(), meerkat_store::SessionStoreError>,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        let Err(error) = result else {
+            return result;
+        };
+        let Some(state) = self.lookup_session(&session_id.to_string()) else {
+            return Err(error);
+        };
+        let resolved = match self
+            .store
+            .resolve_many(std::slice::from_ref(&state.identity))
+            .await
+        {
+            Ok(resolved) => resolved,
+            Err(resolve_error) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    identity = %state.identity,
+                    error = %resolve_error,
+                    "projection supersede probe could not resolve the identity record; \
+                     surfacing the original projection failure"
+                );
+                return Err(error);
+            }
+        };
+        let advanced_past_this_session = match resolved.get(&state.identity) {
+            Some(super::types::ContinuityResolveState::Ready { record }) => {
+                record.session_id != *session_id || record.generation.get() > state.generation.get()
+            }
+            _ => false,
+        };
+        if !advanced_past_this_session {
+            return Err(error);
+        }
+        tracing::info!(
+            session_id = %session_id,
+            identity = %state.identity,
+            refused = %error,
+            "durable projection dropped: the identity's continuity record has advanced past \
+             this session (live reset supersede); the superseded runtime retires through the \
+             reset cleanup debt"
+        );
+        Ok(())
+    }
+
+    /// Record positive durable-evidence authority from an OBSERVATION — a
+    /// head row read back from the substrate — as opposed to a write this
+    /// process acknowledged.
+    ///
+    /// `or_insert`, not `insert`: evidence established while the observing
+    /// read was in flight (an acknowledged write, a removal) is newer than
+    /// the read and must win, exactly as the probe in
+    /// [`Self::resolve_session_lifecycle`] yields.
+    fn mark_session_durably_observed(&self, session_id: &meerkat_core::types::SessionId) {
+        self.session_lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(session_id.to_string())
+            .or_insert(SessionLifecycle::DurableObserved);
     }
 
     /// Record that this session's durable document was explicitly removed.
@@ -2075,6 +2418,9 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
             PersistenceCapability::HeadCanonical(write) => {
                 self.save_head_canonical_document(session, *write).await
             }
+            PersistenceCapability::HeadCanonicalBirth(write) => {
+                self.birth_head_canonical_document(session, &write).await
+            }
             PersistenceCapability::BlobCanonical => {
                 self.save_blob_canonical_document(session).await
             }
@@ -2102,6 +2448,11 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
                     .save_head_canonical_transcript_rewrite(session, commit, *write)
                     .await;
             }
+            // A rewrite as a session's FIRST persistence has no head to
+            // rewrite; it lands whole-document below (guarded against the
+            // absent predecessor) rather than fabricating a birth-plus-
+            // rewrite composite.
+            PersistenceCapability::HeadCanonicalBirth(_) => {}
             PersistenceCapability::BlobCanonical => {}
         }
         let previous = self.load_previous_session_for_save(session.id()).await?;
@@ -2139,37 +2490,9 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
             return Ok(());
         }
         self.ensure_session_mutation_allowed(session.id())?;
-        // Capability before serialization, same rule as `save`. The
-        // authoritative projection asserts that the incoming document IS the
-        // truth (the service's rollback repair), so there is no save guard —
-        // exactly as meerkat-store's head-canonical path — but it still lands
-        // as delta rows plus a small head, never as a blob.
-        match self.resolve_persistence_capability(session.id()).await? {
-            PersistenceCapability::HeadCanonical(write) => {
-                let shape = head_canonical_shape(session, &write.stored)?;
-                return self
-                    .write_head_canonical_document(session, &write, shape)
-                    .await;
-            }
-            PersistenceCapability::BlobCanonical => {}
-        }
-        let data = self.encode_whole_document(session, WholeDocumentPass::BlobCanonicalPersist)?;
-        let sid_str = session.id().to_string();
-        match self.lookup_session(&sid_str) {
-            Some(state) => {
-                self.save_registered_snapshot(session.id(), data, state)
-                    .await?;
-            }
-            None => {
-                self.ensure_unregistered_park_allowed(session.id()).await?;
-                let mut pending = self
-                    .pending_unregistered
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                pending.insert(sid_str, data);
-            }
-        }
-        Ok(())
+        let result = self.save_authoritative_projection_locked(session).await;
+        self.absorb_projection_superseded_by_identity_advance(session.id(), result)
+            .await
     }
 
     async fn save_authoritative_projection_if_current_revision(
@@ -2208,6 +2531,16 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
                 return self
                     .write_head_canonical_document(session, &write, shape)
                     .await;
+            }
+            PersistenceCapability::HeadCanonicalBirth(write) => {
+                // No durable representation exists: the CAS predicate must
+                // expect exactly that, then the write births head-canonical.
+                meerkat_core::session_store::authoritative_projection_current_revision_guard(
+                    session,
+                    None,
+                    expected_current_revision.as_deref(),
+                )?;
+                return self.birth_head_canonical_document(session, &write).await;
             }
             PersistenceCapability::BlobCanonical => {}
         }
@@ -2250,37 +2583,15 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         }
         // Head-canonical sessions materialize straight from head+rows.
         if let Some(session) = self.load_head_canonical_session(id).await? {
-            // The adoption probe is structural and declines on essentially
-            // every load, so it runs BEFORE the document is serialized:
-            // materializing bytes for a document that is not an adoption
-            // candidate would re-impose the whole-document serialize this
-            // read path exists to remove.
-            if !self.lazy_checkpoint_adoption || !session_is_legacy_unverified(&session) {
-                return Ok(Some(session));
-            }
-            // H3 over a head-canonical document: synthesis is deterministic,
-            // so adopting over the synthesized bytes keeps
-            // `adopt_legacy_session`'s byte custody internally consistent
-            // (the adopted bytes persist through the whole-document verb,
-            // which converts them back into delta rows + a head).
-            let raw =
-                self.encode_whole_document(&session, WholeDocumentPass::LegacyCheckpointAdoption)?;
-            return Ok(Some(
-                self.lazy_adopt_legacy_snapshot(id, session, &raw).await,
-            ));
+            return Ok(Some(session));
         }
         // Registration is observed realization state, not transcript history.
         // Missing durable bytes stay missing so upstream can classify them;
         // never synthesize an empty session.
-        let Some((session, raw)) = self.load_persisted_session_with_bytes(id).await? else {
-            return Ok(None);
-        };
-        if !self.lazy_checkpoint_adoption {
-            return Ok(Some(session));
-        }
-        Ok(Some(
-            self.lazy_adopt_legacy_snapshot(id, session, &raw).await,
-        ))
+        Ok(self
+            .load_persisted_session_with_bytes(id)
+            .await?
+            .map(|(session, _)| session))
     }
 
     async fn list(
@@ -3121,6 +3432,777 @@ mod tests {
         }
     }
 
+    /// OB3 release-critical regression (2026-07-31): a released 0.8.10
+    /// session envelope (v2) held by a continuity store must import exactly
+    /// once on the adapter load path - the seam every external whole-blob
+    /// store traverses - and adopt durably, so the second load takes the
+    /// already-current path. The fixture is a frozen 0.8.10-written document
+    /// (tests/fixtures/README.md); current code cannot and must not mint it.
+    #[tokio::test]
+    async fn released_v2_snapshot_imports_once_on_adapter_load() {
+        const RELEASED: &[u8] =
+            include_bytes!("../../tests/fixtures/v0_8_10_released_session.json");
+        let raw: serde_json::Value = serde_json::from_slice(RELEASED).expect("fixture JSON");
+        let session_id =
+            meerkat_core::types::SessionId::parse(raw["id"].as_str().expect("fixture id"))
+                .expect("fixture session id");
+        // The released envelope is exactly what the current decoder refuses.
+        assert!(meerkat_core::Session::from_persisted_bytes(RELEASED).is_err());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("continuity.sqlite3");
+        let store = Arc::new(LocalContinuityStore::open(&db_path).expect("store"));
+        let identity = AgentIdentity::parse("agent:released-import").expect("identity");
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:released-import:0")
+                .expect("runtime id"),
+            session_id: session_id.clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(1),
+        };
+        let fencing_token = FencingToken::new(3);
+        store
+            .upsert_continuity_record(&record, fencing_token)
+            .await
+            .expect("seed record");
+        // Seed the released bytes exactly as a 0.8.10-era deployment left
+        // them: a raw durable row, never routed through current encoders.
+        {
+            let conn = rusqlite::Connection::open(&db_path).expect("seed connection");
+            conn.execute(
+                "INSERT INTO session_snapshots \
+                 (session_id, identity, generation, checkpoint_version, fencing_token, data) \
+                 VALUES (?1, ?2, 0, 1, 3, ?3)",
+                rusqlite::params![session_id.to_string(), identity.to_string(), RELEASED],
+            )
+            .expect("seed released snapshot row");
+        }
+
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        adapter
+            .register_session(
+                &session_id,
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    fencing_token,
+                    checkpoint_version: CheckpointVersion::new(1),
+                },
+            )
+            .await
+            .expect("register");
+
+        let cursor_of = |resolved: &std::collections::BTreeMap<
+            AgentIdentity,
+            ContinuityResolveState,
+        >| match resolved.get(&identity) {
+            Some(ContinuityResolveState::Ready { record }) => record.checkpoint_version,
+            other => panic!("expected a ready continuity record, got {other:?}"),
+        };
+
+        // First load: imports the released envelope and durably adopts it.
+        let loaded = meerkat::SessionStore::load(&adapter, &session_id)
+            .await
+            .expect("first load imports the released envelope")
+            .expect("session present");
+        assert_eq!(loaded.id(), &session_id);
+        assert!(
+            !loaded.messages().is_empty(),
+            "the released transcript resumes with its content"
+        );
+        let after_first = cursor_of(
+            &store
+                .resolve_many(std::slice::from_ref(&identity))
+                .await
+                .expect("resolve after import"),
+        );
+        assert!(
+            after_first > CheckpointVersion::new(1),
+            "the import must adopt durably under an advanced registered cursor, got \
+             {after_first:?}"
+        );
+
+        // Second load: the already-current path - same content, no new
+        // adoption write.
+        let reloaded = meerkat::SessionStore::load(&adapter, &session_id)
+            .await
+            .expect("second load")
+            .expect("session present");
+        assert_eq!(reloaded.id(), &session_id);
+        assert_eq!(reloaded.messages().len(), loaded.messages().len());
+        let after_second = cursor_of(
+            &store
+                .resolve_many(std::slice::from_ref(&identity))
+                .await
+                .expect("resolve after second load"),
+        );
+        assert_eq!(
+            after_second, after_first,
+            "a second load must take the already-current path and adopt nothing"
+        );
+    }
+
+    /// The FIRST birth, pinned explicitly (lead requirement 2026-07-31): a
+    /// registered session's first save on an incremental-capable substrate
+    /// CREATES the head-canonical representation - one canonical head row
+    /// (committed under the create-CAS) whose byte-exact commitment the
+    /// store's own materialization satisfies (the document round-trips),
+    /// with NO whole-blob row written. This is the birth half of the
+    /// O(delta) contract; the steady state is pinned by the idle/encode
+    /// gates and `identity_first_head_canonical_resume`.
+    #[tokio::test]
+    async fn first_registered_save_births_head_canonical() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("continuity.sqlite3");
+        let store = Arc::new(LocalContinuityStore::open(&db_path).expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let mut session = meerkat_core::Session::new();
+        session.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("first turn"),
+        ));
+        let identity = AgentIdentity::parse("agent:first-birth").expect("identity");
+        let token = FencingToken::new(1);
+        store
+            .upsert_continuity_record(
+                &ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:agent:first-birth:0")
+                        .expect("runtime id"),
+                    session_id: session.id().clone(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+                token,
+            )
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity,
+                    generation: ContinuityGeneration::new(0),
+                    fencing_token: token,
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .expect("register");
+
+        meerkat::SessionStore::save(&adapter, &session)
+            .await
+            .expect("the first registered save must birth head-canonical");
+
+        let conn = rusqlite::Connection::open(&db_path).expect("probe connection");
+        let (heads, head_count): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(message_count), -1) \
+                 FROM continuity_session_heads WHERE session_id = ?1",
+                rusqlite::params![session.id().to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("head census");
+        assert_eq!(heads, 1, "birth must create exactly one canonical head row");
+        assert_eq!(
+            head_count,
+            session.messages().len() as i64,
+            "the born head must describe the live transcript"
+        );
+        let blobs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_snapshots WHERE session_id = ?1",
+                rusqlite::params![session.id().to_string()],
+                |row| row.get(0),
+            )
+            .expect("blob census");
+        assert_eq!(blobs, 0, "birth must not write a whole-blob row");
+
+        // Byte-exact commitment: the store's own materialization (which
+        // verifies the head's row-prefix commitment via
+        // `SessionHead::into_session`) round-trips the document.
+        let loaded = meerkat::SessionStore::load(&adapter, session.id())
+            .await
+            .expect("load after birth")
+            .expect("born session present");
+        assert_eq!(
+            loaded.messages(),
+            session.messages(),
+            "the born representation must materialize the exact transcript"
+        );
+    }
+
+    /// Released 0.8.10 ZERO-REWRITE history (the universal mob-supervisor
+    /// shape: a transcript graph with one revision and zero commits) is
+    /// REFUSED TYPED by the shipping 0.8.11 strict importer, through our
+    /// adapter load path, with the durable row left untouched - a load
+    /// error scoped to that one session, never a crash or a store-wide
+    /// failure. The importer follow-ups that would have accepted this shape
+    /// (d6cafd405 and successors) deliberately did NOT ship; this test pins
+    /// the shipping contract so a later "fix" cannot silently turn the
+    /// refusal into a panic or an adoption.
+    ///
+    /// PROVENANCE: the fixture is RELEASED-MINTED bytes (a real 0.8.10
+    /// mob-supervisor snapshot from the HomeCore forensic bundle,
+    /// tests/fixtures/README.md), never re-synthesized by the pinned
+    /// writer - a self-minted fixture silently passes writer-drift bugs
+    /// (the released wire even omits the empty `commits` key, a spelling a
+    /// synthetic fixture gets wrong).
+    #[tokio::test]
+    async fn released_zero_rewrite_history_refuses_typed_on_adapter_load() {
+        const RELEASED: &[u8] =
+            include_bytes!("../../tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json");
+        let raw: serde_json::Value = serde_json::from_slice(RELEASED).expect("fixture JSON");
+        let session_id =
+            meerkat_core::types::SessionId::parse(raw["id"].as_str().expect("fixture id"))
+                .expect("fixture session id");
+        // The released envelope is exactly what the current decoder refuses,
+        // so the load below reaches the one-time importer.
+        assert!(meerkat_core::Session::from_persisted_bytes(RELEASED).is_err());
+
+        let identity = AgentIdentity::parse("agent:zero-rewrite-strict").expect("identity");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("continuity.sqlite3");
+        let store = Arc::new(LocalContinuityStore::open(&db_path).expect("store"));
+        // Seed the released bytes exactly as the 0.8.10 deployment left
+        // them: a raw durable row, never routed through current encoders.
+        {
+            let conn = rusqlite::Connection::open(&db_path).expect("seed connection");
+            conn.execute(
+                "INSERT INTO session_snapshots \
+                 (session_id, identity, generation, checkpoint_version, fencing_token, data) \
+                 VALUES (?1, ?2, 0, 1, 3, ?3)",
+                rusqlite::params![session_id.to_string(), identity.to_string(), RELEASED],
+            )
+            .expect("seed released snapshot row");
+        }
+        store
+            .upsert_continuity_record(
+                &ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:agent:zero-rewrite-strict:0")
+                        .expect("runtime id"),
+                    session_id: session_id.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(1),
+                },
+                FencingToken::new(3),
+            )
+            .await
+            .expect("seed record");
+        let adapter = ContinuitySessionStoreAdapter::new(store);
+        adapter
+            .register_session(
+                &session_id,
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    fencing_token: FencingToken::new(3),
+                    checkpoint_version: CheckpointVersion::new(1),
+                },
+            )
+            .await
+            .expect("register");
+
+        // The strict importer refuses the zero-rewrite graph as a TYPED load
+        // error for this session - not a panic, not an adoption.
+        let error = meerkat::SessionStore::load(&adapter, &session_id)
+            .await
+            .expect_err("the shipping strict importer must refuse a zero-rewrite graph");
+        assert!(
+            error.to_string().contains("import"),
+            "the refusal must surface as the typed import failure: {error}"
+        );
+
+        // Fail-closed means UNTOUCHED: the durable row still holds the exact
+        // released bytes (no partial adoption, no rewrite, no deletion), and
+        // an unrelated session on the same store still operates.
+        {
+            let conn = rusqlite::Connection::open(&db_path).expect("probe connection");
+            let preserved: Vec<u8> = conn
+                .query_row(
+                    "SELECT data FROM session_snapshots WHERE session_id = ?1",
+                    rusqlite::params![session_id.to_string()],
+                    |row| row.get(0),
+                )
+                .expect("released row preserved");
+            assert_eq!(
+                preserved, RELEASED,
+                "the refusal must leave the released bytes byte-identical"
+            );
+        }
+        let healthy = meerkat_core::Session::new();
+        meerkat::SessionStore::save(&adapter, &healthy)
+            .await
+            .expect("an unrelated session must keep working on the same store");
+    }
+
+    /// Released strand rows in the FROZEN 0.8.10 wire shapes, with a head
+    /// commitment minted by the pin's own released digest recomputation, so
+    /// the import proof chain is exercised end to end.
+    ///
+    /// FIXTURE PROVENANCE (documented schema-level synthesis, lead-authorized
+    /// 2026-08-01): the row bytes follow the frozen released decoders in
+    /// meerkat import_0810.rs but were NOT minted by a released binary - the
+    /// released realms committed under tests/fixtures carry no
+    /// rewrite-carrying heads (rewrite_count is 0 in all four), and the
+    /// failing fleet shape is exactly a rewrite-carrying released head.
+    /// Replace with the HomeCore forensic bundle when it lands.
+    fn seed_released_rewrite_carrying_head(
+        db_path: &std::path::Path,
+        session_id: &meerkat_core::types::SessionId,
+        identity: &AgentIdentity,
+    ) -> Vec<Vec<u8>> {
+        let rows: Vec<Vec<u8>> = vec![
+            br#"{"role":"system","content":"released prompt","mutation_kind":"explicit_build","created_at":"2026-06-01T00:00:00Z"}"#.to_vec(),
+            br#"{"role":"user","content":"released question","created_at":"2026-06-01T00:00:01Z"}"#.to_vec(),
+        ];
+        let head_revision = meerkat_core::released_0810_transcript_serialized_rows_digest(&rows)
+            .expect("released digest recomputation");
+        let head_json = serde_json::json!({
+            "id": session_id.to_string(),
+            "version": 2u32,
+            "strand": "root",
+            "head_revision": head_revision,
+            "message_count": 2u64,
+            "rewrite_count": 2u64,
+            "created_at": {"secs_since_epoch": 1_780_000_000u64, "nanos_since_epoch": 0u32},
+            "updated_at": {"secs_since_epoch": 1_780_000_000u64, "nanos_since_epoch": 0u32},
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_tokens": null,
+                "cache_read_tokens": null
+            },
+            "metadata": {},
+        });
+        let conn = rusqlite::Connection::open(db_path).expect("seed connection");
+        // The released deployment's file already carries the head-canonical
+        // tables and the ledger stamp (the HomeCore closure's ledger row is
+        // mobkit-continuity=2); a freshly opened store creates them lazily on
+        // the first delta write, so the seed converges the schema itself.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS continuity_session_heads (
+                session_id     TEXT PRIMARY KEY,
+                identity       TEXT NOT NULL,
+                generation     INTEGER NOT NULL,
+                checkpoint_version INTEGER NOT NULL,
+                fencing_token  INTEGER NOT NULL,
+                head_revision  TEXT NOT NULL,
+                message_count  INTEGER NOT NULL,
+                rewrite_count  INTEGER NOT NULL,
+                head_json      BLOB NOT NULL,
+                cas_token      TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS continuity_strand_messages (
+                session_id     TEXT NOT NULL,
+                strand         TEXT NOT NULL,
+                seq            INTEGER NOT NULL,
+                message_json   BLOB NOT NULL,
+                identity       TEXT NOT NULL,
+                generation     INTEGER NOT NULL,
+                created_at_ms  INTEGER NOT NULL,
+                PRIMARY KEY (session_id, strand, seq)
+            );
+            CREATE TABLE IF NOT EXISTS continuity_session_rewrites (
+                session_id     TEXT NOT NULL,
+                rewrite_idx    INTEGER NOT NULL,
+                parent_strand  TEXT NOT NULL,
+                parent_len     INTEGER NOT NULL,
+                strand         TEXT NOT NULL,
+                strand_len     INTEGER NOT NULL,
+                commit_json    BLOB NOT NULL,
+                identity       TEXT NOT NULL,
+                generation     INTEGER NOT NULL,
+                created_at_ms  INTEGER NOT NULL,
+                PRIMARY KEY (session_id, rewrite_idx)
+            );
+            INSERT INTO meerkat_schema (domain, version) VALUES ('mobkit-continuity', 2)
+              ON CONFLICT(domain) DO UPDATE SET version = MAX(version, 2);",
+        )
+        .expect("converge released head-canonical schema for the seed");
+        conn.execute(
+            "INSERT INTO continuity_session_heads \
+             (session_id, identity, generation, checkpoint_version, fencing_token, \
+              head_revision, message_count, rewrite_count, head_json, cas_token) \
+             VALUES (?1, ?2, 0, 1, 3, ?3, 2, 2, ?4, 'released-cas-token')",
+            rusqlite::params![
+                session_id.to_string(),
+                identity.to_string(),
+                head_revision,
+                serde_json::to_vec(&head_json).expect("head json"),
+            ],
+        )
+        .expect("seed released head row");
+        for (seq, row) in rows.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO continuity_strand_messages \
+                 (session_id, strand, seq, message_json, identity, generation, created_at_ms) \
+                 VALUES (?1, 'root', ?2, ?3, ?4, 0, 0)",
+                rusqlite::params![
+                    session_id.to_string(),
+                    seq as i64,
+                    row,
+                    identity.to_string()
+                ],
+            )
+            .expect("seed released strand row");
+        }
+        rows
+    }
+
+    async fn register_released_adoption_session(
+        store: &Arc<LocalContinuityStore>,
+        adapter: &ContinuitySessionStoreAdapter,
+        session_id: &meerkat_core::types::SessionId,
+        identity: &AgentIdentity,
+        runtime_id: &str,
+    ) {
+        store
+            .upsert_continuity_record(
+                &ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse(runtime_id).expect("runtime id"),
+                    session_id: session_id.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(1),
+                },
+                FencingToken::new(3),
+            )
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                session_id,
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    fencing_token: FencingToken::new(3),
+                    checkpoint_version: CheckpointVersion::new(1),
+                },
+            )
+            .await
+            .expect("register");
+    }
+
+    /// The PR #304 CI wedge, pinned at the adapter seam: LIVE reset replaces
+    /// the identity's continuity record (new generation, new session, new
+    /// fence) FIRST and retires the superseded runtime through deferred
+    /// cleanup debt - deliberately, per the reset contract. In that window
+    /// the superseded session's runtime still commits boundaries, and its
+    /// durable projection used to propagate the cursor refusal ("continuity
+    /// record not found"), failing the committing verb, escalating the
+    /// runtime to repair-blocked retention, wedging the deferred retire
+    /// behind it, and blowing the gateway's bounded shutdown horizon. The
+    /// projection now drops with the superseded-terminal-write semantics -
+    /// and with NO persistent mark, so a reset ROLLBACK re-enforces the same
+    /// session's writes cleanly.
+    #[tokio::test]
+    async fn live_reset_superseded_projection_drops_instead_of_wedging() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let session = meerkat_core::Session::new();
+        let identity = AgentIdentity::parse("agent:live-reset").expect("identity");
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:live-reset:0").expect("runtime id"),
+            session_id: session.id().clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        store
+            .upsert_continuity_record(&record, FencingToken::new(3))
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    fencing_token: FencingToken::new(3),
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .expect("register");
+        let mut doc = session.clone();
+        doc.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("turn 1"),
+        ));
+        meerkat::SessionStore::save(&adapter, &doc)
+            .await
+            .expect("initial save");
+
+        // THE LIVE RESET SHAPE: the identity's record advances (generation,
+        // session, fence) while the old session stays registered and its
+        // runtime keeps committing.
+        let new_session = meerkat_core::Session::new();
+        store
+            .upsert_continuity_record(
+                &ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:agent:live-reset:1")
+                        .expect("runtime id"),
+                    session_id: new_session.id().clone(),
+                    generation: ContinuityGeneration::new(1),
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+                FencingToken::new(4),
+            )
+            .await
+            .expect("reset-shape record replacement");
+
+        let mut post_reset = doc.clone();
+        post_reset.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("in-flight turn tail"),
+        ));
+        meerkat::SessionStore::save_authoritative_projection(&adapter, &post_reset)
+            .await
+            .expect(
+                "a projection superseded by a live reset must DROP, not fail the committing \
+                 verb into repair-blocked retention (the gateway shutdown wedge)",
+            );
+        let durable = meerkat::SessionStore::load(&adapter, session.id())
+            .await
+            .expect("post-drop load")
+            .expect("post-drop document");
+        assert_eq!(
+            durable.messages().len(),
+            1,
+            "the dropped projection must not have written"
+        );
+
+        // NO POISON: the drop is scoped to the superseded session only. The
+        // reset's REPLACEMENT session (the live generation) registers and
+        // writes normally - a wedged-or-poisoned adapter would refuse here.
+        // (A same-session "rollback" is not a store-level operation: durable
+        // head rows are generation-stamped and only the reset machinery's own
+        // compensation may migrate them; that flow is exercised end-to-end by
+        // the gateway reset tests.)
+        adapter
+            .register_session(
+                new_session.id(),
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: ContinuityGeneration::new(1),
+                    fencing_token: FencingToken::new(4),
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .expect("replacement-session registration at the live generation");
+        let mut replacement_doc = new_session.clone();
+        replacement_doc.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("first turn on the replacement"),
+        ));
+        meerkat::SessionStore::save_authoritative_projection(&adapter, &replacement_doc)
+            .await
+            .expect("the live generation's projection must enforce and write after the drop");
+        let durable = meerkat::SessionStore::load(&adapter, new_session.id())
+            .await
+            .expect("replacement load")
+            .expect("replacement document");
+        assert_eq!(
+            durable.messages().len(),
+            1,
+            "the replacement projection must land durably (drop poisoned nothing)"
+        );
+        let old = meerkat::SessionStore::load(&adapter, session.id())
+            .await
+            .expect("superseded load")
+            .expect("superseded document");
+        assert_eq!(
+            old.messages().len(),
+            1,
+            "the superseded session's durable state stays exactly pre-reset"
+        );
+    }
+
+    /// The HomeCore boot-2 exactly-once violation, pinned on their REAL head
+    /// rows (fixtures/homecore_security_idempotency/, sha256 9f5fdb6b...,
+    /// domain:security 019fae11-4e87-...): two consecutive boots of the same
+    /// binary wrote two byte-different heads for an unchanged document. The
+    /// diffs are exactly `updated_at` plus the ORDER of the tool-visibility
+    /// Allow arrays (upstream projects `ToolNameSet`, a HashSet, through
+    /// serde - per-process hash order). Strict equality must SEE the drift
+    /// (else this fixture rotted) while the exact-resave equality must
+    /// recognize it as zero durable change - the pin that stops the
+    /// per-boot head rewrite.
+    #[test]
+    fn homecore_security_boot_drift_is_zero_durable_change() {
+        const BUNDLE: &[u8] = include_bytes!(
+            "../../tests/fixtures/homecore_security_idempotency/security-head-evolution.json"
+        );
+        let bundle: serde_json::Value = serde_json::from_slice(BUNDLE).expect("bundle JSON");
+        let head_of = |state: &str| -> meerkat_core::session_store::SessionHead {
+            use base64::Engine as _;
+            let table = &bundle[state]["continuity_session_heads"];
+            let columns: Vec<&str> = table["columns"]
+                .as_array()
+                .expect("bundle columns")
+                .iter()
+                .map(|c| c.as_str().expect("bundle column"))
+                .collect();
+            let row = table["rows"][0].as_array().expect("bundle row");
+            let head_json = base64::engine::general_purpose::STANDARD
+                .decode(
+                    row[columns
+                        .iter()
+                        .position(|c| *c == "head_json")
+                        .expect("head_json column")]["b64"]
+                        .as_str()
+                        .expect("head_json b64"),
+                )
+                .expect("head_json base64");
+            serde_json::from_slice(&head_json).expect("bundle head deserializes")
+        };
+        let boot1 = head_of("post_boot1_fresh");
+        let boot2 = head_of("post_boot2");
+        assert_ne!(
+            boot1, boot2,
+            "the fleet drift must be visible to strict equality; if the two rows became \
+             identical, the fixture (or upstream's stamp) changed and this pin needs re-deriving"
+        );
+        assert!(
+            head_equal_for_exact_resave(&boot1, &boot2),
+            "the exact-resave equality must recognize the fleet's boot drift as zero durable \
+             change (updated_at + visibility set order only)"
+        );
+        assert!(
+            head_equal_for_exact_resave(&boot2, &boot1),
+            "zero-durable-change recognition must be symmetric"
+        );
+    }
+
+    /// The HomeCore class-3 binding failure, pinned: a released 0.8.10 head
+    /// that RETAINS REWRITES cannot authorize a current mutation
+    /// (`session_head_cas_token` refuses "rewritten current head has no
+    /// compact graph-prefix authority" - the rewrite-generation authority
+    /// predates the compact graph/rewrite-prefix carriers), so before the
+    /// adoption lane the FIRST projected boundary write at boot failed
+    /// 17/17: the head-lane import made the corpus readable and the
+    /// write-back made it a dead end. The released realms in the R1 lane all
+    /// carry rewrite_count 0, which is why that lane stayed green across
+    /// this failure class.
+    #[tokio::test]
+    async fn released_rewrite_carrying_head_adopts_on_first_projected_write() {
+        let identity = AgentIdentity::parse("agent:released-adoption").expect("identity");
+        let session_id = meerkat_core::types::SessionId::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("continuity.sqlite3");
+        let store = Arc::new(LocalContinuityStore::open(&db_path).expect("store"));
+        seed_released_rewrite_carrying_head(&db_path, &session_id, &identity);
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        register_released_adoption_session(
+            &store,
+            &adapter,
+            &session_id,
+            &identity,
+            "rt:agent:released-adoption:0",
+        )
+        .await;
+
+        // Read side (the class-2 lane, already green): the released head
+        // imports on load.
+        let imported = meerkat::SessionStore::load(&adapter, &session_id)
+            .await
+            .expect("import-on-load")
+            .expect("imported document");
+        assert_eq!(imported.messages().len(), 2);
+
+        // The boot shape: the first projected boundary writes the imported
+        // reading back. Before the adoption lane this refused with the fleet
+        // error; now the released representation is adopted wholesale.
+        meerkat::SessionStore::save_authoritative_projection(&adapter, &imported)
+            .await
+            .expect("the first projected write must ADOPT the released head, not refuse");
+        let adopted_head =
+            super::super::contracts::ContinuityIncrementalSessions::load_canonical_head(
+                store.as_ref(),
+                &session_id,
+            )
+            .await
+            .expect("adopted head read")
+            .expect("adopted head present");
+        assert_ne!(
+            adopted_head.version,
+            super::super::contracts::RELEASED_0810_SESSION_ENVELOPE_VERSION,
+            "adoption must leave a CURRENT head, not the released one"
+        );
+        assert_eq!(
+            adopted_head.rewrite_count, 0,
+            "the imported reading carries no retained history; the adopted head starts a \
+             current lineage"
+        );
+        let readable = meerkat::SessionStore::load(&adapter, &session_id)
+            .await
+            .expect("post-adoption load")
+            .expect("post-adoption document");
+        assert_eq!(
+            readable.messages().len(),
+            imported.messages().len(),
+            "adoption must preserve the imported document"
+        );
+
+        // The ordinary arms own the session from here: a plain append works
+        // and no longer routes through adoption.
+        let mut extended = readable.clone();
+        extended.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("post-adoption turn"),
+        ));
+        meerkat::SessionStore::save(&adapter, &extended)
+            .await
+            .expect("ordinary append after adoption");
+
+        // Divergence direction pin: a document that is NOT a successor of
+        // the imported reading refuses typed inside the adoption lane, and
+        // the released representation survives untouched.
+        let fork_id = meerkat_core::types::SessionId::new();
+        let fork_identity = AgentIdentity::parse("agent:released-adoption-fork").expect("identity");
+        seed_released_rewrite_carrying_head(&db_path, &fork_id, &fork_identity);
+        register_released_adoption_session(
+            &store,
+            &adapter,
+            &fork_id,
+            &fork_identity,
+            "rt:agent:released-adoption-fork:0",
+        )
+        .await;
+        let imported_fork = meerkat::SessionStore::load(&adapter, &fork_id)
+            .await
+            .expect("fork import-on-load")
+            .expect("fork imported document");
+        let mut doc: serde_json::Value = serde_json::from_slice(
+            &imported_fork
+                .to_persisted_bytes()
+                .expect("fork document bytes"),
+        )
+        .expect("fork document JSON");
+        doc["messages"][1]["content"] = serde_json::Value::String("FORKED".to_string());
+        let fork = meerkat_core::Session::from_persisted_bytes(
+            &serde_json::to_vec(&doc).expect("fork bytes"),
+        )
+        .expect("fork decodes");
+        let refused = meerkat::SessionStore::save_authoritative_projection(&adapter, &fork)
+            .await
+            .expect_err("a non-successor of the imported reading must refuse typed");
+        assert!(
+            refused.to_string().contains("not a continuation"),
+            "the adoption lane's refusal must be the boundary guard's continuity violation: \
+             {refused}"
+        );
+        let preserved = meerkat::SessionStore::load(&adapter, &fork_id)
+            .await
+            .expect("post-refusal load")
+            .expect("post-refusal document");
+        assert_eq!(
+            preserved.messages().len(),
+            2,
+            "the refused adoption must leave the released document untouched"
+        );
+    }
+
     #[tokio::test]
     async fn continuity_session_store_adapter_parallelizes_different_sessions() {
         let store = Arc::new(ConcurrentLoadStore::new(2));
@@ -3927,118 +5009,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lazy_adoption_failed_save_is_not_observable_and_retry_stamps_durable_cursor() {
-        let inner = Arc::new(LocalContinuityStore::in_memory().expect("store"));
-        let fail_store = Arc::new(FailSaveContinuityStore::new(inner.clone()));
-        let adapter = ContinuitySessionStoreAdapter::new(fail_store.clone())
-            .with_lazy_checkpoint_adoption(true);
-
-        let session = meerkat_core::Session::new();
-        let sid = session.id().clone();
-        let legacy = serde_json::to_vec(&session).expect("serialize legacy session");
-        let identity = AgentIdentity::parse("agent:lazy-fail").expect("identity");
-        let fencing_token = FencingToken::new(5);
-        let record = ContinuityRecord {
-            identity: identity.clone(),
-            agent_runtime_id: AgentRuntimeId::parse("rt:agent:lazy-fail:0").expect("runtime id"),
-            session_id: sid.clone(),
-            generation: ContinuityGeneration::new(3),
-            checkpoint_version: CheckpointVersion::new(0),
-        };
-        inner
-            .upsert_continuity_record(&record, fencing_token)
-            .await
-            .expect("seed record");
-        inner
-            .save_session_snapshot(
-                &identity,
-                &sid,
-                ContinuityGeneration::new(3),
-                CheckpointVersion::new(4),
-                fencing_token,
-                &SessionSnapshot {
-                    data: legacy.clone(),
-                },
-            )
-            .await
-            .expect("seed legacy snapshot");
-        adapter
-            .register_session(
-                &sid,
-                SessionRuntimeState {
-                    identity: identity.clone(),
-                    generation: ContinuityGeneration::new(3),
-                    fencing_token,
-                    checkpoint_version: CheckpointVersion::new(4),
-                },
-            )
-            .await
-            .expect("register session");
-
-        // The failed adoption save mints (and burns) version 5 in the
-        // allocator but commits nothing; the caller must see the legacy
-        // document, never a stamped-but-uncommitted verification.
-        fail_store.fail_saves(true);
-        let loaded = meerkat::SessionStore::load(&adapter, &sid)
-            .await
-            .expect("load under failing save")
-            .expect("session present");
-        assert!(
-            matches!(
-                loaded.try_checkpoint_state().expect("checkpoint state"),
-                meerkat_core::SessionCheckpointState::LegacyUnverified { .. }
-            ),
-            "a failed adoption save must pass the legacy document through"
-        );
-        let durable = inner
-            .load_session_snapshot(&sid)
-            .await
-            .expect("durable load")
-            .expect("snapshot present");
-        assert_eq!(
-            durable.data, legacy,
-            "a failed adoption save must leave the durable legacy bytes untouched"
-        );
-
-        // Retry after the store recovers: the stamp must bind the durable
-        // registered cursor (4), not the unpersisted allocator mint (5).
-        fail_store.fail_saves(false);
-        let adopted = meerkat::SessionStore::load(&adapter, &sid)
-            .await
-            .expect("load after recovery")
-            .expect("session present");
-        let stamp = match adopted.try_checkpoint_state().expect("checkpoint state") {
-            meerkat_core::SessionCheckpointState::Verified(stamp) => stamp,
-            other => panic!("expected an adopted document, got {other:?}"),
-        };
-        assert_eq!(stamp.generation(), meerkat_core::SessionGeneration::new(3));
-        assert_eq!(
-            stamp.checkpoint_revision(),
-            meerkat_core::SessionCheckpointRevision::new(4),
-            "the stamp must bind the durable cursor, never a revision that only \
-             the in-memory allocator ever saw"
-        );
-
-        // The durable copy carries the same stamp.
-        let durable = inner
-            .load_session_snapshot(&sid)
-            .await
-            .expect("durable load after adoption")
-            .expect("snapshot present");
-        let durable_session: meerkat_core::Session =
-            serde_json::from_slice(&durable.data).expect("decode adopted snapshot");
-        match durable_session
-            .try_checkpoint_state()
-            .expect("durable checkpoint state")
-        {
-            meerkat_core::SessionCheckpointState::Verified(durable_stamp) => {
-                assert_eq!(durable_stamp, stamp);
-            }
-            other => panic!("expected a verified durable document, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
     async fn continuity_session_store_adapter_rejects_owner_generation_and_fence_regression() {
         let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
         let adapter = ContinuitySessionStoreAdapter::new(store);
@@ -4281,14 +5251,13 @@ mod tests {
             .await
             .expect("boundary save of the authority");
 
-        // The intra-turn checkpointer persists a STAMPED head strictly ahead
-        // of the boundary commit; the host dies before the boundary lands.
+        // The intra-turn checkpointer persists a head strictly ahead of the
+        // boundary commit; the host dies before the boundary lands. (0.8.11:
+        // the retired runtime-checkpoint provenance stamp no longer exists;
+        // the rollback guard under test is provenance-independent.)
         let mut stamped_head = authority.clone();
         stamped_head
             .append_external_user_content(meerkat_core::ContentInput::Text("mid-turn".to_string()));
-        stamped_head
-            .set_runtime_checkpoint_provenance()
-            .expect("stamp legacy runtime checkpoint provenance");
         meerkat::SessionStore::save(&adapter, &stamped_head)
             .await
             .expect("checkpointer save of the stamped head");
@@ -4403,9 +5372,6 @@ mod tests {
         let mut stamped_fork = base.clone();
         stamped_fork
             .append_external_user_content(meerkat_core::ContentInput::Text("forked".to_string()));
-        stamped_fork
-            .set_runtime_checkpoint_provenance()
-            .expect("stamp legacy runtime checkpoint provenance");
         meerkat::SessionStore::save(&adapter, &stamped_fork)
             .await
             .expect("seed the stamped head");
@@ -6749,9 +7715,17 @@ mod tests {
         let refused = meerkat::SessionStore::save(&cold, &session)
             .await
             .expect_err("an unregistered save over durable state must refuse, not park");
+        // Two fail-closed vocabularies are legal here, decided by the
+        // durable representation the seed produced: a blob-canonical
+        // session refuses through the parking guard; a head-canonical one
+        // (the registered seed births heads since the 0.8.11 repin) refuses
+        // through the capability rule's registered-owner requirement. Both
+        // refuse rather than park, which is the property under test.
+        let text = refused.to_string();
         assert!(
-            refused.to_string().contains("refusing to park"),
-            "the refusal must speak the parking guard's vocabulary: {refused}"
+            text.contains("refusing to park")
+                || text.contains("refusing to degrade a head-canonical session"),
+            "the refusal must speak a fail-closed guard's vocabulary: {refused}"
         );
         assert_eq!(
             cold.recorded_lifecycle(session.id()),

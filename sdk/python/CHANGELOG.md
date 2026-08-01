@@ -4,6 +4,12 @@ All notable changes to the Python SDK are documented here.
 
 ## Unreleased
 
+- Gateway stderr is now INHERITED by default, so tracing lines, panic hooks,
+  and storage-migration progress reach the host process's stderr. The old
+  default sent it to `/dev/null`, which cost one production fleet a week of
+  panic-hook lines and made a working migration read as a hang. Opt out with
+  `MOBKIT_GATEWAY_STDERR=devnull`, or redirect with the existing
+  `MOBKIT_GATEWAY_STDERR_FILE=<path>`.
 - Added durable detached callback tools. `register_tool(..., execution=...)`
   declares runner identity, restart and idempotency policy, submission timeout,
   and credential scopes; the host accepts short `start`/`reconcile`/`cancel`

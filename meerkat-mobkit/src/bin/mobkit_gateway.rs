@@ -44,6 +44,12 @@ type WorkGraphParts = (
     meerkat_mobkit::workgraph_admission::WorkGraphAdmissionSlot,
     PathBuf,
 );
+
+/// Default tracing filter when `RUST_LOG` is unset: this crate's own targets
+/// at INFO, dependencies at WARN (mirrors rpc_gateway). The one-time
+/// head-canonical conversion and the storage maintenance verbs report
+/// progress at INFO from `meerkat_mobkit`; a blanket "warn" default hid them.
+const DEFAULT_TRACING_FILTER: &str = "warn,meerkat_mobkit=info,mobkit_gateway=info";
 type PersistentSessionServiceParts = (
     Arc<dyn meerkat_mob::MobSessionService>,
     Arc<meerkat_runtime::MeerkatMachine>,
@@ -52,6 +58,8 @@ type PersistentSessionServiceParts = (
     Option<WorkGraphParts>,
     meerkat_mobkit::storage_health::ResolvedStorageSummary,
     meerkat_mobkit::mob_handle_runtime::SessionWriteEpochsHandle,
+    Arc<dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer>,
+    Arc<dyn meerkat_runtime::RuntimeStore>,
 );
 
 #[derive(Debug, Deserialize)]
@@ -443,9 +451,16 @@ fn build_persistent_session_service(
     // capture the store; the witness threads to the bootstrap spec so the
     // console session-history epoch gate works on this externally-composed
     // path (mirrors rpc_gateway.rs — without it the 5s discovery loop
-    // re-reads whole session documents forever).
+    // re-reads whole session documents forever). The facade also owns the
+    // durable session projection at meerkat 0.8.11 (the session service no
+    // longer writes the SessionStore itself) and every-boot authority
+    // re-minting - a reset/lost runtime.sqlite reseeds from the durable
+    // session rows instead of refusing resume.
     let (runtime_store, session_write_epochs) =
-        meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store(runtime_store);
+        meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store_with_durable_projection(
+            runtime_store,
+            session_store.clone() as Arc<dyn meerkat::SessionStore>,
+        );
     let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
         Arc::clone(&runtime_store),
         Arc::clone(&blob_store),
@@ -573,6 +588,12 @@ fn build_persistent_session_service(
         workgraph_slot,
     ];
     slots.extend(meerkat_mobkit::storage_health::scratch_ring_buffer_slots());
+    // Heal seam (2026-07-29 incident): the CONCRETE persistent service is the
+    // committed-boundary recoverer; cast here, before the tuple erases it to
+    // `dyn MobSessionService` (mirrors rpc_gateway.rs).
+    let committed_boundary_recoverer: Arc<
+        dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer,
+    > = service.clone();
     Ok((
         service,
         adapter,
@@ -585,6 +606,8 @@ fn build_persistent_session_service(
         )
         .with_slots(slots),
         session_write_epochs,
+        committed_boundary_recoverer,
+        runtime_store,
     ))
 }
 
@@ -683,112 +706,11 @@ fn init_error(request_id: Value, code: i64, message: String) -> Value {
     })
 }
 
-const STORAGE_ADOPT_CHECKPOINTS_USAGE: &str = "usage: mobkit_gateway storage-adopt-checkpoints \
-     (--db <path> | --state-dir <dir>) [--apply] [--json]\n\
-     Adopt legacy (pre-typed) session documents inside continuity snapshots \
-     into typed checkpoint authority (storage-unification H3).\n\
-     Dry-run by default; --apply rewrites legacy rows in place under the \
-     exclusive maintenance fence.\n\
-     Exit codes: 0 clean, 1 refusals or fence/database failure, 2 usage error.";
-
-/// Maintenance verb: `mobkit_gateway storage-adopt-checkpoints`. Runs the H3
-/// continuity-snapshot adoption walk and prints the report. Deliberately a
-/// standalone argv verb that bypasses the stdin init handshake — adoption is
-/// never an eager side effect of ordinary gateway startup.
-fn run_storage_adopt_checkpoints(args: &[String]) -> i32 {
-    let mut db: Option<PathBuf> = None;
-    let mut state_dir: Option<PathBuf> = None;
-    let mut apply = false;
-    let mut json = false;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--db" => match iter.next() {
-                Some(value) => db = Some(PathBuf::from(value)),
-                None => {
-                    eprintln!("--db requires a path\n{STORAGE_ADOPT_CHECKPOINTS_USAGE}");
-                    return 2;
-                }
-            },
-            "--state-dir" => match iter.next() {
-                Some(value) => state_dir = Some(PathBuf::from(value)),
-                None => {
-                    eprintln!(
-                        "--state-dir requires a directory\n{STORAGE_ADOPT_CHECKPOINTS_USAGE}"
-                    );
-                    return 2;
-                }
-            },
-            "--apply" => apply = true,
-            "--json" => json = true,
-            other => {
-                eprintln!("unknown argument {other:?}\n{STORAGE_ADOPT_CHECKPOINTS_USAGE}");
-                return 2;
-            }
-        }
-    }
-    let db_path = match (db, state_dir) {
-        (Some(db), None) => db,
-        (None, Some(dir)) => {
-            // Standalone canonical-name-first probing over the state
-            // directory. The gateway home (runtime registry + peer key)
-            // plays no role in continuity resolution, so the layout is
-            // constructed with injected roots instead of reading XDG state
-            // in a maintenance verb.
-            let layout = MobKitStorageLayout::with_injected_roots(dir, None);
-            match layout.continuity_db() {
-                Ok(resolved) => resolved.path,
-                Err(error) => {
-                    eprintln!("{error}");
-                    return 1;
-                }
-            }
-        }
-        _ => {
-            eprintln!(
-                "exactly one of --db / --state-dir is required\n{STORAGE_ADOPT_CHECKPOINTS_USAGE}"
-            );
-            return 2;
-        }
-    };
-    let mode = if apply {
-        meerkat_mobkit::identity_first::AdoptionMode::Apply
-    } else {
-        meerkat_mobkit::identity_first::AdoptionMode::DryRun
-    };
-    match meerkat_mobkit::identity_first::adopt_continuity_snapshots_blocking(&db_path, mode) {
-        Ok(report) => {
-            if json {
-                match serde_json::to_string_pretty(&report) {
-                    Ok(text) => println!("{text}"),
-                    Err(error) => {
-                        eprintln!("failed to serialize adoption report: {error}");
-                        return 1;
-                    }
-                }
-            } else {
-                println!(
-                    "continuity checkpoint adoption ({}) at {}",
-                    if apply { "apply" } else { "dry-run" },
-                    db_path.display()
-                );
-                println!("{report}");
-            }
-            i32::from(!report.is_clean())
-        }
-        Err(error) => {
-            eprintln!("{error}");
-            1
-        }
-    }
-}
-
 const STORAGE_MIGRATE_USAGE: &str = "usage: mobkit_gateway storage-migrate --state-dir <dir> \
      [--apply] [--adopt <path>] [--json]\n\
      Fenced offline migration of one MobKit state directory \
      (storage-unification M6): ledger baseline, legacy-spelling renames, \
-     twin reconciliation, continuity checkpoint adoption, digest-format \
-     marker stamping (stamp-digest-format-markers), leftover census.\n\
+     twin reconciliation, leftover census.\n\
      Dry-run by default; --apply mutates under the exclusive maintenance \
      fence. --adopt <path> resolves a divergent file-name twin by adopting \
      that copy and archiving the rest read-only (requires --apply).\n\
@@ -947,30 +869,6 @@ fn print_migrate_report_text(report: &meerkat_mobkit::MobKitMigrateReport) {
             describe(entry.after)
         );
     }
-    if let Some(adoption) = &report.adoption {
-        match (&adoption.skipped, &adoption.report) {
-            (Some(skipped), _) => println!("adoption: {skipped}"),
-            (None, Some(walk)) => {
-                println!("adoption at {}:\n{walk}", adoption.database.display());
-            }
-            (None, None) => {}
-        }
-    }
-    for outcome in &report.marker_stamping {
-        match (&outcome.skipped, &outcome.report) {
-            (Some(skipped), _) => {
-                println!("marker stamping [{}]: {skipped}", outcome.store);
-            }
-            (None, Some(walk)) => {
-                println!(
-                    "marker stamping [{}] at {}:\n{walk}",
-                    outcome.store,
-                    outcome.database.display()
-                );
-            }
-            (None, None) => {}
-        }
-    }
     for finding in &report.findings {
         let path = finding
             .path
@@ -1088,30 +986,33 @@ fn main() {
         );
         return;
     }
-    if args.first().map(String::as_str) == Some("storage-adopt-checkpoints") {
-        std::process::exit(run_storage_adopt_checkpoints(&args[1..]));
-    }
+    // Install the tracing subscriber FIRST — before the maintenance verbs,
+    // not just before the gateway boot. The storage verbs drive the same
+    // migration code whose progress reports through tracing; dispatching
+    // them ahead of this init dropped every progress line, and a 2026-07
+    // production deploy was aborted because a supervisor read the
+    // silent-but-working migration as a hang. Also (meerkat-studio K1/K2):
+    // without any init, runtime failures, console internal-error logs, and
+    // the schedule claim watchdog's stall diagnosis all vanish on the child
+    // gateways their app spawns. Stderr, never stdout: stdout carries the
+    // init JSON handshake and the verbs' report output.
+    //
+    // Default: this crate's own targets at INFO, dependencies at WARN;
+    // RUST_LOG overrides everything.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_TRACING_FILTER)),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
     if args.first().map(String::as_str) == Some("storage-migrate") {
         std::process::exit(run_storage_migrate(&args[1..]));
     }
     if args.first().map(String::as_str) == Some("storage-prune") {
         std::process::exit(run_storage_prune(&args[1..]));
     }
-    // Install the tracing subscriber FIRST (mirrors rpc_gateway). Without it
-    // every tracing event in the process is silently dropped: runtime
-    // failures, console internal-error logs, and the schedule claim
-    // watchdog's stall diagnosis all vanish — meerkat-studio root-caused
-    // their opaque K1/K2 failures to exactly this missing init on the child
-    // gateways their app spawns. Stderr, never stdout: stdout carries the
-    // init JSON handshake.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .init();
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         "mobkit_gateway starting (console/HTTP gateway)"
@@ -1268,6 +1169,8 @@ async fn run() -> anyhow::Result<()> {
             workgraph,
             resolved_storage,
             session_write_epochs,
+            committed_boundary_recoverer,
+            runtime_store,
         ) = build_persistent_session_service(
             &layout,
             runtime_root.clone(),
@@ -1290,8 +1193,13 @@ async fn run() -> anyhow::Result<()> {
         // the default ephemeral branch below is the one that was actually broken.
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
             .with_session_write_epochs(&session_write_epochs)
+            // Resume-seam reads must carry the runtime store's archived
+            // terminal (at 0.8.11 archive stamps the catalog/lifecycle row,
+            // never the session body).
+            .with_runtime_archived_terminal_authority(runtime_store)
             .with_session_runtime_adapter(adapter.clone())
             .with_workgraph_service(workgraph_service.clone());
+        spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
         if let Some((_, admission_slot, state_dir)) = &workgraph {
             // Durable (cross-process shareable) store: register the tool-plane
             // admission slot and the sidecar lock beside the store.
@@ -1506,15 +1414,20 @@ async fn run() -> anyhow::Result<()> {
             .map_err(|e| anyhow!("{e}"))?;
 
         let mob_handle = runtime.mob_handle();
-        let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> =
+        let mut bridge =
             if let Some(session_service) = runtime.mob_runtime().session_service().cloned() {
-                Arc::new(MobSessionBridge::with_session_service(
-                    mob_handle.clone(),
-                    session_service,
-                ))
+                MobSessionBridge::with_session_service(mob_handle.clone(), session_service)
             } else {
-                Arc::new(MobSessionBridge::new(mob_handle.clone()))
+                MobSessionBridge::new(mob_handle.clone())
             };
+        // Heal seam (2026-07-29 incident): the continuity repair supervisor
+        // asks this recoverer to commit the durable head before declaring an
+        // identity healed; without it, heal is a cosmetic entry reset that
+        // the next materialization re-Breaks.
+        if let Some(recoverer) = runtime.mob_runtime().committed_boundary_recoverer() {
+            bridge = bridge.with_committed_boundary_recoverer(recoverer);
+        }
+        let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = Arc::new(bridge);
 
         let irt = IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: substrate.continuity_store,
@@ -1698,6 +1611,38 @@ async fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default tracing filter (RUST_LOG unset) must surface this crate's
+    /// own INFO lines — storage-verb/migration progress was invisible at the
+    /// old blanket "warn" default — while keeping dependencies at WARN.
+    #[test]
+    fn default_tracing_filter_surfaces_own_info_keeps_deps_at_warn() -> anyhow::Result<()> {
+        use tracing_subscriber::layer::SubscriberExt;
+        let filter = tracing_subscriber::EnvFilter::try_new(DEFAULT_TRACING_FILTER)?;
+        let subscriber = tracing_subscriber::registry().with(filter);
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(
+                tracing::enabled!(
+                    target: "meerkat_mobkit::identity_first::local_store",
+                    tracing::Level::INFO
+                ),
+                "the crate's own INFO lines (conversion progress) must pass the default filter"
+            );
+            assert!(
+                tracing::enabled!(target: "mobkit_gateway", tracing::Level::INFO),
+                "the gateway binary's own INFO lines must pass the default filter"
+            );
+            assert!(
+                !tracing::enabled!(target: "meerkat_runtime::ops_lifecycle", tracing::Level::INFO),
+                "dependency INFO noise must stay filtered"
+            );
+            assert!(
+                tracing::enabled!(target: "meerkat_runtime::ops_lifecycle", tracing::Level::WARN),
+                "dependency warnings must still pass"
+            );
+        });
+        Ok(())
+    }
 
     #[test]
     fn init_params_parse_console_read_only() -> anyhow::Result<()> {

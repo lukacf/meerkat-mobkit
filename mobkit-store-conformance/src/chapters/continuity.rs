@@ -89,7 +89,7 @@ async fn pre_registration_snapshot_admitted(
     // pre-registration path `PersistentSessionService` hits during member
     // creation) and its bytes round-trip unchanged.
     let seed_identity = identity(steps, STEP, "conformance:preseed")?;
-    let session = fixtures::session_with_texts(&["pre-registration turn"]);
+    let session = fixtures::session_with_texts(&["pre-registration turn"])?;
     let snapshot = fixtures::session_snapshot(&session)?;
     steps.wrap(
         STEP,
@@ -125,7 +125,7 @@ async fn fencing_and_version_cas(
 
     // --- record upsert + resolve round trip -------------------------------
     let step = "record_upsert_resolve";
-    let mut session = fixtures::session_with_texts(&["continuity turn one"]);
+    let mut session = fixtures::session_with_texts(&["continuity turn one"])?;
     let record = ContinuityRecord {
         identity: main.clone(),
         agent_runtime_id: runtime.clone(),
@@ -171,7 +171,7 @@ async fn fencing_and_version_cas(
             .await,
     )?;
     // Stale fence rejected with the typed error naming presented and current.
-    fixtures::push_text(&mut session, "continuity turn two");
+    fixtures::push_text(&mut session, "continuity turn two")?;
     let snapshot_v2 = fixtures::session_snapshot(&session)?;
     match store
         .save_session_snapshot(
@@ -270,7 +270,7 @@ async fn fencing_and_version_cas(
 
     // --- same-generation rebind preserves the version stream ---------------
     let step = "same_generation_rebind_preserves_version";
-    let rebound_session = fixtures::session_with_texts(&["rebound session"]);
+    let rebound_session = fixtures::session_with_texts(&["rebound session"])?;
     let rebind = ContinuityRecord {
         identity: main.clone(),
         agent_runtime_id: runtime.clone(),
@@ -340,7 +340,7 @@ async fn fencing_and_version_cas(
 
     // --- generation advance resets the version stream -----------------------
     let step = "generation_advance_resets_version_stream";
-    let advanced_session = fixtures::session_with_texts(&["generation two session"]);
+    let advanced_session = fixtures::session_with_texts(&["generation two session"])?;
     let advanced = ContinuityRecord {
         identity: main.clone(),
         agent_runtime_id: runtime.clone(),
@@ -505,7 +505,7 @@ pub async fn continuity_rollback(
 
     // Previous committed generation.
     let step = "setup";
-    let previous_session = fixtures::session_with_texts(&["previous generation turn"]);
+    let previous_session = fixtures::session_with_texts(&["previous generation turn"])?;
     let previous = ContinuityRecord {
         identity: main.clone(),
         agent_runtime_id: runtime.clone(),
@@ -541,7 +541,7 @@ pub async fn continuity_rollback(
     // Mismatch guard: a rollback whose expected attempt does not match the
     // durable row must be rejected before anything is touched.
     let step = "rollback_mismatch_rejected";
-    let phantom_session = fixtures::session_with_texts(&["phantom attempt"]);
+    let phantom_session = fixtures::session_with_texts(&["phantom attempt"])?;
     let phantom_attempt = ContinuityRecord {
         identity: main.clone(),
         agent_runtime_id: runtime.clone(),
@@ -571,7 +571,7 @@ pub async fn continuity_rollback(
     // Publish the provisional reset attempt (generation 2) and one snapshot
     // under it.
     let step = "publish_provisional_attempt";
-    let attempt_session = fixtures::session_with_texts(&["provisional generation turn"]);
+    let attempt_session = fixtures::session_with_texts(&["provisional generation turn"])?;
     let attempt = ContinuityRecord {
         identity: main.clone(),
         agent_runtime_id: runtime.clone(),
@@ -741,7 +741,7 @@ pub async fn continuity_rollback(
     let step = "rollback_deletes_first_generation_attempt";
     let fresh = identity(&steps, step, "rollback:fresh")?;
     let fresh_runtime = runtime_id(&steps, step, "rt-rollback-fresh")?;
-    let fresh_session = fixtures::session_with_texts(&["first ever attempt"]);
+    let fresh_session = fixtures::session_with_texts(&["first ever attempt"])?;
     let fresh_attempt = ContinuityRecord {
         identity: fresh.clone(),
         agent_runtime_id: fresh_runtime,
@@ -817,7 +817,7 @@ pub async fn local_continuity_fencing_floor(dir: &Path) -> Result<(), Conformanc
     let step = "seed_high_water";
     let main = identity(&steps, step, "floor:main")?;
     let runtime = runtime_id(&steps, step, "rt-floor")?;
-    let session = fixtures::session_with_texts(&["fencing floor turn"]);
+    let session = fixtures::session_with_texts(&["fencing floor turn"])?;
     {
         let store = steps.wrap(step, LocalContinuityStore::open(&db_path))?;
         let record = ContinuityRecord {
@@ -872,7 +872,7 @@ pub async fn local_continuity_fencing_floor(dir: &Path) -> Result<(), Conformanc
         "fixture error: the floorless provider must mint a token at or below the high-water",
     )?;
     let mut mutated = session;
-    fixtures::push_text(&mut mutated, "post restart turn");
+    fixtures::push_text(&mut mutated, "post restart turn")?;
     let mutated_snapshot = fixtures::session_snapshot(&mutated)?;
     match store
         .save_session_snapshot(

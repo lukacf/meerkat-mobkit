@@ -738,6 +738,7 @@ impl InternalDeliveryScheduleMobHost {
     async fn deliver_internal_member_prompt(
         &self,
         occurrence: &meerkat::Occurrence,
+        delivery_identity: &meerkat::ScheduleDeliveryIdentity,
         mob_id: &str,
         member_id: &str,
         content: &meerkat_core::ContentInput,
@@ -761,32 +762,44 @@ impl InternalDeliveryScheduleMobHost {
                 .identity_for_member_mutation(&member_alias)
                 .await
         {
+            // meerkat 0.8.11: the driver replays this exact identity on every
+            // lease-expiry reclaim. NOTE: the identity dispatch path does not
+            // yet consume this key at admission (no reader of
+            // DispatchInput.idempotency_key exists), so crash-redelivery dedup
+            // for this sink is still ABSENT - carrying the key here stages the
+            // admission-threading follow-up, it does not implement it.
             let input = crate::identity_first::DispatchInput {
                 content: content.clone(),
                 origin: crate::identity_first::DispatchOrigin::Scheduler,
                 correlation_id: None,
-                idempotency_key: None,
+                idempotency_key: Some(crate::identity_first::DispatchIdempotencyKey::new(
+                    delivery_identity.idempotency_key.clone(),
+                )),
             };
             return Some(
                 match identity_runtime
                     .dispatch_member_alias_with_session_tracked(&identity, &member_alias, &input)
                     .await
                 {
-                    Ok(Some(_)) => {
-                        immediate_completed_dispatch(occurrence, Some(member_id.to_string()))
-                    }
+                    Ok(Some(_)) => immediate_completed_dispatch(
+                        occurrence,
+                        Some(delivery_identity.correlation_id.clone()),
+                    ),
                     Ok(None) => immediate_delivery_failure(
                         occurrence,
-                        "identity schedule delivery has no bound session bridge".to_string(),
+                        format!(
+                            "identity schedule delivery has no bound session bridge \
+                             (member {member_id})"
+                        ),
                         meerkat::DeliveryFailureReason::RuntimeRejected,
-                        Some(member_id.to_string()),
+                        Some(delivery_identity.correlation_id.clone()),
                         None,
                     ),
                     Err(error) => immediate_delivery_failure(
                         occurrence,
-                        format!("identity schedule delivery failed: {error}"),
+                        format!("identity schedule delivery failed (member {member_id}): {error}"),
                         meerkat::DeliveryFailureReason::RuntimeRejected,
-                        Some(member_id.to_string()),
+                        Some(delivery_identity.correlation_id.clone()),
                         None,
                     ),
                 },
@@ -799,7 +812,7 @@ impl InternalDeliveryScheduleMobHost {
                     "generated member alias requires current identity authority: {member_alias}"
                 ),
                 meerkat::DeliveryFailureReason::RuntimeRejected,
-                Some(member_id.to_string()),
+                Some(delivery_identity.correlation_id.clone()),
                 None,
             ));
         }
@@ -810,9 +823,9 @@ impl InternalDeliveryScheduleMobHost {
             Err(error) => {
                 return Some(immediate_delivery_failure(
                     occurrence,
-                    format!("member lookup failed: {error}"),
+                    format!("member lookup failed (member {member_id}): {error}"),
                     meerkat::DeliveryFailureReason::RuntimeRejected,
-                    None,
+                    Some(delivery_identity.correlation_id.clone()),
                     None,
                 ));
             }
@@ -831,13 +844,13 @@ impl InternalDeliveryScheduleMobHost {
         {
             Ok(_receipt) => Some(immediate_completed_dispatch(
                 occurrence,
-                Some(member_id.to_string()),
+                Some(delivery_identity.correlation_id.clone()),
             )),
             Err(error) => Some(immediate_delivery_failure(
                 occurrence,
-                format!("internal schedule delivery failed: {error}"),
+                format!("internal schedule delivery failed (member {member_id}): {error}"),
                 meerkat::DeliveryFailureReason::RuntimeRejected,
-                Some(member_id.to_string()),
+                Some(delivery_identity.correlation_id.clone()),
                 None,
             )),
         }
@@ -856,6 +869,7 @@ impl SurfaceScheduleMobHost for InternalDeliveryScheduleMobHost {
     async fn deliver_mob_target(
         &self,
         occurrence: &meerkat::Occurrence,
+        identity: &meerkat::ScheduleDeliveryIdentity,
         binding: &MobTargetBinding,
     ) -> Result<meerkat::DeliveryDispatch, meerkat::ScheduleDomainError> {
         if let MobTargetBinding::Member {
@@ -864,12 +878,14 @@ impl SurfaceScheduleMobHost for InternalDeliveryScheduleMobHost {
             action: ScheduledMobAction::Send { content, .. },
         } = binding
             && let Some(dispatch) = self
-                .deliver_internal_member_prompt(occurrence, mob_id, member_id, content)
+                .deliver_internal_member_prompt(occurrence, identity, mob_id, member_id, content)
                 .await
         {
             return Ok(dispatch);
         }
-        self.inner.deliver_mob_target(occurrence, binding).await
+        self.inner
+            .deliver_mob_target(occurrence, identity, binding)
+            .await
     }
 
     async fn probe_identity_target(
@@ -882,6 +898,7 @@ impl SurfaceScheduleMobHost for InternalDeliveryScheduleMobHost {
     async fn deliver_identity_target(
         &self,
         occurrence: &meerkat::Occurrence,
+        delivery_identity: &meerkat::ScheduleDeliveryIdentity,
         binding: &meerkat::IdentityTargetBinding,
     ) -> Result<Option<meerkat::DeliveryDispatch>, meerkat::ScheduleDomainError> {
         if let Some(identity) = parse_mob_member_schedule_identity(binding.identity())
@@ -897,6 +914,7 @@ impl SurfaceScheduleMobHost for InternalDeliveryScheduleMobHost {
             && let Some(dispatch) = self
                 .deliver_internal_member_prompt(
                     occurrence,
+                    delivery_identity,
                     &identity.mob_id,
                     &identity.member,
                     prompt,
@@ -906,7 +924,7 @@ impl SurfaceScheduleMobHost for InternalDeliveryScheduleMobHost {
             return Ok(Some(dispatch));
         }
         self.inner
-            .deliver_identity_target(occurrence, binding)
+            .deliver_identity_target(occurrence, delivery_identity, binding)
             .await
     }
 }
@@ -1057,23 +1075,32 @@ fn triage_poisoned_rows(
 /// Probe whether the schedule firing pipeline can actually deliver, and if
 /// not, name the reason — down to the poisoned row where possible.
 ///
-/// Exists because meerkat's schedule host discards every driver tick error
-/// (`let _ = driver.tick_once()`), and a tick aborts wholesale on the FIRST
-/// poisoned row anywhere in the store: `service.list()` fails on any
-/// unrecoverable schedule row (e.g. a Deleted tombstone rejected by
-/// `deleted_has_no_planning_cursor`), and the claim scan deserializes and
-/// classifies EVERY occurrence row before leasing anything. One stale row →
-/// zero claims, forever, with nothing in any log — HomeCore 0.7.24 sat with
-/// 31 pending occurrences and `lease_expires_at_ms=NULL` across the board.
+/// Born on HomeCore 0.7.24, where a tick aborted wholesale on the FIRST
+/// poisoned row anywhere in the store and the host discarded the error: 31
+/// pending occurrences sat with `lease_expires_at_ms=NULL` and nothing in
+/// any log. meerkat 0.8.11 fixed the starvation half — the driver's listing
+/// (`list_with_row_faults`) and claim scan now skip poisoned rows as typed
+/// per-row faults and the host logs the fault fingerprint — but the loss
+/// half remains: a poisoned row can never be claimed or listed, so ITS work
+/// silently never fires, and the plain all-or-nothing reads every other
+/// surface uses (`service.list()`, `store.list_occurrences()`) still fail
+/// wholesale on it. This probe stays as the read-only belt-and-suspenders
+/// that names the row.
 pub async fn probe_schedule_firing_pipeline(
     schedule_service: &ScheduleService,
     store_path: &Path,
     overdue_threshold: Duration,
 ) -> ScheduleFiringProbe {
-    // 1. The tick preflight: one poisoned schedule row fails the whole list.
+    // 1. One poisoned schedule row fails the whole all-or-nothing list. The
+    // 0.8.11 driver tolerates it per-row (its own listing skips the row
+    // typed), but the poisoned schedule itself can never fire and every
+    // list-backed surface (tools, RPC, console) is blind until it is
+    // repaired.
     if let Err(err) = schedule_service.list().await {
         let mut report = format!(
-            "schedule list is failing, so every firing-driver tick aborts before claiming (nothing will fire): {err}"
+            "schedule list is failing (one poisoned schedule row fails the whole read); \
+             the firing driver skips the row as a typed fault, so that schedule will \
+             never fire and list-backed surfaces are blind until it is repaired: {err}"
         );
         let poisoned = triage_poisoned_rows(
             store_path,
@@ -1117,7 +1144,9 @@ pub async fn probe_schedule_firing_pipeline(
         Ok(occurrences) => occurrences,
         Err(err) => {
             let mut report = format!(
-                "occurrence scan is failing, so the firing driver cannot claim anything (nothing will fire): {err}"
+                "occurrence scan is failing (one poisoned due-window occurrence row fails \
+                 the whole read); the firing driver's claim skips the row as a typed \
+                 fault, so that occurrence will never fire until it is repaired: {err}"
             );
             let poisoned = triage_poisoned_rows(
                 store_path,
@@ -1579,6 +1608,7 @@ mod tests {
         HostRunnableInvocation {
             occurrence_id: meerkat::OccurrenceId::new(),
             schedule_id: meerkat::ScheduleId::new(),
+            delivery_idempotency_key: "conformance-callback-key".to_string(),
             runnable: runnable_name(runnable),
             trigger_time: chrono::Utc::now(),
             params: params_json
@@ -1823,6 +1853,47 @@ mod tests {
         assert_eq!(changed, 1, "one {table} row corrupted");
     }
 
+    /// Rewrite the first planned occurrence to be due at `overdue` — both the
+    /// projection's `due_at_utc` and the machine state's `due_at_utc_ms`
+    /// (they are recovery-checked against each other), plus the indexed
+    /// ordering column the SQL prefilters scan. The misfire deadline shifts
+    /// by the same amount so due-classification still answers ClaimEligible.
+    /// Returns the aged row's rowid so callers can stage neighbors around it.
+    fn age_first_occurrence(
+        store_path: &std::path::Path,
+        overdue: chrono::DateTime<chrono::Utc>,
+    ) -> i64 {
+        let conn = rusqlite::Connection::open(store_path).expect("open store");
+        let (rowid, bytes): (i64, Vec<u8>) = conn
+            .query_row(
+                "SELECT rowid, occurrence_json FROM schedule_occurrences \
+                 ORDER BY rowid LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read first occurrence");
+        let mut json: serde_json::Value = serde_json::from_slice(&bytes).expect("occurrence json");
+        let old_due_ms = json["machine_state"]["due_at_utc_ms"]
+            .as_i64()
+            .expect("machine due ms");
+        let shift = old_due_ms - overdue.timestamp_millis();
+        json["due_at_utc"] = serde_json::Value::String(overdue.to_rfc3339());
+        json["machine_state"]["due_at_utc_ms"] =
+            serde_json::Value::from(overdue.timestamp_millis());
+        if let Some(deadline) = json["machine_state"]["misfire_deadline_utc_ms"].as_i64() {
+            json["machine_state"]["misfire_deadline_utc_ms"] =
+                serde_json::Value::from(deadline - shift);
+        }
+        let updated = serde_json::to_vec(&json).expect("serialize occurrence");
+        conn.execute(
+            "UPDATE schedule_occurrences SET occurrence_json = ?1, due_at_ms = ?2 \
+             WHERE rowid = ?3",
+            rusqlite::params![updated, overdue.timestamp_millis(), rowid],
+        )
+        .expect("age occurrence");
+        rowid
+    }
+
     /// meerkat 0.7.19 carry guard (asks 16-19): a poisoned occurrence row no
     /// longer starves the whole claim — the sqlite claim scan skips it as a
     /// typed row fault and claims healthy due neighbors. This is the exact
@@ -1837,36 +1908,9 @@ mod tests {
         // Age schedule A's first occurrence JUST past due (inside any misfire
         // window, so it classifies as claimable rather than misfired).
         let overdue = chrono::Utc::now() - chrono::Duration::seconds(5);
+        let rowid = age_first_occurrence(&store_path, overdue);
         {
             let conn = rusqlite::Connection::open(&store_path).expect("open store");
-            let (rowid, bytes): (i64, Vec<u8>) = conn
-                .query_row(
-                    "SELECT rowid, occurrence_json FROM schedule_occurrences \
-                     ORDER BY rowid LIMIT 1",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .expect("read first occurrence");
-            let mut json: serde_json::Value =
-                serde_json::from_slice(&bytes).expect("occurrence json");
-            let old_due_ms = json["machine_state"]["due_at_utc_ms"]
-                .as_i64()
-                .expect("machine due ms");
-            let shift = old_due_ms - overdue.timestamp_millis();
-            json["due_at_utc"] = serde_json::Value::String(overdue.to_rfc3339());
-            json["machine_state"]["due_at_utc_ms"] =
-                serde_json::Value::from(overdue.timestamp_millis());
-            if let Some(deadline) = json["machine_state"]["misfire_deadline_utc_ms"].as_i64() {
-                json["machine_state"]["misfire_deadline_utc_ms"] =
-                    serde_json::Value::from(deadline - shift);
-            }
-            let updated = serde_json::to_vec(&json).expect("serialize occurrence");
-            conn.execute(
-                "UPDATE schedule_occurrences SET occurrence_json = ?1, due_at_ms = ?2 \
-                 WHERE rowid = ?3",
-                rusqlite::params![updated, overdue.timestamp_millis(), rowid],
-            )
-            .expect("age occurrence");
             // Poison a NEIGHBOR row: insert a corrupt occurrence for the same
             // schedule so the claim scan meets it.
             conn.execute(
@@ -2041,6 +2085,7 @@ external_addressable = true
         let dispatch = host
             .deliver_internal_member_prompt(
                 &occurrence,
+                &meerkat::ScheduleDeliveryIdentity::for_occurrence(&occurrence),
                 "schedule-none",
                 alias,
                 &meerkat_core::ContentInput::Text("deliver".to_string()),
@@ -2593,41 +2638,9 @@ schedule = true
         let start = chrono::Utc::now() + chrono::Duration::hours(1);
         let (service, store_path) = seed_sqlite_schedule(dir.path(), start).await;
 
-        // Age the first planned occurrence 10 minutes into the past — both the
-        // projection's due_at_utc and the machine state's due_at_utc_ms (they
-        // are recovery-checked against each other), plus the ordering column.
+        // Age the first planned occurrence 10 minutes into the past.
         let overdue = chrono::Utc::now() - chrono::Duration::minutes(10);
-        {
-            let conn = rusqlite::Connection::open(&store_path).expect("open store");
-            let (rowid, bytes): (i64, Vec<u8>) = conn
-                .query_row(
-                    "SELECT rowid, occurrence_json FROM schedule_occurrences \
-                     ORDER BY rowid LIMIT 1",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .expect("read first occurrence");
-            let mut json: serde_json::Value =
-                serde_json::from_slice(&bytes).expect("occurrence json");
-            let old_due_ms = json["machine_state"]["due_at_utc_ms"]
-                .as_i64()
-                .expect("machine due ms");
-            let shift = old_due_ms - overdue.timestamp_millis();
-            json["due_at_utc"] = serde_json::Value::String(overdue.to_rfc3339());
-            json["machine_state"]["due_at_utc_ms"] =
-                serde_json::Value::from(overdue.timestamp_millis());
-            if let Some(deadline) = json["machine_state"]["misfire_deadline_utc_ms"].as_i64() {
-                json["machine_state"]["misfire_deadline_utc_ms"] =
-                    serde_json::Value::from(deadline - shift);
-            }
-            let updated = serde_json::to_vec(&json).expect("serialize occurrence");
-            conn.execute(
-                "UPDATE schedule_occurrences SET occurrence_json = ?1, due_at_ms = ?2 \
-                 WHERE rowid = ?3",
-                rusqlite::params![updated, overdue.timestamp_millis(), rowid],
-            )
-            .expect("age occurrence");
-        }
+        age_first_occurrence(&store_path, overdue);
 
         let probe =
             probe_schedule_firing_pipeline(&service, &store_path, Duration::from_mins(1)).await;
@@ -2641,9 +2654,10 @@ schedule = true
     }
 
     /// HomeCore Observation B: one poisoned schedule row (e.g. a Deleted
-    /// tombstone the recovery invariant rejects) fails the whole list, which
-    /// aborts every driver tick before claiming. The probe must surface the
-    /// list failure and name the poisoned row.
+    /// tombstone the recovery invariant rejects) fails the whole
+    /// all-or-nothing list. The 0.8.11 driver skips it per-row, but that
+    /// schedule never fires and list-backed surfaces are blind. The probe
+    /// must surface the list failure and name the poisoned row.
     #[tokio::test]
     async fn schedule_claim_watchdog_probe_names_poisoned_schedule_row() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2666,14 +2680,23 @@ schedule = true
         );
     }
 
-    /// The claim scan deserializes EVERY occurrence row before leasing
-    /// anything, so one poisoned occurrence silently starves all schedules.
-    /// The probe must surface the scan failure and name the row.
+    /// A poisoned DUE occurrence row no longer starves its neighbors — the
+    /// meerkat 0.8.11 claim scan skips it as a typed per-row fault
+    /// (`schedule_claim_tolerates_poisoned_neighbor_row` proves that) — but
+    /// the row ITSELF can never be claimed and will never fire. The probe's
+    /// own read of the overdue window still fails wholesale on it, and the
+    /// report must surface that failure and name the row.
+    ///
+    /// The row must be inside the probe's overdue window: the store's SQL
+    /// prefilter (indexed `phase` + `due_at_ms`) never deserializes future
+    /// rows, so a poisoned future occurrence is invisible until it comes due.
     #[tokio::test]
     async fn schedule_claim_watchdog_probe_names_poisoned_occurrence_row() {
         let dir = tempfile::tempdir().expect("tempdir");
         let start = chrono::Utc::now() + chrono::Duration::hours(1);
         let (service, store_path) = seed_sqlite_schedule(dir.path(), start).await;
+        let overdue = chrono::Utc::now() - chrono::Duration::minutes(10);
+        age_first_occurrence(&store_path, overdue);
         corrupt_first_row(&store_path, "schedule_occurrences", "occurrence_json");
 
         let probe =

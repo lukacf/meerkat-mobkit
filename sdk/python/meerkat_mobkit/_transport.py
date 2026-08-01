@@ -58,8 +58,17 @@ class PersistentTransport:
 
     Uses a background reader thread to multiplex responses and callbacks.
     Unlike the per-call subprocess transport, this keeps the process alive
-    so mob state persists across calls. stderr is sent to devnull to avoid
-    backpressure deadlocks.
+    so mob state persists across calls.
+
+    Gateway stderr (tracing lines, panic hooks, migration progress) is
+    INHERITED by default so it reaches the host process's stderr. Override
+    with either environment variable:
+
+    - ``MOBKIT_GATEWAY_STDERR_FILE=<path>``: append gateway stderr to a file.
+    - ``MOBKIT_GATEWAY_STDERR=devnull``: discard gateway stderr (the pre-0.8.9
+      default). A production fleet lost a week of panic-hook lines to the old
+      silent default; opt out only when the host genuinely cannot carry the
+      child's stderr.
     """
 
     def __init__(
@@ -104,11 +113,20 @@ class PersistentTransport:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             self._loop = None
-        stderr_target: Any = subprocess.DEVNULL
+        # Default: the child gateway INHERITS this process's stderr (None).
+        # The old DEVNULL default silently discarded tracing, panic hooks,
+        # and migration progress — a week of panic lines went to /dev/null in
+        # one production fleet, and a supervisor aborted a deploy because a
+        # working migration looked like a hang. Opt out explicitly with
+        # MOBKIT_GATEWAY_STDERR=devnull, or redirect to a file with
+        # MOBKIT_GATEWAY_STDERR_FILE=<path>.
+        stderr_target: Any = None
         stderr_path = self._env.get("MOBKIT_GATEWAY_STDERR_FILE", "").strip()
         if stderr_path:
             self._stderr_file = open(stderr_path, "ab", buffering=0)
             stderr_target = self._stderr_file
+        elif self._env.get("MOBKIT_GATEWAY_STDERR", "").strip().lower() == "devnull":
+            stderr_target = subprocess.DEVNULL
 
         self._process = subprocess.Popen(
             [self.gateway_bin, "--persistent"],

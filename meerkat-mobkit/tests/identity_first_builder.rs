@@ -3587,28 +3587,42 @@ async fn identity_first_builder_runtime_checkpoint_follows_initial_session_save_
     assert!(next_version.get() >= 2);
 }
 
-/// WHY the Python e2e's reset checkpoint bound includes 2
-/// (`test_reset_advances_generation` widened `0/1/None` -> `0/1/2/None` when
-/// M4b shipped), traced to its writer and pinned deterministically.
+/// WHY the Python e2e's reset checkpoint bound includes 1 (the value this
+/// wiring reports since the meerkat 0.8.11 repin), traced to its writer and
+/// pinned deterministically.
 ///
-/// The writer is NOT reset's retire cleanup, which the widening commit
-/// guessed at: post-abandon writes are superseded no-ops against the OLD
-/// session key, and the identity's new record has already committed by the
-/// time cleanup debt runs. The writer is the CREATION-WINDOW FLUSH. Under
-/// M4b the initial session document rides the delta channel as TWO
-/// mutations — `append_messages` plus the adopting `save_head` — parked
-/// while the member is created, then replayed at registration under the
-/// real cursor. Each mutation mints one checkpoint version from the
-/// session's single allocator (append = 1, head adoption = 2), so a freshly
-/// materialized member reports checkpoint version exactly 2: at first boot
-/// AND after every reset, whose replacement session repeats the identical
-/// sequence with a fresh allocator. (The unit-level half of this pin lives
-/// in `adapters.rs`:
-/// `incremental_mutations_park_before_registration_and_flush_on_register`.)
+/// The writer is NOT reset's retire cleanup: post-abandon writes are
+/// superseded no-ops against the OLD session key, and the identity's new
+/// record has already committed by the time cleanup debt runs. The writer
+/// is the CREATION-WINDOW FLUSH, whose shape at 0.8.11 is head-canonical
+/// BIRTH through the adapter (the session service drives no store writes;
+/// the created document reaches the continuity adapter as one committed-
+/// boundary projection): the creation document carries ZERO messages at
+/// its first boundary, so birth is `save_head` under a create-CAS alone -
+/// the empty append is skipped - minting exactly ONE checkpoint version. A
+/// freshly materialized member therefore reports checkpoint version
+/// exactly 1: at first boot AND after every reset, whose replacement
+/// session repeats the identical single flush with a fresh allocator.
+///
+/// BOUND HISTORY - this bound was re-derived twice on 2026-07-31, the next
+/// reader needs the whole story:
+/// - M4b era: 2. The service drove the delta channel; the initial document
+///   rode as TWO parked mutations (`append_messages` = 1, adopting
+///   `save_head` = 2) replayed at registration (parking mechanics remain
+///   pinned unit-level in `adapters.rs`:
+///   `incremental_mutations_park_before_registration_and_flush_on_register`).
+/// - 2026-07-31 first re-derivation: 1, attributed to the facade's
+///   whole-document projection landing as a single blob write. SUPERSEDED
+///   the same day: the blob representation was itself the class-A
+///   regression (heads never born), fixed by adapter-owned birth.
+/// - 2026-07-31 final: 1, now via birth-with-empty-append - one `save_head`
+///   under `SessionHeadCas::Create`. Same value as the superseded
+///   derivation, DIFFERENT mechanism; the head-canonical representation is
+///   restored and the single version is the honest creation-window count.
 ///
 /// The e2e bound's other members stay legal for wirings where the creation
-/// save lands after registration (None/0) or for pre-M4b whole-blob flushes
-/// (1). If this test starts failing, the initial-document write shape
+/// save lands after registration (None/0) and for the M4b-era delta flush
+/// (2). If this test starts failing, the initial-document write shape
 /// changed and that bound must be re-derived, not widened again.
 #[tokio::test]
 async fn reset_checkpoint_version_is_the_initial_document_flush_not_cleanup() {
@@ -3642,9 +3656,9 @@ async fn reset_checkpoint_version_is_the_initial_document_flush_not_cleanup() {
         .expect("identity should be active");
     assert_eq!(
         boot.checkpoint_version.map(CheckpointVersion::get),
-        Some(2),
-        "first boot must report the creation-window document at exactly 2 \
-         (append = 1, head adoption = 2)"
+        Some(1),
+        "first boot must report the creation-window document at exactly 1 \
+         (birth of an empty initial document = one create-CAS head write)"
     );
     let old_session = boot.session_id.clone().expect("active session id");
 
@@ -3662,9 +3676,9 @@ async fn reset_checkpoint_version_is_the_initial_document_flush_not_cleanup() {
     // — cleanup debt has not even been recorded when this version is minted.
     assert_eq!(
         reset_record.checkpoint_version.get(),
-        2,
-        "reset must report the replacement document at exactly 2, \
-         written by the creation-window flush"
+        1,
+        "reset must report the replacement document at exactly 1, \
+         written by the creation-window birth flush"
     );
     let after = identity_runtime
         .status(&identity)
@@ -3672,7 +3686,7 @@ async fn reset_checkpoint_version_is_the_initial_document_flush_not_cleanup() {
         .expect("identity should remain active after reset");
     assert_eq!(
         after.checkpoint_version.map(CheckpointVersion::get),
-        Some(2),
+        Some(1),
         "status after reset must report the same creation-flush version"
     );
 
@@ -3687,7 +3701,7 @@ async fn reset_checkpoint_version_is_the_initial_document_flush_not_cleanup() {
             assert_eq!(record.generation.get(), 1);
             assert_eq!(
                 record.checkpoint_version.get(),
-                2,
+                1,
                 "the durable record must hold the creation-flush version, \
                  with no extra checkpoint from retire cleanup"
             );

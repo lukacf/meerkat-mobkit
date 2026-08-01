@@ -192,7 +192,10 @@ pub struct ConsoleTimelineQuery {
     pub conversation_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<ConsoleCursor>,
-    #[serde(default)]
+    /// Same wire/programmatic default alignment as
+    /// [`ConsoleTimelineWindowQuery::limit`]: a bare `#[serde(default)]`
+    /// deserialized 0 for omitted limits while [`Default`] said 200.
+    #[serde(default = "default_timeline_window_limit")]
     pub limit: usize,
 }
 
@@ -219,8 +222,17 @@ pub struct ConsoleTimelineWindowQuery {
     pub before: Option<ConsoleCursor>,
     #[serde(default)]
     pub mode: ConsoleTimelineMode,
-    #[serde(default)]
+    /// Maximum frames returned. Serde default matches [`Default`] (200):
+    /// `#[serde(default)]` alone yielded 0, which the visibility scan clamps
+    /// to 1 — so every wire caller that omitted `limit` got exactly ONE frame
+    /// while programmatic construction got 200. Only the reference front-end
+    /// (which always sends limit=400) never noticed.
+    #[serde(default = "default_timeline_window_limit")]
     pub limit: usize,
+}
+
+fn default_timeline_window_limit() -> usize {
+    200
 }
 
 impl Default for ConsoleTimelineWindowQuery {
@@ -364,4 +376,34 @@ pub struct ConsoleReplayUnavailable {
     pub requested_cursor: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_cursor: Option<ConsoleCursor>,
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod timeline_window_query_defaults {
+    use super::*;
+
+    /// An omitted `limit` on the wire must match the programmatic default.
+    /// Regression: `#[serde(default)]` alone deserialized 0, the scan clamped
+    /// it to 1, and every SDK/test caller that omitted `limit` silently got a
+    /// single frame (the reference front-end always sends 400, hiding it).
+    #[test]
+    fn omitted_limit_deserializes_to_the_struct_default() {
+        let q: ConsoleTimelineWindowQuery = serde_json::from_str("{}").expect("empty query");
+        assert_eq!(q.limit, ConsoleTimelineWindowQuery::default().limit);
+        assert_eq!(q.limit, 200);
+    }
+
+    #[test]
+    fn omitted_limit_on_the_plain_query_matches_its_default_too() {
+        let q: ConsoleTimelineQuery = serde_json::from_str("{}").expect("empty query");
+        assert_eq!(q.limit, ConsoleTimelineQuery::default().limit);
+    }
+
+    #[test]
+    fn explicit_limit_is_preserved() {
+        let q: ConsoleTimelineWindowQuery =
+            serde_json::from_str(r#"{"limit": 7}"#).expect("explicit limit");
+        assert_eq!(q.limit, 7);
+    }
 }

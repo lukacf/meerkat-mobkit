@@ -530,6 +530,9 @@ fn identity_first_types_identity_status_full_roundtrip() {
             durability_policy: DurabilityPolicy::SyncWriteThrough,
             last_checkpoint_version: Some(CheckpointVersion::new(14)),
         }),
+        continuity_unrecoverable: Some(meerkat_mobkit::identity_first::ContinuityUnrecoverable {
+            reason: "the only durable checkpoint is an intra-turn projection".to_string(),
+        }),
     };
     let json = serde_json::to_string(&status).expect("serialize");
     let back: IdentityStatus = serde_json::from_str(&json).expect("deserialize");

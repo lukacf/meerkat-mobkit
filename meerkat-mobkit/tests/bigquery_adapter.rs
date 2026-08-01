@@ -766,7 +766,18 @@ async fn phase_f_bigquery_timeout_and_connection_failures_surface_http_errors() 
 #[test]
 #[ignore] // requires real BigQuery credentials and network
 fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
-    let access_token = require_bigquery_access_token();
+    // Self-skip without credentials (same idiom as the env-gated tests in
+    // gateway_external.rs): a contributor without GCP access sees SKIP, not
+    // FAIL, when running the ignored lane.
+    let Some(access_token) = bigquery_access_token() else {
+        eprintln!(
+            "skipping phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics \
+             because no BigQuery credentials are available: set BIGQUERY_ACCESS_TOKEN (or \
+             GOOGLE_OAUTH_ACCESS_TOKEN), or run `gcloud auth application-default login` for \
+             project `{REAL_BQ_PROJECT}`"
+        );
+        return;
+    };
     let api_base_url = std::env::var("BIGQUERY_API_BASE_URL")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -1152,7 +1163,14 @@ fn unused_bigquery_api_base_url() -> String {
     format!("http://{address}/bigquery/v2")
 }
 
-fn require_bigquery_access_token() -> String {
+/// Resolve a BigQuery bearer token from the environment or gcloud ADC.
+///
+/// `None` means "no GCP credentials here" and the caller must SKIP, not
+/// FAIL: contributors without access to project `king-dnn-training-dev`
+/// (and CI runners) still run the ignored lane via `--ignored`, and a
+/// missing-prerequisite panic reads as a red test rather than an
+/// environment gap.
+fn bigquery_access_token() -> Option<String> {
     for key in [
         "BIGQUERY_ACCESS_TOKEN",
         "GOOGLE_OAUTH_ACCESS_TOKEN",
@@ -1161,7 +1179,7 @@ fn require_bigquery_access_token() -> String {
         if let Ok(token) = std::env::var(key) {
             let token = token.trim();
             if !token.is_empty() {
-                return token.to_string();
+                return Some(token.to_string());
             }
         }
     }
@@ -1173,15 +1191,12 @@ fn require_bigquery_access_token() -> String {
         if output.status.success() {
             let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !token.is_empty() {
-                return token;
+                return Some(token);
             }
         }
     }
 
-    panic!(
-        "Phase F BigQuery integration prerequisite missing: provide a bearer token via BIGQUERY_ACCESS_TOKEN (or GOOGLE_OAUTH_ACCESS_TOKEN), or run `gcloud auth application-default login` and confirm `gcloud auth application-default print-access-token` works for project `{}`.",
-        REAL_BQ_PROJECT
-    );
+    None
 }
 
 fn unix_ms() -> u64 {

@@ -133,12 +133,101 @@ pub(crate) const MOBKIT_CONTINUITY_DOMAIN: meerkat_sqlite::SchemaDomain =
                 apply: migration_0002_head_canonical_sessions,
             },
         ],
+        initialize_current: initialize_current_continuity_schema,
+        allowed_existing_versions: &[1, 2],
+        released_predecessors: &[meerkat_sqlite::SchemaPredecessor {
+            version: 1,
+            verify: verify_released_v1_continuity_schema,
+        }],
+        owned_objects: CONTINUITY_OWNED_OBJECTS,
+        retired_objects: &[],
     };
 
-/// The open-time domain: migration 0001 only. Opening a fresh or pre-ledger
-/// file converges it to v1 exactly as every previous release did, and an
-/// already-v2 file is left alone (the version check below runs against the
-/// FULL domain, so a v2 file is not "from the future").
+const RELEASED_V1_CONTINUITY_OBJECTS: &[meerkat_sqlite::SchemaObject] = &[
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "continuity_records",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "session_snapshots",
+    },
+];
+
+const CONTINUITY_OWNED_OBJECTS: &[meerkat_sqlite::SchemaObject] = &[
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "continuity_records",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "session_snapshots",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "continuity_session_heads",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "continuity_strand_messages",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "continuity_session_rewrites",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Index,
+        name: "continuity_records_session_idx",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Index,
+        name: "continuity_heads_identity_gen_idx",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Index,
+        name: "continuity_strands_identity_gen_idx",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Index,
+        name: "continuity_rewrites_identity_gen_idx",
+    },
+];
+
+fn initialize_current_continuity_schema(
+    tx: &rusqlite::Transaction<'_>,
+) -> Result<(), rusqlite::Error> {
+    migration_0001_continuity_schema(tx)?;
+    migration_0002_head_canonical_sessions(tx)
+}
+
+/// Frozen v1 verifier honoring the deferred-stamp design: a delta write may
+/// commit the head-canonical DDL inside its own transaction and leave the
+/// ledger at v1 until head state actually exists, so a v1 file legally
+/// carries either the plain two-table v1 catalog or the complete current DDL.
+fn verify_released_v1_continuity_schema(conn: &rusqlite::Connection) -> Result<(), String> {
+    meerkat_sqlite::verify_released_schema_fingerprint(
+        conn,
+        &MOBKIT_CONTINUITY_DOMAIN,
+        RELEASED_V1_CONTINUITY_OBJECTS,
+        migration_0001_continuity_schema,
+    )
+    .or_else(|plain| {
+        meerkat_sqlite::verify_released_schema_fingerprint(
+            conn,
+            &MOBKIT_CONTINUITY_DOMAIN,
+            CONTINUITY_OWNED_OBJECTS,
+            initialize_current_continuity_schema,
+        )
+        .map_err(|full| {
+            format!("v1 catalog: {plain}; v1 + deferred head-canonical DDL catalog: {full}")
+        })
+    })
+}
+
+/// The open-time domain: migration 0001 only. Opening a fresh file converges
+/// it to v1 exactly as every previous release did, and an already-v2 file is
+/// left alone (the version check below runs against the FULL domain, so a v2
+/// file is not "from the future").
 const MOBKIT_CONTINUITY_BASELINE_DOMAIN: meerkat_sqlite::SchemaDomain =
     meerkat_sqlite::SchemaDomain {
         name: "mobkit-continuity",
@@ -147,6 +236,11 @@ const MOBKIT_CONTINUITY_BASELINE_DOMAIN: meerkat_sqlite::SchemaDomain =
             name: "base-schema",
             apply: migration_0001_continuity_schema,
         }],
+        initialize_current: migration_0001_continuity_schema,
+        allowed_existing_versions: &[1],
+        released_predecessors: &[],
+        owned_objects: RELEASED_V1_CONTINUITY_OBJECTS,
+        retired_objects: &[],
     };
 
 fn migration_0001_continuity_schema(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Error> {
@@ -159,6 +253,29 @@ fn migration_0002_head_canonical_sessions(
     tx.execute_batch(SCHEMA_HEAD_CANONICAL)
 }
 
+/// Refuse a file whose `mobkit-continuity` ledger is ahead of this binary.
+///
+/// Local replacement for the retired `meerkat_sqlite::refuse_future_schema`:
+/// deliberately ONLY a future-version check, because the deferred-stamp
+/// design legally leaves a v1 ledger over committed head-canonical DDL, a
+/// shape exact per-version catalog eligibility would refuse at every open.
+fn refuse_future_continuity_schema(conn: &Connection) -> Result<(), ContinuityStoreError> {
+    let supported = MOBKIT_CONTINUITY_DOMAIN.supported_version();
+    let found = meerkat_sqlite::domain_version(conn, MOBKIT_CONTINUITY_DOMAIN.name)
+        .map_err(|e| mechanics_err("continuity schema preflight", e))?;
+    match found {
+        Some(found) if found > supported => Err(mechanics_err(
+            "continuity schema preflight",
+            meerkat_sqlite::SqliteStoreError::SchemaFromTheFuture {
+                domain: MOBKIT_CONTINUITY_DOMAIN.name.to_string(),
+                found,
+                supported,
+            },
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Open-time schema convergence that never commits the one-way v2 bump.
 ///
 /// Returns whether the file already carries the head-canonical channel.
@@ -169,8 +286,7 @@ fn migration_0002_head_canonical_sessions(
 /// - no ledger row (fresh or pre-ledger file) => baseline v1 applied, exactly
 ///   as before this release.
 fn converge_schema_at_open(conn: &mut Connection) -> Result<bool, ContinuityStoreError> {
-    meerkat_sqlite::refuse_future_schema(conn, &MOBKIT_CONTINUITY_DOMAIN)
-        .map_err(|e| mechanics_err("continuity schema preflight", e))?;
+    refuse_future_continuity_schema(conn)?;
     let version = meerkat_sqlite::domain_version(conn, MOBKIT_CONTINUITY_DOMAIN.name)
         .map_err(|e| mechanics_err("read continuity ledger", e))?;
     match version {
@@ -200,8 +316,7 @@ fn converge_schema_at_open(conn: &mut Connection) -> Result<bool, ContinuityStor
 /// continuity ledger row (every opener converges one; its absence under a
 /// write transaction is corruption, not a fresh file).
 fn converge_head_canonical_schema_in_txn(tx: &Transaction<'_>) -> Result<(), ContinuityStoreError> {
-    meerkat_sqlite::refuse_future_schema(tx, &MOBKIT_CONTINUITY_DOMAIN)
-        .map_err(|e| mechanics_err("continuity schema preflight", e))?;
+    refuse_future_continuity_schema(tx)?;
     let current = meerkat_sqlite::domain_version(tx, MOBKIT_CONTINUITY_DOMAIN.name)
         .map_err(|e| mechanics_err("read continuity ledger", e))?
         .ok_or_else(|| {
@@ -1076,27 +1191,247 @@ fn blob_session_in_txn(
     let Some(data) = data else {
         return Ok(None);
     };
-    let session: Session = serde_json::from_slice(&data)
-        .map_err(|error| SessionStoreError::Serialization(error.to_string()))?;
-    Ok(Some(session))
+    match serde_json::from_slice::<Session>(&data) {
+        Ok(session) => Ok(Some(session)),
+        Err(decode_error) => import_released_blob_in_txn(tx, id, &data, &decode_error).map(Some),
+    }
+}
+
+/// Same-transaction one-time import of a released 0.8.10 blob row.
+///
+/// Per the banked 0.8.11 import contract: the public core importer is the
+/// sole boundary allowed to interpret released evidence, the non-Clone
+/// receipt is consumed by the adoption, the source blob SHA is re-proved
+/// against the exact bytes read, nothing mints the retired vocabulary, and
+/// every proof failure fails closed. The durable adoption rewrites the
+/// payload bytes INSIDE the caller's transaction; the row's cursor custody
+/// columns stay exactly as observed. A read-only transaction (the read-pool
+/// fallbacks) serves the imported document without adoption - the first
+/// write-path decode (head-canonical conversion, delta writes) adopts.
+fn import_released_blob_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    source: &[u8],
+    decode_error: &serde_json::Error,
+) -> Result<Session, SessionStoreError> {
+    use sha2::Digest as _;
+
+    let imported = meerkat_core::import_released_0810_session(source).map_err(|import| {
+        SessionStoreError::Serialization(format!(
+            "continuity blob {id} decodes neither as a current document ({decode_error}) nor as              a released 0.8.10 envelope ({import})"
+        ))
+    })?;
+    let (session, receipt) = imported.into_parts();
+    let observed_sha256: [u8; 32] = sha2::Sha256::digest(source).into();
+    if receipt.source_document_sha256() != &observed_sha256 {
+        return Err(SessionStoreError::Serialization(format!(
+            "continuity blob {id} changed during exact released-0.8.10 import"
+        )));
+    }
+    if receipt.session_id() != id {
+        return Err(SessionStoreError::Serialization(format!(
+            "continuity blob key {id} contains released session {}",
+            receipt.session_id()
+        )));
+    }
+    let current = session
+        .to_persisted_bytes()
+        .map_err(|e| SessionStoreError::Serialization(e.to_string()))?;
+    // The receipt is consumed by this durable adoption inside the caller's
+    // transaction.
+    drop(receipt);
+    let changed = match tx.execute(
+        "UPDATE session_snapshots SET data = ?2 WHERE session_id = ?1",
+        rusqlite::params![id.to_string(), current],
+    ) {
+        Ok(changed) => changed,
+        Err(rusqlite::Error::SqliteFailure(failure, _))
+            if failure.code == rusqlite::ErrorCode::ReadOnly =>
+        {
+            // Read-pool fallback: serve the imported document; the first
+            // write-path decode (head-canonical conversion, delta writes)
+            // performs the durable adoption.
+            tracing::info!(
+                session_id = %id,
+                "released 0.8.10 blob imported on a read-only connection; durable adoption \
+                 follows the first write-path decode"
+            );
+            return Ok(session);
+        }
+        Err(e) => return Err(sqlite_session_err("adopt imported released snapshot", e)),
+    };
+    if changed != 1 {
+        return Err(SessionStoreError::Corrupted(id.clone()));
+    }
+    tracing::info!(
+        session_id = %id,
+        source_bytes = source.len(),
+        current_bytes = current.len(),
+        "released 0.8.10 blob imported and durably adopted in-transaction"
+    );
+    Ok(session)
+}
+
+/// Full-vector projection of the 0.8.11 splice-based [`StrandLayout`].
+///
+/// The continuity schema stores every strand as its complete message vector
+/// (there is no strand-link table), so the append-only suffix/splice layout
+/// is materialized back into full per-strand rows. The walk mirrors the
+/// lineage validation in meerkat's own blob conversion: parent-transition
+/// splice, parent-suffix extension, successor replacement splice, tail.
+struct MaterializedBlobLayout {
+    /// Full rows per strand, in first-appearance order. A strand id extended
+    /// across rewrites (exact-append parents) holds its final, longest vector.
+    strands: Vec<(TranscriptStrandId, Vec<Message>)>,
+    rewrites: Vec<RewriteRow>,
+    head_strand: TranscriptStrandId,
+}
+
+impl MaterializedBlobLayout {
+    fn from_layout(
+        id: &meerkat_core::types::SessionId,
+        layout: &StrandLayout,
+    ) -> Result<Self, SessionStoreError> {
+        fn decode_rows(
+            id: &meerkat_core::types::SessionId,
+            rows: &[Vec<u8>],
+        ) -> Result<Vec<Message>, SessionStoreError> {
+            rows.iter()
+                .map(|bytes| {
+                    serde_json::from_slice::<Message>(bytes).map_err(|error| {
+                        SessionStoreError::InvalidTranscriptRewrite {
+                            id: id.clone(),
+                            reason: format!("layout strand row does not decode: {error}"),
+                        }
+                    })
+                })
+                .collect()
+        }
+        fn splice_rows(
+            id: &meerkat_core::types::SessionId,
+            source: &[Message],
+            start: u64,
+            end: u64,
+            replacement: &[Message],
+        ) -> Result<Vec<Message>, SessionStoreError> {
+            let start =
+                usize::try_from(start).map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+            let end = usize::try_from(end).map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+            if start > end || end > source.len() {
+                return Err(SessionStoreError::Corrupted(id.clone()));
+            }
+            let mut rows = Vec::with_capacity(source.len() - (end - start) + replacement.len());
+            rows.extend_from_slice(&source[..start]);
+            rows.extend_from_slice(replacement);
+            rows.extend_from_slice(&source[end..]);
+            Ok(rows)
+        }
+        fn upsert(
+            strands: &mut Vec<(TranscriptStrandId, Vec<Message>)>,
+            strand: &TranscriptStrandId,
+            rows: Vec<Message>,
+        ) {
+            if let Some(entry) = strands.iter_mut().find(|(sid, _)| sid == strand) {
+                entry.1 = rows;
+            } else {
+                strands.push((strand.clone(), rows));
+            }
+        }
+
+        let mut strands: Vec<(TranscriptStrandId, Vec<Message>)> = Vec::new();
+        let mut current = decode_rows(id, &layout.serialized_anchor)?;
+        let mut current_strand = layout.anchor_strand.clone();
+        upsert(&mut strands, &current_strand, current.clone());
+        let mut rewrites = Vec::with_capacity(layout.rewrites.len());
+        for rewrite in &layout.rewrites {
+            match &rewrite.parent_transition {
+                meerkat_core::session_store::PreparedHeadCanonicalParentTransition::ExactAppend => {
+                    if rewrite.parent_strand != current_strand {
+                        return Err(SessionStoreError::Corrupted(id.clone()));
+                    }
+                }
+                meerkat_core::session_store::PreparedHeadCanonicalParentTransition::ExactSplice(
+                    parent_splice,
+                ) => {
+                    let link = parent_splice.link_splice();
+                    let replacement = decode_rows(id, parent_splice.serialized_replacement())?;
+                    current = splice_rows(
+                        id,
+                        &current,
+                        link.splice_start,
+                        link.splice_end,
+                        &replacement,
+                    )?;
+                    current_strand = rewrite.parent_strand.clone();
+                }
+            }
+            if u64::try_from(current.len()).map_err(|_| SessionStoreError::Corrupted(id.clone()))?
+                != rewrite.parent_base_seq
+            {
+                return Err(SessionStoreError::Corrupted(id.clone()));
+            }
+            current.extend(decode_rows(id, &rewrite.serialized_parent_suffix)?);
+            let parent_len = u64::try_from(current.len())
+                .map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+            upsert(&mut strands, &current_strand, current.clone());
+            let replacement = decode_rows(id, &rewrite.serialized_replacement)?;
+            current = splice_rows(
+                id,
+                &current,
+                rewrite.link_splice.splice_start,
+                rewrite.link_splice.successor_end,
+                &replacement,
+            )?;
+            if u64::try_from(current.len()).map_err(|_| SessionStoreError::Corrupted(id.clone()))?
+                != rewrite.link_splice.strand_len
+            {
+                return Err(SessionStoreError::Corrupted(id.clone()));
+            }
+            current_strand = rewrite.strand.clone();
+            upsert(&mut strands, &current_strand, current.clone());
+            rewrites.push(RewriteRow {
+                commit: rewrite.commit.clone(),
+                parent_strand: rewrite.parent_strand.clone(),
+                parent_len,
+                strand: rewrite.strand.clone(),
+                strand_len: rewrite.link_splice.strand_len,
+            });
+        }
+        if layout.head_strand != current_strand {
+            return Err(SessionStoreError::Corrupted(id.clone()));
+        }
+        current.extend(decode_rows(id, &layout.serialized_tail)?);
+        if u64::try_from(current.len()).map_err(|_| SessionStoreError::Corrupted(id.clone()))?
+            != layout.head_len
+        {
+            return Err(SessionStoreError::Corrupted(id.clone()));
+        }
+        upsert(&mut strands, &current_strand, current);
+        Ok(Self {
+            strands,
+            rewrites,
+            head_strand: layout.head_strand.clone(),
+        })
+    }
 }
 
 fn layout_for_blob_session(
     session: &Session,
-) -> Result<(StrandLayout, SessionHead), SessionStoreError> {
-    let state = session.transcript_history_state().map_err(|err| {
-        SessionStoreError::InvalidTranscriptRewrite {
+) -> Result<(MaterializedBlobLayout, SessionHead), SessionStoreError> {
+    let history = session
+        .validated_transcript_history_state()
+        .map_err(|err| SessionStoreError::InvalidTranscriptRewrite {
             id: session.id().clone(),
             reason: format!("stored transcript history state is malformed: {err}"),
-        }
-    })?;
-    let layout = strand_layout_for_history(session.id(), state.as_ref(), session.messages())?;
+        })?;
+    let layout = strand_layout_for_history(session, history.as_ref())?;
+    let materialized = MaterializedBlobLayout::from_layout(session.id(), &layout)?;
     let head = SessionHead::from_session(
         session,
-        layout.head_strand.clone(),
-        layout.rewrites.len() as u64,
+        materialized.head_strand.clone(),
+        materialized.rewrites.len() as u64,
     )?;
-    Ok((layout, head))
+    Ok((materialized, head))
 }
 
 /// One-time per-session migration inside the caller's transaction: lay the
@@ -1147,20 +1482,7 @@ fn migrate_legacy_blob_in_txn(
         insert_strand_rows_in_txn(tx, id, strand, 0, rows, identity, generation)?;
     }
     for (idx, rewrite) in layout.rewrites.iter().enumerate() {
-        insert_rewrite_row_in_txn(
-            tx,
-            id,
-            idx as u64,
-            &RewriteRow {
-                commit: rewrite.commit.clone(),
-                parent_strand: rewrite.parent_strand.clone(),
-                parent_len: rewrite.parent_len,
-                strand: rewrite.strand.clone(),
-                strand_len: rewrite.strand_len,
-            },
-            identity,
-            generation,
-        )?;
+        insert_rewrite_row_in_txn(tx, id, idx as u64, rewrite, identity, generation)?;
     }
     let token = write_head_row_in_txn(tx, &head, identity, generation, version, fencing_token)?;
     tracing::info!(
@@ -1196,7 +1518,211 @@ fn materialize_slim_in_txn(
     head: &SessionHead,
 ) -> Result<Session, SessionStoreError> {
     let messages = strand_messages_in_txn(tx, id, &head.strand, 0..head.message_count)?;
-    head.clone().into_session(messages)
+    match head.clone().into_session(messages) {
+        Ok(session) => Ok(session),
+        // Released 0.8.10 HEAD ROW (session envelope v2): interpretable only
+        // through the explicit one-time importer — the head-row lane of the
+        // same contract `import_released_blob_in_txn` implements for whole
+        // blobs. Every 0.8.10-written head refuses current materialization
+        // (`Session::from_head_parts` fails typed on the envelope version),
+        // so without this lane an entire released head-canonical fleet is
+        // unreadable at resume (HomeCore binding, 17/17 identities:
+        // "failed to restore session from head row: ... expected current 3,
+        // got 2").
+        Err(restore_error)
+            if head.version == super::contracts::RELEASED_0810_SESSION_ENVELOPE_VERSION =>
+        {
+            import_released_head_in_txn(
+                tx,
+                id,
+                head,
+                &format!("failed current materialization ({restore_error})"),
+            )
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Serialized-verbatim released envelope, reassembled from the exact durable
+/// parts a released 0.8.10 head row commits to. `messages` embeds the exact
+/// strand row bytes (`RawValue`), never a re-serialization, so the importer
+/// interprets precisely what the released writer persisted.
+#[derive(serde::Serialize)]
+struct ReleasedHeadEnvelope0810<'a> {
+    version: u32,
+    id: &'a meerkat_core::types::SessionId,
+    messages: &'a [Box<serde_json::value::RawValue>],
+    created_at: std::time::SystemTime,
+    updated_at: std::time::SystemTime,
+    metadata: &'a serde_json::Map<String, serde_json::Value>,
+    usage: &'a meerkat_core::Usage,
+}
+
+/// One-time released-0.8.10 import for a HEAD-CANONICAL continuity document.
+///
+/// Same banked import contract as [`import_released_blob_in_txn`], adapted to
+/// the head representation: the public core importer is the sole boundary
+/// allowed to interpret released evidence, and every proof failure fails
+/// closed with the original refusal surfaced (never a healed reading).
+///
+/// Proof chain, in order:
+/// 1. The exact durable strand rows must be the rows the released head
+///    committed to: `released_0810_transcript_serialized_rows_digest` (the
+///    byte-faithful recomputation of the released transcript digest) must
+///    equal `head.head_revision`.
+/// 2. The released envelope is reassembled from those exact bytes plus the
+///    head's own envelope facts (a released head inlines its full metadata
+///    map — `metadata_identity` is a 0.8.11 concept), and handed to
+///    `import_released_0810_session`, which re-validates the envelope
+///    version and every released metadata shape.
+/// 3. The receipt's source digest is re-proved against the exact bytes
+///    interpreted, and its session id against the row key.
+///
+/// This runs on the read pool, so like the blob lane's read-only fallback it
+/// serves the imported document WITHOUT durable adoption: the first
+/// write-path decode observes the released head, fails its prefix-digest
+/// probe against the current algorithm, and rebases the strand under a
+/// current-format head — the durable adoption every later read observes.
+fn import_released_head_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    head: &SessionHead,
+    refusal_context: &str,
+) -> Result<Session, SessionStoreError> {
+    use sha2::Digest as _;
+
+    let raw_rows = strand_row_bytes_in_txn(tx, id, &head.strand, 0..head.message_count)?;
+    let released_digest = meerkat_core::released_0810_transcript_serialized_rows_digest(&raw_rows)
+        .map_err(|digest_error| {
+            SessionStoreError::Serialization(format!(
+                "continuity head row {id} {refusal_context} and \
+                 its strand rows do not admit the released 0.8.10 digest ({digest_error})"
+            ))
+        })?;
+    if released_digest != head.head_revision {
+        return Err(SessionStoreError::Serialization(format!(
+            "continuity head row {id} {refusal_context} and its \
+             strand rows do not match the released head commitment (released digest \
+             {released_digest}, head revision {})",
+            head.head_revision
+        )));
+    }
+    let messages = raw_rows
+        .into_iter()
+        .map(|bytes| {
+            String::from_utf8(bytes)
+                .map_err(|_| SessionStoreError::Corrupted(id.clone()))
+                .and_then(|row| {
+                    serde_json::value::RawValue::from_string(row)
+                        .map_err(|_| SessionStoreError::Corrupted(id.clone()))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let envelope = serde_json::to_vec(&ReleasedHeadEnvelope0810 {
+        version: head.version,
+        id,
+        messages: &messages,
+        created_at: head.created_at,
+        updated_at: head.updated_at,
+        metadata: &head.metadata,
+        usage: &head.usage,
+    })
+    .map_err(|e| SessionStoreError::Serialization(e.to_string()))?;
+    let imported = meerkat_core::import_released_0810_session(&envelope).map_err(|import| {
+        SessionStoreError::Serialization(format!(
+            "continuity head row {id} {refusal_context} and does not interpret as a \
+             released 0.8.10 head-canonical document either ({import})"
+        ))
+    })?;
+    let (session, receipt) = imported.into_parts();
+    let observed_sha256: [u8; 32] = sha2::Sha256::digest(&envelope).into();
+    if receipt.source_document_sha256() != &observed_sha256 {
+        return Err(SessionStoreError::Serialization(format!(
+            "continuity head row {id} changed during exact released-0.8.10 import"
+        )));
+    }
+    if receipt.session_id() != id {
+        return Err(SessionStoreError::Serialization(format!(
+            "continuity head key {id} contains released session {}",
+            receipt.session_id()
+        )));
+    }
+    drop(receipt);
+    tracing::info!(
+        session_id = %id,
+        released_rows = head.message_count,
+        "released 0.8.10 head-canonical document imported on load; durable adoption follows \
+         the first write-path decode"
+    );
+    Ok(session)
+}
+
+/// One-time durable adoption of a released 0.8.10 head-canonical document,
+/// inside the caller's WRITE transaction (see
+/// `ContinuityIncrementalSessions::adopt_released_head_document`).
+///
+/// A released head with retained rewrites cannot authorize a current
+/// mutation - its rewrite-generation authority predates the compact
+/// graph/rewrite-prefix carriers, so `session_head_cas_token` refuses it
+/// typed and every ordinary write arm is unreachable. Authorization here is
+/// the import proof: the stored released document is re-proved through
+/// [`import_released_head_in_txn`] (byte proof against the released head
+/// commitment + the sanctioned importer + receipt re-proof), `incoming` must
+/// be a legal successor of that imported reading (equal or append-extension;
+/// the boundary guard refuses genuine divergence typed), and only then is the
+/// released representation replaced wholesale with the current-format layout
+/// of `incoming` - the same strand/rewrite/head writer the legacy-blob
+/// migration uses, so rewrite-carrying documents lay out identically to a
+/// converted blob.
+fn adopt_released_head_in_txn(
+    tx: &Transaction<'_>,
+    incoming: &Session,
+    identity: &AgentIdentity,
+    generation: ContinuityGeneration,
+    version: CheckpointVersion,
+    fencing_token: FencingToken,
+) -> Result<(), SessionStoreError> {
+    let id = incoming.id();
+    let Some((stored, _token)) = head_row_in_txn(tx, id)? else {
+        return Err(SessionStoreError::Internal(format!(
+            "released head adoption for session {id} found no durable head row; the adoption \
+             lane is only reachable from a stored released head"
+        )));
+    };
+    if stored.version != super::contracts::RELEASED_0810_SESSION_ENVELOPE_VERSION {
+        return Err(SessionStoreError::Internal(format!(
+            "released head adoption for session {id} found a current head (envelope version \
+             {}); refusing to re-adopt a document the ordinary write arms already own",
+            stored.version
+        )));
+    }
+    let imported =
+        import_released_head_in_txn(tx, id, &stored, "is being adopted on the write path")?;
+    meerkat_core::session_store::append_only_save_guard(incoming, Some(&imported))?;
+    // The released rows are being REPLACED wholesale inside this transaction;
+    // nothing can observe the intermediate state, and the imported reading
+    // above is the receipt-proved successor source. The head row itself is
+    // upserted by `write_head_row_in_txn`.
+    delete_orphan_head_canonical_rows_in_txn(tx, id)?;
+    let started = std::time::Instant::now();
+    let (layout, head) = layout_for_blob_session(incoming)?;
+    for (strand, rows) in &layout.strands {
+        insert_strand_rows_in_txn(tx, id, strand, 0, rows, identity, generation)?;
+    }
+    for (idx, rewrite) in layout.rewrites.iter().enumerate() {
+        insert_rewrite_row_in_txn(tx, id, idx as u64, rewrite, identity, generation)?;
+    }
+    write_head_row_in_txn(tx, &head, identity, generation, version, fencing_token)?;
+    tracing::info!(
+        session_id = %id,
+        released_rows = stored.message_count,
+        released_rewrite_count = stored.rewrite_count,
+        adopted_rows = head.message_count,
+        adopted_rewrite_count = head.rewrite_count,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "released 0.8.10 head-canonical document durably adopted on the write path"
+    );
+    Ok(())
 }
 
 /// Head-canonical compat write for a WHOLE-document verb: delta-append when
@@ -1219,7 +1745,7 @@ fn write_head_canonical_session_in_txn(
         && meerkat_core::transcript_messages_digest(&live[..prev_count])
             .map_err(SessionStoreError::from)?
             == head.head_revision;
-    let strand = if plain_append {
+    let new_head = if plain_append {
         if live.len() > prev_count {
             insert_strand_rows_in_txn(
                 tx,
@@ -1231,15 +1757,50 @@ fn write_head_canonical_session_in_txn(
                 generation,
             )?;
         }
-        head.strand.clone()
+        // The successor head must commit to the EXACT durable row bytes.
+        // Rows 0..prev_count keep the serialization they were written with,
+        // which need not equal re-encoding the same typed Messages today, so
+        // the stored commitment is EXTENDED by only the appended rows' bytes
+        // - mirrors meerkat-core
+        // `SessionHead::from_session_with_proved_inline_storage_authority`, the
+        // published seam for retained boundaries whose exact row bytes may
+        // use an older representation. Re-minting via `from_session` breaks
+        // `SessionHead::into_session`'s byte-exact prefix verification on
+        // the next cold materialization.
+        match head.message_row_prefix.clone() {
+            Some(prefix) => {
+                let appended_serialized = live[prev_count..]
+                    .iter()
+                    .map(|message| serde_json::to_vec(message).map_err(SessionStoreError::from))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let proved = prefix.extend_serialized_rows(&appended_serialized)?;
+                SessionHead::from_session_with_proved_inline_storage_authority(
+                    session,
+                    head.strand.clone(),
+                    head.rewrite_prefix.clone(),
+                    proved,
+                )?
+            }
+            None => {
+                // A pre-0.8.11 head whose row identity was never proved
+                // stays unproved rather than inventing a commitment the
+                // stored rows may not satisfy.
+                let mut unproved =
+                    SessionHead::from_session(session, head.strand.clone(), head.rewrite_count)?;
+                unproved.message_row_prefix = None;
+                unproved.row_lineage_anchor = None;
+                unproved
+            }
+        }
     } else {
         let live_digest =
             meerkat_core::transcript_messages_digest(live).map_err(SessionStoreError::from)?;
         let rebased = TranscriptStrandId::rebase(&live_digest);
         insert_strand_rows_in_txn(tx, id, &rebased, 0, live, identity, generation)?;
-        rebased
+        // A fresh strand: every row was just written from these exact
+        // instances, so the minted commitment matches the durable bytes.
+        SessionHead::from_session(session, rebased, head.rewrite_count)?
     };
-    let new_head = SessionHead::from_session(session, strand, head.rewrite_count)?;
     write_head_row_in_txn(tx, &new_head, identity, generation, version, fencing_token)?;
     Ok(())
 }
@@ -2459,6 +3020,85 @@ impl ContinuityIncrementalSessions for LocalContinuityStore {
         .await
     }
 
+    async fn adopt_released_head_document(
+        &self,
+        cursor: &ContinuityWriteCursor,
+        session: &meerkat_core::Session,
+    ) -> Result<(), SessionStoreError> {
+        let session = session.clone();
+        self.delta_write(
+            "continuity adopt_released_head_document",
+            cursor,
+            session.id().clone(),
+            move |tx, cursor| {
+                adopt_released_head_in_txn(
+                    tx,
+                    &session,
+                    &cursor.identity,
+                    cursor.generation,
+                    cursor.checkpoint_version,
+                    cursor.fencing_token,
+                )
+            },
+        )
+        .await
+    }
+
+    async fn session_head_matches_current(
+        &self,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+        generation: ContinuityGeneration,
+        fencing_token: FencingToken,
+        head: &SessionHead,
+    ) -> Result<bool, SessionStoreError> {
+        let identity = identity.clone();
+        let session_id = session_id.clone();
+        let head = head.clone();
+        self.delta_read(
+            "continuity session_head_matches_current",
+            move |tx, head_tables| {
+                if !head_tables {
+                    return Ok(false);
+                }
+                let Some((stored, _token)) = head_row_in_txn(tx, &session_id)? else {
+                    return Ok(false);
+                };
+                if stored != head {
+                    return Ok(false);
+                }
+                // Fence currency, same shape `enforce_continuity_cursor_in_txn`
+                // validates on the mutating verbs: the identity's CURRENT
+                // record must bind this session and generation, and its fence
+                // must EQUAL the presented one. An advanced durable fence
+                // makes this probe false so the caller's fencing write verb
+                // surfaces the ordinary stale-fence refusal.
+                let record = tx
+                    .query_row(
+                        "SELECT session_id, generation, fencing_token
+                         FROM continuity_records WHERE identity = ?1",
+                        rusqlite::params![identity.as_str()],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, u64>(1)?,
+                                row.get::<_, u64>(2)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|e| sqlite_session_err("query continuity record", e))?;
+                let Some((record_session, record_generation, record_token)) = record else {
+                    return Ok(false);
+                };
+                Ok(record_session == session_id.to_string()
+                    && record_generation == generation.get()
+                    && record_token == fencing_token.get())
+            },
+        )
+        .await
+    }
+
     async fn load_head(
         &self,
         id: &meerkat_core::types::SessionId,
@@ -2657,10 +3297,13 @@ mod tests {
         );
     }
 
+    /// A pre-ledger file (historical two-table DDL, no meerkat_schema table)
+    /// is refused typed at open with its rows left untouched and no ledger
+    /// stamped: pre-ledger corpora are below the mobkit 0.8.8 floor, and the
+    /// 0.8.11 reset retired silent pre-floor convergence (this test pinned
+    /// that convergence until then).
     #[tokio::test]
-    async fn legacy_file_opens_converges_and_preserves_rows() {
-        // A pre-ledger file (historical two-table DDL, no meerkat_schema
-        // table) must open, be stamped, and keep its rows readable.
+    async fn legacy_file_is_refused_with_rows_preserved() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("continuity.sqlite3");
         let identity = AgentIdentity::parse("triage:main").unwrap();
@@ -2682,27 +3325,31 @@ mod tests {
             .expect("legacy snapshot");
         }
 
-        let store = LocalContinuityStore::open(&path).expect("open legacy");
-        let resolved = store
-            .resolve_many(std::slice::from_ref(&identity))
-            .await
-            .expect("resolve");
-        match resolved.get(&identity) {
-            Some(ContinuityResolveState::Ready { record }) => {
-                assert_eq!(record.generation.get(), 3);
-                assert_eq!(record.checkpoint_version.get(), 5);
-            }
-            other => panic!("legacy record must survive the port: {other:?}"),
-        }
-        assert_eq!(
-            store.max_fencing_token().expect("floor"),
-            9,
-            "fencing floor spans both legacy tables"
+        assert!(
+            LocalContinuityStore::open(&path).is_err(),
+            "opening a pre-ledger continuity database must refuse typed: unledgered owned \
+             tables are below the mobkit 0.8.8 floor and must never be silently converged"
         );
         let probe = Connection::open(&path).expect("probe");
+        let (generation, checkpoint): (i64, i64) = probe
+            .query_row(
+                "SELECT generation, checkpoint_version FROM continuity_records \
+                 WHERE identity = ?1",
+                rusqlite::params![identity.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("legacy record preserved");
+        assert_eq!((generation, checkpoint), (3, 5));
+        let snapshots: i64 = probe
+            .query_row("SELECT COUNT(*) FROM session_snapshots", [], |row| {
+                row.get(0)
+            })
+            .expect("legacy snapshots preserved");
+        assert_eq!(snapshots, 1, "the refusal must leave legacy rows untouched");
         assert_eq!(
             meerkat_sqlite::domain_version(&probe, "mobkit-continuity").expect("ledger"),
-            Some(1)
+            None,
+            "a refused open must not stamp the ledger"
         );
     }
 
@@ -3680,7 +4327,7 @@ mod tests {
         // The v1-shaped reader the lockout protects: it must still open.
         {
             let probe = Connection::open(&path).expect("probe");
-            meerkat_sqlite::refuse_future_schema(&probe, &V0_8_5_CONTINUITY_DOMAIN).expect(
+            refuse_future_schema_model(&probe, &V0_8_5_CONTINUITY_DOMAIN).expect(
                 "a previous release must still open a file whose only head-canonical \
                  content is rows no head adopts",
             );
@@ -3734,7 +4381,7 @@ mod tests {
         );
         {
             let probe = Connection::open(&path).expect("probe");
-            match meerkat_sqlite::refuse_future_schema(&probe, &V0_8_5_CONTINUITY_DOMAIN) {
+            match refuse_future_schema_model(&probe, &V0_8_5_CONTINUITY_DOMAIN) {
                 Err(meerkat_sqlite::SqliteStoreError::SchemaFromTheFuture { domain, .. }) => {
                     assert_eq!(domain, "mobkit-continuity");
                 }
@@ -4562,7 +5209,32 @@ mod tests {
             name: "base-schema",
             apply: migration_0001_continuity_schema,
         }],
+        initialize_current: migration_0001_continuity_schema,
+        allowed_existing_versions: &[1],
+        released_predecessors: &[],
+        owned_objects: RELEASED_V1_CONTINUITY_OBJECTS,
+        retired_objects: &[],
     };
+
+    /// Local model of the retired `meerkat_sqlite::refuse_future_schema`
+    /// check the previous release ran at open: read the ledger row, refuse
+    /// when it exceeds the modeled version ceiling.
+    fn refuse_future_schema_model(
+        conn: &Connection,
+        domain: &meerkat_sqlite::SchemaDomain,
+    ) -> Result<(), meerkat_sqlite::SqliteStoreError> {
+        let supported = domain.supported_version();
+        match meerkat_sqlite::domain_version(conn, domain.name)? {
+            Some(found) if found > supported => {
+                Err(meerkat_sqlite::SqliteStoreError::SchemaFromTheFuture {
+                    domain: domain.name.to_string(),
+                    found,
+                    supported,
+                })
+            }
+            _ => Ok(()),
+        }
+    }
 
     /// A stand-in for a release that predates the head-canonical channel:
     /// it supports `mobkit-continuity` up to v1 and reads sessions ONLY from
@@ -4574,7 +5246,7 @@ mod tests {
     /// lockout without needing the old binary on disk.
     fn v1_shaped_binary_opens(path: &Path) -> Result<(), meerkat_sqlite::SqliteStoreError> {
         let conn = Connection::open(path).expect("probe");
-        meerkat_sqlite::refuse_future_schema(&conn, &V0_8_5_CONTINUITY_DOMAIN)
+        refuse_future_schema_model(&conn, &V0_8_5_CONTINUITY_DOMAIN)
     }
 
     /// N1-INTERACTION PIN: keeping the file at v1 for an append that adopts
@@ -4693,11 +5365,27 @@ mod tests {
 
     /// Rebuild a session document on the SAME id with a different transcript.
     fn rebuild_with_messages(source: &Session, messages: Vec<meerkat_core::Message>) -> Session {
-        let head = SessionHead {
-            message_count: messages.len() as u64,
-            head_revision: meerkat_core::transcript_messages_digest(&messages).expect("digest"),
-            ..SessionHead::from_session(source, TranscriptStrandId::root(), 0).expect("head")
-        };
+        let mut head =
+            SessionHead::from_session(source, TranscriptStrandId::root(), 0).expect("head");
+        head.message_count = messages.len() as u64;
+        head.head_revision = meerkat_core::transcript_messages_digest(&messages).expect("digest");
+        // meerkat 0.8.11: `SessionHead::into_session` verifies the byte-exact
+        // row-prefix commitment against the rows it materializes (mirrors
+        // meerkat-core `SessionHead::into_session_with_serialized_rows`), so
+        // the fabricated head must commit to the REPLACEMENT rows. The
+        // source-derived lineage anchor cannot describe them (its fields are
+        // store-private), so it is cleared - `None` is the accepted
+        // unactivated shape at materialization.
+        let serialized = messages
+            .iter()
+            .map(|message| serde_json::to_vec(message).expect("serialize replacement row"))
+            .collect::<Vec<_>>();
+        head.message_row_prefix = Some(
+            meerkat_core::session_store::SessionMessageRowPrefixAccumulator::empty()
+                .extend_serialized_rows(&serialized)
+                .expect("recommit row prefix"),
+        );
+        head.row_lineage_anchor = None;
         head.into_session(messages).expect("rebuild")
     }
 }

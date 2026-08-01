@@ -296,6 +296,12 @@ pub enum ResumeFallbackReason {
     /// The persisted session/runtime identity is incompatible with the current
     /// mob runtime binding.
     RuntimeIdentityIncompatible { detail: String },
+    /// The continuity record points at a session that meerkat reports as
+    /// typed-Absent AND the durable store confirms was never persisted (a
+    /// registration/rebind-minted head for a quiet member whose content-less
+    /// saves were skipped). There is no transcript to preserve, so a fresh
+    /// spawn is legitimate recovery, not data loss.
+    NeverPersisted { detail: String },
 }
 
 /// Result of attempting to materialize a persisted identity through resume.
@@ -437,38 +443,38 @@ impl ActorAdmissionDeadline {
     }
 }
 
-async fn submit_internal_bridge_work(
-    handle: &MobHandle,
-    member_id: &MobAgentIdentity,
+/// Build the internal-delivery [`WorkSpec`] for one member turn.
+///
+/// Pure by design so the threading is unit-testable: every optional carrier
+/// on the deliver surface must reach the spec unchanged.
+///
+/// - Ask 1: `injected_context` rides as separate typed bodies rather than
+///   being fused into the user's message text; WorkSpec carries it to the
+///   StartTurnRequest, where meerkat stamps each entry as the
+///   InjectedContext transcript role (excluded from compaction indexing).
+/// - meerkat 0.8.11: `system_prompt` is one ordinary System message authored
+///   for this exact turn (never member/session configuration); WorkSpec
+///   carries it to the member StartTurnRequest, where meerkat appends it at
+///   the turn's admitted transcript boundary.
+/// - meerkat 0.7.25 ask 15 addendum: a host-supplied interaction id rides
+///   WorkSpec into runtime admission, so this turn's live events AND its
+///   committed transcript messages carry the SAME id the console minted at
+///   send time — the exact live↔history join the console dedup needs. Only
+///   UUID-form ids exist here (the identity-first console send mints v5
+///   UUIDs); anything else is skipped rather than corrupted.
+fn internal_bridge_work_spec(
     content: &meerkat_core::ContentInput,
+    system_prompt: Option<&str>,
     injected_context: &[meerkat_core::ContentInput],
-    handling_mode: HandlingMode,
     interaction_id: Option<&str>,
-    deadline: &ActorAdmissionDeadline,
-) -> Result<(), BridgeError> {
-    let entry = deadline
-        .bound(
-            "deliver.get_member",
-            member_id,
-            handle.get_member(member_id),
-        )
-        .await?
-        .map_err(|err| BridgeError::Mob(err.to_string()))?
-        .ok_or_else(|| BridgeError::Mob(format!("member not found: {member_id}")))?;
-    // Ask 1: attach ambient memory recall as a separate typed injected-context
-    // body rather than fusing it into the user's message text. WorkSpec carries
-    // it to the StartTurnRequest, where meerkat stamps each entry as the
-    // InjectedContext transcript role (excluded from compaction indexing).
+) -> WorkSpec {
     let mut spec = WorkSpec::new(content.clone(), WorkOrigin::Internal);
+    if let Some(system_prompt) = system_prompt {
+        spec = spec.with_system_prompt(system_prompt);
+    }
     if !injected_context.is_empty() {
         spec = spec.with_injected_context(injected_context.to_vec());
     }
-    // meerkat 0.7.25 ask 15 addendum: a host-supplied interaction id rides
-    // WorkSpec into runtime admission, so this turn's live events AND its
-    // committed transcript messages carry the SAME id the console minted at
-    // send time — the exact live↔history join the console dedup needs. Only
-    // UUID-form ids exist here (the identity-first console send mints v5
-    // UUIDs); anything else is skipped rather than corrupted.
     if let Some(raw) = interaction_id {
         match raw.parse::<uuid::Uuid>() {
             Ok(id) => {
@@ -482,6 +488,40 @@ async fn submit_internal_bridge_work(
             }
         }
     }
+    spec
+}
+
+/// Spec-shaping inputs for one internal bridge delivery, grouped so the
+/// submit path carries them as a unit rather than four loose parameters.
+struct InternalBridgeWork<'a> {
+    content: &'a meerkat_core::ContentInput,
+    system_prompt: Option<&'a str>,
+    injected_context: &'a [meerkat_core::ContentInput],
+    interaction_id: Option<&'a str>,
+}
+
+async fn submit_internal_bridge_work(
+    handle: &MobHandle,
+    member_id: &MobAgentIdentity,
+    work: InternalBridgeWork<'_>,
+    handling_mode: HandlingMode,
+    deadline: &ActorAdmissionDeadline,
+) -> Result<(), BridgeError> {
+    let entry = deadline
+        .bound(
+            "deliver.get_member",
+            member_id,
+            handle.get_member(member_id),
+        )
+        .await?
+        .map_err(|err| BridgeError::Mob(err.to_string()))?
+        .ok_or_else(|| BridgeError::Mob(format!("member not found: {member_id}")))?;
+    let spec = internal_bridge_work_spec(
+        work.content,
+        work.system_prompt,
+        work.injected_context,
+        work.interaction_id,
+    );
     deadline
         .bound(
             "deliver.submit_work",
@@ -497,6 +537,126 @@ async fn submit_internal_bridge_work(
         .await?
         .map(|_| ())
         .map_err(|err| BridgeError::Mob(err.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Committed-boundary heal seam (2026-07-29 heal/re-Break incident)
+// ---------------------------------------------------------------------------
+
+/// Typed outcome of a committed-boundary heal attempt against the durable
+/// session head — the mobkit-side mirror of meerkat's
+/// `CommittedBoundaryRecovery`.
+///
+/// The continuity repair supervisor consults this BEFORE re-registering a
+/// Broken identity as healable. Without a real recovery step, "heal" only
+/// reset the runtime entry while the durable head stayed an intra-turn
+/// projection, so the next materialization re-Broke the identity — measured
+/// in production (2026-07-29) as an infinite heal/re-Break loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommittedBoundaryRepair {
+    /// The durable head is already strict-resume-acceptable; nothing written.
+    AlreadyCommitted,
+    /// Machine-authorized recovery persisted a committed boundary head; a
+    /// subsequent resume of the durable session is expected to succeed.
+    Recovered,
+    /// Terminal typed verdict: the proof inputs for a committed boundary are
+    /// absent (or the machine held). Stable across calls — callers must NOT
+    /// retry-loop it; surface `reason` to operators instead.
+    Unprovable { reason: String },
+    /// This bridge exposes no heal seam. Callers keep the legacy behavior
+    /// (reconcile retries the resume directly).
+    Unsupported,
+}
+
+/// Host-injectable authority that can drive the durable session head to a
+/// strict-resume-acceptable committed boundary.
+///
+/// The production implementation wraps meerkat's
+/// `PersistentSessionService::recover_committed_boundary`; it is injected
+/// into [`MobSessionBridge`] at composition time because the bridge only
+/// holds the session service as `dyn MobSessionService`, which does not
+/// expose the concrete heal API.
+#[async_trait]
+pub trait CommittedBoundaryRecoverer: Send + Sync {
+    /// Attempt recovery for the given durable session.
+    ///
+    /// # Errors
+    ///
+    /// `Err` is reserved for genuinely retryable failures (a live session
+    /// owning the head mid-turn, store I/O, CAS races). A terminal verdict is
+    /// `Ok(CommittedBoundaryRepair::Unprovable { .. })`, never an error.
+    async fn recover_committed_boundary(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<CommittedBoundaryRepair, BridgeError>;
+}
+
+/// The production heal authority: meerkat's `PersistentSessionService`
+/// driving the durable head to a boundary-commit-provenance checkpoint
+/// through machine-authorized recovery (meerkat >= 0.8.11).
+///
+/// Contract mapping, per the heal API: the typed `Unprovable` VERDICT is
+/// terminal and stable across calls (callers must not retry-loop it); only
+/// the error tier (`Busy` mid-turn, store I/O, CAS races) is retryable and
+/// maps to `Err` here.
+#[async_trait]
+impl<B> CommittedBoundaryRecoverer for meerkat_session::PersistentSessionService<B>
+where
+    B: meerkat_session::SessionAgentBuilder + 'static,
+{
+    async fn recover_committed_boundary(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<CommittedBoundaryRepair, BridgeError> {
+        // Fully qualified: the inherent method and this trait method share a
+        // name, and the inherent one is the upstream API being consumed.
+        match meerkat_session::PersistentSessionService::recover_committed_boundary(
+            self, session_id,
+        )
+        .await
+        {
+            Ok(meerkat_session::CommittedBoundaryRecovery::AlreadyCommitted) => {
+                Ok(CommittedBoundaryRepair::AlreadyCommitted)
+            }
+            Ok(meerkat_session::CommittedBoundaryRecovery::Recovered { message_count }) => {
+                tracing::info!(
+                    %session_id,
+                    message_count,
+                    "machine-authorized recovery persisted a committed durable head"
+                );
+                Ok(CommittedBoundaryRepair::Recovered)
+            }
+            Ok(meerkat_session::CommittedBoundaryRecovery::Unprovable { reason }) => {
+                Ok(CommittedBoundaryRepair::Unprovable { reason })
+            }
+            Err(error) => map_committed_boundary_recovery_error(error),
+        }
+    }
+}
+
+/// Disposition of the heal authority's error tier, per the heal contract:
+/// `Err` is reserved for failures retrying can genuinely clear (`Busy`
+/// mid-turn, store I/O, CAS races, a held tail awaiting the recovery commit
+/// itself). Typed refusals that only an EXTERNAL change can clear — a
+/// conflicting live runtime quiescing (`DurableTailRecoveryRefused`) or an
+/// operator resolving forked evidence (`DurableEvidenceQuarantined`) — are
+/// terminal `Unprovable` verdicts. Letting them escape as `Err` loops the
+/// reconcile repair pass forever against a verdict no retry can change,
+/// instead of parking the identity with the refusal in front of an operator.
+fn map_committed_boundary_recovery_error(
+    error: meerkat_core::SessionError,
+) -> Result<CommittedBoundaryRepair, BridgeError> {
+    match error {
+        error @ (meerkat_core::SessionError::DurableTailRecoveryRefused { .. }
+        | meerkat_core::SessionError::DurableEvidenceQuarantined { .. }) => {
+            Ok(CommittedBoundaryRepair::Unprovable {
+                reason: error.to_string(),
+            })
+        }
+        error => Err(BridgeError::Mob(format!(
+            "committed-boundary recovery: {error}"
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -593,6 +753,34 @@ pub trait SessionBridge: Send + Sync {
         let _ = interaction_id;
         self.deliver_with_mode(runtime_id, content, handling_mode)
             .await
+    }
+
+    /// Deliver content plus one ordinary System message authored for this
+    /// exact turn (meerkat 0.8.11: `WorkSpec::system_prompt`, appended at the
+    /// turn's admitted transcript boundary — per-turn content, never
+    /// member/session configuration), alongside the optional injected
+    /// context and interaction identity of
+    /// [`Self::deliver_with_mode_and_context`]. Bridges that do not carry
+    /// per-turn System authorship fall back to context delivery, dropping
+    /// the System message.
+    async fn deliver_with_mode_context_and_system_prompt(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        content: &meerkat_core::ContentInput,
+        system_prompt: Option<&str>,
+        injected_context: &[meerkat_core::ContentInput],
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        let _ = system_prompt;
+        self.deliver_with_mode_and_context(
+            runtime_id,
+            content,
+            injected_context,
+            handling_mode,
+            interaction_id,
+        )
+        .await
     }
 
     /// Checkpoint the current session state for a mob member.
@@ -709,6 +897,19 @@ pub trait SessionBridge: Send + Sync {
     ) -> Result<(), BridgeError> {
         Ok(())
     }
+
+    /// Attempt to make the durable session head strict-resume-acceptable
+    /// BEFORE the continuity repair supervisor re-registers its identity as
+    /// healable (2026-07-29 heal/re-Break incident).
+    ///
+    /// The compatibility default declares no heal seam: custom bridges keep
+    /// today's behavior, where reconcile retries the resume directly.
+    async fn recover_committed_boundary(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<CommittedBoundaryRepair, BridgeError> {
+        Ok(CommittedBoundaryRepair::Unsupported)
+    }
 }
 
 /// Lightweight inspection of a mob member's current execution state.
@@ -717,6 +918,31 @@ pub struct MemberInspection {
     pub output_preview: Option<String>,
     pub is_final: bool,
     pub peer_reachable_count: usize,
+}
+
+/// Which restored LLM-identity fields diverge from the profile declaration
+/// with no resume-override mask covering them. Pure comparison seam behind
+/// [`MobSessionBridge::log_unmasked_resume_divergence`]: a field counts only
+/// when it is unmasked (durable metadata will win), declared (for provider —
+/// an undeclared provider states no intent), and different.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UnmaskedResumeDivergence {
+    model: bool,
+    provider: bool,
+}
+
+fn unmasked_resume_divergence(
+    mask: &meerkat_core::service::ResumeOverrideMask,
+    declared_model: &str,
+    declared_provider: Option<meerkat_core::Provider>,
+    restored_model: &str,
+    restored_provider: meerkat_core::Provider,
+) -> UnmaskedResumeDivergence {
+    UnmaskedResumeDivergence {
+        model: !mask.model && restored_model != declared_model,
+        provider: !mask.provider
+            && declared_provider.is_some_and(|declared| restored_provider != declared),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -744,6 +970,14 @@ pub struct MobSessionBridge {
     /// bridge-session authority. Stable for the bridge lifetime so every
     /// external member shares one generated operation owner.
     generated_external_owner_session: std::sync::OnceLock<meerkat_core::types::SessionId>,
+    /// Heal authority for the continuity repair supervisor. `None` means no
+    /// heal seam ([`CommittedBoundaryRepair::Unsupported`]); composition
+    /// injects the concrete meerkat-backed recoverer where available.
+    committed_boundary_recoverer: Option<Arc<dyn CommittedBoundaryRecoverer>>,
+    /// Identities whose unmasked resume divergence was already logged this
+    /// boot (the bridge lives for one boot). See
+    /// [`Self::log_unmasked_resume_divergence`].
+    resume_divergence_logged: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Budget one delivery attempt may spend waiting on the mob actor.
     /// Resolved once at construction so the success path pays nothing per
     /// call. See [`BRIDGE_ACTOR_ADMISSION_BUDGET`].
@@ -761,6 +995,8 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            committed_boundary_recoverer: None,
+            resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -778,6 +1014,8 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            committed_boundary_recoverer: None,
+            resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -795,6 +1033,8 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            committed_boundary_recoverer: None,
+            resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -813,6 +1053,8 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            committed_boundary_recoverer: None,
+            resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -831,6 +1073,8 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            committed_boundary_recoverer: None,
+            resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -842,6 +1086,20 @@ impl MobSessionBridge {
     #[must_use]
     pub fn with_actor_admission_budget(mut self, budget: Duration) -> Self {
         self.actor_admission_budget = budget;
+        self
+    }
+
+    /// Inject the committed-boundary heal authority (2026-07-29 incident).
+    ///
+    /// Without it, [`SessionBridge::recover_committed_boundary`] reports
+    /// [`CommittedBoundaryRepair::Unsupported`] and the continuity repair
+    /// supervisor falls back to plain reconcile retries.
+    #[must_use]
+    pub fn with_committed_boundary_recoverer(
+        mut self,
+        recoverer: Arc<dyn CommittedBoundaryRecoverer>,
+    ) -> Self {
+        self.committed_boundary_recoverer = Some(recoverer);
         self
     }
 
@@ -1019,6 +1277,33 @@ impl MobSessionBridge {
     /// retired-with-intact-snapshot sessions auto-revive on resume). The
     /// probe stays as a regression tripwire: a GONE result on ≥0.7.29 is
     /// always a platform bug worth a loud, immediate signal.
+    /// Belt check for the never-persisted fresh-spawn fallback: true ONLY
+    /// when a durable read path positively answers "no row exists for this
+    /// session id". Probes, in order of directness: the raw session store
+    /// handle, the continuity session-store adapter, and finally the session
+    /// service (`read` returning typed `NotFound`). No available read path,
+    /// or any probe error, returns false - fail closed into the
+    /// never-abandon refusal, never into a fresh spawn.
+    async fn durable_session_row_is_absent(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> bool {
+        if let Some(store) = self.session_store.as_ref() {
+            return matches!(store.load_meta(session_id).await, Ok(None));
+        }
+        if let Some(store) = self.continuity_session_store.as_ref() {
+            use meerkat::SessionStore as _;
+            return matches!(store.load_meta(session_id).await, Ok(None));
+        }
+        if let Some(service) = self.session_service.as_ref() {
+            return matches!(
+                service.read(session_id).await,
+                Err(meerkat_core::SessionError::NotFound { .. })
+            );
+        }
+        false
+    }
+
     async fn verify_durable_session_after_rejected_resume(
         &self,
         identity: &AgentIdentity,
@@ -1058,6 +1343,101 @@ impl MobSessionBridge {
             .definition()
             .resolve_inline_profile(&spec.profile)
             .cloned()
+    }
+
+    /// Resume-divergence tripwire: when the durable session restores a
+    /// model/provider different from the profile's declaration and no
+    /// `resume_overrides` mask covers the field, say so at INFO — once per
+    /// identity per boot. Declared-field auto-mark
+    /// (`crate::mob_handle_runtime::auto_mark_declared_resume_overrides`)
+    /// makes the mask cover declared fields on inline profiles, so the only
+    /// case that can fire today is an inline profile whose declared model
+    /// resolves no coherent provider (unknown model / derived self-hosted or
+    /// other without a binding). Realm-ref profiles do NOT fire:
+    /// `base_profile_for_spec` resolves inline bindings only, and the
+    /// `RealmProfileStore` is not threaded into this bridge, so a realm
+    /// profile edit that loses to durable metadata is currently silent
+    /// (tracked follow-up: thread the realm store and resolve declarations
+    /// via `MobDefinition::resolve_profile`).
+    ///
+    /// Never fails the resume: metadata read faults are skipped at debug.
+    async fn log_unmasked_resume_divergence(
+        &self,
+        identity: &AgentIdentity,
+        spec: &DurableAgentSpec,
+        draft: &AgentBuildDraft,
+        base_profile: Option<&meerkat_mob::Profile>,
+        session_id: &meerkat_core::types::SessionId,
+    ) {
+        let Some(profile) = base_profile else {
+            return;
+        };
+        let mask = profile.resume_override_mask();
+        if mask.model && mask.provider {
+            return;
+        }
+        {
+            let logged = self
+                .resume_divergence_logged
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if logged.contains(identity.as_str()) {
+                return;
+            }
+        }
+        let Some(service) = self.session_service.as_ref() else {
+            return;
+        };
+        let metadata = match service.load_persisted_session_metadata(session_id).await {
+            Ok(Some(view)) => view.session_metadata,
+            Ok(None) => None,
+            Err(error) => {
+                tracing::debug!(
+                    identity = %identity,
+                    session_id = %session_id,
+                    %error,
+                    "resume-divergence check skipped: durable metadata read failed"
+                );
+                None
+            }
+        };
+        let Some(metadata) = metadata else {
+            return;
+        };
+        // The declaration the profile (plus a draft model pin) would apply if
+        // it were masked — mirrors the candidate side of meerkat-mob's
+        // `effective_resumed_session_llm_identity`.
+        let declared_model = draft.model.as_ref().unwrap_or(&profile.model);
+        let divergence = unmasked_resume_divergence(
+            &mask,
+            declared_model,
+            profile.provider,
+            &metadata.model,
+            metadata.provider,
+        );
+        if divergence.model || divergence.provider {
+            // One line, BOTH pairs: the OB3 cutover incident's first symptom
+            // was a (model, provider) pair mismatch, and a model-only line
+            // hid the half that mattered.
+            tracing::info!(
+                identity = %identity,
+                profile = %spec.profile.as_str(),
+                session_id = %session_id,
+                restored_model = %metadata.model,
+                restored_provider = %metadata.provider.as_str(),
+                profile_model = %declared_model,
+                profile_provider = ?profile.provider.map(|provider| provider.as_str()),
+                model_unmasked_divergent = divergence.model,
+                provider_unmasked_divergent = divergence.provider,
+                "resume restored an LLM identity (model, provider) that differs from the \
+                 profile declaration; durable metadata wins for the unmasked fields (no \
+                 resume_overrides mask covers them)"
+            );
+            self.resume_divergence_logged
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(identity.as_str().to_string());
+        }
     }
 
     async fn resolve_runtime_session_id(
@@ -1608,13 +1988,20 @@ pub(crate) fn build_spawn_spec(
             // A pinned provider (or self-hosted server binding) belongs to the
             // base profile's ORIGINAL model id, and meerkat applies
             // `model_override` without re-inferring the provider. Keep the
-            // whole-profile snapshot (provider cleared for catalog
-            // re-inference) for pinned profiles only — accepting the
+            // whole-profile snapshot for pinned profiles only — accepting the
             // definition-drift freeze `model_override` was built to end.
+            //
+            // The snapshot's provider is the DRAFT model's catalog owner, not
+            // None: on resume the profile's resume-override mask applies
+            // model and provider as a pair, and a None provider falls back to
+            // the durable one — minting exactly the invalid (model, provider)
+            // pair the OB3 cutover rejected typed. Catalog-unknown ids keep
+            // None (definition `[models.<id>]` / config-entry resolution
+            // downstream, durable-wins on resume).
             Some(base) if base.provider.is_some() || base.self_hosted_server_id.is_some() => {
                 let mut profile = base.clone();
                 profile.model = model.clone();
-                profile.provider = None;
+                profile.provider = meerkat_models::canonical().infer_provider(model);
                 profile.self_hosted_server_id = None;
                 spawn_spec.override_profile = Some(profile);
             }
@@ -1649,13 +2036,19 @@ pub(crate) fn build_spawn_spec(
 /// Differs from a fresh spawn in two deliberate ways:
 /// - `launch_mode = Resume`, so meerkat loads the persisted session
 ///   (conversation history intact) instead of creating a new one.
-/// - `system_prompt_override` is cleared (Inherit): the persisted System
-///   message is authoritative on resume. Re-sending the draft's explicit
-///   prompt makes meerkat re-assemble the prompt, and on meerkat ≤0.7.14 that
-///   trips the session store's transcript-continuity guard whenever the
-///   persisted prompt carries runtime context appends — the exact cold-restart
-///   transcript-loss class (HomeCore). Dynamic per-boot context belongs in
-///   runtime system-context appends, never the base prompt.
+/// - `system_prompt_override` is cleared: RESUME AUTHORS NOTHING (meerkat
+///   0.8.11 prompt contract, 2026-07-29 ruling). `Message::System` is an
+///   ordinary ordered authored transcript message; prompt policy
+///   materializes only when creating an empty transcript, and the only way
+///   to change durable instructions mid-thread is a caller EXPLICITLY
+///   authoring a new System message as part of a turn
+///   (`StartTurnRequest.system_messages`). Re-sending assembled
+///   configuration on every activation would append a byte-duplicate System
+///   per boot — the prompt-refresh depth leak reborn — so the +0-on-neutral-
+///   resume invariant is achieved STRUCTURALLY by the absence of an append
+///   command here, not by an unchanged-value comparison anywhere. Dynamic
+///   regenerated projections belong in the transient turn-context seam (or
+///   tool reads), never in boot-time prompt authoring.
 pub(crate) fn build_resume_spawn_spec(
     runtime_id: &AgentRuntimeId,
     spec: &DurableAgentSpec,
@@ -1715,6 +2108,18 @@ impl SessionBridge for MobSessionBridge {
         false
     }
 
+    async fn recover_committed_boundary(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<CommittedBoundaryRepair, BridgeError> {
+        match self.committed_boundary_recoverer.as_ref() {
+            Some(recoverer) => recoverer.recover_committed_boundary(session_id).await,
+            // No heal authority composed in: keep the pre-incident contract
+            // honest rather than pretending the head was checked.
+            None => Ok(CommittedBoundaryRepair::Unsupported),
+        }
+    }
+
     async fn create_session(
         &self,
         _identity: &AgentIdentity,
@@ -1755,6 +2160,14 @@ impl SessionBridge for MobSessionBridge {
         session_id: &meerkat_core::types::SessionId,
         _snapshot: &SessionSnapshot,
     ) -> Result<ResumeSessionOutcome, BridgeError> {
+        self.log_unmasked_resume_divergence(
+            identity,
+            spec,
+            draft,
+            self.base_profile_for_spec(spec).as_ref(),
+            session_id,
+        )
+        .await;
         if spec_uses_external_binding(spec) {
             let spawn_spec = build_resume_spawn_spec(
                 runtime_id,
@@ -1841,7 +2254,57 @@ impl SessionBridge for MobSessionBridge {
             // would permanently abandon it (the HomeCore restart-loss bug).
             // Surface a typed rejection so the caller marks the identity
             // degraded and the next reconcile retries the resume.
+            //
+            // ONE narrowly-typed exception (OB3 2026-07-30 fleet wedge, 30
+            // identities): meerkat's typed Absent - "no durable session
+            // exists for this id" - combined with the store confirming no
+            // row was ever persisted, is the never-persisted continuity
+            // head shape (a registration/rebind-minted record whose quiet
+            // member skipped every content-less save). There is no
+            // transcript to preserve; refusing forever is a permanent
+            // Broken retry loop. Fall back to a FRESH spawn under a new
+            // session id. Both gates are required: typed Absent alone
+            // fails closed when the store probe errors or is absent, and
+            // every other refusal (archived-intact, held, quarantined,
+            // unknown) keeps the never-abandon contract above.
             Err(error) => {
+                if durable_snapshot_is_typed_absent(&error)
+                    && self.durable_session_row_is_absent(session_id).await
+                {
+                    tracing::warn!(
+                        identity = %identity,
+                        session_id = %session_id,
+                        error = %error,
+                        "resume target is typed-Absent and the durable store has no row for \
+                         it (never-persisted continuity head): falling back to a FRESH spawn \
+                         under a new session id. External row deletion produces this same \
+                         shape - investigate if unexpected"
+                    );
+                    // The failed resume attempt may have left a stale roster
+                    // entry; retire is inert when nothing matches (see the
+                    // collision arm above).
+                    if let Err(retire_error) =
+                        self.retire_session_owned_member_to_absence(&mid).await
+                    {
+                        return Err(resume_rejected(
+                            identity,
+                            session_id,
+                            &retire_error,
+                            "never-persisted retire before fresh fallback",
+                        ));
+                    }
+                    self.forget_runtime_member(runtime_id).await;
+                    let fresh_session_id = meerkat_core::types::SessionId::new();
+                    let created_session_id = self
+                        .create_session(identity, runtime_id, spec, draft, &fresh_session_id)
+                        .await?;
+                    return Ok(ResumeSessionOutcome::FreshSpawned {
+                        session_id: created_session_id,
+                        reason: ResumeFallbackReason::NeverPersisted {
+                            detail: error.to_string(),
+                        },
+                    });
+                }
                 self.verify_durable_session_after_rejected_resume(identity, session_id)
                     .await;
                 Err(resume_rejected(
@@ -1915,10 +2378,13 @@ impl SessionBridge for MobSessionBridge {
         match submit_internal_bridge_work(
             &self.handle,
             &mid,
-            content,
-            &[],
+            InternalBridgeWork {
+                content,
+                system_prompt: None,
+                injected_context: &[],
+                interaction_id: None,
+            },
             HandlingMode::Queue,
-            None,
             &deadline,
         )
         .await
@@ -1947,10 +2413,13 @@ impl SessionBridge for MobSessionBridge {
                 submit_internal_bridge_work(
                     &self.handle,
                     &mid,
-                    content,
-                    &[],
+                    InternalBridgeWork {
+                        content,
+                        system_prompt: None,
+                        injected_context: &[],
+                        interaction_id: None,
+                    },
                     HandlingMode::Queue,
-                    None,
                     &deadline,
                 )
                 .await?;
@@ -1983,6 +2452,26 @@ impl SessionBridge for MobSessionBridge {
         &self,
         runtime_id: &AgentRuntimeId,
         content: &meerkat_core::ContentInput,
+        injected_context: &[meerkat_core::ContentInput],
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        self.deliver_with_mode_context_and_system_prompt(
+            runtime_id,
+            content,
+            None,
+            injected_context,
+            handling_mode,
+            interaction_id,
+        )
+        .await
+    }
+
+    async fn deliver_with_mode_context_and_system_prompt(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        content: &meerkat_core::ContentInput,
+        system_prompt: Option<&str>,
         injected_context: &[meerkat_core::ContentInput],
         handling_mode: HandlingMode,
         interaction_id: Option<&str>,
@@ -2038,10 +2527,13 @@ impl SessionBridge for MobSessionBridge {
         match submit_internal_bridge_work(
             &self.handle,
             &mid,
-            content,
-            injected_context,
+            InternalBridgeWork {
+                content,
+                system_prompt,
+                injected_context,
+                interaction_id,
+            },
             handling_mode,
-            interaction_id,
             &deadline,
         )
         .await
@@ -2070,10 +2562,13 @@ impl SessionBridge for MobSessionBridge {
                 submit_internal_bridge_work(
                     &self.handle,
                     &mid,
-                    content,
-                    injected_context,
+                    InternalBridgeWork {
+                        content,
+                        system_prompt,
+                        injected_context,
+                        interaction_id,
+                    },
                     handling_mode,
-                    interaction_id,
                     &deadline,
                 )
                 .await?;
@@ -2331,6 +2826,41 @@ impl SessionBridge for MobSessionBridge {
 mod tests {
     use std::sync::Arc;
 
+    /// 8a threading pin: every optional carrier on the internal deliver
+    /// surface reaches the WorkSpec unchanged - in particular the per-turn
+    /// System message (meerkat 0.8.11 `WorkSpec::system_prompt`), threaded
+    /// exactly like `injected_context`.
+    #[test]
+    fn internal_bridge_work_spec_threads_every_carrier() {
+        let content = meerkat_core::ContentInput::Text("turn content".to_string());
+        let injected = vec![meerkat_core::ContentInput::Text(
+            "ambient recall".to_string(),
+        )];
+        let interaction = uuid::Uuid::new_v4();
+
+        let spec = super::internal_bridge_work_spec(
+            &content,
+            Some("per-turn system message"),
+            &injected,
+            Some(&interaction.to_string()),
+        );
+        assert_eq!(
+            spec.system_prompt.as_deref(),
+            Some("per-turn system message")
+        );
+        assert_eq!(spec.injected_context, injected);
+        assert_eq!(
+            spec.interaction_id,
+            Some(meerkat_core::interaction::InteractionId(interaction))
+        );
+        assert!(matches!(spec.origin, meerkat_mob::WorkOrigin::Internal));
+
+        let bare = super::internal_bridge_work_spec(&content, None, &[], None);
+        assert_eq!(bare.system_prompt, None, "absent carrier stays absent");
+        assert!(bare.injected_context.is_empty());
+        assert_eq!(bare.interaction_id, None);
+    }
+
     use async_trait::async_trait;
     use meerkat_core::agent::AgentToolDispatcher;
     use meerkat_core::lifecycle::run_primitive::{OpenAiPromptCacheOptions, ReasoningEffort};
@@ -2358,6 +2888,55 @@ mod tests {
                 message: "not implemented".to_string(),
             })
         }
+    }
+
+    /// Resume-divergence tripwire semantics: unmasked + declared + different
+    /// flags the field; a mask or an absent declaration silences it.
+    #[test]
+    fn unmasked_resume_divergence_flags_only_unmasked_declared_differences() {
+        let unmasked = meerkat_core::service::ResumeOverrideMask::default();
+        let divergence = unmasked_resume_divergence(
+            &unmasked,
+            "claude-opus-4-8",
+            Some(meerkat_core::Provider::Anthropic),
+            "claude-sonnet-4-5",
+            meerkat_core::Provider::OpenAI,
+        );
+        assert!(divergence.model, "unmasked differing model must be flagged");
+        assert!(
+            divergence.provider,
+            "unmasked differing declared provider must be flagged"
+        );
+
+        let masked = meerkat_core::service::ResumeOverrideMask {
+            model: true,
+            provider: true,
+            ..Default::default()
+        };
+        let divergence = unmasked_resume_divergence(
+            &masked,
+            "claude-opus-4-8",
+            Some(meerkat_core::Provider::Anthropic),
+            "claude-sonnet-4-5",
+            meerkat_core::Provider::OpenAI,
+        );
+        assert!(
+            !divergence.model && !divergence.provider,
+            "a mask covering the field silences the tripwire (the profile wins anyway)"
+        );
+
+        let divergence = unmasked_resume_divergence(
+            &unmasked,
+            "claude-opus-4-8",
+            None,
+            "claude-opus-4-8",
+            meerkat_core::Provider::OpenAI,
+        );
+        assert!(!divergence.model, "an identical model is not a divergence");
+        assert!(
+            !divergence.provider,
+            "an undeclared provider states no intent to diverge from"
+        );
     }
 
     fn durable_spec() -> DurableAgentSpec {
@@ -2530,7 +3109,58 @@ mod tests {
         assert_eq!(profile.model.as_str(), "gpt-test");
         assert!(
             profile.provider.is_none(),
-            "stale provider pin must be cleared for catalog re-inference"
+            "a catalog-unknown pin carries no provider (config-entry resolution downstream)"
+        );
+    }
+
+    /// A draft model pin on a pinned-provider base must carry the DRAFT
+    /// model's catalog owner in the snapshot, applied with the model as a
+    /// pair. Clearing it to None (the pre-OB3 shape) let resume fall back to
+    /// the durable provider under the pinned model — the exact invalid
+    /// (model, provider) pair the incident rejected typed.
+    #[test]
+    fn build_spawn_spec_derives_pair_provider_for_catalog_model_pin() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let draft = AgentBuildDraft {
+            model: Some("claude-opus-4-8".to_string()),
+            system_prompt: None,
+            additional_instructions: Vec::new(),
+            labels: Default::default(),
+            app_context: None,
+            external_tools: Vec::new(),
+            local_external_tools: LocalExternalToolOverlay::new(Arc::new(EmptyDispatcher)),
+            provider_params: None,
+        };
+        // Post-auto-mark shape: the definition profile carries its model's
+        // owner and the pair mask.
+        let base_profile: meerkat_mob::Profile = serde_json::from_value(serde_json::json!({
+            "model": "gpt-5.5",
+            "provider": "openai",
+            "resume_overrides": ["model", "provider"],
+        }))
+        .expect("pinned profile");
+
+        let spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft, Some(&base_profile))
+            .expect("spawn spec");
+
+        let profile = spawn
+            .override_profile
+            .as_ref()
+            .expect("pinned profile keeps the snapshot path");
+        assert_eq!(profile.model.as_str(), "claude-opus-4-8");
+        assert_eq!(
+            profile.provider,
+            Some(meerkat_core::Provider::Anthropic),
+            "the pin's provider must be the DRAFT model's catalog owner, applied as a pair"
+        );
+        assert!(
+            profile
+                .resume_overrides
+                .contains(&ResumeOverrideField::Model)
+                && profile
+                    .resume_overrides
+                    .contains(&ResumeOverrideField::Provider),
+            "the base profile's pair mask must ride the snapshot so both fields apply on resume"
         );
     }
 
@@ -3052,12 +3682,18 @@ mod tests {
         );
     }
 
-    /// The persisted System message is authoritative on resume: even when the
-    /// draft carries an explicit customizer prompt, the resume spawn spec must
-    /// NOT re-send it (meerkat ≤0.7.14 re-assembles the prompt and trips the
-    /// transcript-continuity guard — the HomeCore cold-restart loss class).
+    /// RESUME AUTHORS NOTHING (meerkat 0.8.11 prompt contract): even when
+    /// the draft carries an explicit customizer prompt, the resume spawn
+    /// spec must NOT re-send it. `Message::System` is ordinary ordered
+    /// authored transcript content; re-sending assembled configuration at
+    /// every activation would append a byte-duplicate System per boot (the
+    /// prompt-refresh depth leak, reborn). The +0-on-neutral-resume
+    /// invariant is structural — no append command exists on this path —
+    /// and mid-thread instruction changes are a caller EXPLICITLY authoring
+    /// a System message via `StartTurnRequest.system_messages`, exactly
+    /// once, as part of a turn.
     #[test]
-    fn resume_spawn_spec_inherits_persisted_system_prompt() {
+    fn resume_spawn_spec_authors_nothing() {
         let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
         let draft = AgentBuildDraft {
             model: None,
@@ -3077,7 +3713,8 @@ mod tests {
 
         assert_eq!(
             spawn.system_prompt_override, None,
-            "resume must inherit the persisted System message, never re-send the base prompt"
+            "resume must not author or re-send prompt configuration; explicit System \
+             authoring via a turn is the only mid-thread instruction change"
         );
         match &spawn.launch_mode {
             MemberLaunchMode::Resume { bridge_session_id } => {
@@ -3449,5 +4086,67 @@ mod tests {
             "the deadline must not be re-armed per hop: two further hops spent \
              {spent_after_first:?} against a {budget:?} budget"
         );
+    }
+
+    /// Heal contract: `DurableTailRecoveryRefused` is a typed refusal only an
+    /// external change clears — it must PARK as the terminal `Unprovable`
+    /// verdict, not escape as a retryable bridge error that loops the
+    /// reconcile repair pass forever (the HomeCore 9/17-Broken shape would
+    /// then never reach an operator as a parked reason).
+    #[test]
+    fn heal_error_tier_recovery_refused_parks_terminal_unprovable() {
+        let id = meerkat_core::SessionId::new();
+        let verdict = map_committed_boundary_recovery_error(
+            meerkat_core::SessionError::DurableTailRecoveryRefused { id: id.clone() },
+        );
+        match verdict {
+            Ok(CommittedBoundaryRepair::Unprovable { reason }) => {
+                assert!(
+                    reason.contains(&id.to_string()),
+                    "park reason must carry the session id for the operator: {reason}"
+                );
+                assert!(
+                    reason.contains("refused"),
+                    "park reason must state the refusal: {reason}"
+                );
+            }
+            other => panic!("refused must park as Unprovable, got {other:?}"),
+        }
+    }
+
+    /// Forked/unverifiable durable evidence is the same class: no retry can
+    /// un-fork evidence, so it parks with the reason instead of retrying.
+    #[test]
+    fn heal_error_tier_quarantined_evidence_parks_terminal_unprovable() {
+        let verdict = map_committed_boundary_recovery_error(
+            meerkat_core::SessionError::DurableEvidenceQuarantined {
+                id: meerkat_core::SessionId::new(),
+            },
+        );
+        assert!(
+            matches!(verdict, Ok(CommittedBoundaryRepair::Unprovable { .. })),
+            "quarantined evidence must park as Unprovable, got {verdict:?}"
+        );
+    }
+
+    /// The genuinely retryable tier stays in `Err`: a live session owning the
+    /// head mid-turn (`Busy`) and a held tail awaiting the recovery commit
+    /// itself (`DurableTailHeldForRecovery`) both clear on a later pass.
+    #[test]
+    fn heal_error_tier_busy_and_held_stay_retryable_errors() {
+        for error in [
+            meerkat_core::SessionError::Busy {
+                id: meerkat_core::SessionId::new(),
+            },
+            meerkat_core::SessionError::DurableTailHeldForRecovery {
+                id: meerkat_core::SessionId::new(),
+            },
+        ] {
+            let verdict = map_committed_boundary_recovery_error(error);
+            assert!(
+                matches!(verdict, Err(BridgeError::Mob(_))),
+                "retryable-tier errors must stay bridge errors, got {verdict:?}"
+            );
+        }
     }
 }

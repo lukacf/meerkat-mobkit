@@ -355,6 +355,14 @@ comms = true
 /// substrate attached, retire and respawn of NEVER-RAN members succeed:
 /// the ask-20 failure class is unreachable by construction.
 #[tokio::test]
+#[ignore = "upstream meerkat-mob actor defect family (S4; lead decision 2026-08-01): \
+            retire/respawn of idle members hangs INTERMITTENTLY on the same actor \
+            paths as S2/S3. Run records: hung >8m inside the withdrawn-candidate \
+            full-suite run (2026-07-31, killed with the torn suite); PASSED solo \
+            once (0.97s, 2026-08-01 gate lane); hung solo again for 3181s until \
+            SIGTERM (2026-08-01 successor gate lane, quiet machine). Admin-path \
+            operation exercised by neither fleet's acceptance flow; filed with the \
+            S2/S3 upstream report. Re-arm on the upstream fix SHA."]
 async fn studio_k0_identity_first_gateway_retire_respawn_succeed_on_idle_members() {
     use meerkat_mobkit::identity_first::{
         AgentRuntimeServices, DurabilityPolicy, IdentityFirstRuntimeContext, IdentityRuntime,

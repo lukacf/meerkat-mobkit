@@ -2,7 +2,10 @@
 //! method advertisement, identity-target resolution errors, and the mounted
 //! WebSocket route. A full provider round-trip needs a realtime credential
 //! and a live provider — out of scope here; the projection/token semantics
-//! are unit-tested in `src/live_wiring.rs` and upstream.
+//! are unit-tested in `src/live_wiring.rs` and upstream. The
+//! `cross_provider_open` module below drives the full open pipeline
+//! in-process over meerkat's scripted realtime factory instead - no socket,
+//! no credential - to pin the per-open provider selection semantics.
 
 #![allow(
     clippy::expect_used,
@@ -301,6 +304,293 @@ fn init_accepts_host_runnables_and_rejects_duplicates() {
             .contains("duplicated"),
         "{init}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// In-process cross-provider open coverage (HomeCore regression): these tests
+// call `handle_live_method` directly over a real PersistentSessionService +
+// MeerkatMachine pair with meerkat's scripted realtime factory swapped in,
+// so the exact channel identity handed to the provider lane is observable
+// without a provider socket or credential (the binary harness above cannot
+// mint a member session without live provider keys).
+// ---------------------------------------------------------------------------
+mod cross_provider_open {
+    use std::sync::Arc;
+
+    use meerkat::test_fixtures::realtime::ScriptedRealtimeSessionFactory;
+    use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionService};
+    use meerkat_client::TestClient;
+    use meerkat_client::realtime_session::RealtimeSessionFactory;
+    use meerkat_core::service::{
+        CreateSessionRequest, DeferredPromptPolicy, InitialTurnPolicy, SessionBuildOptions,
+        SessionService as _,
+    };
+    use meerkat_core::types::SessionId;
+    use meerkat_mobkit::live_wiring::{GatewayLiveContext, attach_live, handle_live_method};
+    use meerkat_mobkit::rpc::JsonRpcResponse;
+    use serde_json::{Value, json};
+
+    struct LiveOpenStack {
+        ctx: GatewayLiveContext,
+        service: Arc<PersistentSessionService<FactoryAgentBuilder>>,
+        machine: Arc<meerkat_runtime::MeerkatMachine>,
+        factory: Arc<ScriptedRealtimeSessionFactory>,
+        session_id: SessionId,
+        _state: tempfile::TempDir,
+    }
+
+    /// A persistent service + machine pair carrying one Anthropic-identity
+    /// member session (the HomeCore text-profile shape, realm-scoped auth
+    /// binding included), with the live context's realtime factory swapped
+    /// for the scripted fixture.
+    async fn anthropic_member_stack() -> LiveOpenStack {
+        let state = tempfile::tempdir().expect("state dir");
+        let state_path = state.path().join("state");
+        std::fs::create_dir_all(&state_path).expect("create state dir");
+        let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(state_path.join("sessions.sqlite"))
+                .expect("session store"),
+        );
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(state_path.join("runtime.sqlite"))
+                .expect("runtime store"),
+        );
+        let blob_store: Arc<dyn meerkat_core::BlobStore> =
+            Arc::new(meerkat_store::MemoryBlobStore::new());
+        let machine = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        ));
+        let agent_factory = AgentFactory::new(&state_path).builtins(false);
+        let mut builder = FactoryAgentBuilder::new(agent_factory.clone(), Config::default());
+        builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+            session_store.clone(),
+        )));
+        builder.default_blob_store = Some(blob_store.clone());
+        builder.default_llm_client = Some(Arc::new(TestClient::default()));
+        let service = Arc::new(PersistentSessionService::new(
+            builder,
+            16,
+            session_store,
+            Arc::clone(&runtime_store),
+            blob_store,
+        ));
+
+        // Runtime-backed create, the same shape every runtime surface uses:
+        // pre-mint the session, prepare machine-owned bindings on the SAME
+        // machine the live handlers consult, and pass SessionOwned - without
+        // this the live lifecycle lease has no ops runtime to lease against.
+        let session = meerkat_core::Session::new();
+        let session_id = session.id().clone();
+        let bindings = machine
+            .prepare_bindings(session_id.clone())
+            .await
+            .expect("prepare runtime bindings");
+        let created = service
+            .create_session(CreateSessionRequest {
+                model: "claude-sonnet-4-5".to_string(),
+                prompt: meerkat_core::ContentInput::Text(String::new()),
+                injected_context: Vec::new(),
+                system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
+                max_tokens: None,
+                event_tx: None,
+                initial_turn: InitialTurnPolicy::Defer,
+                deferred_prompt_policy: DeferredPromptPolicy::default(),
+                build: Some(SessionBuildOptions {
+                    provider: Some(meerkat_core::Provider::Anthropic),
+                    auth_binding: Some(meerkat_core::AuthBindingRef {
+                        realm: meerkat_core::RealmId::parse("mob.homecore").expect("realm id"),
+                        binding: meerkat_core::BindingId::parse("anthropic-main")
+                            .expect("binding id"),
+                        profile: None,
+                        origin: meerkat_core::BindingOrigin::Configured,
+                    }),
+                    resume_session: Some(session),
+                    runtime_build_mode: meerkat_core::RuntimeBuildMode::SessionOwned(bindings),
+                    ..SessionBuildOptions::default()
+                }),
+                labels: None,
+            })
+            .await
+            .expect("create member session");
+        assert_eq!(
+            created.session_id, session_id,
+            "create honors the pre-minted session"
+        );
+
+        let scripted = Arc::new(ScriptedRealtimeSessionFactory::new());
+        let mut ctx = attach_live(
+            Arc::clone(&service),
+            Arc::clone(&machine),
+            &agent_factory,
+            Config::default(),
+            "ws://127.0.0.1:0".to_string(),
+            None,
+        );
+        ctx.session_factory = Arc::clone(&scripted) as Arc<dyn RealtimeSessionFactory>;
+
+        LiveOpenStack {
+            ctx,
+            service,
+            machine,
+            factory: scripted,
+            session_id: created.session_id,
+            _state: state,
+        }
+    }
+
+    async fn open(stack: &LiveOpenStack, params: Value) -> JsonRpcResponse {
+        handle_live_method(
+            &stack.ctx,
+            &stack.service,
+            &stack.machine,
+            Some(stack.session_id.clone()),
+            "mobkit/live/open",
+            &params,
+            json!("open-test"),
+        )
+        .await
+    }
+
+    /// (a) HomeCore regression: an Anthropic-profile member opens a live
+    /// channel with `provider = "openai"` + a realtime-capable model. The
+    /// channel identity's (provider, model) pair must be re-paired BEFORE
+    /// the B19 precheck and the inherited Anthropic auth binding cleared,
+    /// so the open reaches the OpenAI realtime lane instead of dying as
+    /// MODEL_NOT_REALTIME.
+    ///
+    /// The selection is CHANNEL-scoped: it mutates only the per-open
+    /// `RealtimeSessionOpenConfig` projection, never the member's durable
+    /// identity (`live_session_llm_identity` stays the Anthropic text
+    /// identity, binding included, while the channel is live), and close
+    /// reverts by construction - a model-only reopen after close hits the
+    /// same typed MODEL_NOT_REALTIME rejection as a member that never
+    /// opened cross-provider.
+    #[tokio::test]
+    async fn cross_provider_open_reaches_the_selected_providers_realtime_lane() {
+        let stack = anthropic_member_stack().await;
+        let inherited = stack
+            .service
+            .live_session_llm_identity(&stack.session_id)
+            .await
+            .expect("member identity");
+        assert_eq!(inherited.provider, meerkat_core::Provider::Anthropic);
+        assert!(
+            inherited.auth_binding.is_some(),
+            "fixture must carry a binding to prove the open clears it"
+        );
+
+        let response = open(
+            &stack,
+            json!({"provider": "openai", "model": "gpt-realtime-2"}),
+        )
+        .await;
+        assert!(
+            response.error.is_none(),
+            "cross-provider open must pass the B19/B18 gates: {response:?}"
+        );
+        let result = response.result.expect("open result");
+        let channel_id = result
+            .get("channel_id")
+            .and_then(Value::as_str)
+            .expect("channel_id in open result")
+            .to_string();
+
+        let opens = stack.factory.opens();
+        assert_eq!(opens.len(), 1, "exactly one provider-lane open");
+        assert_eq!(opens[0].identity.provider, meerkat_core::Provider::OpenAI);
+        assert_eq!(opens[0].identity.model, "gpt-realtime-2");
+        assert_eq!(
+            opens[0].identity.auth_binding, None,
+            "the Anthropic binding must not ride into the OpenAI open"
+        );
+
+        // Channel-scoped, not session-scoped: while the cross-provider
+        // channel is live, the member's DURABLE identity is untouched -
+        // its next text turn still resolves the Anthropic identity with
+        // its binding.
+        let durable = stack
+            .service
+            .live_session_llm_identity(&stack.session_id)
+            .await
+            .expect("member identity while channel is live");
+        assert_eq!(durable, inherited, "durable identity must not change");
+
+        // Close reverts by construction: the override lived only on the
+        // channel's open config, so after close a model-only reopen is
+        // back to the typed cross-provider mismatch.
+        let closed = handle_live_method(
+            &stack.ctx,
+            &stack.service,
+            &stack.machine,
+            None,
+            "mobkit/live/close",
+            &json!({ "channel_id": channel_id }),
+            json!("close-test"),
+        )
+        .await;
+        assert!(closed.error.is_none(), "close must succeed: {closed:?}");
+
+        let reopened = open(&stack, json!({"model": "gpt-realtime-2"})).await;
+        let error = reopened.error.expect("typed precheck rejection on reopen");
+        assert_eq!(error.code, -32602, "{error:?}");
+        assert_eq!(
+            error.message,
+            "model gpt-realtime-2 (provider anthropic) does not support realtime"
+        );
+    }
+
+    /// (b) Omitted provider preserves today's behavior byte-for-byte: the
+    /// cross-provider mismatch dies at the B19 precheck as the typed
+    /// MODEL_NOT_REALTIME invalid-params rejection and never reaches the
+    /// provider lane.
+    #[tokio::test]
+    async fn omitted_provider_keeps_the_typed_model_not_realtime_rejection() {
+        let stack = anthropic_member_stack().await;
+        let response = open(&stack, json!({"model": "gpt-realtime-2"})).await;
+        let error = response.error.expect("typed precheck rejection");
+        assert_eq!(error.code, -32602, "{error:?}");
+        assert_eq!(
+            error.message,
+            "model gpt-realtime-2 (provider anthropic) does not support realtime"
+        );
+        assert_eq!(
+            stack.factory.open_count(),
+            0,
+            "B19 must reject before the provider lane"
+        );
+    }
+
+    /// (c) Strict vocabulary: an unrecognized provider string is a typed
+    /// parameter error - never a silent fallthrough to the inherited
+    /// provider - and `provider` without `model` is rejected because the
+    /// pair is mutated together.
+    #[tokio::test]
+    async fn unknown_or_unpaired_provider_is_a_typed_parameter_error() {
+        let stack = anthropic_member_stack().await;
+
+        let response = open(
+            &stack,
+            json!({"provider": "gpt", "model": "gpt-realtime-2"}),
+        )
+        .await;
+        let error = response.error.expect("typed parameter error");
+        assert_eq!(error.code, -32602, "{error:?}");
+        assert!(
+            error.message.contains("unknown provider 'gpt'"),
+            "{error:?}"
+        );
+
+        let response = open(&stack, json!({"provider": "openai"})).await;
+        let error = response.error.expect("typed parameter error");
+        assert_eq!(error.code, -32602, "{error:?}");
+        assert!(
+            error.message.contains("requires an explicit `model`"),
+            "{error:?}"
+        );
+
+        assert_eq!(stack.factory.open_count(), 0);
+    }
 }
 
 /// Minimal blocking GET returning the HTTP status (no external HTTP dep —

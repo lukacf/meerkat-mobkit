@@ -17,6 +17,14 @@
 )]
 //! Phase 0b binary — JSON-RPC gateway bridging SDK clients to the unified runtime.
 
+/// Default tracing filter when `RUST_LOG` is unset: this crate's own targets
+/// at INFO, dependencies at WARN. Operationally significant boot phases (the
+/// one-time head-canonical conversion, continuity repair) report at INFO from
+/// `meerkat_mobkit`; the old blanket "warn" default hid them, and a 2026-07
+/// production deploy was aborted when a supervisor read a silent-but-working
+/// migration as a hang.
+const DEFAULT_TRACING_FILTER: &str = "warn,meerkat_mobkit=info,rpc_gateway=info";
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 use std::path::PathBuf;
@@ -431,6 +439,39 @@ mod tests {
     use meerkat_mobkit::mob_handle_runtime::MobRuntimeError;
     use meerkat_mobkit::unified_runtime::types::IdentityAuthorityReleaseOutcome;
     use meerkat_mobkit::{RuntimeShutdownReport, ShutdownDrainReport};
+
+    /// The default tracing filter (RUST_LOG unset) must surface this crate's
+    /// own INFO lines — the 0.8.8 conversion-progress observability was
+    /// invisible at the old blanket "warn" default — while keeping
+    /// dependencies at WARN.
+    #[test]
+    fn default_tracing_filter_surfaces_own_info_keeps_deps_at_warn() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let filter = tracing_subscriber::EnvFilter::try_new(DEFAULT_TRACING_FILTER)
+            .expect("default filter must parse");
+        let subscriber = tracing_subscriber::registry().with(filter);
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(
+                tracing::enabled!(
+                    target: "meerkat_mobkit::identity_first::local_store",
+                    tracing::Level::INFO
+                ),
+                "the crate's own INFO lines (conversion progress) must pass the default filter"
+            );
+            assert!(
+                tracing::enabled!(target: "rpc_gateway", tracing::Level::INFO),
+                "the gateway binary's own INFO lines must pass the default filter"
+            );
+            assert!(
+                !tracing::enabled!(target: "meerkat_runtime::ops_lifecycle", tracing::Level::INFO),
+                "dependency INFO noise must stay filtered"
+            );
+            assert!(
+                tracing::enabled!(target: "meerkat_runtime::ops_lifecycle", tracing::Level::WARN),
+                "dependency warnings must still pass"
+            );
+        });
+    }
 
     #[test]
     fn gateway_module_boundary_becomes_pre_spawn_data() {
@@ -6642,10 +6683,18 @@ async fn run_persistent_inner() {
     // are visible on stderr. Without this, all tracing events are silently
     // dropped and runtime failures (agent build, LLM calls, comms drain)
     // are invisible.
+    //
+    // Default: this crate's own targets at INFO, dependencies at WARN.
+    // Operationally significant boot phases (the one-time head-canonical
+    // conversion, continuity repair) report at INFO from meerkat_mobkit; at
+    // the old blanket "warn" default they were invisible, and a 2026-07
+    // production deploy was aborted because a supervisor read a
+    // silent-but-working migration as a hang. RUST_LOG still overrides
+    // everything.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_TRACING_FILTER)),
         )
         .with_writer(std::io::stderr)
         .with_ansi(false)
@@ -7113,13 +7162,7 @@ external_addressable = true
         None
     };
     let identity_session_store_adapter = identity_continuity_store.as_ref().map(|store| {
-        // Lazy checkpoint adoption ON for the identity-first gateway: the
-        // continuity store is the session authority on this surface, and a
-        // 0.7.x-era snapshot would otherwise hard-fail every resume (H3).
-        Arc::new(
-            meerkat_mobkit::identity_first::ContinuitySessionStoreAdapter::new(store.clone())
-                .with_lazy_checkpoint_adoption(true),
-        )
+        Arc::new(meerkat_mobkit::identity_first::ContinuitySessionStoreAdapter::new(store.clone()))
     });
 
     // 5. Build session service with callback bridge.
@@ -7235,8 +7278,17 @@ external_addressable = true
         // every member's whole session document forever (~0.3 core per idle
         // durable member at production document sizes; the 0.8.4 idle
         // driver on this externally-composed path).
+        //
+        // The facade also owns the durable session projection at meerkat
+        // 0.8.11 (the session service no longer writes the SessionStore
+        // itself) and every-boot runtime-authority re-minting from that
+        // durable store - a reset/lost runtime store reseeds instead of
+        // refusing resume.
         let (runtime_store, session_write_epochs) =
-            meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store(runtime_store);
+            meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store_with_durable_projection(
+                runtime_store,
+                session_store.clone(),
+            );
         let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
             Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
@@ -7435,9 +7487,18 @@ external_addressable = true
         } else {
             None
         };
+        // Heal seam (2026-07-29 incident): the CONCRETE persistent service is
+        // the committed-boundary recoverer for the identity repair supervisor.
+        let committed_boundary_recoverer: Arc<
+            dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer,
+        > = Arc::clone(&concrete_service) as _;
         let session_service: Arc<dyn meerkat_mob::MobSessionService> = concrete_service;
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
             .with_session_write_epochs(&session_write_epochs)
+            // Resume-seam reads must carry the runtime store's archived
+            // terminal (at 0.8.11 archive stamps the catalog/lifecycle row,
+            // never the session body).
+            .with_runtime_archived_terminal_authority(Arc::clone(&runtime_store))
             .with_session_runtime_adapter(adapter.clone())
             // Order matters: workgraph before agent mob tools so child mobs
             // inherit the service at mob-state install time.
@@ -7451,6 +7512,7 @@ external_addressable = true
                 notify_orchestrator_on_resume: true,
                 default_llm_client: default_llm_client.clone(),
             });
+        spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
         if let Some((_, admission_slot, workgraph_state_dir)) = &workgraph {
             // Durable (cross-process shareable) store: register the
             // tool-plane admission slot and the sidecar lock beside it.
@@ -7673,6 +7735,12 @@ external_addressable = true
         let mut transcript_edit_service: Option<
             Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
         > = None;
+        // Heal seam (2026-07-29 incident): captured from the CONCRETE
+        // persistent service below; the erased MobSessionService does not
+        // carry the heal API.
+        let mut committed_boundary_recoverer: Option<
+            Arc<dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer>,
+        > = None;
         let mut session_store_incremental: Option<bool> = None;
         let session_service: Arc<dyn meerkat_mob::MobSessionService> =
             if let Some(session_adapter) = identity_session_store_adapter.clone() {
@@ -7722,6 +7790,7 @@ external_addressable = true
                     blob_store.clone(),
                 ));
                 transcript_edit_service = Some(Arc::clone(&concrete) as _);
+                committed_boundary_recoverer = Some(Arc::clone(&concrete) as _);
                 concrete
             } else {
                 Arc::new(EphemeralSessionService::new(
@@ -7739,6 +7808,7 @@ external_addressable = true
                 notify_orchestrator_on_resume: true,
                 default_llm_client: default_llm_client.clone(),
             });
+        spec.committed_boundary_recoverer = committed_boundary_recoverer;
         for slot in workgraph_admission_slots {
             spec = spec.with_workgraph_admission_slot(slot);
         }
@@ -7987,27 +8057,29 @@ external_addressable = true
         // uses the raw bootstrap path (not UnifiedRuntimeBuilder), so
         // session_bridge() won't be set — build it directly.
         let mob_handle = runtime.mob_handle();
+        let mut identity_bridge = if let Some(adapter) = identity_session_store_adapter.clone() {
+            meerkat_mobkit::identity_first::MobSessionBridge::with_continuity_session_store(
+                mob_handle.clone(),
+                adapter,
+                runtime.mob_runtime().session_service().cloned(),
+            )
+        } else if let Some(session_service) = runtime.mob_runtime().session_service().cloned() {
+            meerkat_mobkit::identity_first::MobSessionBridge::with_session_service(
+                mob_handle.clone(),
+                session_service,
+            )
+        } else {
+            meerkat_mobkit::identity_first::MobSessionBridge::new(mob_handle.clone())
+        };
+        // Heal seam (2026-07-29 incident): the continuity repair supervisor
+        // asks this recoverer to commit the durable head before declaring an
+        // identity healed; without it, heal is a cosmetic entry reset that
+        // the next materialization re-Breaks.
+        if let Some(recoverer) = runtime.mob_runtime().committed_boundary_recoverer() {
+            identity_bridge = identity_bridge.with_committed_boundary_recoverer(recoverer);
+        }
         let bridge_arc: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> =
-            if let Some(adapter) = identity_session_store_adapter.clone() {
-                Arc::new(
-                    meerkat_mobkit::identity_first::MobSessionBridge::with_continuity_session_store(
-                        mob_handle.clone(),
-                        adapter,
-                        runtime.mob_runtime().session_service().cloned(),
-                    ),
-                )
-            } else if let Some(session_service) = runtime.mob_runtime().session_service().cloned() {
-                Arc::new(
-                    meerkat_mobkit::identity_first::MobSessionBridge::with_session_service(
-                        mob_handle.clone(),
-                        session_service,
-                    ),
-                )
-            } else {
-                Arc::new(meerkat_mobkit::identity_first::MobSessionBridge::new(
-                    mob_handle.clone(),
-                ))
-            };
+            Arc::new(identity_bridge);
 
         let irt = Arc::new(
             IdentityRuntime::new(IdentityRuntimeConfig {

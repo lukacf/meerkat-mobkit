@@ -50,6 +50,10 @@ fn open_console_decisions() -> meerkat_mobkit::RuntimeDecisionState {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "upstream meerkat-mob actor defect family (S3; NOT covered by #929, \
+            lead-confirmed 2026-07-31): GET /agents/<id>/events returns HTTP 500 on \
+            the member-observation route. Reproduces serially at ed7e42b75. Re-arm \
+            on the upstream fix SHA."]
 async fn agent_events_route_resolves_durable_identities_and_aliases() {
     let definition = MobDefinition::from_toml(
         r#"

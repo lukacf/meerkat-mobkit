@@ -86,7 +86,7 @@ pub async fn continuity_session_adapter(
 
     // --- unregistered save parks, never persists ------------------------------
     let step = "unregistered_save_parks_not_persists";
-    let parked = fixtures::session_with_texts(&["unregistered turn"]);
+    let parked = fixtures::session_with_texts(&["unregistered turn"])?;
     steps.wrap(step, adapter.save(&parked).await)?;
     steps.ensure(
         step,
@@ -105,7 +105,7 @@ pub async fn continuity_session_adapter(
     // --- store-seeded snapshot loads through the adapter ----------------------
     let step = "store_seeded_snapshot_loads";
     let seeded_identity = steps.wrap(step, AgentIdentity::parse("adapter:seeded"))?;
-    let seeded = fixtures::session_with_texts(&["seeded turn one", "seeded turn two"]);
+    let seeded = fixtures::session_with_texts(&["seeded turn one", "seeded turn two"])?;
     let snapshot = fixtures::session_snapshot(&seeded)?;
     steps.wrap(
         step,
@@ -165,9 +165,9 @@ pub async fn continuity_session_adapter(
 
     // --- an embedded-id mismatch is a typed error, never silent -----------------
     let step = "embedded_id_mismatch_is_typed_error";
-    let foreign = fixtures::session_with_texts(&["foreign document"]);
+    let foreign = fixtures::session_with_texts(&["foreign document"])?;
     let foreign_snapshot = fixtures::session_snapshot(&foreign)?;
-    let mismatched_key = fixtures::session_with_texts(&["key holder"]);
+    let mismatched_key = fixtures::session_with_texts(&["key holder"])?;
     let mismatch_identity = steps.wrap(step, AgentIdentity::parse("adapter:mismatch"))?;
     steps.wrap(
         step,
@@ -240,7 +240,7 @@ pub async fn continuity_session_adapter(
     // --- unconditional delete over a seeded snapshot -------------------------------
     let step = "delete_removes_seeded_snapshot";
     let doomed_identity = steps.wrap(step, AgentIdentity::parse("adapter:doomed"))?;
-    let doomed = fixtures::session_with_texts(&["doomed turn"]);
+    let doomed = fixtures::session_with_texts(&["doomed turn"])?;
     let doomed_snapshot = fixtures::session_snapshot(&doomed)?;
     steps.wrap(
         step,

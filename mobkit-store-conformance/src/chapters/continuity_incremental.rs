@@ -407,7 +407,7 @@ async fn parked_pre_registration_writes(
         .as_incremental()
         .ok_or_else(|| steps.fail(STEP, "the composed adapter must forward the delta channel"))?;
 
-    let session = fixtures::session_with_texts(&["creation-window turn"]);
+    let session = fixtures::session_with_texts(&["creation-window turn"])?;
     let root = TranscriptStrandId::root();
     steps.wrap(
         STEP,
@@ -517,7 +517,7 @@ async fn parked_flush_failure_retains_the_parked_write(
         .as_incremental()
         .ok_or_else(|| steps.fail(STEP, "the composed adapter must forward the delta channel"))?;
 
-    let session = fixtures::session_with_texts(&["turn parked before a stale registration"]);
+    let session = fixtures::session_with_texts(&["turn parked before a stale registration"])?;
     let root = TranscriptStrandId::root();
     steps.wrap(
         STEP,
@@ -635,7 +635,7 @@ async fn per_mutation_continuity_discipline(
         .as_incremental()
         .ok_or_else(|| steps.fail(STEP, "the composed adapter must forward the delta channel"))?;
 
-    let session = fixtures::session_with_texts(&["fenced turn"]);
+    let session = fixtures::session_with_texts(&["fenced turn"])?;
     let root = TranscriptStrandId::root();
     let identity = identity(steps, STEP, "conformance:fenced")?;
     let current = FencingToken::new(fencing_floor + 10);
@@ -735,7 +735,7 @@ async fn archive_untouched_by_head_canonical_writes(
         .as_incremental()
         .ok_or_else(|| steps.fail(STEP, "the composed adapter must forward the delta channel"))?;
 
-    let session = fixtures::session_with_texts(&["archived turn"]);
+    let session = fixtures::session_with_texts(&["archived turn"])?;
     let identity = identity(steps, STEP, "conformance:archived")?;
     let token = FencingToken::new(fencing_floor + 20);
     seed_record(steps, STEP, store, &identity, session.id(), token).await?;
@@ -785,7 +785,7 @@ async fn archive_untouched_by_head_canonical_writes(
 
     // A whole-document save now converts instead of rewriting the blob.
     let mut extended = session.clone();
-    fixtures::push_text(&mut extended, "appended after migration");
+    fixtures::push_text(&mut extended, "appended after migration")?;
     steps.wrap(STEP, adapter.save(&extended).await)?;
 
     let served = steps

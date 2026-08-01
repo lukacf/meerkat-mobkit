@@ -21,18 +21,19 @@ use super::agent_memory::{
     AgentMemoryError, AgentMemoryForgetResult, AgentMemoryRecallRequest, AgentMemoryRecord,
     AgentMemoryRuntimeInjector, NewAgentMemory,
 };
-use super::bridge::{BridgeError, SessionBridge};
+use super::bridge::{BridgeError, CommittedBoundaryRepair, SessionBridge};
 use super::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
 };
 use super::types::{
     AgentAddressability, AgentBuildContext, AgentIdentity, AgentRuntimeId, AgentRuntimeServices,
     CheckpointVersion, CompletionCursor, CompletionProgress, ContinuityGeneration,
-    ContinuityHealth, ContinuityRecord, ContinuityStoreError, DispatchAdmission, DispatchInput,
-    DurabilityPolicy, DurableAgentSpec, FencingToken, IdentityBootstrapEntry,
-    IdentityBootstrapMode, IdentityBootstrapState, IdentityBootstrapStatus, IdentityLifecycleState,
-    IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable, RosterContext,
-    SendAdmission, SessionSnapshot, TopologyContext,
+    ContinuityHealth, ContinuityRecord, ContinuityStoreError, ContinuityUnrecoverable,
+    DispatchAdmission, DispatchInput, DurabilityPolicy, DurableAgentSpec, FencingToken,
+    HostRejectedBuildPark, IdentityBootstrapEntry, IdentityBootstrapMode, IdentityBootstrapState,
+    IdentityBootstrapStatus, IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo,
+    ManagedPeerEdge, NotAddressable, RosterContext, SendAdmission, SessionSnapshot,
+    TopologyContext,
 };
 use crate::memory::records::{
     ManifestTier, MemoryId, MemoryKind, MemoryScope, NewMemoryRecord, RecordMeta, UsageEvent,
@@ -136,6 +137,15 @@ pub enum IdentityRuntimeError {
         baseline: CompletionCursor,
         observed: CompletionCursor,
     },
+    /// The identity is parked because the HOST deterministically rejected
+    /// its build (the candidate-mode effect gate class): the app-side
+    /// `callback/build_agent` round trip completed and the host answered
+    /// with an error. No automatic retry — a roster/policy (spec) change
+    /// clears the park; `reason` carries the host's rejection for operators.
+    HostRejectedBuild {
+        identity: AgentIdentity,
+        reason: String,
+    },
     /// Generic I/O or internal error.
     Internal(String),
 }
@@ -208,9 +218,41 @@ impl std::fmt::Display for IdentityRuntimeError {
                 "completion baseline {baseline} for {identity} belongs to a superseded runtime \
                  incarnation (now {observed}); capture a fresh baseline"
             ),
+            Self::HostRejectedBuild { identity, reason } => write!(
+                f,
+                "identity {identity} is parked: the host deterministically rejected its build \
+                 ({reason}); a roster/policy (spec) change clears the park"
+            ),
             Self::Internal(msg) => write!(f, "internal: {msg}"),
         }
     }
+}
+
+/// Digest of the exact roster spec, for [`HostRejectedBuildPark`] scoping.
+/// Process-local (std hasher over the canonical JSON form): the park itself
+/// is in-memory, so cross-process stability is not required.
+pub(crate) fn durable_spec_digest(spec: &DurableAgentSpec) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    match serde_json::to_string(spec) {
+        Ok(json) => json.hash(&mut hasher),
+        // A roster spec is plain data; serialization cannot realistically
+        // fail. Degrade to "spec never changes" rather than panicking.
+        Err(_) => spec.identity.as_str().hash(&mut hasher),
+    }
+    hasher.finish()
+}
+
+/// A build failure whose root cause is the HOST's own answer: the
+/// `callback/build_agent` round trip COMPLETED and the app returned an error
+/// (rpc_gateway mints `callback/build_agent failed: callback error: <host
+/// message>` for exactly this case — see `StdioCallbackBridge::call`).
+/// Transport-tier callback failures ("callback transport closed", timeouts,
+/// dropped channels) deliberately do NOT match: those are retryable and stay
+/// on the existing reconcile/repair lanes (their backoff is the upstream
+/// meerkat fix, not this park).
+pub(crate) fn is_host_rejected_build_error(detail: &str) -> bool {
+    detail.contains("callback/build_agent failed: callback error:")
 }
 
 impl std::error::Error for IdentityRuntimeError {}
@@ -276,6 +318,18 @@ pub(crate) struct IdentityEntry {
     pub checkpoint_version: CheckpointVersion,
     /// Whether a durable runtime_store is available (affects dispatch ack semantics).
     pub has_runtime_store: bool,
+    /// Terminal heal verdict from the bridge's heal authority. While set,
+    /// the continuity repair supervisor must not re-attempt this identity and
+    /// reconcile must not cosmetically reset it to Dormant — either would
+    /// restart the 2026-07-29 heal/re-Break loop. Cleared by any non-Broken
+    /// lifecycle projection (a real recovery or an operator reset).
+    pub continuity_unrecoverable: Option<ContinuityUnrecoverable>,
+    /// Typed park for a build the host deterministically rejected (the
+    /// candidate-mode effect gate class). While set AND the recorded spec
+    /// digest still matches `spec`, materialization fails fast typed (no
+    /// bridge/callback churn) and the repair supervisor skips the identity.
+    /// A changed spec clears it — the retry is then permitted.
+    pub host_rejected_build_park: Option<HostRejectedBuildPark>,
 }
 
 /// Tracks a held lease for an identity.
@@ -727,8 +781,67 @@ impl IdentityFirstRuntimeContext {
                 backoff = policy.initial_backoff;
                 continue;
             }
+            // Heal must be REAL before reconcile runs: reconcile alone only
+            // resets the runtime entry (lazy mode re-registers Dormant) while
+            // the durable head can stay an intra-turn projection that the
+            // next materialization re-Breaks — the measured 2026-07-29
+            // production heal/re-Break loop. Drive the bridge's heal
+            // authority FIRST; only identities whose durable head is (now)
+            // committed — or whose bridge has no heal seam — proceed.
+            let mut repairable = Vec::new();
+            let mut recovery_failures = 0usize;
+            for identity in &broken {
+                if self
+                    .runtime
+                    .continuity_unrecoverable(identity)
+                    .await
+                    .is_some()
+                {
+                    // Terminal typed verdict already recorded: stable across
+                    // calls, so re-healing every cycle is exactly the loop
+                    // this replaces. Operators act on the surfaced reason.
+                    continue;
+                }
+                if self
+                    .runtime
+                    .host_rejected_build_park(identity)
+                    .await
+                    .is_some()
+                {
+                    // The host's gate rejects this exact spec
+                    // deterministically: reattempting re-asks the same
+                    // question and burns a build + callback round trip per
+                    // cycle. A spec change clears the park (checked inside
+                    // the accessor); until then this identity is parked, not
+                    // repaired.
+                    continue;
+                }
+                match self.attempt_committed_boundary_recovery(identity).await {
+                    BrokenRepairDisposition::Repairable => repairable.push(identity.clone()),
+                    BrokenRepairDisposition::Unprovable => {}
+                    BrokenRepairDisposition::RetryLater => recovery_failures += 1,
+                }
+            }
+            if repairable.is_empty() {
+                // Nothing eligible this pass: either every Broken identity
+                // carries a terminal verdict (idle at base cadence — a cheap
+                // read, no reconcile churn) or recovery itself failed
+                // transiently (back off before retrying recovery).
+                backoff = if recovery_failures > 0 {
+                    (backoff * 2).min(policy.max_backoff)
+                } else {
+                    policy.initial_backoff
+                };
+                if cancellation
+                    .as_ref()
+                    .is_some_and(|cancellation| *cancellation.borrow())
+                {
+                    return;
+                }
+                continue;
+            }
             tracing::info!(
-                broken = broken.len(),
+                broken = repairable.len(),
                 "continuity repair: retrying restore for Broken identities"
             );
             if let Err(err) = self.refresh_desired_topology().await {
@@ -745,8 +858,8 @@ impl IdentityFirstRuntimeContext {
                 }
                 continue;
             }
-            let still_broken = self.runtime.broken_identities().await;
-            let healed = broken
+            let still_broken = self.runtime.repairable_broken_identities().await;
+            let healed = repairable
                 .iter()
                 .filter(|id| !still_broken.contains(id))
                 .count();
@@ -757,7 +870,7 @@ impl IdentityFirstRuntimeContext {
                     "continuity repair healed identities"
                 );
             }
-            backoff = if still_broken.is_empty() {
+            backoff = if still_broken.is_empty() && recovery_failures == 0 {
                 policy.initial_backoff
             } else {
                 (backoff * 2).min(policy.max_backoff)
@@ -770,6 +883,83 @@ impl IdentityFirstRuntimeContext {
             }
         }
     }
+
+    /// Ask the bridge's heal authority to drive this Broken identity's
+    /// durable session head to a strict-resume-acceptable committed boundary,
+    /// and translate the verdict into what the repair pass may do next.
+    async fn attempt_committed_boundary_recovery(
+        &self,
+        identity: &AgentIdentity,
+    ) -> BrokenRepairDisposition {
+        let Some(bridge) = self.runtime.bridge() else {
+            // Metadata-only runtime (tests): reconcile owns the retry.
+            return BrokenRepairDisposition::Repairable;
+        };
+        let Some(session_id) = self.runtime.continuity_session_id(identity).await else {
+            // No durable session bound (e.g. the store failed before a record
+            // existed): there is no head to heal; reconcile retries as before.
+            return BrokenRepairDisposition::Repairable;
+        };
+        match bridge.recover_committed_boundary(&session_id).await {
+            Ok(
+                CommittedBoundaryRepair::AlreadyCommitted | CommittedBoundaryRepair::Unsupported,
+            ) => BrokenRepairDisposition::Repairable,
+            Ok(CommittedBoundaryRepair::Recovered) => {
+                tracing::info!(
+                    %identity,
+                    %session_id,
+                    "continuity heal: recovery persisted a committed durable head; \
+                     proceeding to reconcile"
+                );
+                BrokenRepairDisposition::Repairable
+            }
+            Ok(CommittedBoundaryRepair::Unprovable { reason }) => {
+                tracing::error!(
+                    %identity,
+                    %session_id,
+                    reason = %reason,
+                    "continuity heal verdict: durable head unprovable; parking the \
+                     identity as Broken until an operator intervenes"
+                );
+                if !self
+                    .runtime
+                    .mark_continuity_unrecoverable(identity, reason)
+                    .await
+                {
+                    // The entry left Broken between the read and the mark
+                    // (an operator reset raced us); nothing to park.
+                    tracing::debug!(
+                        %identity,
+                        "unprovable verdict arrived after the identity left Broken"
+                    );
+                }
+                BrokenRepairDisposition::Unprovable
+            }
+            Err(error) => {
+                // Only the error tier is retryable per the heal contract
+                // (Busy mid-turn, store I/O, CAS races).
+                tracing::warn!(
+                    %identity,
+                    %session_id,
+                    error = %error,
+                    "committed-boundary recovery failed; retrying next repair pass"
+                );
+                BrokenRepairDisposition::RetryLater
+            }
+        }
+    }
+}
+
+/// What the repair pass may do with one Broken identity after consulting the
+/// bridge's heal authority.
+enum BrokenRepairDisposition {
+    /// Reconcile may retry this identity now (head committed, recovered, or
+    /// no heal seam to consult).
+    Repairable,
+    /// Terminal typed verdict recorded; excluded until an operator clears it.
+    Unprovable,
+    /// The recovery attempt itself failed transiently; retry next pass.
+    RetryLater,
 }
 
 /// Runtime-owned repair supervisor with cooperative idle cancellation.
@@ -2685,19 +2875,46 @@ impl IdentityRuntime {
             ttl: g.ttl,
             acquired_at: Instant::now(),
         });
-        let entry = IdentityEntry {
-            spec,
-            bootstrap_generation,
-            state,
-            continuity,
-            lease: lease_entry,
-            pending_lease_release: None,
-            checkpoint_version: cpv,
-            has_runtime_store: self.has_runtime_store,
-        };
-        let has_active_lease =
-            entry.state == IdentityLifecycleState::Active && entry.lease.is_some();
-        self.entries.write().await.insert(identity.clone(), entry);
+        let has_active_lease = state == IdentityLifecycleState::Active && lease_entry.is_some();
+        {
+            let mut entries = self.entries.write().await;
+            // A terminal heal verdict is about the durable head, not this
+            // entry instance: re-projecting Broken (a repair retry, an eager
+            // reconcile) must not silently forget it, while any non-Broken
+            // projection is a real lifecycle transition that supersedes it
+            // (2026-07-29 heal/re-Break incident).
+            let continuity_unrecoverable = if state == IdentityLifecycleState::Broken {
+                entries
+                    .get(&identity)
+                    .and_then(|existing| existing.continuity_unrecoverable.clone())
+            } else {
+                None
+            };
+            // A host-rejected-build park is about the SPEC, not this entry
+            // instance: re-registration (a reconcile pass, a repair retry)
+            // with the same spec must not forget it — retrying an unchanged
+            // spec against a deterministic gate re-burns a build + callback
+            // round trip for the same answer. A changed spec clears it.
+            let host_rejected_build_park = entries.get(&identity).and_then(|existing| {
+                existing
+                    .host_rejected_build_park
+                    .clone()
+                    .filter(|park| park.spec_digest == durable_spec_digest(&spec))
+            });
+            let entry = IdentityEntry {
+                spec,
+                bootstrap_generation,
+                state,
+                continuity,
+                lease: lease_entry,
+                pending_lease_release: None,
+                checkpoint_version: cpv,
+                has_runtime_store: self.has_runtime_store,
+                continuity_unrecoverable,
+                host_rejected_build_park,
+            };
+            entries.insert(identity.clone(), entry);
+        }
 
         // Create event channel for this identity
         let (tx, _) = broadcast::channel(IDENTITY_EVENT_CHANNEL_CAPACITY);
@@ -3752,6 +3969,17 @@ impl IdentityRuntime {
             }
             (entry.spec.clone(), entry.continuity.clone(), entry.state)
         };
+        // Host-rejected-build park: the app-side gate answered this exact
+        // spec with a deterministic rejection. Fail fast typed — every
+        // attempt would otherwise burn a full member build plus a callback
+        // round trip for the same answer. A spec change clears the park
+        // (checked inside the accessor).
+        if let Some(park) = self.host_rejected_build_park(identity).await {
+            return Err(IdentityRuntimeError::HostRejectedBuild {
+                identity: identity.clone(),
+                reason: park.reason,
+            });
+        }
         let original_continuity = continuity.clone();
         let continuity = if durable_spec_uses_external_binding(&spec) {
             None
@@ -3996,6 +4224,13 @@ impl IdentityRuntime {
                             },
                         )
                         .await;
+                        {
+                            let rejection = err.to_string();
+                            if is_host_rejected_build_error(&rejection) {
+                                self.mark_host_rejected_build_park(identity, rejection)
+                                    .await;
+                            }
+                        }
                         let detail = format!(
                             "bridge resume_session rejected (identity degraded, durable session \
                              preserved for reconcile retry): {err}{}{}",
@@ -4144,6 +4379,12 @@ impl IdentityRuntime {
                     .map_err(|err| {
                         IdentityRuntimeError::Internal(format!("bridge create_session: {err}"))
                     });
+                if let Err(err) = &created_session_id {
+                    let detail = err.to_string();
+                    if is_host_rejected_build_error(&detail) {
+                        self.mark_host_rejected_build_park(identity, detail).await;
+                    }
+                }
                 match created_session_id {
                     Ok(session_id) => {
                         if session_id != provisional_session_id {
@@ -6430,6 +6671,7 @@ impl IdentityRuntime {
             },
             lease: lease_info,
             continuity_health,
+            continuity_unrecoverable: entry.continuity_unrecoverable.clone(),
         })
     }
 
@@ -7803,6 +8045,77 @@ impl IdentityRuntime {
             )));
         }
 
+        // Destroy-deprojection (2026-07-31 verdict): the durable session row
+        // must not outlive the identity - a leftover external body is
+        // exactly what the ephemeral-runtime-store activation mint would
+        // faithfully resurrect on the next cold pod. Projection writes are
+        // already quiesced (member retired, session unregistered) and this
+        // delete transaction owns the ADVANCED identity fence, so the
+        // revision-CAS delete cannot race a live writer. `delete_continuity_record` below removes any
+        // remainder atomically for conforming stores; a store that cannot
+        // support session-scoped deletion (`Ok(false)` default) or a row the
+        // current decoder cannot token (an unimported released envelope)
+        // keeps the record-scoped contract and is surfaced loudly instead of
+        // silently retained.
+        if let Some(session_id) = session_id.as_ref() {
+            match self
+                .continuity_store
+                .load_session_snapshot(session_id)
+                .await
+            {
+                Ok(Some(snapshot)) => {
+                    let cas_token = serde_json::from_slice::<meerkat_core::Session>(&snapshot.data)
+                        .ok()
+                        .and_then(|current| {
+                            meerkat_core::session_store::session_projection_cas_token(&current).ok()
+                        });
+                    match cas_token {
+                        Some(token) => match self
+                            .continuity_store
+                            .delete_session_snapshot_if_current_revision(session_id, &token)
+                            .await
+                        {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                tracing::warn!(
+                                    identity = %identity,
+                                    session_id = %session_id,
+                                    "session-scoped snapshot delete unsupported or superseded; \
+                                     relying on delete_continuity_record's record-scoped \
+                                     deletion - a non-conforming external store may retain a \
+                                     resurrectable session body"
+                                );
+                            }
+                            Err(err) => {
+                                self.restore_broken_entry_and_release_grant(
+                                    identity,
+                                    registered_entry,
+                                    &grant,
+                                )
+                                .await;
+                                return Err(IdentityRuntimeError::Store(err));
+                            }
+                        },
+                        None => {
+                            tracing::warn!(
+                                identity = %identity,
+                                session_id = %session_id,
+                                "durable session row cannot be revision-tokened for CAS \
+                                 delete; relying on delete_continuity_record's record-scoped \
+                                 deletion"
+                            );
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    self.restore_broken_entry_and_release_grant(identity, registered_entry, &grant)
+                        .await;
+                    return Err(IdentityRuntimeError::Store(err));
+                }
+            }
+        }
+
         // Remove authoritative continuity record from the store
         if let Err(err) = self
             .continuity_store
@@ -7980,6 +8293,7 @@ impl IdentityRuntime {
                 },
                 lease: lease_info,
                 continuity_health,
+                continuity_unrecoverable: entry.continuity_unrecoverable.clone(),
             };
             result.insert(identity.clone(), (entry.spec.clone(), status));
         }
@@ -8128,6 +8442,162 @@ impl IdentityRuntime {
             .filter(|(_, entry)| entry.state == IdentityLifecycleState::Broken)
             .map(|(identity, _)| identity.clone())
             .collect()
+    }
+
+    /// Broken identities that do NOT carry a terminal heal verdict — the set
+    /// the continuity repair supervisor is allowed to keep retrying.
+    pub async fn repairable_broken_identities(&self) -> Vec<AgentIdentity> {
+        self.entries
+            .read()
+            .await
+            .iter()
+            .filter(|(_, entry)| {
+                entry.state == IdentityLifecycleState::Broken
+                    && entry.continuity_unrecoverable.is_none()
+                    && entry
+                        .host_rejected_build_park
+                        .as_ref()
+                        .is_none_or(|park| park.spec_digest != durable_spec_digest(&entry.spec))
+            })
+            .map(|(identity, _)| identity.clone())
+            .collect()
+    }
+
+    /// The terminal heal verdict recorded for an identity, if any.
+    pub async fn continuity_unrecoverable(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Option<ContinuityUnrecoverable> {
+        self.entries
+            .read()
+            .await
+            .get(identity)
+            .and_then(|entry| entry.continuity_unrecoverable.clone())
+    }
+
+    /// Record a terminal heal verdict against a Broken identity.
+    ///
+    /// Returns `false` (without writing) when the identity is unknown or no
+    /// longer Broken — the verdict only ever parks an already-Broken entry;
+    /// it never degrades a live one. While recorded, the repair supervisor
+    /// skips the identity and reconcile keeps its Broken projection instead
+    /// of cosmetically resetting it (2026-07-29 heal/re-Break incident).
+    pub async fn mark_continuity_unrecoverable(
+        &self,
+        identity: &AgentIdentity,
+        reason: String,
+    ) -> bool {
+        let marked = {
+            let mut entries = self.entries.write().await;
+            match entries.get_mut(identity) {
+                Some(entry) if entry.state == IdentityLifecycleState::Broken => {
+                    entry.continuity_unrecoverable = Some(ContinuityUnrecoverable {
+                        reason: reason.clone(),
+                    });
+                    true
+                }
+                _ => false,
+            }
+        };
+        if marked {
+            // Keep the bootstrap status surface honest about WHY the
+            // identity stays broken (operators read this, not the log).
+            self.mark_bootstrap_from_lifecycle(
+                identity,
+                IdentityLifecycleState::Broken,
+                Some(reason),
+            );
+        }
+        marked
+    }
+
+    /// Clear a previously recorded terminal heal verdict (operator retry).
+    pub async fn clear_continuity_unrecoverable(&self, identity: &AgentIdentity) -> bool {
+        let mut entries = self.entries.write().await;
+        match entries.get_mut(identity) {
+            Some(entry) => entry.continuity_unrecoverable.take().is_some(),
+            None => false,
+        }
+    }
+
+    /// The ACTIVE host-rejected-build park for an identity: `Some` only
+    /// while the identity's current spec still digests to the parked value.
+    /// A mismatch (the roster/policy changed) clears the park in place and
+    /// returns `None` — the retry is permitted.
+    pub async fn host_rejected_build_park(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Option<HostRejectedBuildPark> {
+        let mut entries = self.entries.write().await;
+        let entry = entries.get_mut(identity)?;
+        let park = entry.host_rejected_build_park.clone()?;
+        if park.spec_digest == durable_spec_digest(&entry.spec) {
+            Some(park)
+        } else {
+            entry.host_rejected_build_park = None;
+            None
+        }
+    }
+
+    /// Park an identity whose build the host deterministically rejected,
+    /// scoped to the identity's CURRENT spec. Operator-visible through the
+    /// bootstrap status surface and the warn line; no automatic retry until
+    /// the spec changes.
+    pub(crate) async fn mark_host_rejected_build_park(
+        &self,
+        identity: &AgentIdentity,
+        reason: String,
+    ) -> bool {
+        let marked_state = {
+            let mut entries = self.entries.write().await;
+            match entries.get_mut(identity) {
+                Some(entry) => {
+                    entry.host_rejected_build_park = Some(HostRejectedBuildPark {
+                        reason: reason.clone(),
+                        spec_digest: durable_spec_digest(&entry.spec),
+                    });
+                    Some(entry.state)
+                }
+                None => None,
+            }
+        };
+        let Some(state) = marked_state else {
+            return false;
+        };
+        tracing::warn!(
+            identity = %identity,
+            reason = %reason,
+            "host deterministically rejected this identity's build; parking (no automatic \
+             retry) until the roster spec changes"
+        );
+        // Keep the bootstrap status surface honest about WHY the identity is
+        // stuck (operators read this, not the log). The detail renders on
+        // Broken projections; for a Dormant park the typed materialize error
+        // carries the reason to every send instead.
+        self.mark_bootstrap_from_lifecycle(identity, state, Some(reason));
+        true
+    }
+
+    /// Clear a host-rejected-build park (operator retry with an unchanged
+    /// spec — e.g. after fixing the app-side gate's policy out of band).
+    pub async fn clear_host_rejected_build_park(&self, identity: &AgentIdentity) -> bool {
+        let mut entries = self.entries.write().await;
+        match entries.get_mut(identity) {
+            Some(entry) => entry.host_rejected_build_park.take().is_some(),
+            None => false,
+        }
+    }
+
+    /// The durable session currently bound to an identity, if any.
+    pub(crate) async fn continuity_session_id(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Option<SessionId> {
+        self.entries
+            .read()
+            .await
+            .get(identity)
+            .and_then(|entry| entry.continuity.as_ref().map(|c| c.session_id.clone()))
     }
 
     /// Get the continuity store reference.
@@ -9347,6 +9817,169 @@ mod reset_reprofile_tests {
             backend: None,
             binding: None,
         }
+    }
+
+    /// Always answers create with the host's deterministic rejection — the
+    /// exact string shape rpc_gateway mints when the app-side
+    /// `callback/build_agent` round trip COMPLETES with an error.
+    #[derive(Default)]
+    struct HostRejectingBridge {
+        create_attempts: std::sync::atomic::AtomicUsize,
+    }
+
+    impl HostRejectingBridge {
+        fn attempts(&self) -> usize {
+            self.create_attempts
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBridge for HostRejectingBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            _session_id: &SessionId,
+        ) -> Result<SessionId, BridgeError> {
+            self.create_attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(BridgeError::Mob(
+                "spawn_member: callback/build_agent failed: callback error: candidate-mode \
+                 effect gate refused this build"
+                    .to_string(),
+            ))
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            _session_id: &SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            Err(BridgeError::Mob(
+                "resume not used in host-reject test".to_string(),
+            ))
+        }
+
+        async fn deliver(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _content: &meerkat_core::ContentInput,
+        ) -> Result<SessionId, BridgeError> {
+            Err(BridgeError::Mob(
+                "deliver not used in host-reject test".to_string(),
+            ))
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Err(BridgeError::Mob(
+                "checkpoint not used in host-reject test".to_string(),
+            ))
+        }
+
+        async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            Ok(())
+        }
+    }
+
+    /// Herd-investigation park: a build the HOST deterministically rejects
+    /// (the candidate-mode effect gate) parks the identity typed on the
+    /// FIRST attempt — no repair-loop churn — and a roster spec change
+    /// re-admits exactly one new attempt.
+    #[tokio::test]
+    async fn host_rejected_build_parks_identity_until_spec_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:gated")?;
+        let bridge = Arc::new(HostRejectingBridge::default());
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "host-reject-park-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                durable_spec(identity.clone(), "domain"),
+                IdentityLifecycleState::Dormant,
+                None,
+                None,
+            )
+            .await;
+
+        // The first attempt reaches the host exactly once; the deterministic
+        // rejection parks the identity typed.
+        assert!(
+            runtime.materialize(&identity).await.is_err(),
+            "gated build must fail"
+        );
+        assert_eq!(bridge.attempts(), 1);
+        let park = runtime
+            .host_rejected_build_park(&identity)
+            .await
+            .ok_or("the first host rejection must park the identity")?;
+        assert!(park.reason.contains("callback error"));
+
+        // Parked: the next attempt fails fast typed WITHOUT reaching the
+        // host, and the repair supervisor's Broken selection excludes the
+        // identity even when a reconcile re-registers it Broken with the
+        // same spec.
+        match runtime.materialize(&identity).await {
+            Err(IdentityRuntimeError::HostRejectedBuild { reason, .. }) => {
+                assert!(reason.contains("callback error"));
+            }
+            other => return Err(format!("expected the typed park, got {other:?}").into()),
+        }
+        assert_eq!(
+            bridge.attempts(),
+            1,
+            "a parked identity must not re-ask the host"
+        );
+        runtime
+            .register(
+                durable_spec(identity.clone(), "domain"),
+                IdentityLifecycleState::Broken,
+                None,
+                None,
+            )
+            .await;
+        assert!(
+            runtime.repairable_broken_identities().await.is_empty(),
+            "the repair supervisor must skip a parked identity"
+        );
+
+        // A spec change clears the park: the retry is permitted and reaches
+        // the host exactly once more.
+        let mut changed = durable_spec(identity.clone(), "domain");
+        changed
+            .labels
+            .insert("policy_epoch".to_string(), "2".to_string());
+        runtime
+            .register(changed, IdentityLifecycleState::Dormant, None, None)
+            .await;
+        assert!(
+            runtime.host_rejected_build_park(&identity).await.is_none(),
+            "a spec change must clear the park"
+        );
+        assert!(runtime.materialize(&identity).await.is_err());
+        assert_eq!(
+            bridge.attempts(),
+            2,
+            "a changed spec re-admits exactly one new build attempt"
+        );
+        Ok(())
     }
 
     #[test]

@@ -7,6 +7,368 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: meerkat dependencies repinned `=0.8.10` → `=0.8.11`** (all 19
+  meerkat crates in `meerkat-mobkit`, all 5 in `mobkit-store-conformance`).
+  0.8.11 is the store-owned session-authority reset; the visible behavior
+  changes for MobKit embedders:
+
+  - **Resume authors nothing.** The transcript is ordered rows; System
+    messages are ordinary ordered `Message::System` entries preserved
+    byte-for-byte across resumes. The per-boot "resume-system-prompt-refresh"
+    rewrite is retired (and with it the 60-100x transcript-history revision
+    bloat it minted). Per-turn System instructions ride the new explicit
+    carrier: `WorkSpec.system_prompt` through the mob deliver path
+    (`SessionBridge::deliver_with_mode_context_and_system_prompt` →
+    `RuntimeTurnMetadata.system_prompts`), appended as ONE ordered System row
+    at that turn's boundary.
+
+  - **Pre-ledger storage refuses typed.** Databases written before the
+    mobkit 0.8.8 schema-ledger floor (no `meerkat_schema` row for an owned
+    domain) are refused at open with rows left untouched — across continuity,
+    memory, metadata, and console stores. The former silent pre-floor
+    convergence is retired; upgrade stepwise through a 0.8.8-0.8.10 binary
+    first.
+
+  - **Released 0.8.10 session envelopes import exactly once on load.** The
+    continuity adapter's load path is the sole importer
+    (`import_released_0810_session`); ordinary decoding rejects released
+    carriers. Zero-rewrite released histories (the universal mob-supervisor
+    shape: transcript graph with zero commits and a singleton live-head body)
+    import via the upstream d6cafd405 acceptance; divergent bodies still
+    refuse.
+
+- **Profile-declared fields are auto-marked as resume overrides** ("profile
+  declares it, profile means it"). Durable session metadata restores `model`,
+  `provider`, and `provider_params` on resume, so a profile edit was inert on
+  every identity that already had a session unless the profile also listed the
+  field in `resume_overrides` — two production fleets shipped model migrations
+  that silently did nothing (one had identities running a three-week-old model
+  until a provider byte cap broke the deployment). Now, at runtime bootstrap,
+  every inline definition profile gets its explicitly declared fields marked
+  resume-overridden automatically. `model` and `provider` are treated as a
+  **coherent pair, never independently masked** (OB3 cutover incident: a
+  model-only mask let the durable provider survive under a profile model it
+  was never registered for, and the resume was rejected typed with an invalid
+  `(model, provider)` pair): a declared `provider`/`self_hosted_server_id`
+  masks the pair as written; a declared model with no provider key derives
+  the provider from the canonical model catalog (or the definition's
+  `[models.<id>]` entry) and writes it onto the profile so both apply
+  together; when no coherent provider is resolvable, neither field is masked
+  and durable truth wins whole (with a unified resume-divergence INFO line —
+  once per identity per boot — printing both halves of the pair).
+  `provider_params` masks independently when present. Undeclared fields keep
+  durable-wins semantics, and an explicit `resume_overrides` list is
+  preserved (declared fields are added, never removed). The same pair rule
+  covers customizer/draft model pins: the pinned-profile spawn snapshot now
+  carries the DRAFT model's catalog owner instead of a cleared provider,
+  which on resume fell back to the durable provider under the pinned model —
+  the same invalid-pair mint through a different door.
+
+  **Migration note:** fleets that relied on durable-wins for a *declared*
+  profile field — e.g. a profile that names `model = "x"` but expects resumed
+  identities to keep whatever model their durable session recorded — must now
+  express that per-identity intent through a draft/identity-level override
+  instead of an outdated profile declaration, because the profile declaration
+  now wins on resume. Realm-referenced profiles (`realm_profile = "..."`) are
+  not auto-marked; the new resume-divergence INFO line is the tripwire for
+  those.
+
+- **The 0.8.8 observability lines are now visible at default configuration**
+  (all four legs of the field investigation). (a) Both gateway binaries
+  default their tracing filter to `warn,meerkat_mobkit=info,<gateway>=info`
+  instead of a blanket `warn`, so this crate's own INFO reporting (conversion
+  progress, continuity repair) passes at default config while dependencies
+  stay at WARN; `RUST_LOG` still overrides everything. (b) The Python SDK now
+  inherits gateway stderr by default (`MOBKIT_GATEWAY_STDERR=devnull` opts
+  out; `MOBKIT_GATEWAY_STDERR_FILE=<path>` redirects). (c) The TypeScript SDK
+  pipes gateway stderr to the host process's stderr by default, same opt-out
+  shape. (d) `mobkit_gateway` installs its tracing subscriber BEFORE the
+  storage maintenance verbs (`storage-migrate`, `storage-prune`,
+  `storage-adopt-checkpoints`), so migration progress prints live instead of
+  being dropped pre-init. A production deploy was aborted because a
+  supervisor read a silent-but-working migration as a hang, and a week of
+  panic-hook lines went to `/dev/null` — these four legs are why.
+
+### Removed
+
+- **BREAKING: checkpoint adoption tooling.** The 0.8.11 reset retired the
+  checkpoint vocabulary meerkat no longer reads: the
+  `storage-adopt-checkpoints` maintenance walk, checkpoint adoption module,
+  digest-format marker stamping, and their tests are deleted.
+
+- **BREAKING: storage doctor finding codes**
+  `legacy-unverified-continuity-snapshots`, `checkpoint-digest-mismatch`, and
+  `checkpoint-metadata-invalid` are removed (their subjects no longer exist at
+  0.8.11). Replacements: `released-0810-continuity-snapshots` (censuses
+  released-format rows awaiting one-time import) and
+  `continuity-head-materialization-failed` (a head-canonical session whose
+  slim materialization fails, now reported with strand, row counts, rewrite
+  count, and prefix/anchor presence). Operator tooling keying on the removed
+  codes must migrate.
+
+### Added
+
+- **Host-rejected builds park typed instead of Broken-with-continuous-repair**
+  (the herd-investigation gate-rejection class). When a member build fails
+  because the app-side `callback/build_agent` round trip COMPLETED and the
+  host answered with an error (the candidate-mode effect gate), the identity
+  now parks with a typed, operator-visible verdict on the first attempt:
+  materialization fails fast with `HostRejectedBuild` (no bridge/callback
+  churn) and the continuity repair supervisor skips the identity instead of
+  retrying at 30s→10min forever — each retry previously re-asked the same
+  deterministic gate the same question at the cost of a full member build
+  plus a callback round trip. The park is scoped to the exact roster spec:
+  a spec change (digest mismatch) clears it and re-admits exactly one new
+  attempt, as does `clear_host_rejected_build_park` (operator retry).
+  Transport-tier callback failures (closed transport, timeouts) are NOT
+  parked — those stay on the existing retry lanes, whose backoff is fixed
+  separately upstream.
+
+- **Resume-divergence tripwire**: when a resumed identity's durable session
+  metadata restores a `model`/`provider` that differs from the profile's
+  declaration and no `resume_overrides` mask covers the field, the identity
+  session bridge logs an INFO line with both values, the profile name, and the
+  identity — once per identity per boot. After declared-field auto-mark the
+  only case that can fire today is an inline profile whose declared model
+  resolves no coherent provider; realm-ref profile declarations are NOT
+  visible to the tripwire (the realm profile store is not threaded into the
+  session bridge), so a realm-profile edit that loses to durable metadata is
+  currently silent — threading the realm store is a tracked follow-up.
+
+### Fixed
+
+- **Live reset/reprofile no longer wedges the gateway when the superseded
+  session commits a boundary mid-replacement.** Live reset replaces the
+  identity's continuity record first and retires the superseded runtime
+  through deferred cleanup debt - deliberately, per the reset contract (the
+  old bridge projection is rollback authority until the replacement
+  commits, and reset must not wait on a hung old retire). In that window
+  the superseded session's runtime is still live, and any boundary it
+  committed failed its durable write-through projection with the store's
+  cursor refusal ("continuity record not found"); propagated, that failed
+  the committing verb, escalated the runtime into repair-blocked retention,
+  wedged the deferred retire behind it, and blew the gateway's bounded
+  shutdown horizon (caught by PR CI's Python gateway test - the local
+  pytest gap had hidden it). A record that names a newer binding for the
+  same identity IS the supersede fact, discovered lazily under the identity
+  fence, so the projection now drops such a write with the exact semantics
+  the superseded-session pins already establish (terminal writes drop
+  without parking) - with NO persistent supersede mark, so a reset that
+  rolls back re-enforces the same session's writes cleanly. Every other
+  projection failure stays fail-closed. Retire-before-replace was
+  considered and excluded: it is structurally contrary to the reset
+  contract's own pinned tests.
+
+- **Zero-semantic-change boots no longer rewrite session heads (exactly-once
+  adoption restored).** Upstream projects `ToolNameSet` (a HashSet) through
+  serde when stamping `session_tool_visibility_state_v1`, so a session
+  carrying a multi-tool Allow filter re-stamps the SAME visibility fact as a
+  differently-ordered array every boot (per-process hash order), and the
+  boot also touches `updated_at` - the strict exact-resave equality saw a
+  changed head and rewrote it every boot (field: one fleet session's head
+  churned bytes/checkpoint on every boot after its one-time adoption,
+  violating exactly-once). The exact-resave equality now recognizes
+  precisely those two facts as zero durable change: `updated_at`
+  (timestamps are not durable content) and the ORDER of the
+  tool-visibility Allow/Deny arrays (set semantics by the type's own
+  definition; no other array in the document is touched). Pinned on the
+  fleet's real consecutive-boot head rows and by a zero-turn eager-boot leg
+  over the adopted closure that asserts ZERO head writes. Filed upstream:
+  durable bytes minted from HashSet iteration order.
+
+- **Released rewrite-carrying heads adopt on the first projected write
+  instead of dead-ending the boot.** A released 0.8.10 head that RETAINS
+  REWRITES structurally cannot authorize a current mutation: its
+  rewrite-generation authority predates the compact graph/rewrite-prefix
+  carriers, so `session_head_cas_token` refuses it typed ("rewritten current
+  head has no compact graph-prefix authority") and every ordinary write arm
+  is unreachable. The head-lane import (below) made such corpora READABLE,
+  but the first projected boundary write at boot - the resume-spawn control
+  snapshot - still failed fleet-wide (17/17 identities degraded pending
+  retry; fail-closed held, durable rows preserved). The write path now takes
+  a sanctioned adoption lane: the stored released document is re-proved
+  through the one-time importer inside the write transaction (the import
+  receipt is the authorization, never the released head), the incoming
+  document must be a legal successor of that imported reading (genuine
+  divergence refuses typed), and the released representation is replaced
+  wholesale with the current-format layout - the same strand/rewrite/head
+  writer the legacy-blob migration uses. Released heads with
+  `rewrite_count = 0` (the committed R1 realms' shape) keep their ordinary
+  write arms unchanged. Transcript-rewrite commits over a released head
+  remain fail-closed by design: at 0.8.11 resume authors nothing, so the
+  first projection always adopts before any rewrite can arrive.
+
+- **Released 0.8.10 HEAD-CANONICAL continuity documents import on load**
+  (the head-row lane of the released-envelope import). The one-time importer
+  covered whole-blob rows only, while every 0.8.10-written head row carries a
+  v2 session envelope that current materialization refuses typed
+  ("failed to restore session from head row: ... expected current 3, got
+  2") - so an entire released head-canonical fleet was unreadable at resume
+  (field: 17/17 identities degraded on the reset-mint leg; the fail-closed
+  side held, durable rows preserved). `materialize_slim_in_txn` now routes a
+  v2 head into `import_released_head_in_txn`: the exact durable strand rows
+  are first proved against the released head commitment
+  (`released_0810_transcript_serialized_rows_digest` must equal
+  `head_revision`), the released envelope is reassembled from those exact
+  bytes plus the head's inline envelope facts, and the sanctioned
+  `import_released_0810_session` boundary interprets it (receipt digest and
+  session id re-proved). Read-side interpret only: durable adoption follows
+  the first write-path decode, which rebases the strand under a
+  current-format head. Regression drives the committed released baseline
+  realm with its runtime store deleted - HomeCore's exact binding leg.
+
+- **A restored/rolled-back runtime store no longer serves stale committed
+  authority over the newer durable continuity row** (advisory Form 1, the
+  0.8.9 stale-runtime-snapshot failure recurring at the 0.8.11 store-owned
+  repin). The write-through projection makes "durable strictly newer than
+  committed runtime authority" impossible in normal operation, so observing
+  the inversion proves runtime-store loss; the facade now probes once per
+  runtime per process on the store-owned read verbs and re-seeds the
+  committed runtime authority from the durable session row (ordering on the
+  monotonic pair: transcript rewrite generation, then message count, so a
+  compacted-shorter durable document still orders ahead). Resume replays the
+  full committed head instead of silently dropping durably recorded turns,
+  and the following boundary can no longer project the regression back over
+  the durable document. Catalog entries carrying a lifecycle terminal are
+  left untouched.
+
+- **A divergent runtime reseed refuses typed instead of silently adopting
+  the durable side.** The staleness freshen above initially left fork
+  detection to the inner store's seed verb, but `commit_session_snapshot`
+  consults its LEGACY previous-row table for the boundary save guard - empty
+  on 0.8.11 store shapes - so a durable row that ordered newer WITHOUT
+  extending the committed document was classified as first-save adoption and
+  silently replaced the committed runtime authority (the pick-a-winner
+  data-loss class; fleet operators restoring runtime stores from backups hit
+  this path). The boundary save guard now runs facade-side against the exact
+  committed snapshot before any reseed: genuine divergence surfaces the
+  guard's typed continuity refusal, repeatably, with both documents left
+  untouched. Caught by the direction pin written for the freshen, not by the
+  suite.
+
+- **Archived sessions read as archived through the resume seam again.** At
+  meerkat 0.8.11 the archive protocol never rewrites session BODIES to carry
+  archive authority - the absorbing terminal is a RuntimeStore-owned fact
+  (catalog entry or Retired/Destroyed lifecycle row) - while the mob resume
+  seam still classifies from the body terminal, so a retired member's intact
+  preserved document read back `Revivable` with no archived terminal (the
+  0.8.6 field failure shape: hosts rotated identities off preserved
+  transcripts). The session-service facade now overlays the store-owned
+  terminal onto `load_session_for_resume` reads; both gateway binaries and
+  the persistent library composition thread the shared runtime store as the
+  overlay authority (`with_runtime_archived_terminal_authority` for
+  externally-composed specs).
+
+- **A byte-exact head resave no longer masks a stale fencing token.** The
+  head-path exact-resave noop (which keeps a zero-change save from minting a
+  checkpoint version) now requires the store-side
+  `session_head_matches_current` probe - head equality AND current write
+  authority, the head-path mirror of the whole-blob match probe's fence
+  predicate - so a fenced-out writer falls through to the fencing write verb
+  and hears the ordinary stale-fence refusal instead of a silent `Ok`.
+
+- **An unregistered save refused over a durable head-canonical document now
+  publishes positive lifecycle authority.** The refusal path recorded
+  nothing, leaving the session's lifecycle to be re-inferred from absence; it
+  now records `DurableObserved` (observation-grade: newer in-flight evidence
+  wins), keeping the head-canonical refusal on the same lifecycle footing as
+  the blob parking guard.
+
+- **Ephemeral-runtime durability round trip is now facade-owned** (the OB3
+  pod-scratch shape: durable truth in an injected session/continuity store,
+  runtime store on ephemeral pod scratch). At 0.8.11 the session service
+  keeps no plain `SessionStore` write path (WholeBlob session authority lives
+  only in the `RuntimeStore`), so `SessionStoreBackedRuntimeStore` now owns
+  both halves of durable interop: committed session boundaries WRITE THROUGH
+  to the injected store after every committing verb (fail-closed: an external
+  write failure fails the commit, and a retry of the same prepared boundary
+  converges from the already-current inner successor), and cold activations
+  RE-MINT store-issued runtime authority from the durable row (per-runtime
+  single-flight fencing; a late seed never overwrites an advanced boundary).
+  The mint arms on EVERY composition carrying a durable session source,
+  durable SQLite/provider runtime stores included: an absent runtime record
+  over a durable inner store is either a never-persisted session (the mint
+  declines, the typed refusal stands) or a reset/lost runtime store — the
+  sanctioned recovery path, which now reseeds instead of refusing every
+  resume. Destroyed sessions cannot resurrect through it because identity
+  deletion removes the durable row under the identity fence. Both gateway
+  binaries and the persistent/identity-first compositions thread the same
+  facade (`epoch_tracking_runtime_store_with_durable_projection`). On
+  incremental-capable substrates the continuity adapter BIRTHS the
+  head-canonical representation on a registered session's first projected
+  boundary (strand rows + initial head under a create-CAS; legacy/imported
+  blobs convert via the synthesizing head read), so the O(delta) steady
+  state engages for new sessions exactly as it did when the 0.8.10 service
+  drove the incremental channel - head birth moved seams, it did not
+  disappear. The bounded-bridge composition (ephemeral session service +
+  runtime machine) completes the post-commit boundary acknowledgement the
+  upstream ephemeral service refuses on principle, so runtime-backed
+  ephemeral turns no longer fail after their boundary committed.
+
+- **Migrated head-canonical sessions no longer fail cold materialization
+  after one 0.8.11 turn.** Both head-canonical plain-append writers (the
+  continuity adapter and the local store) re-minted the head's byte-exact
+  row commitment from TODAY's re-serialization while durable rows keep the
+  bytes they were written with; `SessionHead::into_session` verifies that
+  commitment at 0.8.11, so every fleet session migrated by the 0.8.10
+  head-canonical bump would refuse to materialize after its first
+  post-upgrade turn. The successor head now extends the STORED commitment
+  with only the appended rows' bytes
+  (`SessionHead::from_session_with_proved_inline_storage_authority`).
+
+- **Deleting an identity now deletes its durable session row** (CAS-delete
+  under the advanced identity fence inside the delete transaction, after
+  projection writes are quiesced). Previously the row outlived the identity,
+  and on the ephemeral-runtime shape the activation mint would faithfully
+  resurrect the deleted transcript on the next cold boot or identity reuse.
+  Stores that cannot support session-scoped deletion are surfaced loudly and
+  keep the record-scoped deletion contract.
+
+- **Schedule deliveries to identity-first members carry the driver's stable
+  delivery identity.** The internal delivery sink rewrote the receipt
+  correlation to the member id, which 0.8.11's `validate_dispatch_receipt`
+  rejects — every intercepted member delivery errored AFTER the turn ran
+  (false Misfire + `DriverTickFailed` per fire; duplicate turns under
+  catch-up windows). The sink now echoes `ScheduleDeliveryIdentity`'s
+  occurrence correlation exactly and stages the idempotency key on
+  `DispatchInput`. NOTE: admission-boundary dedup for the internal member
+  lane is still absent (the staged key has no reader yet) — crash-redelivery
+  dedup is a tracked follow-up needing an upstream seam decision.
+
+- **Sender-side conversation view now renders outgoing peer communications
+  after a history rebuild.** An outgoing peer send exists in the sender's
+  transcript only as an assistant tool call (`send_message` / `send_request` /
+  `send_response`) plus a nameless tool result; the session-history projection
+  kept assistant text blocks only, so any conversation rebuilt from session
+  history (console log lost or reset, live projection never attached for the
+  turn) showed the RECIPIENT's arrivals — incoming typed comms notices survive
+  history — while silently dropping the SENDER's own outgoing communications.
+  The history projection now re-emits the live edge's `tool_call_requested`
+  frame ({id, tool_call_id, name, args}) for each comms send call, so the
+  console pairs it with the backfilled tool result by `tool_call_id` and
+  renders the same outgoing peer item as a live turn; a live twin collapses
+  through a new tool-call arm of the history counterpart fingerprint (keyed on
+  the provider-minted tool_use_id). Regression coverage runs the two-member
+  scenario through both projection sources (live drain and history-only
+  rebuild) in `unified_console`.
+
+### Known Issues
+
+- Gateway retire/respawn of idle members can hang intermittently (upstream
+  meerkat-mob actor defect family, filed as S4 alongside S2/S3; admin-path
+  operation, not exercised by fleet acceptance flows). The pinning test is
+  `#[ignore]`d with its run records and re-arms on the upstream fix.
+
+- Zero-turn boots re-stamp `session_tool_visibility_state_v1` from a
+  HashSet (per-process order) and touch `updated_at` upstream, so session
+  head BYTES are not boot-idempotent on their own - fleet operators
+  comparing raw DB digests across boots will see byte drift on sessions
+  carrying multi-tool filters. The scoped exact-resave equality (above)
+  keeps the durable row untouched on zero-semantic-change boots; filed
+  upstream as S5 (durable bytes minted from HashSet iteration order).
+
 ## [0.8.8] - 2026-07-29
 
 Observability release. No behaviour changes to storage, resume, or provisioning

@@ -101,7 +101,22 @@ New module `meerkat-mobkit/src/live_wiring.rs`:
    optional `model` override forwarded into `RealtimeSessionOpenConfig`;
    a per-profile `realtime_model` map can ride `runtime_options.live` in a
    follow-up once field usage settles. (Deliberately NOT a mob.toml
-   profile field — profiles are upstream schema.)
+   profile field — profiles are upstream schema.) For members whose text
+   PROVIDER differs too (HomeCore: Anthropic text profiles opening the
+   OpenAI realtime lane), `mobkit/live/open` also accepts a strict
+   optional `provider` paired with `model`: an unrecognized provider name
+   is a typed invalid-params error (never a silent fallthrough), the
+   (provider, model) pair is applied to the channel identity before the
+   B19 precheck and machine admission, and when the selection differs
+   from the member's inherited provider the inherited provider-specific
+   auth binding is cleared so the selected provider's configured default
+   credential resolution applies. Omitting `provider` keeps the previous
+   behavior byte-identical. Both `model` and `provider` are CHANNEL-scoped:
+   they mutate only the per-open `RealtimeSessionOpenConfig` projection
+   (the member's durable identity is read via
+   `live_session_llm_identity`, never written on this path), so channel
+   close reverts by construction and `live/refresh` re-projects from the
+   durable session.
 7. **Gating**: `runtime_options.live = true | {ws: true}` opt-in on
    `mobkit/init` (default OFF). ABAC: live methods map to `agent.send` on
    the target member (console surface); stdin surface is host-trusted as

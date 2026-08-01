@@ -48,10 +48,9 @@
 //!   `Unsupported` error.
 //! - [`chapters::legacy_continuity_database`] /
 //!   [`chapters::legacy_memory_database`] — the legacy-data axis: pre-ledger
-//!   continuity databases holding unstamped 0.7.x-shaped session snapshots
-//!   must open, serve bytes unchanged, and keep their CAS; pre-column memory
-//!   databases must upgrade through `ensure_column`, preserving rows and the
-//!   byte-exact taint backfill sentinel.
+//!   continuity and memory databases (below the mobkit 0.8.8 floor) must be
+//!   refused typed at open, with their fabricated rows left untouched — the
+//!   0.8.11 reset retired silent pre-floor convergence.
 //!
 //! Failures are reported through the upstream
 //! [`ConformanceFailure`] type (re-exported here) so downstream CI treats
