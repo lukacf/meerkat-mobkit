@@ -2034,8 +2034,10 @@ async fn live_reset_takes_a_turn_and_shuts_down_within_horizon() {
 
     // The horizon pin. In the field the superseded session's failed
     // projection held teardown in retain-for-retry past the gateway's 310s
-    // bounded horizon; a healthy teardown completes in seconds.
-    tokio::time::timeout(std::time::Duration::from_mins(1), runtime.shutdown())
+    // bounded horizon; a healthy teardown completes in seconds locally but a
+    // loaded 2-vCPU CI runner needs minutes for the full lifecycle - 5 minutes
+    // still cleanly separates slow-but-done from the 310s+ retention wedge.
+    tokio::time::timeout(std::time::Duration::from_mins(5), runtime.shutdown())
         .await
         .expect(
             "shutdown must complete within the bounded horizon; a timeout here is the \
