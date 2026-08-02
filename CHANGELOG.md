@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **meerkat dependencies repinned `=0.8.11` → `=0.8.12`** (all 19 meerkat
+  crates in `meerkat-mobkit`, all 5 in `mobkit-store-conformance`). 0.8.12 is
+  an upstream hotfix release: fan-in stale admission drops, abandonment
+  flattening, the silent live-actor discard (the actor is now preserved on
+  recoverable turn errors), transient-context transcript-identity false
+  re-proof, terminal-receipt sequence reuse, and a live-boundary run-advance
+  race. Full suite complete-run green against the registry crates before any
+  mobkit-side change (2181/2181, idle gate excluded per its shared-runner
+  disposition).
+
+### Fixed
+
+- The three tests parked on the upstream meerkat-mob actor defect family are
+  re-armed — fixed by meerkat 0.8.12 (the lost-actor cleanup): S2
+  (`explicit_identity_query_refreshes_stale_existing_session_history`, the
+  "autonomous dispatch inject failed: inbox closed" class), S3
+  (`agent_events_route_resolves_durable_identities_and_aliases`, HTTP 500 on
+  the member-observation route), and S4
+  (`studio_k0_identity_first_gateway_retire_respawn_succeed_on_idle_members`,
+  the intermittent retire/respawn hang). Each passed 3/3 re-arm runs at the
+  0.8.12 pin (S4 solo, well under its historical hang horizon); the
+  `#[ignore]` attributes and their run records are removed.
+
 ## [0.8.9] - 2026-08-02
 
 ### Changed
