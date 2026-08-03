@@ -362,6 +362,30 @@ impl Gateway {
         )
     }
 
+    /// Task #21 pin: a boot over healthy (or once-healed) durable state must
+    /// classify CLEAN — zero Broken classifications, zero continuity-repair
+    /// activity. A heal that does not persist a clean boundary re-Breaks on
+    /// the NEXT boot (the 2026-07-29 heal/re-Break production loop), and this
+    /// is where that would surface.
+    fn assert_no_repair_activity(&self) {
+        let Ok(sink) = self.stderr.lock() else {
+            panic!("[{}] gateway stderr unavailable: poisoned lock", self.label);
+        };
+        for marker in [
+            "marking identity Broken",
+            "continuity repair",
+            "continuity heal",
+        ] {
+            if let Some(line) = sink.iter().find(|line| line.contains(marker)) {
+                panic!(
+                    "({}) boot must classify clean, but the gateway logged repair \
+                     activity ({marker}): {line}",
+                    self.label
+                );
+            }
+        }
+    }
+
     fn wait_for(
         &mut self,
         deadline: Duration,
@@ -1024,6 +1048,7 @@ fn drive_released_realm(spec: &RealmSpec) {
         floor += MESSAGES_PER_TURN;
         wait_for_durable_messages(&state, floor, &format!("{label_a} turn for {identity}"));
     }
+    gateway.assert_no_repair_activity();
     gateway.shutdown_and_reap();
 
     // --- Post-exit: the upgrade, read from bytes ----------------------------
@@ -1085,6 +1110,11 @@ fn drive_released_realm(spec: &RealmSpec) {
         floor += MESSAGES_PER_TURN;
         wait_for_durable_messages(&state, floor, &format!("{label_b} turn for {identity}"));
     }
+    // Task #21 two-boot property on real released bytes: boot B inherits
+    // state the NEW build wrote (boot A upgraded, drove, and shut down
+    // clean) and must classify CLEAN — zero repairs. On the crash realm this
+    // additionally pins heal-then-clean over SIGKILL residue.
+    gateway.assert_no_repair_activity();
     gateway.shutdown_and_reap();
 
     let after_b = read_durable_transcript(&state, &format!("{label_b} post-turn"));

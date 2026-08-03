@@ -21,6 +21,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Continuity repair no longer destroys a member's queued work** (OB3 field
+  runs 33758a41 + 6bb7010e: repair healed a stream-dead-but-Attached review
+  member by full disposal and took its 15 pending fan-in inputs with it —
+  irrecoverably, on the ephemeral runtime-store shape). Three changes, all in
+  the identity-first repair paths:
+
+  - **Queue carry.** Before the destructive retire, the repair captures the
+    member's pending machine ingress (admitted-but-not-run inputs, payloads
+    included) through the composition's runtime machine, and re-admits it
+    into the healed successor session after the resume — fresh input
+    identity, idempotency keys dropped (the originals were durably
+    terminalized by the disposal), admission order preserved. Prompt, peer,
+    and external-event inputs carry; flow-step and runtime-internal inputs
+    cannot (their correlation is owned by the flow engine / runtime) and are
+    DESTROYED LOUDLY instead — one warn line per input id, with the class
+    and reason, before disposal proceeds.
+
+  - **Preconditions first.** The collision-repair retire now proves the
+    resume source exists (in the composition's authoritative read view — the
+    raw injected SessionStore row is deliberately not consulted; since the
+    0.8.11 store-owned repin runtime-backed compositions never project into
+    it) BEFORE destroying the stale member. A confirmed-absent resume source
+    refuses typed with no destructive step taken: retiring would destroy the
+    only live copy of the session.
+
+  - **Bounded non-identical retries.** The continuity repair supervisor
+    tracks per-identity failure signatures across passes; three consecutive
+    byte-identical failures park the identity typed
+    (`continuity_unrecoverable`, reason naming the blocking failure verbatim)
+    instead of re-executing destructive repair steps on a timer. An operator
+    clears the park to retry; a changed failure signature resets the streak.
+
 - The three tests parked on the upstream meerkat-mob actor defect family are
   re-armed — fixed by meerkat 0.8.12 (the lost-actor cleanup): S2
   (`explicit_identity_query_refreshes_stale_existing_session_history`, the

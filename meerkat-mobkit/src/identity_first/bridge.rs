@@ -982,6 +982,80 @@ pub struct MobSessionBridge {
     /// Resolved once at construction so the success path pays nothing per
     /// call. See [`BRIDGE_ACTOR_ADMISSION_BUDGET`].
     actor_admission_budget: Duration,
+    /// Machine-level ingress authority for the repair disposal paths (OB3
+    /// run 33758a41: repair destroyed 15 queued inputs with the member).
+    /// Lets repair capture a member's queued/steered inputs BEFORE the
+    /// destructive retire and re-admit them into the healed successor
+    /// session. `None` (validation-only compositions) keeps the legacy
+    /// destroy-on-dispose behavior, minus the carry observability.
+    runtime_ingress_authority: Option<Arc<dyn meerkat_runtime::SessionServiceRuntimeExt>>,
+}
+
+/// One queued/steered member input captured before a repair disposal, for
+/// re-admission into the healed successor session (OB3 run 33758a41: the
+/// disposal destroyed 15 queued review inputs with the member).
+struct CarriedMemberInput {
+    original_input_id: meerkat_core::lifecycle::InputId,
+    admission_sequence: Option<u64>,
+    input: meerkat_runtime::Input,
+}
+
+/// Pre-disposal capture of one member session's pending machine ingress.
+struct PendingIngressCapture {
+    /// Inputs whose payload survives re-admission (Prompt / Peer /
+    /// ExternalEvent classes), in admission order.
+    carryable: Vec<CarriedMemberInput>,
+    /// Pending inputs repair cannot carry: `(input id, class, reason)`.
+    /// Logged loudly per item before disposal proceeds.
+    uncarryable: Vec<(meerkat_core::lifecycle::InputId, &'static str, String)>,
+}
+
+impl PendingIngressCapture {
+    fn empty() -> Self {
+        Self {
+            carryable: Vec::new(),
+            uncarryable: Vec::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.carryable.is_empty() && self.uncarryable.is_empty()
+    }
+}
+
+/// Re-mint the runtime identity of a carried input for successor admission.
+///
+/// The disposal durably terminalized the original admission (abandonment),
+/// so the successor must admit a NEW input: reusing the original `InputId`
+/// collides with the terminal ledger row, and reusing the idempotency key
+/// would dedup the carry into that terminal record and silently drop it.
+/// Everything else — content, handling mode, visibility, correlation — rides
+/// unchanged.
+fn remint_carried_input_identity(
+    mut input: meerkat_runtime::Input,
+) -> Option<meerkat_runtime::Input> {
+    let header = match &mut input {
+        meerkat_runtime::Input::Prompt(i) => &mut i.header,
+        meerkat_runtime::Input::Peer(i) => &mut i.header,
+        meerkat_runtime::Input::FlowStep(i) => &mut i.header,
+        meerkat_runtime::Input::ExternalEvent(i) => &mut i.header,
+        meerkat_runtime::Input::Continuation(i) => &mut i.header,
+        meerkat_runtime::Input::Operation(i) => &mut i.header,
+        // `Input` is #[non_exhaustive]: a variant this build does not know
+        // has no reachable header, so it cannot be re-identified for
+        // successor admission.
+        _ => return None,
+    };
+    header.id = meerkat_core::lifecycle::InputId::new();
+    if let Some(key) = header.idempotency_key.take() {
+        tracing::debug!(
+            idempotency_key = %key,
+            readmitted_input_id = %header.id,
+            "carried input drops its idempotency key: the original admission was \
+             durably terminalized by the repair disposal"
+        );
+    }
+    Some(input)
 }
 
 impl MobSessionBridge {
@@ -998,6 +1072,7 @@ impl MobSessionBridge {
             committed_boundary_recoverer: None,
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
+            runtime_ingress_authority: None,
         }
     }
 
@@ -1017,6 +1092,7 @@ impl MobSessionBridge {
             committed_boundary_recoverer: None,
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
+            runtime_ingress_authority: None,
         }
     }
 
@@ -1036,6 +1112,7 @@ impl MobSessionBridge {
             committed_boundary_recoverer: None,
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
+            runtime_ingress_authority: None,
         }
     }
 
@@ -1056,6 +1133,7 @@ impl MobSessionBridge {
             committed_boundary_recoverer: None,
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
+            runtime_ingress_authority: None,
         }
     }
 
@@ -1076,6 +1154,7 @@ impl MobSessionBridge {
             committed_boundary_recoverer: None,
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
+            runtime_ingress_authority: None,
         }
     }
 
@@ -1100,6 +1179,20 @@ impl MobSessionBridge {
         recoverer: Arc<dyn CommittedBoundaryRecoverer>,
     ) -> Self {
         self.committed_boundary_recoverer = Some(recoverer);
+        self
+    }
+
+    /// Inject the machine-level ingress authority the repair disposal paths
+    /// use to carry a member's queued work across a heal (OB3 run 33758a41:
+    /// disposal destroyed 15 queued inputs with the member). Compositions
+    /// with a runtime machine pass it here; without it, repair proceeds but
+    /// cannot observe or carry pending inputs.
+    #[must_use]
+    pub fn with_runtime_ingress_authority(
+        mut self,
+        authority: Arc<dyn meerkat_runtime::SessionServiceRuntimeExt>,
+    ) -> Self {
+        self.runtime_ingress_authority = Some(authority);
         self
     }
 
@@ -1205,6 +1298,283 @@ impl MobSessionBridge {
         Ok(())
     }
 
+    /// Capture a member session's pending machine ingress BEFORE a repair
+    /// disposal destroys it (OB3 run 33758a41: queue_len=5 steer_queue_len=10
+    /// destroyed with the member). Pending = admitted but not yet run
+    /// (`Accepted`/`Queued`); mid-run and terminal inputs are not queue work.
+    /// Best-effort observation: an unregistered runtime or a probe fault
+    /// degrades to an empty capture (there is then nothing this bridge can
+    /// see, let alone carry).
+    /// Resolve the machine-level ingress authority for repair carry: an
+    /// explicitly injected one wins; otherwise the session service's runtime
+    /// adapter (the gateway's `MeerkatMachine`) serves.
+    fn resolved_runtime_ingress_authority(
+        &self,
+    ) -> Option<Arc<dyn meerkat_runtime::SessionServiceRuntimeExt>> {
+        if let Some(explicit) = self.runtime_ingress_authority.as_ref() {
+            return Some(Arc::clone(explicit));
+        }
+        self.session_service
+            .as_ref()?
+            .runtime_adapter()
+            .map(|machine| machine as Arc<dyn meerkat_runtime::SessionServiceRuntimeExt>)
+    }
+
+    async fn capture_pending_member_ingress(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> PendingIngressCapture {
+        let Some(authority) = self.resolved_runtime_ingress_authority() else {
+            tracing::debug!(
+                session_id = %session_id,
+                "no runtime ingress authority; repair cannot observe or carry queued member inputs"
+            );
+            return PendingIngressCapture::empty();
+        };
+        let active = match authority.list_active_inputs(session_id).await {
+            Ok(ids) => ids,
+            Err(error) => {
+                // NotReady / NotFound = no registered runtime = no live queue
+                // to destroy. Other faults mean the queue is unobservable;
+                // disposal proceeds exactly as it did before this seam.
+                tracing::debug!(
+                    session_id = %session_id,
+                    error = %error,
+                    "pending-ingress probe unavailable before repair disposal"
+                );
+                return PendingIngressCapture::empty();
+            }
+        };
+        let mut capture = PendingIngressCapture::empty();
+        for input_id in active {
+            let stored = match authority.input_state(session_id, &input_id).await {
+                Ok(Some(stored)) => stored,
+                Ok(None) => continue,
+                Err(error) => {
+                    capture
+                        .uncarryable
+                        .push((input_id, "state-unreadable", error.to_string()));
+                    continue;
+                }
+            };
+            if stored.seed.terminal_outcome.is_some() {
+                continue;
+            }
+            match stored.seed.phase {
+                meerkat_runtime::InputLifecycleState::Accepted
+                | meerkat_runtime::InputLifecycleState::Queued => {}
+                meerkat_runtime::InputLifecycleState::Staged
+                | meerkat_runtime::InputLifecycleState::Applied
+                | meerkat_runtime::InputLifecycleState::AppliedPendingConsumption => {
+                    capture.uncarryable.push((
+                        input_id,
+                        "mid-run",
+                        format!(
+                            "input was {:?} at repair disposal; the disposal cancel \
+                             terminalizes it and the sender observes that terminal",
+                            stored.seed.phase
+                        ),
+                    ));
+                    continue;
+                }
+                meerkat_runtime::InputLifecycleState::Consumed
+                | meerkat_runtime::InputLifecycleState::Superseded
+                | meerkat_runtime::InputLifecycleState::Coalesced
+                | meerkat_runtime::InputLifecycleState::Abandoned => continue,
+                other => {
+                    // #[non_exhaustive]: an unknown phase cannot be proven
+                    // pending-and-idle, so it is not carried — but it IS
+                    // named before disposal destroys it.
+                    capture.uncarryable.push((
+                        input_id,
+                        "unrecognized-phase",
+                        format!("input was in unrecognized lifecycle phase {other:?}"),
+                    ));
+                    continue;
+                }
+            }
+            match stored.state.persisted_input {
+                Some(
+                    input @ (meerkat_runtime::Input::Prompt(_)
+                    | meerkat_runtime::Input::Peer(_)
+                    | meerkat_runtime::Input::ExternalEvent(_)),
+                ) => {
+                    capture.carryable.push(CarriedMemberInput {
+                        original_input_id: input_id,
+                        admission_sequence: stored.seed.admission_sequence,
+                        input,
+                    });
+                }
+                Some(meerkat_runtime::Input::FlowStep(_)) => {
+                    capture.uncarryable.push((
+                        input_id,
+                        "flow-step",
+                        "flow-step correlation is owned by the flow engine and cannot be \
+                         re-admitted raw; the loss is bounded to the interrupted flow, \
+                         which observes its step's terminal and owns the retry"
+                            .to_string(),
+                    ));
+                }
+                Some(
+                    meerkat_runtime::Input::Continuation(_) | meerkat_runtime::Input::Operation(_),
+                ) => {
+                    capture.uncarryable.push((
+                        input_id,
+                        "runtime-internal",
+                        "continuation/operation inputs are machine-internal and cannot be \
+                         re-admitted raw; the successor runtime re-derives its own; the \
+                         loss is bounded to the disposed runtime's in-flight bookkeeping"
+                            .to_string(),
+                    ));
+                }
+                Some(_) => {
+                    capture.uncarryable.push((
+                        input_id,
+                        "unrecognized-class",
+                        "the pending input's class is unknown to this build; no carry \
+                         lane exists for it"
+                            .to_string(),
+                    ));
+                }
+                None => {
+                    capture.uncarryable.push((
+                        input_id,
+                        "payload-unavailable",
+                        "the runtime retained no payload for this pending input".to_string(),
+                    ));
+                }
+            }
+        }
+        capture
+            .carryable
+            .sort_by_key(|entry| entry.admission_sequence.unwrap_or(u64::MAX));
+        capture
+    }
+
+    /// Loud pre-disposal record of what the repair is about to do with a
+    /// member's queued work: what it will carry, and — per item, with ids —
+    /// what it is about to DESTROY because no carry lane exists for it.
+    fn log_pending_ingress_before_repair_disposal(
+        &self,
+        member_id: &MobAgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+        capture: &PendingIngressCapture,
+    ) {
+        if capture.is_empty() {
+            return;
+        }
+        tracing::warn!(
+            member_id = %member_id,
+            session_id = %session_id,
+            carryable = capture.carryable.len(),
+            destroyed = capture.uncarryable.len(),
+            "repair disposal found pending queued inputs on the member: carrying \
+             the carryable set to the healed successor; anything listed below is \
+             destroyed with the member"
+        );
+        for (input_id, class, reason) in &capture.uncarryable {
+            tracing::warn!(
+                member_id = %member_id,
+                session_id = %session_id,
+                input_id = %input_id,
+                class,
+                reason = %reason,
+                "repair disposal DESTROYS a pending member input it cannot carry"
+            );
+        }
+    }
+
+    /// Re-admit captured queue work into the healed successor session through
+    /// ordinary machine admission. Per-item failures are loud errors — the
+    /// heal itself stands (a healed member minus one carried input is still
+    /// strictly better than a Broken member), but every lost input is named.
+    async fn readmit_carried_inputs(
+        &self,
+        member_id: &MobAgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+        capture: PendingIngressCapture,
+    ) {
+        if capture.carryable.is_empty() {
+            return;
+        }
+        let Some(authority) = self.resolved_runtime_ingress_authority() else {
+            // Unreachable in practice: a non-empty capture required the
+            // authority. Fail loud rather than silently dropping.
+            tracing::error!(
+                member_id = %member_id,
+                session_id = %session_id,
+                lost = capture.carryable.len(),
+                "runtime ingress authority disappeared between capture and carry; \
+                 captured queued inputs are lost"
+            );
+            return;
+        };
+        let total = capture.carryable.len();
+        let mut carried = 0usize;
+        for entry in capture.carryable {
+            let CarriedMemberInput {
+                original_input_id,
+                input,
+                ..
+            } = entry;
+            let Some(input) = remint_carried_input_identity(input) else {
+                tracing::error!(
+                    member_id = %member_id,
+                    session_id = %session_id,
+                    original_input_id = %original_input_id,
+                    "carried input has no re-identifiable header in this build; the \
+                     input is lost"
+                );
+                continue;
+            };
+            let readmitted_input_id = input.id().clone();
+            match authority.accept_input(session_id, input).await {
+                Ok(meerkat_runtime::AcceptOutcome::Accepted { .. }) => {
+                    carried += 1;
+                    tracing::info!(
+                        member_id = %member_id,
+                        session_id = %session_id,
+                        original_input_id = %original_input_id,
+                        readmitted_input_id = %readmitted_input_id,
+                        "carried a queued member input into the healed successor session"
+                    );
+                }
+                Ok(other) => {
+                    let outcome = match &other {
+                        meerkat_runtime::AcceptOutcome::Deduplicated { .. } => "deduplicated",
+                        meerkat_runtime::AcceptOutcome::Rejected { .. } => "rejected",
+                        _ => "unrecognized",
+                    };
+                    tracing::error!(
+                        member_id = %member_id,
+                        session_id = %session_id,
+                        original_input_id = %original_input_id,
+                        outcome,
+                        "successor admission did not accept a carried queued input; \
+                         the input is lost"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(
+                        member_id = %member_id,
+                        session_id = %session_id,
+                        original_input_id = %original_input_id,
+                        error = %error,
+                        "failed to re-admit a carried queued input into the healed \
+                         successor; the input is lost"
+                    );
+                }
+            }
+        }
+        tracing::warn!(
+            member_id = %member_id,
+            session_id = %session_id,
+            carried,
+            total,
+            "repair carried queued member inputs into the healed successor session"
+        );
+    }
+
     async fn member_wires(
         &self,
         require_reciprocal: bool,
@@ -1291,6 +1661,31 @@ impl MobSessionBridge {
         if let Some(store) = self.session_store.as_ref() {
             return matches!(store.load_meta(session_id).await, Ok(None));
         }
+        if let Some(store) = self.continuity_session_store.as_ref() {
+            use meerkat::SessionStore as _;
+            return matches!(store.load_meta(session_id).await, Ok(None));
+        }
+        if let Some(service) = self.session_service.as_ref() {
+            return matches!(
+                service.read(session_id).await,
+                Err(meerkat_core::SessionError::NotFound { .. })
+            );
+        }
+        false
+    }
+
+    /// Precondition probe for the collision-repair retire: confirmed absence
+    /// of the resume target in the AUTHORITATIVE read view this composition
+    /// resumes from. The raw injected `session_store` row is deliberately
+    /// NOT consulted here (unlike [`Self::durable_session_row_is_absent`],
+    /// whose verdict is paired with meerkat's typed Absent error): since the
+    /// 0.8.11 store-owned repin, runtime-backed compositions persist through
+    /// RuntimeStore authority and never project into a raw injected
+    /// SessionStore, so an empty raw row is not evidence of absence there.
+    async fn resume_source_confirmed_absent(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> bool {
         if let Some(store) = self.continuity_session_store.as_ref() {
             use meerkat::SessionStore as _;
             return matches!(store.load_meta(session_id).await, Ok(None));
@@ -1498,6 +1893,12 @@ impl MobSessionBridge {
             self.runtime_session_id(runtime_id).await,
             member_entry_before_delivery.clone(),
         ) {
+            // The repair below starts with a destructive retire: capture the
+            // wedged member's queued inputs FIRST so the healed successor can
+            // re-admit them instead of losing them with the disposal (OB3
+            // run 33758a41).
+            let capture = self.capture_pending_member_ingress(&session_id).await;
+            self.log_pending_ingress_before_repair_disposal(member_id, &session_id, &capture);
             match self
                 .resume_repair_member(
                     runtime_id,
@@ -1508,7 +1909,11 @@ impl MobSessionBridge {
                 )
                 .await
             {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    self.readmit_carried_inputs(member_id, &session_id, capture)
+                        .await;
+                    return Ok(());
+                }
                 Err(RepairResumeFailure::DurableSnapshotMissing { detail }) => {
                     tracing::warn!(
                         runtime_id = %runtime_id,
@@ -1532,9 +1937,35 @@ impl MobSessionBridge {
                         .await
                         .map_err(|e| BridgeError::Mob(e.to_string()))?;
                     self.remember_runtime_member(runtime_id, member_id).await;
+                    if let Some(fresh_session_id) =
+                        self.handle.resolve_bridge_session_id(member_id).await
+                    {
+                        self.readmit_carried_inputs(member_id, &fresh_session_id, capture)
+                            .await;
+                    } else if !capture.carryable.is_empty() {
+                        tracing::error!(
+                            runtime_id = %runtime_id,
+                            member_id = %member_id,
+                            lost = capture.carryable.len(),
+                            "fresh repair spawn has no resolvable session id; the \
+                             captured queued inputs are lost"
+                        );
+                    }
                     return Ok(());
                 }
-                Err(RepairResumeFailure::Rejected(err)) => return Err(err),
+                Err(RepairResumeFailure::Rejected(err)) => {
+                    if !capture.carryable.is_empty() {
+                        tracing::error!(
+                            runtime_id = %runtime_id,
+                            member_id = %member_id,
+                            session_id = %session_id,
+                            lost = capture.carryable.len(),
+                            "delivery repair failed after its retire; the captured \
+                             queued inputs are lost with the disposed member"
+                        );
+                    }
+                    return Err(err);
+                }
             }
         }
         match self.handle.respawn(member_id.clone(), None).await {
@@ -2219,6 +2650,27 @@ impl SessionBridge for MobSessionBridge {
                     error = %error,
                     "resume_session hit a roster collision; retiring the stale member and retrying resume"
                 );
+                // Preconditions FIRST (OB3 run 33758a41): the retire below is
+                // destructive — on the ephemeral runtime-store shape it takes
+                // the stale member's in-memory state and queued inputs with
+                // it. Before destroying anything, prove the session this
+                // retry will resume from actually exists; a CONFIRMED-absent
+                // resume source means the stale member holds the only live
+                // state and retiring it destroys the session outright.
+                if self.resume_source_confirmed_absent(session_id).await {
+                    return Err(resume_rejected(
+                        identity,
+                        session_id,
+                        &meerkat_mob::MobError::Internal(format!(
+                            "collision retire refused: the resume source for \
+                             {session_id} is confirmed absent, so retiring the stale \
+                             member would destroy the only live copy of the session"
+                        )),
+                        "collision retire precondition",
+                    ));
+                }
+                let capture = self.capture_pending_member_ingress(session_id).await;
+                self.log_pending_ingress_before_repair_disposal(&mid, session_id, &capture);
                 if let Err(err) = self.retire_session_owned_member_to_absence(&mid).await {
                     return Err(resume_rejected(
                         identity,
@@ -2233,6 +2685,16 @@ impl SessionBridge for MobSessionBridge {
                 // 0.7.34 drain-poll between retire and respawn is gone.
                 self.forget_runtime_member(runtime_id).await;
                 if let Err(error) = self.spawn_member_spec(spawn_spec).await {
+                    if !capture.carryable.is_empty() {
+                        tracing::error!(
+                            identity = %identity,
+                            session_id = %session_id,
+                            lost = capture.carryable.len(),
+                            "the collision retire already destroyed the member's queued \
+                             inputs and the resume retry failed; the captured inputs are \
+                             lost with it"
+                        );
+                    }
                     self.verify_durable_session_after_rejected_resume(identity, session_id)
                         .await;
                     return Err(resume_rejected(
@@ -2244,6 +2706,7 @@ impl SessionBridge for MobSessionBridge {
                 }
                 self.remember_runtime_member(runtime_id, &mid).await;
                 self.remember_runtime_session(runtime_id, session_id).await;
+                self.readmit_carried_inputs(&mid, session_id, capture).await;
                 Ok(ResumeSessionOutcome::Resumed {
                     session_id: session_id.clone(),
                 })
@@ -2282,7 +2745,11 @@ impl SessionBridge for MobSessionBridge {
                     );
                     // The failed resume attempt may have left a stale roster
                     // entry; retire is inert when nothing matches (see the
-                    // collision arm above).
+                    // collision arm above). When it DOES match, the retire is
+                    // destructive: capture the stale member's queued inputs
+                    // first and carry them into the fresh successor session.
+                    let capture = self.capture_pending_member_ingress(session_id).await;
+                    self.log_pending_ingress_before_repair_disposal(&mid, session_id, &capture);
                     if let Err(retire_error) =
                         self.retire_session_owned_member_to_absence(&mid).await
                     {
@@ -2295,9 +2762,27 @@ impl SessionBridge for MobSessionBridge {
                     }
                     self.forget_runtime_member(runtime_id).await;
                     let fresh_session_id = meerkat_core::types::SessionId::new();
-                    let created_session_id = self
+                    let created_session_id = match self
                         .create_session(identity, runtime_id, spec, draft, &fresh_session_id)
-                        .await?;
+                        .await
+                    {
+                        Ok(created) => created,
+                        Err(create_error) => {
+                            if !capture.carryable.is_empty() {
+                                tracing::error!(
+                                    identity = %identity,
+                                    session_id = %session_id,
+                                    lost = capture.carryable.len(),
+                                    "the never-persisted retire already destroyed the \
+                                     member's queued inputs and the fresh spawn failed; \
+                                     the captured inputs are lost with it"
+                                );
+                            }
+                            return Err(create_error);
+                        }
+                    };
+                    self.readmit_carried_inputs(&mid, &created_session_id, capture)
+                        .await;
                     return Ok(ResumeSessionOutcome::FreshSpawned {
                         session_id: created_session_id,
                         reason: ResumeFallbackReason::NeverPersisted {

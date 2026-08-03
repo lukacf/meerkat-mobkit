@@ -6,7 +6,7 @@
 //! - Lifecycle: `retire()`, `respawn()`, `reset()`, `delete_identity()`
 //! - Ownership: lease tracking, fencing, and invariant enforcement
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock, Weak};
@@ -754,6 +754,13 @@ impl IdentityFirstRuntimeContext {
         mut cancellation: Option<watch::Receiver<bool>>,
     ) {
         let mut backoff = policy.initial_backoff;
+        // Bounded non-identical retries (OB3 0.8.12-era evidence): a repair
+        // pass whose failure comes back byte-identical N times in a row is a
+        // deterministic wall, and each blind retry re-executes the pass's
+        // DESTRUCTIVE dispose steps against the same blocking precondition.
+        // Track consecutive per-identity failure signatures and park typed
+        // after [`REPAIR_IDENTICAL_FAILURE_PARK_ATTEMPTS`].
+        let mut identical_failure_streaks: HashMap<AgentIdentity, (String, u32)> = HashMap::new();
         loop {
             if let Some(cancellation) = cancellation.as_mut() {
                 if *cancellation.borrow() {
@@ -844,20 +851,23 @@ impl IdentityFirstRuntimeContext {
                 broken = repairable.len(),
                 "continuity repair: retrying restore for Broken identities"
             );
-            if let Err(err) = self.refresh_desired_topology().await {
-                tracing::warn!(
-                    error = %err,
-                    "continuity repair reconcile failed; backing off"
-                );
-                backoff = (backoff * 2).min(policy.max_backoff);
-                if cancellation
-                    .as_ref()
-                    .is_some_and(|cancellation| *cancellation.borrow())
-                {
-                    return;
+            let pass = match self.refresh_desired_topology().await {
+                Ok(pass) => pass,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "continuity repair reconcile failed; backing off"
+                    );
+                    backoff = (backoff * 2).min(policy.max_backoff);
+                    if cancellation
+                        .as_ref()
+                        .is_some_and(|cancellation| *cancellation.borrow())
+                    {
+                        return;
+                    }
+                    continue;
                 }
-                continue;
-            }
+            };
             let still_broken = self.runtime.repairable_broken_identities().await;
             let healed = repairable
                 .iter()
@@ -869,6 +879,64 @@ impl IdentityFirstRuntimeContext {
                     still_broken = still_broken.len(),
                     "continuity repair healed identities"
                 );
+            }
+            for identity in &repairable {
+                if !still_broken.contains(identity) {
+                    identical_failure_streaks.remove(identity);
+                    continue;
+                }
+                let Some(super::orchestrator::RestoreOutcome::Broken(failure)) =
+                    pass.outcomes.get(identity)
+                else {
+                    // No comparable typed failure for this pass (the identity
+                    // broke through a different door); a streak cannot be
+                    // byte-compared across shapes.
+                    identical_failure_streaks.remove(identity);
+                    continue;
+                };
+                let signature = format!("{:?}: {}", failure.kind, failure.detail);
+                let streak = identical_failure_streaks
+                    .entry(identity.clone())
+                    .or_insert_with(|| (signature.clone(), 0));
+                if streak.0 == signature {
+                    streak.1 += 1;
+                } else {
+                    *streak = (signature.clone(), 1);
+                }
+                if streak.1 >= REPAIR_IDENTICAL_FAILURE_PARK_ATTEMPTS {
+                    identical_failure_streaks.remove(identity);
+                    tracing::error!(
+                        %identity,
+                        attempts = REPAIR_IDENTICAL_FAILURE_PARK_ATTEMPTS,
+                        blocking_failure = %signature,
+                        "continuity repair failed byte-identically on every attempt; \
+                         parking the identity typed instead of re-executing destructive \
+                         repair steps on a timer. Operator path back after fixing the \
+                         blocking failure: restart the gateway (the park is \
+                         process-local; boot re-attempts repair once) or reset the \
+                         identity via `mobkit/reset` (deliberate fresh start)"
+                    );
+                    if !self
+                        .runtime
+                        .mark_continuity_unrecoverable(
+                            identity,
+                            format!(
+                                "continuity repair parked after \
+                                 {REPAIR_IDENTICAL_FAILURE_PARK_ATTEMPTS} consecutive \
+                                 byte-identical repair failures; blocking failure: \
+                                 {signature}. After fixing it, restart the gateway \
+                                 (process-local park; boot re-attempts repair) or reset \
+                                 the identity via `mobkit/reset`"
+                            ),
+                        )
+                        .await
+                    {
+                        tracing::debug!(
+                            %identity,
+                            "identity left Broken before the repair park could be recorded"
+                        );
+                    }
+                }
             }
             backoff = if still_broken.is_empty() && recovery_failures == 0 {
                 policy.initial_backoff
@@ -1003,6 +1071,12 @@ impl TrackedLeaseRenewalTask {
         let _ = self.join.await;
     }
 }
+
+/// Consecutive byte-identical repair failures tolerated for one identity
+/// before the repair supervisor parks it typed
+/// ([`IdentityRuntime::mark_continuity_unrecoverable`]) instead of
+/// re-executing the pass's destructive dispose steps on a timer.
+const REPAIR_IDENTICAL_FAILURE_PARK_ATTEMPTS: u32 = 3;
 
 /// Retry cadence for [`IdentityFirstRuntimeContext::spawn_broken_identity_repair_task`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12147,7 +12221,195 @@ mod lease_renewal_backoff_tests {
 #[cfg(test)]
 mod continuity_repair_supervisor_tests {
     use super::*;
+    use crate::identity_first::bridge::{BridgeError, ResumeSessionOutcome, SessionBridge};
+    use crate::identity_first::types::{AgentBuildDraft, SessionSnapshot};
     use crate::identity_first::{LocalContinuityStore, LocalLeaseProvider, MutableRosterProvider};
+
+    /// A resume path that is deterministically wedged: every attempt fails
+    /// with the SAME error bytes, and every attempt is counted. This is the
+    /// shape whose blind re-execution the bounded-identical-retry park
+    /// exists to stop (each real repair attempt re-runs destructive dispose
+    /// steps against the same blocking precondition).
+    struct IdenticallyWedgedResumeBridge {
+        resume_attempts: std::sync::atomic::AtomicUsize,
+    }
+
+    impl IdenticallyWedgedResumeBridge {
+        fn attempts(&self) -> usize {
+            self.resume_attempts
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBridge for IdenticallyWedgedResumeBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            _session_id: &SessionId,
+        ) -> Result<SessionId, BridgeError> {
+            Err(BridgeError::Mob(
+                "create not expected: the identity resolves Ready".to_string(),
+            ))
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            _session_id: &SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            self.resume_attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(BridgeError::Mob(
+                "collision retire blocked: disposal precondition holds (wedged for park test)"
+                    .to_string(),
+            ))
+        }
+
+        async fn deliver(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _content: &meerkat_core::ContentInput,
+        ) -> Result<SessionId, BridgeError> {
+            Err(BridgeError::Mob("deliver not used".to_string()))
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Err(BridgeError::Mob("checkpoint not used".to_string()))
+        }
+
+        async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            Ok(())
+        }
+    }
+
+    fn park_test_spec(identity: AgentIdentity) -> DurableAgentSpec {
+        DurableAgentSpec {
+            identity,
+            profile: meerkat_mob::ProfileName::from("domain"),
+            addressability: crate::identity_first::AgentAddressability::Addressable,
+            display_name: None,
+            labels: BTreeMap::new(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: None,
+            runtime_mode_override: None,
+            backend: None,
+            binding: None,
+        }
+    }
+
+    /// Task #48 (c) — bounded non-identical retries: a Broken identity whose
+    /// repair fails byte-identically on three consecutive passes is parked
+    /// TYPED (`continuity_unrecoverable`, reason naming the blocking
+    /// failure), and the supervisor never re-executes the repair afterwards.
+    #[tokio::test]
+    async fn repair_loop_parks_typed_after_three_byte_identical_failures()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:wedged")?;
+        let spec = park_test_spec(identity.clone());
+        let session_id = SessionId::new();
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse(&format!("rt:{identity}:0"))?,
+            session_id: session_id.clone(),
+            generation: ContinuityGeneration::new(1),
+            checkpoint_version: CheckpointVersion::new(1),
+        };
+        let continuity_store = Arc::new(LocalContinuityStore::in_memory()?);
+        continuity_store
+            .upsert_continuity_record(&record, FencingToken::new(1))
+            .await?;
+        let bridge = Arc::new(IdenticallyWedgedResumeBridge {
+            resume_attempts: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store,
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "identical-failure-park-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                spec.clone(),
+                IdentityLifecycleState::Broken,
+                Some(record),
+                None,
+            )
+            .await;
+        let context = Arc::new(IdentityFirstRuntimeContext::new(
+            Arc::clone(&runtime),
+            Arc::new(MutableRosterProvider::new(vec![spec])),
+            None,
+            None,
+            None,
+        ));
+        let task = context.spawn_tracked_broken_identity_repair_task(ContinuityRepairPolicy {
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(10),
+        });
+
+        // The park must arrive after EXACTLY the bounded attempt count.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let park = loop {
+            if let Some(park) = runtime.continuity_unrecoverable(&identity).await {
+                break park;
+            }
+            if Instant::now() > deadline {
+                task.cancel_and_join().await;
+                return Err("repair loop never parked the identically-failing identity".into());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert!(
+            park.reason.contains("byte-identical"),
+            "park reason must name the bounded-identical-retry cause: {}",
+            park.reason
+        );
+        assert!(
+            park.reason
+                .contains("disposal precondition holds (wedged for park test)"),
+            "park reason must carry the blocking failure verbatim: {}",
+            park.reason
+        );
+        let attempts_at_park = bridge.attempts();
+        assert_eq!(
+            attempts_at_park, 3,
+            "the destructive repair must run exactly the bounded attempt count"
+        );
+
+        // Parked = no further destructive re-execution on the timer.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            bridge.attempts(),
+            attempts_at_park,
+            "a parked identity must not be re-repaired on the timer"
+        );
+        assert!(
+            runtime
+                .repairable_broken_identities()
+                .await
+                .iter()
+                .all(|id| id != &identity),
+            "a parked identity must leave the repairable set"
+        );
+        task.cancel_and_join().await;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn repair_loop_exits_when_supervisor_sender_is_dropped()
