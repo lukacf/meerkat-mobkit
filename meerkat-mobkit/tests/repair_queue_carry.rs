@@ -1,0 +1,547 @@
+// Repair must not destroy queued work (task #48; OB3 field runs 33758a41 +
+// 6bb7010e): identity-first continuity repair used to heal a wedged member by
+// FULL disposal — `cancel_active_runtime_turn_before_retire` observed
+// queue_len=5 steer_queue_len=10 and PROCEEDED; ArchiveSession destroyed the
+// 15 pending review inputs with the member. On the ephemeral runtime-store
+// shape those queued inputs are in-memory, so disposal loses them
+// irrecoverably.
+//
+// The two regressions here pin the bridge-side fix:
+// 1. `repair_carries_queued_inputs_to_the_healed_successor` — the collision
+//    repair captures the member's pending machine ingress BEFORE the
+//    destructive retire and re-admits it into the healed successor session,
+//    which then DRAINS it (real MeerkatMachine, real mob, gated LLM client).
+// 2. `repair_refuses_disposal_when_the_durable_row_is_confirmed_absent` — the
+//    preconditions-first gate: when the durable session row the resume retry
+//    needs is confirmed absent, no destructive step executes at all and the
+//    member (with its queue) is left untouched behind a typed rejection.
+//
+// The bounded byte-identical-failure park (task #48 (c)) is pinned separately
+// in `identity_first::runtime`'s continuity_repair_supervisor_tests.
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::StreamExt;
+use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionService};
+use meerkat_client::types::LlmStream;
+use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
+use meerkat_mob::{MobDefinition, MobStorage};
+use meerkat_mobkit::identity_first::{
+    AgentAddressability, AgentBuildDraft, AgentRuntimeServices, BridgeError, DurabilityPolicy,
+    DurableAgentSpec, IdentityRuntime, IdentityRuntimeConfig, LocalContinuityStore,
+    LocalLeaseProvider, MobSessionBridge, RestoreOutcome, SessionBridge, SessionSnapshot,
+    restore_flow,
+};
+use meerkat_mobkit::{
+    DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, UnifiedRuntime,
+};
+use meerkat_runtime::SessionServiceRuntimeExt;
+use tokio::sync::watch;
+
+/// Deterministic LLM whose stream blocks until the shared gate opens, and
+/// which records EVERY message of every request it is asked to run (carried
+/// inputs may be batched with a later delivery into ONE turn, so recording
+/// only the last message would hide them from the assertions).
+/// Closed gate = the OB3 wedge shape (a turn parked inside the provider
+/// stream while fan-in piles up behind it).
+struct GatedRecordingClient {
+    gate: watch::Receiver<bool>,
+    prompts: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl LlmClient for GatedRecordingClient {
+    fn project_replay_messages(
+        &self,
+        messages: &[meerkat_core::Message],
+    ) -> Result<Vec<meerkat_core::Message>, LlmError> {
+        Ok(messages.to_vec())
+    }
+
+    fn stream<'a>(&'a self, request: &'a LlmRequest) -> LlmStream<'a> {
+        {
+            let mut prompts = self.prompts.lock().expect("prompt record lock");
+            for message in &request.messages {
+                prompts.push(format!("{message:?}"));
+            }
+        }
+        let mut gate = self.gate.clone();
+        let text = futures::stream::once(async move {
+            while !*gate.borrow() {
+                if gate.changed().await.is_err() {
+                    break;
+                }
+            }
+            Ok(LlmEvent::TextDelta {
+                delta: "ok".to_string(),
+                meta: None,
+            })
+        });
+        let done = futures::stream::once(async {
+            Ok(LlmEvent::Done {
+                outcome: LlmDoneOutcome::Success {
+                    stop_reason: meerkat_core::StopReason::EndTurn,
+                },
+            })
+        });
+        Box::pin(text.chain(done))
+    }
+
+    fn provider(&self) -> meerkat_core::Provider {
+        meerkat_core::Provider::Other
+    }
+
+    async fn health_check(&self) -> Result<(), LlmError> {
+        Ok(())
+    }
+}
+
+struct Harness {
+    _temp: tempfile::TempDir,
+    _runtime: UnifiedRuntime,
+    machine: Arc<meerkat_runtime::MeerkatMachine>,
+    mob_handle: meerkat_mob::MobHandle,
+    bridge: Arc<MobSessionBridge>,
+    identity: meerkat_mobkit::identity_first::AgentIdentity,
+    spec: DurableAgentSpec,
+    runtime_id: meerkat_mobkit::identity_first::AgentRuntimeId,
+    session_id: meerkat_core::types::SessionId,
+    prompts: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+fn empty_draft(spec: &DurableAgentSpec) -> AgentBuildDraft {
+    AgentBuildDraft {
+        model: None,
+        system_prompt: None,
+        additional_instructions: spec.additional_instructions.clone(),
+        labels: spec.labels.clone(),
+        app_context: spec.context.clone(),
+        external_tools: Vec::new(),
+        local_external_tools: Default::default(),
+        provider_params: None,
+    }
+}
+
+fn prompt_input(text: &str) -> meerkat_runtime::Input {
+    meerkat_runtime::Input::Prompt(meerkat_runtime::PromptInput::new(text, None))
+}
+
+fn flow_step_input(text: &str) -> meerkat_runtime::Input {
+    meerkat_runtime::Input::FlowStep(meerkat_runtime::FlowStepInput {
+        header: meerkat_runtime::InputHeader {
+            id: meerkat_core::lifecycle::InputId::new(),
+            timestamp: chrono::Utc::now(),
+            source: meerkat_runtime::InputOrigin::Flow {
+                flow_id: "carry-test-flow".to_string(),
+                step_index: 0,
+            },
+            durability: meerkat_runtime::InputDurability::Durable,
+            visibility: meerkat_runtime::InputVisibility::default(),
+            idempotency_key: None,
+            supersession_key: None,
+            correlation_id: None,
+        },
+        step_id: "carry-test-step".to_string(),
+        content: meerkat_core::ContentInput::Text(text.to_string()),
+        directed_interaction_id: None,
+        turn_metadata: None,
+    })
+}
+
+async fn build_harness(gate: watch::Receiver<bool>) -> Harness {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let state = temp.path().join("state");
+    std::fs::create_dir_all(&state).expect("state dir");
+    let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
+        meerkat_store::SqliteSessionStore::open(state.join("sessions.db")).expect("session store"),
+    );
+    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+        meerkat_runtime::store::SqliteRuntimeStore::new(state.join("runtime.sqlite"))
+            .expect("runtime store"),
+    );
+    let blob_store: Arc<dyn meerkat_core::BlobStore> =
+        Arc::new(meerkat_store::MemoryBlobStore::new());
+    let factory = AgentFactory::new(&state).comms(true);
+    let mut builder = FactoryAgentBuilder::new(factory, Config::default());
+    builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+        session_store.clone(),
+    )));
+    builder.default_blob_store = Some(blob_store.clone());
+    let machine = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+        Arc::clone(&runtime_store),
+        Arc::clone(&blob_store),
+    ));
+    let service = Arc::new(PersistentSessionService::new(
+        builder,
+        16,
+        session_store.clone(),
+        runtime_store,
+        blob_store,
+    ));
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "repair-carry"
+
+[profiles.general]
+model = "gpt-5.5"
+
+[profiles.general.tools]
+comms = true
+"#,
+    )
+    .expect("definition");
+    let prompts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
+        .with_session_runtime_adapter(machine.clone())
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(GatedRecordingClient {
+                gate,
+                prompts: Arc::clone(&prompts),
+            })),
+        });
+    let module_config = MobKitConfig {
+        modules: vec![],
+        discovery: DiscoverySpec {
+            namespace: "repair-carry".to_string(),
+            modules: vec![],
+        },
+        pre_spawn: vec![],
+    };
+    let runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, Duration::from_secs(2))
+        .await
+        .expect("bootstrap");
+
+    let continuity_store =
+        LocalContinuityStore::open(state.join("continuity.db")).expect("continuity store");
+    let fencing_floor = continuity_store
+        .max_fencing_token()
+        .expect("fencing high-water");
+    let mob_handle = runtime.mob_handle();
+    let session_service = runtime
+        .mob_runtime()
+        .session_service()
+        .cloned()
+        .expect("session service");
+    // A tight actor-admission budget so a test failure surfaces as a typed
+    // deadline error in seconds instead of parking inside the production
+    // 10-minute budget.
+    let bridge = Arc::new(
+        MobSessionBridge::with_session_store_and_service(
+            mob_handle.clone(),
+            session_store,
+            session_service,
+        )
+        .with_actor_admission_budget(Duration::from_secs(15)),
+    );
+    let irt = Arc::new(
+        IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(continuity_store),
+            lease_provider: Arc::new(LocalLeaseProvider::with_floor(fencing_floor)),
+            runtime_instance_id: "repair-carry-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        })
+        .with_runtime_services(AgentRuntimeServices::new(mob_handle.clone())),
+    );
+    let identity = meerkat_mobkit::identity_first::AgentIdentity::parse("crew:worker")
+        .expect("identity parses");
+    let spec = DurableAgentSpec {
+        identity: identity.clone(),
+        profile: meerkat_mob::ProfileName::from("general"),
+        addressability: AgentAddressability::Addressable,
+        display_name: None,
+        labels: BTreeMap::new(),
+        context: None,
+        additional_instructions: Vec::new(),
+        initial_message: None,
+        runtime_mode_override: None,
+        backend: None,
+        binding: None,
+    };
+    let result = restore_flow(&irt, std::slice::from_ref(&spec), None, None)
+        .await
+        .expect("restore_flow");
+    let record = match result.outcomes.get(&identity) {
+        Some(RestoreOutcome::Created { record, .. }) => record.clone(),
+        other => panic!("worker must fresh-create, got {other:?}"),
+    };
+
+    Harness {
+        _temp: temp,
+        _runtime: runtime,
+        machine,
+        mob_handle,
+        bridge,
+        identity,
+        spec,
+        runtime_id: record.agent_runtime_id,
+        session_id: record.session_id,
+        prompts,
+    }
+}
+
+async fn wait_until<F>(what: &str, timeout: Duration, mut condition: F)
+where
+    F: AsyncFnMut() -> bool,
+{
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if condition().await {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for: {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// OB3 run 33758a41 shape: a member wedged mid-turn with fan-in queued behind
+/// it. The collision repair must carry the queued Prompt inputs into the
+/// healed successor session (which drains them), and must not resurrect the
+/// flow-step (its correlation belongs to the flow engine — it is destroyed
+/// loudly, by class).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repair_carries_queued_inputs_to_the_healed_successor() {
+    let (gate_tx, gate_rx) = watch::channel(true);
+    let harness = build_harness(gate_rx).await;
+    let machine = harness.machine.as_ref();
+
+    // Seed the durable row the resume retry will need: one completed turn
+    // through the sanctioned mob deliver lane (machine-direct admission on a
+    // never-delivered member has no attached loop to run it).
+    harness
+        .bridge
+        .deliver(
+            &harness.runtime_id,
+            &meerkat_core::ContentInput::Text("seed turn".to_string()),
+        )
+        .await
+        .expect("seed turn delivery");
+    eprintln!("PHASE: seed delivered");
+    wait_until(
+        "the seed turn to complete",
+        Duration::from_secs(20),
+        || async {
+            let ran = harness
+                .prompts
+                .lock()
+                .expect("prompt record lock")
+                .iter()
+                .any(|prompt| prompt.contains("seed turn"));
+            ran && SessionServiceRuntimeExt::list_active_inputs(machine, &harness.session_id)
+                .await
+                .map(|active| active.is_empty())
+                .unwrap_or(false)
+        },
+    )
+    .await;
+
+    // Wedge the member: close the gate, start a turn that parks inside the
+    // provider stream, then pile queued fan-in behind it (the OB3 shape).
+    gate_tx.send(false).expect("close gate");
+    harness
+        .bridge
+        .deliver(
+            &harness.runtime_id,
+            &meerkat_core::ContentInput::Text("wedged".to_string()),
+        )
+        .await
+        .expect("wedged turn delivery");
+    eprintln!("PHASE: wedged delivered");
+    wait_until(
+        "the wedged turn to bind the runtime",
+        Duration::from_secs(10),
+        || async {
+            matches!(
+                SessionServiceRuntimeExt::runtime_state(machine, &harness.session_id).await,
+                Ok(meerkat_runtime::RuntimeState::Running)
+            )
+        },
+    )
+    .await;
+    harness
+        .bridge
+        .deliver(
+            &harness.runtime_id,
+            &meerkat_core::ContentInput::Text("carried-one".to_string()),
+        )
+        .await
+        .expect("queued delivery one");
+    eprintln!("PHASE: carried-one delivered");
+    harness
+        .bridge
+        .deliver(
+            &harness.runtime_id,
+            &meerkat_core::ContentInput::Text("carried-two".to_string()),
+        )
+        .await
+        .expect("queued delivery two");
+    eprintln!("PHASE: carried-two delivered");
+    SessionServiceRuntimeExt::accept_input(
+        machine,
+        &harness.session_id,
+        flow_step_input("flow-step-content"),
+    )
+    .await
+    .expect("queued flow step");
+    eprintln!("PHASE: flow step admitted");
+    let pending = SessionServiceRuntimeExt::list_active_inputs(machine, &harness.session_id)
+        .await
+        .expect("pending queue readable");
+    // Whether the mid-run (wedged) input is itself listed as active varies
+    // with the runtime version; the substance this pin needs is the three
+    // QUEUED inputs piled behind the wedge.
+    assert!(
+        pending.len() >= 3,
+        "the wedge must hold at least the three queued inputs, got {}",
+        pending.len()
+    );
+
+    // The repair: a resume over the live (wedged) member takes the roster-
+    // collision arm — capture, retire, resume retry, carry.
+    let outcome = harness
+        .bridge
+        .resume_session(
+            &harness.identity,
+            &harness.runtime_id,
+            &harness.spec,
+            &empty_draft(&harness.spec),
+            &harness.session_id,
+            &SessionSnapshot { data: Vec::new() },
+        )
+        .await
+        .expect("collision repair resumes");
+    eprintln!("PHASE: repair resumed");
+    assert!(
+        matches!(
+            outcome,
+            meerkat_mobkit::identity_first::ResumeSessionOutcome::Resumed { ref session_id }
+                if *session_id == harness.session_id
+        ),
+        "repair must resume the SAME durable session, got {outcome:?}"
+    );
+
+    // The healed successor drains the carried inputs once the gate opens.
+    // A post-heal delivery rides along, as it would in the field (the fan-in
+    // source keeps delivering); it also guarantees the fresh member's loop is
+    // engaged for the machine-level re-admissions.
+    gate_tx.send(true).expect("open gate");
+    harness
+        .bridge
+        .deliver(
+            &harness.runtime_id,
+            &meerkat_core::ContentInput::Text("post-heal ping".to_string()),
+        )
+        .await
+        .expect("post-heal delivery");
+    eprintln!("PHASE: post-heal ping delivered");
+    wait_until(
+        "the healed successor to drain the carried inputs",
+        Duration::from_secs(30),
+        || async {
+            SessionServiceRuntimeExt::list_active_inputs(machine, &harness.session_id)
+                .await
+                .map(|active| active.is_empty())
+                .unwrap_or(false)
+        },
+    )
+    .await;
+    let prompts = harness.prompts.lock().expect("prompt record lock").clone();
+    assert!(
+        prompts.iter().any(|prompt| prompt.contains("carried-one")),
+        "the successor must run the first carried input; ran: {prompts:?}"
+    );
+    assert!(
+        prompts.iter().any(|prompt| prompt.contains("carried-two")),
+        "the successor must run the second carried input; ran: {prompts:?}"
+    );
+    assert!(
+        !prompts
+            .iter()
+            .any(|prompt| prompt.contains("flow-step-content")),
+        "the flow-step must NOT be resurrected by the repair (its correlation \
+         is owned by the flow engine); ran: {prompts:?}"
+    );
+}
+
+/// Preconditions-first (task #48 (a)): when the session the resume retry
+/// would need is CONFIRMED absent from the composition's authoritative read
+/// view (a continuity record pointing at a vanished session — the external-
+/// row-deletion / lost-store shape), the collision arm refuses typed BEFORE
+/// any destructive step — the stale member (holding the only live copy of
+/// its state, queue included) survives untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repair_refuses_disposal_when_the_resume_source_is_confirmed_absent() {
+    // Gate closed: the member's queued work must stay pending through the
+    // refused repair.
+    let (gate_tx, gate_rx) = watch::channel(false);
+    let harness = build_harness(gate_rx).await;
+    let machine = harness.machine.as_ref();
+
+    SessionServiceRuntimeExt::accept_input(
+        machine,
+        &harness.session_id,
+        prompt_input("only-live-copy"),
+    )
+    .await
+    .expect("queued input");
+    let queued_before = SessionServiceRuntimeExt::list_active_inputs(machine, &harness.session_id)
+        .await
+        .expect("queue readable");
+    assert!(
+        !queued_before.is_empty(),
+        "the member must hold queued work"
+    );
+    let members_before = harness.mob_handle.list_all_members().await.len();
+    assert_eq!(members_before, 1, "exactly the worker member exists");
+
+    // A resume target the service has never seen: the continuity-record-
+    // points-at-a-vanished-session shape.
+    let vanished_session = meerkat_core::types::SessionId::new();
+    let error = harness
+        .bridge
+        .resume_session(
+            &harness.identity,
+            &harness.runtime_id,
+            &harness.spec,
+            &empty_draft(&harness.spec),
+            &vanished_session,
+            &SessionSnapshot { data: Vec::new() },
+        )
+        .await
+        .expect_err("repair must refuse disposal without a resume source");
+    match &error {
+        BridgeError::ResumeRejected { detail, .. } => {
+            assert!(
+                detail.contains("collision retire precondition"),
+                "the refusal must name the failed precondition: {detail}"
+            );
+        }
+        other => panic!("expected a typed ResumeRejected, got {other:?}"),
+    }
+
+    // No destructive step ran: the member and its queue are untouched.
+    assert_eq!(
+        harness.mob_handle.list_all_members().await.len(),
+        members_before,
+        "the stale member must survive a precondition-refused repair"
+    );
+    let queued_after = SessionServiceRuntimeExt::list_active_inputs(machine, &harness.session_id)
+        .await
+        .expect("queue still readable");
+    assert_eq!(
+        queued_after, queued_before,
+        "the queued inputs must survive a precondition-refused repair"
+    );
+    drop(gate_tx);
+}

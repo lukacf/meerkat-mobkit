@@ -26,7 +26,7 @@
 heavy-runtime = { max-threads = 2 }
 
 [[profile.default.overrides]]
-filter = 'package(meerkat-mobkit) & (binary(routing_delivery) + binary(list_runs) + binary(list_flows_run_flow) + binary(mob_events_cursor_persistence) + binary(mob_events_query_ledger) + binary(mob_events_streaming) + binary(access_control) + binary(unified_console))'
+filter = 'package(meerkat-mobkit) & (binary(routing_delivery) + binary(list_runs) + binary(list_flows_run_flow) + binary(mob_events_cursor_persistence) + binary(mob_events_query_ledger) + binary(mob_events_streaming) + binary(access_control) + binary(unified_console) + binary(repair_queue_carry))'
 test-group = 'heavy-runtime'
 retries = 2
 

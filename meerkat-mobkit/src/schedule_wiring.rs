@@ -768,6 +768,13 @@ impl InternalDeliveryScheduleMobHost {
             // DispatchInput.idempotency_key exists), so crash-redelivery dedup
             // for this sink is still ABSENT - carrying the key here stages the
             // admission-threading follow-up, it does not implement it.
+            // Re-checked at the 0.8.12 repin: the internal work lane is still
+            // closed upstream - meerkat-mob 0.8.12 `submit_work_with_mode`
+            // (src/runtime/handle.rs:7177) hardcodes
+            // `external_delivery_identity: None` and offers no submit variant
+            // that accepts a delivery identity; the dedup ledger
+            // (`begin_external_delivery`/`complete_external_delivery`) serves
+            // the external door only.
             let input = crate::identity_first::DispatchInput {
                 content: content.clone(),
                 origin: crate::identity_first::DispatchOrigin::Scheduler,

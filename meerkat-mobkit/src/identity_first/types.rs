@@ -445,18 +445,30 @@ pub struct ContinuityFailure {
     pub detail: String,
 }
 
-/// Terminal heal verdict recorded against a Broken identity.
+/// Terminal repair verdict recorded against a Broken identity.
 ///
-/// Minted when the session bridge's heal authority reports that the durable
-/// session head is provably NOT recoverable to a strict-resume-acceptable
-/// committed boundary (`CommittedBoundaryRepair::Unprovable`). The verdict is
-/// stable across calls, so the continuity repair supervisor must not
-/// retry-loop it: before this marker existed, every repair pass cosmetically
-/// re-registered the identity and the next materialization re-Broke it
-/// (measured in production on 2026-07-29 as an infinite heal/re-Break cycle).
+/// Two producers mint it:
+///
+/// - The session bridge's heal authority reporting that the durable session
+///   head is provably NOT recoverable to a strict-resume-acceptable
+///   committed boundary (`CommittedBoundaryRepair::Unprovable`). The verdict
+///   is stable across calls, so the continuity repair supervisor must not
+///   retry-loop it: before this marker existed, every repair pass
+///   cosmetically re-registered the identity and the next materialization
+///   re-Broke it (measured in production on 2026-07-29 as an infinite
+///   heal/re-Break cycle).
+/// - The repair supervisor's bounded-identical-retry park: three consecutive
+///   byte-identical repair failures prove a deterministic wall, and each
+///   blind retry re-executes destructive dispose steps against it (OB3
+///   0.8.12-era field evidence).
+///
+/// The park is process-local (entry state, not durable): after the operator
+/// fixes the blocking cause, a gateway restart re-attempts repair once, and
+/// `mobkit/reset` remains the deliberate fresh-start path. Any non-Broken
+/// lifecycle projection also clears it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContinuityUnrecoverable {
-    /// The heal authority's reason, verbatim, for operators.
+    /// The producing authority's reason, verbatim, for operators.
     pub reason: String,
 }
 
