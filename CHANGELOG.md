@@ -39,12 +39,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     and reason, before disposal proceeds.
 
   - **Preconditions first.** The collision-repair retire now proves the
-    resume source exists (in the composition's authoritative read view — the
-    raw injected SessionStore row is deliberately not consulted; since the
-    0.8.11 store-owned repin runtime-backed compositions never project into
-    it) BEFORE destroying the stale member. A confirmed-absent resume source
-    refuses typed with no destructive step taken: retiring would destroy the
-    only live copy of the session.
+    resume source exists in DURABLE, NON-ACTOR authority (the continuity
+    store row, else the session service's archive-authority predicate)
+    BEFORE destroying the stale member. An actor-routed read is never used:
+    it waits on the very wedged member the repair is disposing (proven live
+    at the meerkat 0.8.13 repin as a self-deadlock inside the probe). The
+    raw injected SessionStore row is also deliberately not consulted; since
+    the 0.8.11 store-owned repin runtime-backed compositions never project
+    into it. A confirmed-absent resume source refuses typed with no
+    destructive step taken: retiring would destroy the only live copy of
+    the session. A probe fault means absence cannot be confirmed, and repair
+    proceeds as before the guard existed.
 
   - **Bounded non-identical retries.** The continuity repair supervisor
     tracks per-identity failure signatures across passes; three consecutive

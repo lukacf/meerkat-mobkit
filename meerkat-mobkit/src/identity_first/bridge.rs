@@ -1675,28 +1675,47 @@ impl MobSessionBridge {
     }
 
     /// Precondition probe for the collision-repair retire: confirmed absence
-    /// of the resume target in the AUTHORITATIVE read view this composition
-    /// resumes from. The raw injected `session_store` row is deliberately
-    /// NOT consulted here (unlike [`Self::durable_session_row_is_absent`],
-    /// whose verdict is paired with meerkat's typed Absent error): since the
-    /// 0.8.11 store-owned repin, runtime-backed compositions persist through
-    /// RuntimeStore authority and never project into a raw injected
-    /// SessionStore, so an empty raw row is not evidence of absence there.
+    /// of the resume target in DURABLE, NON-ACTOR authority. The raw injected
+    /// `session_store` row is deliberately NOT consulted here (unlike
+    /// [`Self::durable_session_row_is_absent`], whose verdict is paired with
+    /// meerkat's typed Absent error): since the 0.8.11 store-owned repin,
+    /// runtime-backed compositions persist through RuntimeStore authority and
+    /// never project into a raw injected SessionStore, so an empty raw row is
+    /// not evidence of absence there.
+    ///
+    /// Every probe here must be answerable WITHOUT the session's live actor:
+    /// this runs while the stale member may be wedged mid-turn, and an
+    /// actor-routed read (`service.read`) waits on the very member the
+    /// repair is about to dispose — a self-deadlock, proven live at the
+    /// meerkat 0.8.13 repin (the collision arm hung inside this probe).
+    /// `session_known_to_archive_authority` is the durable disposal-routing
+    /// predicate that answers from archive authority instead.
+    ///
+    /// Verdict: `true` (refuse the destructive retire) only when at least one
+    /// durable authority was consulted and none of them knows the session.
+    /// A probe fault means absence cannot be CONFIRMED, so repair proceeds
+    /// exactly as it did before this guard existed.
     async fn resume_source_confirmed_absent(
         &self,
         session_id: &meerkat_core::types::SessionId,
     ) -> bool {
+        let mut consulted_authority = false;
         if let Some(store) = self.continuity_session_store.as_ref() {
             use meerkat::SessionStore as _;
-            return matches!(store.load_meta(session_id).await, Ok(None));
+            match store.load_meta(session_id).await {
+                Ok(Some(_)) => return false,
+                Ok(None) => consulted_authority = true,
+                Err(_) => return false,
+            }
         }
         if let Some(service) = self.session_service.as_ref() {
-            return matches!(
-                service.read(session_id).await,
-                Err(meerkat_core::SessionError::NotFound { .. })
-            );
+            match service.session_known_to_archive_authority(session_id).await {
+                Ok(true) => return false,
+                Ok(false) => consulted_authority = true,
+                Err(_) => return false,
+            }
         }
-        false
+        consulted_authority
     }
 
     async fn verify_durable_session_after_rejected_resume(
