@@ -242,8 +242,38 @@ pub enum ResumeRejectionKind {
     /// violation ("incoming transcript is not a continuation of persisted
     /// revision") — the meerkat ≤0.7.14 cold-restart re-projection class.
     TranscriptContinuity,
+    /// meerkat's typed `SessionUnavailableForResume { reason:
+    /// ArchivedNotRevivable }`: the durable document exists and is intact,
+    /// but it carries an archived terminal whose runtime lifecycle pairing
+    /// refuses revival (the 0.6.x body-carried dispose shape with no runtime
+    /// record). A STABLE, deterministic wall: no retry can change the
+    /// verdict, so consumers park the identity typed on the FIRST encounter
+    /// (OB3 rehearsal: 4 identities heal/refusal-looped because the roster
+    /// heal succeeded while this materialize precondition stayed terminal).
+    /// Upstream revive-by-document-authority lands in meerkat 0.8.15; until
+    /// then `mobkit/reset` is the deliberate fresh start.
+    ArchivedNotRevivable,
     /// Any other resume-time failure.
     Other,
+}
+
+/// The terminal park reason recorded when a resume hits the typed
+/// [`ResumeRejectionKind::ArchivedNotRevivable`] wall. One producer text for
+/// both doors (eager restore and on-demand materialize) so operators see one
+/// stable, greppable reason with the operator path inline.
+pub(crate) fn archived_not_revivable_park_reason(
+    session_id: &meerkat_core::types::SessionId,
+    detail: &str,
+) -> String {
+    format!(
+        "durable session {session_id} is archived and its runtime lifecycle refuses \
+         revival (typed ArchivedNotRevivable): a stable verdict retries cannot change, \
+         so continuity repair parks instead of heal-looping. The transcript is intact \
+         and preserved. Operator path: upstream archived-session revive lands in \
+         meerkat 0.8.15; until then reset the identity via `mobkit/reset` (deliberate \
+         fresh start) or restart the gateway after an upstream fix (the park is \
+         process-local). Refusal: {detail}"
+    )
 }
 
 /// Log and construct the typed resume rejection for one failed resume step.
@@ -276,6 +306,15 @@ fn resume_rejected(
 /// belt-and-braces for continuity violations that reach us stringified through
 /// the provisioning path (`MobError::Internal`).
 fn classify_resume_error(error: &meerkat_mob::MobError) -> ResumeRejectionKind {
+    if matches!(
+        error,
+        meerkat_mob::MobError::SessionUnavailableForResume {
+            reason: meerkat_mob::error::SessionResumeUnavailableReason::ArchivedNotRevivable,
+            ..
+        }
+    ) {
+        return ResumeRejectionKind::ArchivedNotRevivable;
+    }
     if matches!(error, meerkat_mob::MobError::MemberRestoreFailed { .. }) {
         return ResumeRejectionKind::MemberRestoreFailed;
     }
@@ -4428,6 +4467,26 @@ mod tests {
             classify_resume_error(&continuity),
             ResumeRejectionKind::TranscriptContinuity
         );
+
+        // The typed archived refusal classifies from the VARIANT, never the
+        // wording: the stable wall consumers park on (OB3 rehearsal).
+        let archived = meerkat_mob::MobError::SessionUnavailableForResume {
+            session_id: meerkat_core::types::SessionId::new(),
+            reason: meerkat_mob::error::SessionResumeUnavailableReason::ArchivedNotRevivable,
+            runtime_state: None,
+        };
+        assert_eq!(
+            classify_resume_error(&archived),
+            ResumeRejectionKind::ArchivedNotRevivable
+        );
+        // Typed Absent stays out of the archived class (it authorizes the
+        // never-persisted fresh fallback, a different door entirely).
+        let absent = meerkat_mob::MobError::SessionUnavailableForResume {
+            session_id: meerkat_core::types::SessionId::new(),
+            reason: meerkat_mob::error::SessionResumeUnavailableReason::Absent,
+            runtime_state: None,
+        };
+        assert_eq!(classify_resume_error(&absent), ResumeRejectionKind::Other);
 
         let other = meerkat_mob::MobError::WiringError("unrelated".to_string());
         assert_eq!(classify_resume_error(&other), ResumeRejectionKind::Other);

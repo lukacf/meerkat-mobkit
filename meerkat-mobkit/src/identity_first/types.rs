@@ -428,8 +428,10 @@ pub enum ContinuityFailureKind {
     /// a transcript-continuity rejection). The identity → session binding is
     /// intact; the identity is degraded until a reconcile retry succeeds.
     ResumeRejected,
-    /// The heal authority returned a terminal verdict: the durable session
-    /// head cannot be proven strict-resume-acceptable (proof inputs absent).
+    /// A terminal typed verdict stands against this identity: the heal
+    /// authority proved the durable session head unrecoverable (proof inputs
+    /// absent), or the resume precondition is provably terminal (the typed
+    /// `ArchivedNotRevivable` refusal - the OB3 heal/refusal loop shape).
     /// Unlike `ResumeRejected` this is NOT retried by the continuity repair
     /// supervisor — retrying is exactly the 2026-07-29 heal/re-Break loop.
     /// The identity stays Broken until an operator intervenes.
@@ -447,7 +449,7 @@ pub struct ContinuityFailure {
 
 /// Terminal repair verdict recorded against a Broken identity.
 ///
-/// Two producers mint it:
+/// Three producers mint it:
 ///
 /// - The session bridge's heal authority reporting that the durable session
 ///   head is provably NOT recoverable to a strict-resume-acceptable
@@ -457,6 +459,13 @@ pub struct ContinuityFailure {
 ///   cosmetically re-registered the identity and the next materialization
 ///   re-Broke it (measured in production on 2026-07-29 as an infinite
 ///   heal/re-Break cycle).
+/// - The typed `ArchivedNotRevivable` resume refusal, recorded on the FIRST
+///   refusal at either resume door (eager restore or on-demand
+///   materialize). The refusal is a stable materialize precondition the
+///   roster heal cannot change, so without this verdict the repair
+///   supervisor "healed" the roster every cycle and the next inbound turn
+///   re-Broke it (OB3 rehearsal, 4 identities) - the N=3 identical-failure
+///   park below never engaged because the heal itself kept succeeding.
 /// - The repair supervisor's bounded-identical-retry park: three consecutive
 ///   byte-identical repair failures prove a deterministic wall, and each
 ///   blind retry re-executes destructive dispose steps against it (OB3

@@ -21,7 +21,10 @@ use super::agent_memory::{
     AgentMemoryError, AgentMemoryForgetResult, AgentMemoryRecallRequest, AgentMemoryRecord,
     AgentMemoryRuntimeInjector, NewAgentMemory,
 };
-use super::bridge::{BridgeError, CommittedBoundaryRepair, SessionBridge};
+use super::bridge::{
+    BridgeError, CommittedBoundaryRepair, ResumeRejectionKind, SessionBridge,
+    archived_not_revivable_park_reason,
+};
 use super::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
 };
@@ -4304,6 +4307,32 @@ impl IdentityRuntime {
                                 self.mark_host_rejected_build_park(identity, rejection)
                                     .await;
                             }
+                        }
+                        // Repair honesty (OB3 rehearsal): the typed
+                        // ArchivedNotRevivable refusal is a stable,
+                        // deterministic wall - record the terminal verdict on
+                        // this FIRST refusal so the repair supervisor parks
+                        // instead of heal-looping (the roster heal succeeds,
+                        // this materialize precondition never does).
+                        if let BridgeError::ResumeRejected {
+                            kind: ResumeRejectionKind::ArchivedNotRevivable,
+                            detail,
+                        } = &err
+                            && !self
+                                .mark_continuity_unrecoverable(
+                                    identity,
+                                    archived_not_revivable_park_reason(
+                                        &registered_session_id,
+                                        detail,
+                                    ),
+                                )
+                                .await
+                        {
+                            tracing::debug!(
+                                %identity,
+                                "identity left Broken before the archived-not-revivable \
+                                 park could be recorded"
+                            );
                         }
                         let detail = format!(
                             "bridge resume_session rejected (identity degraded, durable session \

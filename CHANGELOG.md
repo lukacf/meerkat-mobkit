@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Repair honesty: the typed `ArchivedNotRevivable` refusal parks on the
+  FIRST pass instead of heal-looping** (OB3 prod-data rehearsal at the
+  0.8.14/0.8.10 pins, 4258-session corpus: 4 personal-agent identities whose
+  latest sessions carry a 0.6.x body-written archived terminal with no
+  runtime record entered an endless heal/refusal loop - continuity repair
+  reported healed at the roster level, the next inbound turn re-hit
+  meerkat's typed `SessionUnavailableForResume { reason:
+  ArchivedNotRevivable }` at materialize and re-marked Broken, repeat, with
+  user-facing canned failures and no convergence; the 0.8.10 N=3
+  byte-identical-failure park never engaged because the heal itself kept
+  succeeding). The refusal is a stable, deterministic materialize
+  precondition no retry can change, so it is now classified typed
+  (`ResumeRejectionKind::ArchivedNotRevivable`, from the error VARIANT,
+  never wording) and both resume doors - eager restore and on-demand
+  materialize - record the terminal `continuity_unrecoverable` verdict on
+  the FIRST refusal, the same producer pattern as
+  `CommittedBoundaryRepair::Unprovable`. The repair supervisor then parks:
+  zero heal/re-Break cycles, no heal-authority calls, no reconcile churn,
+  and the durable session (the transcript) stays bound and untouched. The
+  eager restore outcome surfaces under the terminal
+  `CheckpointUnrecoverable` kind rather than the reconcile-retried
+  `ResumeRejected`. The verdict reason carries the operator path inline:
+  upstream archived-session revive lands in meerkat 0.8.15 (promoted to
+  upgrade blocker on real user data); until then `mobkit/reset` is the
+  deliberate fresh start, and the park is process-local (a gateway restart
+  re-attempts once after an upstream fix).
+
 - **Memory-taint first-ingestion race closed at dispatch time** (§10.1
   launch-audit item). Content-trust classification no longer depends on the
   observe-only ASYNC agent-event stream alone: an LLM memory write in the
