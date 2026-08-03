@@ -100,20 +100,7 @@ impl std::fmt::Debug for DispatchTaintSlot {
 /// (`rt:{identity}:{generation}`), which normalizes to the durable identity.
 fn member_taint_identity(req: &CreateSessionRequest) -> Option<String> {
     let binding = req.build.as_ref()?.mob_member_binding.as_ref()?;
-    let alias = member_comms_id::runtime_alias_str(&binding.member);
-    Some(durable_identity_from_runtime_alias(&alias).unwrap_or_else(|| alias.into_owned()))
-}
-
-/// `rt:{identity}:{generation}` → `{identity}`. The identity itself may
-/// contain `:` (e.g. `review:singleton`), so the generation is the trailing
-/// numeric segment (the `rpc_runtime_alias_generation` shape).
-fn durable_identity_from_runtime_alias(alias: &str) -> Option<String> {
-    let rest = alias.strip_prefix("rt:")?;
-    let (identity, generation) = rest.rsplit_once(':')?;
-    if identity.is_empty() || generation.parse::<u64>().is_err() {
-        return None;
-    }
-    Some(identity.to_string())
+    Some(member_comms_id::logical_memory_identity(&binding.member))
 }
 
 /// Install (or compose over) the request's LLM-client decorator so the built

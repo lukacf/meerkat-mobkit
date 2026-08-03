@@ -67,14 +67,17 @@ impl MemorySpawnCustomizer {
         spawner_identity: Option<&meerkat_mob::ids::AgentIdentity>,
         spec: &mut SpawnMemberSpec,
     ) -> Result<(), MobError> {
-        // Memory scope keys pin to the PUBLIC member alias — the identity
-        // space the console, panel filters, and persisted records speak —
-        // not the comms-safe roster encoding meerkat-mob spawns with
-        // (`agent:mem` arrives here as `mk--agent_cmem`). A member alias
-        // that fails validation gets no memory surface — loudly, never
-        // silently — instead of blocking the spawn.
-        let alias = crate::member_comms_id::runtime_alias_str(spec.identity.as_str());
-        let identity = match AgentIdentity::parse(alias.as_ref()) {
+        // Memory scope keys pin to the LOGICAL identity (task #53) - the
+        // identity space the console, panel filters, persisted records, and
+        // the SDK agent_memory surface speak - never the comms-safe roster
+        // encoding meerkat-mob spawns with (`agent:mem` arrives here as
+        // `mk--agent_cmem`) and never a generated runtime alias
+        // (`rt:{identity}:{generation}` strips to the durable identity, so
+        // respawn generations share one scope). A member alias that fails
+        // validation gets no memory surface - loudly, never silently -
+        // instead of blocking the spawn.
+        let alias = crate::member_comms_id::logical_memory_identity(spec.identity.as_str());
+        let identity = match AgentIdentity::parse(&alias) {
             Ok(identity) => identity,
             Err(err) => {
                 tracing::warn!(

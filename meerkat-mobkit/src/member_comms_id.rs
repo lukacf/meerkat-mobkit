@@ -161,6 +161,34 @@ pub(crate) fn is_reserved_generated_alias(member_id: &str) -> bool {
     runtime_alias_str(member_id).starts_with("rt:")
 }
 
+/// `rt:{identity}:{generation}` → `{identity}`. The identity itself may
+/// contain `:` (e.g. `review:singleton`), so the generation is the trailing
+/// numeric segment (the `rpc_runtime_alias_generation` shape). `None` when
+/// the input is not a generated runtime alias.
+pub(crate) fn durable_identity_from_runtime_alias(alias: &str) -> Option<String> {
+    let rest = alias.strip_prefix("rt:")?;
+    let (identity, generation) = rest.rsplit_once(':')?;
+    if identity.is_empty() || generation.parse::<u64>().is_err() {
+        return None;
+    }
+    Some(identity.to_string())
+}
+
+/// The LOGICAL identity for a mob-plane member id or public alias: decode
+/// the comms-safe roster encoding, then strip the generated runtime-alias
+/// shape to the durable identity. Identity on plain names.
+///
+/// This is the ONE identity spelling the memory stack keys scopes on
+/// (`MemoryScope::Identity`), the write gate queries, and the SDK
+/// `agent_memory` surface speaks. Every producer that receives a mob-plane
+/// member id (the observer fan-out, trigger sinks, the classic spawn
+/// customizer, the dispatch-taint join) normalizes through here - never a
+/// local re-parse.
+pub(crate) fn logical_memory_identity(member_id_or_alias: &str) -> String {
+    let alias = runtime_alias_str(member_id_or_alias);
+    durable_identity_from_runtime_alias(&alias).unwrap_or_else(|| alias.into_owned())
+}
+
 /// Whether a caller supplied the comms-safe roster marker directly.
 /// Public surfaces speak aliases, never encoded roster ids; accepting this
 /// spelling at a raw lower-plane creation boundary can collide with the
@@ -1021,6 +1049,37 @@ mod tests {
                     "collision: {prev:?} and {alias:?} both encode to {encoded:?}"
                 );
             }
+        }
+    }
+
+    // The ONE memory-scope identity spelling (task #53): mob-plane member
+    // ids, generated runtime aliases, and plain names all normalize to the
+    // logical durable identity - and it is a fixed point.
+    #[test]
+    fn logical_memory_identity_normalizes_every_member_id_shape() {
+        // Identity-first internal member: encoded runtime alias, any
+        // generation, normalizes to the durable identity.
+        let encoded_gen0 = mob_member_id_str("rt:identity:parent-1:0").into_owned();
+        let encoded_gen7 = mob_member_id_str("rt:identity:parent-1:7").into_owned();
+        assert_eq!(logical_memory_identity(&encoded_gen0), "identity:parent-1");
+        assert_eq!(logical_memory_identity(&encoded_gen7), "identity:parent-1");
+        // Decoded (public alias) spelling of the same runtime id.
+        assert_eq!(
+            logical_memory_identity("rt:identity:parent-1:0"),
+            "identity:parent-1"
+        );
+        // Identity-first external binding: encoded durable identity.
+        assert_eq!(
+            logical_memory_identity(&mob_member_id_str("review:singleton")),
+            "review:singleton"
+        );
+        // Classic plain member names are untouched.
+        assert_eq!(logical_memory_identity("helper"), "helper");
+        // Non-generation rt:-prefixed names stay whole (conservative).
+        assert_eq!(logical_memory_identity("rt:oddly:named"), "rt:oddly:named");
+        // Fixed point: normalizing a logical identity changes nothing.
+        for id in ["identity:parent-1", "review:singleton", "helper"] {
+            assert_eq!(logical_memory_identity(id), id);
         }
     }
 }

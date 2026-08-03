@@ -981,6 +981,19 @@ async fn run_member_event_observer(
                     if subscribed.contains(&identity) {
                         continue;
                     }
+                    // Sinks receive the LOGICAL identity (task #53): the
+                    // roster id is the comms-safe encoding of the member's
+                    // alias, and identity-first internal members roster
+                    // under their generated runtime alias
+                    // (rt:{identity}:{generation}) - both decode/strip to
+                    // the durable identity the memory scopes, the write
+                    // gate, and the SDK surface key on. Keying sinks by the
+                    // roster id is what split distiller scopes per
+                    // incarnation (HomeCore activation smoke). Subscription
+                    // bookkeeping (`subscribed`/`Closed`) stays keyed by the
+                    // roster id - that is the handle's namespace.
+                    let sink_identity =
+                        crate::member_comms_id::logical_memory_identity(&identity);
                     match handle.subscribe_agent_events(&entry.agent_identity).await {
                         Ok(stream) => {
                             warned.remove(&identity);
@@ -989,7 +1002,10 @@ async fn run_member_event_observer(
                             streams.push(
                                 stream
                                     .map(move |envelope| {
-                                        Observed::Event(identity.clone(), Box::new(envelope))
+                                        Observed::Event(
+                                            sink_identity.clone(),
+                                            Box::new(envelope),
+                                        )
                                     })
                                     .chain(futures::stream::once(async move {
                                         Observed::Closed(close_key)

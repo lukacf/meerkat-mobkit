@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Memory scope keys are LOGICAL identities end to end** (HomeCore
+  activation smoke, launch blocker). The platform's observe-stream paths
+  keyed identity scopes by the mob-plane roster id - for identity-first
+  members the comms-safe encoding of a generated runtime alias
+  (`mk--rt_cidentity_cparent-1_c0`), one per respawn generation - while the
+  SDK `agent_memory` RPC, per-turn injection, and the recorder key by the
+  logical `AgentIdentity` (`identity:parent-1`). Result: distiller-extracted
+  memories landed in per-incarnation scopes invisible to injection and to
+  SDK reads, fragmenting further on every respawn. Fixes, all through ONE
+  normalization primitive (`member_comms_id::logical_memory_identity`,
+  the decode-then-strip parser the dispatch-taint join introduced,
+  relocated to the codec owner):
+  - the member event observer fans out the LOGICAL identity to every sink
+    (distiller/hygienist triggers now key the same scope the SDK reads;
+    taint attribution becomes consistent with the dispatch-time join);
+  - the distiller and hygienist trigger sinks re-normalize as a cheap
+    fixed point, so no direct caller can re-split scopes;
+  - the classic-path spawn customizer strips the generated runtime-alias
+    shape instead of keying build injection per incarnation;
+  - store migration `mobkit-memory` v3 (ledger-gated, data-only) folds
+    existing runtime-id-keyed rows into the logical scope across records,
+    proposals, pending promotions, the injection ledger, and the harvest
+    queue (PK collisions collapse; merged scopes may briefly hold
+    duplicate content until the next steward dream - rows keep distinct
+    ids, nothing is lost), and normalizes the `MemoryScope` embedded in
+    surviving stage-table batches' Create ops - stage tokens outlive
+    boots inside the 24h GC window and operator-gated promotions commit
+    later, so a key-column rewrite alone could be undone by a stale
+    batch apply. Existing v2 files migrate on first open behind a frozen
+    v2 fingerprint verifier.
+  - Composition-time collision WARN: a host callback tool named `memory`
+    now warns loudly against the agent-memory recorder at build
+    customization (the overlay layer already warned-and-shadowed; the
+    wire-declared surface now warns too, naming both tools and the
+    remediation).
+
 - **Repair honesty: the typed `ArchivedNotRevivable` refusal parks on the
   FIRST pass instead of heal-looping** (OB3 prod-data rehearsal at the
   0.8.14/0.8.10 pins, 4258-session corpus: 4 personal-agent identities whose

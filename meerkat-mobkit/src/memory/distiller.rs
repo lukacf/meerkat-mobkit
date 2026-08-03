@@ -1821,6 +1821,14 @@ impl DistillerTriggers {
 
 impl MemberAgentEventSink for DistillerTriggers {
     fn observe(&self, identity: &str, envelope: &meerkat_core::event::EventEnvelope<AgentEvent>) {
+        // Scope keys are LOGICAL identities (task #53). The observer already
+        // normalizes its fan-out; this re-normalization is a cheap fixed
+        // point that keeps any direct sink caller from re-splitting
+        // distiller scopes per incarnation (the HomeCore activation smoke:
+        // extraction landed under mk--rt_c... roster ids, invisible to
+        // injection and SDK reads).
+        let identity = crate::member_comms_id::logical_memory_identity(identity);
+        let identity = identity.as_str();
         match &envelope.payload {
             AgentEvent::ToolCallRequested { name, args, .. } if name == MEMORY_TOOL_NAME => {
                 let is_write = args
@@ -2890,6 +2898,67 @@ mod tests {
         assert!(
             matches!(&outcome, DistillOutcome::Skipped { reason } if reason.contains("mutual exclusion")),
             "{outcome:?}"
+        );
+    }
+
+    // Task #53 regression: the trigger sink keys the distiller by the
+    // LOGICAL identity, not the mob-plane roster id it is observed under.
+    // Identity-first members roster as encoded generated runtime aliases
+    // (mk--rt_c...), one per respawn generation - before the fix every
+    // generation's extraction landed in its own scope, disjoint from the
+    // scope the SDK, injection, and the recorder key on.
+    #[tokio::test]
+    async fn trigger_sink_normalizes_roster_ids_to_the_logical_identity_across_generations() {
+        let provider = Arc::new(CapturingProvider::default());
+        let (engine, _client) = engine_with(
+            vec![NOOP_REPLY],
+            provider,
+            Some(slice(&[("user", "hello")])),
+            Vec::new(),
+            None,
+            enabled_config(),
+        );
+        let seen: Arc<StdMutex<Vec<(String, String)>>> = Arc::new(StdMutex::new(Vec::new()));
+        let observed = seen.clone();
+        engine.set_compaction_observed(Arc::new(move |identity, session| {
+            observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((identity.to_string(), session.to_string()));
+        }));
+
+        let session = meerkat_core::types::SessionId::new();
+        let sink = DistillerTriggers::new(engine.clone());
+        // Two respawn generations of the SAME durable identity, observed
+        // under their encoded roster ids.
+        for generation in ["rt:identity:parent-1:0", "rt:identity:parent-1:1"] {
+            let roster_id = crate::member_comms_id::mob_member_id_str(generation).into_owned();
+            assert!(roster_id.starts_with("mk--"), "{roster_id}");
+            sink.observe(
+                &roster_id,
+                &envelope(
+                    &session,
+                    AgentEvent::CompactionCompleted {
+                        summary_tokens: 10,
+                        messages_before: 20,
+                        messages_after: 2,
+                    },
+                ),
+            );
+        }
+        let identities: Vec<String> = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(identity, _)| identity.clone())
+            .collect();
+        assert_eq!(
+            identities,
+            vec![
+                "identity:parent-1".to_string(),
+                "identity:parent-1".to_string()
+            ],
+            "both generations must key the ONE logical scope"
         );
     }
 
