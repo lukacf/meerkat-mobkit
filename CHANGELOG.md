@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.10] - 2026-08-03
+
 ### Changed
 
 - **meerkat dependencies repinned `=0.8.11` → `=0.8.12`** (all 19 meerkat
