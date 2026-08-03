@@ -6186,7 +6186,7 @@ mod tests {
         assert_eq!(partitions.len(), 3, "alpha + beta + remainder");
 
         let orient_alpha = engine.orient(&partitions[0]).await.expect("orient alpha");
-        assert!(orient_alpha.text.contains("a1"));
+        assert!(orient_alpha.text.contains("a1 fact"));
         assert!(
             !orient_alpha.text.contains("b1"),
             "mob alpha's dream must not see mob beta's identity scope: {}",
@@ -6215,7 +6215,15 @@ mod tests {
             "the remainder owns the operator scope: {}",
             orient_remainder.text
         );
-        assert!(!orient_remainder.text.contains("a1"));
+        // Assert on the seeded semantic token, never a short hex-ish
+        // substring: orient renders manifest rows with random record ids,
+        // and any id containing "a1" would trip a bare contains("a1")
+        // (observed as a real-suite flake on 2026-08-03).
+        assert!(
+            !orient_remainder.text.contains("a1 fact"),
+            "the remainder must not carry mob alpha's records: {}",
+            orient_remainder.text
+        );
 
         // The mob partition's consolidate context renders ONLY its own mob.
         let context_alpha = engine.render_mob_context_for(&partitions[0]);
