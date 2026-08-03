@@ -7926,6 +7926,11 @@ external_addressable = true
         mob_spec
     };
 
+    // §10.1 dispatch-time taint join: keep the spec's late-bound slot so the
+    // memory-stack region below can bind the tracker into every member build
+    // (bootstrap members included - their decorators read the slot per call).
+    let dispatch_taint_slot = mob_spec.dispatch_taint_slot();
+
     let timeout = GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT;
     let persistent_metadata: Arc<dyn PersistentMetadataStore> = if persistent_state.is_some() {
         let metadata_path = match storage_layout.metadata_db() {
@@ -8399,6 +8404,11 @@ external_addressable = true
                             }
                         }),
                     )));
+                    // §10.1 dispatch-time taint join: bind the tracker into
+                    // the member pre-build seam so every member's LLM client
+                    // marks untrusted ingestion synchronously - ahead of the
+                    // async observer spawned below (first-ingestion race).
+                    dispatch_taint_slot.fill(tracker.clone());
                     // Observe-stream feed lives for the gateway process;
                     // forgetting the guard keeps the task running.
                     std::mem::forget(meerkat_mobkit::spawn_member_event_observer(

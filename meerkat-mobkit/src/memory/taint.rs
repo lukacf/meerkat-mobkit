@@ -28,33 +28,47 @@
 //!   Distiller output over it lands `Quarantined` (§8.4 — reset is the
 //!   operator's escape hatch; quarantine preserves the re-dream option).
 //!
-//! ## Honest gaps that remain (upstream asks, §13)
+//! ## Closed at the meerkat 0.8.14 pin (dispatch-ordered trust join)
 //!
 //! - **The first-ingestion race** (ask: taint visibility at tool-dispatch
-//!   time): taint is derived from the observe-only agent-event stream,
-//!   which is asynchronous. A memory write in the same turn as the
-//!   session's *first* untrusted ingestion can reach the store before the
-//!   taint observer processes the tool event. Deployments that cannot
-//!   accept this set `agent_memory.llm_writes = "quarantined"`. This stays
-//!   upstream-dependent; nothing here pretends to close it.
+//!   time) is CLOSED. Marking no longer depends on the asynchronous
+//!   observe stream alone: [`crate::memory::dispatch_taint`] wraps every
+//!   mob member's agent-facing LLM client (via the pre-build seam every
+//!   member session create passes through), classifies each tool result
+//!   synchronously BEFORE the LLM request that carries it is sent, and
+//!   classifies provider-executed server-tool blocks from the typed
+//!   response before the loop can dispatch any same-response tool call. An
+//!   LLM-authored memory write is always downstream of an LLM call that
+//!   carried the untrusted result, so the tracker is marked strictly
+//!   before that write can reach the store. Mechanism note: 0.8.14's
+//!   `HookPoint::PostToolExecution` fires synchronously with the same
+//!   typed provenance, but the mob member build path has no hook-engine
+//!   carrier (`SessionBuildOptions` cannot ship one), so the join rides
+//!   the sanctioned `agent_llm_client_decorator` seam instead - identical
+//!   ordering guarantee for LLM-authored writes.
+//! - **Name-based classification** is CLOSED for dispatch-time marking:
+//!   the request's tool catalog carries the typed `ToolDef.provenance`
+//!   owner, and [`ContentTrustConfig::classify_tool_with_provenance`]
+//!   attributes MCP tools to their server through it - unqualified MCP
+//!   tool names no longer need `content_trust.untrusted_tools` listing.
+//!   The observe-stream fallback (events carry only the NAME) keeps the
+//!   name-based coarseness; it is belt-and-suspenders behind the
+//!   dispatch-time join, not the primary marker.
+//!
+//! ## Honest gaps that remain (upstream asks, §13)
+//!
 //! - **The mirror race**: after a session rotation, the tracker's view of
 //!   an identity's current session lags until the runtime's delivery hook
 //!   or the new session's first `RunStarted` event updates it, so a write
 //!   in that window can be quarantined against the *old* session's taint.
 //!   This errs conservative (false quarantine, never false trust).
-//! - **Name-based classification**: meerkat tool events carry only the tool
-//!   NAME — no `ToolDef.provenance` — so MCP tools cannot be attributed to
-//!   a server unless their names are server-qualified
-//!   (`mcp__<server>__<tool>`). Deployments with unqualified MCP tool names
-//!   list them in `content_trust.untrusted_tools` (or run
-//!   `llm_writes = "quarantined"`) until the dispatch-time join against
-//!   real `ToolProvenance` lands upstream.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use meerkat_core::event::AgentEvent;
+use meerkat_core::types::{ServerToolKind, ToolProvenance, ToolSourceKind};
 use serde::{Deserialize, Serialize};
 
 use crate::identity_first::agent_memory::AgentMemoryLlmWrites;
@@ -158,11 +172,29 @@ impl ContentTrustConfig {
         })
     }
 
-    /// Classify a tool by NAME (the only fact the P1 event surface carries —
-    /// module docs). Precedence: builtin web/fetch (non-overridable) >
-    /// `untrusted_tools` > `trusted_tools` > MCP-qualified names against the
-    /// server allowlist > trusted.
+    /// Classify a tool by NAME (the only fact the observe-stream event
+    /// surface carries - module docs). Precedence: builtin web/fetch
+    /// (non-overridable) > `untrusted_tools` > `trusted_tools` >
+    /// MCP-qualified names against the server allowlist > trusted.
     pub fn classify_tool(&self, name: &str) -> ToolContentTrust {
+        self.classify_tool_with_provenance(name, None)
+    }
+
+    /// Classify a tool with the typed [`ToolDef.provenance`] owner when the
+    /// caller has it (the dispatch-time join - module docs). Precedence is
+    /// [`Self::classify_tool`]'s, with the MCP step widened: typed
+    /// `ToolSourceKind::Mcp` provenance attributes the tool to
+    /// `provenance.source_id` regardless of the name shape; absent or
+    /// non-MCP provenance falls back to the `mcp__<server>__<tool>` name
+    /// join. Explicit `trusted_tools` entries still override server-level
+    /// distrust, exactly as on the name-only path.
+    ///
+    /// [`ToolDef.provenance`]: meerkat_core::ToolDef
+    pub fn classify_tool_with_provenance(
+        &self,
+        name: &str,
+        provenance: Option<&ToolProvenance>,
+    ) -> ToolContentTrust {
         if ALWAYS_UNTRUSTED_TOOL_NAMES.contains(&name) {
             return ToolContentTrust::Untrusted {
                 source: format!("web tool '{name}'"),
@@ -176,20 +208,29 @@ impl ContentTrustConfig {
         if self.trusted_tools.iter().any(|tool| tool == name) {
             return ToolContentTrust::Trusted;
         }
+        if let Some(provenance) = provenance
+            && provenance.kind == ToolSourceKind::Mcp
+        {
+            return self.classify_mcp_server(provenance.source_id.as_str(), name);
+        }
         if let Some(rest) = name.strip_prefix(MCP_QUALIFIED_PREFIX) {
             let server = rest.split("__").next().unwrap_or(rest);
-            if self
-                .trusted_mcp_servers
-                .iter()
-                .any(|trusted| trusted == server)
-            {
-                return ToolContentTrust::Trusted;
-            }
-            return ToolContentTrust::Untrusted {
-                source: format!("MCP server '{server}' (tool '{name}')"),
-            };
+            return self.classify_mcp_server(server, name);
         }
         ToolContentTrust::Trusted
+    }
+
+    fn classify_mcp_server(&self, server: &str, name: &str) -> ToolContentTrust {
+        if self
+            .trusted_mcp_servers
+            .iter()
+            .any(|trusted| trusted == server)
+        {
+            return ToolContentTrust::Trusted;
+        }
+        ToolContentTrust::Untrusted {
+            source: format!("MCP server '{server}' (tool '{name}')"),
+        }
     }
 }
 
@@ -356,6 +397,36 @@ impl SessionTaintTracker {
             }
             _ => {}
         }
+    }
+
+    /// Dispatch-ordered ingestion feed (module docs, "closed at 0.8.14"):
+    /// classify one tool result with the typed provenance from the request's
+    /// tool catalog and mark the identity synchronously - strictly before
+    /// the LLM call that carries the result, so no same-turn LLM memory
+    /// write can beat the mark to the store. Marking is idempotent with the
+    /// observe-stream fallback, which stays wired behind this.
+    pub fn observe_dispatched_tool_result(
+        &self,
+        identity: &str,
+        name: &str,
+        provenance: Option<&ToolProvenance>,
+    ) {
+        if let ToolContentTrust::Untrusted { source } =
+            self.config.classify_tool_with_provenance(name, provenance)
+        {
+            self.mark_identity_tainted(identity, source);
+        }
+    }
+
+    /// Dispatch-ordered feed for provider-executed server tools (web search /
+    /// grounding): typed, and always untrusted (§10.1). Called from the
+    /// LLM-boundary join with the response's typed `ServerToolContent`
+    /// blocks, before the loop can dispatch any same-response tool call.
+    pub fn observe_dispatched_server_tool(&self, identity: &str, kind: &ServerToolKind) {
+        self.mark_identity_tainted(
+            identity,
+            format!("provider server tool '{}'", kind.provider_name()),
+        );
     }
 
     /// Authoritative current-session hint from the identity runtime's
@@ -1128,6 +1199,132 @@ mod tests {
         );
         // Unknown plain names are trusted in P1 (documented coarseness).
         assert_eq!(config.classify_tool("shell"), ToolContentTrust::Trusted);
+    }
+
+    // (b) The dispatch-time join: typed MCP provenance attributes a tool to
+    // its server even when the NAME is not server-qualified - the exact gap
+    // the name-based path could not close.
+    #[test]
+    fn typed_mcp_provenance_attributes_unqualified_tool_names() {
+        use meerkat_core::types::{ToolProvenance, ToolSourceKind};
+        let config = ContentTrustConfig {
+            trusted_mcp_servers: vec!["kg".to_string()],
+            ..ContentTrustConfig::default()
+        };
+        let kg = ToolProvenance {
+            kind: ToolSourceKind::Mcp,
+            source_id: "kg".into(),
+        };
+        let scraper = ToolProvenance {
+            kind: ToolSourceKind::Mcp,
+            source_id: "scraper".into(),
+        };
+        // Plain name, untrusted server: provenance closes the attribution.
+        let verdict = config.classify_tool_with_provenance("scrape_page", Some(&scraper));
+        match verdict {
+            ToolContentTrust::Untrusted { source } => {
+                assert!(source.contains("MCP server 'scraper'"), "{source}");
+                assert!(source.contains("scrape_page"), "{source}");
+            }
+            ToolContentTrust::Trusted => panic!("untrusted-server MCP tool must taint"),
+        }
+        // Plain name, allowlisted server: trusted through the same join.
+        assert_eq!(
+            config.classify_tool_with_provenance("query", Some(&kg)),
+            ToolContentTrust::Trusted
+        );
+        // Typed provenance wins over a misleading name shape: the server in
+        // the provenance is the owner, not the name's `mcp__` segment.
+        assert_eq!(
+            config.classify_tool_with_provenance("mcp__evil__query", Some(&kg)),
+            ToolContentTrust::Trusted
+        );
+        // Precedence is preserved around the widened MCP step: web builtins
+        // and explicit per-tool lists still outrank provenance.
+        assert!(matches!(
+            config.classify_tool_with_provenance("web_search", Some(&kg)),
+            ToolContentTrust::Untrusted { .. }
+        ));
+        let listed = ContentTrustConfig {
+            trusted_tools: vec!["scrape_page".to_string()],
+            ..ContentTrustConfig::default()
+        };
+        assert_eq!(
+            listed.classify_tool_with_provenance("scrape_page", Some(&scraper)),
+            ToolContentTrust::Trusted,
+            "explicit trusted_tools overrides server-level distrust, as on the name path"
+        );
+    }
+
+    // (c) Absence fallback: no provenance (and non-MCP provenance) must
+    // reproduce the name-based classification exactly.
+    #[test]
+    fn absent_or_non_mcp_provenance_falls_back_to_name_classification() {
+        use meerkat_core::types::{ToolProvenance, ToolSourceKind};
+        let config = ContentTrustConfig {
+            trusted_mcp_servers: vec!["kg".to_string()],
+            untrusted_tools: vec!["scrape_page".to_string()],
+            trusted_tools: vec!["mcp__evil__probe".to_string()],
+        };
+        for name in [
+            "web_search",
+            "scrape_page",
+            "mcp__evil__probe",
+            "mcp__other__search",
+            "mcp__kg__query",
+            "shell",
+        ] {
+            assert_eq!(
+                config.classify_tool_with_provenance(name, None),
+                config.classify_tool(name),
+                "provenance-absent classification must match the name path for '{name}'"
+            );
+        }
+        // Non-MCP provenance kinds keep the name-shape semantics too.
+        let builtin = ToolProvenance {
+            kind: ToolSourceKind::Builtin,
+            source_id: "builtin".into(),
+        };
+        assert_eq!(
+            config.classify_tool_with_provenance("shell", Some(&builtin)),
+            ToolContentTrust::Trusted
+        );
+        assert_eq!(
+            config.classify_tool_with_provenance("mcp__other__search", Some(&builtin)),
+            config.classify_tool("mcp__other__search")
+        );
+    }
+
+    #[test]
+    fn dispatched_tool_result_marks_identity_before_any_session_attribution() {
+        use meerkat_core::types::{ToolProvenance, ToolSourceKind};
+        let tracker = SessionTaintTracker::new(ContentTrustConfig::default());
+        let provenance = ToolProvenance {
+            kind: ToolSourceKind::Mcp,
+            source_id: "scraper".into(),
+        };
+        // No RunStarted, no delivery hook: the dispatch feed must still land
+        // (identity-sticky pending), so the same-turn write gate sees it.
+        tracker.observe_dispatched_tool_result("identity:a", "scrape_page", Some(&provenance));
+        let taint = tracker
+            .identity_taint("identity:a")
+            .expect("dispatch-time mark must be visible to the gate immediately");
+        assert!(
+            taint.source.contains("MCP server 'scraper'"),
+            "{}",
+            taint.source
+        );
+
+        // Trusted results do not mark.
+        tracker.observe_dispatched_tool_result("identity:b", "shell", None);
+        assert!(tracker.identity_taint("identity:b").is_none());
+
+        // Server tools are always untrusted.
+        tracker.observe_dispatched_server_tool("identity:c", &ServerToolKind::WebSearch);
+        let taint = tracker
+            .identity_taint("identity:c")
+            .expect("server tool marks");
+        assert!(taint.source.contains("web_search"), "{}", taint.source);
     }
 
     #[test]

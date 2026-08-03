@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Memory-taint first-ingestion race closed at dispatch time** (§10.1
+  launch-audit item). Content-trust classification no longer depends on the
+  observe-only ASYNC agent-event stream alone: an LLM memory write in the
+  same turn as the session's FIRST untrusted tool ingestion could reach the
+  store before the taint observer processed the tool event
+  (`llm_writes = "observed"` default), and MCP tools with unqualified names
+  could not be attributed to a server at all (events carry only the tool
+  NAME). Both are closed by a synchronous LLM-boundary join:
+
+  - Every mob member session create (spawn, resume, revival - all funnel
+    through the bootstrap spec's pre-build seam) now composes a
+    taint-observing wrapper onto the member's agent-facing LLM client via
+    `SessionBuildOptions.agent_llm_client_decorator`. Before each LLM call
+    it classifies the tool results newly present in the request - joining
+    the tool name against the request catalog's typed `ToolDef.provenance`
+    (`ToolSourceKind::Mcp` + server id), so unqualified MCP tool names
+    attribute correctly; absent provenance falls back to the existing
+    name-based classification unchanged. After each call it classifies the
+    typed `ServerToolContent` blocks (provider-executed web search /
+    grounding) before the loop can dispatch any same-response tool call.
+    An LLM-authored write is always downstream of an LLM call that carried
+    the untrusted result, so the tracker is marked strictly before the
+    write reaches the store's gate. Observe-and-mark only: the wrapper
+    never denies, never mutates, does no I/O.
+  - Mechanism note: meerkat 0.8.14 DOES fire
+    `HookPoint::PostToolExecution` synchronously with the typed provenance,
+    but the mob member build path has no hook-engine carrier
+    (`SessionBuildOptions` cannot ship an `Arc<dyn HookEngine>`;
+    `AgentBuildConfig.hook_engine_override` is reachable only from the
+    standalone facade builder), so the join rides the sanctioned
+    per-build LLM-client decorator seam - identical ordering guarantee
+    for LLM-authored writes.
+  - The tracker slot is late-bound (`MobBootstrapSpec::dispatch_taint_slot`):
+    the unified builder and the RPC gateway fill it when the full
+    agent-memory stack attaches, and members built earlier (bootstrap
+    roster) pick it up on their next LLM call. Compositions without the
+    taint firewall pay nothing. The async observer stays wired as
+    belt-and-suspenders (it also serves session-rotation mirroring); the
+    dispatch join simply gets there first.
+
 ## [0.8.10] - 2026-08-03
 
 ### Changed

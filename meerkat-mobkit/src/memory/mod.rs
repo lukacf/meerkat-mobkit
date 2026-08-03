@@ -8,6 +8,7 @@
 
 pub mod capabilities;
 pub mod coordinator;
+pub mod dispatch_taint;
 pub mod distiller;
 pub mod events;
 pub mod guards;
@@ -31,6 +32,7 @@ pub use coordinator::{
     ScopeBudget, compose_identity_scope_set, compose_identity_scope_set_with_bindings,
     compose_identity_scope_set_with_operator, compose_scope_budgets,
 };
+pub use dispatch_taint::{DispatchTaintSlot, TaintObservingLlmClient};
 pub use distiller::{
     CompactionDiscardSource, CompactionFollowUp, DistillCause, DistillOutcome,
     DistillerClientHandle, DistillerConfig, DistillerEngine, DistillerError, DistillerProfile,

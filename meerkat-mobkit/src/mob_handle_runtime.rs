@@ -470,6 +470,12 @@ pub type AfterCreateHook = Arc<
 struct PreBuildMobSessionService {
     inner: Arc<dyn MobSessionService>,
     hook: PreBuildHook,
+    /// §10.1 dispatch-time taint join (`crate::memory::dispatch_taint`):
+    /// present ONLY on the wrapper `MobBootstrapSpec::new` installs - the
+    /// one layer every spec has exactly once - so `with_*` re-wraps never
+    /// double-decorate. The slot is late-bound: compositions fill it when
+    /// the memory stack attaches.
+    dispatch_taint: Option<crate::memory::dispatch_taint::DispatchTaintSlot>,
     after_create_hook: Option<AfterCreateHook>,
     runtime_adapter_override: Option<Arc<meerkat_runtime::MeerkatMachine>>,
     /// Installed only on the persistent runtime-backed path: absorbs the
@@ -572,6 +578,11 @@ impl PreBuildMobSessionService {
         (self.hook)(&mut req).await?;
         ensure_shell_tooling_build_substrate(&mut req);
         sanitize_create_session_request_llm_override(&mut req);
+        // After the user hook (composes over any decorator it set) and after
+        // sanitize (which only touches the raw llm_client_override).
+        if let Some(slot) = self.dispatch_taint.as_ref() {
+            crate::memory::dispatch_taint::attach_member_taint_decorator(&mut req, slot);
+        }
 
         let context = SessionCreatedContext {
             model: req.model.clone(),
@@ -4681,6 +4692,10 @@ pub struct MobBootstrapSpec {
     /// repair supervisor falls back to plain reconcile retries).
     pub committed_boundary_recoverer:
         Option<Arc<dyn crate::identity_first::bridge::CommittedBoundaryRecoverer>>,
+    /// Late-bound §10.1 dispatch-time taint slot carried by the base
+    /// session-service wrapper `Self::new` installs; see
+    /// [`Self::dispatch_taint_slot`].
+    pub(crate) dispatch_taint_slot: crate::memory::dispatch_taint::DispatchTaintSlot,
     /// Holds the ephemeral temp directory alive for the lifetime of the spec.
     /// Only populated when the builder creates an ephemeral runtime.
     pub(crate) _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -4692,9 +4707,16 @@ impl MobBootstrapSpec {
         storage: MobStorage,
         session_service: Arc<dyn MobSessionService>,
     ) -> Self {
+        // Every spec construction path funnels through here (the stock
+        // constructors call `Self::new` with their wrapped service), so this
+        // is the ONE layer that carries the dispatch-time taint slot: each
+        // member create passes it exactly once, and later `with_*` re-wraps
+        // never double-decorate.
+        let dispatch_taint_slot = crate::memory::dispatch_taint::DispatchTaintSlot::default();
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook: no_op_pre_build_hook(),
+            dispatch_taint: Some(dispatch_taint_slot.clone()),
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -4724,8 +4746,18 @@ impl MobBootstrapSpec {
             resolved_storage: None,
             session_write_epochs: None,
             committed_boundary_recoverer: None,
+            dispatch_taint_slot,
             _ephemeral_dir: None,
         }
+    }
+
+    /// The late-bound §10.1 dispatch-time taint slot every member session
+    /// create built from this spec consults (see
+    /// `crate::memory::dispatch_taint`). Compositions that assemble the full
+    /// agent-memory stack fill the returned slot with the stack's
+    /// [`crate::SessionTaintTracker`]; unfilled it costs nothing.
+    pub fn dispatch_taint_slot(&self) -> crate::memory::dispatch_taint::DispatchTaintSlot {
+        self.dispatch_taint_slot.clone()
     }
 
     /// Record the composition-time storage durability resolution for a spec
@@ -4860,6 +4892,7 @@ impl MobBootstrapSpec {
         self.session_service = Arc::new(PreBuildMobSessionService {
             inner: self.session_service,
             hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
             after_create_hook: None,
             runtime_adapter_override: Some(adapter),
             session_read_absorber: None,
@@ -4902,6 +4935,7 @@ impl MobBootstrapSpec {
         self.session_service = Arc::new(PreBuildMobSessionService {
             inner: self.session_service,
             hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
@@ -4932,6 +4966,7 @@ impl MobBootstrapSpec {
         self.session_service = Arc::new(PreBuildMobSessionService {
             inner: self.session_service,
             hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -5098,6 +5133,7 @@ impl MobBootstrapSpec {
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
+            dispatch_taint: None,
             after_create_hook,
             runtime_adapter_override: effective_runtime_adapter.clone(),
             session_read_absorber: None,
@@ -5511,6 +5547,7 @@ impl MobBootstrapSpec {
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
+            dispatch_taint: None,
             after_create_hook,
             runtime_adapter_override: None,
             session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
@@ -5798,6 +5835,7 @@ impl MobBootstrapSpec {
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
+            dispatch_taint: None,
             after_create_hook: Some(combined_after_create_hook),
             runtime_adapter_override: Some(runtime_adapter.clone()),
             session_read_absorber: None,
@@ -8190,6 +8228,7 @@ realm_profile = "worker-v2"
         let wrapped = PreBuildMobSessionService {
             inner,
             hook,
+            dispatch_taint: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -8468,6 +8507,7 @@ realm_profile = "worker-v2"
         let wrapped = PreBuildMobSessionService {
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
@@ -8831,6 +8871,7 @@ realm_profile = "worker-v2"
         let wrapped = PreBuildMobSessionService {
             inner,
             hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
             after_create_hook: None,
             runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
             session_read_absorber: None,
@@ -8959,6 +9000,7 @@ realm_profile = "worker-v2"
         let wrapped = PreBuildMobSessionService {
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
             after_create_hook: None,
             runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
             session_read_absorber: None,
