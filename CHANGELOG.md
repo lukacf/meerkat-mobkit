@@ -46,6 +46,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `DispatchOrigin` is untouched; Steer keeps its deliberate bypass on
     the send door.
 
+- **Steward dream honesty: turn-only usage evidence, quarantine window
+  pin-down, durable run rows** (HomeCore dream rehearsal). Three findings,
+  one root shape:
+  - Usage-audit data boundary: the audit now judges only `surface=Turn`
+    injection evidence - build-surface rows are spawn hydration
+    bookkeeping, not proof a record earned its context slot. A store with
+    zero Turn rows for the scope SKIPS the audit and queues NOTHING
+    (HomeCore: 53/53 dead-weight noise verdicts minted from hydration
+    counts on a store where turn evidence could not yet accrue).
+  - Legacy quarantine review: proven from code that no
+    "new-since-last-dream" window exists - every dream loads the full
+    quarantine queue (capped per dream) regardless of record age; the
+    rehearsal's unverdicted legacy records were starved by the pipeline
+    aborting in the consolidate phase AFTER the audit sheet persisted.
+    A regression pins the contract: a quarantined record older than the
+    newest recorded dream still enters signals and gets its verdict.
+  - Dream-run bookkeeping: the `dream_runs` row is now written at run
+    START (in-flight), replaced at the tail with final numbers, and
+    replaced with an honest failure row (committed-op count + failed
+    phase) when the pipeline aborts - verdict rows can no longer
+    reference run ids that resolve nowhere, and the console dream-runs
+    panel sees failed runs instead of nothing.
+
 - **Memory scope keys are LOGICAL identities end to end** (HomeCore
   activation smoke, launch blocker). The platform's observe-stream paths
   keyed identity scopes by the mob-plane roster id - for identity-first
