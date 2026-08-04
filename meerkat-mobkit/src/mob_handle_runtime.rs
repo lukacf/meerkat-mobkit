@@ -2323,11 +2323,150 @@ impl SessionStoreBackedRuntimeStore {
                     commit.rewrite_generation
                 ))
             })?;
-            if prefix_digest == commit.parent_revision {
+            // The verdict logs UNCONDITIONALLY, matched or not: a silent
+            // refusal in the field is indistinguishable from the admission
+            // never running (iteration-4 lesson).
+            let matched = prefix_digest == commit.parent_revision;
+            tracing::info!(
+                session_id = %durable_predecessor.id(),
+                rewrite_generation = commit.rewrite_generation,
+                messages_before = commit.messages_before,
+                durable_messages = durable_messages.len(),
+                %prefix_digest,
+                parent_revision = %commit.parent_revision,
+                matched,
+                "inverse-append proof verdict"
+            );
+            if matched {
                 return Ok(Some(commits[index..].to_vec()));
             }
         }
         Ok(None)
+    }
+
+    /// DURABLE-BEHIND ADMISSION (task #56 corpus iteration 5, HomeCore
+    /// parent-1 true field shape; admission authored by HomeCore and landed
+    /// here with the lane's conventions): the tear is a FAILED projection,
+    /// so the durable row never received the wedged turn's final appends -
+    /// durable is a strict digest-PREFIX of the sealed commit parent (the
+    /// exact inverse of the inverse-append shape). Proof is exact content:
+    /// the materialized parent's first `durable_len` messages must
+    /// digest-equal the WHOLE durable row. On proof the existing replay
+    /// loop does the rest: durable head != parent revision routes through
+    /// the exact-parent projection seam (bringing durable UP to the parent
+    /// from the parent's own body), then the commit replays and the
+    /// trailing projection lands the compacted head. No durable suffix
+    /// exists to preserve - durable holds no unique content. Without proof,
+    /// foreign lineage keeps the typed refusal.
+    fn durable_behind_prefix_chain<'a>(
+        successor: &meerkat_core::Session,
+        sealed: &'a meerkat_core::ValidatedTranscriptHistory,
+        durable_predecessor: &meerkat_core::Session,
+    ) -> Result<
+        Option<Vec<&'a meerkat_core::TranscriptRewriteCommit>>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        let durable_messages = durable_predecessor.messages();
+        let durable_digest =
+            meerkat_core::transcript_messages_digest(durable_messages).map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                    "durable digest for durable-behind admission: {e}"
+                ))
+            })?;
+        let commits: Vec<_> = sealed.state().commits().collect();
+        for (index, commit) in commits.iter().enumerate() {
+            if commit.messages_before < durable_messages.len() {
+                continue;
+            }
+            let parent_session = successor
+                .with_validated_transcript_rewrite_parent_projection(sealed, commit)
+                .map_err(|e| {
+                    meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                        "parent projection for durable-behind admission at generation {}: {e}",
+                        commit.rewrite_generation
+                    ))
+                })?;
+            let parent_messages = parent_session.messages();
+            if parent_messages.len() < durable_messages.len() {
+                continue;
+            }
+            let parent_prefix_digest = meerkat_core::transcript_messages_digest(
+                &parent_messages[..durable_messages.len()],
+            )
+            .map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                    "parent prefix digest for durable-behind admission at generation {}: {e}",
+                    commit.rewrite_generation
+                ))
+            })?;
+            let matched = parent_prefix_digest == durable_digest;
+            tracing::info!(
+                session_id = %durable_predecessor.id(),
+                rewrite_generation = commit.rewrite_generation,
+                messages_before = commit.messages_before,
+                durable_messages = durable_messages.len(),
+                parent_messages = parent_messages.len(),
+                %parent_prefix_digest,
+                %durable_digest,
+                matched,
+                "durable-behind proof verdict"
+            );
+            if matched {
+                return Ok(Some(commits[index..].to_vec()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Last-resort divergence diagnostic, emitted only when BOTH
+    /// proof-carrying admissions found nothing: a message-level scan of the
+    /// durable row against the exact parent body the sealed graph itself
+    /// reconstructs, naming the first divergent index. Diagnostic only - a
+    /// scan failure must not fail the projection.
+    fn log_no_admission_diagnostic(
+        sealed: &meerkat_core::ValidatedTranscriptHistory,
+        durable_predecessor: &meerkat_core::Session,
+        successor: &meerkat_core::Session,
+    ) {
+        let durable_messages = durable_predecessor.messages();
+        let commits: Vec<_> = sealed.state().commits().collect();
+        let Some(first) = commits.first() else {
+            return;
+        };
+        let tested_len = first.messages_before.min(durable_messages.len());
+        let (parent_len, first_divergence) =
+            match successor.with_validated_transcript_rewrite_parent_projection(sealed, first) {
+                Ok(parent) => {
+                    let parent_messages = parent.messages();
+                    let divergence = parent_messages
+                        .iter()
+                        .zip(durable_messages.iter())
+                        .position(|(parent_message, durable_message)| {
+                            serde_json::to_vec(parent_message).ok()
+                                != serde_json::to_vec(durable_message).ok()
+                        })
+                        .map_or_else(
+                            || format!("<none within first {tested_len} messages>"),
+                            |index| index.to_string(),
+                        );
+                    (parent_messages.len().to_string(), divergence)
+                }
+                Err(e) => (
+                    format!("<parent projection failed: {e}>"),
+                    "<unavailable>".to_string(),
+                ),
+            };
+        tracing::warn!(
+            session_id = %durable_predecessor.id(),
+            rewrite_generation = first.rewrite_generation,
+            messages_before = first.messages_before,
+            durable_messages = durable_messages.len(),
+            parent_len = %parent_len,
+            parent_revision = %first.parent_revision,
+            first_divergence = %first_divergence,
+            "no repair admission holds: the durable row is neither a proven \
+             append-extension nor a proven prefix of the sealed parent"
+        );
     }
 
     /// The single-flight projection fence for ONE runtime (see the field
@@ -2543,7 +2682,36 @@ impl SessionStoreBackedRuntimeStore {
                                 preserved_suffix = suffix;
                             }
                         }
-                        inverse
+                        match inverse {
+                            Some(chain) => Some(chain),
+                            None => {
+                                let behind = Self::durable_behind_prefix_chain(
+                                    successor,
+                                    sealed,
+                                    durable_predecessor,
+                                )?;
+                                match behind {
+                                    Some(chain) => {
+                                        tracing::info!(
+                                            runtime_id = %runtime_id,
+                                            session_id = %successor.id(),
+                                            "durable-behind admission: the durable row is a \
+                                             digest-prefix of the sealed commit parent (failed \
+                                             projection tear); replaying the committed rewrites"
+                                        );
+                                        Some(chain)
+                                    }
+                                    None => {
+                                        Self::log_no_admission_diagnostic(
+                                            sealed,
+                                            durable_predecessor,
+                                            successor,
+                                        );
+                                        None
+                                    }
+                                }
+                            }
+                        }
                     }
                 };
                 if let Some(missing_commits) = missing_commits {
@@ -10664,6 +10832,211 @@ realm_profile = "worker-v2"
         assert_eq!(
             head_after.head_revision, expected_revision,
             "the preserved suffix must survive the second boot untouched"
+        );
+    }
+
+    /// Task #56 iteration-5 TRUE field shape (HomeCore parent-1, proof
+    /// verdict "messages_before=250 durable_messages=249 matched"): the
+    /// tear is a FAILED projection - the wedged turn's final append never
+    /// reached the durable row, so durable is a strict digest-PREFIX of the
+    /// sealed compaction parent (N-1 of N, compacted to K). The
+    /// durable-behind admission proves the prefix against the materialized
+    /// parent body and the replay brings durable up to the parent, replays
+    /// the compaction, and lands the committed head exactly - no suffix
+    /// exists to preserve.
+    #[tokio::test]
+    async fn parked_durable_prefix_of_parent_heals_to_committed_head() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let continuity: Arc<dyn crate::identity_first::ContinuityStore> = Arc::new(
+            crate::identity_first::LocalContinuityStore::open(dir.path().join("continuity.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let adapter = Arc::new(crate::identity_first::ContinuitySessionStoreAdapter::new(
+            Arc::clone(&continuity),
+        ));
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(dir.path().join("runtime.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+
+        let mut gen0 = meerkat_core::Session::new();
+        for text in ["opening", "second", "third"] {
+            gen0.push(meerkat_core::Message::User(
+                meerkat_core::types::UserMessage::text(text),
+            ));
+        }
+        let identity = crate::identity_first::AgentIdentity::parse("domain:parked-prefix")
+            .unwrap_or_else(|error| panic!("{error}"));
+        crate::identity_first::ContinuityStore::upsert_continuity_record(
+            continuity.as_ref(),
+            &crate::identity_first::ContinuityRecord {
+                identity: identity.clone(),
+                agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                    "rt:domain:parked-prefix:0",
+                )
+                .unwrap_or_else(|error| panic!("{error}")),
+                session_id: gen0.id().clone(),
+                generation: crate::identity_first::ContinuityGeneration::new(0),
+                checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+            },
+            crate::identity_first::FencingToken::new(1),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+        adapter
+            .register_session(
+                gen0.id(),
+                crate::identity_first::SessionRuntimeState {
+                    identity,
+                    generation: crate::identity_first::ContinuityGeneration::new(0),
+                    fencing_token: crate::identity_first::FencingToken::new(1),
+                    checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        // Only the 3-message state ever projects durably; the 4th message
+        // below is the failed projection.
+        meerkat::SessionStore::save(adapter.as_ref(), &gen0)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // The runtime appended a 4th message (never projected), then the
+        // retire compacted 4 -> 1.
+        let mut successor = gen0.clone();
+        successor.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("never projected"),
+        ));
+        let parent_revision = successor
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        successor
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 4 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::types::UserMessage::text("compacted summary"),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("wedged-turn retire compaction"),
+                Some("task-56-durable-prefix-regression".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        adapter
+            .unregister_session(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(gen0.id());
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        successor
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&adapter) as Arc<dyn SessionStore>,
+        ));
+        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
+            .await
+            .unwrap_or_else(|error| panic!("the durable-prefix repair must converge: {error}"))
+            .unwrap_or_else(|| panic!("the committed snapshot must remain readable"));
+
+        let successor_revision = successor
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let channel = continuity
+            .as_incremental_sessions()
+            .unwrap_or_else(|| panic!("the local continuity store provides the delta channel"));
+        let healed_head = channel
+            .load_canonical_head(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the healed head row must exist"));
+        assert_eq!(
+            healed_head.rewrite_count, 1,
+            "the compaction rewrite must be installed on the durable head"
+        );
+        assert_eq!(
+            healed_head.head_revision, successor_revision,
+            "the healed head must land at the committed head exactly (no suffix exists)"
+        );
+        let healed = meerkat::SessionStore::load(adapter.as_ref(), gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must exist"));
+        assert_eq!(
+            healed
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            successor_revision,
+            "the healed row must match the committed successor exactly"
+        );
+    }
+
+    /// Direct proof test for the durable-behind admission (independent of
+    /// the chain walk's own acceptance behavior): a durable row that is a
+    /// strict digest-prefix of the sealed parent proves the chain; a
+    /// same-length divergent row proves nothing.
+    #[tokio::test]
+    async fn durable_behind_prefix_chain_proves_exact_prefix_and_refuses_divergence() {
+        let mut base = meerkat_core::Session::new();
+        for text in ["opening", "second"] {
+            base.push(meerkat_core::Message::User(
+                meerkat_core::types::UserMessage::text(text),
+            ));
+        }
+        let durable = base.clone();
+        let mut divergent = base.clone();
+        divergent.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("divergent third"),
+        ));
+        let mut successor = base;
+        successor.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("third"),
+        ));
+        let parent_revision = successor
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        successor
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 3 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::types::UserMessage::text("compacted summary"),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("wedged-turn retire compaction"),
+                Some("task-56-behind-proof-unit".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+        let sealed = successor
+            .validated_transcript_history_state()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the successor carries a sealed graph"));
+
+        let proven = SessionStoreBackedRuntimeStore::durable_behind_prefix_chain(
+            &successor, &sealed, &durable,
+        )
+        .unwrap_or_else(|error| panic!("{error}"))
+        .unwrap_or_else(|| panic!("a strict prefix of the parent must prove the chain"));
+        assert_eq!(proven.len(), 1);
+        assert_eq!(proven[0].rewrite_generation, 1);
+
+        let refused = SessionStoreBackedRuntimeStore::durable_behind_prefix_chain(
+            &successor, &sealed, &divergent,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            refused.is_none(),
+            "a divergent row must not prove the durable-behind chain"
         );
     }
 
