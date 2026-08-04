@@ -24,9 +24,9 @@ use meerkat_mobkit::identity_first::contracts::{
 };
 use meerkat_mobkit::identity_first::{
     AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeServices,
-    BridgeError, CheckpointVersion, ContinuityFailure, ContinuityFailureKind, ContinuityGeneration,
-    ContinuityRecord, ContinuityResolveState, ContinuityStoreError, CustomizerError,
-    DurabilityPolicy, DurableAgentSpec, FencingToken, IdentityBootstrapState,
+    BridgeDelivery, BridgeError, CheckpointVersion, ContinuityFailure, ContinuityFailureKind,
+    ContinuityGeneration, ContinuityRecord, ContinuityResolveState, ContinuityStoreError,
+    CustomizerError, DurabilityPolicy, DurableAgentSpec, FencingToken, IdentityBootstrapState,
     IdentityFirstRuntimeContext, IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig,
     LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult, LocalContinuityStore,
     LocalLeaseProvider, ManagedPeerEdge, MemberInspection, RestoreOutcome, ResumeSessionOutcome,
@@ -903,10 +903,10 @@ impl SessionBridge for SnapshotIgnoringBridge {
         })
     }
 
-    async fn deliver(
+    async fn deliver_admitted(
         &self,
         _runtime_id: &meerkat_mobkit::identity_first::AgentRuntimeId,
-        _content: &meerkat_core::ContentInput,
+        _delivery: BridgeDelivery,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         Err(BridgeError::Mob("delivery not used in this test".into()))
     }

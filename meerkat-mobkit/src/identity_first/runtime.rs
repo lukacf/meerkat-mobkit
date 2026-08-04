@@ -101,6 +101,16 @@ pub enum IdentityRuntimeError {
         state: IdentityLifecycleState,
         operation: &'static str,
     },
+    /// Dispatch rejected BEFORE bridge admission: the delivery identity is
+    /// half-formed (idempotency key without a correlation id, or vice
+    /// versa) or fails upstream canonical validation (non-nil canonical
+    /// UUID correlation). Fail-closed on purpose: a degraded delivery under
+    /// a broken identity is a silent dedup hole - the caller gets dedup or
+    /// this refusal, never at-least-once. NO delivery occurs.
+    InvalidDeliveryIdentity {
+        identity: AgentIdentity,
+        detail: String,
+    },
     /// Continuity store error.
     Store(ContinuityStoreError),
     /// Lease provider error.
@@ -172,6 +182,11 @@ impl std::fmt::Display for IdentityRuntimeError {
             } => write!(
                 f,
                 "cannot {operation} identity {identity} in state {state:?}"
+            ),
+            Self::InvalidDeliveryIdentity { identity, detail } => write!(
+                f,
+                "dispatch to {identity} refused before bridge admission: invalid delivery \
+                 identity ({detail}); dedup or typed refusal, never a degraded delivery"
             ),
             Self::Store(err) => write!(f, "continuity store: {err}"),
             Self::Lease(err) => write!(f, "lease provider: {err}"),
@@ -6479,42 +6494,15 @@ impl IdentityRuntime {
                 interaction_id_for_delivery(&entry.spec, interaction_id),
             )
         };
-        // Steer is latency-sensitive live operator input: it bypasses both
-        // memory injection and inbound defanging by design. Every other send
-        // is defanged first (§9.1 anti-spoofing — even with injection off,
-        // forged memory envelopes are an inbound threat) and only then
-        // considered for ambient injection.
-        // Ask 1: the user content and the ambient memory recall travel as
-        // SEPARATE bodies — `content_to_deliver` is the (defanged) user
-        // message, `injected_context` is the recall assembled as its own
-        // typed injected-context body. They are never fused into one text.
-        let (content_to_deliver, injected_context) = if handling_mode == HandlingMode::Steer {
-            (content.clone(), Vec::new())
-        } else {
-            match self.agent_memory.read().await.clone() {
-                Some(injector) => {
-                    // §10.1 taint hook: authoritative session attribution
-                    // ahead of the async observe stream — the run this send
-                    // triggers belongs to this session. The generation bind
-                    // feeds the Distiller's EvidenceRefs (§8.4).
-                    if let Some(session_key) = memory_session_key.as_deref() {
-                        injector.note_current_session(identity, session_key);
-                        if let Some(generation) = memory_generation {
-                            injector.note_session_generation(identity, session_key, generation);
-                        }
-                    }
-                    let defanged = injector.defang_inbound(identity, content);
-                    let injected_context = injector
-                        .inject_for_turn(identity, memory_session_key.as_deref(), &defanged)
-                        .await
-                        .map_err(|err| {
-                            IdentityRuntimeError::Internal(format!("agent memory recall: {err}"))
-                        })?;
-                    (defanged, injected_context)
-                }
-                None => (content.clone(), Vec::new()),
-            }
-        };
+        let (content_to_deliver, injected_context) = self
+            .prepare_member_delivery(
+                identity,
+                content,
+                memory_session_key.as_deref(),
+                memory_generation,
+                handling_mode == HandlingMode::Steer,
+            )
+            .await?;
 
         // Deliver through the session bridge when available.
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
@@ -6560,6 +6548,55 @@ impl IdentityRuntime {
         self.dispatch_with_expected_member_alias(identity, None, input)
             .await
             .map(|outcome| (outcome.admission.fencing_token, outcome.admission.durable))
+    }
+
+    /// The ONE delivery preparation both member doors run (task #54): the
+    /// send door always had it; the dispatch door previously delivered raw,
+    /// so internal dispatches (schedules foremost) skipped defanging, taint
+    /// session attribution, and ambient memory injection for the member's
+    /// whole lifetime (HomeCore: zero surface=Turn injection-ledger rows).
+    ///
+    /// Steer is latency-sensitive live operator input: it bypasses both
+    /// memory injection and inbound defanging by design. Every other
+    /// delivery is defanged first (§9.1 anti-spoofing - even with injection
+    /// off, forged memory envelopes are an inbound threat) and only then
+    /// considered for ambient injection. Ask 1: the user content and the
+    /// ambient recall travel as SEPARATE bodies - the (defanged) message and
+    /// the recall as its own typed injected-context body, never fused.
+    /// §10.1 taint hook: `note_current_session` keeps session attribution
+    /// authoritative ahead of the async observe stream; the generation bind
+    /// feeds the Distiller's EvidenceRefs (§8.4).
+    async fn prepare_member_delivery(
+        &self,
+        identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+        memory_session_key: Option<&str>,
+        memory_generation: Option<u64>,
+        steer: bool,
+    ) -> Result<(meerkat_core::ContentInput, Vec<meerkat_core::ContentInput>), IdentityRuntimeError>
+    {
+        if steer {
+            return Ok((content.clone(), Vec::new()));
+        }
+        match self.agent_memory.read().await.clone() {
+            Some(injector) => {
+                if let Some(session_key) = memory_session_key {
+                    injector.note_current_session(identity, session_key);
+                    if let Some(generation) = memory_generation {
+                        injector.note_session_generation(identity, session_key, generation);
+                    }
+                }
+                let defanged = injector.defang_inbound(identity, content);
+                let injected_context = injector
+                    .inject_for_turn(identity, memory_session_key, &defanged)
+                    .await
+                    .map_err(|err| {
+                        IdentityRuntimeError::Internal(format!("agent memory recall: {err}"))
+                    })?;
+                Ok((defanged, injected_context))
+            }
+            None => Ok((content.clone(), Vec::new())),
+        }
     }
 
     async fn dispatch_with_expected_member_alias(
@@ -6612,7 +6649,7 @@ impl IdentityRuntime {
         // Same pre-delivery baseline contract as the send path — see
         // `send_with_mode_and_interaction_with_expected_member_alias`.
         let completion_baseline = self.rebase_completion_cursor(identity, token);
-        let (is_durable, runtime_id) = {
+        let (is_durable, runtime_id, memory_session_key, memory_generation) = {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
@@ -6625,14 +6662,75 @@ impl IdentityRuntime {
                 .as_ref()
                 .map(|c| c.agent_runtime_id.clone());
 
-            (is_durable, runtime_id)
+            (
+                is_durable,
+                runtime_id,
+                entry.continuity.as_ref().map(|c| c.session_id.to_string()),
+                entry.continuity.as_ref().map(|c| c.generation.get()),
+            )
         };
 
-        // Deliver through the session bridge when available.
+        // Task #54: the dispatch door runs the SAME delivery preparation as
+        // the send door (defang, taint session attribution, ambient memory
+        // injection). Dispatch has no Steer mode; `DispatchOrigin` rides the
+        // input untouched.
+        let (content_to_deliver, injected_context) = self
+            .prepare_member_delivery(
+                identity,
+                &input.content,
+                memory_session_key.as_deref(),
+                memory_generation,
+                false,
+            )
+            .await?;
+        // Task #50 fail-closed matrix, validated BEFORE bridge admission:
+        // (None, None) is an ordinary delivery; a full pair validates
+        // upstream (canonical non-nil UUID correlation) and carries; EVERY
+        // other combination - half-pair, invalid UUID - is a typed refusal
+        // and NO delivery occurs. Never warn-and-degrade: a degraded
+        // delivery under a broken identity is a silent dedup hole.
+        let delivery_identity = match (&input.idempotency_key, &input.correlation_id) {
+            (None, None) => None,
+            (Some(idempotency_key), Some(correlation_id)) => Some(
+                meerkat_mob::MobDeliveryIdentity::new(
+                    idempotency_key.as_str(),
+                    correlation_id.as_str(),
+                )
+                .map_err(|error| {
+                    IdentityRuntimeError::InvalidDeliveryIdentity {
+                        identity: identity.clone(),
+                        detail: error.to_string(),
+                    }
+                })?,
+            ),
+            (Some(_), None) => {
+                return Err(IdentityRuntimeError::InvalidDeliveryIdentity {
+                    identity: identity.clone(),
+                    detail: "idempotency key without a correlation id (half-pair)".to_string(),
+                });
+            }
+            (None, Some(_)) => {
+                return Err(IdentityRuntimeError::InvalidDeliveryIdentity {
+                    identity: identity.clone(),
+                    detail: "correlation id without an idempotency key (half-pair)".to_string(),
+                });
+            }
+        };
+
+        // Deliver through the session bridge when available. When the dedup
+        // carrier is present its correlation id also rides as the
+        // interaction id.
         let mut dispatched_session_id = None;
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
+            let mut delivery =
+                super::bridge::BridgeDelivery::new(content_to_deliver.clone(), HandlingMode::Queue);
+            delivery.injected_context = injected_context.clone();
+            delivery.interaction_id = delivery_identity
+                .as_ref()
+                .map(|identity| identity.correlation_id.clone());
+            delivery.delivery_identity = delivery_identity.clone();
             let delivered_session_id = bridge
-                .deliver(rid, &input.content)
+                .deliver_admitted(rid, delivery)
                 .await
                 .map_err(|e| IdentityRuntimeError::Internal(format!("bridge dispatch: {e}")))?;
             dispatched_session_id = Some(delivered_session_id.clone());
@@ -9194,7 +9292,9 @@ mod reset_reprofile_tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock};
 
-    use super::super::bridge::{BridgeError, MemberInspection, ResumeSessionOutcome};
+    use super::super::bridge::{
+        BridgeDelivery, BridgeError, MemberInspection, ResumeSessionOutcome,
+    };
     use super::super::contracts::RosterProvider;
     use super::super::local_lease::LocalLeaseProvider;
     use super::super::local_store::LocalContinuityStore;
@@ -9576,10 +9676,10 @@ mod reset_reprofile_tests {
             ))
         }
 
-        async fn deliver(
+        async fn deliver_admitted(
             &self,
             _runtime_id: &AgentRuntimeId,
-            _content: &meerkat_core::ContentInput,
+            _delivery: BridgeDelivery,
         ) -> Result<SessionId, BridgeError> {
             Err(BridgeError::Mob(
                 "deliver not used in reset test".to_string(),
@@ -9720,10 +9820,10 @@ mod reset_reprofile_tests {
             ))
         }
 
-        async fn deliver(
+        async fn deliver_admitted(
             &self,
             runtime_id: &AgentRuntimeId,
-            _content: &meerkat_core::ContentInput,
+            _delivery: BridgeDelivery,
         ) -> Result<SessionId, BridgeError> {
             self.sessions
                 .lock()
@@ -9843,10 +9943,10 @@ mod reset_reprofile_tests {
             })
         }
 
-        async fn deliver(
+        async fn deliver_admitted(
             &self,
             _runtime_id: &AgentRuntimeId,
-            _content: &meerkat_core::ContentInput,
+            _delivery: BridgeDelivery,
         ) -> Result<SessionId, BridgeError> {
             Err(BridgeError::Mob(
                 "deliver not used in lost cleanup test".to_string(),
@@ -9970,10 +10070,10 @@ mod reset_reprofile_tests {
             ))
         }
 
-        async fn deliver(
+        async fn deliver_admitted(
             &self,
             _runtime_id: &AgentRuntimeId,
-            _content: &meerkat_core::ContentInput,
+            _delivery: BridgeDelivery,
         ) -> Result<SessionId, BridgeError> {
             Err(BridgeError::Mob(
                 "deliver not used in host-reject test".to_string(),
@@ -12250,7 +12350,9 @@ mod lease_renewal_backoff_tests {
 #[cfg(test)]
 mod continuity_repair_supervisor_tests {
     use super::*;
-    use crate::identity_first::bridge::{BridgeError, ResumeSessionOutcome, SessionBridge};
+    use crate::identity_first::bridge::{
+        BridgeDelivery, BridgeError, ResumeSessionOutcome, SessionBridge,
+    };
     use crate::identity_first::types::{AgentBuildDraft, SessionSnapshot};
     use crate::identity_first::{LocalContinuityStore, LocalLeaseProvider, MutableRosterProvider};
 
@@ -12302,10 +12404,10 @@ mod continuity_repair_supervisor_tests {
             ))
         }
 
-        async fn deliver(
+        async fn deliver_admitted(
             &self,
             _runtime_id: &AgentRuntimeId,
-            _content: &meerkat_core::ContentInput,
+            _delivery: BridgeDelivery,
         ) -> Result<SessionId, BridgeError> {
             Err(BridgeError::Mob("deliver not used".to_string()))
         }

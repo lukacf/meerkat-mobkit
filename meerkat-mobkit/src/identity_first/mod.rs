@@ -24,9 +24,9 @@ pub use agent_memory::{
     MEMORY_TOOL_NAME, MarkdownAgentMemoryStore, NewAgentMemory,
 };
 pub use bridge::{
-    BridgeError, CommittedBoundaryRecoverer, CommittedBoundaryRepair, MemberInspection,
-    MobSessionBridge, ResumeFallbackReason, ResumeRejectionKind, ResumeSessionOutcome,
-    SessionBridge,
+    BridgeDelivery, BridgeError, CommittedBoundaryRecoverer, CommittedBoundaryRepair,
+    MemberInspection, MobSessionBridge, ResumeFallbackReason, ResumeRejectionKind,
+    ResumeSessionOutcome, SessionBridge,
 };
 pub use contracts::*;
 pub use gateway_bridges::{

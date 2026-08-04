@@ -10342,10 +10342,10 @@ mod tests {
             })
         }
 
-        async fn deliver(
+        async fn deliver_admitted(
             &self,
             _runtime_id: &AgentRuntimeId,
-            _content: &meerkat_core::ContentInput,
+            _delivery: crate::identity_first::BridgeDelivery,
         ) -> Result<meerkat_core::types::SessionId, BridgeError> {
             self.deliver_calls.fetch_add(1, Ordering::SeqCst);
             std::future::pending().await
@@ -10391,25 +10391,15 @@ mod tests {
             })
         }
 
-        async fn deliver(
-            &self,
-            runtime_id: &AgentRuntimeId,
-            content: &meerkat_core::ContentInput,
-        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-            self.deliver_with_mode(runtime_id, content, HandlingMode::Queue)
-                .await
-        }
-
-        async fn deliver_with_mode(
+        async fn deliver_admitted(
             &self,
             _runtime_id: &AgentRuntimeId,
-            _content: &meerkat_core::ContentInput,
-            handling_mode: HandlingMode,
+            delivery: crate::identity_first::BridgeDelivery,
         ) -> Result<meerkat_core::types::SessionId, BridgeError> {
             self.handling_modes
                 .lock()
                 .map_err(|_| BridgeError::Mob("handling modes mutex poisoned".to_string()))?
-                .push(handling_mode);
+                .push(delivery.handling_mode);
             Ok(self.session_id.clone())
         }
 

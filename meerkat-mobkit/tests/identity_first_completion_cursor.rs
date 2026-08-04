@@ -26,8 +26,8 @@ use meerkat_core::types::HandlingMode;
 use meerkat_mobkit::identity_first::contracts::{ContinuityStore, LeaseProvider};
 use meerkat_mobkit::identity_first::orchestrator::restore_flow;
 use meerkat_mobkit::identity_first::{
-    AgentAddressability, AgentBuildDraft, AgentIdentity, AgentRuntimeId, BridgeError,
-    CheckpointVersion, CompletionCursor, CompletionProgress, ContinuityGeneration,
+    AgentAddressability, AgentBuildDraft, AgentIdentity, AgentRuntimeId, BridgeDelivery,
+    BridgeError, CheckpointVersion, CompletionCursor, CompletionProgress, ContinuityGeneration,
     ContinuityRecord, DispatchInput, DispatchOrigin, DurabilityPolicy, DurableAgentSpec,
     FencingToken, IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig,
     IdentityRuntimeError, LeaseGrant, MemberInspection, ResumeSessionOutcome, SessionBridge,
@@ -131,10 +131,10 @@ impl SessionBridge for ScriptedPreviewBridge {
         })
     }
 
-    async fn deliver(
+    async fn deliver_admitted(
         &self,
         runtime_id: &AgentRuntimeId,
-        _content: &meerkat_core::ContentInput,
+        _delivery: BridgeDelivery,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let _ = runtime_id;
         Ok(meerkat_core::types::SessionId::new())

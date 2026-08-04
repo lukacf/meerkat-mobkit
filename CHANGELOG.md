@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Internal deliveries dedup across crash redelivery, and the dispatch
+  door runs full delivery preparation** (meerkat 0.8.15 pair; held
+  uncommitted until the repin). Two halves of one change set:
+  - Delivery-identity threading: both internal work doors - the identity
+    bridge's `InternalBridgeWork` submit and the schedule host's direct
+    fallback - now submit through meerkat's deduplicating
+    `submit_work_with_mode_and_delivery_identity` whenever a delivery
+    identity (idempotency key + occurrence-UUID correlation) is present.
+    meerkat derives the WorkRef from mob + member identity + idempotency
+    key, stable across lease-expiry reclaim, so a crash redelivery of the
+    same occurrence resolves to the SAME work instead of a duplicate turn.
+    The scheduler sink now threads BOTH identity halves through
+    `DispatchInput` into runtime admission (the 0.8.12-era "internal lane
+    closed upstream" note is retired with the mechanism it documented).
+    Admission is fail closed and typed, validated BEFORE the bridge:
+    (None, None) is an ordinary delivery; a full pair validates upstream
+    (canonical non-nil UUID correlation) and carries, with the correlation
+    id also riding as the interaction id; EVERY other combination -
+    half-pair, invalid UUID - raises `InvalidDeliveryIdentity` and NO
+    delivery occurs. `SessionBridge` deliveries were rebuilt around one
+    typed request: the REQUIRED `deliver_admitted(runtime_id,
+    BridgeDelivery)` method that every implementation must service (the
+    convenience `deliver*` methods are provided forwarders that build the
+    request), so no implementation - production or test double - can
+    silently drop a delivery identity; a bridge that cannot honor one
+    refuses typed.
+  - Shared delivery preparation: `dispatch_with_expected_member_alias`
+    previously delivered RAW - internal dispatches (schedules foremost)
+    skipped inbound defanging, taint session attribution, and ambient
+    memory injection for the member's whole lifetime (HomeCore: zero
+    surface=Turn injection-ledger rows ever). Both member doors now run
+    the ONE preparation helper (note_current_session + generation bind,
+    defang, inject_for_turn), and dispatch populates the admitted
+    delivery request with the injected recall as its own typed body.
+    `DispatchOrigin` is untouched; Steer keeps its deliberate bypass on
+    the send door.
+
 - **Memory scope keys are LOGICAL identities end to end** (HomeCore
   activation smoke, launch blocker). The platform's observe-stream paths
   keyed identity scopes by the mob-plane roster id - for identity-first

@@ -531,12 +531,18 @@ fn internal_bridge_work_spec(
 }
 
 /// Spec-shaping inputs for one internal bridge delivery, grouped so the
-/// submit path carries them as a unit rather than four loose parameters.
+/// submit path carries them as a unit rather than five loose parameters.
 struct InternalBridgeWork<'a> {
     content: &'a meerkat_core::ContentInput,
     system_prompt: Option<&'a str>,
     injected_context: &'a [meerkat_core::ContentInput],
     interaction_id: Option<&'a str>,
+    /// meerkat 0.8.15 internal-lane dedup: when present, the submit goes
+    /// through `submit_work_with_mode_and_delivery_identity` and meerkat
+    /// derives the WorkRef from mob + member identity + idempotency key -
+    /// stable across lease-expiry reclaim, so a crash redelivery of the
+    /// same identity resolves to the SAME work instead of a duplicate turn.
+    delivery_identity: Option<&'a meerkat_mob::MobDeliveryIdentity>,
 }
 
 async fn submit_internal_bridge_work(
@@ -561,21 +567,38 @@ async fn submit_internal_bridge_work(
         work.injected_context,
         work.interaction_id,
     );
-    deadline
-        .bound(
-            "deliver.submit_work",
-            member_id,
-            handle.submit_work_with_mode(
-                entry.agent_runtime_id.clone(),
-                entry.fence_token,
-                WorkRef::new(),
-                spec,
-                handling_mode,
-            ),
-        )
-        .await?
-        .map(|_| ())
-        .map_err(|err| BridgeError::Mob(err.to_string()))
+    match work.delivery_identity {
+        Some(delivery_identity) => deadline
+            .bound(
+                "deliver.submit_work",
+                member_id,
+                handle.submit_work_with_mode_and_delivery_identity(
+                    entry.agent_runtime_id.clone(),
+                    entry.fence_token,
+                    spec,
+                    handling_mode,
+                    delivery_identity.clone(),
+                ),
+            )
+            .await?
+            .map(|_| ())
+            .map_err(|err| BridgeError::Mob(err.to_string())),
+        None => deadline
+            .bound(
+                "deliver.submit_work",
+                member_id,
+                handle.submit_work_with_mode(
+                    entry.agent_runtime_id.clone(),
+                    entry.fence_token,
+                    WorkRef::new(),
+                    spec,
+                    handling_mode,
+                ),
+            )
+            .await?
+            .map(|_| ())
+            .map_err(|err| BridgeError::Mob(err.to_string())),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -702,6 +725,49 @@ fn map_committed_boundary_recovery_error(
 // SessionBridge trait
 // ---------------------------------------------------------------------------
 
+/// One fully-admitted member delivery: everything a bridge needs to hand a
+/// turn to the mob work lane, as ONE typed request instead of a growing
+/// parameter staircase. The identity runtime's shared delivery preparation
+/// (defang, taint session attribution, ambient memory injection) is exactly
+/// the code that POPULATES this request before
+/// [`SessionBridge::deliver_admitted`].
+///
+/// `delivery_identity` is the meerkat 0.8.15 internal-lane dedup carrier
+/// (idempotency key + occurrence-correlation UUID, validated upstream). Its
+/// semantics are fail-closed end to end: the runtime refuses half-formed or
+/// non-canonical pairs typed BEFORE admission, and an implementation that
+/// cannot honor a present identity must refuse typed rather than deliver
+/// without dedup. When the identity is present its correlation id also
+/// rides as `interaction_id`.
+#[derive(Debug, Clone)]
+pub struct BridgeDelivery {
+    pub content: meerkat_core::ContentInput,
+    pub handling_mode: HandlingMode,
+    /// Per-turn System message (meerkat 0.8.11 `WorkSpec::system_prompt`).
+    pub system_prompt: Option<String>,
+    /// Typed ambient injection bodies delivered alongside - never fused
+    /// into - the user content (meerkat 0.7.12 ask 1).
+    pub injected_context: Vec<meerkat_core::ContentInput>,
+    /// Host-minted interaction id threaded into runtime admission
+    /// (meerkat 0.7.25 ask 15 addendum).
+    pub interaction_id: Option<String>,
+    /// Internal-lane dedup identity (see the struct docs).
+    pub delivery_identity: Option<meerkat_mob::MobDeliveryIdentity>,
+}
+
+impl BridgeDelivery {
+    pub fn new(content: meerkat_core::ContentInput, handling_mode: HandlingMode) -> Self {
+        Self {
+            content,
+            handling_mode,
+            system_prompt: None,
+            injected_context: Vec::new(),
+            interaction_id: None,
+            delivery_identity: None,
+        }
+    }
+}
+
 /// Bridge between the identity-first control plane and the Meerkat session
 /// pipeline. Each method maps an identity-layer operation to its concrete
 /// mob-level counterpart.
@@ -753,24 +819,47 @@ pub trait SessionBridge: Send + Sync {
         snapshot: &SessionSnapshot,
     ) -> Result<ResumeSessionOutcome, BridgeError>;
 
+    /// Deliver ONE fully-admitted request to an active mob member. The
+    /// SINGLE authority-bearing delivery method: every convenience form
+    /// below is a provided forwarder that BUILDS a [`BridgeDelivery`], so no
+    /// implementation can receive delivery authority it did not explicitly
+    /// accept. REQUIRED on purpose (the optional-default authority-drop bug
+    /// class): an implementation that cannot honor
+    /// `delivery.delivery_identity` must FAIL CLOSED with a typed error -
+    /// a caller holding an identity gets dedup or a refusal, never a silent
+    /// at-least-once downgrade.
+    async fn deliver_admitted(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        delivery: BridgeDelivery,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError>;
+
     /// Deliver content to an active mob member.
     async fn deliver(
         &self,
         runtime_id: &AgentRuntimeId,
         content: &meerkat_core::ContentInput,
-    ) -> Result<meerkat_core::types::SessionId, BridgeError>;
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        self.deliver_admitted(
+            runtime_id,
+            BridgeDelivery::new(content.clone(), HandlingMode::Queue),
+        )
+        .await
+    }
 
     /// Deliver content to an active mob member using a caller-selected turn
-    /// handling mode. Bridge implementations that do not distinguish modes can
-    /// fall back to ordinary delivery.
+    /// handling mode.
     async fn deliver_with_mode(
         &self,
         runtime_id: &AgentRuntimeId,
         content: &meerkat_core::ContentInput,
         handling_mode: HandlingMode,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        let _ = handling_mode;
-        self.deliver(runtime_id, content).await
+        self.deliver_admitted(
+            runtime_id,
+            BridgeDelivery::new(content.clone(), handling_mode),
+        )
+        .await
     }
 
     /// Deliver content plus a separate `injected_context` body (meerkat
@@ -778,8 +867,6 @@ pub trait SessionBridge: Send + Sync {
     /// the user's message) and an optional host-minted interaction id
     /// (meerkat 0.7.25 ask 15 addendum: threaded into runtime admission so
     /// transcript messages join the caller's live interaction frames).
-    /// Bridges that do not carry injected context fall back to plain
-    /// delivery of the user content, dropping the injection and the id.
     async fn deliver_with_mode_and_context(
         &self,
         runtime_id: &AgentRuntimeId,
@@ -788,10 +875,10 @@ pub trait SessionBridge: Send + Sync {
         handling_mode: HandlingMode,
         interaction_id: Option<&str>,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        let _ = injected_context;
-        let _ = interaction_id;
-        self.deliver_with_mode(runtime_id, content, handling_mode)
-            .await
+        let mut delivery = BridgeDelivery::new(content.clone(), handling_mode);
+        delivery.injected_context = injected_context.to_vec();
+        delivery.interaction_id = interaction_id.map(ToString::to_string);
+        self.deliver_admitted(runtime_id, delivery).await
     }
 
     /// Deliver content plus one ordinary System message authored for this
@@ -799,9 +886,7 @@ pub trait SessionBridge: Send + Sync {
     /// turn's admitted transcript boundary — per-turn content, never
     /// member/session configuration), alongside the optional injected
     /// context and interaction identity of
-    /// [`Self::deliver_with_mode_and_context`]. Bridges that do not carry
-    /// per-turn System authorship fall back to context delivery, dropping
-    /// the System message.
+    /// [`Self::deliver_with_mode_and_context`].
     async fn deliver_with_mode_context_and_system_prompt(
         &self,
         runtime_id: &AgentRuntimeId,
@@ -811,15 +896,11 @@ pub trait SessionBridge: Send + Sync {
         handling_mode: HandlingMode,
         interaction_id: Option<&str>,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        let _ = system_prompt;
-        self.deliver_with_mode_and_context(
-            runtime_id,
-            content,
-            injected_context,
-            handling_mode,
-            interaction_id,
-        )
-        .await
+        let mut delivery = BridgeDelivery::new(content.clone(), handling_mode);
+        delivery.system_prompt = system_prompt.map(ToString::to_string);
+        delivery.injected_context = injected_context.to_vec();
+        delivery.interaction_id = interaction_id.map(ToString::to_string);
+        self.deliver_admitted(runtime_id, delivery).await
     }
 
     /// Checkpoint the current session state for a mob member.
@@ -2860,165 +2941,17 @@ impl SessionBridge for MobSessionBridge {
         }
     }
 
-    async fn deliver(
+    async fn deliver_admitted(
         &self,
         runtime_id: &AgentRuntimeId,
-        content: &meerkat_core::ContentInput,
+        delivery: BridgeDelivery,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        let mid = self.member_id_for_runtime_id(runtime_id).await;
-        // One admission budget for the whole attempt, shared by every actor
-        // round trip below: the serialized hops must not each cost a budget.
-        let mut deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
-        // Best-effort repair material: a faulted or timed-out lookup degrades
-        // to "no pre-delivery entry" (the delivery itself will surface the
-        // fault; a blocked actor hits the same deadline again below).
-        let member_entry_before_delivery = deadline
-            .bound(
-                "deliver.get_member.pre_delivery",
-                &mid,
-                self.handle.get_member(&mid),
-            )
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .flatten()
-            .map(|entry| (entry.role, entry.labels));
-        if content_input_has_images(content) {
-            let member_entry = deadline
-                .bound(
-                    "deliver.get_member.image_capability",
-                    &mid,
-                    self.handle.get_member(&mid),
-                )
-                .await?
-                .map_err(|err| BridgeError::Mob(err.to_string()))?
-                .ok_or_else(|| {
-                    BridgeError::Mob("member not found while checking image capability".to_string())
-                })?;
-            let caps = deadline
-                .bound(
-                    "deliver.model_capabilities",
-                    &mid,
-                    model_capabilities_for_member(
-                        &self.handle,
-                        self.session_service.as_ref(),
-                        &member_entry.agent_identity,
-                    ),
-                )
-                .await?;
-            if !caps.image_input {
-                return Err(BridgeError::InvalidInput(
-                    "target member model cannot accept image input".to_string(),
-                ));
-            }
-        }
-
-        // Submit internal work directly through the mob work lane so delivery
-        // acks at runtime ingress rather than waiting for the full turn to
-        // complete. The identity layer owns addressability enforcement — the
-        // bridge is an internal delivery mechanism regardless of whether the
-        // identity is Addressable or InternalOnly.
-        match submit_internal_bridge_work(
-            &self.handle,
-            &mid,
-            InternalBridgeWork {
-                content,
-                system_prompt: None,
-                injected_context: &[],
-                interaction_id: None,
-            },
-            HandlingMode::Queue,
-            &deadline,
-        )
-        .await
-        {
-            Ok(()) => {}
-            // A blocked actor is not stale runtime state: keep the typed
-            // timeout instead of routing it into member repair (which cannot
-            // unblock an actor) or laundering it into `Mob(String)` below.
-            Err(err @ BridgeError::ActorAdmissionTimeout { .. }) => return Err(err),
-            Err(err) if is_repairable_bridge_delivery_error(&err.to_string()) => {
-                tracing::warn!(
-                    runtime_id = %runtime_id,
-                    error = %err,
-                    "identity bridge delivery found stale runtime state; repairing member before retry"
-                );
-                Box::pin(self.repair_member_for_delivery(
-                    runtime_id,
-                    &mid,
-                    member_entry_before_delivery,
-                ))
-                .await?;
-                // Repair is a distinct multi-step recovery with its own
-                // (pre-existing, unbounded) cost; the retry is a new admission
-                // attempt and gets a fresh budget.
-                deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
-                submit_internal_bridge_work(
-                    &self.handle,
-                    &mid,
-                    InternalBridgeWork {
-                        content,
-                        system_prompt: None,
-                        injected_context: &[],
-                        interaction_id: None,
-                    },
-                    HandlingMode::Queue,
-                    &deadline,
-                )
-                .await?;
-            }
-            Err(err) => return Err(BridgeError::Mob(err.to_string())),
-        }
-
-        // Meerkat 0.6: MemberDeliveryReceipt no longer carries session_id.
-        // Query the bridge session id directly from the mob handle.
-        self.resolve_runtime_session_id(
-            runtime_id,
-            &mid,
-            "member has no bridge session after deliver",
-            &deadline,
-        )
-        .await
-    }
-
-    async fn deliver_with_mode(
-        &self,
-        runtime_id: &AgentRuntimeId,
-        content: &meerkat_core::ContentInput,
-        handling_mode: HandlingMode,
-    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        self.deliver_with_mode_and_context(runtime_id, content, &[], handling_mode, None)
-            .await
-    }
-
-    async fn deliver_with_mode_and_context(
-        &self,
-        runtime_id: &AgentRuntimeId,
-        content: &meerkat_core::ContentInput,
-        injected_context: &[meerkat_core::ContentInput],
-        handling_mode: HandlingMode,
-        interaction_id: Option<&str>,
-    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        self.deliver_with_mode_context_and_system_prompt(
-            runtime_id,
-            content,
-            None,
-            injected_context,
-            handling_mode,
-            interaction_id,
-        )
-        .await
-    }
-
-    async fn deliver_with_mode_context_and_system_prompt(
-        &self,
-        runtime_id: &AgentRuntimeId,
-        content: &meerkat_core::ContentInput,
-        system_prompt: Option<&str>,
-        injected_context: &[meerkat_core::ContentInput],
-        handling_mode: HandlingMode,
-        interaction_id: Option<&str>,
-    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        let content = &delivery.content;
+        let handling_mode = delivery.handling_mode;
+        let system_prompt = delivery.system_prompt.as_deref();
+        let injected_context = delivery.injected_context.as_slice();
+        let interaction_id = delivery.interaction_id.as_deref();
+        let delivery_identity = delivery.delivery_identity.as_ref();
         let mid = self.member_id_for_runtime_id(runtime_id).await;
         // One admission budget for the whole attempt, shared by every actor
         // round trip below: the serialized hops must not each cost a budget.
@@ -3075,6 +3008,7 @@ impl SessionBridge for MobSessionBridge {
                 system_prompt,
                 injected_context,
                 interaction_id,
+                delivery_identity,
             },
             handling_mode,
             &deadline,
@@ -3110,6 +3044,7 @@ impl SessionBridge for MobSessionBridge {
                         system_prompt,
                         injected_context,
                         interaction_id,
+                        delivery_identity,
                     },
                     handling_mode,
                     &deadline,
