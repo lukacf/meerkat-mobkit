@@ -1172,6 +1172,67 @@ impl ContinuitySessionStoreAdapter {
             ))),
             (false, Some(stored)) => {
                 let Some(state) = self.lookup_session(&id.to_string()) else {
+                    // Parked repair (task #56 corpus, HomeCore parent-1): an
+                    // EXPLICITLY unregistered session whose continuity
+                    // record still binds it hydrates write authority from
+                    // the DURABLE record - identity, generation, and fencing
+                    // token are the same facts registration would carry, so
+                    // the substrate write runs under the identity's current
+                    // fence. Only the projection doors can reach this arm
+                    // with an explicitly-unregistered session (their
+                    // parked-repair admission); never-registered sessions
+                    // (foreign writers, the supervisor plane) and sessions
+                    // whose record rotated away keep the refusal below.
+                    if self.session_was_unregistered(id) {
+                        let bound =
+                            self.store
+                                .resolve_record_by_session(id)
+                                .await
+                                .map_err(|e| {
+                                    meerkat_store::SessionStoreError::Internal(format!(
+                                        "continuity record lookup for parked repair of {id}: {e}"
+                                    ))
+                                })?;
+                        if let Some((record, fencing_token, fence_current)) = bound
+                            && record.session_id == *id
+                        {
+                            // The write cursor presents from the per-session
+                            // counter, which unregistration cleared: re-seed
+                            // it at the SUBSTRATE's fence-current version so
+                            // the repair writes present current + 1, exactly
+                            // as a registered resume would.
+                            {
+                                let mut versions = self
+                                    .versions
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                versions
+                                    .entry(id.to_string())
+                                    .or_insert_with(|| AtomicU64::new(fence_current.get()))
+                                    .fetch_max(fence_current.get(), Ordering::Relaxed);
+                            }
+                            tracing::info!(
+                                session_id = %id,
+                                identity = %record.identity,
+                                generation = record.generation.get(),
+                                fence_current = fence_current.get(),
+                                "parked repair write authority hydrated from the durable \
+                                 continuity record (no in-memory registration)"
+                            );
+                            return Ok(PersistenceCapability::HeadCanonical(Box::new(
+                                HeadCanonicalWrite {
+                                    channel: Arc::clone(channel),
+                                    stored,
+                                    state: SessionRuntimeState {
+                                        identity: record.identity,
+                                        generation: record.generation,
+                                        fencing_token,
+                                        checkpoint_version: fence_current,
+                                    },
+                                },
+                            )));
+                        }
+                    }
                     // The head row just read IS positive durable evidence.
                     // Publishing it here keeps this refusal on the same
                     // lifecycle footing as the blob parking guard: without
@@ -1710,6 +1771,78 @@ impl ContinuitySessionStoreAdapter {
             )));
         }
         Ok(())
+    }
+
+    /// The PROJECTION doors' variant of
+    /// [`Self::ensure_session_mutation_allowed`] (task #56 corpus finding,
+    /// HomeCore parent-1): `save_authoritative_projection*` and
+    /// `save_transcript_rewrite` carry STORE-ISSUED committed runtime
+    /// authority by trait contract, and the durable-tear reconciliation must
+    /// be able to repair a PARKED member's durable head - a member that
+    /// holds no identity-runtime registration by design. A blanket
+    /// unregistered refusal deadlocks repair against registration: the
+    /// member cannot register until its torn row resumes, and the row
+    /// cannot be repaired until the member registers.
+    ///
+    /// The refusal keeps protecting what it actually protects. A session
+    /// whose durable document was REMOVED (delete/reset/rotation) or that
+    /// never had one (creation window) still refuses - a projection there
+    /// would resurrect a removed session or mint durable state for a dead
+    /// incarnation - and suspension (identity authority rotation in flight)
+    /// still refuses everything. Only the durable-observed, non-superseded
+    /// current head - the parked-repair shape - is admitted, loudly.
+    async fn ensure_projection_repair_allowed(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        if self.session_was_suspended(session_id) {
+            return Err(meerkat_store::SessionStoreError::Internal(format!(
+                "session {session_id} persistence is suspended during identity authority rotation"
+            )));
+        }
+        if !self.session_was_unregistered(session_id) {
+            return Ok(());
+        }
+        match self.resolve_session_lifecycle(session_id).await? {
+            SessionLifecycle::DurableObserved => {
+                // The archive wall stays up: an ARCHIVED durable document
+                // (readable, lifecycle terminal present) keeps the
+                // registration requirement - a raw spawn/resume bypass must
+                // not extend an archive through the projection doors (the
+                // recorded refusal in identity_first_head_canonical_resume).
+                // A live head admits the repair; an UNREADABLE head - the
+                // torn row this seam exists to fix - admits it too, because
+                // archives read fine and a failing read is precisely the
+                // tear under repair.
+                if let Ok(Some(durable)) = self.load_persisted_session(session_id).await
+                    && durable.lifecycle_terminal().is_some()
+                {
+                    return Err(meerkat_store::SessionStoreError::Internal(format!(
+                        "session {session_id} was unregistered from identity runtime state \
+                         and its durable document is terminal (archived); a projection here \
+                         requires identity registration"
+                    )));
+                }
+                tracing::info!(
+                    session_id = %session_id,
+                    "unregistered-session projection admitted as durable-head repair \
+                     (parked member: committed runtime authority projecting into the \
+                     current durable row)"
+                );
+                Ok(())
+            }
+            SessionLifecycle::CreationWindow => {
+                Err(meerkat_store::SessionStoreError::Internal(format!(
+                    "session {session_id} was unregistered from identity runtime state and \
+                     has no durable document; refusing to mint durable state for a dead \
+                     incarnation"
+                )))
+            }
+            SessionLifecycle::Removed => Err(meerkat_store::SessionStoreError::Internal(format!(
+                "session {session_id} was unregistered from identity runtime state and \
+                     its durable document was removed; refusing to resurrect it"
+            ))),
+        }
     }
 
     /// Get the next checkpoint version for a session, starting at 1.
@@ -2436,7 +2569,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         if self.session_was_superseded(session.id()) {
             return Ok(());
         }
-        self.ensure_session_mutation_allowed(session.id())?;
+        self.ensure_projection_repair_allowed(session.id()).await?;
         // Head-canonical sessions keep retained history out-of-line, so a
         // rewrite is `commit_rewrite -> adopt`, not a whole-document write:
         // routing it through the whole-document verb would rebase the live
@@ -2489,7 +2622,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         if self.session_was_superseded(session.id()) {
             return Ok(());
         }
-        self.ensure_session_mutation_allowed(session.id())?;
+        self.ensure_projection_repair_allowed(session.id()).await?;
         let result = self.save_authoritative_projection_locked(session).await;
         self.absorb_projection_superseded_by_identity_advance(session.id(), result)
             .await
@@ -2504,7 +2637,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         if self.session_was_superseded(session.id()) {
             return Ok(());
         }
-        self.ensure_session_mutation_allowed(session.id())?;
+        self.ensure_projection_repair_allowed(session.id()).await?;
         // A recovery/repair verb, not an ordinary turn: the compare token IS
         // `sha256(serialize(previous document))`, so this path is
         // O(document) by the CAS contract itself. What it must NOT do is add

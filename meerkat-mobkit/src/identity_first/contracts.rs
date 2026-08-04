@@ -68,6 +68,29 @@ pub trait ContinuityStore: Send + Sync {
         identities: &[AgentIdentity],
     ) -> Result<BTreeMap<AgentIdentity, ContinuityResolveState>, ContinuityStoreError>;
 
+    /// The continuity record currently BINDING this session, with its stored
+    /// fencing token and the SUBSTRATE's current checkpoint version for the
+    /// session (the max across the session's snapshot/head rows - the
+    /// version fence a write cursor must advance past): durable write
+    /// authority for a session whose in-memory registration is gone (task
+    /// #56 parked repair - the projection doors repairing a parked member's
+    /// torn durable head hydrate their write cursor from these facts, the
+    /// same facts registration would carry). The record's OWN checkpoint
+    /// version is a checkpoint-time stamp and may trail the substrate's
+    /// write counter; the third element is the fence-current value.
+    ///
+    /// `None` when no record binds the session (never-registered sessions,
+    /// rotated-away sessions) or when the substrate does not support the
+    /// lookup - callers must then keep their registration-required refusal.
+    async fn resolve_record_by_session(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<(ContinuityRecord, FencingToken, CheckpointVersion)>, ContinuityStoreError>
+    {
+        let _ = session_id;
+        Ok(None)
+    }
+
     /// Load a previously saved session snapshot.
     async fn load_session_snapshot(
         &self,

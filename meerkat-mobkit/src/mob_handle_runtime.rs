@@ -2408,6 +2408,15 @@ impl SessionStoreBackedRuntimeStore {
                 // shape (commitless projections, adopted seeds) - never a
                 // blind graph-advanced overwrite from this facade.
                 if let Some(missing_commits) = missing_commits {
+                    // An EMPTY chain means the durable row's CONTENT already
+                    // sits at the sealed head (the walk judges by revision):
+                    // nothing to replay, only the trailing envelope
+                    // projection below. It must never be "corrected" from a
+                    // generation read off the durable Session - slim
+                    // head-canonical materializations keep retained history
+                    // out-of-line and always read generation 0, so a
+                    // session-level generation is not a durable oracle here.
+                    //
                     // The injected `save_transcript_rewrite` requires the
                     // durable head to equal each commit's parent revision
                     // EXACTLY, while the chain walk also accepts an
@@ -10032,6 +10041,216 @@ realm_profile = "worker-v2"
                 .transcript_revision()
                 .unwrap_or_else(|error| panic!("{error}")),
             "the projected row must match the committed authority exactly"
+        );
+    }
+
+    /// Task #56 corpus finding (HomeCore parent-1, real bytes): the member
+    /// is PARKED and its session explicitly UNREGISTERED from
+    /// identity-runtime state while the durable row sits torn behind
+    /// committed runtime authority. The tear reconciliation is a
+    /// durable-store repair, not a live-session operation - it must not
+    /// depend on registration, or repair and registration deadlock (the
+    /// member cannot register until its row resumes; the row cannot be
+    /// repaired until the member registers). A plain freshness/boot pass
+    /// must converge the row through the projection doors' parked-repair
+    /// admission.
+    #[tokio::test]
+    async fn parked_unregistered_torn_head_heals_on_plain_freshness_pass() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let continuity: Arc<dyn crate::identity_first::ContinuityStore> = Arc::new(
+            crate::identity_first::LocalContinuityStore::open(dir.path().join("continuity.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let adapter = Arc::new(crate::identity_first::ContinuitySessionStoreAdapter::new(
+            Arc::clone(&continuity),
+        ));
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(dir.path().join("runtime.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+
+        // A REGISTERED write lands the gen0 durable row, exactly as the
+        // member's live turns did before the incident.
+        let mut gen0 = meerkat_core::Session::new();
+        gen0.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("original opening"),
+        ));
+        let identity = crate::identity_first::AgentIdentity::parse("domain:parked")
+            .unwrap_or_else(|error| panic!("{error}"));
+        // The durable continuity record binding the identity to this session
+        // - in the field this is what restore resolves, and what the parked
+        // repair hydrates its write authority from.
+        crate::identity_first::ContinuityStore::upsert_continuity_record(
+            continuity.as_ref(),
+            &crate::identity_first::ContinuityRecord {
+                identity: identity.clone(),
+                agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                    "rt:domain:parked:0",
+                )
+                .unwrap_or_else(|error| panic!("{error}")),
+                session_id: gen0.id().clone(),
+                generation: crate::identity_first::ContinuityGeneration::new(0),
+                checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+            },
+            crate::identity_first::FencingToken::new(1),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+        adapter
+            .register_session(
+                gen0.id(),
+                crate::identity_first::SessionRuntimeState {
+                    identity,
+                    generation: crate::identity_first::ContinuityGeneration::new(0),
+                    fencing_token: crate::identity_first::FencingToken::new(1),
+                    checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        meerkat::SessionStore::save(adapter.as_ref(), &gen0)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // The PARK: explicit unregistration from identity-runtime state.
+        adapter
+            .unregister_session(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // The tear: committed runtime authority advanced one rewrite
+        // generation past the durable row.
+        let parent_revision = gen0
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut successor = gen0.clone();
+        successor
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 1 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::types::UserMessage::text("rewritten opening"),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("wedged-turn retire"),
+                Some("task-56-corpus-regression".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(gen0.id());
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        successor
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // A plain read through the facade with the CONTINUITY ADAPTER as
+        // the injected store - the field composition, unregistered state
+        // and all. No committing verb, no registration.
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&adapter) as Arc<dyn SessionStore>,
+        ));
+        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("the parked repair must converge, not deadlock on registration: {error}")
+            })
+            .unwrap_or_else(|| panic!("the committed snapshot must remain readable"));
+
+        // The durable AUTHORITY is the continuity head row. Slim
+        // head-canonical materializations keep retained history out-of-line
+        // (a loaded Session always reads rewrite generation 0 by design), so
+        // the heal is proven where meerkat's resume invariant reads it: the
+        // head row's adopted rewrite count and revision.
+        let channel = continuity
+            .as_incremental_sessions()
+            .unwrap_or_else(|| panic!("the local continuity store provides the delta channel"));
+        let healed_head = channel
+            .load_canonical_head(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the healed head row must exist"));
+        assert_eq!(
+            healed_head.rewrite_count, 1,
+            "the parked member's torn durable head must carry the committed rewrite"
+        );
+        let successor_revision = successor
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            healed_head.head_revision, successor_revision,
+            "the healed head row must sit at the committed successor's revision"
+        );
+        let healed = meerkat::SessionStore::load(adapter.as_ref(), gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must exist"));
+        assert_eq!(
+            healed
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            successor_revision,
+            "the healed row must match the committed successor exactly"
+        );
+
+        // Second boot: the member restores REGISTERED (the mob boot path
+        // registers rostered members from the continuity record before any
+        // read). A fresh facade's freshness pass over the already-healed row
+        // must converge idempotently: no typed refusal, no re-replay, the
+        // head row still at the committed rewrite and revision (envelope
+        // updates aside).
+        let (record, fencing_token, fence_current) =
+            crate::identity_first::ContinuityStore::resolve_record_by_session(
+                continuity.as_ref(),
+                gen0.id(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the continuity record must still bind the session"));
+        adapter
+            .register_session(
+                gen0.id(),
+                crate::identity_first::SessionRuntimeState {
+                    identity: record.identity.clone(),
+                    generation: record.generation,
+                    fencing_token,
+                    checkpoint_version: fence_current,
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let second_boot = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&adapter) as Arc<dyn SessionStore>,
+        ));
+        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(
+            &*second_boot,
+            &runtime_id,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!("the healed row must stay resumable on the next boot: {error}")
+        })
+        .unwrap_or_else(|| panic!("the committed snapshot must remain readable on the next boot"));
+        let head_after_second_boot = channel
+            .load_canonical_head(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the head row must survive the second boot"));
+        assert_eq!(
+            head_after_second_boot.rewrite_count, 1,
+            "the second boot must not re-replay or regress the healed rewrite"
+        );
+        assert_eq!(
+            head_after_second_boot.head_revision, successor_revision,
+            "the second boot must leave the healed head at the committed revision"
         );
     }
 
