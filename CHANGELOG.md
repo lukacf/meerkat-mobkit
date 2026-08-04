@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.11] - 2026-08-04
+
 ### Fixed
 
 - **Internal deliveries dedup across crash redelivery, and the dispatch
@@ -101,6 +103,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   exact proof-carrying parent via meerkat 0.8.15's
   `Session::with_validated_transcript_rewrite_parent_projection`, then
   replays the rewrite commit against its exact parent.
+  Real-bytes corpus hardening (frozen parent-1 backup, five field
+  iterations): the repair works on a PARKED member whose session is
+  explicitly unregistered - the projection doors admit the
+  durable-observed non-superseded head as a parked repair, write
+  authority hydrates from the durable continuity record via the new
+  fail-closed `ContinuityStore::resolve_record_by_session` (identity,
+  generation, fencing token, fence-current checkpoint re-seed), and
+  archives, creation windows, removed documents, and suspended sessions
+  keep their refusals. Two proof-carrying admissions extend the chain
+  walk for tear shapes it cannot prove, both by exact content digest:
+  the durable row extending PAST the sealed parent (its unacknowledged
+  suffix is REBASED over the compacted head, preserved, with the
+  committed snapshot converged to the rebased state in the same pass)
+  and the true parent-1 shape - the durable row as a strict PREFIX of
+  the sealed parent (a failed projection; admission authored by
+  HomeCore and validated on the live corpus, GATE_PASS 17/17). All
+  admission verdicts log unconditionally with both digests; a durable
+  row proving neither shape is a foreign lineage and keeps the typed
+  refusal, byte-untouched.
 
 - **Memory scope keys are LOGICAL identities end to end** (HomeCore
   activation smoke, launch blocker). The platform's observe-stream paths
