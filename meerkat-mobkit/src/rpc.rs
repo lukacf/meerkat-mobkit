@@ -5867,10 +5867,10 @@ mod tests {
             })
         }
 
-        async fn deliver(
+        async fn deliver_admitted(
             &self,
             _runtime_id: &AgentRuntimeId,
-            _content: &meerkat_core::ContentInput,
+            _delivery: crate::identity_first::BridgeDelivery,
         ) -> Result<meerkat_core::types::SessionId, BridgeError> {
             Ok(meerkat_core::types::SessionId::new())
         }

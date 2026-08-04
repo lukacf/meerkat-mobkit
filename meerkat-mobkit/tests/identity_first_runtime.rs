@@ -29,7 +29,7 @@ use meerkat_mobkit::identity_first::runtime::IdentityEvent;
 use meerkat_mobkit::identity_first::{
     AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentMemoryConfig,
     AgentMemoryPerTurnInjection, AgentMemoryRuntimeInjector, AgentMemorySelection, AgentRuntimeId,
-    BridgeError, CheckpointVersion, CommittedBoundaryRepair, ContinuityFailure,
+    BridgeDelivery, BridgeError, CheckpointVersion, CommittedBoundaryRepair, ContinuityFailure,
     ContinuityFailureKind, ContinuityGeneration, ContinuityRecord, ContinuityResolveState,
     ContinuityStoreError, CustomizerError, DispatchIdempotencyKey, DispatchInput, DispatchOrigin,
     DurabilityPolicy, DurableAgentSpec, FencingToken, IdentityLifecycleState, IdentityRuntime,
@@ -1298,6 +1298,7 @@ struct CountingBridge {
     fail_retire: AtomicBool,
     force_resume_fallback: AtomicBool,
     reject_resume_times: AtomicUsize,
+    reject_resume_archived_not_revivable: AtomicBool,
     recover_calls: AtomicUsize,
     recover_unprovable_reason: tokio::sync::Mutex<Option<String>>,
     recover_heals: AtomicBool,
@@ -1307,6 +1308,12 @@ struct CountingBridge {
     fallback_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
     deliver_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
     delivered_content: tokio::sync::Mutex<Vec<String>>,
+    /// Task #54: the injected-context bodies each context-carrying delivery
+    /// arrived with, in delivery order.
+    delivered_injected_context: tokio::sync::Mutex<Vec<Vec<String>>>,
+    /// Task #50: the (idempotency_key, correlation_id) pairs threaded into
+    /// each context-carrying delivery (`None` = no delivery identity).
+    delivered_delivery_identities: tokio::sync::Mutex<Vec<Option<(String, String)>>>,
     created_drafts: tokio::sync::Mutex<Vec<AgentBuildDraft>>,
     unregistered_session_ids: tokio::sync::Mutex<Vec<String>>,
     wires: tokio::sync::Mutex<Vec<(String, String)>>,
@@ -1333,6 +1340,15 @@ impl CountingBridge {
     /// succeed — models a resume that heals on a later reconcile retry.
     fn reject_resume_times(&self, times: usize) {
         self.reject_resume_times.store(times, Ordering::SeqCst);
+    }
+
+    /// Reject EVERY resume attempt with the typed ArchivedNotRevivable
+    /// rejection - the OB3 rehearsal shape: the durable document is intact
+    /// but carries an archived terminal whose lifecycle pairing refuses
+    /// revival, permanently. No retry ever changes the answer.
+    fn reject_resume_archived_not_revivable(&self) {
+        self.reject_resume_archived_not_revivable
+            .store(true, Ordering::SeqCst);
     }
 
     /// Script the heal authority to a stable terminal verdict: the durable
@@ -1443,6 +1459,19 @@ impl SessionBridge for CountingBridge {
             barrier.wait().await;
         }
         if self
+            .reject_resume_archived_not_revivable
+            .load(Ordering::SeqCst)
+        {
+            return Err(BridgeError::ResumeRejected {
+                kind: meerkat_mobkit::identity_first::ResumeRejectionKind::ArchivedNotRevivable,
+                detail: format!(
+                    "resume spawn: session '{session_id}' unavailable for resume: archived \
+                     and not revivable; the transcript is intact and preserved (runtime \
+                     state <no runtime record>)"
+                ),
+            });
+        }
+        if self
             .reject_resume_times
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
                 remaining.checked_sub(1)
@@ -1481,16 +1510,28 @@ impl SessionBridge for CountingBridge {
         )
     }
 
-    async fn deliver(
+    async fn deliver_admitted(
         &self,
         _runtime_id: &AgentRuntimeId,
-        content: &meerkat_core::ContentInput,
+        delivery: BridgeDelivery,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         self.deliver_calls.fetch_add(1, Ordering::SeqCst);
         self.delivered_content
             .lock()
             .await
-            .push(content.text_content());
+            .push(delivery.content.text_content());
+        self.delivered_injected_context.lock().await.push(
+            delivery
+                .injected_context
+                .iter()
+                .map(meerkat_core::ContentInput::text_content)
+                .collect(),
+        );
+        self.delivered_delivery_identities.lock().await.push(
+            delivery
+                .delivery_identity
+                .map(|identity| (identity.idempotency_key, identity.correlation_id)),
+        );
         Ok(self
             .deliver_session_id
             .lock()
@@ -1971,7 +2012,9 @@ async fn identity_first_runtime_dispatch_with_fields_flows_through() {
     let input = DispatchInput {
         content: make_content(),
         origin: DispatchOrigin::Policy,
-        correlation_id: Some(meerkat_mobkit::identity_first::CorrelationId::new("corr-1")),
+        correlation_id: Some(meerkat_mobkit::identity_first::CorrelationId::new(
+            "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+        )),
         idempotency_key: Some(DispatchIdempotencyKey::new("idem-1")),
     };
 
@@ -1979,6 +2022,96 @@ async fn identity_first_runtime_dispatch_with_fields_flows_through() {
         .dispatch(&make_identity("triage:main"), &input)
         .await;
     assert!(result.is_ok());
+}
+
+// ===========================================================================
+// Task #50 - delivery-identity admission matrix (fail closed, typed, before
+// bridge admission; half-pairs and non-canonical correlations never deliver)
+// ===========================================================================
+
+async fn make_registered_counting_runtime() -> (Arc<IdentityRuntime>, Arc<CountingBridge>) {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store, lease, bridge.clone());
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(make_record("triage:main", 0, 0)),
+            Some(make_grant("triage:main", 1)),
+        )
+        .await;
+    (runtime, bridge)
+}
+
+async fn assert_dispatch_refused_before_admission(input: DispatchInput, expected_detail: &str) {
+    let (runtime, bridge) = make_registered_counting_runtime().await;
+    let error = runtime
+        .dispatch(&make_identity("triage:main"), &input)
+        .await
+        .expect_err("a broken delivery identity must refuse typed, never deliver degraded");
+    match &error {
+        meerkat_mobkit::identity_first::IdentityRuntimeError::InvalidDeliveryIdentity {
+            detail,
+            ..
+        } => {
+            assert!(
+                detail.contains(expected_detail),
+                "refusal detail should name the defect; got: {detail}"
+            );
+        }
+        other => panic!("expected InvalidDeliveryIdentity, got {other:?}"),
+    }
+    assert_eq!(
+        bridge.deliver_calls.load(Ordering::SeqCst),
+        0,
+        "refusal must happen BEFORE bridge admission - no delivery may occur"
+    );
+}
+
+#[tokio::test]
+async fn dispatch_refuses_idempotency_key_without_correlation() {
+    assert_dispatch_refused_before_admission(
+        DispatchInput {
+            content: make_content(),
+            origin: DispatchOrigin::Scheduler,
+            correlation_id: None,
+            idempotency_key: Some(DispatchIdempotencyKey::new("sched-occurrence-1")),
+        },
+        "half-pair",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn dispatch_refuses_correlation_without_idempotency_key() {
+    assert_dispatch_refused_before_admission(
+        DispatchInput {
+            content: make_content(),
+            origin: DispatchOrigin::Scheduler,
+            correlation_id: Some(meerkat_mobkit::identity_first::CorrelationId::new(
+                "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+            )),
+            idempotency_key: None,
+        },
+        "half-pair",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn dispatch_refuses_non_canonical_correlation_uuid() {
+    assert_dispatch_refused_before_admission(
+        DispatchInput {
+            content: make_content(),
+            origin: DispatchOrigin::Scheduler,
+            correlation_id: Some(meerkat_mobkit::identity_first::CorrelationId::new("corr-1")),
+            idempotency_key: Some(DispatchIdempotencyKey::new("sched-occurrence-1")),
+        },
+        "correlation",
+    )
+    .await;
 }
 
 // ===========================================================================
@@ -6269,6 +6402,301 @@ async fn identity_first_runtime_repair_task_parks_unprovable_head_terminally() {
     assert!(status.continuity_unrecoverable.is_some());
 }
 
+/// Regression for the OB3 rehearsal heal/refusal loop (repair honesty): a
+/// session whose typed refusal is ArchivedNotRevivable is a STABLE
+/// materialize precondition - the roster heal kept succeeding while the next
+/// inbound turn re-hit the refusal and re-marked Broken, forever (the N=3
+/// byte-identical park never engaged because the heal itself reported
+/// healed). The on-demand materialize door must record the terminal verdict
+/// on the FIRST refusal: the repair supervisor then parks immediately - zero
+/// heal/re-Break cycles, no recovery calls, no reconcile churn - and the
+/// durable session (the transcript) stays bound and untouched.
+#[tokio::test]
+async fn identity_first_runtime_parks_archived_not_revivable_on_first_materialize() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    bridge.reject_resume_archived_not_revivable();
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
+
+    let id = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 0);
+    let original_session_id = record.session_id.clone();
+    store
+        .upsert_continuity_record(&record, FencingToken::new(0))
+        .await
+        .unwrap();
+
+    // Lazy registration succeeds at the roster level (Dormant) - exactly the
+    // "healed" projection the OB3 loop kept reporting.
+    let roster = vec![make_spec("triage:main")];
+    let result = lazy_register_flow(&runtime, &roster, None).await.unwrap();
+    assert!(matches!(
+        result.outcomes.get(&id).unwrap(),
+        RestoreOutcome::Dormant { .. }
+    ));
+
+    // First inbound-turn materialization hits the typed refusal: the identity
+    // Breaks AND the terminal verdict is recorded in the same pass.
+    let err = runtime
+        .materialize(&id)
+        .await
+        .expect_err("archived-not-revivable resume must fail the materialization");
+    assert!(
+        err.to_string().contains("archived"),
+        "the refusal must surface the archived cause: {err}"
+    );
+    let status = runtime.status(&id).await.unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Broken);
+    let verdict = status
+        .continuity_unrecoverable
+        .expect("the FIRST typed refusal must record the terminal verdict");
+    assert!(
+        verdict.reason.contains("ArchivedNotRevivable"),
+        "{}",
+        verdict.reason
+    );
+    assert!(
+        verdict.reason.contains("0.8.15") && verdict.reason.contains("mobkit/reset"),
+        "the verdict must carry the operator path: {}",
+        verdict.reason
+    );
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 1);
+
+    // The repair supervisor must PARK, not heal-loop: across many cycles it
+    // makes no recovery calls, triggers no reconcile churn, and never
+    // re-attempts the refused resume.
+    let provider = Arc::new(StaticRosterProvider::new(roster.clone()));
+    let context = Arc::new(
+        meerkat_mobkit::identity_first::IdentityFirstRuntimeContext::new(
+            runtime.clone(),
+            provider.clone(),
+            None,
+            None,
+            None,
+        ),
+    );
+    let repair = context.clone().spawn_broken_identity_repair_task(
+        meerkat_mobkit::identity_first::ContinuityRepairPolicy {
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(40),
+        },
+    );
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    repair.abort();
+    assert_eq!(
+        bridge.recover_calls.load(Ordering::SeqCst),
+        0,
+        "a parked archived-not-revivable identity must not reach the heal authority"
+    );
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        0,
+        "a parked identity must not trigger reconcile churn"
+    );
+    assert_eq!(
+        bridge.resume_calls.load(Ordering::SeqCst),
+        1,
+        "zero heal/re-Break cycles: the refused resume is never re-attempted"
+    );
+
+    // Reconcile passes must not soften the parked projection back to Dormant
+    // (that cosmetic heal is the loop) - and the outcome carries the terminal
+    // kind, not the reconcile-retried one.
+    let result = lazy_register_flow(&runtime, &roster, None).await.unwrap();
+    match result.outcomes.get(&id).unwrap() {
+        RestoreOutcome::Broken(failure) => {
+            assert_eq!(failure.kind, ContinuityFailureKind::CheckpointUnrecoverable);
+        }
+        other => panic!("parked identity must stay Broken, got {other:?}"),
+    }
+    let status = runtime.status(&id).await.unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Broken);
+    assert!(status.continuity_unrecoverable.is_some());
+
+    // Transcript untouched: the identity keeps its durable session binding
+    // (no rebind, no retire, no fresh spawn).
+    let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
+    match resolved.get(&id).unwrap() {
+        ContinuityResolveState::Ready { record } => {
+            assert_eq!(record.session_id, original_session_id);
+        }
+        other => panic!("continuity record must stay intact, got {other:?}"),
+    }
+    assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(bridge.create_calls.load(Ordering::SeqCst), 0);
+}
+
+/// Same wall through the EAGER restore door: the first restore pass must
+/// surface the terminal kind AND record the verdict, so the repair
+/// supervisor parks without ever consulting the heal authority or retrying
+/// the resume.
+#[tokio::test]
+async fn identity_first_runtime_parks_archived_not_revivable_on_first_restore_pass() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    bridge.reject_resume_archived_not_revivable();
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
+
+    let id = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 0);
+    store
+        .upsert_continuity_record(&record, FencingToken::new(0))
+        .await
+        .unwrap();
+
+    let roster = vec![make_spec("triage:main")];
+    let result = restore_flow(&runtime, &roster, None, None).await.unwrap();
+    match result.outcomes.get(&id).unwrap() {
+        RestoreOutcome::Broken(failure) => {
+            assert_eq!(
+                failure.kind,
+                ContinuityFailureKind::CheckpointUnrecoverable,
+                "the typed archived refusal is terminal, not reconcile-retried"
+            );
+        }
+        other => panic!("archived-not-revivable restore must Break, got {other:?}"),
+    }
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 1);
+    let verdict = runtime
+        .status(&id)
+        .await
+        .unwrap()
+        .continuity_unrecoverable
+        .expect("the FIRST restore refusal must record the terminal verdict");
+    assert!(
+        verdict.reason.contains("ArchivedNotRevivable"),
+        "{}",
+        verdict.reason
+    );
+
+    let provider = Arc::new(StaticRosterProvider::new(roster.clone()));
+    let context = Arc::new(
+        meerkat_mobkit::identity_first::IdentityFirstRuntimeContext::new(
+            runtime.clone(),
+            provider.clone(),
+            None,
+            None,
+            None,
+        ),
+    );
+    let repair = context.clone().spawn_broken_identity_repair_task(
+        meerkat_mobkit::identity_first::ContinuityRepairPolicy {
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(40),
+        },
+    );
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    repair.abort();
+    assert_eq!(
+        bridge.recover_calls.load(Ordering::SeqCst),
+        0,
+        "parked on the FIRST pass: the heal authority is never consulted"
+    );
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 1);
+}
+
+/// Task #54 regression (HomeCore: lifetime ZERO surface=Turn injection rows):
+/// an INTERNAL DISPATCH must run the same delivery preparation as the send
+/// door. A content-matching logical-scope record must arrive as
+/// injected_context on the bridge delivery AND leave a durable surface=Turn
+/// injection-ledger row. Also pins the #50 threading: the dispatch input's
+/// (idempotency_key, correlation_id) pair reaches the bridge as a typed
+/// MobDeliveryIdentity.
+#[tokio::test]
+async fn internal_dispatch_runs_delivery_preparation_and_ledgers_turn_injection() {
+    let memory_dir = tempfile::tempdir().unwrap();
+    let memory_store =
+        Arc::new(meerkat_mobkit::SqliteAgentMemoryStore::open(memory_dir.path()).unwrap());
+    let provider: Arc<dyn meerkat_mobkit::AgentMemoryProvider> = memory_store.clone();
+    let id = make_identity("triage:main");
+    provider
+        .remember(
+            "default",
+            &id,
+            meerkat_mobkit::NewAgentMemory {
+                title: "Deploy policy".to_string(),
+                body: "Deploys are frozen on Fridays.".to_string(),
+                tags: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    let injector = AgentMemoryRuntimeInjector::new(
+        provider,
+        meerkat_mobkit::AgentMemoryConfig {
+            selection: AgentMemorySelection::Always,
+            ..meerkat_mobkit::AgentMemoryConfig::default()
+        },
+    );
+
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
+    runtime.set_agent_memory(Some(injector)).await;
+
+    let record = make_record("triage:main", 0, 0);
+    store
+        .upsert_continuity_record(&record, FencingToken::new(0))
+        .await
+        .unwrap();
+    let roster = vec![make_spec("triage:main")];
+    let result = restore_flow(&runtime, &roster, None, None).await.unwrap();
+    assert!(
+        !matches!(result.outcomes.get(&id).unwrap(), RestoreOutcome::Broken(_)),
+        "restore must succeed for the dispatch to reach the bridge"
+    );
+
+    let correlation = "0d7b3a52-8f7e-4f7c-9a44-2f3f0f6e5a11";
+    let input = DispatchInput {
+        content: meerkat_core::ContentInput::Text("what is the deploy policy?".to_string()),
+        origin: DispatchOrigin::Scheduler,
+        correlation_id: Some(meerkat_mobkit::identity_first::CorrelationId::new(
+            correlation,
+        )),
+        idempotency_key: Some(DispatchIdempotencyKey::new("sched-occurrence-1")),
+    };
+    runtime.dispatch(&id, &input).await.unwrap();
+
+    // The bridge received the ambient recall as injected context (the send
+    // door's behavior, now shared) ...
+    let contexts = bridge.delivered_injected_context.lock().await.clone();
+    assert_eq!(contexts.len(), 1, "one prepared delivery expected");
+    assert!(
+        contexts[0]
+            .iter()
+            .any(|body| body.contains("Deploys are frozen on Fridays.")),
+        "the logical-scope record must inject on internal dispatch: {contexts:?}"
+    );
+    // ... with the #50 delivery identity threaded typed ...
+    let identities = bridge.delivered_delivery_identities.lock().await.clone();
+    assert_eq!(
+        identities,
+        vec![Some((
+            "sched-occurrence-1".to_string(),
+            correlation.to_string()
+        ))]
+    );
+    // ... and the injection is DURABLY ledgered as a Turn surface, so the
+    // HomeCore smoke can never read "surface shipped dark" again.
+    let log = meerkat_mobkit::StewardStore::injection_log(memory_store.as_ref(), "default", 16)
+        .await
+        .unwrap();
+    assert!(
+        log.iter().any(|entry| {
+            entry.identity == "triage:main"
+                && matches!(
+                    entry.surface,
+                    meerkat_mobkit::memory::InjectionSurface::Turn
+                )
+        }),
+        "a durable surface=Turn injection row must exist: {log:?}"
+    );
+}
+
 /// Regression for the 2026-07-29 heal/re-Break production loop, recovery arm:
 /// when the heal authority can drive the durable head to a committed boundary
 /// (`Recovered`), the repair task heals the identity for real — the resume
@@ -6501,10 +6929,10 @@ async fn identity_first_runtime_restore_flow_reconciles_resume_returned_session_
             )
         }
 
-        async fn deliver(
+        async fn deliver_admitted(
             &self,
             _runtime_id: &AgentRuntimeId,
-            _content: &meerkat_core::ContentInput,
+            _delivery: BridgeDelivery,
         ) -> Result<meerkat_core::types::SessionId, BridgeError> {
             Ok(self.actual_session_id.clone())
         }
@@ -8555,10 +8983,10 @@ async fn identity_first_runtime_topology_materializes_runtime_peer_wires() {
             )
         }
 
-        async fn deliver(
+        async fn deliver_admitted(
             &self,
             _runtime_id: &AgentRuntimeId,
-            _content: &meerkat_core::ContentInput,
+            _delivery: BridgeDelivery,
         ) -> Result<meerkat_core::types::SessionId, BridgeError> {
             Ok(meerkat_core::types::SessionId::new())
         }
@@ -8742,10 +9170,10 @@ async fn identity_first_runtime_topology_claims_persisted_wires_without_rebatchi
             )
         }
 
-        async fn deliver(
+        async fn deliver_admitted(
             &self,
             _runtime_id: &AgentRuntimeId,
-            _content: &meerkat_core::ContentInput,
+            _delivery: BridgeDelivery,
         ) -> Result<meerkat_core::types::SessionId, BridgeError> {
             Ok(meerkat_core::types::SessionId::new())
         }

@@ -762,23 +762,21 @@ impl InternalDeliveryScheduleMobHost {
                 .identity_for_member_mutation(&member_alias)
                 .await
         {
-            // meerkat 0.8.11: the driver replays this exact identity on every
-            // lease-expiry reclaim. NOTE: the identity dispatch path does not
-            // yet consume this key at admission (no reader of
-            // DispatchInput.idempotency_key exists), so crash-redelivery dedup
-            // for this sink is still ABSENT - carrying the key here stages the
-            // admission-threading follow-up, it does not implement it.
-            // Re-checked at the 0.8.12 repin: the internal work lane is still
-            // closed upstream - meerkat-mob 0.8.12 `submit_work_with_mode`
-            // (src/runtime/handle.rs:7177) hardcodes
-            // `external_delivery_identity: None` and offers no submit variant
-            // that accepts a delivery identity; the dedup ledger
-            // (`begin_external_delivery`/`complete_external_delivery`) serves
-            // the external door only.
+            // meerkat 0.8.15: the driver replays this exact identity on every
+            // lease-expiry reclaim, and the identity dispatch path now
+            // consumes BOTH halves at admission - the runtime threads them
+            // into the internal work lane's deduplicating submit
+            // (`submit_work_with_mode_and_delivery_identity`, WorkRef derived
+            // from mob + member identity + idempotency key), so a crash
+            // redelivery of the same occurrence resolves to the SAME work
+            // instead of a duplicate turn. The correlation is the occurrence
+            // UUID by construction (canonical non-nil, as upstream requires).
             let input = crate::identity_first::DispatchInput {
                 content: content.clone(),
                 origin: crate::identity_first::DispatchOrigin::Scheduler,
-                correlation_id: None,
+                correlation_id: Some(crate::identity_first::CorrelationId::new(
+                    delivery_identity.correlation_id.clone(),
+                )),
                 idempotency_key: Some(crate::identity_first::DispatchIdempotencyKey::new(
                     delivery_identity.idempotency_key.clone(),
                 )),
@@ -838,21 +836,53 @@ impl InternalDeliveryScheduleMobHost {
             }
         };
         let spec = meerkat_mob::WorkSpec::new(content.clone(), meerkat_mob::WorkOrigin::Internal);
+        // meerkat 0.8.15 deduplicating internal work door: the WorkRef
+        // derives from mob + member identity + idempotency key, so replaying
+        // this occurrence after a crash resolves to the SAME work. The
+        // correlation is the occurrence UUID by construction; a validation
+        // refusal is a real bug in that construction and fails the delivery
+        // typed rather than silently downgrading to at-least-once.
+        let mob_delivery_identity = match meerkat_mob::MobDeliveryIdentity::new(
+            delivery_identity.idempotency_key.clone(),
+            delivery_identity.correlation_id.clone(),
+        ) {
+            Ok(identity) => identity,
+            Err(error) => {
+                return Some(immediate_delivery_failure(
+                    occurrence,
+                    format!(
+                        "schedule delivery identity rejected upstream validation \
+                         (member {member_id}): {error}"
+                    ),
+                    meerkat::DeliveryFailureReason::RuntimeRejected,
+                    Some(delivery_identity.correlation_id.clone()),
+                    None,
+                ));
+            }
+        };
         match self
             .handle
-            .submit_work_with_mode(
+            .submit_work_with_mode_and_delivery_identity(
                 entry.agent_runtime_id.clone(),
                 entry.fence_token,
-                meerkat_mob::WorkRef::new(),
                 spec,
                 meerkat_core::types::HandlingMode::Queue,
+                mob_delivery_identity,
             )
             .await
         {
-            Ok(_receipt) => Some(immediate_completed_dispatch(
-                occurrence,
-                Some(delivery_identity.correlation_id.clone()),
-            )),
+            Ok(receipt) => {
+                let mut dispatch = immediate_completed_dispatch(
+                    occurrence,
+                    Some(delivery_identity.correlation_id.clone()),
+                );
+                // Retain the lower admission identity in the schedule receipt.
+                // This is both useful diagnostics and a durable-carrier proof:
+                // a replay of one occurrence must expose the same derived work
+                // reference instead of minting a second unit of work.
+                dispatch.receipt.detail = Some(format!("work_ref={}", receipt.work_ref));
+                Some(dispatch)
+            }
             Err(error) => Some(immediate_delivery_failure(
                 occurrence,
                 format!("internal schedule delivery failed (member {member_id}): {error}"),
@@ -1945,6 +1975,532 @@ mod tests {
             claimed.claimed.len(),
             1,
             "the healthy due occurrence must be claimed despite the poisoned neighbor"
+        );
+    }
+
+    struct CountingLlmClient {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl meerkat_client::LlmClient for CountingLlmClient {
+        fn project_replay_messages(
+            &self,
+            messages: &[meerkat_core::Message],
+        ) -> Result<Vec<meerkat_core::Message>, meerkat_client::LlmError> {
+            Ok(messages.to_vec())
+        }
+        fn stream<'a>(
+            &'a self,
+            _request: &'a meerkat_client::LlmRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn futures::Stream<
+                        Item = Result<meerkat_client::LlmEvent, meerkat_client::LlmError>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(futures::stream::iter(vec![
+                Ok(meerkat_client::LlmEvent::TextDelta {
+                    delta: "done".to_string(),
+                    meta: None,
+                }),
+                Ok(meerkat_client::LlmEvent::Done {
+                    outcome: meerkat_client::LlmDoneOutcome::Success {
+                        stop_reason: meerkat_core::types::StopReason::EndTurn,
+                    },
+                }),
+            ]))
+        }
+        fn provider(&self) -> meerkat_core::Provider {
+            meerkat_core::Provider::OpenAI
+        }
+        fn health_check<'life0, 'async_trait>(
+            &'life0 self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<(), meerkat_client::LlmError>>
+                    + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// Task #50 carrier regression, DIRECT-DOOR half: redelivering the SAME
+    /// occurrence through two independently-created MobKit schedule hosts
+    /// (no identity runtime bound, so the host's direct member-plane
+    /// fallback submits) must reach Meerkat's deduplicating internal door
+    /// with the SAME derived work reference. The identity-runtime door has
+    /// its own crash-redelivery regression below
+    /// (`internal_schedule_crash_redelivery_through_identity_runtime_executes_once`).
+    #[tokio::test]
+    async fn internal_schedule_redelivery_preserves_stable_work_receipt() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let llm_calls = Arc::new(AtomicUsize::new(0));
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let factory = AgentFactory::new(temp_dir.path()).comms(true);
+        let session_service = Arc::new(meerkat::build_ephemeral_service(
+            factory,
+            Config::default(),
+            4,
+        ));
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "schedule-dedup"
+
+[profiles.general]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.general.tools]
+comms = true
+"#,
+        )
+        .expect("schedule dedup mob definition");
+        let mob_spec = crate::mob_handle_runtime::MobBootstrapSpec::new(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            session_service,
+        )
+        .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(CountingLlmClient {
+                calls: llm_calls.clone(),
+            })),
+        });
+        let runtime = crate::UnifiedRuntime::bootstrap(
+            mob_spec,
+            crate::MobKitConfig {
+                modules: vec![],
+                discovery: crate::DiscoverySpec {
+                    namespace: "schedule-dedup".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            },
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("bootstrap schedule dedup runtime");
+        let handle = runtime.mob_handle();
+        runtime
+            .spawn_many(vec![meerkat_mob::SpawnMemberSpec::new(
+                meerkat_mob::ProfileName::from("general"),
+                meerkat_mob::ids::AgentIdentity::from("digest-owner"),
+            )])
+            .await
+            .expect("spawn member");
+        // The member's autonomous kickoff turn also hits the counting client;
+        // settle it and baseline the counter so the once-only assertion below
+        // counts SCHEDULED executions, not the kickoff (the false-red shape
+        // the identity-runtime twin already fixed).
+        handle
+            .wait_for_members_kickoff_complete(
+                std::slice::from_ref(&meerkat_mob::ids::AgentIdentity::from("digest-owner")),
+                Some(Duration::from_secs(2)),
+            )
+            .await
+            .expect("member kickoff should settle");
+        let baseline_llm_calls = llm_calls.load(Ordering::SeqCst);
+        let member_id = crate::member_comms_id::mob_member_id("digest-owner").to_string();
+        let content = meerkat_core::ContentInput::Text("run the digest".to_string());
+        let schedule = Schedule::new(CreateScheduleRequest {
+            name: Some("schedule-dedup-carrier".to_string()),
+            description: None,
+            trigger: TriggerSpec::Interval(IntervalTriggerSpec {
+                start_at_utc: chrono::Utc::now(),
+                every_seconds: 60,
+                end_at_utc: None,
+            }),
+            target: TargetBinding::Mob(Box::new(MobTargetBinding::Member {
+                mob_id: "schedule-dedup".to_string(),
+                member_id: member_id.clone(),
+                action: ScheduledMobAction::Send {
+                    content: content.clone(),
+                    render_metadata: None,
+                },
+            })),
+            misfire_policy: meerkat::MisfirePolicy::default(),
+            overlap_policy: meerkat::OverlapPolicy::default(),
+            missing_target_policy: meerkat::MissingTargetPolicy::default(),
+            labels: BTreeMap::new(),
+            planning_horizon_days: None,
+            planning_horizon_occurrences: None,
+        })
+        .expect("schedule");
+        let occurrence = Occurrence::planned_from_schedule(
+            &schedule,
+            meerkat::OccurrenceOrdinal(0),
+            chrono::Utc::now(),
+        )
+        .expect("occurrence");
+        let delivery_identity = meerkat::ScheduleDeliveryIdentity::for_occurrence(&occurrence);
+
+        let first_host = InternalDeliveryScheduleMobHost {
+            inner: Arc::new(NoopScheduleMobHost::new("unused fallback")),
+            handle: handle.clone(),
+            identity_runtime: None,
+        };
+        let first = first_host
+            .deliver_internal_member_prompt(
+                &occurrence,
+                &delivery_identity,
+                "schedule-dedup",
+                &member_id,
+                &content,
+            )
+            .await
+            .expect("first schedule host must own the local member delivery");
+        let first_terminal = first.completion.await.expect("first terminal");
+        let first_work_ref = first.receipt.detail.clone().unwrap_or_else(|| {
+            panic!(
+                "first receipt carries derived work ref: receipt={:?}, terminal={first_terminal:?}",
+                first.receipt
+            )
+        });
+        drop(first_host);
+
+        // Recreate the MobKit host boundary and replay the exact occurrence
+        // identity, matching a driver reclaim after the previous host dies.
+        let replacement_host = InternalDeliveryScheduleMobHost {
+            inner: Arc::new(NoopScheduleMobHost::new("unused fallback")),
+            handle,
+            identity_runtime: None,
+        };
+        let second = replacement_host
+            .deliver_internal_member_prompt(
+                &occurrence,
+                &delivery_identity,
+                "schedule-dedup",
+                &member_id,
+                &content,
+            )
+            .await
+            .expect("replacement schedule host must own the local member redelivery");
+        let second_work_ref = second
+            .receipt
+            .detail
+            .clone()
+            .expect("redelivery receipt carries derived work ref");
+        second.completion.await.expect("redelivery terminal");
+        assert_eq!(
+            first_work_ref, second_work_ref,
+            "host replacement must preserve the exact derived work authority"
+        );
+        assert_eq!(
+            second.receipt.correlation_id,
+            Some(delivery_identity.correlation_id.clone())
+        );
+
+        // The stable authority above is the seam owned here. Keep a direct
+        // end-to-end sanity check that the admitted work executes, then let
+        // runtime shutdown drain before checking Meerkat's dedup result.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while llm_calls.load(Ordering::SeqCst) <= baseline_llm_calls {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the deduplicated work must still execute once"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        runtime.shutdown().await;
+        assert_eq!(
+            llm_calls.load(Ordering::SeqCst),
+            baseline_llm_calls + 1,
+            "the shared work authority must execute once beyond the kickoff baseline"
+        );
+    }
+
+    /// Task #50 carrier regression, IDENTITY-RUNTIME half: crash redelivery
+    /// of one occurrence through the FULL MobKit chain - schedule host
+    /// (`deliver_mob_target`) -> `DispatchInput` (both identity halves) ->
+    /// identity-runtime admission matrix -> `BridgeDelivery` ->
+    /// `SessionBridge::deliver_admitted` (production `MobSessionBridge`) ->
+    /// `submit_work_with_mode_and_delivery_identity` - executes the member
+    /// turn exactly once. The identity is minted the way the driver mints it
+    /// (`ScheduleDeliveryIdentity::for_occurrence`), the first host is
+    /// dropped BEFORE the admitted work reaches a terminal (the driver
+    /// reclaim shape: delivery lease expires while the work is in flight),
+    /// and the replacement host replays the exact identity. If ANY hop drops
+    /// the carrier, the replay mints a second unit of work and the count
+    /// goes to 2; if a hop half-drops it, the typed admission refusal fails
+    /// the delivery; if the identity door is bypassed, the receipt grows the
+    /// direct-door work_ref stamp. All three defects turn this red.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn internal_schedule_crash_redelivery_through_identity_runtime_executes_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let llm_calls = Arc::new(AtomicUsize::new(0));
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let factory = AgentFactory::new(temp_dir.path()).comms(true);
+        let session_service = Arc::new(meerkat::build_ephemeral_service(
+            factory,
+            Config::default(),
+            4,
+        ));
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "schedule-dedup-identity"
+
+[profiles.general]
+model = "gpt-5.5"
+external_addressable = false
+
+[profiles.general.tools]
+comms = true
+"#,
+        )
+        .expect("schedule dedup identity mob definition");
+        let mob_spec = crate::mob_handle_runtime::MobBootstrapSpec::new(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            session_service,
+        )
+        .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(CountingLlmClient {
+                calls: llm_calls.clone(),
+            })),
+        });
+        let runtime = crate::UnifiedRuntime::bootstrap(
+            mob_spec,
+            crate::MobKitConfig {
+                modules: vec![],
+                discovery: crate::DiscoverySpec {
+                    namespace: "schedule-dedup-identity".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            },
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("bootstrap schedule dedup identity runtime");
+        let handle = runtime.mob_handle();
+
+        // An identity-first member: the roster id is the mk--encoded
+        // generated runtime alias, exactly the shape HomeCore schedules
+        // address (the binding stores the roster id).
+        let roster_id = crate::member_comms_id::mob_member_id_str("rt:digest:main:0").into_owned();
+        assert!(
+            roster_id.starts_with("mk--"),
+            "precondition: identity-first roster ids are marker-encoded"
+        );
+        let roster_identity = meerkat_mob::ids::AgentIdentity::from(roster_id.clone());
+        handle
+            .ensure_member(meerkat_mob::SpawnMemberSpec::new(
+                meerkat_mob::ProfileName::from("general"),
+                roster_identity.clone(),
+            ))
+            .await
+            .expect("spawn identity-first member");
+        handle
+            .wait_for_members_kickoff_complete(
+                std::slice::from_ref(&roster_identity),
+                Some(Duration::from_secs(2)),
+            )
+            .await
+            .expect("identity-first member kickoff should settle");
+        let baseline_llm_calls = llm_calls.load(Ordering::SeqCst);
+        let member_session = handle
+            .resolve_bridge_session_id_observation(&meerkat_mob::ids::AgentIdentity::from(
+                roster_id.clone(),
+            ))
+            .await
+            .expect("member session id");
+
+        // Durable identity authority over that member, bridged to the mob by
+        // the PRODUCTION MobSessionBridge (the gateway wiring).
+        let public_member_alias =
+            crate::member_comms_id::runtime_alias_str(&roster_id).into_owned();
+        let identity = crate::identity_first::IdentityRuntime::identity_for_generated_member_alias(
+            &public_member_alias,
+        )
+        .expect("generated alias identity");
+        let continuity_store = Arc::new(
+            crate::identity_first::LocalContinuityStore::in_memory().expect("identity store"),
+        );
+        let lease_provider = Arc::new(crate::identity_first::LocalLeaseProvider::new());
+        let lease_results = crate::identity_first::LeaseProvider::acquire_leases(
+            lease_provider.as_ref(),
+            std::slice::from_ref(&identity),
+            "schedule-dedup-identity",
+        )
+        .await
+        .expect("acquire identity lease");
+        let lease = match lease_results.get(&identity) {
+            Some(crate::identity_first::LeaseAcquireResult::Acquired(lease)) => lease.clone(),
+            other => panic!("expected acquired identity lease, got {other:?}"),
+        };
+        let record = crate::identity_first::ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(&public_member_alias)
+                .expect("runtime alias"),
+            session_id: member_session,
+            generation: crate::identity_first::ContinuityGeneration::new(0),
+            checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+        };
+        crate::identity_first::ContinuityStore::upsert_continuity_record(
+            continuity_store.as_ref(),
+            &record,
+            lease.fencing_token,
+        )
+        .await
+        .expect("persist identity continuity");
+        let identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store,
+                lease_provider,
+                runtime_instance_id: "schedule-dedup-identity".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: Some(Arc::new(crate::identity_first::MobSessionBridge::new(
+                    handle.clone(),
+                ))),
+                default_timeout: None,
+            },
+        ));
+        identity_runtime
+            .register(
+                crate::identity_first::DurableAgentSpec {
+                    identity,
+                    profile: meerkat_mob::ProfileName::from("general"),
+                    addressability: crate::identity_first::AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                },
+                crate::identity_first::IdentityLifecycleState::Active,
+                Some(record),
+                Some(lease),
+            )
+            .await;
+
+        let schedule = Schedule::new(CreateScheduleRequest {
+            name: Some("schedule-dedup-identity-carrier".to_string()),
+            description: None,
+            trigger: TriggerSpec::Interval(IntervalTriggerSpec {
+                start_at_utc: chrono::Utc::now(),
+                every_seconds: 60,
+                end_at_utc: None,
+            }),
+            target: TargetBinding::Mob(Box::new(MobTargetBinding::Member {
+                mob_id: "schedule-dedup-identity".to_string(),
+                member_id: roster_id,
+                action: ScheduledMobAction::Send {
+                    content: meerkat_core::ContentInput::Text("run the digest".to_string()),
+                    render_metadata: None,
+                },
+            })),
+            misfire_policy: meerkat::MisfirePolicy::default(),
+            overlap_policy: meerkat::OverlapPolicy::default(),
+            missing_target_policy: meerkat::MissingTargetPolicy::default(),
+            labels: BTreeMap::new(),
+            planning_horizon_days: None,
+            planning_horizon_occurrences: None,
+        })
+        .expect("schedule");
+        let occurrence = Occurrence::planned_from_schedule(
+            &schedule,
+            meerkat::OccurrenceOrdinal(0),
+            chrono::Utc::now(),
+        )
+        .expect("occurrence");
+        let TargetBinding::Mob(binding) = &schedule.target else {
+            unreachable!("test schedule is mob-targeted")
+        };
+        // Minted exactly the way the driver mints it at delivery time.
+        let delivery_identity = meerkat::ScheduleDeliveryIdentity::for_occurrence(&occurrence);
+
+        let first_host = InternalDeliveryScheduleMobHost {
+            inner: Arc::new(NoopScheduleMobHost::new("unused fallback")),
+            handle: handle.clone(),
+            identity_runtime: Some(identity_runtime.clone()),
+        };
+        let first = first_host
+            .deliver_mob_target(&occurrence, &delivery_identity, binding)
+            .await
+            .expect("first host delivery");
+        assert!(
+            first.receipt.detail.is_none(),
+            "the identity-runtime door must handle this member (the direct \
+             fallback door stamps a work_ref detail): {:?}",
+            first.receipt.detail
+        );
+        assert_eq!(
+            first.receipt.correlation_id,
+            Some(delivery_identity.correlation_id.clone())
+        );
+        let first_terminal = first.completion.await.expect("first delivery terminal");
+        assert_eq!(
+            first_terminal.phase,
+            OccurrencePhase::Completed,
+            "identity-door delivery must be admitted: {:?}",
+            first_terminal.detail
+        );
+
+        // Kill the host boundary BEFORE the admitted work reaches a
+        // terminal (no settle wait), then replay the exact occurrence
+        // identity through a replacement host - the driver's lease-expiry
+        // reclaim shape.
+        drop(first_host);
+        let replacement_host = InternalDeliveryScheduleMobHost {
+            inner: Arc::new(NoopScheduleMobHost::new("unused fallback")),
+            handle,
+            identity_runtime: Some(identity_runtime),
+        };
+        let second = replacement_host
+            .deliver_mob_target(&occurrence, &delivery_identity, binding)
+            .await
+            .expect("replacement host redelivery");
+        assert!(
+            second.receipt.detail.is_none(),
+            "redelivery must also take the identity-runtime door: {:?}",
+            second.receipt.detail
+        );
+        assert_eq!(
+            second.receipt.correlation_id,
+            Some(delivery_identity.correlation_id.clone())
+        );
+        let second_terminal = second.completion.await.expect("redelivery terminal");
+        assert_eq!(
+            second_terminal.phase,
+            OccurrencePhase::Completed,
+            "redelivery of the same identity must dedup, not refuse: {:?}",
+            second_terminal.detail
+        );
+
+        // Exactly one member-turn execution across both deliveries.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while llm_calls.load(Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the admitted work must still execute once"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        runtime.shutdown().await;
+        assert_eq!(
+            llm_calls.load(Ordering::SeqCst),
+            baseline_llm_calls + 1,
+            "crash redelivery of one occurrence identity must execute the \
+             member turn exactly once end to end"
         );
     }
 

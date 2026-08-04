@@ -999,6 +999,27 @@ impl AgentCustomizer for AgentMemoryCustomizer {
         let config = self.coordinator.config();
         let provider = self.coordinator.provider();
         if config.recorder_tool && provider.supports_authored_writes() {
+            // Composition-time collision check (task #53 item 4): a host
+            // callback tool declared under the recorder's name must be loud,
+            // never a silent winner-by-composition-order. The local-overlay
+            // copy is shadowed (recorder wins) inside RecorderToolDispatcher;
+            // this names the wire-declared surface too, so the operator sees
+            // BOTH tools and the remediation regardless of which layer the
+            // host tool rode.
+            if draft
+                .external_tools
+                .iter()
+                .any(|tool| tool.name == MEMORY_TOOL_NAME)
+            {
+                tracing::warn!(
+                    identity = %context.identity,
+                    "host callback tool '{MEMORY_TOOL_NAME}' collides with the agent-memory \
+                     recorder tool '{MEMORY_TOOL_NAME}' on this member: the recorder shadows \
+                     the overlay copy, and a host tool composed at any other layer competes \
+                     for the same name. Rename the host callback tool or disable \
+                     agent_memory.recorder_tool"
+                );
+            }
             let recorder = MemoryRecorder {
                 provider,
                 identity: context.identity.clone(),
@@ -3914,6 +3935,116 @@ memory = false
         .await?;
         assert!(!is_error, "{text}");
         assert!(!text.contains("QUARANTINED"), "{text}");
+        Ok(())
+    }
+
+    // Task #53 regression (the 0.8.15 lead's shape): an SDK agent_memory
+    // write and a distiller-side write land in the SAME logical scope, and
+    // the SAME records surface through turn injection - across a respawn
+    // generation bump. Before the fix the platform paths keyed scopes by
+    // the mob-plane roster id (mk--rt_c..., one per generation), disjoint
+    // from the logical scope the SDK and injection speak.
+    #[tokio::test]
+    async fn memory_scope_keys_are_logical_across_sdk_injection_and_distiller_generations()
+    -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = Arc::new(SqliteAgentMemoryStore::open(dir.path())?);
+        let provider: Arc<dyn AgentMemoryProvider> = store.clone();
+        let identity = AgentIdentity::parse("identity:parent-1")?;
+
+        // SDK write: the exact provider call the mobkit/agent_memory RPC
+        // handlers land on.
+        provider
+            .remember(
+                "default",
+                &identity,
+                NewAgentMemory {
+                    title: "Deploy window".to_string(),
+                    body: "Deploys are frozen on Fridays.".to_string(),
+                    tags: vec![],
+                },
+            )
+            .await?;
+
+        // Distiller-side write across a generation bump: the sink identity
+        // for BOTH generations' roster ids normalizes to the one logical
+        // scope (the exact key the distiller's identity_scope() builds).
+        let sink_gen0 = crate::member_comms_id::logical_memory_identity(
+            &crate::member_comms_id::mob_member_id_str("rt:identity:parent-1:0"),
+        );
+        let sink_gen1 = crate::member_comms_id::logical_memory_identity(
+            &crate::member_comms_id::mob_member_id_str("rt:identity:parent-1:1"),
+        );
+        assert_eq!(sink_gen0, "identity:parent-1");
+        assert_eq!(sink_gen1, sink_gen0, "generations share one scope");
+        let distiller_scope = crate::memory::records::MemoryScope::Identity {
+            realm: "default".to_string(),
+            identity: sink_gen1.clone(),
+        };
+        store
+            .remember_authored(
+                &distiller_scope,
+                crate::memory::records::NewMemoryRecord {
+                    kind: crate::memory::records::MemoryKind::Fact,
+                    title: "Extracted preference".to_string(),
+                    description: "Extracted preference".to_string(),
+                    body: "Operator prefers terse digests.".to_string(),
+                    tags: vec![],
+                    evidence: vec![],
+                    verification: None,
+                },
+                crate::memory::records::MemoryAuthor::Distiller {
+                    run_id: "run-1".to_string(),
+                },
+            )
+            .await?;
+
+        // The SDK read (logical identity) sees BOTH records.
+        let recalled = provider
+            .recall(AgentMemoryRecallRequest {
+                identity: identity.clone(),
+                realm: "default".to_string(),
+                query_text: None,
+                query_terms: Vec::new(),
+                selection: AgentMemorySelection::Always,
+                max_entries: 16,
+            })
+            .await?;
+        let titles: Vec<&str> = recalled
+            .iter()
+            .map(|record| record.title.as_str())
+            .collect();
+        assert!(titles.contains(&"Deploy window"), "{titles:?}");
+        assert!(titles.contains(&"Extracted preference"), "{titles:?}");
+
+        // Turn injection (the delivery path's read) surfaces BOTH too.
+        let injector = AgentMemoryRuntimeInjector::new(
+            provider.clone(),
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                ..normalize_config(AgentMemoryConfig::default())
+            },
+        );
+        let injected = injector
+            .inject_for_turn(
+                &identity,
+                Some("sess-1"),
+                &meerkat_core::ContentInput::Text("what is the deploy policy?".to_string()),
+            )
+            .await?;
+        let injected_text = injected
+            .iter()
+            .map(meerkat_core::ContentInput::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            injected_text.contains("Deploys are frozen on Fridays."),
+            "SDK-written record must inject: {injected_text}"
+        );
+        assert!(
+            injected_text.contains("Operator prefers terse digests."),
+            "distiller-scope record must inject: {injected_text}"
+        );
         Ok(())
     }
 }

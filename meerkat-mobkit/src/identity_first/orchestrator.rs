@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use futures::{StreamExt, stream};
 
+use super::bridge::{BridgeError, ResumeRejectionKind, archived_not_revivable_park_reason};
 use super::contracts::{AgentCustomizer, TopologyProvider};
 use super::runtime::{IdentityRuntime, IdentityRuntimeError};
 use super::types::{
@@ -1167,11 +1168,43 @@ async fn restore_flow_with_snapshot_policy(
                                     None,
                                 )
                                 .await;
+                            // Repair honesty (OB3 rehearsal): the typed
+                            // ArchivedNotRevivable refusal is a stable,
+                            // deterministic wall. Record the terminal verdict
+                            // on this FIRST restore refusal - the repair
+                            // supervisor then parks instead of heal-looping -
+                            // and surface the outcome under the terminal kind
+                            // rather than the reconcile-retried one.
+                            let failure_kind = if let BridgeError::ResumeRejected {
+                                kind: ResumeRejectionKind::ArchivedNotRevivable,
+                                detail,
+                            } = &err
+                            {
+                                if !runtime
+                                    .mark_continuity_unrecoverable(
+                                        identity,
+                                        archived_not_revivable_park_reason(
+                                            &registered_session_id,
+                                            detail,
+                                        ),
+                                    )
+                                    .await
+                                {
+                                    tracing::debug!(
+                                        %identity,
+                                        "identity left Broken before the \
+                                         archived-not-revivable park could be recorded"
+                                    );
+                                }
+                                ContinuityFailureKind::CheckpointUnrecoverable
+                            } else {
+                                ContinuityFailureKind::ResumeRejected
+                            };
                             outcomes.insert(
                                 identity.clone(),
                                 RestoreOutcome::Broken(ContinuityFailure {
                                     identity: identity.clone(),
-                                    kind: ContinuityFailureKind::ResumeRejected,
+                                    kind: failure_kind,
                                     record: Some(record.clone()),
                                     detail: err.to_string(),
                                 }),

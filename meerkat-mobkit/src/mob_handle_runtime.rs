@@ -470,6 +470,12 @@ pub type AfterCreateHook = Arc<
 struct PreBuildMobSessionService {
     inner: Arc<dyn MobSessionService>,
     hook: PreBuildHook,
+    /// §10.1 dispatch-time taint join (`crate::memory::dispatch_taint`):
+    /// present ONLY on the wrapper `MobBootstrapSpec::new` installs - the
+    /// one layer every spec has exactly once - so `with_*` re-wraps never
+    /// double-decorate. The slot is late-bound: compositions fill it when
+    /// the memory stack attaches.
+    dispatch_taint: Option<crate::memory::dispatch_taint::DispatchTaintSlot>,
     after_create_hook: Option<AfterCreateHook>,
     runtime_adapter_override: Option<Arc<meerkat_runtime::MeerkatMachine>>,
     /// Installed only on the persistent runtime-backed path: absorbs the
@@ -572,6 +578,11 @@ impl PreBuildMobSessionService {
         (self.hook)(&mut req).await?;
         ensure_shell_tooling_build_substrate(&mut req);
         sanitize_create_session_request_llm_override(&mut req);
+        // After the user hook (composes over any decorator it set) and after
+        // sanitize (which only touches the raw llm_client_override).
+        if let Some(slot) = self.dispatch_taint.as_ref() {
+            crate::memory::dispatch_taint::attach_member_taint_decorator(&mut req, slot);
+        }
 
         let context = SessionCreatedContext {
             model: req.model.clone(),
@@ -1765,6 +1776,15 @@ struct SessionStoreBackedRuntimeStore {
     mint_flights: std::sync::Mutex<
         std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
     >,
+    /// PER-RUNTIME single-flight fences over durable projection: two
+    /// committing verbs racing the rewrite-replay chain walk for ONE runtime
+    /// must not interleave their per-commit `save_transcript_rewrite` steps
+    /// (each step validates against the durable head its predecessor
+    /// installed). Same weak-entry shape as [`Self::mint_flights`]; distinct
+    /// runtimes project independently.
+    projection_flights: std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
+    >,
     /// Runtimes whose present committed authority has been checked once this
     /// process against the durable session row (see
     /// [`Self::freshen_stale_runtime_authority_from_durable`]). Staleness is
@@ -1784,6 +1804,7 @@ impl SessionStoreBackedRuntimeStore {
             write_epochs: None,
             session_store: Some(session_store),
             mint_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
+            projection_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
             freshened: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
@@ -1797,6 +1818,7 @@ impl SessionStoreBackedRuntimeStore {
             write_epochs: Some(write_epochs),
             session_store: None,
             mint_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
+            projection_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
             freshened: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
@@ -1814,6 +1836,7 @@ impl SessionStoreBackedRuntimeStore {
             write_epochs: Some(write_epochs),
             session_store: Some(session_store),
             mint_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
+            projection_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
             freshened: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
@@ -1952,8 +1975,12 @@ impl SessionStoreBackedRuntimeStore {
     /// `commit_session_snapshot` treats a session it has no legacy previous
     /// row for as first-save ADOPTION, which is exactly the pick-a-winner
     /// this refusal exists to prevent. A catalog entry carrying a lifecycle
-    /// terminal is left untouched: terminal lifecycle facts outrank content
-    /// recovery.
+    /// terminal blocks the RESEED direction only (terminal lifecycle facts
+    /// outrank content recovery; re-seeding runtime authority is where
+    /// resurrection risk lives) - the opposite direction, durable BEHIND
+    /// committed (the parent-1 tear), reconciles even under a terminal
+    /// because repairing the durable projection of already-committed
+    /// authority mints no runtime life.
     async fn freshen_stale_runtime_authority_from_durable(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
@@ -1995,15 +2022,11 @@ impl SessionStoreBackedRuntimeStore {
         {
             return Ok(());
         }
-        if self
+        let lifecycle_terminal = self
             .inner
             .load_runtime_session_catalog_entry(runtime_id)
             .await?
-            .is_some_and(|entry| entry.lifecycle_terminal().is_some())
-        {
-            mark_fresh();
-            return Ok(());
-        }
+            .is_some_and(|entry| entry.lifecycle_terminal().is_some());
         let Some(committed) = self
             .inner
             .load_committed_whole_blob_snapshot(runtime_id)
@@ -2020,6 +2043,15 @@ impl SessionStoreBackedRuntimeStore {
             ))
         })?;
         let Some(durable) = durable else {
+            // Committed authority with NO durable row at all: the FIRST
+            // projection failed with its committing verb, and nothing would
+            // retry it until some future committing verb - a plain resume
+            // must clear the projection debt instead of stranding it. Same
+            // reconciliation, same single-flight; the guard's adoption
+            // branch owns the first-save shape. Runs under a lifecycle
+            // terminal for the same reason as the durable-behind arm.
+            self.project_committed_session_to_durable(runtime_id)
+                .await?;
             mark_fresh();
             return Ok(());
         };
@@ -2035,7 +2067,103 @@ impl SessionStoreBackedRuntimeStore {
         };
         let durable_order = order_of(&durable)?;
         let committed_order = order_of(committed.session())?;
-        if durable_order <= committed_order {
+        if durable_order == committed_order {
+            // Equal (generation, message-count) order is necessary but NOT
+            // sufficient for freshness: a session-store restore from a
+            // different lineage can coincide on both counts while carrying
+            // different content - a FORK, not staleness in either
+            // direction, and out-of-band file restores are exactly this
+            // probe's threat model, so no in-process ordering argument can
+            // rule the shape out. Fork adjudication is not this probe's to
+            // make: refuse typed, loudly and repeatably, exactly like the
+            // divergent-ahead refusal below. Exact revision equality marks
+            // fresh.
+            let durable_revision = durable.transcript_revision().map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                    "durable transcript revision for runtime-authority freshness probe: {e}"
+                ))
+            })?;
+            let committed_revision = committed.session().transcript_revision().map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                    "committed transcript revision for runtime-authority freshness \
+                         probe: {e}"
+                ))
+            })?;
+            if durable_revision != committed_revision {
+                return Err(meerkat_runtime::store::RuntimeStoreError::WriteFailed(
+                    format!(
+                        "durable session row for runtime {runtime_id} matches the committed \
+                         runtime authority on (rewrite generation {}, message count {}) but \
+                         DIVERGES in content (durable revision {durable_revision}, committed \
+                         revision {committed_revision}): a fork between lineages; refusing \
+                         to adopt either side",
+                        durable_order.0, durable_order.1
+                    ),
+                ));
+            }
+            // Exact revision equality still does not prove the durable
+            // ENVELOPE is current: a failure after every rewrite save but
+            // before the final authoritative projection leaves generation,
+            // count, and revision identical while usage/metadata lag. The
+            // projection door OWNS the envelope definition, so no
+            // field-list comparison can be proved complete against it -
+            // compare the full persisted encodings instead. Identical
+            // bytes make debt impossible (nothing for the projection to
+            // change, no write spent); any difference runs the idempotent
+            // reconciliation before mark_fresh, so envelope debt clears on
+            // a plain resume instead of stranding.
+            let durable_bytes = durable.to_persisted_bytes().map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                    "durable session encode for envelope-currency probe: {e}"
+                ))
+            })?;
+            let committed_bytes = committed.session().to_persisted_bytes().map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                    "committed session encode for envelope-currency probe: {e}"
+                ))
+            })?;
+            if durable_bytes != committed_bytes {
+                self.project_committed_session_to_durable(runtime_id)
+                    .await?;
+            }
+            mark_fresh();
+            return Ok(());
+        }
+        if durable_order < committed_order {
+            // Durable BEHIND committed: the parent-1 tear shape. A projection
+            // that failed (or, pre-fix, could not install a rewrite
+            // generation) left the durable row behind authority the runtime
+            // store already committed - a PLAIN RESUME must converge it, not
+            // wait for the next committing verb. The committed->durable
+            // reconciliation (rewrite-suffix replay + trailing projection)
+            // runs here, under this probe's single-flight, before the
+            // runtime is marked fresh. It runs EVEN under a lifecycle
+            // terminal: repairing the durable projection of already-committed
+            // authority mints no runtime life and resurrects nothing; the
+            // terminal gate stays on the reseed direction below, where
+            // adopting durable content into the runtime store is exactly the
+            // resurrection it exists to prevent. A reconciliation failure
+            // fails the probe typed (retryable), never a torn mark-fresh.
+            tracing::info!(
+                runtime_id = %runtime_id,
+                session_id = %session_id,
+                durable_rewrite_generation = durable_order.0,
+                durable_message_count = durable_order.1,
+                committed_rewrite_generation = committed_order.0,
+                committed_message_count = committed_order.1,
+                "durable row orders behind committed runtime authority; \
+                 running the committed->durable reconciliation"
+            );
+            self.project_committed_session_to_durable(runtime_id)
+                .await?;
+            mark_fresh();
+            return Ok(());
+        }
+        // Durable strictly AHEAD of committed: the reseed direction.
+        if lifecycle_terminal {
+            // Terminal lifecycle facts outrank content recovery: never
+            // re-seed runtime authority for a session the lifecycle domain
+            // has closed.
             mark_fresh();
             return Ok(());
         }
@@ -2114,6 +2242,255 @@ impl SessionStoreBackedRuntimeStore {
         fresh
     }
 
+    /// EXACT-PARENT PROJECTION SEAM (task #56, append-before-compact): bring
+    /// the durable row to EXACTLY `commit.parent_revision` before replaying
+    /// the rewrite commit. The chain walk accepts a durable predecessor that
+    /// is a strict APPEND-PREFIX of the commit's parent (the committed turn
+    /// appended messages before compacting), but the injected store's
+    /// `save_transcript_rewrite` requires the previously persisted head to
+    /// equal the commit's parent revision exactly - replaying directly would
+    /// conflict at the store.
+    ///
+    /// `Session::with_validated_transcript_rewrite_parent_projection`
+    /// (meerkat 0.8.15) mints the exact proof-carrying parent: the preceding
+    /// graph prefix, the exact parent body and timestamps, first occurrence
+    /// without an invented graph. Relative to the durable head that parent
+    /// is a pure append extension, so the ordinary authoritative-projection
+    /// door installs it and the rewrite replay then meets its exact parent.
+    async fn project_durable_to_exact_rewrite_parent(
+        &self,
+        session_store: &Arc<dyn SessionStore>,
+        successor: &meerkat_core::Session,
+        sealed: &meerkat_core::ValidatedTranscriptHistory,
+        commit: &meerkat_core::TranscriptRewriteCommit,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        let parent_session = successor
+            .with_validated_transcript_rewrite_parent_projection(sealed, commit)
+            .map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                    "exact rewrite-parent projection at generation {}: {e}",
+                    commit.rewrite_generation
+                ))
+            })?;
+        session_store
+            .save_authoritative_projection(&parent_session)
+            .await
+            .map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                    "exact rewrite-parent save at generation {}: {e}",
+                    commit.rewrite_generation
+                ))
+            })
+    }
+
+    /// INVERSE-APPEND ADMISSION (task #56 corpus, HomeCore parent-1 field
+    /// shape): the chain walk accepts a durable predecessor that the commit
+    /// parent EXTENDS (appends before compaction), but the wedged-retire
+    /// tear leaves the INVERSE - a durable row extending PAST the sealed
+    /// parent, because the final appends were projected durably while the
+    /// retire committed its compaction from the quiesced pre-append state
+    /// (an unacknowledged boundary is lost whole, by the projection
+    /// contract). The walk returns `None` on that shape and the repair had
+    /// no replay path.
+    ///
+    /// Admission is proof-carrying and exact: the earliest sealed commit
+    /// whose recorded `parent_revision` equals the digest of the durable
+    /// row's own first `messages_before` messages proves the durable row is
+    /// the commit parent plus an unacknowledged suffix; the replay chain is
+    /// that commit onward, and the exact-parent projection seam truncates
+    /// the suffix before the typed rewrite replay. No prefix proof means no
+    /// replay: a durable row from a foreign lineage keeps the injected
+    /// store's refusal exactly as before.
+    fn inverse_append_replay_chain<'a>(
+        sealed: &'a meerkat_core::ValidatedTranscriptHistory,
+        durable_predecessor: &meerkat_core::Session,
+    ) -> Result<
+        Option<Vec<&'a meerkat_core::TranscriptRewriteCommit>>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        let durable_messages = durable_predecessor.messages();
+        let commits: Vec<_> = sealed.state().commits().collect();
+        for (index, commit) in commits.iter().enumerate() {
+            if commit.messages_before > durable_messages.len() {
+                continue;
+            }
+            let prefix_digest = meerkat_core::transcript_messages_digest(
+                &durable_messages[..commit.messages_before],
+            )
+            .map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                    "durable prefix digest for inverse-append admission at generation {}: {e}",
+                    commit.rewrite_generation
+                ))
+            })?;
+            // The verdict logs UNCONDITIONALLY, matched or not: a silent
+            // refusal in the field is indistinguishable from the admission
+            // never running (iteration-4 lesson).
+            let matched = prefix_digest == commit.parent_revision;
+            tracing::info!(
+                session_id = %durable_predecessor.id(),
+                rewrite_generation = commit.rewrite_generation,
+                messages_before = commit.messages_before,
+                durable_messages = durable_messages.len(),
+                %prefix_digest,
+                parent_revision = %commit.parent_revision,
+                matched,
+                "inverse-append proof verdict"
+            );
+            if matched {
+                return Ok(Some(commits[index..].to_vec()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// DURABLE-BEHIND ADMISSION (task #56 corpus iteration 5, HomeCore
+    /// parent-1 true field shape; admission authored by HomeCore and landed
+    /// here with the lane's conventions): the tear is a FAILED projection,
+    /// so the durable row never received the wedged turn's final appends -
+    /// durable is a strict digest-PREFIX of the sealed commit parent (the
+    /// exact inverse of the inverse-append shape). Proof is exact content:
+    /// the materialized parent's first `durable_len` messages must
+    /// digest-equal the WHOLE durable row. On proof the existing replay
+    /// loop does the rest: durable head != parent revision routes through
+    /// the exact-parent projection seam (bringing durable UP to the parent
+    /// from the parent's own body), then the commit replays and the
+    /// trailing projection lands the compacted head. No durable suffix
+    /// exists to preserve - durable holds no unique content. Without proof,
+    /// foreign lineage keeps the typed refusal.
+    fn durable_behind_prefix_chain<'a>(
+        successor: &meerkat_core::Session,
+        sealed: &'a meerkat_core::ValidatedTranscriptHistory,
+        durable_predecessor: &meerkat_core::Session,
+    ) -> Result<
+        Option<Vec<&'a meerkat_core::TranscriptRewriteCommit>>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        let durable_messages = durable_predecessor.messages();
+        let durable_digest =
+            meerkat_core::transcript_messages_digest(durable_messages).map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                    "durable digest for durable-behind admission: {e}"
+                ))
+            })?;
+        let commits: Vec<_> = sealed.state().commits().collect();
+        for (index, commit) in commits.iter().enumerate() {
+            if commit.messages_before < durable_messages.len() {
+                continue;
+            }
+            let parent_session = successor
+                .with_validated_transcript_rewrite_parent_projection(sealed, commit)
+                .map_err(|e| {
+                    meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                        "parent projection for durable-behind admission at generation {}: {e}",
+                        commit.rewrite_generation
+                    ))
+                })?;
+            let parent_messages = parent_session.messages();
+            if parent_messages.len() < durable_messages.len() {
+                continue;
+            }
+            let parent_prefix_digest = meerkat_core::transcript_messages_digest(
+                &parent_messages[..durable_messages.len()],
+            )
+            .map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                    "parent prefix digest for durable-behind admission at generation {}: {e}",
+                    commit.rewrite_generation
+                ))
+            })?;
+            let matched = parent_prefix_digest == durable_digest;
+            tracing::info!(
+                session_id = %durable_predecessor.id(),
+                rewrite_generation = commit.rewrite_generation,
+                messages_before = commit.messages_before,
+                durable_messages = durable_messages.len(),
+                parent_messages = parent_messages.len(),
+                %parent_prefix_digest,
+                %durable_digest,
+                matched,
+                "durable-behind proof verdict"
+            );
+            if matched {
+                return Ok(Some(commits[index..].to_vec()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Last-resort divergence diagnostic, emitted only when BOTH
+    /// proof-carrying admissions found nothing: a message-level scan of the
+    /// durable row against the exact parent body the sealed graph itself
+    /// reconstructs, naming the first divergent index. Diagnostic only - a
+    /// scan failure must not fail the projection.
+    fn log_no_admission_diagnostic(
+        sealed: &meerkat_core::ValidatedTranscriptHistory,
+        durable_predecessor: &meerkat_core::Session,
+        successor: &meerkat_core::Session,
+    ) {
+        let durable_messages = durable_predecessor.messages();
+        let commits: Vec<_> = sealed.state().commits().collect();
+        let Some(first) = commits.first() else {
+            return;
+        };
+        let tested_len = first.messages_before.min(durable_messages.len());
+        let (parent_len, first_divergence) =
+            match successor.with_validated_transcript_rewrite_parent_projection(sealed, first) {
+                Ok(parent) => {
+                    let parent_messages = parent.messages();
+                    let divergence = parent_messages
+                        .iter()
+                        .zip(durable_messages.iter())
+                        .position(|(parent_message, durable_message)| {
+                            serde_json::to_vec(parent_message).ok()
+                                != serde_json::to_vec(durable_message).ok()
+                        })
+                        .map_or_else(
+                            || format!("<none within first {tested_len} messages>"),
+                            |index| index.to_string(),
+                        );
+                    (parent_messages.len().to_string(), divergence)
+                }
+                Err(e) => (
+                    format!("<parent projection failed: {e}>"),
+                    "<unavailable>".to_string(),
+                ),
+            };
+        tracing::warn!(
+            session_id = %durable_predecessor.id(),
+            rewrite_generation = first.rewrite_generation,
+            messages_before = first.messages_before,
+            durable_messages = durable_messages.len(),
+            parent_len = %parent_len,
+            parent_revision = %first.parent_revision,
+            first_divergence = %first_divergence,
+            "no repair admission holds: the durable row is neither a proven \
+             append-extension nor a proven prefix of the sealed parent"
+        );
+    }
+
+    /// The single-flight projection fence for ONE runtime (see the field
+    /// docs on [`Self::projection_flights`]).
+    fn projection_flight_for(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        let mut flights = self
+            .projection_flights
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = flights
+            .get(runtime_id.0.as_str())
+            .and_then(std::sync::Weak::upgrade)
+        {
+            return existing;
+        }
+        flights.retain(|_, flight| flight.strong_count() > 0);
+        let fresh = Arc::new(tokio::sync::Mutex::new(()));
+        flights.insert(runtime_id.0.clone(), Arc::downgrade(&fresh));
+        fresh
+    }
+
     /// Write-side complement of
     /// [`Self::mint_runtime_authority_from_durable`]: after a committing
     /// verb succeeds on the (ephemeral) inner store, project the
@@ -2165,6 +2542,14 @@ impl SessionStoreBackedRuntimeStore {
         {
             return Ok(());
         }
+        // Single-flight per runtime: the rewrite-replay walk below installs
+        // each missing commit against the durable head its predecessor
+        // step just advanced; two interleaved walks for one runtime would
+        // race those validations. The committed snapshot is re-read INSIDE
+        // the fence so a projection racing a newer commit converges toward
+        // the newer committed state.
+        let flight = self.projection_flight_for(runtime_id);
+        let _flight = flight.lock().await;
         let Some(snapshot) = self
             .inner
             .load_committed_whole_blob_snapshot(runtime_id)
@@ -2174,14 +2559,289 @@ impl SessionStoreBackedRuntimeStore {
             // nothing durable to project yet.
             return Ok(());
         };
+        let successor = snapshot.session();
+        // Parent-1 tear (task #56): `save_authoritative_projection` alone
+        // cannot INSTALL a new rewrite generation on the durable row - a
+        // retire committing a rewrite-advanced WholeBlob over an older
+        // durable head left graph-ahead-of-head state that meerkat's
+        // rewrite-save invariant then refused on every resume. When the
+        // committed successor's PROVED graph extends the durable
+        // predecessor, replay each missing rewrite commit through the
+        // store's typed rewrite door first; every step is monotonic and
+        // validated against the durable head the previous step installed,
+        // so a partial failure re-converges on the exact retry. No branch
+        // overwrites durable state the successor graph does not prove.
+        let durable_predecessor = session_store.load(successor.id()).await.map_err(|e| {
+            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                "durable predecessor read before boundary projection: {e}"
+            ))
+        })?;
+        // Durable rows proven (by the inverse-append admission below) to
+        // extend the sealed commit parent carry their suffix through the
+        // repair: the replay truncates to the exact parent, and the suffix
+        // rides the final projection as ordinary post-head appends.
+        let mut preserved_suffix: Vec<meerkat_core::Message> = Vec::new();
+        if let Some(durable_predecessor) = durable_predecessor.as_ref() {
+            let sealed = successor
+                .validated_transcript_history_state()
+                .map_err(|e| {
+                    meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                        "committed WholeBlob transcript-history seal: {e}"
+                    ))
+                })?;
+            if let Some(sealed) = sealed.as_ref()
+                && sealed.commit_count() != 0
+            {
+                let missing_commits =
+                    meerkat_core::session_store::find_transcript_rewrite_commit_chain_extending_session(
+                        sealed,
+                        durable_predecessor,
+                        sealed.state().head(),
+                    )
+                    .map_err(|e| {
+                        meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                            "rewrite chain walk against durable predecessor: {e}"
+                        ))
+                    })?;
+                // Field diagnosability: the walk's verdict decides the whole
+                // repair shape, and a repair that fell through to the
+                // trailing projection is indistinguishable from a replayed
+                // one without it.
+                tracing::info!(
+                    runtime_id = %runtime_id,
+                    session_id = %successor.id(),
+                    walk = match missing_commits.as_ref() {
+                        None => "none".to_string(),
+                        Some(commits) => commits.len().to_string(),
+                    },
+                    durable_revision = %durable_predecessor
+                        .transcript_revision()
+                        .unwrap_or_else(|_| "<unreadable>".to_string()),
+                    sealed_head_revision = %sealed.state().head(),
+                    sealed_commits = sealed.commit_count(),
+                    durable_messages = durable_predecessor.messages().len(),
+                    committed_messages = successor.messages().len(),
+                    "rewrite-suffix walk against the durable predecessor"
+                );
+                // `None` from the walk is NOT replayed on its own: the
+                // successor graph does not prove an extension of the durable
+                // row. ONE further proof-carrying admission applies before
+                // the injected store's save guard stays the only authority
+                // (commitless projections, adopted seeds): the INVERSE
+                // append shape, where the durable row extends PAST the
+                // sealed commit parent (HomeCore parent-1 - the wedged
+                // turn's final appends projected durably while the retire
+                // compacted from the quiesced pre-append state). The proof
+                // is exact content: the durable row's own first
+                // `messages_before` messages must digest-equal the commit's
+                // recorded parent revision. On proof the committed rewrites
+                // replay and the durable suffix is REBASED over the
+                // compacted head (preserved, never truncated - those rows
+                // can be real acknowledged turns); without proof, foreign
+                // lineage keeps the typed refusal. Never a blind
+                // graph-advanced overwrite from this facade.
+                let missing_commits = match missing_commits {
+                    Some(chain) => Some(chain),
+                    None => {
+                        let inverse =
+                            Self::inverse_append_replay_chain(sealed, durable_predecessor)?;
+                        if let Some(chain) = inverse.as_ref()
+                            && let Some(first) = chain.first()
+                        {
+                            let suffix =
+                                durable_predecessor.messages()[first.messages_before..].to_vec();
+                            let lifecycle_terminal = self
+                                .inner
+                                .load_runtime_session_catalog_entry(runtime_id)
+                                .await?
+                                .is_some_and(|entry| entry.lifecycle_terminal().is_some());
+                            tracing::info!(
+                                runtime_id = %runtime_id,
+                                session_id = %successor.id(),
+                                replay_from_generation = first.rewrite_generation,
+                                suffix_rows = suffix.len(),
+                                lifecycle_terminal,
+                                "inverse-append admission: the durable row extends the \
+                                 sealed commit parent; replaying the committed rewrites"
+                            );
+                            if lifecycle_terminal {
+                                // A terminal session's stable durable state
+                                // is the committed authority exactly; a
+                                // preserved suffix would be re-truncated by
+                                // the next reconciliation pass anyway. Drop
+                                // it loudly instead of quietly on pass two.
+                                tracing::warn!(
+                                    runtime_id = %runtime_id,
+                                    session_id = %successor.id(),
+                                    dropped_suffix_rows = suffix.len(),
+                                    "inverse-append repair under a lifecycle terminal \
+                                     converges to the committed authority; the durable \
+                                     suffix beyond the sealed parent is dropped"
+                                );
+                            } else {
+                                preserved_suffix = suffix;
+                            }
+                        }
+                        match inverse {
+                            Some(chain) => Some(chain),
+                            None => {
+                                let behind = Self::durable_behind_prefix_chain(
+                                    successor,
+                                    sealed,
+                                    durable_predecessor,
+                                )?;
+                                match behind {
+                                    Some(chain) => {
+                                        tracing::info!(
+                                            runtime_id = %runtime_id,
+                                            session_id = %successor.id(),
+                                            "durable-behind admission: the durable row is a \
+                                             digest-prefix of the sealed commit parent (failed \
+                                             projection tear); replaying the committed rewrites"
+                                        );
+                                        Some(chain)
+                                    }
+                                    None => {
+                                        Self::log_no_admission_diagnostic(
+                                            sealed,
+                                            durable_predecessor,
+                                            successor,
+                                        );
+                                        None
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+                if let Some(missing_commits) = missing_commits {
+                    // An EMPTY chain means the durable row's CONTENT already
+                    // sits at the sealed head (the walk judges by revision):
+                    // nothing to replay, only the trailing envelope
+                    // projection below. It must never be "corrected" from a
+                    // generation read off the durable Session - slim
+                    // head-canonical materializations keep retained history
+                    // out-of-line and always read generation 0, so a
+                    // session-level generation is not a durable oracle here.
+                    //
+                    // The injected `save_transcript_rewrite` requires the
+                    // durable head to equal each commit's parent revision
+                    // EXACTLY, while the chain walk also accepts an
+                    // append-prefix predecessor (messages appended in the
+                    // committed turn before it compacted). Track the durable
+                    // head across the walk and route any prefix gap through
+                    // the exact-parent projection seam before replaying.
+                    let mut durable_head_revision =
+                        durable_predecessor.transcript_revision().map_err(|e| {
+                            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                                "durable predecessor revision before rewrite replay: {e}"
+                            ))
+                        })?;
+                    for commit in missing_commits {
+                        let exact_parent_projected =
+                            durable_head_revision != commit.parent_revision;
+                        if exact_parent_projected {
+                            self.project_durable_to_exact_rewrite_parent(
+                                session_store,
+                                successor,
+                                sealed,
+                                commit,
+                            )
+                            .await?;
+                            durable_head_revision.clone_from(&commit.parent_revision);
+                        }
+                        tracing::info!(
+                            runtime_id = %runtime_id,
+                            session_id = %successor.id(),
+                            rewrite_generation = commit.rewrite_generation,
+                            exact_parent_projected,
+                            "replaying missing rewrite commit into the durable row"
+                        );
+                        let projected_history =
+                            sealed.project_at_rewrite_commit(commit).map_err(|e| {
+                                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                                    "rewrite replay projection at generation {}: {e}",
+                                    commit.rewrite_generation
+                                ))
+                            })?;
+                        let prefix_session = successor
+                            .with_validated_transcript_history_projection(projected_history)
+                            .map_err(|e| {
+                                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                                    "rewrite replay prefix session at generation {}: {e}",
+                                    commit.rewrite_generation
+                                ))
+                            })?;
+                        session_store
+                            .save_transcript_rewrite(&prefix_session, commit)
+                            .await
+                            .map_err(|e| {
+                                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                                    "rewrite replay save at generation {}: {e}",
+                                    commit.rewrite_generation
+                                ))
+                            })?;
+                        durable_head_revision = commit.revision.clone();
+                    }
+                }
+            }
+        }
+        // Trailing appends past the latest audited head plus the envelope
+        // (usage, metadata): the durable row is now at the successor's
+        // rewrite generation, so this is the ordinary projection shape. A
+        // preserved inverse-append suffix rides here as ordinary post-head
+        // appends on the committed successor.
+        let rebased = if preserved_suffix.is_empty() {
+            None
+        } else {
+            let mut rebased = successor.clone();
+            for message in preserved_suffix {
+                rebased.push(message);
+            }
+            Some(rebased)
+        };
+        let projected_document: &meerkat_core::Session = rebased.as_ref().unwrap_or(successor);
         session_store
-            .save_authoritative_projection(snapshot.session())
+            .save_authoritative_projection(projected_document)
             .await
             .map_err(|e| {
                 meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
                     "durable session projection after runtime boundary commit: {e}"
                 ))
-            })
+            })?;
+        if let Some(rebased) = rebased.as_ref() {
+            // Converge the committed runtime snapshot to the REBASED state
+            // in the same repair pass. Without this, durable (head plus
+            // suffix) orders ahead of committed and the next freshness
+            // reconciliation - blind to head-canonical generations on slim
+            // materializations - would project the plain successor and
+            // silently truncate the suffix it just preserved.
+            let bytes = rebased.to_persisted_bytes().map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                    "rebased session encode after inverse-append repair: {e}"
+                ))
+            })?;
+            self.note_session_scoped_write(runtime_id);
+            let result = self
+                .inner
+                .commit_session_snapshot(
+                    runtime_id,
+                    meerkat_runtime::store::SerializedSessionSnapshot {
+                        session_snapshot: Arc::new(bytes),
+                    },
+                )
+                .await;
+            self.note_session_scoped_write(runtime_id);
+            result?;
+            tracing::info!(
+                runtime_id = %runtime_id,
+                session_id = %projected_document.id(),
+                "inverse-append repair converged: committed runtime snapshot \
+                 re-seeded at the rebased state (compacted head plus preserved \
+                 suffix)"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -4681,6 +5341,10 @@ pub struct MobBootstrapSpec {
     /// repair supervisor falls back to plain reconcile retries).
     pub committed_boundary_recoverer:
         Option<Arc<dyn crate::identity_first::bridge::CommittedBoundaryRecoverer>>,
+    /// Late-bound §10.1 dispatch-time taint slot carried by the base
+    /// session-service wrapper `Self::new` installs; see
+    /// [`Self::dispatch_taint_slot`].
+    pub(crate) dispatch_taint_slot: crate::memory::dispatch_taint::DispatchTaintSlot,
     /// Holds the ephemeral temp directory alive for the lifetime of the spec.
     /// Only populated when the builder creates an ephemeral runtime.
     pub(crate) _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -4692,9 +5356,16 @@ impl MobBootstrapSpec {
         storage: MobStorage,
         session_service: Arc<dyn MobSessionService>,
     ) -> Self {
+        // Every spec construction path funnels through here (the stock
+        // constructors call `Self::new` with their wrapped service), so this
+        // is the ONE layer that carries the dispatch-time taint slot: each
+        // member create passes it exactly once, and later `with_*` re-wraps
+        // never double-decorate.
+        let dispatch_taint_slot = crate::memory::dispatch_taint::DispatchTaintSlot::default();
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook: no_op_pre_build_hook(),
+            dispatch_taint: Some(dispatch_taint_slot.clone()),
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -4724,8 +5395,18 @@ impl MobBootstrapSpec {
             resolved_storage: None,
             session_write_epochs: None,
             committed_boundary_recoverer: None,
+            dispatch_taint_slot,
             _ephemeral_dir: None,
         }
+    }
+
+    /// The late-bound §10.1 dispatch-time taint slot every member session
+    /// create built from this spec consults (see
+    /// `crate::memory::dispatch_taint`). Compositions that assemble the full
+    /// agent-memory stack fill the returned slot with the stack's
+    /// [`crate::SessionTaintTracker`]; unfilled it costs nothing.
+    pub fn dispatch_taint_slot(&self) -> crate::memory::dispatch_taint::DispatchTaintSlot {
+        self.dispatch_taint_slot.clone()
     }
 
     /// Record the composition-time storage durability resolution for a spec
@@ -4860,6 +5541,7 @@ impl MobBootstrapSpec {
         self.session_service = Arc::new(PreBuildMobSessionService {
             inner: self.session_service,
             hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
             after_create_hook: None,
             runtime_adapter_override: Some(adapter),
             session_read_absorber: None,
@@ -4902,6 +5584,7 @@ impl MobBootstrapSpec {
         self.session_service = Arc::new(PreBuildMobSessionService {
             inner: self.session_service,
             hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
@@ -4932,6 +5615,7 @@ impl MobBootstrapSpec {
         self.session_service = Arc::new(PreBuildMobSessionService {
             inner: self.session_service,
             hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -5098,6 +5782,7 @@ impl MobBootstrapSpec {
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
+            dispatch_taint: None,
             after_create_hook,
             runtime_adapter_override: effective_runtime_adapter.clone(),
             session_read_absorber: None,
@@ -5511,6 +6196,7 @@ impl MobBootstrapSpec {
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
+            dispatch_taint: None,
             after_create_hook,
             runtime_adapter_override: None,
             session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
@@ -5798,6 +6484,7 @@ impl MobBootstrapSpec {
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
+            dispatch_taint: None,
             after_create_hook: Some(combined_after_create_hook),
             runtime_adapter_override: Some(runtime_adapter.clone()),
             session_read_absorber: None,
@@ -8190,6 +8877,7 @@ realm_profile = "worker-v2"
         let wrapped = PreBuildMobSessionService {
             inner,
             hook,
+            dispatch_taint: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: None,
@@ -8468,6 +9156,7 @@ realm_profile = "worker-v2"
         let wrapped = PreBuildMobSessionService {
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
             after_create_hook: None,
             runtime_adapter_override: None,
             session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
@@ -8831,6 +9520,7 @@ realm_profile = "worker-v2"
         let wrapped = PreBuildMobSessionService {
             inner,
             hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
             after_create_hook: None,
             runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
             session_read_absorber: None,
@@ -8959,6 +9649,7 @@ realm_profile = "worker-v2"
         let wrapped = PreBuildMobSessionService {
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
             after_create_hook: None,
             runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
             session_read_absorber: None,
@@ -9282,6 +9973,1611 @@ realm_profile = "worker-v2"
             converged.messages().len(),
             third.messages().len(),
             "the durable projection must converge on the latest committed document"
+        );
+    }
+
+    /// Task #56 (parent-1 launch blocker): a committed WholeBlob boundary
+    /// carrying a NEW rewrite generation over an older durable row must
+    /// project through the store's typed rewrite door, installing the
+    /// missing commit on the durable row - not tear it into
+    /// graph-ahead-of-head state that the rewrite-save invariant then
+    /// refuses on every resume. Durable HeadCanonical gen0 + committed
+    /// WholeBlob gen1 -> the projection proves gen1 head, session document,
+    /// and graph on the durable row.
+    #[tokio::test]
+    async fn rewrite_advanced_boundary_projects_missing_commit_into_durable_row() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(dir.path().join("sessions.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(dir.path().join("runtime.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        // Durable predecessor at generation 0.
+        let mut gen0 = meerkat_core::Session::new();
+        gen0.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("original opening"),
+        ));
+        session_store
+            .save(&gen0)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(gen0.id());
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        gen0.to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // The committed successor: one typed rewrite (generation 1) plus a
+        // trailing plain append past the audited head.
+        let parent_revision = gen0
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut successor = gen0.clone();
+        successor
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 1 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::types::UserMessage::text("rewritten opening"),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("wedged-turn retire"),
+                Some("task-56-regression".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+        successor.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("post-rewrite turn"),
+        ));
+
+        // Commit the rewrite-advanced boundary THROUGH THE FACADE - the
+        // projection under test runs as part of this committing verb.
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&session_store),
+        ));
+        let authority =
+            meerkat_runtime::RuntimeStore::load_whole_blob_store_authority(&*store, &runtime_id)
+                .await
+                .unwrap_or_else(|error| panic!("{error}"))
+                .unwrap_or_else(|| panic!("the seeded runtime authority must exist"));
+        let prepared = meerkat_runtime::store::PreparedWholeBlobSnapshotCas::prepare(
+            authority,
+            meerkat_core::lifecycle::core_executor::BoundSessionCommit::sealed(Arc::new(
+                successor.clone(),
+            ))
+            .unwrap_or_else(|error| panic!("{error}")),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let outcome = meerkat_runtime::RuntimeStore::commit_prepared_whole_blob_snapshot_cas(
+            &*store,
+            &runtime_id,
+            prepared,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!("a rewrite-advanced boundary must project, not tear: {error}")
+        });
+        assert!(
+            matches!(
+                outcome,
+                meerkat_runtime::store::WholeBlobSnapshotCasOutcome::Committed(_)
+            ),
+            "the boundary must commit"
+        );
+
+        // The durable row now proves the gen1 head, document, and graph.
+        let durable = session_store
+            .load(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("the projected row must load cleanly: {error}"))
+            .unwrap_or_else(|| panic!("the durable row must exist"));
+        assert_eq!(
+            durable
+                .transcript_rewrite_generation()
+                .unwrap_or_else(|error| panic!("{error}")),
+            1,
+            "the durable row must carry the installed rewrite generation"
+        );
+        assert_eq!(
+            durable.messages().len(),
+            successor.messages().len(),
+            "the durable document must match the committed successor"
+        );
+        assert_eq!(
+            durable
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            successor
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            "the durable live revision must match the committed successor"
+        );
+        let graph = durable
+            .validated_transcript_history_state()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must carry the proved graph"));
+        assert_eq!(
+            graph.commit_count(),
+            1,
+            "the durable graph must retain the installed rewrite commit"
+        );
+    }
+
+    /// Task #56, freshness half (parent-1's ACTUAL recovery path): the tear
+    /// already exists on disk - durable gen0, committed gen1 - and the next
+    /// thing that happens is a plain RESUME, not a new committing verb. The
+    /// freshness probe must distinguish durable-behind from fresh, run the
+    /// committed-to-durable rewrite reconciliation, and converge the durable
+    /// row to gen1 with NO new write through the facade.
+    #[tokio::test]
+    async fn parent_1_torn_durable_row_heals_on_plain_freshness_pass() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(dir.path().join("sessions.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(dir.path().join("runtime.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let mut gen0 = meerkat_core::Session::new();
+        gen0.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("original opening"),
+        ));
+        session_store
+            .save(&gen0)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(gen0.id());
+        // The tear: the runtime store holds a committed rewrite-advanced
+        // boundary the durable row never received.
+        let parent_revision = gen0
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut successor = gen0.clone();
+        successor
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 1 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::types::UserMessage::text("rewritten opening"),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("wedged-turn retire"),
+                Some("task-56-regression".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        successor
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // A PLAIN READ through the facade (the resume path's authority
+        // load) - no committing verb anywhere.
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&session_store),
+        ));
+        let snapshot =
+            meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("the freshness pass must reconcile, not fail: {error}")
+                })
+                .unwrap_or_else(|| panic!("the committed snapshot must remain readable"));
+        assert_eq!(
+            snapshot
+                .session()
+                .transcript_rewrite_generation()
+                .unwrap_or_else(|error| panic!("{error}")),
+            1,
+            "the committed authority is the gen1 successor"
+        );
+
+        // The durable row converged to gen1 on the read alone.
+        let healed = session_store
+            .load(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must exist"));
+        assert_eq!(
+            healed
+                .transcript_rewrite_generation()
+                .unwrap_or_else(|error| panic!("{error}")),
+            1,
+            "a plain freshness pass must heal the torn durable row"
+        );
+        assert_eq!(
+            healed
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            successor
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            "the healed row must match the committed successor exactly"
+        );
+    }
+
+    /// Task #56, append-before-compact seam: durable synced at the gen1
+    /// audited head;
+    /// the committed turn appended C and rewrote to gen2 (parent gen1-head +
+    /// C). The reconciler must FIRST project the gen1-head -> gen1-head + C
+    /// append onto the durable row (exact parent revision), THEN replay the
+    /// gen2 commit, and converge end to end with exact digests.
+    #[tokio::test]
+    async fn append_before_compact_projects_append_then_replays_rewrite() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(dir.path().join("sessions.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> =
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        let mut gen1 = meerkat_core::Session::new();
+        gen1.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("original opening"),
+        ));
+        let parent_revision = gen1
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        gen1.commit_transcript_rewrite(
+            meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 1 },
+            vec![meerkat_core::Message::User(
+                meerkat_core::types::UserMessage::text("gen1 head"),
+            )],
+            meerkat_core::TranscriptRewriteReason::new("first compaction"),
+            Some("task-56-regression".to_string()),
+            Some(parent_revision),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        session_store
+            .save_authoritative_projection(&gen1)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(gen1.id());
+        let mut successor = gen1.clone();
+        successor.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("appended C"),
+        ));
+        let parent_revision = successor
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        successor
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 2 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::types::UserMessage::text("gen2 head"),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("append-before-compact"),
+                Some("task-56-regression".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        successor
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&session_store),
+        ));
+        store
+            .project_committed_session_to_durable(&runtime_id)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("append-then-rewrite reconciliation must converge: {error}")
+            });
+        let converged = session_store
+            .load(gen1.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must exist"));
+        assert_eq!(
+            converged
+                .transcript_rewrite_generation()
+                .unwrap_or_else(|error| panic!("{error}")),
+            2,
+            "the gen2 rewrite must be installed after the append projection"
+        );
+        assert_eq!(
+            converged
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            successor
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            "the durable row must converge on the exact committed digests"
+        );
+    }
+
+    /// Task #56, gap 3 (stranded first projection): committed WholeBlob
+    /// authority exists - including a rewrite generation - but the durable
+    /// store has NO row for the session (the first projection failed with
+    /// its committing verb). A plain freshness/resume pass must create the
+    /// durable projection and converge, not mark the runtime fresh over the
+    /// projection debt and strand it until some future committing verb.
+    #[tokio::test]
+    async fn cold_activation_with_no_durable_row_projects_committed_authority() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(dir.path().join("sessions.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(dir.path().join("runtime.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        // Committed authority carrying a rewrite; the durable store is left
+        // completely empty for this session.
+        let mut successor = meerkat_core::Session::new();
+        successor.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("original opening"),
+        ));
+        let parent_revision = successor
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        successor
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 1 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::types::UserMessage::text("rewritten opening"),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("first boundary"),
+                Some("task-56-regression".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(successor.id());
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        successor
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // A plain read through the facade - no committing verb anywhere.
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&session_store),
+        ));
+        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
+            .await
+            .unwrap_or_else(|error| panic!("the freshness pass must project, not fail: {error}"))
+            .unwrap_or_else(|| panic!("the committed snapshot must remain readable"));
+
+        let projected = session_store
+            .load(successor.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| {
+                panic!("the plain freshness pass must create the missing durable row")
+            });
+        assert_eq!(
+            projected
+                .transcript_rewrite_generation()
+                .unwrap_or_else(|error| panic!("{error}")),
+            1,
+            "the projected row must carry the committed rewrite generation"
+        );
+        assert_eq!(
+            projected
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            successor
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            "the projected row must match the committed authority exactly"
+        );
+    }
+
+    /// Task #56 corpus finding (HomeCore parent-1, real bytes): the member
+    /// is PARKED and its session explicitly UNREGISTERED from
+    /// identity-runtime state while the durable row sits torn behind
+    /// committed runtime authority. The tear reconciliation is a
+    /// durable-store repair, not a live-session operation - it must not
+    /// depend on registration, or repair and registration deadlock (the
+    /// member cannot register until its row resumes; the row cannot be
+    /// repaired until the member registers). A plain freshness/boot pass
+    /// must converge the row through the projection doors' parked-repair
+    /// admission.
+    #[tokio::test]
+    async fn parked_unregistered_torn_head_heals_on_plain_freshness_pass() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let continuity: Arc<dyn crate::identity_first::ContinuityStore> = Arc::new(
+            crate::identity_first::LocalContinuityStore::open(dir.path().join("continuity.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let adapter = Arc::new(crate::identity_first::ContinuitySessionStoreAdapter::new(
+            Arc::clone(&continuity),
+        ));
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(dir.path().join("runtime.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+
+        // A REGISTERED write lands the gen0 durable row, exactly as the
+        // member's live turns did before the incident.
+        let mut gen0 = meerkat_core::Session::new();
+        gen0.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("original opening"),
+        ));
+        let identity = crate::identity_first::AgentIdentity::parse("domain:parked")
+            .unwrap_or_else(|error| panic!("{error}"));
+        // The durable continuity record binding the identity to this session
+        // - in the field this is what restore resolves, and what the parked
+        // repair hydrates its write authority from.
+        crate::identity_first::ContinuityStore::upsert_continuity_record(
+            continuity.as_ref(),
+            &crate::identity_first::ContinuityRecord {
+                identity: identity.clone(),
+                agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                    "rt:domain:parked:0",
+                )
+                .unwrap_or_else(|error| panic!("{error}")),
+                session_id: gen0.id().clone(),
+                generation: crate::identity_first::ContinuityGeneration::new(0),
+                checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+            },
+            crate::identity_first::FencingToken::new(1),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+        adapter
+            .register_session(
+                gen0.id(),
+                crate::identity_first::SessionRuntimeState {
+                    identity,
+                    generation: crate::identity_first::ContinuityGeneration::new(0),
+                    fencing_token: crate::identity_first::FencingToken::new(1),
+                    checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        meerkat::SessionStore::save(adapter.as_ref(), &gen0)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // The PARK: explicit unregistration from identity-runtime state.
+        adapter
+            .unregister_session(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // The tear: committed runtime authority advanced one rewrite
+        // generation past the durable row.
+        let parent_revision = gen0
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut successor = gen0.clone();
+        successor
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 1 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::types::UserMessage::text("rewritten opening"),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("wedged-turn retire"),
+                Some("task-56-corpus-regression".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(gen0.id());
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        successor
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // A plain read through the facade with the CONTINUITY ADAPTER as
+        // the injected store - the field composition, unregistered state
+        // and all. No committing verb, no registration.
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&adapter) as Arc<dyn SessionStore>,
+        ));
+        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("the parked repair must converge, not deadlock on registration: {error}")
+            })
+            .unwrap_or_else(|| panic!("the committed snapshot must remain readable"));
+
+        // The durable AUTHORITY is the continuity head row. Slim
+        // head-canonical materializations keep retained history out-of-line
+        // (a loaded Session always reads rewrite generation 0 by design), so
+        // the heal is proven where meerkat's resume invariant reads it: the
+        // head row's adopted rewrite count and revision.
+        let channel = continuity
+            .as_incremental_sessions()
+            .unwrap_or_else(|| panic!("the local continuity store provides the delta channel"));
+        let healed_head = channel
+            .load_canonical_head(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the healed head row must exist"));
+        assert_eq!(
+            healed_head.rewrite_count, 1,
+            "the parked member's torn durable head must carry the committed rewrite"
+        );
+        let successor_revision = successor
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            healed_head.head_revision, successor_revision,
+            "the healed head row must sit at the committed successor's revision"
+        );
+        let healed = meerkat::SessionStore::load(adapter.as_ref(), gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must exist"));
+        assert_eq!(
+            healed
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            successor_revision,
+            "the healed row must match the committed successor exactly"
+        );
+
+        // Second boot: the member restores REGISTERED (the mob boot path
+        // registers rostered members from the continuity record before any
+        // read). A fresh facade's freshness pass over the already-healed row
+        // must converge idempotently: no typed refusal, no re-replay, the
+        // head row still at the committed rewrite and revision (envelope
+        // updates aside).
+        let (record, fencing_token, fence_current) =
+            crate::identity_first::ContinuityStore::resolve_record_by_session(
+                continuity.as_ref(),
+                gen0.id(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the continuity record must still bind the session"));
+        adapter
+            .register_session(
+                gen0.id(),
+                crate::identity_first::SessionRuntimeState {
+                    identity: record.identity.clone(),
+                    generation: record.generation,
+                    fencing_token,
+                    checkpoint_version: fence_current,
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let second_boot = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&adapter) as Arc<dyn SessionStore>,
+        ));
+        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(
+            &*second_boot,
+            &runtime_id,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!("the healed row must stay resumable on the next boot: {error}")
+        })
+        .unwrap_or_else(|| panic!("the committed snapshot must remain readable on the next boot"));
+        let head_after_second_boot = channel
+            .load_canonical_head(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the head row must survive the second boot"));
+        assert_eq!(
+            head_after_second_boot.rewrite_count, 1,
+            "the second boot must not re-replay or regress the healed rewrite"
+        );
+        assert_eq!(
+            head_after_second_boot.head_revision, successor_revision,
+            "the second boot must leave the healed head at the committed revision"
+        );
+    }
+
+    /// Task #56 iteration-3 field shape (HomeCore parent-1 trace): the
+    /// wedged turn's final appends were projected DURABLY while the retire
+    /// committed its compaction from the quiesced pre-append state, so the
+    /// durable row EXTENDS PAST the sealed commit parent (249 vs a smaller
+    /// parent in the field; 4 vs 3 here) and the rewrite-suffix walk
+    /// correctly proves nothing. The inverse-append admission must prove
+    /// the durable prefix against the commit's recorded parent revision,
+    /// replay the compaction, and REBASE the suffix over the compacted
+    /// head - preserved, never truncated - with the committed runtime
+    /// snapshot re-seeded to the rebased state so the repair is stable
+    /// across passes.
+    #[tokio::test]
+    async fn parked_inverse_append_durable_rebases_suffix_over_compaction() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let continuity: Arc<dyn crate::identity_first::ContinuityStore> = Arc::new(
+            crate::identity_first::LocalContinuityStore::open(dir.path().join("continuity.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let adapter = Arc::new(crate::identity_first::ContinuitySessionStoreAdapter::new(
+            Arc::clone(&continuity),
+        ));
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(dir.path().join("runtime.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+
+        let mut gen0 = meerkat_core::Session::new();
+        for text in ["opening", "second", "third"] {
+            gen0.push(meerkat_core::Message::User(
+                meerkat_core::types::UserMessage::text(text),
+            ));
+        }
+        let identity = crate::identity_first::AgentIdentity::parse("domain:parked-rebase")
+            .unwrap_or_else(|error| panic!("{error}"));
+        crate::identity_first::ContinuityStore::upsert_continuity_record(
+            continuity.as_ref(),
+            &crate::identity_first::ContinuityRecord {
+                identity: identity.clone(),
+                agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                    "rt:domain:parked-rebase:0",
+                )
+                .unwrap_or_else(|error| panic!("{error}")),
+                session_id: gen0.id().clone(),
+                generation: crate::identity_first::ContinuityGeneration::new(0),
+                checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+            },
+            crate::identity_first::FencingToken::new(1),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+        adapter
+            .register_session(
+                gen0.id(),
+                crate::identity_first::SessionRuntimeState {
+                    identity,
+                    generation: crate::identity_first::ContinuityGeneration::new(0),
+                    fencing_token: crate::identity_first::FencingToken::new(1),
+                    checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        meerkat::SessionStore::save(adapter.as_ref(), &gen0)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // The unacknowledged tail: one more turn PROJECTED DURABLY that the
+        // committed compaction's parent never captured.
+        let mut extended = gen0.clone();
+        extended.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("unacknowledged tail"),
+        ));
+        meerkat::SessionStore::save(adapter.as_ref(), &extended)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // The committed authority: a COMPACTION rewrite minted from the
+        // 3-message parent state (durable holds 4 rows).
+        let parent_revision = gen0
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut successor = gen0.clone();
+        successor
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 3 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::types::UserMessage::text("compacted summary"),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("wedged-turn retire compaction"),
+                Some("task-56-inverse-append-regression".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // The PARK, then the committed WholeBlob authority.
+        adapter
+            .unregister_session(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(gen0.id());
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        successor
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&adapter) as Arc<dyn SessionStore>,
+        ));
+        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
+            .await
+            .unwrap_or_else(|error| panic!("the inverse-append repair must converge: {error}"))
+            .unwrap_or_else(|| panic!("the committed snapshot must remain readable"));
+
+        // Expected rebased document: the compacted head plus the preserved
+        // unacknowledged tail.
+        let mut expected = successor.clone();
+        expected.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("unacknowledged tail"),
+        ));
+        let expected_revision = expected
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let channel = continuity
+            .as_incremental_sessions()
+            .unwrap_or_else(|| panic!("the local continuity store provides the delta channel"));
+        let healed_head = channel
+            .load_canonical_head(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the healed head row must exist"));
+        assert_eq!(
+            healed_head.rewrite_count, 1,
+            "the compaction rewrite must be installed on the durable head"
+        );
+        assert_eq!(
+            healed_head.head_revision, expected_revision,
+            "the healed head must carry the compacted head PLUS the preserved suffix"
+        );
+        let healed = meerkat::SessionStore::load(adapter.as_ref(), gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must exist"));
+        assert_eq!(
+            healed.messages().len(),
+            2,
+            "compacted summary plus the preserved unacknowledged tail"
+        );
+        let committed_after = inner
+            .load_committed_whole_blob_snapshot(&runtime_id)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the committed snapshot must survive the repair"));
+        assert_eq!(
+            committed_after
+                .session()
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            expected_revision,
+            "the committed runtime snapshot must converge to the rebased state"
+        );
+
+        // Second boot: registered restore over the healed pair converges
+        // idempotently - no re-replay, no truncation of the suffix.
+        let (record, fencing_token, fence_current) =
+            crate::identity_first::ContinuityStore::resolve_record_by_session(
+                continuity.as_ref(),
+                gen0.id(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the continuity record must still bind the session"));
+        adapter
+            .register_session(
+                gen0.id(),
+                crate::identity_first::SessionRuntimeState {
+                    identity: record.identity.clone(),
+                    generation: record.generation,
+                    fencing_token,
+                    checkpoint_version: fence_current,
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let second_boot = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&adapter) as Arc<dyn SessionStore>,
+        ));
+        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(
+            &*second_boot,
+            &runtime_id,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("the rebased row must stay resumable: {error}"))
+        .unwrap_or_else(|| panic!("the committed snapshot must remain readable on boot two"));
+        let head_after = channel
+            .load_canonical_head(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the head row must survive the second boot"));
+        assert_eq!(
+            head_after.rewrite_count, 1,
+            "no re-replay on the second boot"
+        );
+        assert_eq!(
+            head_after.head_revision, expected_revision,
+            "the preserved suffix must survive the second boot untouched"
+        );
+    }
+
+    /// Task #56 iteration-5 TRUE field shape (HomeCore parent-1, proof
+    /// verdict "messages_before=250 durable_messages=249 matched"): the
+    /// tear is a FAILED projection - the wedged turn's final append never
+    /// reached the durable row, so durable is a strict digest-PREFIX of the
+    /// sealed compaction parent (N-1 of N, compacted to K). The
+    /// durable-behind admission proves the prefix against the materialized
+    /// parent body and the replay brings durable up to the parent, replays
+    /// the compaction, and lands the committed head exactly - no suffix
+    /// exists to preserve.
+    #[tokio::test]
+    async fn parked_durable_prefix_of_parent_heals_to_committed_head() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let continuity: Arc<dyn crate::identity_first::ContinuityStore> = Arc::new(
+            crate::identity_first::LocalContinuityStore::open(dir.path().join("continuity.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let adapter = Arc::new(crate::identity_first::ContinuitySessionStoreAdapter::new(
+            Arc::clone(&continuity),
+        ));
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(dir.path().join("runtime.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+
+        let mut gen0 = meerkat_core::Session::new();
+        for text in ["opening", "second", "third"] {
+            gen0.push(meerkat_core::Message::User(
+                meerkat_core::types::UserMessage::text(text),
+            ));
+        }
+        let identity = crate::identity_first::AgentIdentity::parse("domain:parked-prefix")
+            .unwrap_or_else(|error| panic!("{error}"));
+        crate::identity_first::ContinuityStore::upsert_continuity_record(
+            continuity.as_ref(),
+            &crate::identity_first::ContinuityRecord {
+                identity: identity.clone(),
+                agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                    "rt:domain:parked-prefix:0",
+                )
+                .unwrap_or_else(|error| panic!("{error}")),
+                session_id: gen0.id().clone(),
+                generation: crate::identity_first::ContinuityGeneration::new(0),
+                checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+            },
+            crate::identity_first::FencingToken::new(1),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+        adapter
+            .register_session(
+                gen0.id(),
+                crate::identity_first::SessionRuntimeState {
+                    identity,
+                    generation: crate::identity_first::ContinuityGeneration::new(0),
+                    fencing_token: crate::identity_first::FencingToken::new(1),
+                    checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        // Only the 3-message state ever projects durably; the 4th message
+        // below is the failed projection.
+        meerkat::SessionStore::save(adapter.as_ref(), &gen0)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // The runtime appended a 4th message (never projected), then the
+        // retire compacted 4 -> 1.
+        let mut successor = gen0.clone();
+        successor.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("never projected"),
+        ));
+        let parent_revision = successor
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        successor
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 4 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::types::UserMessage::text("compacted summary"),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("wedged-turn retire compaction"),
+                Some("task-56-durable-prefix-regression".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        adapter
+            .unregister_session(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(gen0.id());
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        successor
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&adapter) as Arc<dyn SessionStore>,
+        ));
+        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
+            .await
+            .unwrap_or_else(|error| panic!("the durable-prefix repair must converge: {error}"))
+            .unwrap_or_else(|| panic!("the committed snapshot must remain readable"));
+
+        let successor_revision = successor
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let channel = continuity
+            .as_incremental_sessions()
+            .unwrap_or_else(|| panic!("the local continuity store provides the delta channel"));
+        let healed_head = channel
+            .load_canonical_head(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the healed head row must exist"));
+        assert_eq!(
+            healed_head.rewrite_count, 1,
+            "the compaction rewrite must be installed on the durable head"
+        );
+        assert_eq!(
+            healed_head.head_revision, successor_revision,
+            "the healed head must land at the committed head exactly (no suffix exists)"
+        );
+        let healed = meerkat::SessionStore::load(adapter.as_ref(), gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must exist"));
+        assert_eq!(
+            healed
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            successor_revision,
+            "the healed row must match the committed successor exactly"
+        );
+    }
+
+    /// Direct proof test for the durable-behind admission (independent of
+    /// the chain walk's own acceptance behavior): a durable row that is a
+    /// strict digest-prefix of the sealed parent proves the chain; a
+    /// same-length divergent row proves nothing.
+    #[tokio::test]
+    async fn durable_behind_prefix_chain_proves_exact_prefix_and_refuses_divergence() {
+        let mut base = meerkat_core::Session::new();
+        for text in ["opening", "second"] {
+            base.push(meerkat_core::Message::User(
+                meerkat_core::types::UserMessage::text(text),
+            ));
+        }
+        let durable = base.clone();
+        let mut divergent = base.clone();
+        divergent.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("divergent third"),
+        ));
+        let mut successor = base;
+        successor.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("third"),
+        ));
+        let parent_revision = successor
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        successor
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 3 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::types::UserMessage::text("compacted summary"),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("wedged-turn retire compaction"),
+                Some("task-56-behind-proof-unit".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+        let sealed = successor
+            .validated_transcript_history_state()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the successor carries a sealed graph"));
+
+        let proven = SessionStoreBackedRuntimeStore::durable_behind_prefix_chain(
+            &successor, &sealed, &durable,
+        )
+        .unwrap_or_else(|error| panic!("{error}"))
+        .unwrap_or_else(|| panic!("a strict prefix of the parent must prove the chain"));
+        assert_eq!(proven.len(), 1);
+        assert_eq!(proven[0].rewrite_generation, 1);
+
+        let refused = SessionStoreBackedRuntimeStore::durable_behind_prefix_chain(
+            &successor, &sealed, &divergent,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            refused.is_none(),
+            "a divergent row must not prove the durable-behind chain"
+        );
+    }
+
+    /// Inverse-append admission is proof-carrying: a durable row whose
+    /// prefix does NOT digest-match the sealed commit's recorded parent is
+    /// a foreign lineage, and the repair must keep the typed refusal - no
+    /// replay, no truncation, no committed-derived overwrite.
+    #[tokio::test]
+    async fn parked_repair_refuses_foreign_lineage_durable_row_typed() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let continuity: Arc<dyn crate::identity_first::ContinuityStore> = Arc::new(
+            crate::identity_first::LocalContinuityStore::open(dir.path().join("continuity.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let adapter = Arc::new(crate::identity_first::ContinuitySessionStoreAdapter::new(
+            Arc::clone(&continuity),
+        ));
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(dir.path().join("runtime.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+
+        let mut base = meerkat_core::Session::new();
+        for text in ["opening", "second"] {
+            base.push(meerkat_core::Message::User(
+                meerkat_core::types::UserMessage::text(text),
+            ));
+        }
+        // The committed lineage continues with "third"; the durable row was
+        // restored from a lineage that continued with "divergent third".
+        let mut committed_parent = base.clone();
+        committed_parent.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("third"),
+        ));
+        let mut divergent = base;
+        divergent.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("divergent third"),
+        ));
+
+        let identity = crate::identity_first::AgentIdentity::parse("domain:parked-fork")
+            .unwrap_or_else(|error| panic!("{error}"));
+        crate::identity_first::ContinuityStore::upsert_continuity_record(
+            continuity.as_ref(),
+            &crate::identity_first::ContinuityRecord {
+                identity: identity.clone(),
+                agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                    "rt:domain:parked-fork:0",
+                )
+                .unwrap_or_else(|error| panic!("{error}")),
+                session_id: divergent.id().clone(),
+                generation: crate::identity_first::ContinuityGeneration::new(0),
+                checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+            },
+            crate::identity_first::FencingToken::new(1),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+        adapter
+            .register_session(
+                divergent.id(),
+                crate::identity_first::SessionRuntimeState {
+                    identity,
+                    generation: crate::identity_first::ContinuityGeneration::new(0),
+                    fencing_token: crate::identity_first::FencingToken::new(1),
+                    checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        meerkat::SessionStore::save(adapter.as_ref(), &divergent)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let divergent_revision = divergent
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let parent_revision = committed_parent
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut successor = committed_parent;
+        successor
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 3 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::types::UserMessage::text("compacted summary"),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("wedged-turn retire compaction"),
+                Some("task-56-fork-refusal-regression".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        adapter
+            .unregister_session(divergent.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(divergent.id());
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        successor
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&adapter) as Arc<dyn SessionStore>,
+        ));
+        let refusal =
+            meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
+                .await;
+        assert!(
+            refusal.is_err(),
+            "a foreign-lineage durable row must refuse typed, not heal or overwrite"
+        );
+
+        // The refusal must leave the divergent durable row byte-untouched.
+        let untouched = meerkat::SessionStore::load(adapter.as_ref(), divergent.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must survive the refusal"));
+        assert_eq!(
+            untouched
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            divergent_revision,
+            "the refusal must not mutate the foreign-lineage durable row"
+        );
+        assert_eq!(untouched.messages().len(), 3);
+    }
+
+    /// Task #56, equal-order fork disposition: equal (rewrite generation,
+    /// message count) order between the durable row and the committed
+    /// authority is necessary but not sufficient for freshness - a
+    /// session-store restore from a different lineage can coincide on both
+    /// counts with different content. That is a FORK: the probe must refuse
+    /// typed, loudly and repeatably, and adopt neither side - never mark
+    /// fresh over silent divergence.
+    #[tokio::test]
+    async fn freshen_refuses_equal_order_divergent_durable_row_typed() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(dir.path().join("sessions.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(dir.path().join("runtime.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        // One session identity, two single-message documents from different
+        // lineages: generation 0 and message count 1 on BOTH sides, content
+        // divergent.
+        let seed = meerkat_core::Session::new();
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(seed.id());
+        let mut committed = seed.clone();
+        committed.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("committed turn"),
+        ));
+        let mut divergent = seed;
+        divergent.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("divergent turn"),
+        ));
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        committed
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        session_store
+            .save(&divergent)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&session_store),
+        ));
+        for attempt in ["first read", "retry"] {
+            let refused = meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(
+                &*store,
+                &runtime_id,
+            )
+            .await
+            .expect_err("an equal-order divergent durable row must refuse typed, not adopt");
+            assert!(
+                refused.to_string().contains("DIVERGES in content"),
+                "the {attempt} refusal must name the fork: {refused}"
+            );
+        }
+        // Neither side was rewritten by the refused probe.
+        let retained = inner
+            .load_committed_whole_blob_snapshot(&runtime_id)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the committed runtime authority must survive"));
+        assert_eq!(
+            retained
+                .session()
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            committed
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            "the committed runtime document must be untouched"
+        );
+        let durable = session_store
+            .load(committed.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must survive"));
+        assert_eq!(
+            durable
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            divergent
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            "the durable document must be untouched"
+        );
+    }
+
+    /// Task #56, envelope-debt case: generation, count, AND revision all
+    /// equal, but the durable ENVELOPE lags (a failure after every rewrite
+    /// save, before the final authoritative projection). The equal arm must
+    /// detect the debt (persisted-encoding comparison) and complete the
+    /// projection on a plain freshness pass instead of marking fresh over
+    /// it.
+    #[tokio::test]
+    async fn equal_revision_envelope_debt_clears_on_plain_freshness_pass() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(dir.path().join("sessions.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(dir.path().join("runtime.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let mut session = meerkat_core::Session::new();
+        session.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("original opening"),
+        ));
+        // Durable row WITHOUT the envelope update.
+        session_store
+            .save(&session)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        // Committed authority: identical transcript, updated envelope.
+        let mut committed = session.clone();
+        committed.set_metadata(
+            "mobkit:task56:envelope-probe",
+            serde_json::Value::String("current".to_string()),
+        );
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(session.id());
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        committed
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // A plain read through the facade - no committing verb anywhere.
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&session_store),
+        ));
+        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&*store, &runtime_id)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("the freshness pass must complete the envelope, not fail: {error}")
+            })
+            .unwrap_or_else(|| panic!("the committed snapshot must remain readable"));
+
+        let healed = session_store
+            .load(session.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must exist"));
+        assert_eq!(
+            healed
+                .metadata()
+                .get("mobkit:task56:envelope-probe")
+                .and_then(|value| value.as_str()),
+            Some("current"),
+            "a plain freshness pass must complete the lagging envelope"
+        );
+        assert_eq!(
+            healed
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            committed
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            "content stays identical - only the envelope was owed"
+        );
+    }
+
+    /// Task #56, retry half: a partial failure MID-CHAIN (first missing
+    /// commit installed, second refused by an injected outage) fails the
+    /// committing verb, keeps the monotonic progress it made, and the exact
+    /// retried step converges - installing ONLY the remaining commit, never
+    /// re-writing the one already durable.
+    #[tokio::test]
+    async fn rewrite_replay_partial_failure_keeps_progress_and_exact_retry_converges() {
+        struct FailNthRewriteStore {
+            inner: Arc<dyn SessionStore>,
+            rewrite_calls: std::sync::atomic::AtomicUsize,
+            fail_on_call: std::sync::atomic::AtomicUsize,
+        }
+
+        #[async_trait]
+        impl SessionStore for FailNthRewriteStore {
+            async fn save(
+                &self,
+                session: &meerkat_core::Session,
+            ) -> Result<(), meerkat_store::SessionStoreError> {
+                self.inner.save(session).await
+            }
+
+            async fn save_transcript_rewrite(
+                &self,
+                session: &meerkat_core::Session,
+                commit: &meerkat_core::TranscriptRewriteCommit,
+            ) -> Result<(), meerkat_store::SessionStoreError> {
+                let call = self
+                    .rewrite_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                if call == self.fail_on_call.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err(meerkat_store::SessionStoreError::Internal(
+                        "injected mid-chain outage".to_string(),
+                    ));
+                }
+                self.inner.save_transcript_rewrite(session, commit).await
+            }
+
+            async fn save_authoritative_projection(
+                &self,
+                session: &meerkat_core::Session,
+            ) -> Result<(), meerkat_store::SessionStoreError> {
+                self.inner.save_authoritative_projection(session).await
+            }
+
+            async fn load(
+                &self,
+                id: &meerkat_core::types::SessionId,
+            ) -> Result<Option<meerkat_core::Session>, meerkat_store::SessionStoreError>
+            {
+                self.inner.load(id).await
+            }
+
+            async fn list(
+                &self,
+                filter: meerkat_store::SessionFilter,
+            ) -> Result<Vec<meerkat_core::SessionMeta>, meerkat_store::SessionStoreError>
+            {
+                self.inner.list(filter).await
+            }
+
+            async fn delete(
+                &self,
+                id: &meerkat_core::types::SessionId,
+            ) -> Result<(), meerkat_store::SessionStoreError> {
+                self.inner.delete(id).await
+            }
+
+            async fn delete_if_current_revision(
+                &self,
+                id: &meerkat_core::types::SessionId,
+                expected_current_revision: &str,
+            ) -> Result<bool, meerkat_store::SessionStoreError> {
+                self.inner
+                    .delete_if_current_revision(id, expected_current_revision)
+                    .await
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let failing = Arc::new(FailNthRewriteStore {
+            inner: Arc::new(
+                meerkat_store::SqliteSessionStore::open(dir.path().join("sessions.db"))
+                    .unwrap_or_else(|error| panic!("{error}")),
+            ),
+            rewrite_calls: std::sync::atomic::AtomicUsize::new(0),
+            fail_on_call: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> =
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+
+        // Durable predecessor at generation 0; committed successor two
+        // rewrite generations ahead.
+        let mut gen0 = meerkat_core::Session::new();
+        gen0.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("original opening"),
+        ));
+        failing
+            .save(&gen0)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(gen0.id());
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        gen0.to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut successor = gen0.clone();
+        for (generation, replacement) in [(1u64, "first rewrite"), (2, "second rewrite")] {
+            let parent_revision = successor
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}"));
+            let commit = successor
+                .commit_transcript_rewrite(
+                    meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 1 },
+                    vec![meerkat_core::Message::User(
+                        meerkat_core::types::UserMessage::text(replacement),
+                    )],
+                    meerkat_core::TranscriptRewriteReason::new("task-56 chain"),
+                    Some("task-56-regression".to_string()),
+                    Some(parent_revision),
+                )
+                .unwrap_or_else(|error| panic!("{error}"));
+            assert_eq!(commit.rewrite_generation, generation);
+        }
+
+        let store = Arc::new(SessionStoreBackedRuntimeStore::new(
+            Arc::clone(&inner),
+            Arc::clone(&failing) as Arc<dyn SessionStore>,
+        ));
+        // Outage on the SECOND missing commit: mid-chain.
+        failing
+            .fail_on_call
+            .store(2, std::sync::atomic::Ordering::SeqCst);
+        let authority =
+            meerkat_runtime::RuntimeStore::load_whole_blob_store_authority(&*store, &runtime_id)
+                .await
+                .unwrap_or_else(|error| panic!("{error}"))
+                .unwrap_or_else(|| panic!("the seeded runtime authority must exist"));
+        let prepared = meerkat_runtime::store::PreparedWholeBlobSnapshotCas::prepare(
+            authority,
+            meerkat_core::lifecycle::core_executor::BoundSessionCommit::sealed(Arc::new(
+                successor.clone(),
+            ))
+            .unwrap_or_else(|error| panic!("{error}")),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let error = meerkat_runtime::RuntimeStore::commit_prepared_whole_blob_snapshot_cas(
+            &*store,
+            &runtime_id,
+            prepared,
+        )
+        .await
+        .expect_err("a mid-chain projection outage must fail the committing verb");
+        assert!(
+            error.to_string().contains("generation 2"),
+            "the failure must name the refused step: {error}"
+        );
+        assert_eq!(
+            failing
+                .rewrite_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "generation 1 installed, generation 2 attempted and refused"
+        );
+        let after_failure = failing
+            .load(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must survive the outage"));
+        assert_eq!(
+            after_failure
+                .transcript_rewrite_generation()
+                .unwrap_or_else(|error| panic!("{error}")),
+            1,
+            "the monotonic progress before the outage must stand"
+        );
+
+        // The exact retried step converges: only the REMAINING commit is
+        // installed (call 3 is generation 2 again; generation 1 is not
+        // re-written), and the durable row reaches the committed successor.
+        failing
+            .fail_on_call
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        store
+            .project_committed_session_to_durable(&runtime_id)
+            .await
+            .unwrap_or_else(|error| panic!("the exact retry must converge: {error}"));
+        assert_eq!(
+            failing
+                .rewrite_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "the retry must install only the remaining commit"
+        );
+        let converged = failing
+            .load(gen0.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must exist after retry"));
+        assert_eq!(
+            converged
+                .transcript_rewrite_generation()
+                .unwrap_or_else(|error| panic!("{error}")),
+            2,
+            "the retried projection must install the remaining generation"
+        );
+        assert_eq!(
+            converged
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            successor
+                .transcript_revision()
+                .unwrap_or_else(|error| panic!("{error}")),
+            "the durable row must converge on the committed successor"
         );
     }
 

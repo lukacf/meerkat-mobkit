@@ -7,6 +7,225 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.11] - 2026-08-04
+
+### Fixed
+
+- **Internal deliveries dedup across crash redelivery, and the dispatch
+  door runs full delivery preparation** (meerkat 0.8.15 pair; held
+  uncommitted until the repin). Two halves of one change set:
+  - Delivery-identity threading: both internal work doors - the identity
+    bridge's `InternalBridgeWork` submit and the schedule host's direct
+    fallback - now submit through meerkat's deduplicating
+    `submit_work_with_mode_and_delivery_identity` whenever a delivery
+    identity (idempotency key + occurrence-UUID correlation) is present.
+    meerkat derives the WorkRef from mob + member identity + idempotency
+    key, stable across lease-expiry reclaim, so a crash redelivery of the
+    same occurrence resolves to the SAME work instead of a duplicate turn.
+    The scheduler sink now threads BOTH identity halves through
+    `DispatchInput` into runtime admission (the 0.8.12-era "internal lane
+    closed upstream" note is retired with the mechanism it documented).
+    Admission is fail closed and typed, validated BEFORE the bridge:
+    (None, None) is an ordinary delivery; a full pair validates upstream
+    (canonical non-nil UUID correlation) and carries, with the correlation
+    id also riding as the interaction id; EVERY other combination -
+    half-pair, invalid UUID - raises `InvalidDeliveryIdentity` and NO
+    delivery occurs. `SessionBridge` deliveries were rebuilt around one
+    typed request: the REQUIRED `deliver_admitted(runtime_id,
+    BridgeDelivery)` method that every implementation must service (the
+    convenience `deliver*` methods are provided forwarders that build the
+    request), so no implementation - production or test double - can
+    silently drop a delivery identity; a bridge that cannot honor one
+    refuses typed.
+  - Shared delivery preparation: `dispatch_with_expected_member_alias`
+    previously delivered RAW - internal dispatches (schedules foremost)
+    skipped inbound defanging, taint session attribution, and ambient
+    memory injection for the member's whole lifetime (HomeCore: zero
+    surface=Turn injection-ledger rows ever). Both member doors now run
+    the ONE preparation helper (note_current_session + generation bind,
+    defang, inject_for_turn), and dispatch populates the admitted
+    delivery request with the injected recall as its own typed body.
+    `DispatchOrigin` is untouched; Steer keeps its deliberate bypass on
+    the send door.
+
+- **Steward dream honesty: turn-only usage evidence, quarantine window
+  pin-down, durable run rows** (HomeCore dream rehearsal). Three findings,
+  one root shape:
+  - Usage-audit data boundary: the audit now judges only `surface=Turn`
+    injection evidence - build-surface rows are spawn hydration
+    bookkeeping, not proof a record earned its context slot. A store with
+    zero Turn rows for the scope SKIPS the audit and queues NOTHING
+    (HomeCore: 53/53 dead-weight noise verdicts minted from hydration
+    counts on a store where turn evidence could not yet accrue).
+  - Legacy quarantine review: proven from code that no
+    "new-since-last-dream" window exists - every dream loads the full
+    quarantine queue (capped per dream) regardless of record age; the
+    rehearsal's unverdicted legacy records were starved by the pipeline
+    aborting in the consolidate phase AFTER the audit sheet persisted.
+    A regression pins the contract: a quarantined record older than the
+    newest recorded dream still enters signals and gets its verdict.
+  - Dream-run bookkeeping: the `dream_runs` row is now written at run
+    START (in-flight), replaced at the tail with final numbers, and
+    replaced with an honest failure row (committed-op count + failed
+    phase) when the pipeline aborts - verdict rows can no longer
+    reference run ids that resolve nowhere, and the console dream-runs
+    panel sees failed runs instead of nothing.
+
+- **WholeBlob-to-durable projection tear healed: missing rewrite commits
+  replay through the typed rewrite door** (HomeCore parent-1 production
+  park). The runtime-store facade projected committed WholeBlob
+  boundaries into the durable session store with a plain authoritative
+  projection, which cannot INSTALL a new rewrite generation - a
+  wedged-turn retire committing a rewrite-advanced boundary left the
+  durable row torn (graph one generation ahead of its head), and
+  meerkat's rewrite-save invariant then refused every subsequent resume.
+  The projection now runs per-runtime single-flight, loads the exact
+  committed successor and the durable predecessor, and when the
+  successor's PROVED graph extends durable state it installs each
+  missing rewrite commit through `SessionStore::save_transcript_rewrite`
+  (exact prefix session projected at that commit) before the ordinary
+  trailing-append/envelope projection. Every step is monotonic and
+  validated against the head the previous step installed, so a partial
+  failure re-converges on the exact retry; no branch overwrites durable
+  state the successor graph does not prove. The freshness probe gained
+  the matching half: durable-behind-committed is now distinguished from
+  fresh and runs the same reconciliation on a PLAIN RESUME (no new
+  committing verb required), including under a lifecycle terminal -
+  repairing the durable projection of already-committed authority mints
+  no runtime life; the terminal gate stays on the reseed direction where
+  resurrection risk actually lives. Field-recovery property:
+  parent-1-class tears self-heal on the first post-upgrade resume - the
+  committed runtime authority still holds the full graph, and the
+  resume-path freshness pass replays the missing commit into the durable
+  row; no hand-repair of wedged stores. The append-before-compact shape
+  (a committed rewrite whose parent revision is a strict APPEND-extension
+  of the durable head) is covered too: the reconciler first installs the
+  exact proof-carrying parent via meerkat 0.8.15's
+  `Session::with_validated_transcript_rewrite_parent_projection`, then
+  replays the rewrite commit against its exact parent.
+  Real-bytes corpus hardening (frozen parent-1 backup, five field
+  iterations): the repair works on a PARKED member whose session is
+  explicitly unregistered - the projection doors admit the
+  durable-observed non-superseded head as a parked repair, write
+  authority hydrates from the durable continuity record via the new
+  fail-closed `ContinuityStore::resolve_record_by_session` (identity,
+  generation, fencing token, fence-current checkpoint re-seed), and
+  archives, creation windows, removed documents, and suspended sessions
+  keep their refusals. Two proof-carrying admissions extend the chain
+  walk for tear shapes it cannot prove, both by exact content digest:
+  the durable row extending PAST the sealed parent (its unacknowledged
+  suffix is REBASED over the compacted head, preserved, with the
+  committed snapshot converged to the rebased state in the same pass)
+  and the true parent-1 shape - the durable row as a strict PREFIX of
+  the sealed parent (a failed projection; admission authored by
+  HomeCore and validated on the live corpus, GATE_PASS 17/17). All
+  admission verdicts log unconditionally with both digests; a durable
+  row proving neither shape is a foreign lineage and keeps the typed
+  refusal, byte-untouched.
+
+- **Memory scope keys are LOGICAL identities end to end** (HomeCore
+  activation smoke, launch blocker). The platform's observe-stream paths
+  keyed identity scopes by the mob-plane roster id - for identity-first
+  members the comms-safe encoding of a generated runtime alias
+  (`mk--rt_cidentity_cparent-1_c0`), one per respawn generation - while the
+  SDK `agent_memory` RPC, per-turn injection, and the recorder key by the
+  logical `AgentIdentity` (`identity:parent-1`). Result: distiller-extracted
+  memories landed in per-incarnation scopes invisible to injection and to
+  SDK reads, fragmenting further on every respawn. Fixes, all through ONE
+  normalization primitive (`member_comms_id::logical_memory_identity`,
+  the decode-then-strip parser the dispatch-taint join introduced,
+  relocated to the codec owner):
+  - the member event observer fans out the LOGICAL identity to every sink
+    (distiller/hygienist triggers now key the same scope the SDK reads;
+    taint attribution becomes consistent with the dispatch-time join);
+  - the distiller and hygienist trigger sinks re-normalize as a cheap
+    fixed point, so no direct caller can re-split scopes;
+  - the classic-path spawn customizer strips the generated runtime-alias
+    shape instead of keying build injection per incarnation;
+  - store migration `mobkit-memory` v3 (ledger-gated, data-only) folds
+    existing runtime-id-keyed rows into the logical scope across records,
+    proposals, pending promotions, the injection ledger, and the harvest
+    queue (PK collisions collapse; merged scopes may briefly hold
+    duplicate content until the next steward dream - rows keep distinct
+    ids, nothing is lost), and normalizes the `MemoryScope` embedded in
+    surviving stage-table batches' Create ops - stage tokens outlive
+    boots inside the 24h GC window and operator-gated promotions commit
+    later, so a key-column rewrite alone could be undone by a stale
+    batch apply. Existing v2 files migrate on first open behind a frozen
+    v2 fingerprint verifier.
+  - Composition-time collision WARN: a host callback tool named `memory`
+    now warns loudly against the agent-memory recorder at build
+    customization (the overlay layer already warned-and-shadowed; the
+    wire-declared surface now warns too, naming both tools and the
+    remediation).
+
+- **Repair honesty: the typed `ArchivedNotRevivable` refusal parks on the
+  FIRST pass instead of heal-looping** (OB3 prod-data rehearsal at the
+  0.8.14/0.8.10 pins, 4258-session corpus: 4 personal-agent identities whose
+  latest sessions carry a 0.6.x body-written archived terminal with no
+  runtime record entered an endless heal/refusal loop - continuity repair
+  reported healed at the roster level, the next inbound turn re-hit
+  meerkat's typed `SessionUnavailableForResume { reason:
+  ArchivedNotRevivable }` at materialize and re-marked Broken, repeat, with
+  user-facing canned failures and no convergence; the 0.8.10 N=3
+  byte-identical-failure park never engaged because the heal itself kept
+  succeeding). The refusal is a stable, deterministic materialize
+  precondition no retry can change, so it is now classified typed
+  (`ResumeRejectionKind::ArchivedNotRevivable`, from the error VARIANT,
+  never wording) and both resume doors - eager restore and on-demand
+  materialize - record the terminal `continuity_unrecoverable` verdict on
+  the FIRST refusal, the same producer pattern as
+  `CommittedBoundaryRepair::Unprovable`. The repair supervisor then parks:
+  zero heal/re-Break cycles, no heal-authority calls, no reconcile churn,
+  and the durable session (the transcript) stays bound and untouched. The
+  eager restore outcome surfaces under the terminal
+  `CheckpointUnrecoverable` kind rather than the reconcile-retried
+  `ResumeRejected`. The verdict reason carries the operator path inline:
+  upstream archived-session revive lands in meerkat 0.8.15 (promoted to
+  upgrade blocker on real user data); until then `mobkit/reset` is the
+  deliberate fresh start, and the park is process-local (a gateway restart
+  re-attempts once after an upstream fix).
+
+- **Memory-taint first-ingestion race closed at dispatch time** (§10.1
+  launch-audit item). Content-trust classification no longer depends on the
+  observe-only ASYNC agent-event stream alone: an LLM memory write in the
+  same turn as the session's FIRST untrusted tool ingestion could reach the
+  store before the taint observer processed the tool event
+  (`llm_writes = "observed"` default), and MCP tools with unqualified names
+  could not be attributed to a server at all (events carry only the tool
+  NAME). Both are closed by a synchronous LLM-boundary join:
+
+  - Every mob member session create (spawn, resume, revival - all funnel
+    through the bootstrap spec's pre-build seam) now composes a
+    taint-observing wrapper onto the member's agent-facing LLM client via
+    `SessionBuildOptions.agent_llm_client_decorator`. Before each LLM call
+    it classifies the tool results newly present in the request - joining
+    the tool name against the request catalog's typed `ToolDef.provenance`
+    (`ToolSourceKind::Mcp` + server id), so unqualified MCP tool names
+    attribute correctly; absent provenance falls back to the existing
+    name-based classification unchanged. After each call it classifies the
+    typed `ServerToolContent` blocks (provider-executed web search /
+    grounding) before the loop can dispatch any same-response tool call.
+    An LLM-authored write is always downstream of an LLM call that carried
+    the untrusted result, so the tracker is marked strictly before the
+    write reaches the store's gate. Observe-and-mark only: the wrapper
+    never denies, never mutates, does no I/O.
+  - Mechanism note: meerkat 0.8.14 DOES fire
+    `HookPoint::PostToolExecution` synchronously with the typed provenance,
+    but the mob member build path has no hook-engine carrier
+    (`SessionBuildOptions` cannot ship an `Arc<dyn HookEngine>`;
+    `AgentBuildConfig.hook_engine_override` is reachable only from the
+    standalone facade builder), so the join rides the sanctioned
+    per-build LLM-client decorator seam - identical ordering guarantee
+    for LLM-authored writes.
+  - The tracker slot is late-bound (`MobBootstrapSpec::dispatch_taint_slot`):
+    the unified builder and the RPC gateway fill it when the full
+    agent-memory stack attaches, and members built earlier (bootstrap
+    roster) pick it up on their next LLM call. Compositions without the
+    taint firewall pay nothing. The async observer stays wired as
+    belt-and-suspenders (it also serves session-rotation mirroring); the
+    dispatch join simply gets there first.
+
 ## [0.8.10] - 2026-08-03
 
 ### Changed

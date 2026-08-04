@@ -216,14 +216,23 @@ const MOBKIT_MEMORY_DOMAIN: meerkat_sqlite::SchemaDomain = meerkat_sqlite::Schem
             name: "quarantine-and-taint-columns",
             apply: migration_0002_quarantine_and_taint_columns,
         },
+        meerkat_sqlite::Migration {
+            version: 3,
+            name: "logical-identity-scope-keys",
+            apply: migration_0003_logical_identity_scope_keys,
+        },
     ],
     initialize_current: initialize_current_memory_schema,
-    // Version 2 is the mobkit 0.8.8 floor and current shape: every supported
-    // realm file was created (or upgraded) by a binary whose SCHEMA_SQL
-    // already carried the quarantine/taint columns inline, so v1 files are
-    // pre-floor and refused typed.
-    allowed_existing_versions: &[2],
-    released_predecessors: &[],
+    // Version 2 is the mobkit 0.8.8 floor (SCHEMA_SQL already carried the
+    // quarantine/taint columns inline; v1 files are pre-floor and refused
+    // typed). Version 3 folds legacy runtime-id-keyed identity scopes into
+    // the logical identity (task #53) - data-only, so the v2 predecessor
+    // verifier is the CURRENT schema fingerprint.
+    allowed_existing_versions: &[2, 3],
+    released_predecessors: &[meerkat_sqlite::SchemaPredecessor {
+        version: 2,
+        verify: verify_released_0_8_10_memory_schema,
+    }],
     owned_objects: &[
         meerkat_sqlite::SchemaObject {
             kind: meerkat_sqlite::SchemaObjectKind::Table,
@@ -289,9 +298,173 @@ fn migration_0001_base_schema(tx: &Transaction<'_>) -> Result<(), rusqlite::Erro
     tx.execute_batch(SCHEMA_SQL)
 }
 
-fn initialize_current_memory_schema(tx: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+/// The released v2 (mobkit 0.8.8-0.8.10) schema shape, used as the frozen
+/// predecessor oracle. Migration 0003 is data-only, so this is byte-identical
+/// to the current schema.
+fn initialize_v2_memory_schema(tx: &Transaction<'_>) -> Result<(), rusqlite::Error> {
     migration_0001_base_schema(tx)?;
     migration_0002_quarantine_and_taint_columns(tx)
+}
+
+fn initialize_current_memory_schema(tx: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    initialize_v2_memory_schema(tx)?;
+    // Data-only on a fresh file (no rows to fold); kept for the invariant
+    // that initialize_current composes every migration.
+    migration_0003_logical_identity_scope_keys(tx)
+}
+
+/// Frozen fingerprint verifier for allowed predecessor version 2.
+fn verify_released_0_8_10_memory_schema(conn: &Connection) -> Result<(), String> {
+    meerkat_sqlite::verify_released_schema_fingerprint(
+        conn,
+        &MOBKIT_MEMORY_DOMAIN,
+        MOBKIT_MEMORY_DOMAIN.owned_objects,
+        initialize_v2_memory_schema,
+    )
+}
+
+/// Migration 0003 (task #53): memory scope keys are LOGICAL identities.
+///
+/// Platform writers (the distiller's trigger-sink path foremost) keyed
+/// identity scopes by the mob-plane member id, the comms-safe roster
+/// encoding of a generated runtime alias (e.g.
+/// `mk--rt_cidentity_cparent-1_c0`), splitting each member's memory across
+/// per-incarnation scopes disjoint from the scope the SDK, injection, and
+/// recorder speak (`identity:parent-1`). Fold every identity-space key
+/// through the one normalization helper
+/// (`member_comms_id::logical_memory_identity`). Data-only: no DDL, so the
+/// v2 predecessor fingerprint stays the current schema.
+///
+/// Collision semantics: merged scopes may hold duplicate content
+/// (`records_scope_hash_idx` is non-unique; content-hash dedup is
+/// write-time-only). That is loss-free - rows keep distinct memory_ids and
+/// steward consolidation dedups. `pending_harvests` keys identity in its
+/// PRIMARY KEY, so folding uses OR IGNORE and collapses collided duplicates
+/// (two queue entries for one logical harvest become one).
+fn migration_0003_logical_identity_scope_keys(tx: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    for (table, column, identity_scoped_only) in [
+        ("records", "scope_key", true),
+        ("proposals", "scope_key", true),
+        ("pending_promotions", "scope_key", true),
+        ("injections", "identity", false),
+    ] {
+        normalize_identity_keys(tx, table, column, identity_scoped_only)?;
+    }
+    // Proposals are covered by the key rewrite alone: the accept path
+    // hydrates the scope from the ROW's (scope_kind, scope_key) via
+    // scope_from_parts, and the serialized `record` is a NewMemoryRecord,
+    // which embeds no scope. Stage batches are NOT - see below.
+    normalize_staged_batch_scopes(tx)?;
+    let legacy: Vec<String> = collect_legacy_keys(tx, "pending_harvests", "identity", false)?;
+    for key in legacy {
+        let logical = crate::member_comms_id::logical_memory_identity(&key);
+        tx.execute(
+            "UPDATE OR IGNORE pending_harvests SET identity = ?1 WHERE identity = ?2",
+            rusqlite::params![logical, key],
+        )?;
+        // Only the collided leftovers (rows OR IGNORE could not move because
+        // the logical (identity, retired_at_ms) twin already exists) still
+        // carry the LEGACY key; drop exactly those.
+        tx.execute(
+            "DELETE FROM pending_harvests WHERE identity = ?1",
+            rusqlite::params![key],
+        )?;
+    }
+    Ok(())
+}
+
+/// Rewrite every non-logical identity key in `table.column` to its logical
+/// form. `identity_scoped_only` restricts to `scope_kind = 'identity'` rows
+/// (mob-scope keys are never identity-space).
+fn normalize_identity_keys(
+    tx: &Transaction<'_>,
+    table: &str,
+    column: &str,
+    identity_scoped_only: bool,
+) -> Result<(), rusqlite::Error> {
+    let legacy = collect_legacy_keys(tx, table, column, identity_scoped_only)?;
+    for key in legacy {
+        let logical = crate::member_comms_id::logical_memory_identity(&key);
+        let filter = if identity_scoped_only {
+            " AND scope_kind = 'identity'"
+        } else {
+            ""
+        };
+        tx.execute(
+            &format!("UPDATE {table} SET {column} = ?1 WHERE {column} = ?2{filter}"),
+            rusqlite::params![logical, key],
+        )?;
+    }
+    Ok(())
+}
+
+/// Stage rows embed the serialized [`StagedMutationBatch`], whose `Create`
+/// ops carry their target `MemoryScope` INLINE. Rewriting the key columns
+/// alone would let a surviving stage token re-create the legacy scope on
+/// apply - and stage tokens DO outlive boots: the open-time GC only prunes
+/// tokens older than [`STAGE_GC_MAX_AGE_MS`], and operator-gated promotions
+/// commit their token on approval, possibly days later. Normalize the
+/// embedded Identity scopes through the same helper. A batch that no longer
+/// deserializes is left untouched: the commit path parses the same JSON and
+/// fails identically, so an unreadable batch cannot reintroduce a legacy
+/// key.
+fn normalize_staged_batch_scopes(tx: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    let rows: Vec<(String, String)> = {
+        let mut stmt = tx.prepare("SELECT token, batch FROM stage")?;
+        stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?
+    };
+    for (token, batch_json) in rows {
+        let Ok(mut batch) = serde_json::from_str::<StagedMutationBatch>(&batch_json) else {
+            continue;
+        };
+        let mut changed = false;
+        for op in &mut batch.ops {
+            if let StagedOp::Create { scope, .. } = op
+                && let MemoryScope::Identity { identity, .. } = scope
+            {
+                let logical = crate::member_comms_id::logical_memory_identity(identity);
+                if *identity != logical {
+                    *identity = logical;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let serialized = serde_json::to_string(&batch)
+                .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+            tx.execute(
+                "UPDATE stage SET batch = ?1 WHERE token = ?2",
+                rusqlite::params![serialized, token],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The distinct keys in `table.column` whose logical form differs (the
+/// decode/strip happens in Rust; SQLite cannot evaluate the codec).
+fn collect_legacy_keys(
+    tx: &Transaction<'_>,
+    table: &str,
+    column: &str,
+    identity_scoped_only: bool,
+) -> Result<Vec<String>, rusqlite::Error> {
+    let filter = if identity_scoped_only {
+        " WHERE scope_kind = 'identity'"
+    } else {
+        ""
+    };
+    let mut stmt = tx.prepare(&format!("SELECT DISTINCT {column} FROM {table}{filter}"))?;
+    let keys = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(keys
+        .into_iter()
+        .filter(|key| crate::member_comms_id::logical_memory_identity(key) != *key)
+        .collect())
 }
 
 /// Column migrations for stores created before the columns joined
@@ -3937,6 +4110,277 @@ mod tests {
         Ok(())
     }
 
+    /// Task #53 migration: a v2 realm file holding runtime-id-keyed identity
+    /// scopes (the HomeCore shape - distiller output stranded under
+    /// mk--rt_c... roster ids, one scope per respawn generation) folds into
+    /// the logical identity scope on open, across every identity-keyed
+    /// table, and stamps the ledger at v3. Already-logical rows and
+    /// mob-scope rows are untouched.
+    #[tokio::test]
+    async fn migration_folds_runtime_id_scopes_into_the_logical_identity()
+    -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let db_path = {
+            let store = SqliteAgentMemoryStore::open(dir.path())?;
+            store.path_for_realm("default")
+        };
+        let gen0 = crate::member_comms_id::mob_member_id_str("rt:identity:parent-1:0").into_owned();
+        let gen1 = crate::member_comms_id::mob_member_id_str("rt:identity:parent-1:1").into_owned();
+        {
+            // Build the released v2 shape and stamp its ledger row, exactly
+            // as a mobkit 0.8.8-0.8.10 binary left it.
+            let mut conn = Connection::open(&db_path)?;
+            let tx = conn.transaction()?;
+            initialize_v2_memory_schema(&tx)?;
+            tx.execute_batch(
+                "CREATE TABLE meerkat_schema (domain TEXT PRIMARY KEY, version INTEGER NOT NULL);
+                 INSERT INTO meerkat_schema (domain, version) VALUES ('mobkit-memory', 2);",
+            )?;
+            let provenance = "{\"author\":{\"author\":\"application\"}}";
+            let insert_record = |id: &str, scope_key: &str| {
+                tx.execute(
+                    "INSERT INTO records (memory_id, scope_kind, scope_key, kind, title, \
+                     description, body, tags, provenance, trust, status_kind, status_detail, \
+                     supersedes, derived_from, content_hash, created_at_ms, updated_at_ms, \
+                     usage_stats) VALUES (?1, 'identity', ?2, 'fact', ?1, '', 'body', '[]', \
+                     ?3, 'agent_observed', 'active', NULL, NULL, '[]', ?1, 1, 1, '{}')",
+                    params![id, scope_key, provenance],
+                )
+            };
+            insert_record("mem-gen0", &gen0)?;
+            insert_record("mem-gen1", &gen1)?;
+            insert_record("mem-logical", "identity:parent-1")?;
+            // A mob-scope row whose key must NEVER be rewritten even if it
+            // looked identity-shaped.
+            tx.execute(
+                "INSERT INTO records (memory_id, scope_kind, scope_key, kind, title, \
+                 description, body, tags, provenance, trust, status_kind, status_detail, \
+                 supersedes, derived_from, content_hash, created_at_ms, updated_at_ms, \
+                 usage_stats) VALUES ('mem-mob', 'mob', ?1, 'fact', 'mob', '', 'body', '[]', \
+                 ?2, 'agent_observed', 'active', NULL, NULL, '[]', 'mem-mob', 1, 1, '{}')",
+                params![gen0, provenance],
+            )?;
+            // Legacy pending harvests: two generations plus a logical twin
+            // colliding on retired_at_ms=1 (must collapse, not error).
+            for (identity, at) in [
+                (gen0.as_str(), 1),
+                (gen0.as_str(), 2),
+                ("identity:parent-1", 1),
+            ] {
+                tx.execute(
+                    "INSERT INTO pending_harvests (identity, session_key, cause, \
+                     retired_at_ms) VALUES (?1, NULL, 'retire', ?2)",
+                    params![identity, at],
+                )?;
+            }
+            tx.execute(
+                "INSERT INTO injections (record_id, identity, session_key, surface, at_ms) \
+                 VALUES ('mem-gen0', ?1, NULL, 'build', 1)",
+                params![gen1],
+            )?;
+            // A pending proposal under the legacy key. Its serialized
+            // `record` is a NewMemoryRecord (embeds NO scope - the accept
+            // path re-derives scope from the row key), so the key rewrite
+            // alone covers it.
+            let proposal_record = serde_json::to_string(&NewMemoryRecord {
+                kind: MemoryKind::Fact,
+                title: "proposed".to_string(),
+                description: "proposed".to_string(),
+                body: "proposed body".to_string(),
+                tags: vec![],
+                evidence: vec![],
+                verification: None,
+            })
+            .expect("serialize proposal record");
+            tx.execute(
+                "INSERT INTO proposals (proposal_id, scope_kind, scope_key, record, author, \
+                 status, created_at_ms) VALUES ('prop-1', 'identity', ?1, ?2, ?3, 'pending', 1)",
+                params![
+                    gen0,
+                    proposal_record,
+                    serde_json::to_string(&MemoryAuthor::Application)
+                        .expect("serialize proposal author")
+                ],
+            )?;
+            // A surviving stage token whose batch EMBEDS the legacy scope in
+            // a Create op (the adversarial seam: tokens outlive boots inside
+            // the 24h GC window, and gated promotions commit later).
+            let staged = StagedMutationBatch {
+                realm: "default".to_string(),
+                author: MemoryAuthor::Distiller {
+                    run_id: "run-legacy".to_string(),
+                },
+                kind: StagedBatchKind::FreshWrite,
+                ops: vec![StagedOp::Create {
+                    id: None,
+                    scope: MemoryScope::Identity {
+                        realm: "default".to_string(),
+                        identity: gen0.clone(),
+                    },
+                    record: NewMemoryRecord {
+                        kind: MemoryKind::Fact,
+                        title: "staged".to_string(),
+                        description: "staged".to_string(),
+                        body: "staged body".to_string(),
+                        tags: vec![],
+                        evidence: vec![],
+                        verification: None,
+                    },
+                    trust: TrustTier::AgentObserved,
+                    derived_from: vec![],
+                    rationale: None,
+                    created_at_ms: None,
+                    updated_at_ms: None,
+                }],
+            };
+            // A CURRENT timestamp: the open-time stage GC prunes tokens older
+            // than STAGE_GC_MAX_AGE_MS, and this test is about a token that
+            // legitimately survives the reopen.
+            tx.execute(
+                "INSERT INTO stage (token, batch, created_at_ms) VALUES ('stage-1', ?1, ?2)",
+                params![
+                    serde_json::to_string(&staged).expect("serialize staged batch"),
+                    now_ms() as i64
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO pending_promotions (pending_id, stage_token, record_id, \
+                 scope_kind, scope_key, rationale, status, created_at_ms) VALUES \
+                 ('pending-1', 'stage-1', 'mem-gen0', 'identity', ?1, NULL, 'pending', 1)",
+                params![gen0],
+            )?;
+            tx.commit()?;
+        }
+
+        // Open through the store: the ledger applies migration 0003.
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        // Any realm op runs the preflight + migrations.
+        store.pending_proposals("default", 4).await?;
+
+        let probe = Connection::open(&db_path)?;
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-memory")?,
+            Some(3),
+            "migration must stamp v3"
+        );
+        let logical_records: i64 = probe.query_row(
+            "SELECT COUNT(*) FROM records WHERE scope_kind = 'identity' \
+             AND scope_key = 'identity:parent-1'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            logical_records, 3,
+            "both generations fold into the logical scope beside the existing row"
+        );
+        let legacy_records: i64 = probe.query_row(
+            "SELECT COUNT(*) FROM records WHERE scope_kind = 'identity' \
+             AND scope_key LIKE 'mk--%'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            legacy_records, 0,
+            "no identity rows may stay runtime-id-keyed"
+        );
+        let mob_scope_key: String = probe.query_row(
+            "SELECT scope_key FROM records WHERE memory_id = 'mem-mob'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(mob_scope_key, gen0, "mob-scope keys are not identity-space");
+        let harvests: Vec<(String, i64)> = {
+            let mut stmt = probe.prepare(
+                "SELECT identity, retired_at_ms FROM pending_harvests ORDER BY retired_at_ms",
+            )?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        assert_eq!(
+            harvests,
+            vec![
+                ("identity:parent-1".to_string(), 1),
+                ("identity:parent-1".to_string(), 2)
+            ],
+            "harvest queue folds with PK collisions collapsed"
+        );
+        let injection_identity: String =
+            probe.query_row("SELECT identity FROM injections", [], |row| row.get(0))?;
+        assert_eq!(injection_identity, "identity:parent-1");
+        // Content preservation: folded rows keep their ids and bodies.
+        let gen0_body: String = probe.query_row(
+            "SELECT body FROM records WHERE memory_id = 'mem-gen0'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(gen0_body, "body");
+        // Proposals: key rewritten, serialized record untouched (it embeds
+        // no scope; accept re-derives from the row key).
+        let (proposal_scope, proposal_record): (String, String) = probe.query_row(
+            "SELECT scope_key, record FROM proposals WHERE proposal_id = 'prop-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(proposal_scope, "identity:parent-1");
+        assert!(
+            proposal_record.contains("proposed body"),
+            "{proposal_record}"
+        );
+        // Pending promotion: key rewritten.
+        let promotion_scope: String = probe.query_row(
+            "SELECT scope_key FROM pending_promotions WHERE pending_id = 'pending-1'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(promotion_scope, "identity:parent-1");
+        // THE stage seam: the surviving token's EMBEDDED Create scope is
+        // normalized, so a later gated commit cannot re-create the legacy
+        // scope.
+        let staged_json: String = probe.query_row(
+            "SELECT batch FROM stage WHERE token = 'stage-1'",
+            [],
+            |row| row.get(0),
+        )?;
+        let staged: StagedMutationBatch = serde_json::from_str(&staged_json)?;
+        match &staged.ops[0] {
+            StagedOp::Create { scope, .. } => {
+                assert_eq!(
+                    scope,
+                    &MemoryScope::Identity {
+                        realm: "default".to_string(),
+                        identity: "identity:parent-1".to_string(),
+                    },
+                    "the embedded Create scope must be normalized in place"
+                );
+            }
+            other => panic!("seeded op must survive as Create, got {other:?}"),
+        }
+        drop(probe);
+
+        // Idempotent reopen: a second open at v3 changes nothing and errors
+        // nowhere (the ledger will not re-run the migration).
+        drop(store);
+        let reopened = SqliteAgentMemoryStore::open(dir.path())?;
+        reopened.pending_proposals("default", 4).await?;
+        let probe = Connection::open(&db_path)?;
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-memory")?,
+            Some(3)
+        );
+        let logical_records: i64 = probe.query_row(
+            "SELECT COUNT(*) FROM records WHERE scope_kind = 'identity' \
+             AND scope_key = 'identity:parent-1'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(logical_records, 3, "reopen must not change folded state");
+        Ok(())
+    }
+
     /// A pre-ledger realm file holding ONLY a historical `proposals` table
     /// is refused the same way (the floor refusal is per owned object, not
     /// per complete schema). Until the 0.8.11 reset this test pinned the
@@ -4016,7 +4460,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(
             meerkat_sqlite::domain_version(&guard, "mobkit-memory")?,
-            Some(2)
+            Some(3)
         );
         Ok(())
     }

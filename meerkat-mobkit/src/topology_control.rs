@@ -3163,10 +3163,10 @@ mod tests {
             })
         }
 
-        async fn deliver(
+        async fn deliver_admitted(
             &self,
             _runtime_id: &AgentRuntimeId,
-            _content: &meerkat_core::ContentInput,
+            _delivery: crate::identity_first::BridgeDelivery,
         ) -> Result<SessionId, BridgeError> {
             Err(BridgeError::Mob(
                 "delivery not used in recovery test".to_string(),

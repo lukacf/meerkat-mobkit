@@ -1017,6 +1017,11 @@ impl UnifiedRuntimeBuilder {
             } else {
                 Arc::new(InMemoryConsoleLogStore::new())
             };
+        // §10.1 dispatch-time taint join: keep the spec's late-bound slot so
+        // the full-stack path below can bind the stack's tracker into every
+        // member build (including bootstrap members built before the stack
+        // attaches - their decorators read the slot per call).
+        let dispatch_taint_slot = mob_spec.dispatch_taint_slot();
         let runtime = Box::pin(UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
@@ -1312,6 +1317,11 @@ impl UnifiedRuntimeBuilder {
             if let Some(panel) = stack.panel.clone() {
                 runtime.set_memory_panel_store(panel);
             }
+            // §10.1 dispatch-time taint join: bind the stack's tracker into
+            // the member pre-build seam so every member's LLM client marks
+            // untrusted ingestion synchronously - ahead of the async
+            // observer spawned below, closing the first-ingestion race.
+            dispatch_taint_slot.fill(stack.taint.clone());
             // Runtime ownership makes both infinite supervisors visible to
             // normal shutdown and to the identity-bootstrap failure cleanup
             // path below. Leaking either handle here would leave ghost memory

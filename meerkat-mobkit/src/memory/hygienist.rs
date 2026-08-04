@@ -1495,6 +1495,10 @@ impl HygienistTriggers {
 
 impl MemberAgentEventSink for HygienistTriggers {
     fn observe(&self, identity: &str, envelope: &meerkat_core::event::EventEnvelope<AgentEvent>) {
+        // Scope keys are LOGICAL identities (task #53) - same fixed-point
+        // re-normalization as the distiller sink.
+        let identity = crate::member_comms_id::logical_memory_identity(identity);
+        let identity = identity.as_str();
         if let AgentEvent::CompactionCompleted { .. } = &envelope.payload {
             match &envelope.source {
                 meerkat_core::event::EventSourceIdentity::Session { session_id } => {

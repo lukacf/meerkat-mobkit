@@ -1289,6 +1289,17 @@ async fn event_surfaces_do_not_reauthorize_secret_generation_as_public_same_alia
         .await
         .expect("raw frontier after latest secret alias projection");
 
+    // The raw ledger keeps moving underneath these snapshots: every spawned
+    // member's kickoff objective appends structural lifecycle rows on its own
+    // schedule (observed live under suite load: `MemberKickoffUpdated
+    // { phase: Started }` for "zz-public-incarnation" landing one row past
+    // the captured frontier). Those rows are not `member_spawned` events, so
+    // they can never enter the filtered pages below - but they DO advance
+    // the raw frontier, which makes frontier EQUALITY a race against the
+    // kickoff tasks. Assert the real properties instead: the reported
+    // frontier advanced over the hidden raw row (>= the captured frontier)
+    // and is an honest ledger position (<= the raw frontier read after the
+    // call).
     let backward = rpc(
         &app,
         "mobkit/mob_events/query",
@@ -1301,9 +1312,18 @@ async fn event_surfaces_do_not_reauthorize_secret_generation_as_public_same_alia
         public_spawn_cursor
     );
     assert_eq!(backward["result"]["events"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        backward["result"]["next_after_seq"], latest_secret_frontier,
-        "backwards snapshot must expose the raw ledger frontier"
+    let backward_next = backward["result"]["next_after_seq"]
+        .as_u64()
+        .expect("backward next_after_seq");
+    let raw_frontier_after_backward = events_view
+        .latest_cursor()
+        .await
+        .expect("raw frontier after backward query");
+    assert!(
+        backward_next >= latest_secret_frontier && backward_next <= raw_frontier_after_backward,
+        "backwards snapshot must expose the raw ledger frontier (captured \
+         {latest_secret_frontier}, reported {backward_next}, raw now \
+         {raw_frontier_after_backward})"
     );
 
     let empty_subscribe = rpc(
@@ -1327,9 +1347,23 @@ async fn event_surfaces_do_not_reauthorize_secret_generation_as_public_same_alia
             .is_some_and(Vec::is_empty),
         "hidden-only snapshot should remain empty: {empty_subscribe:#?}"
     );
-    assert_eq!(
-        empty_subscribe["result"]["next_after_seq"],
-        latest_secret_frontier
+    // Same bounded frontier contract as the backwards snapshot above: the
+    // empty page must have advanced OVER the hidden latest-secret row, and
+    // late kickoff-lifecycle rows (`MemberKickoffUpdated { phase: Started }`
+    // from an earlier spawn's async kickoff) may already sit past the
+    // captured frontier.
+    let empty_next = empty_subscribe["result"]["next_after_seq"]
+        .as_u64()
+        .expect("empty subscribe next_after_seq");
+    let raw_frontier_after_subscribe = events_view
+        .latest_cursor()
+        .await
+        .expect("raw frontier after empty subscribe");
+    assert!(
+        empty_next >= latest_secret_frontier && empty_next <= raw_frontier_after_subscribe,
+        "empty page must advance over the hidden raw row to a real ledger \
+         frontier (captured {latest_secret_frontier}, reported {empty_next}, \
+         raw now {raw_frontier_after_subscribe})"
     );
 
     let before_next_public = events_view

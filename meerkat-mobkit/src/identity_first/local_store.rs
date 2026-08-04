@@ -2043,6 +2043,75 @@ impl ContinuityStore for LocalContinuityStore {
         .await
     }
 
+    async fn resolve_record_by_session(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<(ContinuityRecord, FencingToken, CheckpointVersion)>, ContinuityStoreError>
+    {
+        let session_id = session_id.clone();
+        self.run_blocking("resolve_record_by_session", move |inner| {
+            inner.with_reader(|connection| {
+                let mut stmt = connection
+                    .prepare_cached(
+                        "SELECT identity, agent_runtime_id, generation, checkpoint_version, \
+                         fencing_token FROM continuity_records WHERE session_id = ?1",
+                    )
+                    .map_err(|e| sqlite_err("prepare", e))?;
+                let row = stmt
+                    .query_row(rusqlite::params![session_id.to_string()], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, u64>(2)?,
+                            row.get::<_, u64>(3)?,
+                            row.get::<_, u64>(4)?,
+                        ))
+                    })
+                    .optional()
+                    .map_err(|e| sqlite_err("query", e))?;
+                let Some((identity, runtime_id, generation, cpv, token)) = row else {
+                    return Ok(None);
+                };
+                // The substrate's CURRENT checkpoint version for the session:
+                // the fence the next write cursor must advance past. The
+                // record's own stamp trails it whenever writes landed after
+                // the last checkpoint.
+                let fence_current: u64 = connection
+                    .query_row(
+                        "SELECT MAX(v) FROM (\
+                             SELECT COALESCE(MAX(checkpoint_version), 0) AS v \
+                                 FROM session_snapshots WHERE session_id = ?1 \
+                             UNION ALL \
+                             SELECT COALESCE(MAX(checkpoint_version), 0) AS v \
+                                 FROM continuity_session_heads WHERE session_id = ?1)",
+                        rusqlite::params![session_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| sqlite_err("fence query", e))?;
+                let fence_current = fence_current.max(cpv);
+                let record = ContinuityRecord {
+                    identity: AgentIdentity::parse(&identity).map_err(|e| {
+                        ContinuityStoreError::Corruption(format!("invalid identity in store: {e}"))
+                    })?,
+                    agent_runtime_id: AgentRuntimeId::parse(&runtime_id).map_err(|e| {
+                        ContinuityStoreError::Corruption(format!(
+                            "invalid runtime_id in store: {e}"
+                        ))
+                    })?,
+                    session_id: session_id.clone(),
+                    generation: ContinuityGeneration::new(generation),
+                    checkpoint_version: CheckpointVersion::new(cpv),
+                };
+                Ok(Some((
+                    record,
+                    FencingToken::new(token),
+                    CheckpointVersion::new(fence_current),
+                )))
+            })
+        })
+        .await
+    }
+
     async fn load_session_snapshot(
         &self,
         session_id: &meerkat_core::types::SessionId,
