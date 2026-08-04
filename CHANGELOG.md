@@ -69,6 +69,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     reference run ids that resolve nowhere, and the console dream-runs
     panel sees failed runs instead of nothing.
 
+- **WholeBlob-to-durable projection tear healed: missing rewrite commits
+  replay through the typed rewrite door** (HomeCore parent-1 production
+  park). The runtime-store facade projected committed WholeBlob
+  boundaries into the durable session store with a plain authoritative
+  projection, which cannot INSTALL a new rewrite generation - a
+  wedged-turn retire committing a rewrite-advanced boundary left the
+  durable row torn (graph one generation ahead of its head), and
+  meerkat's rewrite-save invariant then refused every subsequent resume.
+  The projection now runs per-runtime single-flight, loads the exact
+  committed successor and the durable predecessor, and when the
+  successor's PROVED graph extends durable state it installs each
+  missing rewrite commit through `SessionStore::save_transcript_rewrite`
+  (exact prefix session projected at that commit) before the ordinary
+  trailing-append/envelope projection. Every step is monotonic and
+  validated against the head the previous step installed, so a partial
+  failure re-converges on the exact retry; no branch overwrites durable
+  state the successor graph does not prove. The freshness probe gained
+  the matching half: durable-behind-committed is now distinguished from
+  fresh and runs the same reconciliation on a PLAIN RESUME (no new
+  committing verb required), including under a lifecycle terminal -
+  repairing the durable projection of already-committed authority mints
+  no runtime life; the terminal gate stays on the reseed direction where
+  resurrection risk actually lives. Field-recovery property:
+  parent-1-class tears self-heal on the first post-upgrade resume - the
+  committed runtime authority still holds the full graph, and the
+  resume-path freshness pass replays the missing commit into the durable
+  row; no hand-repair of wedged stores. The append-before-compact shape
+  (a committed rewrite whose parent revision is a strict APPEND-extension
+  of the durable head) is covered too: the reconciler first installs the
+  exact proof-carrying parent via meerkat 0.8.15's
+  `Session::with_validated_transcript_rewrite_parent_projection`, then
+  replays the rewrite commit against its exact parent.
+
 - **Memory scope keys are LOGICAL identities end to end** (HomeCore
   activation smoke, launch blocker). The platform's observe-stream paths
   keyed identity scopes by the mob-plane roster id - for identity-first
