@@ -338,6 +338,10 @@ fn default_confirm_evidence(
         summary: None,
         confirmation_kind: None,
         confirming_owner_key: None,
+        // Confirmation evidence is keyed on the ATTENTION binding; a work
+        // EXECUTION binding (meerkat 0.8.16 flow-execution provenance) does
+        // not exist on this path.
+        execution_binding_id: None,
     }
 }
 
@@ -383,6 +387,9 @@ fn parse_confirm_evidence(value: &Value) -> Result<meerkat::WorkEvidenceRef, Jso
         summary: optional("summary")?,
         confirmation_kind: None,
         confirming_owner_key: None,
+        // The wire surface does not carry an execution binding; typed
+        // execution provenance stays server-minted (0.8.16 vocabulary).
+        execution_binding_id: None,
     })
 }
 
