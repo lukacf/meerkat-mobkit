@@ -2144,6 +2144,16 @@ impl SessionStoreBackedRuntimeStore {
             // adopting durable content into the runtime store is exactly the
             // resurrection it exists to prevent. A reconciliation failure
             // fails the probe typed (retryable), never a torn mark-fresh.
+            tracing::info!(
+                runtime_id = %runtime_id,
+                session_id = %session_id,
+                durable_rewrite_generation = durable_order.0,
+                durable_message_count = durable_order.1,
+                committed_rewrite_generation = committed_order.0,
+                committed_message_count = committed_order.1,
+                "durable row orders behind committed runtime authority; \
+                 running the committed->durable reconciliation"
+            );
             self.project_committed_session_to_durable(runtime_id)
                 .await?;
             mark_fresh();
@@ -2402,6 +2412,26 @@ impl SessionStoreBackedRuntimeStore {
                             "rewrite chain walk against durable predecessor: {e}"
                         ))
                     })?;
+                // Field diagnosability: the walk's verdict decides the whole
+                // repair shape, and a repair that fell through to the
+                // trailing projection is indistinguishable from a replayed
+                // one without it.
+                tracing::info!(
+                    runtime_id = %runtime_id,
+                    session_id = %successor.id(),
+                    walk = match missing_commits.as_ref() {
+                        None => "none".to_string(),
+                        Some(commits) => commits.len().to_string(),
+                    },
+                    durable_revision = %durable_predecessor
+                        .transcript_revision()
+                        .unwrap_or_else(|_| "<unreadable>".to_string()),
+                    sealed_head_revision = %sealed.state().head(),
+                    sealed_commits = sealed.commit_count(),
+                    durable_messages = durable_predecessor.messages().len(),
+                    committed_messages = successor.messages().len(),
+                    "rewrite-suffix walk against the durable predecessor"
+                );
                 // `None` is NOT replayed: the successor graph does not prove
                 // an extension of the durable row, so the injected store's
                 // own save guard below stays the only authority over that
@@ -2431,7 +2461,9 @@ impl SessionStoreBackedRuntimeStore {
                             ))
                         })?;
                     for commit in missing_commits {
-                        if durable_head_revision != commit.parent_revision {
+                        let exact_parent_projected =
+                            durable_head_revision != commit.parent_revision;
+                        if exact_parent_projected {
                             self.project_durable_to_exact_rewrite_parent(
                                 session_store,
                                 successor,
@@ -2441,6 +2473,13 @@ impl SessionStoreBackedRuntimeStore {
                             .await?;
                             durable_head_revision.clone_from(&commit.parent_revision);
                         }
+                        tracing::info!(
+                            runtime_id = %runtime_id,
+                            session_id = %successor.id(),
+                            rewrite_generation = commit.rewrite_generation,
+                            exact_parent_projected,
+                            "replaying missing rewrite commit into the durable row"
+                        );
                         let projected_history =
                             sealed.project_at_rewrite_commit(commit).map_err(|e| {
                                 meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
