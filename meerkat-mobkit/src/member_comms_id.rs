@@ -368,9 +368,65 @@ pub fn runtime_event_alias(runtime_id: &meerkat_mob::ids::AgentRuntimeId) -> Str
     )
 }
 
+/// Deterministic canonical-UUID form of an APP-supplied delivery
+/// correlation id (task #58, HomeCore admission break 2026-08-05):
+/// meerkat 0.8.16 threads arbitrary app correlation strings ("telegram:
+/// primary/i:769307582", connector source ids) into bridge admission,
+/// where the delivery-identity contract requires a canonical UUID. A
+/// string that already is one passes through byte-identical; anything
+/// else canonicalizes as UUIDv5 under a fixed mobkit namespace, so equal
+/// source strings dedup identically across boots and hosts and a
+/// well-formed identity PAIR is never refused for its value shape.
+///
+/// Scope: the app-facing dispatch matrix only. The schedule lane keeps
+/// its strict refusal - its correlation is the occurrence UUID by
+/// construction, and a non-UUID there is a construction bug that must
+/// fail typed, never be laundered.
+pub(crate) fn canonical_correlation_id(correlation_id: &str) -> std::borrow::Cow<'_, str> {
+    if uuid::Uuid::try_parse(correlation_id)
+        .is_ok_and(|parsed| !parsed.is_nil() && parsed.to_string() == correlation_id)
+    {
+        return std::borrow::Cow::Borrowed(correlation_id);
+    }
+    let namespace = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        b"rkat-mobkit:delivery-correlation",
+    );
+    std::borrow::Cow::Owned(uuid::Uuid::new_v5(&namespace, correlation_id.as_bytes()).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_correlation_id_passes_canonical_uuids_and_canonicalizes_the_rest() {
+        // A canonical UUID rides through byte-identical (the schedule
+        // occurrence shape must never be rewritten).
+        let occurrence = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+        assert_eq!(canonical_correlation_id(occurrence).as_ref(), occurrence);
+        // App source strings canonicalize deterministically: equal in,
+        // equal out; distinct in, distinct out; output is a canonical
+        // non-nil UUID.
+        let a1 = canonical_correlation_id("telegram:primary/i:769307582").into_owned();
+        let a2 = canonical_correlation_id("telegram:primary/i:769307582").into_owned();
+        let b = canonical_correlation_id("telegram:primary/i:769307583").into_owned();
+        assert_eq!(a1, a2);
+        assert_ne!(a1, b);
+        let parsed = uuid::Uuid::try_parse(&a1).expect("canonical output");
+        assert!(!parsed.is_nil());
+        assert_eq!(parsed.to_string(), a1);
+        // Non-canonical UUID SPELLINGS (uppercase, braced) and the nil
+        // UUID also canonicalize rather than riding through.
+        assert_ne!(
+            canonical_correlation_id("7C9E6679-7425-40DE-944B-E07FC1F90AE7").as_ref(),
+            "7C9E6679-7425-40DE-944B-E07FC1F90AE7"
+        );
+        assert_ne!(
+            canonical_correlation_id("00000000-0000-0000-0000-000000000000").as_ref(),
+            "00000000-0000-0000-0000-000000000000"
+        );
+    }
 
     fn raw_lock_test_runtime()
     -> Result<std::sync::Arc<crate::identity_first::IdentityRuntime>, Box<dyn std::error::Error>>

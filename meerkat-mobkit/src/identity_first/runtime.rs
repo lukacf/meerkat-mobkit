@@ -6691,18 +6691,37 @@ impl IdentityRuntime {
         // delivery under a broken identity is a silent dedup hole.
         let delivery_identity = match (&input.idempotency_key, &input.correlation_id) {
             (None, None) => None,
-            (Some(idempotency_key), Some(correlation_id)) => Some(
-                meerkat_mob::MobDeliveryIdentity::new(
-                    idempotency_key.as_str(),
-                    correlation_id.as_str(),
+            (Some(idempotency_key), Some(correlation_id)) => {
+                // App-supplied correlations canonicalize deterministically
+                // instead of refusing on value shape (HomeCore admission
+                // break: source-string correlations were tolerated through
+                // the 0.8.15 pair and refused by 0.8.16 identity threading).
+                // Half-pairs below stay typed refusals - structure is still
+                // fail closed; only the VALUE domain is widened.
+                let canonical =
+                    crate::member_comms_id::canonical_correlation_id(correlation_id.as_str());
+                if canonical.as_ref() != correlation_id.as_str() {
+                    tracing::info!(
+                        identity = %identity,
+                        canonical_correlation = %canonical,
+                        source_len = correlation_id.as_str().len(),
+                        "app-supplied delivery correlation canonicalized to UUIDv5 \
+                         for bridge admission"
+                    );
+                }
+                Some(
+                    meerkat_mob::MobDeliveryIdentity::new(
+                        idempotency_key.as_str(),
+                        canonical.as_ref(),
+                    )
+                    .map_err(|error| {
+                        IdentityRuntimeError::InvalidDeliveryIdentity {
+                            identity: identity.clone(),
+                            detail: error.to_string(),
+                        }
+                    })?,
                 )
-                .map_err(|error| {
-                    IdentityRuntimeError::InvalidDeliveryIdentity {
-                        identity: identity.clone(),
-                        detail: error.to_string(),
-                    }
-                })?,
-            ),
+            }
             (Some(_), None) => {
                 return Err(IdentityRuntimeError::InvalidDeliveryIdentity {
                     identity: identity.clone(),
