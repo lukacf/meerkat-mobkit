@@ -100,11 +100,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get("content")
         .cloned()
         .ok_or("first System row carries no content field")?;
+    // Key on (content, identity), ignoring only the envelope timestamp
+    // (meerkat lead's selector): replayed configured prompts carry
+    // identity=None and collapse; an explicit identity-bearing System
+    // append stays distinct even with equal content.
+    let reference_identity = values[first_system].get("identity").cloned();
     let duplicate_indices: Vec<usize> = values
         .iter()
         .enumerate()
         .skip(first_system + 1)
-        .filter(|(_, value)| is_system(value) && value.get("content") == Some(&reference_content))
+        .filter(|(_, value)| {
+            is_system(value)
+                && value.get("content") == Some(&reference_content)
+                && value.get("identity").cloned() == reference_identity
+        })
         .map(|(index, _)| index)
         .collect();
     println!(
