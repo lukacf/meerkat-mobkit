@@ -2428,6 +2428,23 @@ impl SessionStoreBackedRuntimeStore {
         durable_predecessor: &meerkat_core::Session,
         successor: &meerkat_core::Session,
     ) {
+        // Already-converged rows match no admission BY DESIGN (there is
+        // nothing to repair): repair passes after a heal land here on every
+        // reconciliation, and a WARN there reads as a failure that is not
+        // one (HomeCore field observation on v0.8.11). Content equality with
+        // the committed authority is the converged proof; quiet debug.
+        if let (Ok(durable_revision), Ok(successor_revision)) = (
+            durable_predecessor.transcript_revision(),
+            successor.transcript_revision(),
+        ) && durable_revision == successor_revision
+        {
+            tracing::debug!(
+                session_id = %durable_predecessor.id(),
+                "no repair admission holds because the durable row is already \
+                 converged with the committed authority; nothing to repair"
+            );
+            return;
+        }
         let durable_messages = durable_predecessor.messages();
         let commits: Vec<_> = sealed.state().commits().collect();
         let Some(first) = commits.first() else {
