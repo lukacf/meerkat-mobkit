@@ -91,35 +91,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|r| r == "system")
             .unwrap_or(false)
     };
-    let first_system = values.iter().position(is_system);
-    let Some(first_system) = first_system else {
+    // GROUP System rows by (content, identity), ignoring only the envelope
+    // timestamp (meerkat lead's selector, amended for multi-group heads):
+    // the transcript can carry SEVERAL distinct replayed prompts (field
+    // parent-1: one singleton plus 24x112568 and 7x91909 replay groups).
+    // Keep the FIRST occurrence of each distinct group; drop the rest.
+    let mut seen_groups: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut duplicate_indices: Vec<usize> = Vec::new();
+    for (index, value) in values.iter().enumerate() {
+        if !is_system(value) {
+            continue;
+        }
+        let key = serde_json::to_string(&serde_json::json!({
+            "content": value.get("content"),
+            "identity": value.get("identity"),
+        }))?;
+        match seen_groups.entry(key) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(index);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => duplicate_indices.push(index),
+        }
+    }
+    if seen_groups.is_empty() {
         println!("no System rows at all; nothing to do");
         return Ok(());
-    };
-    let reference_content = values[first_system]
-        .get("content")
-        .cloned()
-        .ok_or("first System row carries no content field")?;
-    // Key on (content, identity), ignoring only the envelope timestamp
-    // (meerkat lead's selector): replayed configured prompts carry
-    // identity=None and collapse; an explicit identity-bearing System
-    // append stays distinct even with equal content.
-    let reference_identity = values[first_system].get("identity").cloned();
-    let duplicate_indices: Vec<usize> = values
-        .iter()
-        .enumerate()
-        .skip(first_system + 1)
-        .filter(|(_, value)| {
-            is_system(value)
-                && value.get("content") == Some(&reference_content)
-                && value.get("identity").cloned() == reference_identity
-        })
-        .map(|(index, _)| index)
-        .collect();
+    }
+    let mut kept: Vec<usize> = seen_groups.values().copied().collect();
+    kept.sort_unstable();
     println!(
-        "first System row at index {first_system} ({} bytes serialized); {} \
-         content-identical duplicates (envelope timestamps ignored)",
-        serialized[first_system].len(),
+        "{} System rows in {} distinct (content, identity) groups; keeping first \
+         occurrences at indices {:?}; dropping {} replay copies",
+        seen_groups.len() + duplicate_indices.len(),
+        seen_groups.len(),
+        kept,
         duplicate_indices.len()
     );
     if duplicate_indices.is_empty() {
