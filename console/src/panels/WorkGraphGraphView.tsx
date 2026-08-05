@@ -5,6 +5,7 @@ import {
   layoutWorkGraph,
   workGraphEdgeMidpoint,
   workGraphEdgePath,
+  workGraphItemOwnerLabel,
 } from "../lib/workgraph-layout";
 import type { WorkGraphLayoutNode } from "../lib/workgraph-layout";
 import { useZoomPan, viewportTransform } from "./topology/zoom-pan";
@@ -14,7 +15,7 @@ import { useZoomPan, viewportTransform } from "./topology/zoom-pan";
 /// parent, blocks edges dashed amber. Pan by dragging, zoom with the wheel
 /// (non-passive listener inside useZoomPan so the dock scroll container
 /// never eats it), Fit resets to the viewBox 1:1 fit. Mutations stay in the
-/// tree/attention sections — the graph only selects.
+/// tree/attention sections - the graph only selects.
 interface WorkGraphGraphViewProps {
   items: WorkGraphWireItem[];
   edges: WorkGraphWireEdge[];
@@ -55,10 +56,7 @@ function selectionSummary(
   const item = items.find((candidate) => candidate.id === itemId);
   if (!item) return itemId;
   const parts = [itemId, item.status || "open"];
-  const owner = item.owner?.display_name
-    || item.owner?.key?.id
-    || item.claim?.owner?.display_name
-    || item.claim?.owner?.key?.id;
+  const owner = workGraphItemOwnerLabel(item);
   if (owner) parts.push(owner);
   if (item.labels && item.labels.length > 0) parts.push(item.labels.join(", "));
   if (attention.some((binding) => binding.work_ref?.item_id === itemId)) parts.push("attention-bound");
@@ -74,6 +72,13 @@ export function WorkGraphGraphView({
   onSelect,
 }: WorkGraphGraphViewProps): React.JSX.Element {
   const layout = React.useMemo(() => layoutWorkGraph(items, edges), [items, edges]);
+  const itemById = React.useMemo(() => {
+    const map = new Map<string, WorkGraphWireItem>();
+    for (const item of items) {
+      if (typeof item.id === "string" && item.id) map.set(item.id, item);
+    }
+    return map;
+  }, [items]);
   const zoom = useZoomPan(layout.width, layout.height);
   const boundItemIds = React.useMemo(() => {
     const bound = new Set<string>();
@@ -198,7 +203,7 @@ export function WorkGraphGraphView({
                 }}
               >
                 <title>
-                  {nodeHoverText(node, items.find((candidate) => candidate.id === node.itemId))}
+                  {nodeHoverText(node, itemById.get(node.itemId))}
                 </title>
                 <rect className="workgraph-graph__node-box" width={node.w} height={node.h} rx={8} />
                 <circle className="workgraph-graph__node-dot" cx={14} cy={meta ? 15 : node.h / 2} r={3.5} />

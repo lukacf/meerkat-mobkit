@@ -6,7 +6,7 @@ import type { WorkGraphWireEdge, WorkGraphWireItem } from "../types";
 /// `buildWorkGraphPanelTree`: parent edges run child→parent, placement is
 /// first-parent-wins, children of unknown parents are roots). Row = stable
 /// index within the column, ordered by created_at then id. No crossing
-/// minimization — the guardrails are determinism and the node cap.
+/// minimization - the guardrails are determinism and the node cap.
 
 export const WORKGRAPH_GRAPH_COL_WIDTH = 220;
 export const WORKGRAPH_GRAPH_ROW_HEIGHT = 64;
@@ -32,7 +32,7 @@ export interface WorkGraphLayoutNode {
   priority?: string;
   ownerLabel: string;
   blocked: boolean;
-  /// Titles (or ids) of parents beyond the placing one — the card's
+  /// Titles (or ids) of parents beyond the placing one - the card's
   /// "also under X, Y" fold rule, kept as text instead of extra edges.
   alsoUnder: string[];
 }
@@ -50,11 +50,14 @@ export interface WorkGraphLayout {
   edges: WorkGraphLayoutEdge[];
   width: number;
   height: number;
-  /// Items dropped past WORKGRAPH_GRAPH_NODE_CAP.
+  /// Input items not drawn: past WORKGRAPH_GRAPH_NODE_CAP, id-less, or
+  /// shadowed by a duplicate id. Always items.length - nodes.length.
   overflowCount: number;
 }
 
-function ownerLabelOf(item: WorkGraphWireItem): string {
+/// Owner-label precedence shared by the tree rows, the graph nodes, and the
+/// graph selection footer: display name, then key id, then the claim's.
+export function workGraphItemOwnerLabel(item: WorkGraphWireItem): string {
   return item.owner?.display_name
     || item.owner?.key?.id
     || item.claim?.owner?.display_name
@@ -62,7 +65,7 @@ function ownerLabelOf(item: WorkGraphWireItem): string {
     || "";
 }
 
-/// created_at then id — the tree panel's comparator, so both views agree.
+/// created_at then id - the tree panel's comparator, so both views agree.
 function compareIds(byId: Map<string, WorkGraphWireItem>, left: string, right: string): number {
   const leftKey = byId.get(left)?.created_at || "";
   const rightKey = byId.get(right)?.created_at || "";
@@ -135,7 +138,9 @@ export function layoutWorkGraph(
 
   const sortedIds = [...byId.keys()].sort((left, right) => compareIds(byId, left, right));
   const keptIds = sortedIds.slice(0, WORKGRAPH_GRAPH_NODE_CAP);
-  const overflowCount = sortedIds.length - keptIds.length;
+  // Everything in keptIds renders, so this counts every input item that
+  // does not: the capped tail plus id-less/duplicate-id rows.
+  const overflowCount = items.length - keptIds.length;
   const kept = new Set(keptIds);
 
   // Depth from parent chains, cycle-guarded (a parent cycle degrades to
@@ -184,7 +189,7 @@ export function layoutWorkGraph(
       status,
       title: item.title || id,
       priority: item.priority,
-      ownerLabel: ownerLabelOf(item),
+      ownerLabel: workGraphItemOwnerLabel(item),
       blocked: status === "blocked",
       alsoUnder: (extraParents.get(id) || []).map(
         (parentId) => byId.get(parentId)?.title || parentId,
@@ -200,10 +205,18 @@ export function layoutWorkGraph(
     if (!from || !to) continue;
     layoutEdges.push({ kind: "parent", fromId: child, toId: parent, points: edgePoints(from, to) });
   }
-  // Every other edge kind passes through as geometry when both ends render.
+  // Every other edge kind passes through as geometry when both ends render,
+  // with the same hygiene the parent loop applies: no self edges (a
+  // degenerate bezier through the node's own body), no duplicates (stacked
+  // double-stroke paths).
+  const seenEdges = new Set<string>();
   for (const edge of edges) {
     if (edge.kind === "parent" || typeof edge.kind !== "string" || !edge.kind) continue;
     if (typeof edge.from_id !== "string" || typeof edge.to_id !== "string") continue;
+    if (edge.from_id === edge.to_id) continue;
+    const dedupeKey = `${edge.kind} ${edge.from_id} ${edge.to_id}`;
+    if (seenEdges.has(dedupeKey)) continue;
+    seenEdges.add(dedupeKey);
     const from = rects.get(edge.from_id);
     const to = rects.get(edge.to_id);
     if (!from || !to) continue;

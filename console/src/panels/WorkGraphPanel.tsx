@@ -5,12 +5,13 @@ import type {
   WorkGraphWireEvent,
   WorkGraphWireItem,
 } from "../types";
+import { WORKGRAPH_GRAPH_NODE_CAP, workGraphItemOwnerLabel } from "../lib/workgraph-layout";
 import { WorkGraphGraphView } from "./WorkGraphGraphView";
 
 export type WorkGraphViewMode = "tree" | "graph";
 
 // Module-level so the chosen view survives dock remounts (same trick as
-// the conversation card's expansion registries — dock panels are torn
+// the conversation card's expansion registries - dock panels are torn
 // down and rebuilt on focus changes).
 let workGraphViewModeMemory: WorkGraphViewMode = "tree";
 
@@ -142,12 +143,11 @@ export function workGraphEventLine(event: WorkGraphWireEvent): string {
   return [at, kind, item].filter(Boolean).join(" · ");
 }
 
+/// Kept under the panel's historical export name; the single definition of
+/// the precedence chain lives in workgraph-layout.ts so the tree rows, the
+/// graph nodes, and the graph selection footer cannot drift apart.
 export function workGraphOwnerLabelOf(item: WorkGraphWireItem): string {
-  return item.owner?.display_name
-    || item.owner?.key?.id
-    || item.claim?.owner?.display_name
-    || item.claim?.owner?.key?.id
-    || "";
+  return workGraphItemOwnerLabel(item);
 }
 
 /// Latest observed revision of the binding's bound goal work item. Goal
@@ -376,6 +376,13 @@ export function WorkGraphPanel({
     () => buildWorkGraphPanelTree(data.items, data.edges),
     [data.items, data.edges],
   );
+  // The snapshot includes terminal rows (the panel is the operator
+  // inspection surface), so its size tracks the store's full history. The
+  // tree gets the same rendered-row cap and overflow honesty as the graph.
+  const visibleRows = rows.length > WORKGRAPH_GRAPH_NODE_CAP
+    ? rows.slice(0, WORKGRAPH_GRAPH_NODE_CAP)
+    : rows;
+  const treeOverflowCount = rows.length - visibleRows.length;
   const [viewMode, setViewModeState] = React.useState<WorkGraphViewMode>(workGraphViewModeMemory);
   const [selectedGraphItem, setSelectedGraphItem] = React.useState<string | null>(null);
   const setViewMode = (mode: WorkGraphViewMode) => {
@@ -448,15 +455,22 @@ export function WorkGraphPanel({
             ) : rows.length === 0 ? (
               <div className="workgraph__empty">No work items.</div>
             ) : (
-              rows.map((row) => (
-                <ItemRow
-                  key={row.itemId}
-                  row={row}
-                  canManage={canManage}
-                  onClaim={onClaim}
-                  onClose={onClose}
-                />
-              ))
+              <>
+                {visibleRows.map((row) => (
+                  <ItemRow
+                    key={row.itemId}
+                    row={row}
+                    canManage={canManage}
+                    onClaim={onClaim}
+                    onClose={onClose}
+                  />
+                ))}
+                {treeOverflowCount > 0 ? (
+                  <div className="workgraph__empty" data-testid="workgraph-panel-overflow">
+                    +{treeOverflowCount} more items not shown
+                  </div>
+                ) : null}
+              </>
             )}
           </div>
           <div className="workgraph__section">

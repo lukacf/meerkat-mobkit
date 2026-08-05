@@ -3,7 +3,7 @@
 //!
 //! Boots the same library-mode runtime as `library_mode_reference`. The
 //! `UnifiedRuntime` builder wires an ephemeral (memory-store) WorkGraph
-//! service plus the runtime-wide admission at bootstrap — the only legal
+//! service plus the runtime-wide admission at bootstrap - the only legal
 //! wiring point; late attachment runs guard-degraded (see
 //! `UnifiedRuntime::workgraph_service`). The console runs unenforced
 //! (`require_app_auth: false`), so `apply_workgraph_to_experience` mirrors

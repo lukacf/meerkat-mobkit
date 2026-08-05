@@ -246,6 +246,23 @@ test("workgraph graph view draws nodes with status classes and typed edges", () 
   assert.ok(html.includes("child-run"));
 });
 
+test("workgraph tree view caps rendered rows with the graph's overflow honesty", () => {
+  // The snapshot includes terminal rows, so it tracks the store's full
+  // history; the tree must stay render-bounded like the graph is.
+  const items = Array.from({ length: 205 }, (_, index) =>
+    item(`item-${String(index).padStart(3, "0")}`, "2026-07-08T08:00:00Z"));
+  const html = renderToStaticMarkup(
+    React.createElement(WorkGraphPanel, {
+      data: panelData({ items, edges: [] }),
+      canManage: false,
+      onRefresh: () => {},
+    }),
+  );
+  assert.equal(count(html, 'data-testid="workgraph-panel-item:'), 200);
+  assert.ok(html.includes('data-testid="workgraph-panel-overflow"'));
+  assert.ok(html.includes("+5 more items not shown"));
+});
+
 test("workgraph graph view reports overflow past the node cap", () => {
   const items = Array.from({ length: 205 }, (_, index) =>
     item(`item-${String(index).padStart(3, "0")}`, "2026-07-08T08:00:00Z"));

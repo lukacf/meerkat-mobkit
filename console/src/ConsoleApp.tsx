@@ -2369,7 +2369,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       try {
         // The panel is the operator inspection surface: completed/cancelled/
         // failed items must stay visible (tree status column, graph status
-        // classes), so opt into terminal rows — the default snapshot is the
+        // classes), so opt into terminal rows - the default snapshot is the
         // live working set and would drop them on the first refresh.
         snapshot = (await executeHeadlessCommand(
           CONSOLE_COMMAND_NAMES.workgraphSnapshot,

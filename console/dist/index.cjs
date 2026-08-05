@@ -14970,9 +14970,6 @@ function RosterPanel({
 // src/panels/WorkGraphPanel.tsx
 var import_react24 = __toESM(require("react"));
 
-// src/panels/WorkGraphGraphView.tsx
-var import_react23 = __toESM(require("react"));
-
 // src/lib/workgraph-layout.ts
 var WORKGRAPH_GRAPH_COL_WIDTH = 220;
 var WORKGRAPH_GRAPH_ROW_HEIGHT = 64;
@@ -14980,7 +14977,7 @@ var WORKGRAPH_GRAPH_NODE_WIDTH = 168;
 var WORKGRAPH_GRAPH_NODE_HEIGHT = 44;
 var WORKGRAPH_GRAPH_NODE_CAP = 200;
 var PAD = 24;
-function ownerLabelOf(item) {
+function workGraphItemOwnerLabel(item) {
   return item.owner?.display_name || item.owner?.key?.id || item.claim?.owner?.display_name || item.claim?.owner?.key?.id || "";
 }
 function compareIds(byId, left, right) {
@@ -15032,7 +15029,7 @@ function layoutWorkGraph(items, edges) {
   }
   const sortedIds = [...byId.keys()].sort((left, right) => compareIds(byId, left, right));
   const keptIds = sortedIds.slice(0, WORKGRAPH_GRAPH_NODE_CAP);
-  const overflowCount = sortedIds.length - keptIds.length;
+  const overflowCount = items.length - keptIds.length;
   const kept = new Set(keptIds);
   const depthOf = /* @__PURE__ */ new Map();
   const resolveDepth = (id, onPath) => {
@@ -15076,7 +15073,7 @@ function layoutWorkGraph(items, edges) {
       status,
       title: item.title || id,
       priority: item.priority,
-      ownerLabel: ownerLabelOf(item),
+      ownerLabel: workGraphItemOwnerLabel(item),
       blocked: status === "blocked",
       alsoUnder: (extraParents.get(id) || []).map(
         (parentId) => byId.get(parentId)?.title || parentId
@@ -15090,9 +15087,14 @@ function layoutWorkGraph(items, edges) {
     if (!from || !to) continue;
     layoutEdges.push({ kind: "parent", fromId: child, toId: parent, points: edgePoints(from, to) });
   }
+  const seenEdges = /* @__PURE__ */ new Set();
   for (const edge of edges) {
     if (edge.kind === "parent" || typeof edge.kind !== "string" || !edge.kind) continue;
     if (typeof edge.from_id !== "string" || typeof edge.to_id !== "string") continue;
+    if (edge.from_id === edge.to_id) continue;
+    const dedupeKey = `${edge.kind}\0${edge.from_id}\0${edge.to_id}`;
+    if (seenEdges.has(dedupeKey)) continue;
+    seenEdges.add(dedupeKey);
     const from = rects.get(edge.from_id);
     const to = rects.get(edge.to_id);
     if (!from || !to) continue;
@@ -15125,6 +15127,9 @@ function workGraphEdgeMidpoint(edge) {
     y: (p0.y + 3 * p1.y + 3 * p2.y + p3.y) / 8
   };
 }
+
+// src/panels/WorkGraphGraphView.tsx
+var import_react23 = __toESM(require("react"));
 
 // src/panels/topology/zoom-pan.ts
 var import_react22 = __toESM(require("react"));
@@ -15237,7 +15242,7 @@ function selectionSummary(itemId, items, attention) {
   const item = items.find((candidate) => candidate.id === itemId);
   if (!item) return itemId;
   const parts = [itemId, item.status || "open"];
-  const owner = item.owner?.display_name || item.owner?.key?.id || item.claim?.owner?.display_name || item.claim?.owner?.key?.id;
+  const owner = workGraphItemOwnerLabel(item);
   if (owner) parts.push(owner);
   if (item.labels && item.labels.length > 0) parts.push(item.labels.join(", "));
   if (attention.some((binding) => binding.work_ref?.item_id === itemId)) parts.push("attention-bound");
@@ -15252,6 +15257,13 @@ function WorkGraphGraphView({
   onSelect
 }) {
   const layout = import_react23.default.useMemo(() => layoutWorkGraph(items, edges), [items, edges]);
+  const itemById = import_react23.default.useMemo(() => {
+    const map = /* @__PURE__ */ new Map();
+    for (const item of items) {
+      if (typeof item.id === "string" && item.id) map.set(item.id, item);
+    }
+    return map;
+  }, [items]);
   const zoom = useZoomPan(layout.width, layout.height);
   const boundItemIds = import_react23.default.useMemo(() => {
     const bound = /* @__PURE__ */ new Set();
@@ -15378,7 +15390,7 @@ function WorkGraphGraphView({
                     onSelect?.(node.itemId);
                   },
                   children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("title", { children: nodeHoverText(node, items.find((candidate) => candidate.id === node.itemId)) }),
+                    /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("title", { children: nodeHoverText(node, itemById.get(node.itemId)) }),
                     /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("rect", { className: "workgraph-graph__node-box", width: node.w, height: node.h, rx: 8 }),
                     /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("circle", { className: "workgraph-graph__node-dot", cx: 14, cy: meta ? 15 : node.h / 2, r: 3.5 }),
                     boundItemIds.has(node.itemId) ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
@@ -15486,7 +15498,7 @@ function workGraphEventLine(event) {
   return [at, kind, item].filter(Boolean).join(" \xB7 ");
 }
 function workGraphOwnerLabelOf(item) {
-  return item.owner?.display_name || item.owner?.key?.id || item.claim?.owner?.display_name || item.claim?.owner?.key?.id || "";
+  return workGraphItemOwnerLabel(item);
 }
 function workGraphGoalRevisionOf(binding, items) {
   const itemId = binding.work_ref?.item_id;
@@ -15652,6 +15664,8 @@ function WorkGraphPanel({
     () => buildWorkGraphPanelTree(data.items, data.edges),
     [data.items, data.edges]
   );
+  const visibleRows = rows.length > WORKGRAPH_GRAPH_NODE_CAP ? rows.slice(0, WORKGRAPH_GRAPH_NODE_CAP) : rows;
+  const treeOverflowCount = rows.length - visibleRows.length;
   const [viewMode, setViewModeState] = import_react24.default.useState(workGraphViewModeMemory);
   const [selectedGraphItem, setSelectedGraphItem] = import_react24.default.useState(null);
   const setViewMode = (mode) => {
@@ -15717,16 +15731,23 @@ function WorkGraphPanel({
             selectedId: selectedGraphItem ?? void 0,
             onSelect: setSelectedGraphItem
           }
-        ) : rows.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "workgraph__empty", children: "No work items." }) : rows.map((row) => /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
-          ItemRow2,
-          {
-            row,
-            canManage,
-            onClaim,
-            onClose
-          },
-          row.itemId
-        ))
+        ) : rows.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "workgraph__empty", children: "No work items." }) : /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(import_jsx_runtime34.Fragment, { children: [
+          visibleRows.map((row) => /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+            ItemRow2,
+            {
+              row,
+              canManage,
+              onClaim,
+              onClose
+            },
+            row.itemId
+          )),
+          treeOverflowCount > 0 ? /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "workgraph__empty", "data-testid": "workgraph-panel-overflow", children: [
+            "+",
+            treeOverflowCount,
+            " more items not shown"
+          ] }) : null
+        ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "workgraph__section", children: [
         /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "workgraph__sec-label", children: "Attention" }),

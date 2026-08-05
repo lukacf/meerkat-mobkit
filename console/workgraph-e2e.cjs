@@ -116,7 +116,7 @@ async function rpc(baseUrl, method, params) {
   const body = await response.json();
   if (body.error) {
     // -32041 unavailable / -32042 conflict / -32030 denied are all fatal
-    // fixture bugs here — the reference runtime runs unenforced.
+    // fixture bugs here - the reference runtime runs unenforced.
     throw new Error(`${method} failed: ${JSON.stringify(body.error)}`);
   }
   return body.result;
@@ -215,9 +215,9 @@ async function runBrowserChecks(page, baseUrl, seeded) {
       .locator(`[data-testid="workgraph-graph-node"][data-status="${status}"]`)
       .count();
     assert.equal(count, 1, `exactly one ${status} node`);
-    const classes = await page
+    const classes = (await page
       .locator(`[data-testid="workgraph-graph-node"][data-status="${status}"]`)
-      .getAttribute("class");
+      .getAttribute("class")) ?? "";
     assert.ok(classes.includes(`is-${status}`), `node carries is-${status}: ${classes}`);
   }
   assert.equal(
@@ -258,6 +258,17 @@ async function runBrowserChecks(page, baseUrl, seeded) {
   await page.mouse.down();
   await page.mouse.move(panStartX - 70, panStartY - 40, { steps: 5 });
   await page.mouse.up();
+  // pointermove is a continuous-priority React event: wait for the state
+  // flush to land in the DOM (same settle the zoom assertion gets) instead
+  // of racing the CDP round-trip.
+  await page.waitForFunction(
+    (previous) =>
+      document
+        .querySelector('[data-testid="workgraph-graph-viewport"]')
+        ?.getAttribute("transform") !== previous,
+    zoomedTransform,
+    { timeout: 5_000 },
+  );
   const pannedTransform = await viewport.getAttribute("transform");
   assert.notEqual(pannedTransform, zoomedTransform, "drag pan changes the transform");
 
@@ -267,7 +278,8 @@ async function runBrowserChecks(page, baseUrl, seeded) {
 
   // Click-select: the footer detail names the selected item and status.
   await page.click('[data-testid="workgraph-graph-node"][data-status="in_progress"]');
-  const detail = await page.locator('[data-testid="workgraph-graph-detail"]').textContent();
+  const detail =
+    (await page.locator('[data-testid="workgraph-graph-detail"]').textContent()) ?? "";
   assert.ok(detail.includes(seeded.claimedId), `detail names the item: ${detail}`);
   assert.ok(detail.includes("in_progress"), `detail carries the status: ${detail}`);
 

@@ -76,6 +76,11 @@ test("workgraph layout passes blocks edges through as geometry with kind intact"
       { kind: "blocks", from_id: "a", to_id: "b" },
       // Edges touching unknown items are dropped, not guessed.
       { kind: "blocks", from_id: "a", to_id: "ghost" },
+      // Self edges and duplicates get the parent loop's hygiene: a self
+      // blocks edge would be a degenerate bezier through the node's own
+      // body, a duplicate a stacked double-stroke path.
+      { kind: "blocks", from_id: "a", to_id: "a" },
+      { kind: "blocks", from_id: "a", to_id: "b" },
     ],
   );
   assert.equal(layout.edges.length, 1);
@@ -114,6 +119,21 @@ test("workgraph layout caps nodes and reports the surplus", () => {
   assert.equal(layout.overflowCount, 7);
   // Deterministic cut: the kept set is the sorted prefix.
   assert.equal(layout.nodes[0].itemId, "item-000");
+});
+
+test("workgraph layout counts undrawable items in the overflow, never silently", () => {
+  // An id-less row and a duplicate id both fail to draw; the overflow count
+  // owns them so overflowCount is always items.length - nodes.length.
+  const layout = layoutWorkGraph(
+    [
+      item("a", "2026-07-08T08:00:00Z"),
+      { title: "no id", created_at: "2026-07-08T08:01:00Z" },
+      item("a", "2026-07-08T08:02:00Z", { title: "duplicate id" }),
+    ],
+    [],
+  );
+  assert.equal(layout.nodes.length, 1);
+  assert.equal(layout.overflowCount, 2);
 });
 
 test("workgraph layout carries status, owner, priority, and blocked onto nodes", () => {
