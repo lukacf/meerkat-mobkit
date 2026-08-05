@@ -24,18 +24,22 @@ use meerkat_mobkit::identity_first::{
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut db: Option<String> = None;
+    let mut runtime_db: Option<String> = None;
     let mut session: Option<String> = None;
     let mut apply = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--db" => db = args.next(),
+            "--runtime-db" => runtime_db = args.next(),
             "--session" => session = args.next(),
             "--apply" => apply = true,
             other => return Err(format!("unknown argument: {other}").into()),
         }
     }
     let db = db.ok_or("--db <continuity.db> is required")?;
+    let runtime_db = runtime_db
+        .ok_or("--runtime-db <runtime.sqlite> is required (full-history session source)")?;
     let session_id =
         meerkat_core::types::SessionId::parse(&session.ok_or("--session <uuid> is required")?)
             .map_err(|e| format!("--session must be a session UUID: {e}"))?;
@@ -61,13 +65,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    let session = meerkat::SessionStore::load(adapter.as_ref(), &session_id)
+    // The FULL-HISTORY session comes from the runtime store's committed
+    // WholeBlob snapshot: slim head-canonical materializations through the
+    // adapter deliberately drop the compact rewrite graph (a rewrite
+    // committed on one composes at generation 1 and the store refuses it
+    // against the retained chain - field failure "occurrence generation 1
+    // is not the expected 5"). The committed snapshot carries the sealed
+    // graph inline, so the dedup rewrite composes at the correct next
+    // generation.
+    let runtime: std::sync::Arc<dyn meerkat_runtime::RuntimeStore> = std::sync::Arc::new(
+        meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db)?,
+    );
+    let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(&session_id);
+    let snapshot = runtime
+        .load_committed_whole_blob_snapshot(&runtime_id)
         .await?
-        .ok_or("no durable row for this session")?;
+        .ok_or("no committed WholeBlob snapshot for this session in the runtime store")?;
+    let session = snapshot.session().clone();
     let messages = session.messages();
     println!(
-        "session {session_id}: {} messages, identity {}",
+        "session {session_id}: {} messages (committed snapshot, rewrite generation {}), identity {}",
         messages.len(),
+        session.transcript_rewrite_generation()?,
         record.identity
     );
 
@@ -156,6 +175,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("DRY RUN ONLY - re-run with --apply to commit");
         return Ok(());
     }
+
+    // Converge the durable row to the committed authority FIRST (the
+    // projection door's own semantics: the committed document IS the
+    // truth), so the rewrite's parent-exactness check at the typed door
+    // meets the durable head it expects.
+    meerkat::SessionStore::save_authoritative_projection(adapter.as_ref(), &session).await?;
 
     let parent_revision = session.transcript_revision()?;
     let mut rewritten = session.clone();
