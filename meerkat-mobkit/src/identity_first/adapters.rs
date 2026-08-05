@@ -1914,12 +1914,30 @@ impl ContinuitySessionStoreAdapter {
         id: &meerkat_core::types::SessionId,
     ) -> Result<Option<meerkat_core::Session>, meerkat_store::SessionStoreError> {
         if let Some(session) = self.load_head_canonical_session(id).await? {
+            // Representation+count trace (task #61, HomeCore cold-mint
+            // 839-vs-851): names which durable representation each load
+            // served, so a mint-vs-save-guard split is attributable from a
+            // debug log instead of a store dump.
+            tracing::debug!(
+                session_id = %id,
+                representation = "head_canonical",
+                message_count = session.messages().len(),
+                "durable session load"
+            );
             return Ok(Some(session));
         }
         let fallback = self
             .load_persisted_session_with_bytes(id)
             .await?
             .map(|(session, _)| session);
+        if let Some(session) = fallback.as_ref() {
+            tracing::debug!(
+                session_id = %id,
+                representation = "whole_blob_fallback",
+                message_count = session.messages().len(),
+                "durable session load"
+            );
+        }
         // Falling back is the ordinary path for every blob-canonical session,
         // so it is not worth a log line by itself. What IS worth one: a
         // durable head row existing for this session while the caller is
@@ -2131,6 +2149,17 @@ impl ContinuitySessionStoreAdapter {
         id: &meerkat_core::types::SessionId,
     ) -> Result<Option<meerkat_core::Session>, meerkat_store::SessionStoreError> {
         if let Some(session) = self.load_persisted_session(id).await? {
+            // Companion to the load_persisted_session representation trace
+            // (task #61): this is the document the save guard compares the
+            // incoming session against, so a mint that materialized from a
+            // DIFFERENT representation shows up as a count split between
+            // these two debug lines.
+            tracing::debug!(
+                session_id = %id,
+                lane = "save_guard_previous",
+                message_count = session.messages().len(),
+                "previous session resolved for save"
+            );
             return Ok(Some(session));
         }
         let pending = self
