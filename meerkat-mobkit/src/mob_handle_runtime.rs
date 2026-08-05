@@ -1915,9 +1915,68 @@ impl SessionStoreBackedRuntimeStore {
                 "durable session read for runtime-authority mint: {e}"
             ))
         })?;
-        let Some(session) = session else {
+        let Some(mut session) = session else {
             return Ok(false);
         };
+        // Cold-mint graph hydration (task #61, HomeCore window-4 fleet
+        // blocker): the durable load materializes SLIM - the compact
+        // rewrite graph stays out-of-line - but a rewritten durable head
+        // demands graph authority from every boundary projection composed
+        // over this seed, so a graphless mint wedges the member in a
+        // refuse-retry loop ("rewritten session has no validated compact
+        // graph authority"). Hydrate from the store's own adopted rewrite
+        // records before sealing the seed bytes; fail closed rather than
+        // seed authority the projections cannot exercise.
+        //
+        // Scope: sessions whose adopted rewrite records reconstruct in the
+        // CURRENT format - exactly the class whose projections demand graph
+        // authority. Legacy blob shapes (released 0.8.10 closures pending
+        // one-time import) legitimately fail record reconstruction before
+        // the adoption pass, and the import lane owns their graphs: for
+        // those the mint seeds slim exactly as before, loudly. This is not
+        // a shrink admission - a hydration skip leaves every downstream
+        // guard fail-closed, it only forgoes the authority the seed could
+        // not prove.
+        if let Some(incremental) = Arc::clone(session_store).as_incremental() {
+            let records = match incremental.load_rewrites(&session_id).await {
+                Ok(records) => records,
+                Err(e) => {
+                    tracing::warn!(
+                        runtime_id = %runtime_id,
+                        session_id = %session_id,
+                        error = %e,
+                        "runtime-authority mint could not reconstruct durable rewrite \
+                         records; seeding slim (legacy/import shapes take the adoption lane)"
+                    );
+                    Vec::new()
+                }
+            };
+            if !records.is_empty() {
+                let validated =
+                    meerkat_core::ValidatedTranscriptHistory::from_rewrite_records_with_proved(
+                        records, None,
+                    )
+                    .map_err(|e| {
+                        meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                            "rewrite-graph proof for runtime-authority mint: {e}"
+                        ))
+                    })?;
+                if let Some(validated) = validated {
+                    session
+                        .install_validated_audited_transcript_history_preserving_live(validated)
+                        .map_err(|e| {
+                            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                                "rewrite-graph install for runtime-authority mint: {e}"
+                            ))
+                        })?;
+                    tracing::info!(
+                        runtime_id = %runtime_id,
+                        session_id = %session_id,
+                        "runtime-authority mint hydrated the rewrite graph from durable records"
+                    );
+                }
+            }
+        }
         let bytes = session.to_persisted_bytes().map_err(|e| {
             meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
                 "durable session encode for runtime-authority mint: {e}"

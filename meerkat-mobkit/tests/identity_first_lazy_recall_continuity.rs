@@ -2525,6 +2525,221 @@ async fn reset_after_repeated_customizer_boots_preserves_exact_counts_and_projec
     }
 }
 
+/// WINDOW-5 mirror (task #61, drill-proven fleet blocker): an operator
+/// dedup rewrite through the typed door, then the sanctioned runtime-store
+/// reset, then a cold boot. The cold mint materializes the rewritten
+/// durable head SLIM (the compact graph stays out-of-line), so the first
+/// turn's boundary projection composed rewrite-shaped state with no graph
+/// authority and the store refused fail-closed ("rewritten session has no
+/// validated compact graph authority") - every member wedged in a
+/// refuse-retry loop (HomeCore window 4: 0 active / 17 broken,
+/// reproduced byte-exact offline on both released 0.8.16 and the 0.8.17
+/// candidate). The mint must hydrate the graph from the store's own
+/// adopted rewrite records so the seed carries the authority its durable
+/// row already proves.
+#[tokio::test(flavor = "multi_thread")]
+async fn reset_after_operator_rewrite_cold_mints_with_graph_authority() {
+    const TOKEN: &str = "MARKER-REWRITE-RESET-13-WHISKEY";
+    if proxied_to_memo_free_child("reset_after_operator_rewrite_cold_mints_with_graph_authority") {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    let member = id(MEMBER);
+
+    // --- Boot 1: one turn carrying the recall marker. ---
+    let session_id;
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
+            .await
+            .expect("send boot 1's turn");
+        wait_for_turn(&capture, 1, "boot 1's turn").await;
+        runtime.shutdown().await;
+        let (head, _) =
+            wait_for_durable_document_at_least(&state, 2, "boot 1's turn to commit").await;
+        session_id = head;
+    }
+
+    // --- Field shape: accumulated duplicate System rows, then the operator
+    // dedup rewrite through the typed door (window-4 surgery in miniature,
+    // same sequence as examples/dedup_system_rows.rs). ---
+    let expected_after_rewrite;
+    {
+        let continuity: Arc<dyn ContinuityStore> = Arc::new(
+            LocalContinuityStore::open(continuity_db(&state))
+                .expect("open the continuity store for the operator rewrite"),
+        );
+        let adapter = Arc::new(ContinuitySessionStoreAdapter::new(Arc::clone(&continuity)));
+        let sid = meerkat_core::types::SessionId::parse(&session_id).expect("session id");
+        let (record, fencing_token, fence_current) = continuity
+            .resolve_record_by_session(&sid)
+            .await
+            .expect("resolve the continuity record")
+            .expect("a continuity record binds the session");
+        adapter
+            .register_session(
+                &sid,
+                meerkat_mobkit::identity_first::SessionRuntimeState {
+                    identity: record.identity.clone(),
+                    generation: record.generation,
+                    fencing_token,
+                    checkpoint_version: fence_current,
+                },
+            )
+            .await
+            .expect("register the operator writer");
+        let mut with_dups = meerkat::SessionStore::load(adapter.as_ref(), &sid)
+            .await
+            .expect("load for the duplicate seed")
+            .expect("the durable session exists");
+        for _ in 0..12 {
+            with_dups.push(meerkat_core::Message::System(
+                meerkat_core::types::SystemMessage::new(CUSTOMIZER_PROMPT),
+            ));
+        }
+        meerkat::SessionStore::save(adapter.as_ref(), &with_dups)
+            .await
+            .expect("seed the duplicate System rows");
+
+        let mut cleaned: Vec<meerkat_core::Message> = Vec::new();
+        let mut kept_first_system = false;
+        for message in with_dups.messages() {
+            if matches!(message, meerkat_core::Message::System(_)) {
+                if kept_first_system {
+                    continue;
+                }
+                kept_first_system = true;
+            }
+            cleaned.push(message.clone());
+        }
+        assert!(
+            with_dups.messages().len() - cleaned.len() >= 11,
+            "the dedup must drop real duplicate rows"
+        );
+        expected_after_rewrite = i64::try_from(cleaned.len()).expect("cleaned count");
+        let parent_revision = with_dups
+            .transcript_revision()
+            .expect("parent revision before the rewrite");
+        let selection_end = with_dups.messages().len();
+        let mut rewritten = with_dups.clone();
+        let commit = rewritten
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange {
+                    start: 0,
+                    end: selection_end,
+                },
+                cleaned,
+                meerkat_core::TranscriptRewriteReason::new(
+                    "test operator dedup of duplicate System copies",
+                ),
+                Some("test-operator/dedup".to_string()),
+                Some(parent_revision),
+            )
+            .expect("compose the dedup rewrite");
+        meerkat::SessionStore::save_transcript_rewrite(adapter.as_ref(), &rewritten, &commit)
+            .await
+            .expect("commit the dedup rewrite through the typed door");
+        meerkat::SessionStore::save_authoritative_projection(adapter.as_ref(), &rewritten)
+            .await
+            .expect("project the rewritten head");
+    }
+    let (_, post_rewrite_count) =
+        wait_for_durable_document_at_least(&state, 0, "the rewritten durable head").await;
+    assert_eq!(
+        post_rewrite_count, expected_after_rewrite,
+        "the dedup rewrite must land on the durable head"
+    );
+
+    // --- The sanctioned reset: runtime.sqlite file set deleted, continuity
+    // untouched. ---
+    let mut removed = 0;
+    for suffix in ["", "-wal", "-shm", ".mfence"] {
+        let path = state.join(format!(
+            "{}{suffix}",
+            meerkat_mobkit::storage_layout::RUNTIME_DB_FILE_NAME
+        ));
+        if path.exists() {
+            std::fs::remove_file(&path).expect("reset runtime store");
+            removed += 1;
+        }
+    }
+    assert!(
+        removed > 0,
+        "the persistent shape must have written runtime.sqlite"
+    );
+    assert!(
+        continuity_db(&state).exists(),
+        "the reset must leave the continuity store intact"
+    );
+
+    // --- Cold boot over the rewritten head: mint, materialize, one real
+    // turn whose boundary projection must carry graph authority. Pre-fix
+    // this send refused fail-closed and the member wedged. ---
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+            )
+            .await
+            .expect(
+                "the cold-mint turn over a rewritten head must not be refused \
+                 (field failure: 'rewritten session has no validated compact graph authority')",
+            );
+        wait_for_turn(&capture, 1, "the cold-mint turn").await;
+        let last = capture.last().expect("the cold-mint request was captured");
+        assert!(
+            last.contains(TOKEN),
+            "the cold mint must replay the preserved transcript (token {TOKEN})"
+        );
+        // Exactly the LIVE prompt. The dedup kept the transcript's first
+        // System row - the boot-1 creation row, which does not carry the
+        // customizer marker (the multi-boot regression's 13-not-14 count
+        // pins that) - so every seeded marker copy is dead and the only
+        // marker in the request is the live system prompt itself.
+        assert_eq!(
+            last.matches(CUSTOMIZER_PROMPT).count(),
+            1,
+            "the deduped marker copies must stay dead after the cold mint"
+        );
+        runtime.shutdown().await;
+        let (_, post) =
+            wait_for_durable_document_at_least(&state, 0, "the post-cold-mint document").await;
+        assert_eq!(
+            post,
+            expected_after_rewrite + 2,
+            "the first projection must extend the rewritten head exactly"
+        );
+    }
+}
+
 /// Destroy-deprojection regression (2026-07-31 verdict): deleting an
 /// identity must remove its durable session row along with the continuity
 /// record, and a COLD pod after the delete must not mint, resume, or
