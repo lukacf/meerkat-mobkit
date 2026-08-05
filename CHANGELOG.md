@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.12] - 2026-08-05
+
+### Changed
+
+- **Paired on meerkat 0.8.16.** All meerkat crates repin to the published
+  0.8.16 registry release. What the pair carries for MobKit deployments:
+  - The fan-in admission stall is fixed upstream: durable input admission
+    returns without awaiting any ephemeral actor-boundary handshake, so a
+    wedged live-boundary preparation can no longer silently starve every
+    queued peer delivery behind it (OB3 field class: 30-of-69 completion
+    pings, then an idle member with queued inputs and no wake).
+  - WorkGraph/Mob Flow interoperation (meerkat PR #941): flow executions
+    bind WorkGraph work items (`MobRun.flow_definition_digest`,
+    `mob/flow_status.execution_binding`, `Realizing`/`ExistingRealizing`
+    realization states); MobKit's workgraph tool surface carries the new
+    optional typed execution provenance on `WorkEvidenceRef`
+    (`execution_binding_id`; MobKit's attention-keyed provenance paths and
+    the RPC wire surface mint no execution binding, explicit `None`).
+
+### Fixed
+
+- **Converged rows no longer WARN from the tear-repair diagnostic.**
+  Repair passes after a heal match no admission by design (nothing to
+  repair), and the "no repair admission holds" WARN read as a failure in
+  HomeCore's v0.8.11 production validation. Content equality with the
+  committed authority now logs debug and returns.
+
+
 ## [0.8.11] - 2026-08-04
 
 ### Fixed
