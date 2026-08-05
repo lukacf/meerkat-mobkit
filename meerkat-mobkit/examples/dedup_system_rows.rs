@@ -71,37 +71,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         record.identity
     );
 
-    // Byte-identical System duplicates of the FIRST System row.
+    // CONTENT-identical System duplicates of the FIRST System row. Each
+    // materialized copy carries its own created_at in the message envelope
+    // (verified in the field: 12 differing bytes, all inside the
+    // timestamp), so the comparison is on the system CONTENT - the
+    // configured-prompt bytes themselves - never the envelope.
     let serialized: Vec<Vec<u8>> = messages
         .iter()
         .map(serde_json::to_vec)
         .collect::<Result<_, _>>()?;
-    let is_system = |bytes: &[u8]| -> bool {
-        serde_json::from_slice::<serde_json::Value>(bytes)
-            .ok()
-            .and_then(|v| {
-                v.get("role")
-                    .and_then(|r| r.as_str())
-                    .map(|r| r == "system")
-            })
+    let values: Vec<serde_json::Value> = serialized
+        .iter()
+        .map(|bytes| serde_json::from_slice(bytes))
+        .collect::<Result<_, _>>()?;
+    let is_system = |value: &serde_json::Value| -> bool {
+        value
+            .get("role")
+            .and_then(|r| r.as_str())
+            .map(|r| r == "system")
             .unwrap_or(false)
     };
-    let first_system = serialized.iter().position(|bytes| is_system(bytes));
+    let first_system = values.iter().position(is_system);
     let Some(first_system) = first_system else {
         println!("no System rows at all; nothing to do");
         return Ok(());
     };
-    let reference = &serialized[first_system];
-    let duplicate_indices: Vec<usize> = serialized
+    let reference_content = values[first_system]
+        .get("content")
+        .cloned()
+        .ok_or("first System row carries no content field")?;
+    let duplicate_indices: Vec<usize> = values
         .iter()
         .enumerate()
         .skip(first_system + 1)
-        .filter(|(_, bytes)| *bytes == reference)
+        .filter(|(_, value)| is_system(value) && value.get("content") == Some(&reference_content))
         .map(|(index, _)| index)
         .collect();
     println!(
-        "first System row at index {first_system} ({} bytes); {} byte-identical duplicates",
-        reference.len(),
+        "first System row at index {first_system} ({} bytes serialized); {} \
+         content-identical duplicates (envelope timestamps ignored)",
+        serialized[first_system].len(),
         duplicate_indices.len()
     );
     if duplicate_indices.is_empty() {
