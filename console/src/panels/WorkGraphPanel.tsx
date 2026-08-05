@@ -5,6 +5,14 @@ import type {
   WorkGraphWireEvent,
   WorkGraphWireItem,
 } from "../types";
+import { WorkGraphGraphView } from "./WorkGraphGraphView";
+
+export type WorkGraphViewMode = "tree" | "graph";
+
+// Module-level so the chosen view survives dock remounts (same trick as
+// the conversation card's expansion registries — dock panels are torn
+// down and rebuilt on focus changes).
+let workGraphViewModeMemory: WorkGraphViewMode = "tree";
 
 /// Snapshot-backed panel state assembled by ConsoleApp. `denied` is a -32030
 /// access outcome (rendered as "no grant", never as an empty store);
@@ -368,6 +376,12 @@ export function WorkGraphPanel({
     () => buildWorkGraphPanelTree(data.items, data.edges),
     [data.items, data.edges],
   );
+  const [viewMode, setViewModeState] = React.useState<WorkGraphViewMode>(workGraphViewModeMemory);
+  const [selectedGraphItem, setSelectedGraphItem] = React.useState<string | null>(null);
+  const setViewMode = (mode: WorkGraphViewMode) => {
+    workGraphViewModeMemory = mode;
+    setViewModeState(mode);
+  };
 
   if (data.unavailable) {
     return (
@@ -385,6 +399,26 @@ export function WorkGraphPanel({
           <span className="workgraph__captured">as of {data.capturedAt.slice(0, 19).replace("T", " ")}</span>
         ) : null}
         <span className="workgraph__spacer" />
+        <div className="workgraph__view-toggle" role="group" aria-label="WorkGraph view mode">
+          <button
+            type="button"
+            className={`workgraph__action${viewMode === "tree" ? " is-active" : ""}`}
+            aria-pressed={viewMode === "tree"}
+            data-testid="workgraph-view-toggle:tree"
+            onClick={() => setViewMode("tree")}
+          >
+            Tree
+          </button>
+          <button
+            type="button"
+            className={`workgraph__action${viewMode === "graph" ? " is-active" : ""}`}
+            aria-pressed={viewMode === "graph"}
+            data-testid="workgraph-view-toggle:graph"
+            onClick={() => setViewMode("graph")}
+          >
+            Graph
+          </button>
+        </div>
         <button
           type="button"
           className="workgraph__action"
@@ -403,7 +437,15 @@ export function WorkGraphPanel({
         <>
           <div className="workgraph__section">
             <div className="workgraph__sec-label">Work items</div>
-            {rows.length === 0 ? (
+            {viewMode === "graph" ? (
+              <WorkGraphGraphView
+                items={data.items}
+                edges={data.edges}
+                attention={data.attention}
+                selectedId={selectedGraphItem ?? undefined}
+                onSelect={setSelectedGraphItem}
+              />
+            ) : rows.length === 0 ? (
               <div className="workgraph__empty">No work items.</div>
             ) : (
               rows.map((row) => (

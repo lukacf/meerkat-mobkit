@@ -3802,6 +3802,123 @@ svg[data-svg="fit"],
   text-overflow: ellipsis;
 }
 
+/* === WorkGraph graph view (layered DAG inside the workgraph panel) === */
+.workgraph__view-toggle {
+  display: flex;
+  gap: 4px;
+}
+.workgraph__view-toggle .workgraph__action.is-active {
+  color: var(--ink);
+  border-color: var(--accent);
+}
+.workgraph-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.workgraph-graph__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.workgraph-graph__stats {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+}
+.workgraph-graph__overflow {
+  font-size: 10.5px;
+  color: var(--warn);
+}
+.workgraph-graph__hint {
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+.workgraph-graph__svg {
+  width: 100%;
+  height: 380px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  cursor: grab;
+  touch-action: none;
+}
+.workgraph-graph__svg.is-dragging { cursor: grabbing; }
+.workgraph-graph__arrow path { fill: var(--ink-dim); }
+.workgraph-graph__arrow.is-blocks path { fill: var(--warn); }
+.workgraph-graph__edge {
+  fill: none;
+  stroke: var(--ink-dim);
+  stroke-width: 1.5;
+}
+.workgraph-graph__edge.is-blocks {
+  stroke: var(--warn);
+  stroke-dasharray: 5 4;
+}
+/* Any non-parent, non-blocks kind: dotted muted with its kind label. */
+.workgraph-graph__edge:not(.is-parent):not(.is-blocks) { stroke-dasharray: 2 3; }
+.workgraph-graph__edge-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  fill: var(--ink-faint);
+}
+.workgraph-graph__node { cursor: pointer; }
+.workgraph-graph__node-box {
+  fill: var(--bg-elev-1);
+  stroke: var(--ink-faint);
+  stroke-width: 1;
+}
+.workgraph-graph__node-dot { fill: var(--ink-faint); }
+.workgraph-graph__node-goal-ring {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1;
+  opacity: 0.7;
+}
+.workgraph-graph__node-title {
+  font-size: 11.5px;
+  fill: var(--ink);
+}
+.workgraph-graph__node-meta {
+  font-family: var(--mono);
+  font-size: 9px;
+  fill: var(--ink-dim);
+}
+.workgraph-graph__node.is-in_progress .workgraph-graph__node-box {
+  stroke: var(--accent);
+  filter: drop-shadow(0 0 3px color-mix(in oklch, var(--accent) 60%, transparent));
+}
+.workgraph-graph__node.is-in_progress .workgraph-graph__node-dot {
+  fill: var(--accent);
+  animation: workgraph-graph-pulse 1.4s ease-in-out infinite;
+}
+.workgraph-graph__node.is-completed .workgraph-graph__node-box { stroke: var(--ok); }
+.workgraph-graph__node.is-completed .workgraph-graph__node-dot { fill: var(--ok); }
+.workgraph-graph__node.is-failed .workgraph-graph__node-box { stroke: var(--bad, var(--err, #d4564e)); }
+.workgraph-graph__node.is-failed .workgraph-graph__node-dot { fill: var(--bad, var(--err, #d4564e)); }
+.workgraph-graph__node.is-blocked .workgraph-graph__node-box { stroke: var(--warn); }
+.workgraph-graph__node.is-blocked .workgraph-graph__node-dot { fill: var(--warn); }
+.workgraph-graph__node.is-cancelled { opacity: 0.55; }
+.workgraph-graph__node.is-cancelled .workgraph-graph__node-title { text-decoration: line-through; }
+.workgraph-graph__node.is-selected .workgraph-graph__node-box {
+  stroke: var(--focus, var(--accent));
+  stroke-width: 2;
+}
+@keyframes workgraph-graph-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.workgraph-graph__detail {
+  font-size: 11px;
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  padding: 2px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* === Recoverable action errors (e.g. access-denied send) === */
 .mobkit-action-error {
   display: flex;

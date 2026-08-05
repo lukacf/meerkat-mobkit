@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { __workGraphPanelTest } from "./WorkGraphPanel";
-import type { WorkGraphWireBinding, WorkGraphWireItem } from "../types";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import { WorkGraphPanel, __workGraphPanelTest } from "./WorkGraphPanel";
+import { WorkGraphGraphView } from "./WorkGraphGraphView";
+import type { WorkGraphPanelData } from "./WorkGraphPanel";
+import type { WorkGraphWireBinding, WorkGraphWireEdge, WorkGraphWireItem } from "../types";
 
 const {
   buildWorkGraphPanelTree,
@@ -155,6 +160,101 @@ test("workgraph refresh sequencer invalidates stale refreshes the moment a newer
   const third = sequencer.begin();
   assert.equal(second(), false);
   assert.equal(third(), true);
+});
+
+// ── Graph view rendering ─────────────────────────────────────────────────
+
+function graphFixture(): { items: WorkGraphWireItem[]; edges: WorkGraphWireEdge[] } {
+  return {
+    items: [
+      item("root", "2026-07-08T08:00:00Z", { title: "Ship it" }),
+      item("child-run", "2026-07-08T08:10:00Z", {
+        status: "in_progress",
+        claim: { owner: { key: { kind: "agent", id: "helper" } } },
+      }),
+      item("child-done", "2026-07-08T08:20:00Z", { status: "completed" }),
+      item("child-stuck", "2026-07-08T08:30:00Z", { status: "blocked" }),
+    ],
+    edges: [
+      { kind: "parent", from_id: "child-run", to_id: "root" },
+      { kind: "parent", from_id: "child-done", to_id: "root" },
+      { kind: "parent", from_id: "child-stuck", to_id: "root" },
+      { kind: "blocks", from_id: "child-run", to_id: "child-stuck" },
+    ],
+  };
+}
+
+function panelData(overrides: Partial<WorkGraphPanelData> = {}): WorkGraphPanelData {
+  const fixture = graphFixture();
+  return {
+    items: fixture.items,
+    edges: fixture.edges,
+    attention: [],
+    events: [],
+    capturedAt: "2026-07-08T09:00:00Z",
+    unavailable: false,
+    denied: false,
+    error: null,
+    ...overrides,
+  };
+}
+
+function count(html: string, needle: string): number {
+  return html.split(needle).length - 1;
+}
+
+test("workgraph panel head renders the tree/graph toggle and defaults to the tree", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(WorkGraphPanel, {
+      data: panelData(),
+      canManage: false,
+      onRefresh: () => {},
+    }),
+  );
+  assert.ok(html.includes('data-testid="workgraph-view-toggle:tree"'));
+  assert.ok(html.includes('data-testid="workgraph-view-toggle:graph"'));
+  // Default mode is the tree: item rows render, the graph svg does not.
+  assert.ok(html.includes('data-testid="workgraph-panel-item:root"'));
+  assert.ok(!html.includes('data-testid="workgraph-graph"'));
+  // The existing head affordances stay untouched.
+  assert.ok(html.includes('data-testid="workgraph-panel-refresh"'));
+});
+
+test("workgraph graph view draws nodes with status classes and typed edges", () => {
+  const fixture = graphFixture();
+  const html = renderToStaticMarkup(
+    React.createElement(WorkGraphGraphView, {
+      items: fixture.items,
+      edges: fixture.edges,
+      attention: [{ binding_id: "b-1", work_ref: { item_id: "root" } }],
+      selectedId: "child-run",
+    }),
+  );
+  assert.equal(count(html, 'data-testid="workgraph-graph-node"'), 4);
+  assert.equal(count(html, 'data-testid="workgraph-graph-edge"'), 4);
+  assert.ok(html.includes("is-in_progress"));
+  assert.ok(html.includes("is-completed"));
+  assert.ok(html.includes("is-blocked"));
+  assert.ok(html.includes('data-kind="blocks"'));
+  assert.ok(html.includes("is-selected"));
+  assert.ok(html.includes('data-testid="workgraph-graph-viewport"'));
+  assert.ok(html.includes('data-testid="workgraph-graph-fit"'));
+  // The attention-bound root carries the goal ring.
+  assert.ok(html.includes("workgraph-graph__node-goal-ring"));
+  // Selection detail footer names the selected item.
+  assert.ok(html.includes('data-testid="workgraph-graph-detail"'));
+  assert.ok(html.includes("child-run"));
+});
+
+test("workgraph graph view reports overflow past the node cap", () => {
+  const items = Array.from({ length: 205 }, (_, index) =>
+    item(`item-${String(index).padStart(3, "0")}`, "2026-07-08T08:00:00Z"));
+  const html = renderToStaticMarkup(
+    React.createElement(WorkGraphGraphView, { items, edges: [], attention: [] }),
+  );
+  assert.equal(count(html, 'data-testid="workgraph-graph-node"'), 200);
+  assert.ok(html.includes('data-testid="workgraph-graph-overflow"'));
+  assert.ok(html.includes("+5 more items not drawn"));
 });
 
 test("workgraph owner labels prefer display names, then key ids, then claim owners", () => {
