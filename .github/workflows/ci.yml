@@ -137,6 +137,9 @@ jobs:
       # CARGO_INCREMENTAL=0 guards the known rustc ICE, same as flow-editor.
       - run: CARGO_INCREMENTAL=0 scripts/repo-cargo build -p meerkat-mobkit --example memory_console_reference
       - run: npm --prefix console run e2e:memory --silent
+      # Seeded workgraph graph-view lane (deterministic, same harness shape).
+      - run: CARGO_INCREMENTAL=0 scripts/repo-cargo build -p meerkat-mobkit --example workgraph_console_reference
+      - run: npm --prefix console run e2e:workgraph --silent
 
   flow-editor:
     name: flow-editor

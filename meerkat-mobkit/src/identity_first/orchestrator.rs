@@ -1527,6 +1527,20 @@ async fn restore_flow_with_snapshot_policy(
                 // Broken entries through the runtime roster; omitting this
                 // entry made a transient eager-store failure terminal until a
                 // manual reconcile or process restart.
+                //
+                // The typed reason must reach the operator's default log
+                // level: a Broken registration with the ContinuityFailure
+                // carried only in the roster is invisible from a
+                // warn-baseline gateway (HomeCore activation-33: 17 Broken,
+                // zero log lines, certification refused with no cause on
+                // record).
+                tracing::warn!(
+                    %identity,
+                    kind = ?failure.kind,
+                    detail = %failure.detail,
+                    "continuity resolve returned Broken; registering the identity Broken \
+                     (no member materialized)"
+                );
                 runtime
                     .register(
                         spec.clone(),
@@ -1770,6 +1784,15 @@ pub async fn lazy_register_flow(
                         },
                     );
                 } else {
+                    // Same warn-baseline visibility rule as the resolve-time
+                    // Broken registration above: the typed reason must not
+                    // ride only the roster.
+                    tracing::warn!(
+                        %identity,
+                        kind = ?failure.kind,
+                        detail = %failure.detail,
+                        "restore failure registers the identity Broken pending reconcile"
+                    );
                     runtime
                         .register(
                             spec.clone(),

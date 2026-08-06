@@ -110,6 +110,10 @@ The center area is a multi-panel tabbed workspace. Each panel contains a `Conver
 
 The right column shows user-meaningful signals: requests, assistant replies, peer messages, image events, relevant tool activity, and alert levels. Low-level transport envelopes, scaffold prompts, raw checksum tokens, and raw tool metadata are filtered out before reaching the user-facing view.
 
+### WorkGraph panel - Tree and Graph views
+
+The WorkGraph panel (sidebar nav entry, visible when the runtime wires a WorkGraph service) reads `mobkit/workgraph/snapshot` and offers two views of the same data via the Tree | Graph toggle in the panel head. Tree is the default: an indented item list with claim/close actions plus the attention-binding and recent-event sections. Graph draws a read-only layered DAG - roots leftmost, one column per parent-edge depth, solid arrows into parents, dashed amber `blocks` edges, node borders/dots in the item-status palette (pulsing blue in progress, green completed, red failed, amber blocked, struck-through cancelled). Drag to pan, wheel to zoom, Fit resets, clicking a node shows its id/status/owner detail underneath. The view caps at 200 nodes and reports the overflow; all mutations stay in the tree and attention sections.
+
 ## Agent grouping
 
 Agents are grouped in the sidebar by `console_config.agent_list`. Selectors support `labels.<key>`, `label:<key>`, raw label keys, and direct fields such as `group`, `subgroup`, `role`, `kind`, `identity`, `member_id`, and `agent_id`.

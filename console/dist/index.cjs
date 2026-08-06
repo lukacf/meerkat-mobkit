@@ -37,7 +37,7 @@ module.exports = __toCommonJS(index_exports);
 var import_client = require("react-dom/client");
 
 // src/ConsoleApp.tsx
-var import_react31 = __toESM(require("react"));
+var import_react33 = __toESM(require("react"));
 
 // node_modules/clsx/dist/clsx.mjs
 function r(e) {
@@ -14968,8 +14968,466 @@ function RosterPanel({
 }
 
 // src/panels/WorkGraphPanel.tsx
+var import_react24 = __toESM(require("react"));
+
+// src/lib/workgraph-layout.ts
+var WORKGRAPH_GRAPH_COL_WIDTH = 220;
+var WORKGRAPH_GRAPH_ROW_HEIGHT = 64;
+var WORKGRAPH_GRAPH_NODE_WIDTH = 168;
+var WORKGRAPH_GRAPH_NODE_HEIGHT = 44;
+var WORKGRAPH_GRAPH_NODE_CAP = 200;
+var PAD = 24;
+function workGraphItemOwnerLabel(item) {
+  return item.owner?.display_name || item.owner?.key?.id || item.claim?.owner?.display_name || item.claim?.owner?.key?.id || "";
+}
+function compareIds(byId, left, right) {
+  const leftKey = byId.get(left)?.created_at || "";
+  const rightKey = byId.get(right)?.created_at || "";
+  if (leftKey !== rightKey) return leftKey < rightKey ? -1 : 1;
+  return left < right ? -1 : left === right ? 0 : 1;
+}
+function edgePoints(from, to) {
+  let start;
+  let end;
+  if (to.x + to.w < from.x) {
+    start = { x: from.x, y: from.y + from.h / 2 };
+    end = { x: to.x + to.w, y: to.y + to.h / 2 };
+  } else if (to.x > from.x + from.w) {
+    start = { x: from.x + from.w, y: from.y + from.h / 2 };
+    end = { x: to.x, y: to.y + to.h / 2 };
+  } else if (to.y > from.y) {
+    start = { x: from.x + from.w / 2, y: from.y + from.h };
+    end = { x: to.x + to.w / 2, y: to.y };
+  } else {
+    start = { x: from.x + from.w / 2, y: from.y };
+    end = { x: to.x + to.w / 2, y: to.y + to.h };
+  }
+  const horizontal = Math.abs(end.x - start.x) >= Math.abs(end.y - start.y);
+  const bend = horizontal ? Math.max(24, Math.abs(end.x - start.x) * 0.4) : Math.max(24, Math.abs(end.y - start.y) * 0.4);
+  const c1 = horizontal ? { x: start.x + Math.sign(end.x - start.x) * bend, y: start.y } : { x: start.x, y: start.y + Math.sign(end.y - start.y) * bend };
+  const c2 = horizontal ? { x: end.x - Math.sign(end.x - start.x) * bend, y: end.y } : { x: end.x, y: end.y - Math.sign(end.y - start.y) * bend };
+  return [start, c1, c2, end];
+}
+function layoutWorkGraph(items, edges) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const item of items) {
+    if (typeof item.id === "string" && item.id) byId.set(item.id, item);
+  }
+  const parentOf = /* @__PURE__ */ new Map();
+  const extraParents = /* @__PURE__ */ new Map();
+  for (const edge of edges) {
+    if (edge.kind !== "parent") continue;
+    if (typeof edge.from_id !== "string" || !edge.from_id || typeof edge.to_id !== "string" || !edge.to_id || edge.from_id === edge.to_id) continue;
+    const placed = parentOf.get(edge.from_id);
+    if (placed === void 0) {
+      parentOf.set(edge.from_id, edge.to_id);
+    } else if (placed !== edge.to_id) {
+      const extras = extraParents.get(edge.from_id) || [];
+      if (!extras.includes(edge.to_id)) extras.push(edge.to_id);
+      extraParents.set(edge.from_id, extras);
+    }
+  }
+  const sortedIds = [...byId.keys()].sort((left, right) => compareIds(byId, left, right));
+  const keptIds = sortedIds.slice(0, WORKGRAPH_GRAPH_NODE_CAP);
+  const overflowCount = items.length - keptIds.length;
+  const kept = new Set(keptIds);
+  const depthOf = /* @__PURE__ */ new Map();
+  const resolveDepth = (id, onPath) => {
+    const memo = depthOf.get(id);
+    if (memo !== void 0) return memo;
+    const parent = parentOf.get(id);
+    let depth = 0;
+    if (parent && kept.has(parent) && !onPath.has(parent)) {
+      onPath.add(id);
+      depth = resolveDepth(parent, onPath) + 1;
+      onPath.delete(id);
+    }
+    depthOf.set(id, depth);
+    return depth;
+  };
+  for (const id of keptIds) resolveDepth(id, /* @__PURE__ */ new Set([id]));
+  const columnRows = /* @__PURE__ */ new Map();
+  const rects = /* @__PURE__ */ new Map();
+  const nodes = [];
+  let maxDepth = 0;
+  let maxRows = 0;
+  for (const id of keptIds) {
+    const item = byId.get(id);
+    if (!item) continue;
+    const depth = depthOf.get(id) ?? 0;
+    const row = columnRows.get(depth) ?? 0;
+    columnRows.set(depth, row + 1);
+    maxDepth = Math.max(maxDepth, depth);
+    maxRows = Math.max(maxRows, row + 1);
+    const rect = {
+      x: PAD + depth * WORKGRAPH_GRAPH_COL_WIDTH,
+      y: PAD + row * WORKGRAPH_GRAPH_ROW_HEIGHT,
+      w: WORKGRAPH_GRAPH_NODE_WIDTH,
+      h: WORKGRAPH_GRAPH_NODE_HEIGHT
+    };
+    rects.set(id, rect);
+    const status = item.status || "open";
+    nodes.push({
+      itemId: id,
+      ...rect,
+      status,
+      title: item.title || id,
+      priority: item.priority,
+      ownerLabel: workGraphItemOwnerLabel(item),
+      blocked: status === "blocked",
+      alsoUnder: (extraParents.get(id) || []).map(
+        (parentId) => byId.get(parentId)?.title || parentId
+      )
+    });
+  }
+  const layoutEdges = [];
+  for (const [child, parent] of parentOf) {
+    const from = rects.get(child);
+    const to = rects.get(parent);
+    if (!from || !to) continue;
+    layoutEdges.push({ kind: "parent", fromId: child, toId: parent, points: edgePoints(from, to) });
+  }
+  const seenEdges = /* @__PURE__ */ new Set();
+  for (const edge of edges) {
+    if (edge.kind === "parent" || typeof edge.kind !== "string" || !edge.kind) continue;
+    if (typeof edge.from_id !== "string" || typeof edge.to_id !== "string") continue;
+    if (edge.from_id === edge.to_id) continue;
+    const dedupeKey = `${edge.kind}\0${edge.from_id}\0${edge.to_id}`;
+    if (seenEdges.has(dedupeKey)) continue;
+    seenEdges.add(dedupeKey);
+    const from = rects.get(edge.from_id);
+    const to = rects.get(edge.to_id);
+    if (!from || !to) continue;
+    layoutEdges.push({
+      kind: edge.kind,
+      fromId: edge.from_id,
+      toId: edge.to_id,
+      points: edgePoints(from, to)
+    });
+  }
+  if (nodes.length === 0) {
+    return { nodes, edges: layoutEdges, width: 0, height: 0, overflowCount };
+  }
+  return {
+    nodes,
+    edges: layoutEdges,
+    width: PAD * 2 + maxDepth * WORKGRAPH_GRAPH_COL_WIDTH + WORKGRAPH_GRAPH_NODE_WIDTH,
+    height: PAD * 2 + (maxRows - 1) * WORKGRAPH_GRAPH_ROW_HEIGHT + WORKGRAPH_GRAPH_NODE_HEIGHT,
+    overflowCount
+  };
+}
+function workGraphEdgePath(edge) {
+  const [p0, p1, p2, p3] = edge.points;
+  return `M ${p0.x} ${p0.y} C ${p1.x} ${p1.y}, ${p2.x} ${p2.y}, ${p3.x} ${p3.y}`;
+}
+function workGraphEdgeMidpoint(edge) {
+  const [p0, p1, p2, p3] = edge.points;
+  return {
+    x: (p0.x + 3 * p1.x + 3 * p2.x + p3.x) / 8,
+    y: (p0.y + 3 * p1.y + 3 * p2.y + p3.y) / 8
+  };
+}
+
+// src/panels/WorkGraphGraphView.tsx
+var import_react23 = __toESM(require("react"));
+
+// src/panels/topology/zoom-pan.ts
 var import_react22 = __toESM(require("react"));
+var MIN_SCALE = 0.4;
+var MAX_SCALE = 6;
+function clientToViewBox(el, clientX, clientY, viewBoxW, viewBoxH) {
+  const rect = el.getBoundingClientRect();
+  const renderScale = Math.min(rect.width / viewBoxW, rect.height / viewBoxH);
+  const contentW = viewBoxW * renderScale;
+  const contentH = viewBoxH * renderScale;
+  const offsetX = rect.left + (rect.width - contentW) / 2;
+  const offsetY = rect.top + (rect.height - contentH) / 2;
+  return {
+    x: (clientX - offsetX) / renderScale,
+    y: (clientY - offsetY) / renderScale
+  };
+}
+function useZoomPan(width, height) {
+  const [viewport, setViewport] = import_react22.default.useState({ tx: 0, ty: 0, scale: 1 });
+  const dragRef = import_react22.default.useRef(null);
+  const [isDragging, setIsDragging] = import_react22.default.useState(false);
+  const svgRef = import_react22.default.useRef(null);
+  const reset = import_react22.default.useCallback(() => {
+    setViewport({ tx: 0, ty: 0, scale: 1 });
+  }, []);
+  import_react22.default.useEffect(() => {
+    setViewport({ tx: 0, ty: 0, scale: 1 });
+    dragRef.current = null;
+    setIsDragging(false);
+  }, [width, height]);
+  import_react22.default.useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const handler = (e) => {
+      e.preventDefault();
+      const { x: cx, y: cy } = clientToViewBox(el, e.clientX, e.clientY, width, height);
+      setViewport((prev) => {
+        const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+        const nextScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, prev.scale * factor));
+        if (nextScale === prev.scale) return prev;
+        const wx = (cx - prev.tx) / prev.scale;
+        const wy = (cy - prev.ty) / prev.scale;
+        return {
+          scale: nextScale,
+          tx: cx - wx * nextScale,
+          ty: cy - wy * nextScale
+        };
+      });
+    };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, [width, height]);
+  const onPointerDown = import_react22.default.useCallback((e) => {
+    if (e.button !== 0) return;
+    const tag = e.target?.tagName?.toLowerCase();
+    if (tag !== "svg" && tag !== "g" && tag !== "rect" && tag !== "line") return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragRef.current = { pointerId: e.pointerId, lastX: e.clientX, lastY: e.clientY };
+    setIsDragging(true);
+  }, []);
+  const onPointerMove = import_react22.default.useCallback((e) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    const dx = e.clientX - drag.lastX;
+    const dy = e.clientY - drag.lastY;
+    drag.lastX = e.clientX;
+    drag.lastY = e.clientY;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const renderScale = Math.min(rect.width / width, rect.height / height);
+    const vbDx = dx / renderScale;
+    const vbDy = dy / renderScale;
+    setViewport((prev) => ({ ...prev, tx: prev.tx + vbDx, ty: prev.ty + vbDy }));
+  }, [width, height]);
+  const onPointerUp = import_react22.default.useCallback((e) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    dragRef.current = null;
+    setIsDragging(false);
+  }, []);
+  return { viewport, reset, svgRef, onPointerDown, onPointerMove, onPointerUp, isDragging };
+}
+function viewportTransform(v) {
+  return `translate(${v.tx} ${v.ty}) scale(${v.scale})`;
+}
+
+// src/panels/WorkGraphGraphView.tsx
 var import_jsx_runtime33 = require("react/jsx-runtime");
+var TITLE_MAX_CHARS = 21;
+var META_MAX_CHARS = 24;
+function truncate(text, max) {
+  return text.length > max ? `${text.slice(0, max - 1)}\u2026` : text;
+}
+function nodeMetaLine(node) {
+  const parts = [];
+  if (node.priority && node.priority !== "medium") parts.push(node.priority);
+  if (node.blocked) parts.push("blocked");
+  if (node.ownerLabel) parts.push(node.ownerLabel);
+  if (node.alsoUnder.length > 0) parts.push(`also under ${node.alsoUnder.join(", ")}`);
+  return truncate(parts.join(" \xB7 "), META_MAX_CHARS);
+}
+function nodeHoverText(node, item) {
+  const lines = [node.title, `status: ${node.status}`];
+  if (node.ownerLabel) lines.push(`owner: ${node.ownerLabel}`);
+  if (node.alsoUnder.length > 0) lines.push(`also under: ${node.alsoUnder.join(", ")}`);
+  if (item?.description) lines.push(item.description);
+  return lines.join("\n");
+}
+function selectionSummary(itemId, items, attention) {
+  const item = items.find((candidate) => candidate.id === itemId);
+  if (!item) return itemId;
+  const parts = [itemId, item.status || "open"];
+  const owner = workGraphItemOwnerLabel(item);
+  if (owner) parts.push(owner);
+  if (item.labels && item.labels.length > 0) parts.push(item.labels.join(", "));
+  if (attention.some((binding) => binding.work_ref?.item_id === itemId)) parts.push("attention-bound");
+  if (item.description) parts.push(item.description);
+  return parts.join(" \xB7 ");
+}
+function WorkGraphGraphView({
+  items,
+  edges,
+  attention,
+  selectedId,
+  onSelect
+}) {
+  const layout = import_react23.default.useMemo(() => layoutWorkGraph(items, edges), [items, edges]);
+  const itemById = import_react23.default.useMemo(() => {
+    const map = /* @__PURE__ */ new Map();
+    for (const item of items) {
+      if (typeof item.id === "string" && item.id) map.set(item.id, item);
+    }
+    return map;
+  }, [items]);
+  const zoom = useZoomPan(layout.width, layout.height);
+  const boundItemIds = import_react23.default.useMemo(() => {
+    const bound = /* @__PURE__ */ new Set();
+    for (const binding of attention) {
+      const itemId = binding.work_ref?.item_id;
+      if (typeof itemId === "string" && itemId) bound.add(itemId);
+    }
+    return bound;
+  }, [attention]);
+  if (layout.nodes.length === 0) {
+    return /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "workgraph__empty", children: "No work items to draw." });
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "workgraph-graph", "data-testid": "workgraph-graph-frame", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "workgraph-graph__toolbar", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+        "button",
+        {
+          type: "button",
+          className: "workgraph__action",
+          "data-testid": "workgraph-graph-fit",
+          onClick: zoom.reset,
+          children: "Fit"
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("span", { className: "workgraph-graph__stats", children: [
+        layout.nodes.length,
+        " items \xB7 ",
+        layout.edges.length,
+        " edges"
+      ] }),
+      layout.overflowCount > 0 ? /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("span", { className: "workgraph-graph__overflow", "data-testid": "workgraph-graph-overflow", children: [
+        "+",
+        layout.overflowCount,
+        " more items not drawn"
+      ] }) : null,
+      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "workgraph__spacer" }),
+      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "workgraph-graph__hint", children: "drag to pan \xB7 wheel to zoom" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(
+      "svg",
+      {
+        "data-testid": "workgraph-graph",
+        className: `workgraph-graph__svg${zoom.isDragging ? " is-dragging" : ""}`,
+        viewBox: `0 0 ${layout.width} ${layout.height}`,
+        preserveAspectRatio: "xMidYMid meet",
+        role: "img",
+        "aria-label": "Work item dependency graph",
+        ref: zoom.svgRef,
+        onPointerDown: zoom.onPointerDown,
+        onPointerMove: zoom.onPointerMove,
+        onPointerUp: zoom.onPointerUp,
+        onPointerCancel: zoom.onPointerUp,
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("defs", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+              "marker",
+              {
+                id: "workgraph-graph-arrow",
+                className: "workgraph-graph__arrow",
+                viewBox: "0 0 8 8",
+                refX: "7",
+                refY: "4",
+                markerWidth: "7",
+                markerHeight: "7",
+                orient: "auto-start-reverse",
+                children: /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("path", { d: "M0,0 L8,4 L0,8 z" })
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+              "marker",
+              {
+                id: "workgraph-graph-arrow-blocks",
+                className: "workgraph-graph__arrow is-blocks",
+                viewBox: "0 0 8 8",
+                refX: "7",
+                refY: "4",
+                markerWidth: "7",
+                markerHeight: "7",
+                orient: "auto-start-reverse",
+                children: /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("path", { d: "M0,0 L8,4 L0,8 z" })
+              }
+            )
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("g", { "data-testid": "workgraph-graph-viewport", transform: viewportTransform(zoom.viewport), children: [
+            layout.edges.map((edge, index) => {
+              const mid = workGraphEdgeMidpoint(edge);
+              const marker = edge.kind === "blocks" ? "url(#workgraph-graph-arrow-blocks)" : "url(#workgraph-graph-arrow)";
+              return /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("g", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+                  "path",
+                  {
+                    "data-testid": "workgraph-graph-edge",
+                    "data-kind": edge.kind,
+                    className: `workgraph-graph__edge is-${edge.kind}`,
+                    d: workGraphEdgePath(edge),
+                    markerEnd: marker
+                  }
+                ),
+                edge.kind !== "parent" ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+                  "text",
+                  {
+                    className: "workgraph-graph__edge-label",
+                    x: mid.x,
+                    y: mid.y - 4,
+                    textAnchor: "middle",
+                    children: edge.kind
+                  }
+                ) : null
+              ] }, `${edge.kind}:${edge.fromId}:${edge.toId}:${index}`);
+            }),
+            layout.nodes.map((node) => {
+              const meta = nodeMetaLine(node);
+              const selected = node.itemId === selectedId;
+              return /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(
+                "g",
+                {
+                  "data-testid": "workgraph-graph-node",
+                  "data-item-id": node.itemId,
+                  "data-status": node.status,
+                  className: `workgraph-graph__node is-${node.status}${selected ? " is-selected" : ""}`,
+                  transform: `translate(${node.x} ${node.y})`,
+                  onPointerDown: (event) => {
+                    event.stopPropagation();
+                    onSelect?.(node.itemId);
+                  },
+                  children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("title", { children: nodeHoverText(node, itemById.get(node.itemId)) }),
+                    /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("rect", { className: "workgraph-graph__node-box", width: node.w, height: node.h, rx: 8 }),
+                    /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("circle", { className: "workgraph-graph__node-dot", cx: 14, cy: meta ? 15 : node.h / 2, r: 3.5 }),
+                    boundItemIds.has(node.itemId) ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+                      "circle",
+                      {
+                        className: "workgraph-graph__node-goal-ring",
+                        cx: 14,
+                        cy: meta ? 15 : node.h / 2,
+                        r: 6.5
+                      }
+                    ) : null,
+                    /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+                      "text",
+                      {
+                        className: "workgraph-graph__node-title",
+                        x: 26,
+                        y: meta ? 19 : node.h / 2 + 4,
+                        children: truncate(node.title, TITLE_MAX_CHARS)
+                      }
+                    ),
+                    meta ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("text", { className: "workgraph-graph__node-meta", x: 26, y: 34, children: meta }) : null
+                  ]
+                },
+                node.itemId
+              );
+            })
+          ] })
+        ]
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "workgraph-graph__detail", "data-testid": "workgraph-graph-detail", children: selectedId ? selectionSummary(selectedId, items, attention) : "Click a node to inspect it." })
+  ] });
+}
+
+// src/panels/WorkGraphPanel.tsx
+var import_jsx_runtime34 = require("react/jsx-runtime");
+var workGraphViewModeMemory = "tree";
 function buildWorkGraphPanelTree(items, edges) {
   const byId = /* @__PURE__ */ new Map();
   for (const item of items) {
@@ -15040,7 +15498,7 @@ function workGraphEventLine(event) {
   return [at, kind, item].filter(Boolean).join(" \xB7 ");
 }
 function workGraphOwnerLabelOf(item) {
-  return item.owner?.display_name || item.owner?.key?.id || item.claim?.owner?.display_name || item.claim?.owner?.key?.id || "";
+  return workGraphItemOwnerLabel(item);
 }
 function workGraphGoalRevisionOf(binding, items) {
   const itemId = binding.work_ref?.item_id;
@@ -15081,19 +15539,19 @@ function ItemRow2({
   const revision = typeof item.revision === "number" ? item.revision : void 0;
   const terminal = status === "completed" || status === "cancelled" || status === "failed";
   const owner = workGraphOwnerLabelOf(item);
-  return /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
     "div",
     {
       className: "workgraph__item",
       "data-testid": `workgraph-panel-item:${itemId}`,
       style: { paddingLeft: `${depth * 16}px` },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: statusDotClass(status), "aria-hidden": "true" }),
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "workgraph__item-title", title: item.description || item.title, children: item.title || itemId }),
-        item.priority && item.priority !== "medium" ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: `workgraph__chip is-priority-${item.priority}`, children: item.priority }) : null,
-        owner ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "workgraph__chip", children: owner }) : null,
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "workgraph__item-status", children: status.replace(/_/g, " ") }),
-        canManage && onClaim && status === "open" && !owner ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: statusDotClass(status), "aria-hidden": "true" }),
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "workgraph__item-title", title: item.description || item.title, children: item.title || itemId }),
+        item.priority && item.priority !== "medium" ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: `workgraph__chip is-priority-${item.priority}`, children: item.priority }) : null,
+        owner ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "workgraph__chip", children: owner }) : null,
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "workgraph__item-status", children: status.replace(/_/g, " ") }),
+        canManage && onClaim && status === "open" && !owner ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
           "button",
           {
             type: "button",
@@ -15103,7 +15561,7 @@ function ItemRow2({
             children: "Claim"
           }
         ) : null,
-        canManage && onClose && !terminal && status !== "blocked" ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+        canManage && onClose && !terminal && status !== "blocked" ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
           "button",
           {
             type: "button",
@@ -15127,8 +15585,8 @@ function AttentionRow2({
   onAttentionResume,
   onAttentionReassign
 }) {
-  const [reassignOpen, setReassignOpen] = import_react22.default.useState(false);
-  const [reassignIdentity, setReassignIdentity] = import_react22.default.useState("");
+  const [reassignOpen, setReassignOpen] = import_react24.default.useState(false);
+  const [reassignIdentity, setReassignIdentity] = import_react24.default.useState("");
   const bindingId = binding.binding_id || "";
   const revision = binding.machine_state?.revision;
   const statusLabel2 = workGraphBindingStatusLabel(binding);
@@ -15140,18 +15598,18 @@ function AttentionRow2({
   const bindingInput = { bindingId, revision };
   const goalInput = { bindingId, revision: goalRevision };
   if (!bindingId) return null;
-  return /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "workgraph__binding", "data-testid": `workgraph-panel-binding:${bindingId}`, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "workgraph__binding-line", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: `workgraph__mode is-${binding.mode || "pursue"}`, children: binding.mode || "pursue" }),
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "workgraph__binding-status", children: statusLabel2 }),
-      targetLabel ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "workgraph__binding-target", children: targetLabel }) : null,
-      binding.work_ref?.item_id ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "workgraph__chip", title: "Bound work item", children: binding.work_ref.item_id }) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "workgraph__spacer" }),
-      canManage && onAttentionPause && isActive ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onAttentionPause(bindingInput), children: "Pause" }) : null,
-      canManage && onAttentionResume && isPaused ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onAttentionResume(bindingInput), children: "Resume" }) : null,
-      canManage && onGoalConfirm && live ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onGoalConfirm(goalInput), children: "Confirm" }) : null,
-      canManage && onGoalRequestClose && live ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onGoalRequestClose(goalInput), children: "Request close" }) : null,
-      canManage && onAttentionReassign && canReassign ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "workgraph__binding", "data-testid": `workgraph-panel-binding:${bindingId}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "workgraph__binding-line", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: `workgraph__mode is-${binding.mode || "pursue"}`, children: binding.mode || "pursue" }),
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "workgraph__binding-status", children: statusLabel2 }),
+      targetLabel ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "workgraph__binding-target", children: targetLabel }) : null,
+      binding.work_ref?.item_id ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "workgraph__chip", title: "Bound work item", children: binding.work_ref.item_id }) : null,
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "workgraph__spacer" }),
+      canManage && onAttentionPause && isActive ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onAttentionPause(bindingInput), children: "Pause" }) : null,
+      canManage && onAttentionResume && isPaused ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onAttentionResume(bindingInput), children: "Resume" }) : null,
+      canManage && onGoalConfirm && live ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onGoalConfirm(goalInput), children: "Confirm" }) : null,
+      canManage && onGoalRequestClose && live ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onGoalRequestClose(goalInput), children: "Request close" }) : null,
+      canManage && onAttentionReassign && canReassign ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
         "button",
         {
           type: "button",
@@ -15162,8 +15620,8 @@ function AttentionRow2({
         }
       ) : null
     ] }),
-    reassignOpen && canManage && onAttentionReassign && canReassign ? /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "workgraph__reassign", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+    reassignOpen && canManage && onAttentionReassign && canReassign ? /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "workgraph__reassign", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
         "input",
         {
           placeholder: "Target agent identity\u2026",
@@ -15172,7 +15630,7 @@ function AttentionRow2({
           "data-testid": `workgraph-panel-reassign-input:${bindingId}`
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
         "button",
         {
           type: "button",
@@ -15202,22 +15660,54 @@ function WorkGraphPanel({
   onAttentionResume,
   onAttentionReassign
 }) {
-  const rows = import_react22.default.useMemo(
+  const rows = import_react24.default.useMemo(
     () => buildWorkGraphPanelTree(data.items, data.edges),
     [data.items, data.edges]
   );
+  const visibleRows = rows.length > WORKGRAPH_GRAPH_NODE_CAP ? rows.slice(0, WORKGRAPH_GRAPH_NODE_CAP) : rows;
+  const treeOverflowCount = rows.length - visibleRows.length;
+  const [viewMode, setViewModeState] = import_react24.default.useState(workGraphViewModeMemory);
+  const [selectedGraphItem, setSelectedGraphItem] = import_react24.default.useState(null);
+  const setViewMode = (mode) => {
+    workGraphViewModeMemory = mode;
+    setViewModeState(mode);
+  };
   if (data.unavailable) {
-    return /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "console-panel workgraph", "data-testid": "workgraph-panel", children: /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "workgraph__empty", children: "WorkGraph is not configured on this runtime." }) });
+    return /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "console-panel workgraph", "data-testid": "workgraph-panel", children: /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "workgraph__empty", children: "WorkGraph is not configured on this runtime." }) });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "console-panel workgraph", "data-testid": "workgraph-panel", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "workgraph__head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("h3", { children: "WorkGraph" }),
-      data.capturedAt ? /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("span", { className: "workgraph__captured", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "console-panel workgraph", "data-testid": "workgraph-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "workgraph__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("h3", { children: "WorkGraph" }),
+      data.capturedAt ? /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("span", { className: "workgraph__captured", children: [
         "as of ",
         data.capturedAt.slice(0, 19).replace("T", " ")
       ] }) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "workgraph__spacer" }),
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "workgraph__spacer" }),
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "workgraph__view-toggle", role: "group", "aria-label": "WorkGraph view mode", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+          "button",
+          {
+            type: "button",
+            className: `workgraph__action${viewMode === "tree" ? " is-active" : ""}`,
+            "aria-pressed": viewMode === "tree",
+            "data-testid": "workgraph-view-toggle:tree",
+            onClick: () => setViewMode("tree"),
+            children: "Tree"
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+          "button",
+          {
+            type: "button",
+            className: `workgraph__action${viewMode === "graph" ? " is-active" : ""}`,
+            "aria-pressed": viewMode === "graph",
+            "data-testid": "workgraph-view-toggle:graph",
+            onClick: () => setViewMode("graph"),
+            children: "Graph"
+          }
+        )
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
         "button",
         {
           type: "button",
@@ -15228,24 +15718,40 @@ function WorkGraphPanel({
         }
       )
     ] }),
-    data.error ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "workgraph__error", role: "alert", children: data.error }) : null,
-    data.denied ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "workgraph__empty", "data-testid": "workgraph-panel-denied", children: "You do not have a grant to view WorkGraph state." }) : /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(import_jsx_runtime33.Fragment, { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "workgraph__section", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "workgraph__sec-label", children: "Work items" }),
-        rows.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "workgraph__empty", children: "No work items." }) : rows.map((row) => /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
-          ItemRow2,
+    data.error ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "workgraph__error", role: "alert", children: data.error }) : null,
+    data.denied ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "workgraph__empty", "data-testid": "workgraph-panel-denied", children: "You do not have a grant to view WorkGraph state." }) : /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(import_jsx_runtime34.Fragment, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "workgraph__section", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "workgraph__sec-label", children: "Work items" }),
+        viewMode === "graph" ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+          WorkGraphGraphView,
           {
-            row,
-            canManage,
-            onClaim,
-            onClose
-          },
-          row.itemId
-        ))
+            items: data.items,
+            edges: data.edges,
+            attention: data.attention,
+            selectedId: selectedGraphItem ?? void 0,
+            onSelect: setSelectedGraphItem
+          }
+        ) : rows.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "workgraph__empty", children: "No work items." }) : /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(import_jsx_runtime34.Fragment, { children: [
+          visibleRows.map((row) => /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+            ItemRow2,
+            {
+              row,
+              canManage,
+              onClaim,
+              onClose
+            },
+            row.itemId
+          )),
+          treeOverflowCount > 0 ? /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "workgraph__empty", "data-testid": "workgraph-panel-overflow", children: [
+            "+",
+            treeOverflowCount,
+            " more items not shown"
+          ] }) : null
+        ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "workgraph__section", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "workgraph__sec-label", children: "Attention" }),
-        data.attention.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "workgraph__empty", children: "No attention bindings." }) : data.attention.map((binding, index) => /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "workgraph__section", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "workgraph__sec-label", children: "Attention" }),
+        data.attention.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "workgraph__empty", children: "No attention bindings." }) : data.attention.map((binding, index) => /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
           AttentionRow2,
           {
             binding,
@@ -15260,23 +15766,23 @@ function WorkGraphPanel({
           binding.binding_id || `binding-${index}`
         ))
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "workgraph__section", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "workgraph__sec-label", children: "Recent events" }),
-        data.events.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "workgraph__empty", children: "No events." }) : /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "workgraph__events", children: data.events.map((event, index) => /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "workgraph__event", children: workGraphEventLine(event) }, `${event.seq ?? index}`)) })
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "workgraph__section", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "workgraph__sec-label", children: "Recent events" }),
+        data.events.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "workgraph__empty", children: "No events." }) : /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "workgraph__events", children: data.events.map((event, index) => /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "workgraph__event", children: workGraphEventLine(event) }, `${event.seq ?? index}`)) })
       ] })
     ] })
   ] });
 }
 
 // src/panels/RoutingPanel.tsx
-var import_react23 = __toESM(require("react"));
-var import_jsx_runtime34 = require("react/jsx-runtime");
+var import_react25 = __toESM(require("react"));
+var import_jsx_runtime35 = require("react/jsx-runtime");
 function RoutingPanel({ data }) {
   const routes = data.routes || [];
   const deliveries = data.deliveries || [];
-  const [q, setQ] = import_react23.default.useState("");
-  const [sel, setSel] = import_react23.default.useState(routes[0]?.route_key || "");
-  const rows = import_react23.default.useMemo(() => {
+  const [q, setQ] = import_react25.default.useState("");
+  const [sel, setSel] = import_react25.default.useState(routes[0]?.route_key || "");
+  const rows = import_react25.default.useMemo(() => {
     if (!q) return routes;
     const needle = q.toLowerCase();
     return routes.filter(
@@ -15286,17 +15792,17 @@ function RoutingPanel({ data }) {
   const active = rows.find((r2) => r2.route_key === sel) || rows[0];
   const recentDeliveries = deliveries.slice(0, 40);
   const trafficForRoute = (routeKey) => deliveries.filter((d) => d.route_id === routeKey).length;
-  return /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "view routing", "data-testid": "routing-panel", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "view__head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("h2", { children: "Routing" }),
-      /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("span", { className: "view__sub", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "view routing", "data-testid": "routing-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "view__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("h2", { children: "Routing" }),
+      /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("span", { className: "view__sub", children: [
         rows.length,
         " routes \xB7 ",
         deliveries.length,
         " deliveries (recent)"
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "view__spacer" }),
-      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "view__spacer" }),
+      /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
         "input",
         {
           className: "view__search",
@@ -15306,89 +15812,89 @@ function RoutingPanel({ data }) {
         }
       )
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "routing__body", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "routing__table", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "routing__row routing__row--head", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "Route" }),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "Channel" }),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "Recipient" }),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "Sink" }),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "Module" }),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "24h" })
+    /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "routing__body", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "routing__table", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "routing__row routing__row--head", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { children: "Route" }),
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { children: "Channel" }),
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { children: "Recipient" }),
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { children: "Sink" }),
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { children: "Module" }),
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { children: "24h" })
         ] }),
         rows.map((r2) => {
           const isSel = active && r2.route_key === active.route_key;
-          return /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
+          return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
             "div",
             {
               className: `routing__row ${isSel ? "is-selected" : ""}`,
               onClick: () => setSel(r2.route_key),
               "data-testid": `routing-route:${r2.route_key}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "routing__intent mono", children: r2.route_key }),
-                /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "mono dim", children: r2.channel || "\u2014" }),
-                /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "mono", children: r2.recipient }),
-                /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "dim", children: r2.sink }),
-                /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "mono dim", children: r2.target_module }),
-                /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "mono", children: trafficForRoute(r2.route_key) })
+                /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "routing__intent mono", children: r2.route_key }),
+                /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "mono dim", children: r2.channel || "\u2014" }),
+                /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "mono", children: r2.recipient }),
+                /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "dim", children: r2.sink }),
+                /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "mono dim", children: r2.target_module }),
+                /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "mono", children: trafficForRoute(r2.route_key) })
               ]
             },
             r2.route_key
           );
         }),
-        rows.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { style: { padding: 24, color: "var(--ink-dim)", fontFamily: "var(--mono)", fontSize: 12 }, children: "No routes configured." })
+        rows.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { style: { padding: 24, color: "var(--ink-dim)", fontFamily: "var(--mono)", fontSize: 12 }, children: "No routes configured." })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("aside", { className: "routing__flow", children: active && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(import_jsx_runtime34.Fragment, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "rf__title", children: "Flow" }),
-        /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "rf__diagram", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "rf__node rf__node--intent", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "rf__lbl", children: "Route" }),
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "rf__val mono", children: active.route_key })
+      /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("aside", { className: "routing__flow", children: active && /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(import_jsx_runtime35.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "rf__title", children: "Flow" }),
+        /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "rf__diagram", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "rf__node rf__node--intent", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "rf__lbl", children: "Route" }),
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "rf__val mono", children: active.route_key })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("svg", { className: "rf__arrow", viewBox: "0 0 40 12", children: /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("path", { d: "M0 6 H 34 M 28 2 L 34 6 L 28 10", stroke: "currentColor", fill: "none", strokeWidth: "1" }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "rf__node rf__node--handler", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "rf__lbl", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("svg", { className: "rf__arrow", viewBox: "0 0 40 12", children: /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("path", { d: "M0 6 H 34 M 28 2 L 34 6 L 28 10", stroke: "currentColor", fill: "none", strokeWidth: "1" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "rf__node rf__node--handler", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "rf__lbl", children: [
               "via ",
               active.sink
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "rf__val mono", children: active.recipient })
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "rf__val mono", children: active.recipient })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("svg", { className: "rf__arrow rf__arrow--drop", viewBox: "0 0 12 40", children: /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("path", { d: "M6 0 V 34 M 2 28 L 6 34 L 10 28", stroke: "currentColor", fill: "none", strokeWidth: "1" }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "rf__node rf__node--gate", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "rf__lbl", children: "Module" }),
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "rf__val mono", children: active.target_module })
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("svg", { className: "rf__arrow rf__arrow--drop", viewBox: "0 0 12 40", children: /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("path", { d: "M6 0 V 34 M 2 28 L 6 34 L 10 28", stroke: "currentColor", fill: "none", strokeWidth: "1" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "rf__node rf__node--gate", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "rf__lbl", children: "Module" }),
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "rf__val mono", children: active.target_module })
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "rf__stats", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("dt", { children: "Retry max" }),
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("dd", { children: active.retry_max ?? "\u2014" })
+        /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "rf__stats", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("dt", { children: "Retry max" }),
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("dd", { children: active.retry_max ?? "\u2014" })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("dt", { children: "Backoff" }),
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("dd", { children: active.backoff_ms ? `${active.backoff_ms} ms` : "\u2014" })
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("dt", { children: "Backoff" }),
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("dd", { children: active.backoff_ms ? `${active.backoff_ms} ms` : "\u2014" })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("dt", { children: "Rate limit" }),
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("dd", { children: active.rate_limit_per_minute ? `${active.rate_limit_per_minute}/m` : "\u2014" })
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("dt", { children: "Rate limit" }),
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("dd", { children: active.rate_limit_per_minute ? `${active.rate_limit_per_minute}/m` : "\u2014" })
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "rf__title", style: { marginTop: 12 }, children: "Recent deliveries" }),
-        /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { style: { display: "flex", flexDirection: "column", gap: 4, fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink-muted)" }, children: [
-          recentDeliveries.filter((d) => d.route_id === active.route_key).slice(0, 8).map((d) => /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { "data-testid": `routing-delivery:${d.delivery_id}`, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { style: { color: d.status === "delivered" ? "var(--ok)" : d.status === "failed" ? "var(--crit)" : "var(--warn)" }, children: d.status }),
+        /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "rf__title", style: { marginTop: 12 }, children: "Recent deliveries" }),
+        /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { style: { display: "flex", flexDirection: "column", gap: 4, fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink-muted)" }, children: [
+          recentDeliveries.filter((d) => d.route_id === active.route_key).slice(0, 8).map((d) => /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { "data-testid": `routing-delivery:${d.delivery_id}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { style: { color: d.status === "delivered" ? "var(--ok)" : d.status === "failed" ? "var(--crit)" : "var(--warn)" }, children: d.status }),
             " ",
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("span", { className: "dim", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("span", { className: "dim", children: [
               "\xB7 ",
               d.delivery_id.slice(0, 8)
             ] }),
             " ",
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("span", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("span", { children: [
               "\u2192 ",
               d.recipient
             ] })
           ] }, d.delivery_id)),
-          recentDeliveries.filter((d) => d.route_id === active.route_key).length === 0 && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "dim", children: "No recent deliveries." })
+          recentDeliveries.filter((d) => d.route_id === active.route_key).length === 0 && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "dim", children: "No recent deliveries." })
         ] })
       ] }) })
     ] })
@@ -15396,8 +15902,8 @@ function RoutingPanel({ data }) {
 }
 
 // src/panels/LogsPanel.tsx
-var import_react24 = __toESM(require("react"));
-var import_jsx_runtime35 = require("react/jsx-runtime");
+var import_react26 = __toESM(require("react"));
+var import_jsx_runtime36 = require("react/jsx-runtime");
 var INTERNAL_LOG_EVENTS = /* @__PURE__ */ new Set([
   "keep-alive",
   "snapshot_complete",
@@ -15533,16 +16039,16 @@ function hasStructuredOutput(frame) {
   return d.structured_output != null;
 }
 function LogsPanel({ frames }) {
-  const [q, setQ] = import_react24.default.useState("");
-  const [lvl, setLvl] = import_react24.default.useState("all");
-  const [expanded, setExpanded] = import_react24.default.useState(/* @__PURE__ */ new Set());
+  const [q, setQ] = import_react26.default.useState("");
+  const [lvl, setLvl] = import_react26.default.useState("all");
+  const [expanded, setExpanded] = import_react26.default.useState(/* @__PURE__ */ new Set());
   const toggle = (key) => setExpanded((prev) => {
     const next = new Set(prev);
     if (next.has(key)) next.delete(key);
     else next.add(key);
     return next;
   });
-  const rows = import_react24.default.useMemo(() => {
+  const rows = import_react26.default.useMemo(() => {
     return frames.filter(isLogFrameVisible).map((f) => ({ f, level: levelFor(f) })).filter(({ f, level }) => {
       if (lvl !== "all" && level !== lvl) return false;
       if (!q) return true;
@@ -15550,7 +16056,7 @@ function LogsPanel({ frames }) {
       return f.event.toLowerCase().includes(needle) || (f.identity || "").toLowerCase().includes(needle);
     });
   }, [frames, q, lvl]);
-  const counts = import_react24.default.useMemo(() => {
+  const counts = import_react26.default.useMemo(() => {
     const c = { info: 0, warn: 0, error: 0 };
     frames.filter(isLogFrameVisible).forEach((f) => {
       c[levelFor(f)]++;
@@ -15558,17 +16064,17 @@ function LogsPanel({ frames }) {
     return c;
   }, [frames]);
   const visibleTotal = counts.info + counts.warn + counts.error;
-  return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "view logs", "data-testid": "logs-panel", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "view__head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("h2", { children: "Logs" }),
-      /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("span", { className: "view__sub", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "view logs", "data-testid": "logs-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "view__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("h2", { children: "Logs" }),
+      /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("span", { className: "view__sub", children: [
         rows.length,
         " of ",
         visibleTotal,
         " events \xB7 live"
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "view__spacer" }),
-      /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "view__spacer" }),
+      /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
         "input",
         {
           className: "view__search",
@@ -15577,37 +16083,37 @@ function LogsPanel({ frames }) {
           onChange: (e) => setQ(e.target.value)
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "view__segs", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("button", { className: lvl === "all" ? "is-active" : "", onClick: () => setLvl("all"), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "view__segs", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("button", { className: lvl === "all" ? "is-active" : "", onClick: () => setLvl("all"), children: [
           "all ",
-          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "n", children: visibleTotal })
+          /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "n", children: visibleTotal })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("button", { className: lvl === "info" ? "is-active" : "", onClick: () => setLvl("info"), children: [
+        /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("button", { className: lvl === "info" ? "is-active" : "", onClick: () => setLvl("info"), children: [
           "info ",
-          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "n", children: counts.info })
+          /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "n", children: counts.info })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("button", { className: `warn ${lvl === "warn" ? "is-active" : ""}`, onClick: () => setLvl("warn"), children: [
+        /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("button", { className: `warn ${lvl === "warn" ? "is-active" : ""}`, onClick: () => setLvl("warn"), children: [
           "warn ",
-          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "n", children: counts.warn })
+          /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "n", children: counts.warn })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("button", { className: `bad ${lvl === "error" ? "is-active" : ""}`, onClick: () => setLvl("error"), children: [
+        /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("button", { className: `bad ${lvl === "error" ? "is-active" : ""}`, onClick: () => setLvl("error"), children: [
           "err ",
-          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "n", children: counts.error })
+          /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "n", children: counts.error })
         ] })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "logs__body", children: /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "logs__stream", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("div", { className: "logs__body", children: /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "logs__stream", children: [
       rows.map(({ f, level }, i) => {
         const key = f.id || `${f.event}:${f.timestampMs}:${i}`;
         const isOpen = expanded.has(key);
         const hasStructured = hasStructuredOutput(f);
-        return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
+        return /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)(
           "div",
           {
             className: `logline logline--${level}${isOpen ? " is-open" : ""}`,
             "data-testid": `log-line:${f.id || i}`,
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
+              /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)(
                 "button",
                 {
                   type: "button",
@@ -15616,46 +16122,46 @@ function LogsPanel({ frames }) {
                   "aria-expanded": isOpen,
                   "data-testid": `log-line:${f.id || i}:toggle`,
                   children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "logline__chevron", children: isOpen ? "\u25BE" : "\u25B8" }),
-                    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "logline__t", children: formatTime2(f.timestampMs) }),
-                    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: `logline__lvl logline__lvl--${level}`, children: level.toUpperCase() }),
-                    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "logline__src", children: f.identity || "_system" }),
-                    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "logline__evt", children: f.event }),
-                    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "logline__ctx dim", children: f.interactionId ? `int=${f.interactionId.slice(0, 8)}` : "" }),
-                    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "logline__msg", children: summarizeLogFrame(f) }),
-                    hasStructured && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "logline__badge", title: "Carries structured_output", children: "\u21B3 struct" })
+                    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "logline__chevron", children: isOpen ? "\u25BE" : "\u25B8" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "logline__t", children: formatTime2(f.timestampMs) }),
+                    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: `logline__lvl logline__lvl--${level}`, children: level.toUpperCase() }),
+                    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "logline__src", children: f.identity || "_system" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "logline__evt", children: f.event }),
+                    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "logline__ctx dim", children: f.interactionId ? `int=${f.interactionId.slice(0, 8)}` : "" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "logline__msg", children: summarizeLogFrame(f) }),
+                    hasStructured && /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "logline__badge", title: "Carries structured_output", children: "\u21B3 struct" })
                   ]
                 }
               ),
-              isOpen && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("pre", { className: "logline__detail", "data-testid": `log-line:${f.id || i}:detail`, children: formatFrameData(f) })
+              isOpen && /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("pre", { className: "logline__detail", "data-testid": `log-line:${f.id || i}:detail`, children: formatFrameData(f) })
             ]
           },
           key
         );
       }),
-      rows.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { style: { padding: 24, color: "var(--ink-dim)", fontFamily: "var(--mono)", fontSize: 12 }, children: "No matching events." })
+      rows.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("div", { style: { padding: 24, color: "var(--ink-dim)", fontFamily: "var(--mono)", fontSize: 12 }, children: "No matching events." })
     ] }) })
   ] });
 }
 
 // src/panels/Topbar.tsx
-var import_jsx_runtime36 = require("react/jsx-runtime");
+var import_jsx_runtime37 = require("react/jsx-runtime");
 function PanelGlyph({ side, open }) {
   const dividerLeft = side === "left";
   const cx = dividerLeft ? 16.5 : 7.5;
   const point = open ? dividerLeft ? 1 : -1 : dividerLeft ? -1 : 1;
   const x1 = cx + point * 1.6;
   const x2 = cx - point * 1.6;
-  return /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)(
     "svg",
     {
       viewBox: "0 0 24 24",
       "aria-hidden": "true",
       focusable: "false",
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("rect", { x: "3", y: "5", width: "18", height: "14", rx: "1.5" }),
-        /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("path", { d: dividerLeft ? "M9 5 L9 19" : "M15 5 L15 19" }),
-        /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("path", { d: `M${x1} 9.5 L${x2} 12 L${x1} 14.5` })
+        /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("rect", { x: "3", y: "5", width: "18", height: "14", rx: "1.5" }),
+        /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("path", { d: dividerLeft ? "M9 5 L9 19" : "M15 5 L15 19" }),
+        /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("path", { d: `M${x1} 9.5 L${x2} 12 L${x1} 14.5` })
       ]
     }
   );
@@ -15675,8 +16181,8 @@ function Topbar({
   onToggleSidebar,
   onToggleRail
 }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "mobkit-topbar", "data-testid": "mobkit-topbar", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { className: "mobkit-topbar", "data-testid": "mobkit-topbar", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
       "button",
       {
         type: "button",
@@ -15686,27 +16192,27 @@ function Topbar({
         "aria-label": sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
         title: sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
         "data-testid": "sidebar-collapse-toggle",
-        children: /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(PanelGlyph, { side: "left", open: !sidebarCollapsed })
+        children: /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(PanelGlyph, { side: "left", open: !sidebarCollapsed })
       }
     ),
-    /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "mobkit-topbar__brand", children: [
-      brandLogoUrl ? /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("img", { className: "mobkit-topbar__brand-logo", src: brandLogoUrl, alt: brandLogoAlt || brandLabel }) : /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "mobkit-topbar__brand-mark" }),
-      /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { children: brandLabel })
+    /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { className: "mobkit-topbar__brand", children: [
+      brandLogoUrl ? /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("img", { className: "mobkit-topbar__brand-logo", src: brandLogoUrl, alt: brandLogoAlt || brandLabel }) : /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "mobkit-topbar__brand-mark" }),
+      /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { children: brandLabel })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "mobkit-topbar__mob", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "mobkit-topbar__mob-status", title: mobStatus }),
-      /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { children: mobName }),
-      /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("span", { className: "dim", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { className: "mobkit-topbar__mob", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "mobkit-topbar__mob-status", title: mobStatus }),
+      /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { children: mobName }),
+      /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("span", { className: "dim", children: [
         "\xB7 ",
         mobStatus
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "mobkit-topbar__mob", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { children: "env:" }),
-      /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { children: environment })
+    /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { className: "mobkit-topbar__mob", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { children: "env:" }),
+      /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { children: environment })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("div", { className: "mobkit-topbar__spacer" }),
-    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("div", { className: "mobkit-topbar__util", children: /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { className: "mobkit-topbar__spacer" }),
+    /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { className: "mobkit-topbar__util", children: /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
       "button",
       {
         type: "button",
@@ -15716,7 +16222,7 @@ function Topbar({
         children: theme === "dark" ? "\u263E dark" : "\u2600 light"
       }
     ) }),
-    railVisible ? /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+    railVisible ? /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
       "button",
       {
         type: "button",
@@ -15726,17 +16232,17 @@ function Topbar({
         "aria-label": railCollapsed ? "Expand signals rail" : "Collapse signals rail",
         title: railCollapsed ? "Expand signals rail" : "Collapse signals rail",
         "data-testid": "signals-rail-collapse-toggle",
-        children: /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(PanelGlyph, { side: "right", open: !railCollapsed })
+        children: /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(PanelGlyph, { side: "right", open: !railCollapsed })
       }
     ) : null
   ] });
 }
 
 // src/panels/Tweaks.tsx
-var import_react25 = __toESM(require("react"));
+var import_react27 = __toESM(require("react"));
 var VARIANT_STORAGE = "mobkit-console-variant";
 function useConsoleVariant() {
-  const [v, setV] = import_react25.default.useState(() => {
+  const [v, setV] = import_react27.default.useState(() => {
     try {
       const stored = localStorage.getItem(VARIANT_STORAGE);
       if (stored === "rams" || stored === "terminal" || stored === "graphite") return stored;
@@ -15744,7 +16250,7 @@ function useConsoleVariant() {
     }
     return "rams";
   });
-  const set = import_react25.default.useCallback((next) => {
+  const set = import_react27.default.useCallback((next) => {
     setV(next);
     try {
       localStorage.setItem(VARIANT_STORAGE, next);
@@ -15755,8 +16261,8 @@ function useConsoleVariant() {
 }
 
 // src/panels/Sidebar.tsx
-var import_react26 = __toESM(require("react"));
-var import_jsx_runtime37 = require("react/jsx-runtime");
+var import_react28 = __toESM(require("react"));
+var import_jsx_runtime38 = require("react/jsx-runtime");
 var ALL_NAV = ["topology", "timeline", "gating", "roster", "routing", "logs", "health", "access", "memory", "workgraph"];
 var NAV_LABEL = {
   topology: "Topology",
@@ -16497,40 +17003,40 @@ function sidebarDragPreviewRows(rows, item) {
 function renderSidebarDragPreviewRows(rows) {
   return rows.map((row) => {
     if (row.kind === "section") {
-      return /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)(
+      return /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(
         "div",
         {
           className: "sidebar__drag-preview-section",
           "data-pinned": row.pinned ? "true" : void 0,
           children: [
-            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "sidebar__sec-label", children: row.bucket }),
-            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "sidebar__sec-spacer" }),
-            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "sidebar__sec-count", children: row.count })
+            /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "sidebar__sec-label", children: row.bucket }),
+            /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "sidebar__sec-spacer" }),
+            /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "sidebar__sec-count", children: row.count })
           ]
         },
         `preview:${row.key}`
       );
     }
     if (row.kind === "subgroup") {
-      return /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { className: "sidebar__drag-preview-subgroup", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { children: row.label }),
-        /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "sidebar__sec-spacer" }),
-        /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "sidebar__sec-count", children: row.count })
+      return /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { className: "sidebar__drag-preview-subgroup", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { children: row.label }),
+        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "sidebar__sec-spacer" }),
+        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "sidebar__sec-count", children: row.count })
       ] }, `preview:${row.key}`);
     }
     if (row.kind === "empty") {
-      return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { className: "sidebar__drag-preview-empty", children: row.sectionConfig?.empty_title || row.sectionConfig?.empty_text || "No agents" }, `preview:${row.key}`);
+      return /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { className: "sidebar__drag-preview-empty", children: row.sectionConfig?.empty_title || row.sectionConfig?.empty_text || "No agents" }, `preview:${row.key}`);
     }
-    return /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(
       "div",
       {
         className: `sidebar__drag-preview-agent ${row.row.childOfHost ? "sidebar__drag-preview-agent--child" : ""}`,
         "data-depth": row.row.childOfHost ? String(Math.min(row.row.depth, 3)) : void 0,
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "agent__dot" }),
-          /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("span", { className: "sidebar__drag-preview-agent-body", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "agent__name", children: row.row.agent.label }),
-            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "agent__id", children: row.row.agent.identity || row.row.agent.member_id })
+          /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "agent__dot" }),
+          /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("span", { className: "sidebar__drag-preview-agent-body", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "agent__name", children: row.row.agent.label }),
+            /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "agent__id", children: row.row.agent.identity || row.row.agent.member_id })
           ] })
         ]
       },
@@ -16578,9 +17084,9 @@ function pendingOrderFocusMatchesElement(pending, element) {
   return true;
 }
 function useMeasuredHeight() {
-  const ref = import_react26.default.useRef(null);
-  const [height, setHeight] = import_react26.default.useState(0);
-  import_react26.default.useLayoutEffect(() => {
+  const ref = import_react28.default.useRef(null);
+  const [height, setHeight] = import_react28.default.useState(0);
+  import_react28.default.useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return void 0;
     const update = () => setHeight(element.clientHeight);
@@ -16605,7 +17111,7 @@ function renderAgentRow(row, selectedMemberId, recentActivity, grouping, pinnedA
   const inbox = inboxCount(agent);
   const badges = configuredAgentBadges(agent, grouping);
   const pinned = isAgentPinned2(agent, pinnedAgentIds);
-  return /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(
     "div",
     {
       className: `agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`,
@@ -16623,25 +17129,25 @@ function renderAgentRow(row, selectedMemberId, recentActivity, grouping, pinnedA
       role: "button",
       tabIndex: 0,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "agent__dot" }),
-        /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("span", { className: "agent__body", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "agent__name", children: agent.label }),
-          /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "agent__id", children: agent.identity || agent.member_id }),
-          badges.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "agent__badges", children: badges.map((badge) => /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "agent__dot" }),
+        /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("span", { className: "agent__body", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "agent__name", children: agent.label }),
+          /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "agent__id", children: agent.identity || agent.member_id }),
+          badges.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "agent__badges", children: badges.map((badge) => /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(
             "span",
             {
               className: "agent__badge",
               "data-tone": badge.tone || "neutral",
               title: `${badge.label}: ${badge.value}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { children: badge.label }),
-                /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("strong", { children: badge.value })
+                /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { children: badge.label }),
+                /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("strong", { children: badge.value })
               ]
             },
             badge.id
           )) }) : null
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "agent__actions", children: onTogglePinnedAgent ? /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "agent__actions", children: onTogglePinnedAgent ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
           "button",
           {
             type: "button",
@@ -16656,12 +17162,12 @@ function renderAgentRow(row, selectedMemberId, recentActivity, grouping, pinnedA
               event.stopPropagation();
               onTogglePinnedAgent(agent, familyPinIds);
             },
-            children: /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(Icon, { name: "i-pin", className: "agent__pin-icon" })
+            children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(Icon, { name: "i-pin", className: "agent__pin-icon" })
           }
         ) : null }),
-        /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("span", { className: "agent__meta", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "agent__pulse", children: pulse.map((v, i) => /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { style: { height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` } }, i)) }),
-          inbox > 0 && /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "agent__inbox", children: inbox })
+        /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("span", { className: "agent__meta", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "agent__pulse", children: pulse.map((v, i) => /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { style: { height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` } }, i)) }),
+          inbox > 0 && /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "agent__inbox", children: inbox })
         ] })
       ]
     }
@@ -16685,85 +17191,85 @@ function Sidebar({
   onTogglePinnedAgent,
   onOpenControl
 }) {
-  const [q, setQ] = import_react26.default.useState("");
-  const [draggingOrder, setDraggingOrder] = import_react26.default.useState(null);
-  const [dragOverOrder, setDragOverOrder] = import_react26.default.useState(null);
-  const [dragPreview, setDragPreview] = import_react26.default.useState(null);
-  const [orderAnnouncement, setOrderAnnouncement] = import_react26.default.useState("");
-  const pendingOrderFocusRef = import_react26.default.useRef(null);
-  const draggingOrderRef = import_react26.default.useRef(null);
-  const pointerDragRef = import_react26.default.useRef(null);
-  const suppressOrderClickRef = import_react26.default.useRef(false);
-  import_react26.default.useEffect(() => {
+  const [q, setQ] = import_react28.default.useState("");
+  const [draggingOrder, setDraggingOrder] = import_react28.default.useState(null);
+  const [dragOverOrder, setDragOverOrder] = import_react28.default.useState(null);
+  const [dragPreview, setDragPreview] = import_react28.default.useState(null);
+  const [orderAnnouncement, setOrderAnnouncement] = import_react28.default.useState("");
+  const pendingOrderFocusRef = import_react28.default.useRef(null);
+  const draggingOrderRef = import_react28.default.useRef(null);
+  const pointerDragRef = import_react28.default.useRef(null);
+  const suppressOrderClickRef = import_react28.default.useRef(false);
+  import_react28.default.useEffect(() => {
     draggingOrderRef.current = draggingOrder;
   }, [draggingOrder]);
-  const navKinds = import_react26.default.useMemo(() => {
+  const navKinds = import_react28.default.useMemo(() => {
     const configured = visibleNavKinds();
     if (!visibleControls) return configured;
     const allowed = new Set(visibleControls);
     return configured.filter((kind) => allowed.has(kind));
   }, [visibleControls]);
-  const filtered = import_react26.default.useMemo(() => {
+  const filtered = import_react28.default.useMemo(() => {
     if (!q) return agents;
     const needle = q.toLowerCase();
     return agents.filter(
       (a) => a.label.toLowerCase().includes(needle) || (a.identity || "").toLowerCase().includes(needle) || (a.member_id || "").toLowerCase().includes(needle) || (a.role || "").toLowerCase().includes(needle)
     );
   }, [agents, q]);
-  const grouped = import_react26.default.useMemo(() => {
+  const grouped = import_react28.default.useMemo(() => {
     return groupSidebarAgents(filtered, grouping);
   }, [filtered, grouping]);
-  const familyPinIdsByMemberId = import_react26.default.useMemo(() => sidebarFamilyPinIdsByMemberId(grouped), [grouped]);
-  const sectionNames = import_react26.default.useMemo(() => orderedSectionNames(grouped, grouping), [grouped, grouping]);
-  const defaultCollapsedKey = import_react26.default.useMemo(
+  const familyPinIdsByMemberId = import_react28.default.useMemo(() => sidebarFamilyPinIdsByMemberId(grouped), [grouped]);
+  const sectionNames = import_react28.default.useMemo(() => orderedSectionNames(grouped, grouping), [grouped, grouping]);
+  const defaultCollapsedKey = import_react28.default.useMemo(
     () => JSON.stringify((grouping?.sections || []).map((section) => [section.name, section.collapsed === true])),
     [grouping?.sections]
   );
-  const sectionCollapseStorageKey = import_react26.default.useMemo(
+  const sectionCollapseStorageKey = import_react28.default.useMemo(
     () => sidebarStorageKey(SECTION_COLLAPSE_STORAGE_PREFIX, storageNamespace),
     [storageNamespace]
   );
-  const subgroupCollapseStorageKey = import_react26.default.useMemo(
+  const subgroupCollapseStorageKey = import_react28.default.useMemo(
     () => sidebarStorageKey(SUBGROUP_COLLAPSE_STORAGE_PREFIX, storageNamespace),
     [storageNamespace]
   );
-  const sectionOrderStorageKey = import_react26.default.useMemo(
+  const sectionOrderStorageKey = import_react28.default.useMemo(
     () => sidebarStorageKey(SIDEBAR_SECTION_ORDER_STORAGE_PREFIX, storageNamespace),
     [storageNamespace]
   );
-  const subgroupOrderStorageKey = import_react26.default.useMemo(
+  const subgroupOrderStorageKey = import_react28.default.useMemo(
     () => sidebarStorageKey(SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX, storageNamespace),
     [storageNamespace]
   );
-  const [collapsedSections, setCollapsedSections] = import_react26.default.useState(() => {
+  const [collapsedSections, setCollapsedSections] = import_react28.default.useState(() => {
     return collapsedSectionsForStorage(grouping, sectionCollapseStorageKey);
   });
-  import_react26.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     setCollapsedSections(collapsedSectionsForStorage(grouping, sectionCollapseStorageKey));
   }, [defaultCollapsedKey, grouping, sectionCollapseStorageKey]);
-  const [collapsedSubgroups, setCollapsedSubgroups] = import_react26.default.useState(() => {
+  const [collapsedSubgroups, setCollapsedSubgroups] = import_react28.default.useState(() => {
     return collapsedSubgroupsForStorage(subgroupCollapseStorageKey);
   });
-  import_react26.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     setCollapsedSubgroups(collapsedSubgroupsForStorage(subgroupCollapseStorageKey));
   }, [subgroupCollapseStorageKey]);
-  const [sectionOrder, setSectionOrder] = import_react26.default.useState(() => {
+  const [sectionOrder, setSectionOrder] = import_react28.default.useState(() => {
     return readSidebarStringList(localSidebarStorage(), sectionOrderStorageKey) || [];
   });
-  import_react26.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     setSectionOrder(readSidebarStringList(localSidebarStorage(), sectionOrderStorageKey) || []);
   }, [sectionOrderStorageKey]);
-  const [subgroupOrder, setSubgroupOrder] = import_react26.default.useState(() => {
+  const [subgroupOrder, setSubgroupOrder] = import_react28.default.useState(() => {
     return readSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey) || [];
   });
-  import_react26.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     setSubgroupOrder(readSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey) || []);
   }, [subgroupOrderStorageKey]);
-  const customSidebarButtons = import_react26.default.useMemo(
+  const customSidebarButtons = import_react28.default.useMemo(
     () => (customButtons || []).filter((button) => button.id && button.label && (button.control || button.href)),
     [customButtons]
   );
-  const completeSectionDrop = import_react26.default.useCallback((target, where, draggedId = draggingOrderRef.current?.id, inputSource = "pointer") => {
+  const completeSectionDrop = import_react28.default.useCallback((target, where, draggedId = draggingOrderRef.current?.id, inputSource = "pointer") => {
     if (!draggedId || draggedId === target) return;
     if (inputSource === "keyboard") {
       pendingOrderFocusRef.current = { kind: "section", id: draggedId };
@@ -16776,12 +17282,12 @@ function Sidebar({
     });
     setOrderAnnouncement(`Moved section ${draggedId} ${where} ${target}.`);
   }, [sectionNames, sectionOrderStorageKey]);
-  const subgroupIdsForBucket = import_react26.default.useCallback((bucket) => {
+  const subgroupIdsForBucket = import_react28.default.useCallback((bucket) => {
     const list = grouped.get(bucket) || [];
     const ids = list.map((row) => row.subgroup).filter((value) => Boolean(value)).map((subgroup) => sidebarSubgroupStorageId(bucket, subgroup));
     return Array.from(new Set(ids));
   }, [grouped]);
-  const completeSubgroupDrop = import_react26.default.useCallback((target, bucket, where, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket, inputSource = "pointer") => {
+  const completeSubgroupDrop = import_react28.default.useCallback((target, bucket, where, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket, inputSource = "pointer") => {
     if (!draggedId || draggedBucket !== bucket || draggedId === target) return;
     if (inputSource === "keyboard") {
       pendingOrderFocusRef.current = { kind: "subgroup", id: draggedId, bucket };
@@ -16799,7 +17305,7 @@ function Sidebar({
     });
     setOrderAnnouncement(`Moved subgroup ${sidebarSubgroupStorageLabel(draggedId)} ${where} ${sidebarSubgroupStorageLabel(target)}.`);
   }, [subgroupIdsForBucket, subgroupOrderStorageKey]);
-  const handleSectionOrderKeyDown = import_react26.default.useCallback((event, bucket) => {
+  const handleSectionOrderKeyDown = import_react28.default.useCallback((event, bucket) => {
     if (!event.altKey || event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
     const ordered = applyConsoleSidebarOrder(sectionNames, sectionOrder);
     const index = ordered.indexOf(bucket);
@@ -16808,7 +17314,7 @@ function Sidebar({
     event.preventDefault();
     completeSectionDrop(target, event.key === "ArrowUp" ? "before" : "after", bucket, "keyboard");
   }, [completeSectionDrop, sectionNames, sectionOrder]);
-  const handleSubgroupOrderKeyDown = import_react26.default.useCallback((event, storageKey, bucket) => {
+  const handleSubgroupOrderKeyDown = import_react28.default.useCallback((event, storageKey, bucket) => {
     if (!event.altKey || event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
     const ordered = applyConsoleSidebarOrder(subgroupIdsForBucket(bucket), subgroupOrder);
     const index = ordered.indexOf(storageKey);
@@ -16817,7 +17323,7 @@ function Sidebar({
     event.preventDefault();
     completeSubgroupDrop(target, bucket, event.key === "ArrowUp" ? "before" : "after", storageKey, bucket, "keyboard");
   }, [completeSubgroupDrop, subgroupIdsForBucket, subgroupOrder]);
-  const beginPointerOrderDrag = import_react26.default.useCallback((event, item) => {
+  const beginPointerOrderDrag = import_react28.default.useCallback((event, item) => {
     if (event.button !== 0) return;
     event.preventDefault();
     pointerDragRef.current = {
@@ -16831,7 +17337,7 @@ function Sidebar({
     setDraggingOrder(item);
     draggingOrderRef.current = item;
   }, []);
-  const movePointerOrderDrag = import_react26.default.useCallback((event) => {
+  const movePointerOrderDrag = import_react28.default.useCallback((event) => {
     const drag = pointerDragRef.current;
     if (!drag) return;
     if (!drag.moved && Math.max(Math.abs(event.clientX - drag.startX), Math.abs(event.clientY - drag.startY)) < 4) return;
@@ -16861,7 +17367,7 @@ function Sidebar({
     drag.over = { id, bucket, where };
     setDragOverOrder({ kind, id, where });
   }, []);
-  const finishPointerOrderDrag = import_react26.default.useCallback(() => {
+  const finishPointerOrderDrag = import_react28.default.useCallback(() => {
     const drag = pointerDragRef.current;
     if (!drag) return;
     pointerDragRef.current = null;
@@ -16881,7 +17387,7 @@ function Sidebar({
     setDragOverOrder(null);
     setDragPreview(null);
   }, [completeSectionDrop, completeSubgroupDrop]);
-  import_react26.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     if (!draggingOrder) return void 0;
     const onMove = (event) => movePointerOrderDrag(event);
     const onDone = () => finishPointerOrderDrag();
@@ -16894,7 +17400,7 @@ function Sidebar({
       window.removeEventListener("pointercancel", onDone);
     };
   }, [draggingOrder, finishPointerOrderDrag, movePointerOrderDrag]);
-  const sidebarNavigationModel = import_react26.default.useMemo(() => {
+  const sidebarNavigationModel = import_react28.default.useMemo(() => {
     return buildStockSidebarNavigationModel({
       sectionNames,
       grouped,
@@ -16907,29 +17413,29 @@ function Sidebar({
       searchActive: Boolean(q)
     });
   }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, sectionOrder, subgroupOrder, q]);
-  const virtualRows = import_react26.default.useMemo(
+  const virtualRows = import_react28.default.useMemo(
     () => sidebarNavigationRows(sidebarNavigationModel),
     [sidebarNavigationModel]
   );
-  const virtualOffsets = import_react26.default.useMemo(() => sidebarVirtualOffsets(virtualRows), [virtualRows]);
+  const virtualOffsets = import_react28.default.useMemo(() => sidebarVirtualOffsets(virtualRows), [virtualRows]);
   const [listRef, listHeight] = useMeasuredHeight();
-  const [scrollTop, setScrollTop] = import_react26.default.useState(0);
-  import_react26.default.useEffect(() => {
+  const [scrollTop, setScrollTop] = import_react28.default.useState(0);
+  import_react28.default.useEffect(() => {
     setScrollTop(0);
     if (listRef.current) listRef.current.scrollTop = 0;
   }, [q, grouping, listRef]);
-  const visibleRange = import_react26.default.useMemo(() => sidebarVisibleRange({
+  const visibleRange = import_react28.default.useMemo(() => sidebarVisibleRange({
     rowCount: virtualRows.length,
     offsets: virtualOffsets.offsets,
     total: virtualOffsets.total,
     scrollTop,
     listHeight
   }), [listHeight, scrollTop, virtualOffsets, virtualRows.length]);
-  const visibleRows = import_react26.default.useMemo(
+  const visibleRows = import_react28.default.useMemo(
     () => virtualRows.slice(visibleRange.start, visibleRange.end),
     [virtualRows, visibleRange]
   );
-  import_react26.default.useLayoutEffect(() => {
+  import_react28.default.useLayoutEffect(() => {
     const pending = pendingOrderFocusRef.current;
     const list = listRef.current;
     if (!pending || !list) return;
@@ -16961,23 +17467,23 @@ function Sidebar({
       window.setTimeout(restoreFocus, 0);
     }
   }, [listHeight, listRef, scrollTop, virtualOffsets, virtualRows]);
-  const dragPreviewRows = import_react26.default.useMemo(
+  const dragPreviewRows = import_react28.default.useMemo(
     () => sidebarDragPreviewRows(virtualRows, draggingOrder),
     [virtualRows, draggingOrder]
   );
   if (collapsed) {
-    return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+    return /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
       "aside",
       {
         className: "sidebar sidebar--collapsed",
         "data-collapsed": "true",
         "data-testid": "sidebar-root",
-        children: /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("i", { className: "sidebar__grip", "aria-hidden": "true" })
+        children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("i", { className: "sidebar__grip", "aria-hidden": "true" })
       }
     );
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("aside", { className: "sidebar", "data-testid": "sidebar-root", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("aside", { className: "sidebar", "data-testid": "sidebar-root", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
       "div",
       {
         "aria-live": "polite",
@@ -16996,14 +17502,14 @@ function Sidebar({
         children: orderAnnouncement
       }
     ),
-    /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { className: "sidebar__mast", children: /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { className: "sidebar__mast-title", children: "Roster" }),
-      /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { className: "sidebar__mast-sub", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { className: "sidebar__mast", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { className: "sidebar__mast-title", children: "Roster" }),
+      /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { className: "sidebar__mast-sub", children: [
         agents.length,
         " agents"
       ] })
     ] }) }),
-    /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { className: "sidebar__search", children: /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { className: "sidebar__search", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
       "input",
       {
         placeholder: "Search roster...",
@@ -17012,10 +17518,10 @@ function Sidebar({
         "data-testid": "sidebar-search"
       }
     ) }),
-    (navKinds.length > 0 || customSidebarButtons.length > 0) && /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { className: "sidebar__section sidebar__section--nav", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { className: "sidebar__sec-head", children: /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "sidebar__sec-label", children: "Workbench" }) }),
-      /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { className: "sidebar__navgrid", children: [
-        navKinds.map((kind) => /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+    (navKinds.length > 0 || customSidebarButtons.length > 0) && /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { className: "sidebar__section sidebar__section--nav", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { className: "sidebar__sec-head", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "sidebar__sec-label", children: "Workbench" }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { className: "sidebar__navgrid", children: [
+        navKinds.map((kind) => /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
           "button",
           {
             className: "sidebar__navitem",
@@ -17028,7 +17534,7 @@ function Sidebar({
         customSidebarButtons.map((button) => {
           const control = normalizeNavKind(button.control);
           if (control) {
-            return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+            return /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
               "button",
               {
                 className: "sidebar__navitem",
@@ -17047,7 +17553,7 @@ function Sidebar({
             }
             const target = button.target || void 0;
             const rel = target === "_blank" ? "noopener noreferrer" : void 0;
-            return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+            return /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
               "a",
               {
                 className: "sidebar__navitem",
@@ -17065,30 +17571,30 @@ function Sidebar({
         })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
       "div",
       {
         className: "sidebar__virtual-list",
         ref: listRef,
         onScroll: (event) => setScrollTop(event.currentTarget.scrollTop),
         "data-testid": "sidebar-agent-list",
-        children: /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { className: "sidebar__virtual-space", style: { height: `${virtualOffsets.total}px` }, children: visibleRows.map((row, index) => {
+        children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { className: "sidebar__virtual-space", style: { height: `${virtualOffsets.total}px` }, children: visibleRows.map((row, index) => {
           const rowIndex = visibleRange.start + index;
           const top = virtualOffsets.offsets[rowIndex] || 0;
           const height = virtualRowHeight(row);
-          return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+          return /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
             "div",
             {
               className: `sidebar__virtual-row sidebar__virtual-row--${row.kind}`,
               style: { transform: `translateY(${top}px)`, height: `${height}px` },
-              children: row.kind === "section" ? /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+              children: row.kind === "section" ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
                 "div",
                 {
                   className: "sidebar__section",
                   "data-collapsed": row.collapsed ? "true" : void 0,
                   "data-pinned": row.pinned ? "true" : void 0,
                   "data-drag-over": dragOverOrder?.kind === "section" && dragOverOrder.id === row.bucket ? dragOverOrder.where : void 0,
-                  children: /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)(
+                  children: /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(
                     "button",
                     {
                       type: "button",
@@ -17111,17 +17617,17 @@ function Sidebar({
                       },
                       "data-testid": `sidebar-section-toggle:${row.bucket}`,
                       children: [
-                        /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "sidebar__sec-label", children: row.bucket }),
-                        /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "sidebar__sec-spacer" }),
-                        /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "sidebar__sec-count", children: row.count })
+                        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "sidebar__sec-label", children: row.bucket }),
+                        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "sidebar__sec-spacer" }),
+                        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "sidebar__sec-count", children: row.count })
                       ]
                     }
                   )
                 }
-              ) : row.kind === "empty" ? /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { className: "sidebar__empty", "data-testid": `sidebar-section-empty:${row.bucket}`, children: [
-                row.sectionConfig?.empty_title ? /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "sidebar__empty-title", children: row.sectionConfig.empty_title }) : null,
-                /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { children: row.sectionConfig?.empty_text || "No agents in this section." })
-              ] }) : row.kind === "subgroup" ? /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)(
+              ) : row.kind === "empty" ? /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { className: "sidebar__empty", "data-testid": `sidebar-section-empty:${row.bucket}`, children: [
+                row.sectionConfig?.empty_title ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "sidebar__empty-title", children: row.sectionConfig.empty_title }) : null,
+                /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { children: row.sectionConfig?.empty_text || "No agents in this section." })
+              ] }) : row.kind === "subgroup" ? /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(
                 "button",
                 {
                   type: "button",
@@ -17147,9 +17653,9 @@ function Sidebar({
                     });
                   },
                   children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { children: row.label }),
-                    /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "sidebar__sec-spacer" }),
-                    /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { className: "sidebar__sec-count", children: row.count })
+                    /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { children: row.label }),
+                    /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "sidebar__sec-spacer" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "sidebar__sec-count", children: row.count })
                   ]
                 }
               ) : renderAgentRow(
@@ -17168,7 +17674,7 @@ function Sidebar({
         }) })
       }
     ),
-    dragPreview && dragPreviewRows.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+    dragPreview && dragPreviewRows.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
       "div",
       {
         className: "sidebar__drag-preview",
@@ -17185,8 +17691,8 @@ function Sidebar({
 }
 
 // src/panels/SignalsRail.tsx
-var import_react27 = __toESM(require("react"));
-var import_jsx_runtime38 = require("react/jsx-runtime");
+var import_react29 = __toESM(require("react"));
+var import_jsx_runtime39 = require("react/jsx-runtime");
 var DEFAULT_FILTER_PRESETS = [
   { id: "all", label: "All" },
   { id: "warning", label: "Attn", alertLevels: ["warning", "critical"] },
@@ -17226,7 +17732,7 @@ function textFromValue(value) {
   }
   return "";
 }
-function truncate(value, max = 110) {
+function truncate2(value, max = 110) {
   const normalized = value.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1").replace(/\s+/g, " ").trim();
   if (normalized.length <= max) return normalized;
   return `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}...`;
@@ -17327,7 +17833,7 @@ function signalFromFrame(frame) {
     return {
       ...base,
       label: frame.event === "interaction_failed" ? "Agent turn failed" : frame.event.replace(/_/g, " "),
-      detail: truncate(textFromValue(data.error ?? data.reason ?? data.message) || "Needs attention")
+      detail: truncate2(textFromValue(data.error ?? data.reason ?? data.message) || "Needs attention")
     };
   }
   switch (frame.event) {
@@ -17342,7 +17848,7 @@ function signalFromFrame(frame) {
         ...base,
         id: `user:${frame.id || frame.interactionId || frame.timestampMs || request}`,
         label: `You asked ${displayName(base.agent)}`,
-        detail: truncate(request)
+        detail: truncate2(request)
       };
     }
     case "system_notice": {
@@ -17353,7 +17859,7 @@ function signalFromFrame(frame) {
         ...base,
         id: `comms:${frame.id || frame.interactionId || frame.timestampMs || peer}`,
         label: `${comms.incoming ? "Received from" : "Sent to"} ${peer}`,
-        detail: truncate(comms.detail || "Peer comms")
+        detail: truncate2(comms.detail || "Peer comms")
       };
     }
     case "interaction_complete": {
@@ -17362,7 +17868,7 @@ function signalFromFrame(frame) {
       return {
         ...base,
         label: `${displayName(base.agent)} replied`,
-        detail: truncate(reply)
+        detail: truncate2(reply)
       };
     }
     case "assistant_image":
@@ -17385,21 +17891,21 @@ function signalFromFrame(frame) {
         ...base,
         id: `peer:${frame.id || frame.interactionId || `${target}:${body}`}`,
         label: `${displayName(base.agent)} ${verb} ${displayName(target)}`,
-        detail: truncate(body || "Peer comms")
+        detail: truncate2(body || "Peer comms")
       };
     }
     case "gating_decision":
       return {
         ...base,
         label: `Gate ${String(data.decision || "decision")}`,
-        detail: truncate(textFromValue(data.reason) || "Gating decision recorded")
+        detail: truncate2(textFromValue(data.reason) || "Gating decision recorded")
       };
     case "member_retired":
-      return { ...base, label: "Member retired", detail: truncate(textFromValue(data.reason) || "Lifecycle change") };
+      return { ...base, label: "Member retired", detail: truncate2(textFromValue(data.reason) || "Lifecycle change") };
     case "state_changed":
       return { ...base, label: `State -> ${String(data.state || data.new_state || "changed")}`, detail: base.agent };
     case "route_changed":
-      return { ...base, label: "Route changed", detail: truncate(textFromValue(data.reason) || "Routing updated") };
+      return { ...base, label: "Route changed", detail: truncate2(textFromValue(data.reason) || "Routing updated") };
     default:
       if (frame.event.startsWith("memory.")) {
         return memorySignal(frame, data, base);
@@ -17408,7 +17914,7 @@ function signalFromFrame(frame) {
   }
 }
 function memorySignal(frame, data, base) {
-  const detail = truncate(describeMemoryTimelineEvent2(frame.event, data));
+  const detail = truncate2(describeMemoryTimelineEvent2(frame.event, data));
   const warning = (label) => ({ ...base, severity: "warning", label, detail });
   const info = (label) => ({ ...base, severity: "info", label, detail });
   switch (frame.event) {
@@ -17537,18 +18043,18 @@ function SignalsRail({
   onPresetChange,
   onSelect
 }) {
-  const presets = import_react27.default.useMemo(() => {
+  const presets = import_react29.default.useMemo(() => {
     const configured = (filterPresets || []).filter((preset) => preset.id && preset.label);
     return configured.length > 0 ? configured : DEFAULT_FILTER_PRESETS;
   }, [filterPresets]);
-  const [filter, setFilter] = import_react27.default.useState(activePresetId || presets[0]?.id || "all");
-  const [expandedGroups, setExpandedGroups] = import_react27.default.useState(() => /* @__PURE__ */ new Set());
-  import_react27.default.useEffect(() => {
+  const [filter, setFilter] = import_react29.default.useState(activePresetId || presets[0]?.id || "all");
+  const [expandedGroups, setExpandedGroups] = import_react29.default.useState(() => /* @__PURE__ */ new Set());
+  import_react29.default.useEffect(() => {
     if (activePresetId && presets.some((preset) => preset.id === activePresetId)) {
       setFilter(activePresetId);
     }
   }, [activePresetId, presets]);
-  const groups = import_react27.default.useMemo(() => {
+  const groups = import_react29.default.useMemo(() => {
     return buildSignalGroupsForTest(frames);
   }, [frames]);
   function groupMatchesPreset(group, preset) {
@@ -17565,7 +18071,7 @@ function SignalsRail({
     return true;
   }
   const activePreset = presets.find((preset) => preset.id === filter) || presets[0] || DEFAULT_FILTER_PRESETS[0];
-  const counts = import_react27.default.useMemo(() => {
+  const counts = import_react29.default.useMemo(() => {
     return new Map(presets.map((preset) => [
       preset.id,
       groups.filter((group) => groupMatchesPreset(group, preset)).length
@@ -17586,25 +18092,25 @@ function SignalsRail({
     });
   }
   if (collapsed) {
-    return /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
+    return /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
       "aside",
       {
         className: "rail rail--collapsed",
         "data-collapsed": "true",
         "data-testid": "signals-rail",
-        children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("i", { className: "rail__grip", "aria-hidden": "true" })
+        children: /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("i", { className: "rail__grip", "aria-hidden": "true" })
       }
     );
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("aside", { className: "rail", "data-testid": "signals-rail", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { className: "rail__head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "rail__title", children: "Signals" }),
-      /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("span", { className: "rail__sub", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("aside", { className: "rail", "data-testid": "signals-rail", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "rail__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "rail__title", children: "Signals" }),
+      /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("span", { className: "rail__sub", children: [
         recent15m,
         " in 15m"
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { className: "rail__filters", children: presets.map((preset) => /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(
+    /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "rail__filters", children: presets.map((preset) => /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(
       "button",
       {
         className: `rail__filter ${filter === preset.id ? "is-active" : ""}`,
@@ -17616,16 +18122,16 @@ function SignalsRail({
         children: [
           preset.label,
           " ",
-          /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "rail__filter-count", children: counts.get(preset.id) || 0 })
+          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "rail__filter-count", children: counts.get(preset.id) || 0 })
         ]
       },
       preset.id
     )) }),
-    /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { className: "rail__list", children: [
-      shown.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { className: "rail__empty", children: emptyText || "No meaningful signals yet." }),
+    /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "rail__list", children: [
+      shown.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "rail__empty", children: emptyText || "No meaningful signals yet." }),
       shown.map((s) => {
         const expanded = expandedGroups.has(s.id);
-        return /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(
+        return /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(
           "div",
           {
             className: "signal",
@@ -17636,16 +18142,16 @@ function SignalsRail({
             role: "button",
             tabIndex: 0,
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "signal__bar" }),
-              /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("span", { className: "signal__body", children: [
-                /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("span", { className: "signal__label", children: [
-                  s.items.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "signal__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
+              /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "signal__bar" }),
+              /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("span", { className: "signal__body", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("span", { className: "signal__label", children: [
+                  s.items.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "signal__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
                   s.title,
-                  s.items.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "signal__count", children: s.items.length })
+                  s.items.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "signal__count", children: s.items.length })
                 ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "signal__detail", children: s.detail }),
-                /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "signal__agent", children: s.agent }),
-                s.items.length === 1 && s.items[0].raw.event.startsWith("memory.") && onSelect ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
+                /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "signal__detail", children: s.detail }),
+                /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "signal__agent", children: s.agent }),
+                s.items.length === 1 && s.items[0].raw.event.startsWith("memory.") && onSelect ? /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
                   "button",
                   {
                     type: "button",
@@ -17658,7 +18164,7 @@ function SignalsRail({
                     children: "state here"
                   }
                 ) : null,
-                s.items.length > 1 && expanded && /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "signal__events", children: s.items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(
+                s.items.length > 1 && expanded && /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "signal__events", children: s.items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(
                   "button",
                   {
                     className: "signal__event",
@@ -17668,14 +18174,14 @@ function SignalsRail({
                       onSelect?.(item.raw);
                     },
                     children: [
-                      /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "signal__event-label", children: item.label }),
-                      /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "signal__event-detail", children: item.detail })
+                      /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "signal__event-label", children: item.label }),
+                      /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "signal__event-detail", children: item.detail })
                     ]
                   },
                   item.id
                 )) })
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "signal__meta", children: /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { className: "signal__time", children: s.at }) })
+              /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "signal__meta", children: /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "signal__time", children: s.at }) })
             ]
           },
           s.id
@@ -17686,7 +18192,7 @@ function SignalsRail({
 }
 
 // src/panels/ChatPane.tsx
-var import_react28 = __toESM(require("react"));
+var import_react30 = __toESM(require("react"));
 
 // src/lib/composer-attachment-text.ts
 function composerImageFileKey(file) {
@@ -17758,7 +18264,7 @@ function stripConsoleBlobReferencesFromText(value, references = consoleBlobRefer
 }
 
 // src/panels/ChatPane.tsx
-var import_jsx_runtime39 = require("react/jsx-runtime");
+var import_jsx_runtime40 = require("react/jsx-runtime");
 var ALLOWED_IMAGE_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 var MAX_ATTACHMENTS = 4;
 var MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -18091,7 +18597,7 @@ function CopyInlineButton({
   label,
   className = ""
 }) {
-  const [copied, setCopied] = import_react28.default.useState(false);
+  const [copied, setCopied] = import_react30.default.useState(false);
   const disabled = !text.trim();
   async function copy() {
     if (disabled) return;
@@ -18102,7 +18608,7 @@ function CopyInlineButton({
     } catch {
     }
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
     "button",
     {
       "aria-label": copied ? "Copied" : label,
@@ -18147,23 +18653,23 @@ function ChatPane({
   stackSlot,
   workGraphActions = null
 }) {
-  const bodyRef = import_react28.default.useRef(null);
-  const preserveOlderHistoryScrollRef = import_react28.default.useRef(false);
-  const olderHistoryScrollHeightRef = import_react28.default.useRef(0);
-  const olderHistoryScrollTopRef = import_react28.default.useRef(0);
-  const activeTurnFrameRef = import_react28.default.useRef(0);
-  const [visibleTurnIndexes, setVisibleTurnIndexes] = import_react28.default.useState([]);
-  const messages = import_react28.default.useMemo(() => {
+  const bodyRef = import_react30.default.useRef(null);
+  const preserveOlderHistoryScrollRef = import_react30.default.useRef(false);
+  const olderHistoryScrollHeightRef = import_react30.default.useRef(0);
+  const olderHistoryScrollTopRef = import_react30.default.useRef(0);
+  const activeTurnFrameRef = import_react30.default.useRef(0);
+  const [visibleTurnIndexes, setVisibleTurnIndexes] = import_react30.default.useState([]);
+  const messages = import_react30.default.useMemo(() => {
     return buildChatMessages(entries);
   }, [entries]);
-  const turns = import_react28.default.useMemo(() => buildChatTurns(messages), [messages]);
-  const lastAgentMessageId = import_react28.default.useMemo(() => {
+  const turns = import_react30.default.useMemo(() => buildChatTurns(messages), [messages]);
+  const lastAgentMessageId = import_react30.default.useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       if (messages[i].kind === "agent") return messages[i].id;
     }
     return null;
   }, [messages]);
-  const scrollSignature = import_react28.default.useMemo(() => {
+  const scrollSignature = import_react30.default.useMemo(() => {
     const last = messages[messages.length - 1];
     const lastTextLength = last?.text?.length ?? 0;
     const lastBlockLength = last?.blocks ? JSON.stringify(last.blocks).length : last?.workGraphEntry ? JSON.stringify(last.workGraphEntry).length : 0;
@@ -18176,7 +18682,7 @@ function ChatPane({
       phase ?? ""
     ].join(":");
   }, [identity, messages, phase]);
-  import_react28.default.useLayoutEffect(() => {
+  import_react30.default.useLayoutEffect(() => {
     if (preserveOlderHistoryScrollRef.current && bodyRef.current) {
       const node = bodyRef.current;
       const addedHeight = node.scrollHeight - olderHistoryScrollHeightRef.current;
@@ -18199,12 +18705,12 @@ function ChatPane({
       window.cancelAnimationFrame(secondFrame);
     };
   }, [scrollSignature]);
-  import_react28.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     if (!loadingOlderHistory && preserveOlderHistoryScrollRef.current) {
       preserveOlderHistoryScrollRef.current = false;
     }
   }, [loadingOlderHistory]);
-  const updateActiveTurn = import_react28.default.useCallback(() => {
+  const updateActiveTurn = import_react30.default.useCallback(() => {
     activeTurnFrameRef.current = 0;
     const body = bodyRef.current;
     if (!body || turns.length <= 1) {
@@ -18245,16 +18751,16 @@ function ChatPane({
       return nextIndexes;
     });
   }, [turns.length]);
-  const scheduleActiveTurnUpdate = import_react28.default.useCallback(() => {
+  const scheduleActiveTurnUpdate = import_react30.default.useCallback(() => {
     if (activeTurnFrameRef.current) {
       return;
     }
     activeTurnFrameRef.current = window.requestAnimationFrame(updateActiveTurn);
   }, [updateActiveTurn]);
-  import_react28.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     scheduleActiveTurnUpdate();
   }, [scheduleActiveTurnUpdate, scrollSignature]);
-  import_react28.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     updateActiveTurn();
     window.addEventListener("resize", scheduleActiveTurnUpdate);
     return () => {
@@ -18279,17 +18785,17 @@ function ChatPane({
     }
     onLoadOlder?.();
   }
-  const transcriptText = import_react28.default.useMemo(() => transcriptCopyText(messages), [messages]);
+  const transcriptText = import_react30.default.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
   const canAttachImages = !readOnly && agent?.model_capabilities?.image_input === true;
   const sendWithheld = accessEnforcing && agent?.affordances?.can_send_message === false;
-  const [dragActive, setDragActive] = import_react28.default.useState(false);
-  const [attachmentError, setAttachmentError] = import_react28.default.useState(null);
-  const resolvedDraftBlobRefs = import_react28.default.useRef("");
-  const railRef = import_react28.default.useRef(null);
-  const [railHeight, setRailHeight] = import_react28.default.useState(null);
-  import_react28.default.useEffect(() => {
+  const [dragActive, setDragActive] = import_react30.default.useState(false);
+  const [attachmentError, setAttachmentError] = import_react30.default.useState(null);
+  const resolvedDraftBlobRefs = import_react30.default.useRef("");
+  const railRef = import_react30.default.useRef(null);
+  const [railHeight, setRailHeight] = import_react30.default.useState(null);
+  import_react30.default.useEffect(() => {
     const nav = railRef.current;
     if (!nav || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries2) => {
@@ -18301,9 +18807,9 @@ function ChatPane({
     return () => observer.disconnect();
   }, [turns.length > 1]);
   const railWindow = windowTurnRail(turns.length, railHeight);
-  const turnRail = turns.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("nav", { className: "conv-turn-rail", "aria-label": "Conversation turns", ref: railRef, children: /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("ol", { className: "conv-turn-rail__list", children: [
-    railWindow.overflow > 0 && /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("li", { className: "conv-turn-rail__item", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
+  const turnRail = turns.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("nav", { className: "conv-turn-rail", "aria-label": "Conversation turns", ref: railRef, children: /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("ol", { className: "conv-turn-rail__list", children: [
+    railWindow.overflow > 0 && /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("li", { className: "conv-turn-rail__item", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
         "button",
         {
           "aria-label": `Jump to the ${railWindow.overflow} earlier turns`,
@@ -18316,7 +18822,7 @@ function ChatPane({
             }
           },
           type: "button",
-          children: /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
+          children: /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
             "span",
             {
               className: "conv-turn-rail__tick conv-turn-rail__tick--overflow",
@@ -18325,20 +18831,20 @@ function ChatPane({
           )
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "conv-turn-preview__title", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "conv-turn-preview__title", children: [
           railWindow.overflow,
           " earlier turns"
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "conv-turn-preview__body", children: "Jump to the start of the visible history." })
+        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "conv-turn-preview__body", children: "Jump to the start of the visible history." })
       ] })
     ] }, "rail-overflow"),
     turns.slice(railWindow.start).map((turn, railIndex) => {
       const turnIndex = railWindow.start + railIndex;
       const preview = chatTurnPreview(turn);
       const isVisibleTurn = visibleTurnIndexes.includes(turnIndex);
-      return /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("li", { className: "conv-turn-rail__item", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("li", { className: "conv-turn-rail__item", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
           "button",
           {
             "aria-current": isVisibleTurn ? "true" : void 0,
@@ -18352,12 +18858,12 @@ function ChatPane({
               }
             },
             type: "button",
-            children: /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "conv-turn-rail__tick", "aria-hidden": "true" })
+            children: /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "conv-turn-rail__tick", "aria-hidden": "true" })
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "conv-turn-preview__title", children: preview.title }),
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "conv-turn-preview__body", children: preview.body })
+        /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "conv-turn-preview__title", children: preview.title }),
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "conv-turn-preview__body", children: preview.body })
         ] })
       ] }, turn.id);
     })
@@ -18410,7 +18916,7 @@ function ChatPane({
       return current.filter((item) => item.id !== id);
     });
   }
-  import_react28.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     if (!canAttachImages) return;
     const refs = consoleBlobReferencesFromText(draft);
     if (refs.length === 0) {
@@ -18468,23 +18974,23 @@ function ChatPane({
       setAttachmentError("send failed; images retained");
     }
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "conv__head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "conv__avatar", children: initial }),
-      /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { style: { minWidth: 0 }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "conv__title", children: agentLabel }),
-        /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "conv__identity", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "conv__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "conv__avatar", children: initial }),
+      /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { style: { minWidth: 0 }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "conv__title", children: agentLabel }),
+        /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "conv__identity", children: [
           identity,
           agent?.role ? ` \xB7 ${agent.role}` : ""
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "conv__actions", children: [
-        onInspect ? /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("button", { className: "conv__action", onClick: onInspect, "data-testid": "conv-action:details", children: inspectLabel }) : null,
-        agent?.affordances?.can_respawn && onRespawn ? /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("button", { className: "conv__action", onClick: onRespawn, "data-testid": "conv-action:respawn", children: respawnLabel }) : null,
-        agent?.affordances?.can_retire && onRetire ? /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", children: retireLabel }) : null
+      /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "conv__actions", children: [
+        onInspect ? /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("button", { className: "conv__action", onClick: onInspect, "data-testid": "conv-action:details", children: inspectLabel }) : null,
+        agent?.affordances?.can_respawn && onRespawn ? /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("button", { className: "conv__action", onClick: onRespawn, "data-testid": "conv-action:respawn", children: respawnLabel }) : null,
+        agent?.affordances?.can_retire && onRetire ? /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", children: retireLabel }) : null
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(
+    /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(
       "div",
       {
         className: "conv__body",
@@ -18499,7 +19005,7 @@ function ChatPane({
         },
         ref: bodyRef,
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
             CopyInlineButton,
             {
               className: "msg__copy--transcript",
@@ -18507,7 +19013,7 @@ function ChatPane({
               text: transcriptText
             }
           ),
-          hasOlderHistory && /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
+          hasOlderHistory && /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
             "button",
             {
               className: "conv__history",
@@ -18517,7 +19023,7 @@ function ChatPane({
               children: loadingOlderHistory ? "Loading history" : "Load older history"
             }
           ),
-          messages.length === 0 && isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(
+          messages.length === 0 && isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(
             "div",
             {
               className: "msg msg--origin",
@@ -18525,44 +19031,44 @@ function ChatPane({
               "aria-live": "polite",
               "aria-busy": "true",
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "msg__time" }),
-                /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("span", { className: "msg__typing", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", {})
+                /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "msg__time" }),
+                /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("span", { className: "msg__typing", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", {})
                   ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "msg__typing-label", children: "Loading conversation\u2026" })
+                  /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "msg__typing-label", children: "Loading conversation\u2026" })
                 ] }) })
               ]
             }
           ),
-          messages.length === 0 && !isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "msg msg--origin", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "msg__time" }),
-            /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("span", { className: "msg__text", children: [
+          messages.length === 0 && !isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "msg msg--origin", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "msg__time" }),
+            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("span", { className: "msg__text", children: [
               "No messages yet. Say hello to ",
               agentLabel,
               "."
             ] }) })
           ] }),
-          turns.map((turn, turnIndex) => /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
+          turns.map((turn, turnIndex) => /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
             "div",
             {
               "aria-label": `Turn ${turnIndex + 1}`,
               className: "conv-turn",
               "data-chat-turn-index": turnIndex,
               "data-testid": `chat-turn:${identity}:${turnIndex}`,
-              children: turn.messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "msg__time", children: m.time }),
-                /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "msg__bubble", children: [
-                  (m.kind === "user" || m.kind === "agent") && /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(CopyInlineButton, { label: `Copy ${m.kind === "user" ? "message" : "turn"}`, text: msgCopyText(m) }),
-                  m.kind === "workgraph" && m.workGraphEntry ? /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(WorkGraphCard, { entry: m.workGraphEntry, actions: workGraphActions }) : m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(ConversationRichContent, { blocks: m.blocks, displayNormalization: false }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "msg__text", children: m.text }),
-                  m.workedFor && !(phase && m.id === lastAgentMessageId) && /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "msg__worked", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("span", { children: [
+              children: turn.messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "msg__time", children: m.time }),
+                /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "msg__bubble", children: [
+                  (m.kind === "user" || m.kind === "agent") && /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(CopyInlineButton, { label: `Copy ${m.kind === "user" ? "message" : "turn"}`, text: msgCopyText(m) }),
+                  m.kind === "workgraph" && m.workGraphEntry ? /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(WorkGraphCard, { entry: m.workGraphEntry, actions: workGraphActions }) : m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(ConversationRichContent, { blocks: m.blocks, displayNormalization: false }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "msg__text", children: m.text }),
+                  m.workedFor && !(phase && m.id === lastAgentMessageId) && /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "msg__worked", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("span", { children: [
                       "Worked for ",
                       m.workedFor
                     ] }),
-                    /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
+                    /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
                       CopyInlineButton,
                       {
                         className: "msg__copy--inline",
@@ -18576,7 +19082,7 @@ function ChatPane({
             },
             turn.id
           )),
-          phase && /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(
+          phase && /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(
             "div",
             {
               className: "msg msg--typing",
@@ -18584,14 +19090,14 @@ function ChatPane({
               "aria-live": "polite",
               "aria-label": `${agentLabel} is ${phaseLabel(phase)}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "msg__time" }),
-                /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("span", { className: "msg__typing", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", {})
+                /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "msg__time" }),
+                /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("span", { className: "msg__typing", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", {})
                   ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase) })
+                  /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase) })
                 ] }) })
               ]
             }
@@ -18601,8 +19107,8 @@ function ChatPane({
     ),
     turnRail,
     stackSlot,
-    /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "composer", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(
+    /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "composer", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(
         "div",
         {
           className: `composer__shell${dragActive && canAttachImages ? " is-drag-active" : ""}`,
@@ -18640,11 +19146,11 @@ function ChatPane({
             }
           },
           children: [
-            staged.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "composer__attachments", children: staged.map((item) => /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "composer__attachment", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("img", { alt: "", src: item.previewUrl }),
-              /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("button", { "aria-label": "Remove attachment", onClick: () => removeAttachment(item.id), type: "button", children: "\xD7" })
+            staged.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "composer__attachments", children: staged.map((item) => /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "composer__attachment", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("img", { alt: "", src: item.previewUrl }),
+              /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("button", { "aria-label": "Remove attachment", onClick: () => removeAttachment(item.id), type: "button", children: "\xD7" })
             ] }, item.id)) }),
-            /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
               "textarea",
               {
                 placeholder: readOnly ? "View-only console" : sendWithheld ? `You can view ${agentLabel} but not message it` : `Message ${agentLabel}\u2026`,
@@ -18663,10 +19169,10 @@ function ChatPane({
                 "data-testid": `chat-composer:${identity}`
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "composer__row", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "composer__chip mono", children: agent?.role || "agent" }),
-              /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "composer__spacer" }),
-              /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(
+            /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "composer__row", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "composer__chip mono", children: agent?.role || "agent" }),
+              /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "composer__spacer" }),
+              /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(
                 "button",
                 {
                   className: "composer__send",
@@ -18683,41 +19189,41 @@ function ChatPane({
           ]
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "composer__footer", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("span", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "composer__footer", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("span", { children: [
           "To: ",
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("b", { style: { color: "var(--ink-muted)" }, children: agentLabel })
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("b", { style: { color: "var(--ink-muted)" }, children: agentLabel })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { children: "\xB7" }),
-        /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "mono", children: identity }),
-        agent?.role && /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(import_jsx_runtime39.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { children: agent.role })
+        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: "\xB7" }),
+        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "mono", children: identity }),
+        agent?.role && /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(import_jsx_runtime40.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: agent.role })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { children: "\xB7" }),
-        /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "dot", style: {
+        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: "\xB7" }),
+        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "dot", style: {
           background: state === "active" || state === "running" ? "var(--ok)" : state.includes("degrade") ? "var(--warn)" : state === "retired" ? "var(--ink-faint)" : "var(--ink-dim)"
         } }),
-        /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { children: state }),
-        phase && /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(import_jsx_runtime39.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { style: { color: "var(--accent)" }, children: phase })
+        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: state }),
+        phase && /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(import_jsx_runtime40.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { style: { color: "var(--accent)" }, children: phase })
         ] }),
-        readOnly && /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(import_jsx_runtime39.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { children: "view only" })
+        readOnly && /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(import_jsx_runtime40.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: "view only" })
         ] }),
-        !readOnly && sendWithheld && /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(import_jsx_runtime39.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { children: "send not permitted" })
+        !readOnly && sendWithheld && /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(import_jsx_runtime40.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: "send not permitted" })
         ] }),
-        !readOnly && !canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(import_jsx_runtime39.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { children: "model cannot see images" })
+        !readOnly && !canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(import_jsx_runtime40.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: "model cannot see images" })
         ] }),
-        attachmentError && /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(import_jsx_runtime39.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { style: { color: "var(--bad)" }, children: attachmentError })
+        attachmentError && /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(import_jsx_runtime40.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { style: { color: "var(--bad)" }, children: attachmentError })
         ] })
       ] })
     ] })
@@ -18725,8 +19231,8 @@ function ChatPane({
 }
 
 // src/panels/MobKitDock.tsx
-var import_react29 = __toESM(require("react"));
-var import_jsx_runtime40 = require("react/jsx-runtime");
+var import_react31 = __toESM(require("react"));
+var import_jsx_runtime41 = require("react/jsx-runtime");
 function tabPanelCount(node) {
   if (!node) return 0;
   if (node.kind === "panel") return 1;
@@ -18747,7 +19253,7 @@ function MobKitDock({
   onOpenTargetInPanel
 }) {
   const activeTab = viewState.tabs.find((t) => t.id === viewState.activeTabId) || viewState.tabs[0];
-  import_react29.default.useEffect(() => {
+  import_react31.default.useEffect(() => {
     function onKey(e) {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
@@ -18782,22 +19288,22 @@ function MobKitDock({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [viewState, onSplitPanel, onClosePanel, onCreateTab, onSelectTab]);
-  return /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "mkdock", "data-testid": "mkdock", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "wstabs", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "mkdock", "data-testid": "mkdock", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "wstabs", children: [
       viewState.tabs.map((t) => {
         const isActive = t.id === activeTab?.id;
         const count = tabPanelCount(t.layout);
-        return /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(
+        return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
           "div",
           {
             className: `wstab ${isActive ? "is-active" : ""}`,
             onClick: () => onSelectTab(t.id),
             "data-testid": `wstab:${t.id}`,
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "wstab__mark" }),
-              /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "wstab__name", children: t.title || "untitled" }),
-              count > 1 && /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "wstab__count", children: count }),
-              viewState.tabs.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "wstab__mark" }),
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "wstab__name", children: t.title || "untitled" }),
+              count > 1 && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "wstab__count", children: count }),
+              viewState.tabs.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
                 "button",
                 {
                   className: "wstab__close",
@@ -18815,7 +19321,7 @@ function MobKitDock({
           t.id
         );
       }),
-      /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
         "button",
         {
           className: "wstab__add",
@@ -18827,7 +19333,7 @@ function MobKitDock({
         }
       )
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "dock", children: activeTab && /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "dock", children: activeTab && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
       DockLayout,
       {
         node: activeTab.layout,
@@ -18847,9 +19353,9 @@ function MobKitDock({
 function DockLayout(props) {
   const { node } = props;
   if (node.kind === "panel") {
-    return /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(PaneView, { panelId: node.panelId, ...props });
+    return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(PaneView, { panelId: node.panelId, ...props });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(SplitView, { node, ...props });
+  return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(SplitView, { node, ...props });
 }
 function SplitView(props) {
   const { node } = props;
@@ -18857,7 +19363,7 @@ function SplitView(props) {
   const ratio = typeof node.ratio === "number" ? Math.max(0.1, Math.min(0.9, node.ratio)) : 0.5;
   const direction = node.direction;
   const style = direction === "horizontal" ? { gridTemplateColumns: `${ratio * 100}% 6px ${(1 - ratio) * 100}%` } : { gridTemplateRows: `${ratio * 100}% 6px ${(1 - ratio) * 100}%` };
-  const hostRef = import_react29.default.useRef(null);
+  const hostRef = import_react31.default.useRef(null);
   function startDrag(e) {
     e.preventDefault();
     const host = hostRef.current;
@@ -18877,15 +19383,15 @@ function SplitView(props) {
     window.addEventListener("pointerup", end);
     window.addEventListener("pointercancel", end);
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
     "div",
     {
       ref: hostRef,
       className: `split split--${direction === "horizontal" ? "h" : "v"}`,
       style,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(DockLayout, { ...props, node: node.first }),
-        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(DockLayout, { ...props, node: node.first }),
+        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
           "div",
           {
             className: `split__handle split__handle--${direction === "horizontal" ? "h" : "v"}`,
@@ -18893,7 +19399,7 @@ function SplitView(props) {
             "data-testid": `split-handle:${node.id}`
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(DockLayout, { ...props, node: node.second })
+        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(DockLayout, { ...props, node: node.second })
       ]
     }
   );
@@ -18915,16 +19421,16 @@ function PaneView({
   const title = panel.title || panel.target?.title || "untitled";
   const target = panel.target;
   const subId = target?.kind === "agent-chat" ? target.identity || target.memberId : target?.kind === "identity-inspect" ? target.identity : void 0;
-  const [menuOpen, setMenuOpen] = import_react29.default.useState(false);
-  return /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(
+  const [menuOpen, setMenuOpen] = import_react31.default.useState(false);
+  return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
     "div",
     {
       className: `pane ${isFocused ? "is-focused" : ""}`,
       onMouseDown: () => onFocusPanel(panelId),
       "data-testid": `pane:${panelId}`,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "pane__bar", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "pane__bar", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
             "button",
             {
               className: "pane__title",
@@ -18936,14 +19442,14 @@ function PaneView({
               "data-testid": `pane-title:${panelId}`,
               title: "Retarget pane",
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "pane__title-text", children: title }),
-                /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "pane__caret", children: "\u25BE" })
+                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "pane__title-text", children: title }),
+                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "pane__caret", children: "\u25BE" })
               ]
             }
           ),
-          subId && /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "pane__id", children: subId }),
-          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "pane__spacer" }),
-          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
+          subId && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "pane__id", children: subId }),
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "pane__spacer" }),
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
             "button",
             {
               className: "pane__btn",
@@ -18956,7 +19462,7 @@ function PaneView({
               children: "\u25E8"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
             "button",
             {
               className: "pane__btn",
@@ -18969,7 +19475,7 @@ function PaneView({
               children: "\u2B13"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
             "button",
             {
               className: "pane__btn pane__close",
@@ -18982,7 +19488,7 @@ function PaneView({
               children: "\xD7"
             }
           ),
-          menuOpen && /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
+          menuOpen && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
             PaneMenu,
             {
               agents,
@@ -18995,7 +19501,7 @@ function PaneView({
             }
           )
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "pane__body", children: renderPanelBody({ id: panelId, target }) })
+        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "pane__body", children: renderPanelBody({ id: panelId, target }) })
       ]
     }
   );
@@ -19010,27 +19516,27 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
     ["logs", "Logs"],
     ["health", "Health"]
   ].filter(([kind]) => !visibleControls || visibleControls.includes(kind));
-  return /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(import_jsx_runtime40.Fragment, { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "pane-menu__scrim", onMouseDown: onClose }),
-    /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { className: "pane-menu", onMouseDown: (e) => e.stopPropagation(), children: [
-      /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "pane-menu__label", children: "Views" }),
-      controls.map(([kind, label]) => /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "pane-menu__scrim", onMouseDown: onClose }),
+    /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "pane-menu", onMouseDown: (e) => e.stopPropagation(), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "pane-menu__label", children: "Views" }),
+      controls.map(([kind, label]) => /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
         "button",
         {
           className: "pane-menu__item",
           onClick: () => onPick(buildControlTarget2(kind)),
           "data-testid": `pane-menu-view:${kind}`,
           children: [
-            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: label }),
-            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "pane-menu__id", children: "view" })
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: label }),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "pane-menu__id", children: "view" })
           ]
         },
         kind
       )),
-      /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "pane-menu__sep" }),
-      /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { className: "pane-menu__label", children: "Agents" }),
-      agents.slice(0, 14).map((a) => /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(
+      /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "pane-menu__sep" }),
+      /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "pane-menu__label", children: "Agents" }),
+      agents.slice(0, 14).map((a) => /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
         "button",
         {
           className: "pane-menu__item",
@@ -19038,9 +19544,9 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
           onClick: () => onPick(buildDockTarget2(a)),
           "data-testid": `pane-menu-agent:${a.member_id}`,
           children: [
-            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "agent__dot" }),
-            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { children: a.label }),
-            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { className: "pane-menu__id", children: a.identity || a.member_id })
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "agent__dot" }),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: a.label }),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "pane-menu__id", children: a.identity || a.member_id })
           ]
         },
         a.member_id
@@ -19050,8 +19556,8 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
 }
 
 // src/panels/PendingStack.tsx
-var import_react30 = __toESM(require("react"));
-var import_jsx_runtime41 = require("react/jsx-runtime");
+var import_react32 = __toESM(require("react"));
+var import_jsx_runtime42 = require("react/jsx-runtime");
 function StackHead({
   count,
   agentBusy,
@@ -19059,8 +19565,8 @@ function StackHead({
   onToggleCollapsed,
   onClear
 }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "stack__head", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "stack__head", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
       "button",
       {
         type: "button",
@@ -19069,18 +19575,18 @@ function StackHead({
         "aria-expanded": !collapsed,
         "aria-label": collapsed ? "Expand pending queue" : "Collapse pending queue",
         title: collapsed ? "Expand queue" : "Collapse queue",
-        children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "stack__head-chev", children: collapsed ? "\u25B8" : "\u25BE" })
+        children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "stack__head-chev", children: collapsed ? "\u25B8" : "\u25BE" })
       }
     ),
-    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "Queue" }),
-    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "stack__head-count", children: String(count).padStart(2, "0") }),
-    !collapsed && count > 1 && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "stack__head-hint", children: "\xB7 drains top \u2192 bottom" }),
-    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "stack__head-spacer" }),
-    /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: `stack__head-phase ${agentBusy ? "" : "is-idle"}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("b", {}),
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "Queue" }),
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "stack__head-count", children: String(count).padStart(2, "0") }),
+    !collapsed && count > 1 && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "stack__head-hint", children: "\xB7 drains top \u2192 bottom" }),
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "stack__head-spacer" }),
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: `stack__head-phase ${agentBusy ? "" : "is-idle"}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("b", {}),
       agentBusy ? "Agent busy" : "Agent idle \xB7 draining"
     ] }),
-    count > 0 && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+    count > 0 && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
       "button",
       {
         type: "button",
@@ -19118,9 +19624,9 @@ function StackItem({
   onDrop,
   onDragEnd
 }) {
-  const taRef = import_react30.default.useRef(null);
-  const [draft, setDraft] = import_react30.default.useState(item.text);
-  import_react30.default.useEffect(() => {
+  const taRef = import_react32.default.useRef(null);
+  const [draft, setDraft] = import_react32.default.useState(item.text);
+  import_react32.default.useEffect(() => {
     if (item.editing && taRef.current) {
       taRef.current.focus();
       const len = taRef.current.value.length;
@@ -19129,7 +19635,7 @@ function StackItem({
       taRef.current.style.height = taRef.current.scrollHeight + "px";
     }
   }, [item.editing]);
-  import_react30.default.useEffect(() => {
+  import_react32.default.useEffect(() => {
     setDraft(item.text);
   }, [item.text, item.editing]);
   const handleEditKey = (e) => {
@@ -19154,7 +19660,7 @@ function StackItem({
     dropHint === "below" ? "drop-target drop-below" : ""
   ].filter(Boolean).join(" ");
   const longText = item.text.length > 90 || /\n/.test(item.text);
-  return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
     "li",
     {
       className: cls,
@@ -19176,19 +19682,19 @@ function StackItem({
         }
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "stk-item__lead", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "stk-item__grip", "aria-label": "Drag to reorder", title: "Drag to reorder", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {})
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "stk-item__lead", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "stk-item__grip", "aria-label": "Drag to reorder", title: "Drag to reorder", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {})
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "stk-item__queue-glyph", "aria-hidden": "true", children: "\u2935" })
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "stk-item__queue-glyph", "aria-hidden": "true", children: "\u2935" })
         ] }),
-        item.editing ? /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "stk-item__edit", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+        item.editing ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "stk-item__edit", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
             "textarea",
             {
               ref: taRef,
@@ -19204,19 +19710,19 @@ function StackItem({
               "data-testid": `pending-item-edit:${item.id}`
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "stk-item__edit-row", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "stk-kbd", children: "Esc" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "stk-item__edit-row", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "stk-kbd", children: "Esc" }),
               " cancel"
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "stk-kbd", children: "\u21B5" }),
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "stk-kbd", children: "\u21B5" }),
               " save \xB7 ",
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "stk-kbd", children: "\u21E7\u21B5" }),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "stk-kbd", children: "\u21E7\u21B5" }),
               " newline"
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "stk-item__edit-spacer" }),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "stk-item__edit-spacer" }),
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
               "button",
               {
                 type: "button",
@@ -19225,7 +19731,7 @@ function StackItem({
                 children: "Cancel"
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
               "button",
               {
                 type: "button",
@@ -19235,8 +19741,8 @@ function StackItem({
               }
             )
           ] })
-        ] }) : /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "stk-item__body", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "stk-item__body", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
             "div",
             {
               className: `stk-item__text ${item.expanded ? "stk-item__text--expanded" : ""}`,
@@ -19246,14 +19752,14 @@ function StackItem({
               children: item.text
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "stk-item__meta", children: [
-            isHead && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "stk-item__head-tag", children: "Next" }),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: timeAgo(item.addedAt) }),
-            item.status === "promoting" && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "stk-item__sending", children: "SENDING\u2026" })
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "stk-item__meta", children: [
+            isHead && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "stk-item__head-tag", children: "Next" }),
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: timeAgo(item.addedAt) }),
+            item.status === "promoting" && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "stk-item__sending", children: "SENDING\u2026" })
           ] })
         ] }),
-        !item.editing && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "stk-item__actions", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+        !item.editing && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "stk-item__actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
             "button",
             {
               type: "button",
@@ -19264,12 +19770,12 @@ function StackItem({
               title: "Send now and interrupt at the next cooperative pause",
               "data-testid": `pending-steer:${item.id}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "stk-btn__glyph", children: "\u21AA" }),
+                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "stk-btn__glyph", children: "\u21AA" }),
                 " Steer"
               ]
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
             "button",
             {
               type: "button",
@@ -19278,10 +19784,10 @@ function StackItem({
               "aria-label": "Edit message",
               title: "Edit message",
               "data-testid": `pending-edit:${item.id}`,
-              children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "stk-btn__glyph", children: "\u270E" })
+              children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "stk-btn__glyph", children: "\u270E" })
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
             "button",
             {
               type: "button",
@@ -19290,7 +19796,7 @@ function StackItem({
               "aria-label": "Remove from queue",
               title: "Remove from queue",
               "data-testid": `pending-trash:${item.id}`,
-              children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "stk-btn__glyph", children: "\xD7" })
+              children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "stk-btn__glyph", children: "\xD7" })
             }
           )
         ] })
@@ -19311,16 +19817,16 @@ function PendingStack3({
   onClearAll,
   onToggleExpand
 }) {
-  const [, setTick] = import_react30.default.useState(0);
-  import_react30.default.useEffect(() => {
+  const [, setTick] = import_react32.default.useState(0);
+  import_react32.default.useEffect(() => {
     const t = window.setInterval(() => setTick((n) => n + 1), 1e4);
     return () => window.clearInterval(t);
   }, []);
-  const [dragId, setDragId] = import_react30.default.useState(null);
-  const [dropTarget, setDropTarget] = import_react30.default.useState({ id: null, where: null });
-  const [collapsed, setCollapsed] = import_react30.default.useState(false);
-  const lastCount = import_react30.default.useRef(0);
-  import_react30.default.useEffect(() => {
+  const [dragId, setDragId] = import_react32.default.useState(null);
+  const [dropTarget, setDropTarget] = import_react32.default.useState({ id: null, where: null });
+  const [collapsed, setCollapsed] = import_react32.default.useState(false);
+  const lastCount = import_react32.default.useRef(0);
+  import_react32.default.useEffect(() => {
     if (items.length > lastCount.current) setCollapsed(false);
     lastCount.current = items.length;
   }, [items.length]);
@@ -19360,14 +19866,14 @@ function PendingStack3({
     setDragId(null);
     setDropTarget({ id: null, where: null });
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
     "section",
     {
       className: `stack ${collapsed ? "is-collapsed" : ""} ${reducedMotion ? "reduced-motion" : ""}`,
       "aria-label": "Pending message queue",
       "data-testid": "pending-stack",
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
           StackHead,
           {
             count: items.length,
@@ -19377,7 +19883,7 @@ function PendingStack3({
             onClear: onClearAll
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("ol", { className: "stack__list", role: "list", children: items.map((item, i) => /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("ol", { className: "stack__list", role: "list", children: items.map((item, i) => /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
           StackItem,
           {
             item,
@@ -19404,7 +19910,7 @@ function PendingStack3({
 }
 
 // src/ConsoleApp.tsx
-var import_jsx_runtime42 = require("react/jsx-runtime");
+var import_jsx_runtime43 = require("react/jsx-runtime");
 function normalizeConsoleTheme(value) {
   return value === "dark" || value === "light" ? value : null;
 }
@@ -19648,47 +20154,47 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "server_tool_content"
 ]);
 function ConsoleApp({ baseUrl }) {
-  const consoleFetchTimeoutMsRef = import_react31.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2);
-  const consoleTransport = import_react31.default.useMemo(
+  const consoleFetchTimeoutMsRef = import_react33.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2);
+  const consoleTransport = import_react33.default.useMemo(
     () => createHttpConsoleTransport2({
       baseUrl,
       fetchTimeoutMs: () => consoleFetchTimeoutMsRef.current
     }),
     [baseUrl]
   );
-  const consoleController = import_react31.default.useMemo(
+  const consoleController = import_react33.default.useMemo(
     () => createMobKitConsoleController2({ transport: consoleTransport }),
     [consoleTransport]
   );
-  const [experience, setExperience] = import_react31.default.useState(
+  const [experience, setExperience] = import_react33.default.useState(
     null
   );
-  const [agents, setAgents] = import_react31.default.useState([]);
-  const [draftByKey, setDraftByKey] = import_react31.default.useState(
+  const [agents, setAgents] = import_react33.default.useState([]);
+  const [draftByKey, setDraftByKey] = import_react33.default.useState(
     {}
   );
-  const [stagedAttachmentsByIdentity, setStagedAttachmentsByIdentity] = import_react31.default.useState({});
-  const [sendingPanels, setSendingPanels] = import_react31.default.useState(
+  const [stagedAttachmentsByIdentity, setStagedAttachmentsByIdentity] = import_react33.default.useState({});
+  const [sendingPanels, setSendingPanels] = import_react33.default.useState(
     /* @__PURE__ */ new Set()
   );
-  const [pinnedAgentIds, setPinnedAgentIds] = import_react31.default.useState(
+  const [pinnedAgentIds, setPinnedAgentIds] = import_react33.default.useState(
     /* @__PURE__ */ new Set()
   );
-  const [inspectByIdentity, setInspectByIdentity] = import_react31.default.useState({});
-  const [routingData, setRoutingData] = import_react31.default.useState({
+  const [inspectByIdentity, setInspectByIdentity] = import_react33.default.useState({});
+  const [routingData, setRoutingData] = import_react33.default.useState({
     routes: [],
     deliveries: []
   });
-  const [gatingData, setGatingData] = import_react31.default.useState({
+  const [gatingData, setGatingData] = import_react33.default.useState({
     pending: [],
     audit: []
   });
-  const [accessData, setAccessData] = import_react31.default.useState({
+  const [accessData, setAccessData] = import_react33.default.useState({
     status: null,
     config: null,
     error: null
   });
-  const [memoryData, setMemoryData] = import_react31.default.useState({
+  const [memoryData, setMemoryData] = import_react33.default.useState({
     records: [],
     realms: [],
     quarantineRecords: [],
@@ -19716,7 +20222,7 @@ function ConsoleApp({ baseUrl }) {
     auditVerdicts: [],
     auditVerdictsDenied: false
   });
-  const [workGraphData, setWorkGraphData] = import_react31.default.useState({
+  const [workGraphData, setWorkGraphData] = import_react33.default.useState({
     items: [],
     edges: [],
     attention: [],
@@ -19726,17 +20232,17 @@ function ConsoleApp({ baseUrl }) {
     denied: false,
     error: null
   });
-  const [topologyQueryResult, setTopologyQueryResult] = import_react31.default.useState(null);
-  const [topologyCapabilities, setTopologyCapabilities] = import_react31.default.useState(null);
-  const [topologyOperations, setTopologyOperations] = import_react31.default.useState([]);
-  const [topologyConnectionSourceId, setTopologyConnectionSourceId] = import_react31.default.useState(null);
-  const [activeActivityPresetId, setActiveActivityPresetId] = import_react31.default.useState("");
-  const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react31.default.useState("");
-  const [loading, setLoading] = import_react31.default.useState(true);
-  const [loadingHistory, setLoadingHistory] = import_react31.default.useState({});
-  const [error, setError] = import_react31.default.useState("");
-  const [actionError, setActionError] = import_react31.default.useState("");
-  const [theme, setTheme] = import_react31.default.useState(() => {
+  const [topologyQueryResult, setTopologyQueryResult] = import_react33.default.useState(null);
+  const [topologyCapabilities, setTopologyCapabilities] = import_react33.default.useState(null);
+  const [topologyOperations, setTopologyOperations] = import_react33.default.useState([]);
+  const [topologyConnectionSourceId, setTopologyConnectionSourceId] = import_react33.default.useState(null);
+  const [activeActivityPresetId, setActiveActivityPresetId] = import_react33.default.useState("");
+  const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react33.default.useState("");
+  const [loading, setLoading] = import_react33.default.useState(true);
+  const [loadingHistory, setLoadingHistory] = import_react33.default.useState({});
+  const [error, setError] = import_react33.default.useState("");
+  const [actionError, setActionError] = import_react33.default.useState("");
+  const [theme, setTheme] = import_react33.default.useState(() => {
     try {
       return localStorage.getItem("mobkit-console-theme") || "light";
     } catch {
@@ -19744,22 +20250,22 @@ function ConsoleApp({ baseUrl }) {
     }
   });
   const [variant, setVariant] = useConsoleVariant();
-  const sidebarStorageScope = import_react31.default.useMemo(
+  const sidebarStorageScope = import_react33.default.useMemo(
     () => sidebarPreferencesScope(baseUrl, experience),
     [baseUrl, experience]
   );
-  const sidebarStorageNamespace = import_react31.default.useMemo(
+  const sidebarStorageNamespace = import_react33.default.useMemo(
     () => sidebarPreferencesNamespace(baseUrl, experience),
     [baseUrl, experience]
   );
-  const sidebarPinsStorageKey = import_react31.default.useMemo(
+  const sidebarPinsStorageKey = import_react33.default.useMemo(
     () => sidebarStorageKey(SIDEBAR_PINS_STORAGE_PREFIX, sidebarStorageNamespace),
     [sidebarStorageNamespace]
   );
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     pruneStaleSidebarStorage(browserLocalStorage(), sidebarStorageScope, sidebarStorageNamespace);
   }, [sidebarStorageScope, sidebarStorageNamespace]);
-  const [sidebarCollapsed, setSidebarCollapsed] = import_react31.default.useState(
+  const [sidebarCollapsed, setSidebarCollapsed] = import_react33.default.useState(
     () => {
       try {
         return localStorage.getItem("mobkit-console-sidebar-collapsed") === "1";
@@ -19768,7 +20274,7 @@ function ConsoleApp({ baseUrl }) {
       }
     }
   );
-  const toggleSidebarCollapsed = import_react31.default.useCallback(() => {
+  const toggleSidebarCollapsed = import_react33.default.useCallback(() => {
     setSidebarCollapsed((c) => {
       const next = !c;
       try {
@@ -19781,14 +20287,14 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, []);
-  const [railCollapsed, setRailCollapsed] = import_react31.default.useState(() => {
+  const [railCollapsed, setRailCollapsed] = import_react33.default.useState(() => {
     try {
       return localStorage.getItem("mobkit-console-rail-collapsed") === "1";
     } catch {
       return false;
     }
   });
-  const toggleRailCollapsed = import_react31.default.useCallback(() => {
+  const toggleRailCollapsed = import_react33.default.useCallback(() => {
     setRailCollapsed((c) => {
       const next = !c;
       try {
@@ -19798,11 +20304,11 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, []);
-  const defaultPinnedAgentIdsKey = import_react31.default.useMemo(
+  const defaultPinnedAgentIdsKey = import_react33.default.useMemo(
     () => JSON.stringify(experience?.console_config?.agent_list?.default_pinned_agent_ids || []),
     [experience?.console_config?.agent_list?.default_pinned_agent_ids]
   );
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     const defaults = new Set(experience?.console_config?.agent_list?.default_pinned_agent_ids || []);
     const stored = readSidebarStringSet(
       browserLocalStorage(),
@@ -19810,7 +20316,7 @@ function ConsoleApp({ baseUrl }) {
     );
     setPinnedAgentIds(stored ?? defaults);
   }, [defaultPinnedAgentIdsKey, experience?.console_config?.agent_list, sidebarPinsStorageKey]);
-  const togglePinnedAgent = import_react31.default.useCallback((agent, renderedFamilyPinIds) => {
+  const togglePinnedAgent = import_react33.default.useCallback((agent, renderedFamilyPinIds) => {
     const pinId = sidebarAgentPinId2(agent);
     setPinnedAgentIds((current) => {
       const next = new Set(current);
@@ -19829,13 +20335,13 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, [agents, sidebarPinsStorageKey]);
-  const [, setRenderTick] = import_react31.default.useState(0);
-  const forceRender = import_react31.default.useCallback(() => setRenderTick((n) => n + 1), []);
-  const stagedAttachmentsRef = import_react31.default.useRef(stagedAttachmentsByIdentity);
-  import_react31.default.useEffect(() => {
+  const [, setRenderTick] = import_react33.default.useState(0);
+  const forceRender = import_react33.default.useCallback(() => setRenderTick((n) => n + 1), []);
+  const stagedAttachmentsRef = import_react33.default.useRef(stagedAttachmentsByIdentity);
+  import_react33.default.useEffect(() => {
     stagedAttachmentsRef.current = stagedAttachmentsByIdentity;
   }, [stagedAttachmentsByIdentity]);
-  import_react31.default.useEffect(
+  import_react33.default.useEffect(
     () => () => {
       for (const items of Object.values(stagedAttachmentsRef.current)) {
         items.forEach((item) => URL.revokeObjectURL(item.previewUrl));
@@ -19884,11 +20390,11 @@ function ConsoleApp({ baseUrl }) {
       params
     })).result;
   }
-  const identityLogRef = import_react31.default.useRef({});
-  const timelineFetchInFlightRef = import_react31.default.useRef(
+  const identityLogRef = import_react33.default.useRef({});
+  const timelineFetchInFlightRef = import_react33.default.useRef(
     {}
   );
-  const optimisticUserByPanelKeyRef = import_react31.default.useRef({});
+  const optimisticUserByPanelKeyRef = import_react33.default.useRef({});
   function getOrCreateLog(identity) {
     let log = identityLogRef.current[identity];
     if (!log) {
@@ -20280,14 +20786,14 @@ function ConsoleApp({ baseUrl }) {
     void panelId;
     return frames;
   }
-  const activityRef = import_react31.default.useRef([]);
-  const liveFramesRef = import_react31.default.useRef([]);
-  const [liveFrames, setLiveFrames] = import_react31.default.useState([]);
+  const activityRef = import_react33.default.useRef([]);
+  const liveFramesRef = import_react33.default.useRef([]);
+  const [liveFrames, setLiveFrames] = import_react33.default.useState([]);
   function commitLiveFrames(frames) {
     liveFramesRef.current = frames;
     setLiveFrames(frames);
   }
-  const pendingStackRef = import_react31.default.useRef({});
+  const pendingStackRef = import_react33.default.useRef({});
   const PENDING_STACK_KEY_PREFIX = "mobkit-pending-stack:";
   const PENDING_DRAIN_CLAIM_TTL_MS = 15e3;
   const stackKeyFor = (identity) => `${PENDING_STACK_KEY_PREFIX}${identity}`;
@@ -20354,7 +20860,7 @@ function ConsoleApp({ baseUrl }) {
     persistPendingStack(identity, next);
     forceRender();
   }
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     const onStorage = (e) => {
       if (!e.key || !e.key.startsWith(PENDING_STACK_KEY_PREFIX)) return;
       const identity = e.key.slice(PENDING_STACK_KEY_PREFIX.length);
@@ -20366,26 +20872,26 @@ function ConsoleApp({ baseUrl }) {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
-  const identityBusyRef = import_react31.default.useRef({});
-  const identityLifecycleRef = import_react31.default.useRef({});
+  const identityBusyRef = import_react33.default.useRef({});
+  const identityLifecycleRef = import_react33.default.useRef({});
   const isIdentityBusy = (identity) => identityBusyRef.current[identity] === true;
-  const phaseRef = import_react31.default.useRef({});
-  const phaseValueByKey = import_react31.default.useRef({});
-  const phaseSinceByKey = import_react31.default.useRef({});
-  const phaseTimerByKey = import_react31.default.useRef({});
-  const refreshTimersRef = import_react31.default.useRef({});
-  const experienceTimerRef = import_react31.default.useRef(null);
-  const experienceLoadInFlightRef = import_react31.default.useRef(
+  const phaseRef = import_react33.default.useRef({});
+  const phaseValueByKey = import_react33.default.useRef({});
+  const phaseSinceByKey = import_react33.default.useRef({});
+  const phaseTimerByKey = import_react33.default.useRef({});
+  const refreshTimersRef = import_react33.default.useRef({});
+  const experienceTimerRef = import_react33.default.useRef(null);
+  const experienceLoadInFlightRef = import_react33.default.useRef(
     null
   );
-  const agentsRef = import_react31.default.useRef([]);
-  import_react31.default.useEffect(() => {
+  const agentsRef = import_react33.default.useRef([]);
+  import_react33.default.useEffect(() => {
     agentsRef.current = agents;
   }, [agents]);
-  const initialTargetOpened = import_react31.default.useRef(false);
-  const dockLayoutHydrated = import_react31.default.useRef(false);
-  const dockLayoutRestored = import_react31.default.useRef(false);
-  const dockLayoutRestoring = import_react31.default.useRef(false);
+  const initialTargetOpened = import_react33.default.useRef(false);
+  const dockLayoutHydrated = import_react33.default.useRef(false);
+  const dockLayoutRestored = import_react33.default.useRef(false);
+  const dockLayoutRestoring = import_react33.default.useRef(false);
   const dock = useConsoleDockController({
     createPanelState: ({ target }) => ({
       id: createConsoleId("panel"),
@@ -20393,11 +20899,11 @@ function ConsoleApp({ baseUrl }) {
       mode: "console"
     })
   });
-  const currentDockLayoutStorageKey = import_react31.default.useMemo(
+  const currentDockLayoutStorageKey = import_react33.default.useMemo(
     () => dockLayoutStorageKey(baseUrl, experience),
     [baseUrl, experience?.runtime_id, experience?.console_config?.title]
   );
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     if (!experience || dockLayoutHydrated.current) return;
     dockLayoutHydrated.current = true;
     try {
@@ -20412,7 +20918,7 @@ function ConsoleApp({ baseUrl }) {
     } catch {
     }
   }, [currentDockLayoutStorageKey, experience]);
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     if (!experience || !dockLayoutHydrated.current) return;
     if (dockLayoutRestoring.current) {
       dockLayoutRestoring.current = false;
@@ -20520,7 +21026,7 @@ function ConsoleApp({ baseUrl }) {
         return false;
     }
   }
-  const dockRef = import_react31.default.useRef(dock);
+  const dockRef = import_react33.default.useRef(dock);
   dockRef.current = dock;
   function updatePhaseForIdentity(identity, frame) {
     let changed = false;
@@ -20577,7 +21083,7 @@ function ConsoleApp({ baseUrl }) {
     }
     return changed;
   }
-  const loadExperience = import_react31.default.useCallback(() => {
+  const loadExperience = import_react33.default.useCallback(() => {
     if (experienceLoadInFlightRef.current) {
       return experienceLoadInFlightRef.current;
     }
@@ -20607,7 +21113,7 @@ function ConsoleApp({ baseUrl }) {
     experienceLoadInFlightRef.current = request;
     return request;
   }, [consoleTransport]);
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     let mounted = true;
     setLoading(true);
     setError("");
@@ -20620,14 +21126,14 @@ function ConsoleApp({ baseUrl }) {
       mounted = false;
     };
   }, [loadExperience]);
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     const timer = window.setInterval(() => {
       void loadExperience().catch(() => {
       });
     }, 15e3);
     return () => window.clearInterval(timer);
   }, [loadExperience]);
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     const appearance = experience?.console_config?.appearance;
     if (!appearance) return;
     const configuredTheme = normalizeConsoleTheme(appearance.default_theme);
@@ -20651,7 +21157,7 @@ function ConsoleApp({ baseUrl }) {
       }
     }
   }, [experience?.console_config?.appearance, setVariant]);
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     const configured = experience?.console_config?.layout?.sidebar_collapsed;
     if (typeof configured !== "boolean") return;
     try {
@@ -20661,7 +21167,7 @@ function ConsoleApp({ baseUrl }) {
     }
     setSidebarCollapsed(configured);
   }, [experience?.console_config?.layout?.sidebar_collapsed]);
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     const configured = experience?.console_config?.rail?.collapsed;
     if (typeof configured !== "boolean") return;
     try {
@@ -20672,12 +21178,12 @@ function ConsoleApp({ baseUrl }) {
     setRailCollapsed(configured);
   }, [experience?.console_config?.rail?.collapsed]);
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
-  const frontendReadOnly = import_react31.default.useMemo(() => resolveConsoleReadOnlyOverride(), []);
+  const frontendReadOnly = import_react33.default.useMemo(() => resolveConsoleReadOnlyOverride(), []);
   const accessEnforcing = experience?.access?.enabled === true;
   const consoleReadOnly = frontendReadOnly || experience?.console_policy?.read_only === true || !accessEnforcing && experience?.runtime_capabilities?.can_send_messages === false;
-  const consoleReadOnlyRef = import_react31.default.useRef(false);
+  const consoleReadOnlyRef = import_react33.default.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
-  const normalizedTopology = import_react31.default.useMemo(
+  const normalizedTopology = import_react33.default.useMemo(
     () => normalizeConsoleTopologyQuery(topologyQueryResult, {
       agents,
       fallbackNodes: experience?.topology?.live_snapshot?.nodes || [],
@@ -20696,7 +21202,7 @@ function ConsoleApp({ baseUrl }) {
       topologyQueryResult
     ]
   );
-  const visibleControls = import_react31.default.useMemo(() => {
+  const visibleControls = import_react33.default.useMemo(() => {
     const runtimeControls = hasMobControlSurface ? [
       "topology",
       "timeline",
@@ -20738,7 +21244,7 @@ function ConsoleApp({ baseUrl }) {
     experience?.workgraph?.can_view,
     hasMobControlSurface
   ]);
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     if (initialTargetOpened.current || dock.focusedTarget || !experience)
       return;
     if (!dockLayoutHydrated.current) return;
@@ -20772,7 +21278,7 @@ function ConsoleApp({ baseUrl }) {
     if (preset) dock.applyPreset(preset);
     dock.openTarget(target, "replace_focused");
   }, [agents, dock, experience, visibleControls]);
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     const target = dock.focusedTarget;
     if (!target || target.kind !== "agent-chat" || agents.length === 0) return;
     const identity = target.identity || target.memberId;
@@ -20789,7 +21295,7 @@ function ConsoleApp({ baseUrl }) {
       dock.openTarget(buildControlTarget2("roster"), "replace_focused");
     }
   }, [agents, dock.focusedTarget]);
-  const refreshAccessData = import_react31.default.useCallback(async () => {
+  const refreshAccessData = import_react33.default.useCallback(async () => {
     const accessTarget = controlWorkbenchTarget("access");
     try {
       const status = await executeHeadlessCommand(
@@ -20809,7 +21315,7 @@ function ConsoleApp({ baseUrl }) {
       setAccessData((current) => ({ ...current, error: errorMessage(err) }));
     }
   }, [baseUrl]);
-  const refreshMemoryData = import_react31.default.useCallback(async () => {
+  const refreshMemoryData = import_react33.default.useCallback(async () => {
     const memoryTarget = controlWorkbenchTarget("memory");
     try {
       let records = [];
@@ -20950,8 +21456,8 @@ function ConsoleApp({ baseUrl }) {
       setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
     }
   }, [baseUrl, experience?.memory?.can_review_quarantine]);
-  const workGraphRefreshSequencerRef = import_react31.default.useRef(createWorkGraphRefreshSequencer());
-  const refreshWorkGraphData = import_react31.default.useCallback(async () => {
+  const workGraphRefreshSequencerRef = import_react33.default.useRef(createWorkGraphRefreshSequencer());
+  const refreshWorkGraphData = import_react33.default.useCallback(async () => {
     const workGraphTarget = controlWorkbenchTarget("workgraph");
     const isCurrent = workGraphRefreshSequencerRef.current.begin();
     try {
@@ -20960,7 +21466,8 @@ function ConsoleApp({ baseUrl }) {
       try {
         snapshot = await executeHeadlessCommand(
           CONSOLE_COMMAND_NAMES2.workgraphSnapshot,
-          workGraphTarget
+          workGraphTarget,
+          { include_terminal: true }
         );
       } catch (err) {
         if (jsonRpcErrorCode(err) !== -32030) throw err;
@@ -21001,7 +21508,7 @@ function ConsoleApp({ baseUrl }) {
       setWorkGraphData((current) => ({ ...current, error: errorMessage(err) }));
     }
   }, [baseUrl]);
-  const queryMemoryRecords = import_react31.default.useCallback(
+  const queryMemoryRecords = import_react33.default.useCallback(
     async (params) => {
       try {
         return await executeHeadlessCommand(
@@ -21018,7 +21525,7 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl]
   );
-  const loadMemoryEvidence = import_react31.default.useCallback(
+  const loadMemoryEvidence = import_react33.default.useCallback(
     async (identity, evidence) => {
       if (!evidence.session_id) return null;
       try {
@@ -21042,7 +21549,7 @@ function ConsoleApp({ baseUrl }) {
     },
     [consoleController]
   );
-  const loadMemoryRecordDetail = import_react31.default.useCallback(
+  const loadMemoryRecordDetail = import_react33.default.useCallback(
     async (realm, memoryId) => {
       setMemoryData((current) => ({ ...current, detail: null, detailLoading: true, error: null }));
       try {
@@ -21070,7 +21577,7 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl]
   );
-  const runAccessMutation = import_react31.default.useCallback(
+  const runAccessMutation = import_react33.default.useCallback(
     async (command, params) => {
       try {
         await executeHeadlessCommand(command, controlWorkbenchTarget("access"), params);
@@ -21085,7 +21592,7 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl, refreshAccessData, loadExperience]
   );
-  const refreshTopologyData = import_react31.default.useCallback(async () => {
+  const refreshTopologyData = import_react33.default.useCallback(async () => {
     try {
       const capabilities = await consoleTransport.capabilities();
       setTopologyCapabilities(capabilities.topologyControl || null);
@@ -21105,7 +21612,7 @@ function ConsoleApp({ baseUrl }) {
       throw error2;
     }
   }, [consoleTransport]);
-  const refreshPanelData = import_react31.default.useCallback(async () => {
+  const refreshPanelData = import_react33.default.useCallback(async () => {
     const openPanels = dock.viewState.panels.map((p) => p.target).filter(Boolean);
     const inspects = openPanels.filter(
       (t) => t.kind === "identity-inspect"
@@ -21158,11 +21665,11 @@ function ConsoleApp({ baseUrl }) {
       });
     }
   }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData, refreshMemoryData, refreshTopologyData, refreshWorkGraphData]);
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     void refreshPanelData().catch(() => {
     });
   }, [dock.viewState.panels, refreshPanelData]);
-  const scheduleExperienceRefresh = import_react31.default.useCallback(() => {
+  const scheduleExperienceRefresh = import_react33.default.useCallback(() => {
     if (experienceTimerRef.current !== null) return;
     experienceTimerRef.current = window.setTimeout(async () => {
       experienceTimerRef.current = null;
@@ -21172,7 +21679,7 @@ function ConsoleApp({ baseUrl }) {
       });
     }, 150);
   }, [loadExperience, refreshPanelData]);
-  const scheduleHistoryRefresh = import_react31.default.useCallback(
+  const scheduleHistoryRefresh = import_react33.default.useCallback(
     (identity) => {
       clearTimeout(refreshTimersRef.current[identity]);
       refreshTimersRef.current[identity] = window.setTimeout(async () => {
@@ -21190,7 +21697,7 @@ function ConsoleApp({ baseUrl }) {
     },
     [baseUrl, forceRender]
   );
-  const workGraphHydrationGateRef = import_react31.default.useRef(createWorkGraphHydrationGate());
+  const workGraphHydrationGateRef = import_react33.default.useRef(createWorkGraphHydrationGate());
   async function hydrateWorkGraphCardsForIdentity(identity) {
     const shouldFetch = workGraphHydrationGateRef.current.shouldFetch(identity, {
       workgraphAvailable: experience?.workgraph?.available === true,
@@ -21218,7 +21725,7 @@ function ConsoleApp({ baseUrl }) {
     } catch {
     }
   }
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     for (const panel of dock.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
@@ -21232,7 +21739,7 @@ function ConsoleApp({ baseUrl }) {
       });
     }
   }, [baseUrl, dock.viewState.panels, forceRender, experience?.workgraph?.available]);
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     const refreshOpenChatPanels = async () => {
       const identities = /* @__PURE__ */ new Set();
       for (const panel of dock.viewState.panels) {
@@ -21283,25 +21790,25 @@ function ConsoleApp({ baseUrl }) {
     void refreshOpenChatPanels();
     return () => window.clearInterval(timer);
   }, [baseUrl, dock.viewState.panels, forceRender]);
-  const scheduleHistoryRefreshRef = import_react31.default.useRef(scheduleHistoryRefresh);
+  const scheduleHistoryRefreshRef = import_react33.default.useRef(scheduleHistoryRefresh);
   scheduleHistoryRefreshRef.current = scheduleHistoryRefresh;
-  const scheduleExperienceRefreshRef = import_react31.default.useRef(scheduleExperienceRefresh);
+  const scheduleExperienceRefreshRef = import_react33.default.useRef(scheduleExperienceRefresh);
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
-  const refreshMemoryDataRef = import_react31.default.useRef(refreshMemoryData);
+  const refreshMemoryDataRef = import_react33.default.useRef(refreshMemoryData);
   refreshMemoryDataRef.current = refreshMemoryData;
-  const memoryPanelDockedRef = import_react31.default.useRef(false);
+  const memoryPanelDockedRef = import_react33.default.useRef(false);
   memoryPanelDockedRef.current = dock.viewState.panels.some(
     (panel) => panel.target?.kind === "memory"
   );
-  const memoryRefreshTimerRef = import_react31.default.useRef(null);
-  const refreshWorkGraphDataRef = import_react31.default.useRef(refreshWorkGraphData);
+  const memoryRefreshTimerRef = import_react33.default.useRef(null);
+  const refreshWorkGraphDataRef = import_react33.default.useRef(refreshWorkGraphData);
   refreshWorkGraphDataRef.current = refreshWorkGraphData;
-  const workGraphPanelDockedRef = import_react31.default.useRef(false);
+  const workGraphPanelDockedRef = import_react33.default.useRef(false);
   workGraphPanelDockedRef.current = dock.viewState.panels.some(
     (panel) => panel.target?.kind === "workgraph"
   );
-  const workGraphRefreshTimerRef = import_react31.default.useRef(null);
-  import_react31.default.useEffect(() => {
+  const workGraphRefreshTimerRef = import_react33.default.useRef(null);
+  import_react33.default.useEffect(() => {
     const handleLiveFrame = (incomingFrame) => {
       const canonicalIdentity = canonicalConsoleIdentity(
         incomingFrame.identity,
@@ -21360,7 +21867,7 @@ function ConsoleApp({ baseUrl }) {
       unsubscribe?.();
     };
   }, [consoleController, consoleTransport]);
-  import_react31.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     return () => {
       for (const timer of Object.values(phaseTimerByKey.current))
         window.clearTimeout(timer);
@@ -21545,7 +22052,7 @@ function ConsoleApp({ baseUrl }) {
   }
   const reducedMotion = typeof window !== "undefined" ? window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false : false;
   const animMs = (ms) => reducedMotion ? 0 : ms;
-  const pendingDrainOwnerRef = import_react31.default.useRef(
+  const pendingDrainOwnerRef = import_react33.default.useRef(
     `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   );
   function findChatTargetFor(identity) {
@@ -21801,7 +22308,7 @@ function ConsoleApp({ baseUrl }) {
     }
   }
   const canManageWorkGraph = experience?.workgraph?.can_manage === true && !consoleReadOnly;
-  const runWorkGraphCommand = import_react31.default.useCallback(
+  const runWorkGraphCommand = import_react33.default.useCallback(
     async (command, params, cardIdentity) => {
       if (consoleReadOnlyRef.current) return;
       const echoResultToCard = (result, failureMessage) => {
@@ -21858,12 +22365,12 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl, refreshWorkGraphData]
   );
-  const runWorkGraphQuery = import_react31.default.useCallback(
+  const runWorkGraphQuery = import_react33.default.useCallback(
     (command, params) => executeHeadlessCommand(command, controlWorkbenchTarget("workgraph"), params),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl]
   );
-  const makeWorkGraphOperatorHandlers = import_react31.default.useCallback(
+  const makeWorkGraphOperatorHandlers = import_react33.default.useCallback(
     (cardIdentity) => {
       const dispatch = (resolveRevision, send) => {
         void (async () => {
@@ -21938,7 +22445,7 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [runWorkGraphCommand, runWorkGraphQuery, experience?.access?.subject]
   );
-  const workGraphCardActions = import_react31.default.useCallback(
+  const workGraphCardActions = import_react33.default.useCallback(
     (cardIdentity) => {
       if (!canManageWorkGraph) return void 0;
       const { onAttentionReassign: _panelOnly, ...cardHandlers } = makeWorkGraphOperatorHandlers(cardIdentity);
@@ -22015,7 +22522,7 @@ function ConsoleApp({ baseUrl }) {
     window.addEventListener("pointercancel", cleanup);
   }
   if (loading)
-    return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
       "div",
       {
         "data-testid": "console-loading",
@@ -22029,16 +22536,16 @@ function ConsoleApp({ baseUrl }) {
           minHeight: "100vh"
         },
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {})
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {})
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "Loading console\u2026" })
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { children: "Loading console\u2026" })
         ]
       }
     );
-  if (error) return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { "data-testid": "console-error", children: error });
+  if (error) return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { "data-testid": "console-error", children: error });
   const focusedMemberId = dock.focusedTarget?.kind === "agent-chat" ? dock.focusedTarget.memberId : selectedRosterMemberId;
   const sidebarVS = buildSidebarViewState2({
     agents,
@@ -22120,7 +22627,7 @@ function ConsoleApp({ baseUrl }) {
     const canRetire = !consoleReadOnly && configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
     const stackItems = getPendingStack(identity);
     const agentBusy = isIdentityBusy(identity);
-    const stackSlot = stackItems.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+    const stackSlot = stackItems.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
       PendingStack3,
       {
         items: stackItems,
@@ -22136,7 +22643,7 @@ function ConsoleApp({ baseUrl }) {
         onToggleExpand: (itemId) => onStackToggleExpand(identity, itemId)
       }
     ) : null;
-    return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+    return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
       ChatPane,
       {
         agent,
@@ -22178,16 +22685,16 @@ function ConsoleApp({ baseUrl }) {
     const canRespawn = !consoleReadOnly && configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
     const canRetire = !consoleReadOnly && configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
     const canReset = !consoleReadOnly && configuredActionVisibility.reset && experience?.runtime_capabilities?.can_retire_members === true;
-    return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
       "div",
       {
         className: "console-panel",
         "data-testid": `inspect-panel:${target.identity}`,
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "console-panel__header", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("h3", { children: target.identity }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "console-panel__actions", children: [
-              canRespawn ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "console-panel__header", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("h3", { children: target.identity }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "console-panel__actions", children: [
+              canRespawn ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
                 "button",
                 {
                   "data-testid": `inspect-action:${target.identity}:respawn`,
@@ -22196,7 +22703,7 @@ function ConsoleApp({ baseUrl }) {
                   children: configuredActionLabels.respawn
                 }
               ) : null,
-              canReset ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+              canReset ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
                 "button",
                 {
                   "data-testid": `inspect-action:${target.identity}:reset`,
@@ -22205,7 +22712,7 @@ function ConsoleApp({ baseUrl }) {
                   children: configuredActionLabels.reset
                 }
               ) : null,
-              canRetire ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+              canRetire ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
                 "button",
                 {
                   "data-testid": `inspect-action:${target.identity}:retire`,
@@ -22216,35 +22723,35 @@ function ConsoleApp({ baseUrl }) {
               ) : null
             ] })
           ] }),
-          !inspect ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("dl", { className: "console-panel__grid", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dt", { children: "State" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dd", { children: inspect.state }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dt", { children: "Role" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dd", { children: inspect.role || "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dt", { children: "Addressability" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dd", { children: inspect.addressability }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dt", { children: "Generation" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dd", { children: inspect.continuity?.generation ?? "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dt", { children: "Checkpoint" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dd", { children: inspect.continuity?.checkpoint_version ?? "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dt", { children: "Session" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dd", { children: inspect.continuity?.session_id || "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dt", { children: "Runtime" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dd", { children: inspect.continuity?.agent_runtime_id || "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dt", { children: "Lease Healthy" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dd", { children: String(inspect.lease_healthy ?? inspect.lease?.healthy ?? false) }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dt", { children: "Peers" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dd", { children: inspect.topology_peers?.join(", ") || "none" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dt", { children: "Output Preview" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("dd", { children: inspect.output_preview || "n/a" })
+          !inspect ? /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("dl", { className: "console-panel__grid", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dt", { children: "State" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dd", { children: inspect.state }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dt", { children: "Role" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dd", { children: inspect.role || "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dt", { children: "Addressability" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dd", { children: inspect.addressability }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dt", { children: "Generation" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dd", { children: inspect.continuity?.generation ?? "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dt", { children: "Checkpoint" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dd", { children: inspect.continuity?.checkpoint_version ?? "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dt", { children: "Session" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dd", { children: inspect.continuity?.session_id || "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dt", { children: "Runtime" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dd", { children: inspect.continuity?.agent_runtime_id || "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dt", { children: "Lease Healthy" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dd", { children: String(inspect.lease_healthy ?? inspect.lease?.healthy ?? false) }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dt", { children: "Peers" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dd", { children: inspect.topology_peers?.join(", ") || "none" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dt", { children: "Output Preview" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("dd", { children: inspect.output_preview || "n/a" })
           ] })
         ]
       }
     );
   }
   function renderHealthPanel(identities) {
-    return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("li", { "data-testid": `health-identity:${r2.identity}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("strong", { children: r2.display_name || r2.identity }),
+    return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("li", { "data-testid": `health-identity:${r2.identity}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("strong", { children: r2.display_name || r2.identity }),
       " \xB7 ",
       r2.state,
       " \xB7",
@@ -22285,17 +22792,17 @@ function ConsoleApp({ baseUrl }) {
   }
   function renderPanelBody(panel) {
     const target = panel.target;
-    if (!target) return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "console-panel", children: "No panel target" });
+    if (!target) return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "console-panel", children: "No panel target" });
     if (target.kind === "agent-chat") return renderChatPanel(panel);
     if (target.kind === "identity-inspect") {
       return renderInspectPanel(target);
     }
     if ((target.kind === "routing" || target.kind === "gating" || target.kind === "gates" || target.kind === "workgraph") && !hasMobControlSurface) {
-      return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "console-panel", children: "This view requires a mob runtime control surface." });
+      return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "console-panel", children: "This view requires a mob runtime control surface." });
     }
-    if (target.kind === "routing") return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(RoutingPanel, { data: routingData });
+    if (target.kind === "routing") return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(RoutingPanel, { data: routingData });
     if (target.kind === "gating")
-      return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
         GatingInboxPanel,
         {
           pending: gatingData.pending,
@@ -22305,7 +22812,7 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "topology")
-      return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
         TopologyPanel,
         {
           nodes: normalizedTopology?.nodes || experience?.topology?.live_snapshot?.nodes || [],
@@ -22323,9 +22830,9 @@ function ConsoleApp({ baseUrl }) {
         experience?.health_overview?.live_snapshot?.identities || []
       );
     if (target.kind === "timeline")
-      return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(TimelinePanel, { frames: activityRef.current });
+      return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(TimelinePanel, { frames: activityRef.current });
     if (target.kind === "roster")
-      return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
         RosterPanel,
         {
           agents,
@@ -22345,7 +22852,7 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "gates")
-      return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
         GatingInboxPanel,
         {
           pending: gatingData.pending,
@@ -22355,9 +22862,9 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "logs")
-      return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(LogsPanel, { frames: activityRef.current });
+      return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(LogsPanel, { frames: activityRef.current });
     if (target.kind === "access")
-      return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
         AccessPanel,
         {
           status: accessData.status,
@@ -22396,7 +22903,7 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "memory")
-      return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
         MemoryPanel,
         {
           records: memoryData.records,
@@ -22442,7 +22949,7 @@ function ConsoleApp({ baseUrl }) {
       );
     if (target.kind === "workgraph") {
       const workGraphPanelHandlers = makeWorkGraphOperatorHandlers();
-      return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
         WorkGraphPanel,
         {
           data: workGraphData,
@@ -22458,9 +22965,9 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     }
-    return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
+    return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
     "div",
     {
       className: "cc-theme-scope mobkit-shell",
@@ -22468,10 +22975,10 @@ function ConsoleApp({ baseUrl }) {
       "data-cc-variant": variant,
       "data-testid": "meerkat-console",
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(SpriteSheet, {}),
-        actionError && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "mobkit-action-error", "data-testid": "console-action-error", role: "alert", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: actionError }),
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(SpriteSheet, {}),
+        actionError && /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "mobkit-action-error", "data-testid": "console-action-error", role: "alert", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { children: actionError }),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
             "button",
             {
               "aria-label": "Dismiss error",
@@ -22482,7 +22989,7 @@ function ConsoleApp({ baseUrl }) {
             }
           )
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
           Topbar,
           {
             mobName,
@@ -22500,7 +23007,7 @@ function ConsoleApp({ baseUrl }) {
             onToggleRail: toggleRailCollapsed
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
           "div",
           {
             className: "shell",
@@ -22508,7 +23015,7 @@ function ConsoleApp({ baseUrl }) {
             "data-sidebar-collapsed": sidebarCollapsed ? "true" : "false",
             "data-rail-collapsed": railCollapsed ? "true" : "false",
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
                 Sidebar,
                 {
                   agents,
@@ -22527,7 +23034,7 @@ function ConsoleApp({ baseUrl }) {
                   }
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
                 "div",
                 {
                   className: "pane-resizer",
@@ -22536,7 +23043,7 @@ function ConsoleApp({ baseUrl }) {
                   onPointerDown: handleSidebarResize
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "main", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "main", children: /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
                 MobKitDock,
                 {
                   viewState: dock.viewState,
@@ -22556,8 +23063,8 @@ function ConsoleApp({ baseUrl }) {
                   }
                 }
               ) }),
-              railVisible ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+              railVisible ? /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(import_jsx_runtime43.Fragment, { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
                   "div",
                   {
                     className: "pane-resizer pane-resizer--activity",
@@ -22566,7 +23073,7 @@ function ConsoleApp({ baseUrl }) {
                     onPointerDown: handleActivityResize
                   }
                 ),
-                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+                /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
                   SignalsRail,
                   {
                     frames: activityRef.current,
@@ -22601,14 +23108,14 @@ function ConsoleApp({ baseUrl }) {
 }
 
 // src/index.tsx
-var import_jsx_runtime43 = require("react/jsx-runtime");
+var import_jsx_runtime44 = require("react/jsx-runtime");
 function createConsoleApp(target, options = {}) {
   if (!target) {
     throw new Error("target element is required");
   }
   const baseUrl = options.baseUrl || "";
   const root = (0, import_client.createRoot)(target);
-  root.render(/* @__PURE__ */ (0, import_jsx_runtime43.jsx)(ConsoleApp, { baseUrl }));
+  root.render(/* @__PURE__ */ (0, import_jsx_runtime44.jsx)(ConsoleApp, { baseUrl }));
   return {
     unmount() {
       root.unmount();

@@ -2253,6 +2253,575 @@ async fn reset_runtime_store_reseeds_from_continuity_and_resumes() {
     }
 }
 
+/// COLD-MINT COUNT FAITHFULNESS (2026-08-05 HomeCore window-4 boot
+/// blocker, released-0.8.16 lineage): a fleet that had accumulated
+/// customizer-prompt boot appends took the sanctioned runtime-store reset
+/// and came back 0 active / 17 broken - the machine-authorized revival's
+/// first projection save was refused with "new message count N is shorter
+/// than previously persisted M without transcript-continuity proof"
+/// (field deltas 12/8/4/10 = per-member accumulated boot appends). This
+/// pins the count contract hop by hop: durable load -> runtime mint ->
+/// resume materialization -> first projection must be row-count-faithful;
+/// no hop may manufacture or silently admit a shrink. Boot append deltas
+/// are MEASURED per boot rather than assumed, so the test holds both on
+/// lineages that append a prompt copy per boot and on lineages that
+/// preserve persisted prompts without appending.
+#[tokio::test(flavor = "multi_thread")]
+async fn reset_after_repeated_customizer_boots_preserves_exact_counts_and_projects() {
+    const TOKEN: &str = "MARKER-MULTIBOOT-RESET-11-VICTOR";
+    if proxied_to_memo_free_child(
+        "reset_after_repeated_customizer_boots_preserves_exact_counts_and_projects",
+    ) {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    let member = id(MEMBER);
+
+    // --- Boot 1: one turn carrying the recall marker. ---
+    let session_id;
+    let mut durable_count;
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
+            .await
+            .expect("send boot 1's turn");
+        wait_for_turn(&capture, 1, "boot 1's turn").await;
+        runtime.shutdown().await;
+        let (head, count) =
+            wait_for_durable_document_at_least(&state, 2, "boot 1's turn to commit").await;
+        session_id = head;
+        durable_count = count;
+    }
+
+    // --- Boots 2..=4: accumulate whatever this lineage's resume policy
+    // appends per customizer boot (measured after quiescent shutdown, not
+    // assumed). Each boot takes one real turn so its boundary commits. ---
+    let mut boot_appends: i64 = 0;
+    for boot_no in 2i64..=4 {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text(format!("boot {boot_no} touch")),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("boot {boot_no}'s turn must not be refused: {e}"));
+        wait_for_turn(&capture, 1, "an accumulation boot's turn").await;
+        wait_for_durable_document_at_least(
+            &state,
+            durable_count + 2,
+            "an accumulation boot's boundary commit",
+        )
+        .await;
+        runtime.shutdown().await;
+        let (head, count) =
+            wait_for_durable_document_at_least(&state, 0, "the quiescent post-boot document").await;
+        assert_eq!(
+            head, session_id,
+            "accumulation boots must extend the same durable session"
+        );
+        let appended = count - durable_count - 2;
+        assert!(
+            appended >= 0,
+            "boot {boot_no} SHRANK the durable document: {durable_count} -> {count}"
+        );
+        boot_appends += appended;
+        durable_count = count;
+    }
+
+    // --- Direct typed seed (the field's accumulation, meerkat-lead
+    // prescribed): this harness's customizer resume authors nothing per
+    // boot (measured boot_appends stays 0 here), but the field gateway's
+    // callback path appended one System copy per boot for a day - so seed
+    // the duplicate System rows through the SAME adapter representation
+    // the gateway writes through, and assert the accumulation is real
+    // (a zero-duplicate run must not pass as a field repro). ---
+    const SEEDED_DUPLICATES: i64 = 12;
+    {
+        let continuity: std::sync::Arc<dyn meerkat_mobkit::identity_first::ContinuityStore> =
+            std::sync::Arc::new(
+                meerkat_mobkit::identity_first::LocalContinuityStore::open(continuity_db(&state))
+                    .expect("open the continuity store for the duplicate seed"),
+            );
+        let adapter = std::sync::Arc::new(
+            meerkat_mobkit::identity_first::ContinuitySessionStoreAdapter::new(
+                std::sync::Arc::clone(&continuity),
+            ),
+        );
+        let sid = meerkat_core::types::SessionId::parse(&session_id).expect("session id");
+        let (record, fencing_token, fence_current) = continuity
+            .resolve_record_by_session(&sid)
+            .await
+            .expect("resolve the continuity record")
+            .expect("a continuity record binds the session");
+        adapter
+            .register_session(
+                &sid,
+                meerkat_mobkit::identity_first::SessionRuntimeState {
+                    identity: record.identity.clone(),
+                    generation: record.generation,
+                    fencing_token,
+                    checkpoint_version: fence_current,
+                },
+            )
+            .await
+            .expect("register the seed writer");
+        let mut seeded = meerkat::SessionStore::load(adapter.as_ref(), &sid)
+            .await
+            .expect("load for the duplicate seed")
+            .expect("the durable session exists");
+        for _ in 0..SEEDED_DUPLICATES {
+            seeded.push(meerkat_core::Message::System(
+                meerkat_core::types::SystemMessage::new(CUSTOMIZER_PROMPT),
+            ));
+        }
+        meerkat::SessionStore::save(adapter.as_ref(), &seeded)
+            .await
+            .expect("seed the duplicate System rows through the typed door");
+    }
+    durable_count += SEEDED_DUPLICATES;
+    let (_, seeded_count) =
+        wait_for_durable_document_at_least(&state, durable_count, "the seeded duplicates").await;
+    assert_eq!(
+        seeded_count, durable_count,
+        "all {SEEDED_DUPLICATES} duplicate System rows must be durable before the reset"
+    );
+
+    // --- The sanctioned reset: the runtime.sqlite file set deleted,
+    // continuity untouched (same file set as the single-boot test above). ---
+    let mut removed = 0;
+    for suffix in ["", "-wal", "-shm", ".mfence"] {
+        let path = state.join(format!(
+            "{}{suffix}",
+            meerkat_mobkit::storage_layout::RUNTIME_DB_FILE_NAME
+        ));
+        if path.exists() {
+            std::fs::remove_file(&path).expect("reset runtime store");
+            removed += 1;
+        }
+    }
+    assert!(
+        removed > 0,
+        "the persistent shape must have written runtime.sqlite"
+    );
+    assert!(
+        continuity_db(&state).exists(),
+        "the reset must leave the continuity store intact"
+    );
+
+    // Durable-load hop: the reset must not move the durable document.
+    let (head, pre_mint_count) =
+        wait_for_durable_document_at_least(&state, 0, "the durable document after the reset").await;
+    assert_eq!(head, session_id);
+    assert_eq!(
+        pre_mint_count, durable_count,
+        "the reset deleted only runtime.sqlite, so the durable count must be unchanged"
+    );
+
+    // --- Boot 5 over the reset store: cold mint -> materialize -> turn ->
+    // first projection. This send is exactly where the field fleet died. ---
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+            )
+            .await
+            .expect(
+                "the cold-mint resume turn must not be refused \
+                 (field failure: MonotonicityViolation on the first projection save)",
+            );
+        wait_for_turn(&capture, 1, "the cold-mint turn").await;
+        let last = capture.last().expect("the cold-mint request was captured");
+        assert!(
+            last.contains(TOKEN),
+            "the cold-mint materialization must replay boot 1's turn (token {TOKEN}); \
+             request: {last}"
+        );
+        let after = identity_runtime
+            .status(&member)
+            .await
+            .expect("status after the cold-mint send");
+        assert_eq!(
+            after.session_id.as_ref().map(ToString::to_string),
+            Some(session_id.clone()),
+            "the cold mint must RESUME the durable session, not create a fresh one; \
+             status: {after:?}"
+        );
+        wait_for_durable_document_at_least(
+            &state,
+            pre_mint_count + 2,
+            "the cold-mint turn's boundary commit",
+        )
+        .await;
+        runtime.shutdown().await;
+
+        // First-projection hop: exact count against this boot's own
+        // measured append delta - growth only, never a shrink.
+        let (_, post_count) =
+            wait_for_durable_document_at_least(&state, 0, "the quiescent post-cold-mint document")
+                .await;
+        let boot5_appends = post_count - pre_mint_count - 2;
+        assert!(
+            boot5_appends >= 0,
+            "the cold-mint boot SHRANK the durable document: {pre_mint_count} -> {post_count}"
+        );
+
+        // Resume-materialization hop: every accumulated customizer copy
+        // reaches the LLM request - the live prompt, the seeded field-shape
+        // duplicates, and each measured boot append (prior boots' plus this
+        // boot's own).
+        let expected_copies = usize::try_from(1 + SEEDED_DUPLICATES + boot_appends + boot5_appends)
+            .expect("customizer copy count");
+        let seen_copies = last.matches(CUSTOMIZER_PROMPT).count();
+        eprintln!(
+            "COUNT-TRACE: seeded={SEEDED_DUPLICATES} boot_appends={boot_appends} \
+             boot5_appends={boot5_appends} pre_mint={pre_mint_count} post={post_count} \
+             seen_copies={seen_copies}"
+        );
+        assert_eq!(
+            seen_copies, expected_copies,
+            "cold-mint materialization dropped or invented customizer copies \
+             (live prompt 1 + seeded {SEEDED_DUPLICATES} + accumulated {boot_appends} \
+             + this boot's {boot5_appends}); request: {last}"
+        );
+    }
+}
+
+/// WINDOW-5 mirror (task #61, drill-proven fleet blocker): an operator
+/// dedup rewrite through the typed door, then the sanctioned runtime-store
+/// reset, then a cold boot. The cold mint materializes the rewritten
+/// durable head SLIM (the compact graph stays out-of-line), so the first
+/// turn's boundary projection composed rewrite-shaped state with no graph
+/// authority and the store refused fail-closed ("rewritten session has no
+/// validated compact graph authority") - every member wedged in a
+/// refuse-retry loop (HomeCore window 4: 0 active / 17 broken,
+/// reproduced byte-exact offline on both released 0.8.16 and the 0.8.17
+/// candidate). The mint must hydrate the graph from the store's own
+/// adopted rewrite records so the seed carries the authority its durable
+/// row already proves.
+#[tokio::test(flavor = "multi_thread")]
+async fn reset_after_operator_rewrite_cold_mints_with_graph_authority() {
+    const TOKEN: &str = "MARKER-REWRITE-RESET-13-WHISKEY";
+    if proxied_to_memo_free_child("reset_after_operator_rewrite_cold_mints_with_graph_authority") {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    let member = id(MEMBER);
+
+    // --- Boot 1: one turn carrying the recall marker. ---
+    let session_id;
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
+            .await
+            .expect("send boot 1's turn");
+        wait_for_turn(&capture, 1, "boot 1's turn").await;
+        runtime.shutdown().await;
+        let (head, _) =
+            wait_for_durable_document_at_least(&state, 2, "boot 1's turn to commit").await;
+        session_id = head;
+    }
+
+    // --- Field shape: accumulated duplicate System rows, then the operator
+    // dedup rewrite through the typed door (window-4 surgery in miniature,
+    // same sequence as examples/dedup_system_rows.rs). ---
+    let expected_after_rewrite;
+    {
+        let continuity: Arc<dyn ContinuityStore> = Arc::new(
+            LocalContinuityStore::open(continuity_db(&state))
+                .expect("open the continuity store for the operator rewrite"),
+        );
+        let adapter = Arc::new(ContinuitySessionStoreAdapter::new(Arc::clone(&continuity)));
+        let sid = meerkat_core::types::SessionId::parse(&session_id).expect("session id");
+        let (record, fencing_token, fence_current) = continuity
+            .resolve_record_by_session(&sid)
+            .await
+            .expect("resolve the continuity record")
+            .expect("a continuity record binds the session");
+        adapter
+            .register_session(
+                &sid,
+                meerkat_mobkit::identity_first::SessionRuntimeState {
+                    identity: record.identity.clone(),
+                    generation: record.generation,
+                    fencing_token,
+                    checkpoint_version: fence_current,
+                },
+            )
+            .await
+            .expect("register the operator writer");
+        let mut with_dups = meerkat::SessionStore::load(adapter.as_ref(), &sid)
+            .await
+            .expect("load for the duplicate seed")
+            .expect("the durable session exists");
+        for _ in 0..12 {
+            with_dups.push(meerkat_core::Message::System(
+                meerkat_core::types::SystemMessage::new(CUSTOMIZER_PROMPT),
+            ));
+        }
+        meerkat::SessionStore::save(adapter.as_ref(), &with_dups)
+            .await
+            .expect("seed the duplicate System rows");
+
+        let mut cleaned: Vec<meerkat_core::Message> = Vec::new();
+        let mut kept_first_system = false;
+        for message in with_dups.messages() {
+            if matches!(message, meerkat_core::Message::System(_)) {
+                if kept_first_system {
+                    continue;
+                }
+                kept_first_system = true;
+            }
+            cleaned.push(message.clone());
+        }
+        assert!(
+            with_dups.messages().len() - cleaned.len() >= 11,
+            "the dedup must drop real duplicate rows"
+        );
+        expected_after_rewrite = i64::try_from(cleaned.len()).expect("cleaned count");
+        let parent_revision = with_dups
+            .transcript_revision()
+            .expect("parent revision before the rewrite");
+        let selection_end = with_dups.messages().len();
+        let mut rewritten = with_dups.clone();
+        let commit = rewritten
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange {
+                    start: 0,
+                    end: selection_end,
+                },
+                cleaned,
+                meerkat_core::TranscriptRewriteReason::new(
+                    "test operator dedup of duplicate System copies",
+                ),
+                Some("test-operator/dedup".to_string()),
+                Some(parent_revision),
+            )
+            .expect("compose the dedup rewrite");
+        meerkat::SessionStore::save_transcript_rewrite(adapter.as_ref(), &rewritten, &commit)
+            .await
+            .expect("commit the dedup rewrite through the typed door");
+        meerkat::SessionStore::save_authoritative_projection(adapter.as_ref(), &rewritten)
+            .await
+            .expect("project the rewritten head");
+    }
+    let (_, post_rewrite_count) =
+        wait_for_durable_document_at_least(&state, 0, "the rewritten durable head").await;
+    assert_eq!(
+        post_rewrite_count, expected_after_rewrite,
+        "the dedup rewrite must land on the durable head"
+    );
+
+    // --- The sanctioned reset: runtime.sqlite file set deleted, continuity
+    // untouched. ---
+    let mut removed = 0;
+    for suffix in ["", "-wal", "-shm", ".mfence"] {
+        let path = state.join(format!(
+            "{}{suffix}",
+            meerkat_mobkit::storage_layout::RUNTIME_DB_FILE_NAME
+        ));
+        if path.exists() {
+            std::fs::remove_file(&path).expect("reset runtime store");
+            removed += 1;
+        }
+    }
+    assert!(
+        removed > 0,
+        "the persistent shape must have written runtime.sqlite"
+    );
+    assert!(
+        continuity_db(&state).exists(),
+        "the reset must leave the continuity store intact"
+    );
+
+    // --- Cold boot over the rewritten head: mint, materialize, one real
+    // turn whose boundary projection must carry graph authority. Pre-fix
+    // this send refused fail-closed and the member wedged. ---
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+            )
+            .await
+            .expect(
+                "the cold-mint turn over a rewritten head must not be refused \
+                 (field failure: 'rewritten session has no validated compact graph authority')",
+            );
+        wait_for_turn(&capture, 1, "the cold-mint turn").await;
+        let last = capture.last().expect("the cold-mint request was captured");
+        assert!(
+            last.contains(TOKEN),
+            "the cold mint must replay the preserved transcript (token {TOKEN})"
+        );
+        // Exactly the LIVE prompt. The dedup kept the transcript's first
+        // System row - the boot-1 creation row, which does not carry the
+        // customizer marker (the multi-boot regression's 13-not-14 count
+        // pins that) - so every seeded marker copy is dead and the only
+        // marker in the request is the live system prompt itself.
+        assert_eq!(
+            last.matches(CUSTOMIZER_PROMPT).count(),
+            1,
+            "the deduped marker copies must stay dead after the cold mint"
+        );
+        runtime.shutdown().await;
+        let (_, post) =
+            wait_for_durable_document_at_least(&state, 0, "the post-cold-mint document").await;
+        assert_eq!(
+            post,
+            expected_after_rewrite + 2,
+            "the first projection must extend the rewritten head exactly"
+        );
+    }
+}
+
+/// STEER INTO A NON-RESIDENT MEMBER (OB3 0.8.18 field-acceptance shape,
+/// 2026-08-06): a console steer whose arrival TRIGGERS the member build
+/// persisted its interaction id into the first run's input row with an
+/// EMPTY body - identity survived the whole chain, content did not, and
+/// the marker never appeared in the session. This pins mobkit's half of
+/// that chain: a Steer-mode tracked send into a not-yet-materialized
+/// member must deliver its body into the first run. Green here means the
+/// console hand-off and the identity-first materialization lane carry
+/// steer content intact and the residual field loss lives beyond the
+/// bridge admission.
+#[tokio::test(flavor = "multi_thread")]
+async fn steer_into_non_resident_member_delivers_content() {
+    const MARKER: &str = "STEER-CONTENT-MARKER-15-XRAY";
+    if proxied_to_memo_free_child("steer_into_non_resident_member_delivers_content") {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    let member = id(MEMBER);
+
+    // Boot 1: one turn so the member has a durable session, then shut down
+    // so the next boot starts with the member NON-RESIDENT.
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("seed turn".to_string()),
+            )
+            .await
+            .expect("seed turn");
+        wait_for_turn(&capture, 1, "the seed turn").await;
+        runtime.shutdown().await;
+    }
+
+    // Boot 2: the very first contact is a STEER-mode tracked send - the
+    // steer's own arrival drives materialization (the OB3 shape).
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send_with_mode_and_interaction_tracked(
+                &member,
+                &meerkat_core::ContentInput::Text(format!(
+                    "{MARKER}: if you can read this line, reply with the marker."
+                )),
+                meerkat_core::types::HandlingMode::Steer,
+                Some("0818aaaa-1247-5ce3-85c8-17ec20e09a77"),
+            )
+            .await
+            .expect("the steer into a non-resident member must be admitted");
+        wait_for_turn(&capture, 1, "the steer-driven first turn").await;
+        let last = capture.last().expect("a request was captured");
+        assert!(
+            last.contains(MARKER),
+            "the steer body must reach the first run's request - the field shape lost it \
+             (identity persisted, content empty); request: {last}"
+        );
+        runtime.shutdown().await;
+    }
+}
+
 /// Destroy-deprojection regression (2026-07-31 verdict): deleting an
 /// identity must remove its durable session row along with the continuity
 /// record, and a COLD pod after the delete must not mint, resume, or
