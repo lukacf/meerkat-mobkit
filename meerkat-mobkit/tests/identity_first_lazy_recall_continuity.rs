@@ -2740,6 +2740,91 @@ async fn reset_after_operator_rewrite_cold_mints_with_graph_authority() {
     }
 }
 
+/// STEER INTO A NON-RESIDENT MEMBER (OB3 0.8.18 field-acceptance shape,
+/// 2026-08-06): a console steer whose arrival TRIGGERS the member build
+/// persisted its interaction id into the first run's input row with an
+/// EMPTY body - identity survived the whole chain, content did not, and
+/// the marker never appeared in the session. This pins mobkit's half of
+/// that chain: a Steer-mode tracked send into a not-yet-materialized
+/// member must deliver its body into the first run. Green here means the
+/// console hand-off and the identity-first materialization lane carry
+/// steer content intact and the residual field loss lives beyond the
+/// bridge admission.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "RED on the released 0.8.17 pair: the steer body is lost across materialization \
+            (OB3 0.8.18 field-acceptance shape). Un-ignore when the steer admission fix lands; \
+            run with --ignored for the sub-second repro."]
+async fn steer_into_non_resident_member_delivers_content() {
+    const MARKER: &str = "STEER-CONTENT-MARKER-15-XRAY";
+    if proxied_to_memo_free_child("steer_into_non_resident_member_delivers_content") {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    let member = id(MEMBER);
+
+    // Boot 1: one turn so the member has a durable session, then shut down
+    // so the next boot starts with the member NON-RESIDENT.
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("seed turn".to_string()),
+            )
+            .await
+            .expect("seed turn");
+        wait_for_turn(&capture, 1, "the seed turn").await;
+        runtime.shutdown().await;
+    }
+
+    // Boot 2: the very first contact is a STEER-mode tracked send - the
+    // steer's own arrival drives materialization (the OB3 shape).
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send_with_mode_and_interaction_tracked(
+                &member,
+                &meerkat_core::ContentInput::Text(format!(
+                    "{MARKER}: if you can read this line, reply with the marker."
+                )),
+                meerkat_core::types::HandlingMode::Steer,
+                Some("test-interaction-steer-nonresident-1"),
+            )
+            .await
+            .expect("the steer into a non-resident member must be admitted");
+        wait_for_turn(&capture, 1, "the steer-driven first turn").await;
+        let last = capture.last().expect("a request was captured");
+        assert!(
+            last.contains(MARKER),
+            "the steer body must reach the first run's request - the field shape lost it \
+             (identity persisted, content empty); request: {last}"
+        );
+        runtime.shutdown().await;
+    }
+}
+
 /// Destroy-deprojection regression (2026-07-31 verdict): deleting an
 /// identity must remove its durable session row along with the continuity
 /// record, and a COLD pod after the delete must not mint, resume, or
