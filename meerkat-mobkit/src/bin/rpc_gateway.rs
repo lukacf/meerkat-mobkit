@@ -6574,19 +6574,24 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                         .get("resume_session_id")
                         .and_then(|v| v.as_str())
                         .is_some();
-                // Apply additional_instructions as system prompt extension -
-                // on MINT builds only. Folding them into an explicit
-                // SystemPromptOverride::Set on a RESUMED build made the
-                // runtime record one assembled System row per boot (the
-                // HomeCore accretion: parent-1 reached 1,294,962 tokens
-                // against a 922,000 ceiling), because an explicit Set at
-                // resume IS new transcript intent by contract. Standing
-                // instructions are per-session build state baked at mint;
-                // a deliberate mid-life change must use the typed
-                // transcript admission, not a build-time fold.
+                // Apply additional_instructions through meerkat's NATIVE
+                // standing-instructions carrier
+                // (SessionBuildOptions.additional_instructions) - on MINT
+                // builds only. The old translation folded them into an
+                // explicit SystemPromptOverride::Set, a transcript-authoring
+                // ruling this layer does not own: an explicit Set at resume
+                // IS new transcript intent by contract, so the runtime
+                // recorded one assembled System row per boot (the HomeCore
+                // accretion: parent-1 reached 1,294,962 tokens against a
+                // 922,000 ceiling). Standing instructions are per-session
+                // build state baked at mint; a deliberate mid-life change
+                // must use the typed transcript admission.
                 if let Some(instructions) = result.get("additional_instructions") {
                     if let Some(arr) = instructions.as_array() {
-                        let combined: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+                        let combined: Vec<String> = arr
+                            .iter()
+                            .filter_map(|v| v.as_str().map(ToString::to_string))
+                            .collect();
                         if !combined.is_empty() {
                             if resumed {
                                 tracing::warn!(
@@ -6596,26 +6601,15 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                                      admission instead)"
                                 );
                             } else {
-                                let extra = combined.join("\n");
-                                use meerkat_core::config::SystemPromptOverride;
-                                modified_req.system_prompt = match &modified_req.system_prompt {
-                                    SystemPromptOverride::Set(existing) => {
-                                        SystemPromptOverride::Set(format!("{existing}\n{extra}"))
-                                    }
-                                    SystemPromptOverride::Inherit => {
-                                        SystemPromptOverride::Set(extra)
-                                    }
-                                    // An explicit Disable suppresses every prompt
-                                    // source; honor it rather than resurrecting a
-                                    // prompt from hook-supplied instructions.
-                                    SystemPromptOverride::Disable => {
-                                        tracing::warn!(
-                                            "callback/build_agent: additional_instructions \
-                                             ignored because system prompt is explicitly disabled"
-                                        );
-                                        SystemPromptOverride::Disable
-                                    }
-                                };
+                                let build = modified_req.build.get_or_insert_with(|| {
+                                    meerkat_core::service::SessionBuildOptions::default()
+                                });
+                                // Merge, preserving instructions another
+                                // customizer already installed.
+                                build
+                                    .additional_instructions
+                                    .get_or_insert_with(Vec::new)
+                                    .extend(combined);
                             }
                         }
                     }
