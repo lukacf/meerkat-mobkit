@@ -1310,6 +1310,60 @@ actions = ["agent.view"]
         assert_eq!(options.max_sessions, 320);
     }
 
+    /// Task #62 (HomeCore field ask): the build callback must carry the
+    /// mint-vs-resume signal so a host can append standing instructions on
+    /// MINT and inherit on RESUME. Measured field gap: both boots printed
+    /// session_id=None resume_session_id=None, so every host composing
+    /// instructions in build_agent silently accreted one durable System row
+    /// per boot.
+    #[test]
+    fn callback_build_agent_options_carry_resume_session_identity() {
+        let resumed_session = meerkat_core::Session::new();
+        let resumed_id = resumed_session.id().to_string();
+        let build = meerkat_core::service::SessionBuildOptions {
+            resume_session: Some(resumed_session),
+            ..Default::default()
+        };
+        let req = CreateSessionRequest {
+            model: "m".to_string(),
+            prompt: meerkat_core::ContentInput::Text("noop".to_string()),
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
+            max_tokens: None,
+            event_tx: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            build: Some(build),
+            labels: None,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
+        };
+
+        let options = callback_build_agent_options(&req, "build-test");
+        assert_eq!(options["resume_session_id"], resumed_id.as_str());
+        assert_eq!(
+            options["session_id"],
+            resumed_id.as_str(),
+            "session identity falls back to the resumed session when labels lack it"
+        );
+
+        let mint_req = CreateSessionRequest {
+            model: "m".to_string(),
+            prompt: meerkat_core::ContentInput::Text("noop".to_string()),
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
+            max_tokens: None,
+            event_tx: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            build: None,
+            labels: None,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
+        };
+        let mint_options = callback_build_agent_options(&mint_req, "build-test");
+        assert!(
+            mint_options["resume_session_id"].is_null(),
+            "a mint build carries no resume identity"
+        );
+    }
+
     #[test]
     fn callback_build_agent_options_include_profile_name_from_spawn_labels() {
         let build = meerkat_core::service::SessionBuildOptions {
@@ -6408,15 +6462,31 @@ fn callback_build_agent_options(req: &CreateSessionRequest, scope_id: &str) -> V
             request_labels
                 .and_then(|labels| labels.get("profile_name").or_else(|| labels.get("role")))
         });
+    // Mint-vs-resume signal (task #62, HomeCore field ask 2026-08-06): a
+    // spawn-level resume is known here via `build.resume_session`, so the
+    // host can honor the System-message contract (append standing
+    // instructions on MINT, inherit on RESUME) instead of inferring
+    // platform state from its own continuity store. `session_id` keeps its
+    // label-sourced semantics but falls back to the resumed session's id,
+    // which is the identity the older restore-path complaint was missing.
+    let resume_session_id = req
+        .build
+        .as_ref()
+        .and_then(|b| b.resume_session.as_ref())
+        .map(|s| s.id().to_string());
     json!({
         "scope_id": scope_id,
-        "session_id": labels.as_ref().and_then(|l| l.get("session_id")),
+        "session_id": labels
+            .as_ref()
+            .and_then(|l| l.get("session_id").cloned())
+            .or_else(|| resume_session_id.clone()),
         "profile_name": profile_name,
         "model": &req.model,
         "prompt": &req.prompt,
         "labels": &labels,
         "app_context": req.build.as_ref()
             .and_then(|b| b.app_context.as_ref()),
+        "resume_session_id": resume_session_id,
     })
 }
 
@@ -6490,29 +6560,63 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                     deferred_prompt_policy: req.deferred_prompt_policy,
                     injected_context: req.injected_context.clone(),
                 };
-                // Apply additional_instructions as system prompt extension
+                // Resume-ness decides the instruction fold below, so resolve
+                // it FIRST: a resume can arrive spawn-level
+                // (build.resume_session already loaded) or be requested by
+                // the Python response (resume_session_id, applied further
+                // down) - both shapes must suppress the fold.
+                let resumed = modified_req
+                    .build
+                    .as_ref()
+                    .and_then(|b| b.resume_session.as_ref())
+                    .is_some()
+                    || result
+                        .get("resume_session_id")
+                        .and_then(|v| v.as_str())
+                        .is_some();
+                // Apply additional_instructions as system prompt extension -
+                // on MINT builds only. Folding them into an explicit
+                // SystemPromptOverride::Set on a RESUMED build made the
+                // runtime record one assembled System row per boot (the
+                // HomeCore accretion: parent-1 reached 1,294,962 tokens
+                // against a 922,000 ceiling), because an explicit Set at
+                // resume IS new transcript intent by contract. Standing
+                // instructions are per-session build state baked at mint;
+                // a deliberate mid-life change must use the typed
+                // transcript admission, not a build-time fold.
                 if let Some(instructions) = result.get("additional_instructions") {
                     if let Some(arr) = instructions.as_array() {
                         let combined: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
                         if !combined.is_empty() {
-                            let extra = combined.join("\n");
-                            use meerkat_core::config::SystemPromptOverride;
-                            modified_req.system_prompt = match &modified_req.system_prompt {
-                                SystemPromptOverride::Set(existing) => {
-                                    SystemPromptOverride::Set(format!("{existing}\n{extra}"))
-                                }
-                                SystemPromptOverride::Inherit => SystemPromptOverride::Set(extra),
-                                // An explicit Disable suppresses every prompt
-                                // source; honor it rather than resurrecting a
-                                // prompt from hook-supplied instructions.
-                                SystemPromptOverride::Disable => {
-                                    tracing::warn!(
-                                        "callback/build_agent: additional_instructions ignored \
-                                         because system prompt is explicitly disabled"
-                                    );
-                                    SystemPromptOverride::Disable
-                                }
-                            };
+                            if resumed {
+                                tracing::warn!(
+                                    "callback/build_agent: additional_instructions ignored on a \
+                                     RESUMED build (resume inherits persisted prompt state; \
+                                     append deliberate System content through the typed \
+                                     admission instead)"
+                                );
+                            } else {
+                                let extra = combined.join("\n");
+                                use meerkat_core::config::SystemPromptOverride;
+                                modified_req.system_prompt = match &modified_req.system_prompt {
+                                    SystemPromptOverride::Set(existing) => {
+                                        SystemPromptOverride::Set(format!("{existing}\n{extra}"))
+                                    }
+                                    SystemPromptOverride::Inherit => {
+                                        SystemPromptOverride::Set(extra)
+                                    }
+                                    // An explicit Disable suppresses every prompt
+                                    // source; honor it rather than resurrecting a
+                                    // prompt from hook-supplied instructions.
+                                    SystemPromptOverride::Disable => {
+                                        tracing::warn!(
+                                            "callback/build_agent: additional_instructions \
+                                             ignored because system prompt is explicitly disabled"
+                                        );
+                                        SystemPromptOverride::Disable
+                                    }
+                                };
+                            }
                         }
                     }
                 }
