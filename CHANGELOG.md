@@ -9,16 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.8.13] - 2026-08-06
 
-Paired release on meerkat 0.8.17 (burst-wake FIFO fix + preserving_live
-audited-history acceptance). Field-driven: every fix below was drilled
-against HomeCore's byte-exact window-4 evidence or OB3's 69-board rig.
+Paired release on meerkat 0.8.18 (burst-wake FIFO fix, preserving_live
+audited-history acceptance, and the first-wake interaction-threaded
+steer-content fix). Field-driven: every fix below was drilled against
+HomeCore's byte-exact window-4 evidence or OB3's 69-board rig, and OB3
+field-accepted the 0.8.18 pairing against this exact branch.
 
 ### Changed
 
-- **Paired on meerkat 0.8.17.** All meerkat crates repin to the published
-  0.8.17 line (both workspace pin sites). This pairing is MANDATORY for
-  the cold-mint graph hydration below: it requires meerkat 0.8.17's
-  preserving_live audited-history acceptance.
+- **Paired on meerkat 0.8.18.** All meerkat crates repin to the published
+  0.8.18 line (both workspace pin sites). This pairing is MANDATORY: the
+  cold-mint graph hydration below requires meerkat's preserving_live
+  audited-history acceptance (0.8.17+), and the console steer path into a
+  not-yet-resident member requires meerkat's first-wake queue-behind-
+  kickoff fix (0.8.18) - the regression pinning it
+  (steer_into_non_resident_member_delivers_content) runs live in this
+  pairing.
 
 ### Fixed
 

@@ -2751,13 +2751,6 @@ async fn reset_after_operator_rewrite_cold_mints_with_graph_authority() {
 /// steer content intact and the residual field loss lives beyond the
 /// bridge admission.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "RED on the released 0.8.17 pair AND on meerkat 0d4b572a: an interaction-THREADED \
-            steer (UUID interaction id, the console's always-UUID shape) loses its body across \
-            materialization while the interaction id survives into the persisted row. A non-UUID \
-            id (not threaded into WorkSpec) delivers intact on the same path, and mobkit hands a \
-            content-intact WorkSpec.with_interaction_id to submit_work_with_mode - the drop is \
-            downstream in the mob first-wake admission of interaction-carrying specs. Un-ignore \
-            when the fix lands; run with --ignored for the 0.7s repro."]
 async fn steer_into_non_resident_member_delivers_content() {
     const MARKER: &str = "STEER-CONTENT-MARKER-15-XRAY";
     if proxied_to_memo_free_child("steer_into_non_resident_member_delivers_content") {
