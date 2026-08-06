@@ -6697,9 +6697,21 @@ impl IdentityRuntime {
                 // break: source-string correlations were tolerated through
                 // the 0.8.15 pair and refused by 0.8.16 identity threading).
                 // Half-pairs below stay typed refusals - structure is still
-                // fail closed; only the VALUE domain is widened.
-                let canonical =
-                    crate::member_comms_id::canonical_correlation_id(correlation_id.as_str());
+                // fail closed; only the VALUE domain is widened, and ONLY
+                // for the app-reachable dispatch origins (Connector, plus
+                // the RPC surface's System default). Code-owned lanes -
+                // Scheduler, Policy, Flow - mint their own canonical UUIDs,
+                // so a non-canonical value there is a defect to refuse
+                // typed (the task #50 matrix), never to mask.
+                let app_lane = matches!(
+                    input.origin,
+                    super::types::DispatchOrigin::Connector | super::types::DispatchOrigin::System
+                );
+                let canonical = if app_lane {
+                    crate::member_comms_id::canonical_correlation_id(correlation_id.as_str())
+                } else {
+                    std::borrow::Cow::Borrowed(correlation_id.as_str())
+                };
                 if canonical.as_ref() != correlation_id.as_str() {
                     tracing::info!(
                         identity = %identity,
