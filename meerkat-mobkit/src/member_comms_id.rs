@@ -396,6 +396,7 @@ pub(crate) fn canonical_correlation_id(correlation_id: &str) -> std::borrow::Cow
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

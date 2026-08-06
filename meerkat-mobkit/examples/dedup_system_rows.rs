@@ -8,7 +8,7 @@
 //!   1. STOP the gateway.
 //!   2. Back up continuity.db (byte copy).
 //!   3. Dry run:  cargo run --example dedup_system_rows -- \
-//!        --db /path/to/continuity.db --session <uuid>
+//!      --db /path/to/continuity.db --session <uuid>
 //!   4. Apply:    ... --apply
 //!   5. Remove the runtime scratch store (runtime.db) so the next boot
 //!      mints runtime authority from the healed durable row (the
