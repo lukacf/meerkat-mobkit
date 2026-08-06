@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.13] - 2026-08-06
+
+Paired release on meerkat 0.8.17 (burst-wake FIFO fix + preserving_live
+audited-history acceptance). Field-driven: every fix below was drilled
+against HomeCore's byte-exact window-4 evidence or OB3's 69-board rig.
+
+### Changed
+
+- **Paired on meerkat 0.8.17.** All meerkat crates repin to the published
+  0.8.17 line (both workspace pin sites). This pairing is MANDATORY for
+  the cold-mint graph hydration below: it requires meerkat 0.8.17's
+  preserving_live audited-history acceptance.
+
+### Fixed
+
+- **Cold mint hydrates the rewrite graph** (HomeCore window-4 fleet
+  blocker): `mint_runtime_authority_from_durable` seeded the runtime
+  WholeBlob from the SLIM durable materialization, so on a REWRITTEN head
+  every boundary projection composed rewrite-shaped state without compact
+  graph authority and the store refused fail-closed ("rewritten session
+  has no validated compact graph authority") - a sanctioned runtime-store
+  reset then wedged every rewritten member in a refuse-retry loop
+  (0 active / 17 broken). The mint now hydrates the graph from the
+  store's own adopted rewrite records before sealing the seed bytes;
+  legacy/import shapes whose records fail reconstruction pre-adoption
+  seed slim as before, loudly. Drill-verified on the byte-exact field
+  corpus: 17/17 mints at exact durable counts, zero refusals, echo turns
+  green (parent-1: 4s/turn on the deduped head, down from 29s).
+- **Broken registrations name their typed reason at warn**: both
+  orchestrator Broken registration sites carried the typed
+  `ContinuityFailure { kind, detail }` only into the roster outcome -
+  never to the log stream - so a warn-baseline gateway saw 17 Broken
+  identities with zero log lines. Each Broken registration now emits one
+  warn line with identity + kind + detail.
+- **App-supplied delivery correlations are canonicalized at the dispatch
+  door** (HomeCore 2h outage on 0.8.12 + meerkat 0.8.16): non-UUID app
+  correlation strings now map deterministically to UUIDv5 under the
+  mobkit delivery namespace instead of drawing typed refusals from the
+  fail-closed delivery-identity matrix; the schedule lane stays strict.
+
+### Added
+
+- **Console WorkGraph graph view**: a Tree|Graph toggle in the workgraph
+  panel rendering a layered DAG (hand-rolled SVG, zero new dependencies)
+  with status-colored nodes, arrowed parent edges, dashed labeled blocks
+  edges, wheel-zoom/drag-pan/fit, click-to-inspect, and a 200-node cap
+  with honest "+N more" overflow on both views. Playwright e2e
+  (`e2e:workgraph`) boots a real console against a seeded fixture and is
+  wired into CI.
+- **Operator surgery helper** `examples/dedup_system_rows.rs`: drops
+  replayed duplicate System rows from a live session's durable transcript
+  through the typed rewrite door - groups by (content, identity), keeps
+  the first occurrence per group, hydrates the rewrite graph from the
+  store's own records, one full-range rewrite commit + authoritative
+  projection. Field-proven in HomeCore window 4 (17/17 applies, parent-1
+  36 -> 4 System rows, heads 80-460KB from 82MB-class documents).
+- **Load representation traces**: `load_persisted_session` and
+  `load_previous_session_for_save` emit representation+count debug lines
+  so a mint-vs-save-guard representation split is attributable from a
+  debug log instead of a store dump.
+
+### Tests
+
+- `reset_after_operator_rewrite_cold_mints_with_graph_authority`:
+  window-5 mirror (operator dedup rewrite -> sanctioned reset -> cold
+  boot -> real turn); red with the byte-exact field refusal pre-fix.
+- `reset_after_repeated_customizer_boots_preserves_exact_counts_and_projects`:
+  multi-boot count faithfulness with 12 seeded field-shape duplicate
+  System rows, exact counts asserted at every hop from durable load to
+  first projection.
+
 ## [0.8.12] - 2026-08-05
 
 ### Changed
