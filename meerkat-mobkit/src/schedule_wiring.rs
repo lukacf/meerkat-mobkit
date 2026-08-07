@@ -2202,7 +2202,14 @@ mod tests {
             .await
             .expect("claim must tolerate the poisoned neighbor (meerkat >= 0.7.19)");
         assert_eq!(
-            claimed.claimed.len(),
+            claimed
+                .transitions
+                .iter()
+                .filter(|commit| matches!(
+                    commit.successor().phase,
+                    meerkat::OccurrencePhase::Claimed
+                ))
+                .count(),
             1,
             "the healthy due occurrence must be claimed despite the poisoned neighbor"
         );

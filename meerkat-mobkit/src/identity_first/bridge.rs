@@ -4217,6 +4217,7 @@ mod tests {
                 session_id: session_id.clone(),
                 reason: meerkat_mob::error::SessionResumeUnavailableReason::Absent,
                 runtime_state: None,
+                verdict: None,
             }
         ));
         // Archived-but-intact carries a transcript: never a fresh respawn.
@@ -4225,6 +4226,7 @@ mod tests {
                 session_id,
                 reason: meerkat_mob::error::SessionResumeUnavailableReason::ArchivedNotRevivable,
                 runtime_state: Some("archived".to_string()),
+                verdict: None,
             }
         ));
         // The wording attack the substring classifier was vulnerable to: an
@@ -4409,6 +4411,7 @@ mod tests {
             session_id: meerkat_core::types::SessionId::new(),
             reason: meerkat_mob::error::SessionResumeUnavailableReason::ArchivedNotRevivable,
             runtime_state: None,
+            verdict: None,
         };
         assert_eq!(
             classify_resume_error(&archived),
@@ -4420,6 +4423,7 @@ mod tests {
             session_id: meerkat_core::types::SessionId::new(),
             reason: meerkat_mob::error::SessionResumeUnavailableReason::Absent,
             runtime_state: None,
+            verdict: None,
         };
         assert_eq!(classify_resume_error(&absent), ResumeRejectionKind::Other);
 

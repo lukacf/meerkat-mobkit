@@ -127,7 +127,7 @@ async fn run() -> Result<i32, Box<dyn std::error::Error>> {
             other => return Err(format!("unknown argument: {other}").into()),
         }
     }
-    let db = db.ok_or("--db <continuity.db> is required")?;
+    let db = db.ok_or("--db <path to the continuity store> is required")?;
     if all_sessions && !sessions.is_empty() {
         return Err("--all-sessions and --session are mutually exclusive".into());
     }
@@ -215,8 +215,8 @@ async fn run() -> Result<i32, Box<dyn std::error::Error>> {
             "mobkit-repair: APPLY COMPLETE - ONE STEP REMAINS BEFORE RESTARTING THE GATEWAY:"
         );
         eprintln!(
-            "mobkit-repair:   remove the runtime scratch store (the runtime.db / runtime.sqlite \
-             file set next to this continuity store)."
+            "mobkit-repair:   remove the runtime scratch store (the file set next to this \
+             continuity store; `rkat storage doctor` names it)."
         );
         eprintln!(
             "mobkit-repair:   It still projects the PRE-repair transcript; the next boot must \

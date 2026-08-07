@@ -3180,6 +3180,29 @@ impl meerkat_core::session_store::IncrementalSessionStore for ContinuityIncremen
         self.inner.load_head(id).await
     }
 
+    /// meerkat 0.8.21 format-door crossing (required, no default). This
+    /// wrapper routes, never converts: the store that OWNS the row performs
+    /// the single-transaction conversion + reverification. Superseded
+    /// sessions present as absent on every read verb here, and the crossing
+    /// contract names absence `NotApplicable`.
+    async fn cross_head_canonical_authority(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<
+        meerkat_core::session_store::HeadCanonicalAuthorityCrossing,
+        meerkat_store::SessionStoreError,
+    > {
+        let _guard = self.adapter.lock_session(id).await;
+        if self.adapter.session_was_superseded(id) {
+            return Ok(meerkat_core::session_store::HeadCanonicalAuthorityCrossing::NotApplicable);
+        }
+        // Deliberately NOT routed through the parked overlay: the park holds
+        // creation-window deltas, never physical format authority. The
+        // crossing classifies and converts the exact stored head in the
+        // owning store, and activation runs before any park can exist.
+        self.inner.cross_head_canonical_authority(id).await
+    }
+
     async fn load_messages(
         &self,
         id: &meerkat_core::types::SessionId,

@@ -5611,17 +5611,19 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MobSessionService for DelayedHistorySessionService {
+        async fn observe_session_resume_authority(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::SessionResumeAuthority, SessionError> {
+            // Test double: truthfully an empty authority bundle (the ephemeral
+            // arm of the meerkat 0.8.21 resume-verdict contract).
+            Ok(meerkat_mob::SessionResumeAuthority::default())
+        }
         async fn prepare_session_for_resume(
             &self,
             session_id: &meerkat_core::types::SessionId,
         ) -> Result<(), meerkat_core::service::SessionError> {
             self.inner.prepare_session_for_resume(session_id).await
-        }
-        async fn materialize_session_for_resume(
-            &self,
-            session_id: &meerkat_core::types::SessionId,
-        ) -> Result<meerkat_mob::ResumeSessionLoad, meerkat_core::service::SessionError> {
-            self.inner.materialize_session_for_resume(session_id).await
         }
 
         async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
