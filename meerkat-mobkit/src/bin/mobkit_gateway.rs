@@ -34,6 +34,7 @@ type ScheduleHostInputs = (
     meerkat_mobkit::schedule_wiring::ScheduleMobTargetRegistry,
     Arc<PersistentSessionService<FactoryAgentBuilder>>,
     PathBuf,
+    meerkat_mobkit::schedule_wiring::ScheduleFiringHostBinding,
 );
 /// WorkGraph wiring from a durable attach: the realm-scoped service, the
 /// tool-plane admission slot the bootstrap spec must register, and the state
@@ -553,6 +554,7 @@ fn build_persistent_session_service(
             tools.mob_target_registry,
             Arc::clone(&service),
             layout.schedule_db(),
+            tools.firing_host_binding,
         )
     });
     // Blob slot resolved fail-closed above (local disk under
@@ -1182,8 +1184,10 @@ async fn run() -> anyhow::Result<()> {
         )?;
         // Pair the schedule wiring with a clone of the runtime adapter so the
         // firing host can be spawned once the runtime has booted (below).
-        let schedule_host_inputs = schedule_host_inputs
-            .map(|(sched, registry, svc, path)| (sched, registry, svc, path, adapter.clone()));
+        let schedule_host_inputs =
+            schedule_host_inputs.map(|(sched, registry, svc, path, binding)| {
+                (sched, registry, svc, path, binding, adapter.clone())
+            });
         let workgraph_service = workgraph.as_ref().map(|(service, _, _)| service.clone());
         // The explicit runtime adapter must share the session service's runtime
         // persistence authority or meerkat 0.7 fails the bootstrap closed.
@@ -1475,6 +1479,7 @@ async fn run() -> anyhow::Result<()> {
         mob_target_registry,
         service,
         schedule_store_path,
+        schedule_firing_host_binding,
         adapter,
     )) = schedule_host_inputs
     {
@@ -1507,7 +1512,7 @@ async fn run() -> anyhow::Result<()> {
             schedule_store_path,
             Default::default(),
         );
-        (
+        let schedule_host =
             meerkat_mobkit::schedule_wiring::spawn_schedule_host_with_identity_runtime(
                 service,
                 adapter,
@@ -1518,9 +1523,21 @@ async fn run() -> anyhow::Result<()> {
                 None,
                 workgraph_service.clone(),
                 runtime_id.clone(),
-            ),
-            Some(watchdog),
-        )
+            );
+        if schedule_host.is_some() {
+            // The firing host now drains the store: firing-intent schedule
+            // writes (create/update/resume) are admissible from here on
+            // (Bug C stopgap — the gate refused them until this point).
+            schedule_firing_host_binding.bind();
+        } else {
+            tracing::warn!(
+                "schedule host failed to spawn over the attached schedule store: \
+                 firing-intent schedule writes (create/update/resume) stay \
+                 refused so schedules cannot be accepted durably and then \
+                 silently never fire"
+            );
+        }
+        (schedule_host, Some(watchdog))
     } else {
         (None, None)
     };

@@ -348,6 +348,109 @@ impl ScheduleMobTargetRegistry {
 pub struct AttachedScheduleTools {
     pub service: ScheduleService,
     pub mob_target_registry: ScheduleMobTargetRegistry,
+    /// Firing-host liveness the write gate consults (Bug C stopgap: no store
+    /// may accept a firing-intent write that no driver drains). Gateway
+    /// compositions start this `pending` and [`ScheduleFiringHostBinding::bind`]
+    /// it once their in-process host spawns; the caller-injected store seam
+    /// starts it `external_driver` because firing responsibility rides with
+    /// the injector and mobkit must not rule on a store it does not own.
+    pub firing_host_binding: ScheduleFiringHostBinding,
+}
+
+/// Shared liveness flag between a schedule-tools attachment and the firing
+/// host that drains its store.
+///
+/// Bug C (2026-07-08) was a schedule write accepted into a store no driver
+/// read: 30 occurrences rotted silently while healthz stayed green. The
+/// mobkit-side stopgap turns that class into a typed refusal at write time:
+/// firing-intent tool verbs (`create`, `update`, `resume`) refuse while the
+/// binding is `pending`. Reads and rot-reducing verbs (`pause`, `delete`,
+/// `get`, `list`, `occurrences`) always pass.
+#[derive(Clone)]
+pub struct ScheduleFiringHostBinding(Arc<std::sync::atomic::AtomicBool>);
+
+impl ScheduleFiringHostBinding {
+    /// An in-process firing host is expected but has not spawned yet.
+    /// Firing-intent writes refuse until [`Self::bind`] is called.
+    pub fn pending_in_process_host() -> Self {
+        Self(Arc::new(std::sync::atomic::AtomicBool::new(false)))
+    }
+
+    /// The store's driver lives outside this process (caller-injected store,
+    /// library mode). Never gates: whether that driver exists is the
+    /// injector's ruling to make, not mobkit's.
+    pub fn external_driver() -> Self {
+        Self(Arc::new(std::sync::atomic::AtomicBool::new(true)))
+    }
+
+    /// Record that a firing host now drains the store.
+    pub fn bind(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn is_bound(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// Schedule tool verbs that create or revive firing intent. These are the
+/// writes that rot when no driver drains the store; everything else either
+/// reads or reduces rot.
+const FIRING_INTENT_SCHEDULE_TOOLS: &[&str] = &[
+    "meerkat_schedule_create",
+    "meerkat_schedule_update",
+    "meerkat_schedule_resume",
+];
+
+/// Write gate over the schedule tool dispatcher: firing-intent verbs refuse
+/// typed while no firing host is bound to the target store.
+struct FiringHostGatedScheduleTools {
+    inner: Arc<dyn meerkat_core::AgentToolDispatcher>,
+    binding: ScheduleFiringHostBinding,
+}
+
+impl FiringHostGatedScheduleTools {
+    fn refusal(&self, name: &str) -> Option<meerkat_core::ToolError> {
+        if !FIRING_INTENT_SCHEDULE_TOOLS.contains(&name) || self.binding.is_bound() {
+            return None;
+        }
+        Some(meerkat_core::ToolError::execution_failed(format!(
+            "{name} refused: no schedule firing host is bound to this store, so the \
+             schedule would be accepted durably and then never fire (this gateway \
+             is running without its schedule host - ephemeral mode or a failed \
+             host spawn). Reads, pause, and delete remain available."
+        )))
+    }
+}
+
+#[async_trait]
+impl meerkat_core::AgentToolDispatcher for FiringHostGatedScheduleTools {
+    fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+        self.inner.tools()
+    }
+
+    async fn dispatch(
+        &self,
+        call: meerkat_core::types::ToolCallView<'_>,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        if let Some(refusal) = self.refusal(call.name) {
+            return Err(refusal);
+        }
+        self.inner.dispatch(call).await
+    }
+
+    async fn dispatch_with_context(
+        &self,
+        call: meerkat_core::types::ToolCallView<'_>,
+        context: &meerkat_core::ToolDispatchContext,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        if let Some(refusal) = self.refusal(call.name) {
+            return Err(refusal);
+        }
+        // Forward AS the context entry point — the trait default drops the
+        // ToolDispatchContext (verified witness-loss class, see tool_compose).
+        self.inner.dispatch_with_context(call, context).await
+    }
 }
 
 type MobSessionResolver = Arc<
@@ -672,7 +775,15 @@ pub fn attach_schedule_tools_with_identity_targets_reporting(
             return Err(format!("{}: {error}", path.display()));
         }
     };
-    Ok(attach_schedule_tools_with_store(builder, Arc::new(store)))
+    // Gateway-owned local store: the only driver that can ever drain it is
+    // this process's schedule host. Firing-intent writes refuse until the
+    // composition marks the host bound (Bug C stopgap) — the alternative is
+    // a durably accepted schedule that silently never fires.
+    Ok(attach_schedule_tools_with_store_and_binding(
+        builder,
+        Arc::new(store),
+        ScheduleFiringHostBinding::pending_in_process_host(),
+    ))
 }
 
 /// Attach the agent-facing schedule tools over a caller-supplied
@@ -687,16 +798,37 @@ pub fn attach_schedule_tools_with_store(
     builder: &FactoryAgentBuilder,
     store: Arc<dyn ScheduleStore>,
 ) -> AttachedScheduleTools {
+    // Caller-injected store (library mode): firing responsibility rides with
+    // the injector — the embedder's own driver, or a gateway pointed at the
+    // same store, drains it. Whether that driver exists is the injector's
+    // ruling; mobkit never gates a store it does not own.
+    attach_schedule_tools_with_store_and_binding(
+        builder,
+        store,
+        ScheduleFiringHostBinding::external_driver(),
+    )
+}
+
+fn attach_schedule_tools_with_store_and_binding(
+    builder: &FactoryAgentBuilder,
+    store: Arc<dyn ScheduleStore>,
+    firing_host_binding: ScheduleFiringHostBinding,
+) -> AttachedScheduleTools {
     let service = ScheduleService::new(store);
     let mob_target_registry = ScheduleMobTargetRegistry::default();
     let dispatcher = MobIdentityScheduleToolDispatcher::new(
         Arc::new(ScheduleToolDispatcher::new(service.clone())),
         mob_target_registry.clone(),
     );
-    meerkat::surface::set_default_schedule_tools(builder, Some(Arc::new(dispatcher)));
+    let gated = FiringHostGatedScheduleTools {
+        inner: Arc::new(dispatcher),
+        binding: firing_host_binding.clone(),
+    };
+    meerkat::surface::set_default_schedule_tools(builder, Some(Arc::new(gated)));
     AttachedScheduleTools {
         service,
         mob_target_registry,
+        firing_host_binding,
     }
 }
 
@@ -1331,6 +1463,104 @@ mod tests {
         assert!(
             dir.path().join(SCHEDULE_STORE_FILE).exists(),
             "the durable store file is created",
+        );
+    }
+
+    /// Bug C stopgap: a gateway-owned store with no spawned firing host must
+    /// refuse firing-intent writes typed instead of accepting rows nothing
+    /// drains (30 occurrences rotted silently in the field). Reads and
+    /// rot-reducing verbs always pass; `bind()` opens the gate.
+    #[tokio::test]
+    async fn firing_intent_writes_refuse_until_a_firing_host_is_bound() {
+        struct CountingInner(std::sync::atomic::AtomicUsize);
+        #[async_trait]
+        impl meerkat_core::AgentToolDispatcher for CountingInner {
+            fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+                Vec::new().into()
+            }
+            async fn dispatch(
+                &self,
+                call: ToolCallView<'_>,
+            ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(meerkat_core::ToolError::not_found(call.name))
+            }
+        }
+
+        let inner = Arc::new(CountingInner(std::sync::atomic::AtomicUsize::new(0)));
+        let binding = ScheduleFiringHostBinding::pending_in_process_host();
+        let gated = FiringHostGatedScheduleTools {
+            inner: Arc::clone(&inner) as Arc<dyn meerkat_core::AgentToolDispatcher>,
+            binding: binding.clone(),
+        };
+        let args = RawValue::from_string("{}".to_string()).expect("raw");
+        let call = |name: &'static str| ToolCallView {
+            id: "call-1",
+            name,
+            args: &args,
+        };
+
+        // Firing-intent verbs refuse while pending and never reach the inner
+        // dispatcher.
+        for verb in FIRING_INTENT_SCHEDULE_TOOLS {
+            let err = gated
+                .dispatch(call(verb))
+                .await
+                .expect_err("pending binding must refuse firing-intent writes");
+            assert!(
+                err.to_string().contains("no schedule firing host is bound"),
+                "refusal must name the missing firing host: {err}"
+            );
+        }
+        assert_eq!(inner.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // Reads and rot-reducing verbs pass through unbound.
+        for verb in [
+            "meerkat_schedule_get",
+            "meerkat_schedule_list",
+            "meerkat_schedule_occurrences",
+            "meerkat_schedule_pause",
+            "meerkat_schedule_delete",
+        ] {
+            let _ = gated.dispatch(call(verb)).await;
+        }
+        assert_eq!(inner.0.load(std::sync::atomic::Ordering::SeqCst), 5);
+
+        // Binding the firing host opens the gate for firing-intent verbs.
+        binding.bind();
+        let _ = gated.dispatch(call("meerkat_schedule_create")).await;
+        assert_eq!(inner.0.load(std::sync::atomic::Ordering::SeqCst), 6);
+    }
+
+    /// The caller-injected store seam (library mode, the OB3 shape) never
+    /// gates: firing responsibility rides with the injector, and ruling on a
+    /// store mobkit does not own is exactly the seam violation the
+    /// dual-authority invariant forbids.
+    #[test]
+    fn caller_injected_store_attaches_ungated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let factory = AgentFactory::new(dir.path());
+        let builder = FactoryAgentBuilder::new(factory, Config::default());
+        let attached =
+            attach_schedule_tools_with_store(&builder, Arc::new(MemoryScheduleStore::default()));
+        assert!(
+            attached.firing_host_binding.is_bound(),
+            "library mode presumes an external driver; the write gate must not engage"
+        );
+    }
+
+    /// The gateway state-dir seam starts pending: writes refuse until the
+    /// composition binds its in-process host.
+    #[test]
+    fn gateway_state_dir_store_attaches_with_a_pending_binding() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let factory = AgentFactory::new(dir.path());
+        let builder = FactoryAgentBuilder::new(factory, Config::default());
+        let attached = attach_schedule_tools_with_identity_targets_reporting(&builder, dir.path())
+            .expect("store opens");
+        assert!(
+            !attached.firing_host_binding.is_bound(),
+            "gateway-owned store must refuse firing-intent writes until its host spawns"
         );
     }
 
