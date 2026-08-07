@@ -253,6 +253,17 @@ impl SessionStore for RegisteringIncremental {
 
 #[async_trait]
 impl IncrementalSessionStore for RegisteringIncremental {
+    // meerkat 0.8.21 format-door crossing: the conformance wrapper only
+    // registers observations; physical format authority belongs to the
+    // wrapped store, so the crossing delegates verbatim.
+    async fn cross_head_canonical_authority(
+        &self,
+        id: &SessionId,
+    ) -> Result<meerkat_core::session_store::HeadCanonicalAuthorityCrossing, SessionStoreError>
+    {
+        self.inner.cross_head_canonical_authority(id).await
+    }
+
     async fn append_messages(
         &self,
         id: &SessionId,
