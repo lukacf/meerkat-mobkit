@@ -383,6 +383,50 @@ fn continuity_db(state: &Path) -> std::path::PathBuf {
         .path
 }
 
+/// The lazy-recall mob with a PROFILE-declared system prompt - the one
+/// configuration shape proven (HomeCore/OB3 field contrast, 2026-08-06) to
+/// re-author one assembled System row per automatic revival on the
+/// 0.8.16-0.8.18 line: the assembled prompt lands in persisted spawn state
+/// at original spawn and the mob-resume AppendExplicit branches re-lower it
+/// as fresh explicit intent on every boot.
+const PROFILE_PROMPT_MOB_TOML: &str = r#"
+[mob]
+id = "lazy-recall-continuity"
+
+[profiles.personal]
+model = "gpt-5.5"
+external_addressable = true
+runtime_mode = "turn_driven"
+system_prompt = "PROFILE-PROMPT-MARKER-16-YANKEE: you are alice."
+
+[profiles.personal.tools]
+comms = true
+"#;
+
+/// `boot` with an explicit definition and NO agent customizer, so a
+/// profile-declared prompt is the only prompt source in play.
+async fn boot_with_definition_no_customizer(
+    state: &Path,
+    capture: CaptureClient,
+    mode: IdentityBootstrapMode,
+    definition: MobDefinition,
+) -> meerkat_mobkit::UnifiedRuntime {
+    let builder = UnifiedRuntimeBuilder::default()
+        .definition(definition)
+        .persistent_state(state)
+        .continuity_from_state_dir(state)
+        .await
+        .expect("open the state-dir identity substrate")
+        .roster_provider(Arc::new(OneMemberRoster))
+        .identity_bootstrap_mode(mode)
+        .identity_runtime_instance_id(RUNTIME_INSTANCE)
+        .comms(true)
+        .default_llm_client(Arc::new(capture));
+    Box::pin(builder.build())
+        .await
+        .expect("build the gateway-shaped UnifiedRuntime")
+}
+
 // ---------------------------------------------------------------------------
 // Precondition probe
 // ---------------------------------------------------------------------------
@@ -2819,6 +2863,342 @@ async fn steer_into_non_resident_member_delivers_content() {
              (identity persisted, content empty); request: {last}"
         );
         runtime.shutdown().await;
+    }
+}
+
+/// THE SHIPPED REPAIR BINARY end to end (task #63): seed field-shape
+/// duplicate System rows, run `mobkit-repair` dry-run then `--apply`
+/// against the stopped store, reset the runtime scratch, and prove the
+/// member resumes with the healed head and its conversation intact - the
+/// window-4/5 operator procedure, driven through the supported binary
+/// instead of the example.
+#[tokio::test(flavor = "multi_thread")]
+async fn mobkit_repair_binary_prunes_duplicates_and_member_resumes() {
+    const TOKEN: &str = "MARKER-REPAIR-BIN-17-ZULU";
+    if proxied_to_memo_free_child("mobkit_repair_binary_prunes_duplicates_and_member_resumes") {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    let member = id(MEMBER);
+
+    // Boot 1: one turn with the recall marker, then shut down.
+    let session_id;
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
+            .await
+            .expect("boot 1's turn");
+        wait_for_turn(&capture, 1, "boot 1's turn").await;
+        runtime.shutdown().await;
+        let (head, _) = wait_for_durable_document_at_least(&state, 2, "boot 1's commit").await;
+        session_id = head;
+    }
+
+    // Seed 12 field-shape duplicate System rows through the typed door.
+    {
+        let continuity: Arc<dyn ContinuityStore> =
+            Arc::new(LocalContinuityStore::open(continuity_db(&state)).expect("open continuity"));
+        let adapter = Arc::new(ContinuitySessionStoreAdapter::new(Arc::clone(&continuity)));
+        let sid = meerkat_core::types::SessionId::parse(&session_id).expect("session id");
+        let (record, fencing_token, fence_current) = continuity
+            .resolve_record_by_session(&sid)
+            .await
+            .expect("resolve record")
+            .expect("record binds session");
+        adapter
+            .register_session(
+                &sid,
+                meerkat_mobkit::identity_first::SessionRuntimeState {
+                    identity: record.identity.clone(),
+                    generation: record.generation,
+                    fencing_token,
+                    checkpoint_version: fence_current,
+                },
+            )
+            .await
+            .expect("register seed writer");
+        let mut with_dups = meerkat::SessionStore::load(adapter.as_ref(), &sid)
+            .await
+            .expect("load")
+            .expect("durable session");
+        for _ in 0..12 {
+            with_dups.push(meerkat_core::Message::System(
+                meerkat_core::types::SystemMessage::new(CUSTOMIZER_PROMPT),
+            ));
+        }
+        meerkat::SessionStore::save(adapter.as_ref(), &with_dups)
+            .await
+            .expect("seed duplicates");
+    }
+    let (_, seeded_count) =
+        wait_for_durable_document_at_least(&state, 0, "the seeded document").await;
+
+    // Dry run through the SHIPPED binary: plan only, durable untouched.
+    let bin = env!("CARGO_BIN_EXE_mobkit_repair");
+    let db = continuity_db(&state);
+    let dry = std::process::Command::new(bin)
+        .args(["--db", db.to_str().expect("db path"), "--all-sessions"])
+        .output()
+        .expect("run mobkit-repair dry-run");
+    assert!(dry.status.success(), "dry-run must exit 0: {dry:?}");
+    let dry_report: serde_json::Value =
+        serde_json::from_slice(&dry.stdout).expect("dry-run emits JSON");
+    assert_eq!(dry_report["mode"], "content_dedup");
+    assert_eq!(dry_report["applied"], false);
+    assert_eq!(dry_report["sessions"][0]["outcome"], "dry_run");
+    assert_eq!(
+        dry_report["sessions"][0]["system_rows_after"],
+        dry_report["sessions"][0]["system_rows_before"]
+            .as_u64()
+            .expect("count")
+            - 11,
+        "12 identical copies collapse to one kept occurrence"
+    );
+    let (_, after_dry) =
+        wait_for_durable_document_at_least(&state, 0, "the document after dry-run").await;
+    assert_eq!(
+        after_dry, seeded_count,
+        "a dry run must not touch the durable row"
+    );
+
+    // Apply through the binary, then the reset-reseed lane.
+    let applied = std::process::Command::new(bin)
+        .args([
+            "--db",
+            db.to_str().expect("db path"),
+            "--all-sessions",
+            "--apply",
+        ])
+        .output()
+        .expect("run mobkit-repair apply");
+    assert!(applied.status.success(), "apply must exit 0: {applied:?}");
+    let applied_report: serde_json::Value =
+        serde_json::from_slice(&applied.stdout).expect("apply emits JSON");
+    assert_eq!(applied_report["sessions"][0]["outcome"], "applied");
+    assert_eq!(applied_report["refused"], 0);
+    let expected_after = seeded_count - 11;
+    let (_, healed) = wait_for_durable_document_at_least(&state, 0, "the healed document").await;
+    assert_eq!(
+        healed, expected_after,
+        "the durable head reflects the applied plan"
+    );
+
+    let mut removed = 0;
+    for suffix in ["", "-wal", "-shm", ".mfence"] {
+        let path = state.join(format!(
+            "{}{suffix}",
+            meerkat_mobkit::storage_layout::RUNTIME_DB_FILE_NAME
+        ));
+        if path.exists() {
+            std::fs::remove_file(&path).expect("reset runtime store");
+            removed += 1;
+        }
+    }
+    assert!(
+        removed > 0,
+        "the persistent shape must have written runtime.sqlite"
+    );
+
+    // Boot 2: cold mint over the healed rewritten head, one real turn.
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+            )
+            .await
+            .expect("the post-repair cold-mint turn must not be refused");
+        wait_for_turn(&capture, 1, "the post-repair turn").await;
+        let last = capture.last().expect("request captured");
+        assert!(
+            last.contains(TOKEN),
+            "the conversation survives the repair (token {TOKEN})"
+        );
+        runtime.shutdown().await;
+        let (_, post) =
+            wait_for_durable_document_at_least(&state, 0, "the post-repair document").await;
+        assert_eq!(
+            post,
+            expected_after + 2,
+            "the turn extends the healed head exactly"
+        );
+    }
+}
+
+/// Profile-prompt revival hygiene (0.8.19 pairing prep, 2026-08-06): a
+/// member whose PROFILE declares a system_prompt, booted repeatedly with a
+/// turn each - automatic rematerialization must author NOTHING beyond each
+/// turn's own messages. MEASURED FINDING: this is ALREADY GREEN on the
+/// 0.8.18 pairing - the identity-first lazy revival and the cold-mint
+/// recovery lane both take PreservePersisted paths (host_materialize) and
+/// do not mint. The field defect (HomeCore parent-1: one assembled row per
+/// boot, 263 copies) therefore lives in resume paths this harness does not
+/// traverse (the mob actor resume AppendExplicit branches, reached through
+/// the gateway's bridge session lanes). This test pins the clean lanes as
+/// STAYING clean across the 0.8.19 contract change (resumed builds force
+/// Inherit); the minting lane needs its own regression at the call site
+/// the meerkat lead's inspection confirms.
+#[tokio::test(flavor = "multi_thread")]
+async fn profile_prompt_revival_authors_no_system_rows() {
+    if proxied_to_memo_free_child("profile_prompt_revival_authors_no_system_rows") {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    let member = id(MEMBER);
+    let definition = || {
+        MobDefinition::from_toml(PROFILE_PROMPT_MOB_TOML)
+            .expect("parse profile-prompt mob definition")
+    };
+
+    // Boot 1: original spawn (the assembled prompt lands in persisted
+    // spawn state here) plus one turn.
+    let session_id;
+    let mut durable_count;
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot_with_definition_no_customizer(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+            definition(),
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("boot 1 turn".to_string()),
+            )
+            .await
+            .expect("boot 1's turn");
+        wait_for_turn(&capture, 1, "boot 1's turn").await;
+        runtime.shutdown().await;
+        let (head, count) = wait_for_durable_document_at_least(&state, 2, "boot 1's commit").await;
+        session_id = head;
+        durable_count = count;
+    }
+
+    // Boots 2 and 3: pure revivals. Any durable growth beyond the turn's
+    // own two messages is revival-authored configuration - the defect.
+    for boot_no in 2i64..=3 {
+        let capture = CaptureClient::default();
+        let runtime = boot_with_definition_no_customizer(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+            definition(),
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text(format!("boot {boot_no} turn")),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("boot {boot_no}'s turn must not be refused: {e}"));
+        wait_for_turn(&capture, 1, "a revival boot's turn").await;
+        wait_for_durable_document_at_least(
+            &state,
+            durable_count + 2,
+            "a revival boot's boundary commit",
+        )
+        .await;
+        runtime.shutdown().await;
+        let (head, count) =
+            wait_for_durable_document_at_least(&state, 0, "the quiescent post-boot document").await;
+        assert_eq!(head, session_id, "revivals must extend the same session");
+        assert_eq!(
+            count,
+            durable_count + 2,
+            "boot {boot_no} authored {} extra durable row(s): automatic rematerialization \
+             re-authored persisted prompt configuration as fresh System input",
+            count - durable_count - 2
+        );
+        durable_count = count;
+    }
+
+    // Sanctioned recovery lane under the same contract: runtime-store
+    // reset, cold mint, one more turn.
+    let mut removed = 0;
+    for suffix in ["", "-wal", "-shm", ".mfence"] {
+        let path = state.join(format!(
+            "{}{suffix}",
+            meerkat_mobkit::storage_layout::RUNTIME_DB_FILE_NAME
+        ));
+        if path.exists() {
+            std::fs::remove_file(&path).expect("reset runtime store");
+            removed += 1;
+        }
+    }
+    assert!(
+        removed > 0,
+        "the persistent shape must have written runtime.sqlite"
+    );
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot_with_definition_no_customizer(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+            definition(),
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("post-reset turn".to_string()),
+            )
+            .await
+            .expect("the cold-mint turn must not be refused");
+        wait_for_turn(&capture, 1, "the cold-mint turn").await;
+        runtime.shutdown().await;
+        let (_, count) =
+            wait_for_durable_document_at_least(&state, 0, "the post-reset document").await;
+        assert_eq!(
+            count,
+            durable_count + 2,
+            "the cold-mint boot must extend the head exactly, authoring nothing"
+        );
     }
 }
 

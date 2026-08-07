@@ -2719,6 +2719,50 @@ impl ContinuityStore for LocalContinuityStore {
 // ---------------------------------------------------------------------------
 
 impl LocalContinuityStore {
+    /// Read-only enumeration of every durable identity → session binding.
+    ///
+    /// Operator-maintenance surface (task #63): the repair binary's
+    /// `--all-sessions` pass needs the fleet's bindings without knowing
+    /// identities up front; each binding then goes through the ordinary
+    /// per-session [`ContinuityStore::resolve_record_by_session`] path, so
+    /// this adds no new write or trust surface.
+    pub async fn list_session_bindings(
+        &self,
+    ) -> Result<Vec<(AgentIdentity, meerkat_core::types::SessionId)>, ContinuityStoreError> {
+        self.run_blocking("list_session_bindings", move |inner| {
+            inner.with_reader(|connection| {
+                let mut stmt = connection
+                    .prepare_cached(
+                        "SELECT identity, session_id FROM continuity_records ORDER BY identity",
+                    )
+                    .map_err(|e| sqlite_err("prepare", e))?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|e| sqlite_err("query", e))?;
+                let mut bindings = Vec::new();
+                for row in rows {
+                    let (identity, session_id) = row.map_err(|e| sqlite_err("row", e))?;
+                    bindings.push((
+                        AgentIdentity::parse(&identity).map_err(|e| {
+                            ContinuityStoreError::Corruption(format!(
+                                "invalid identity in store: {e}"
+                            ))
+                        })?,
+                        meerkat_core::types::SessionId::parse(&session_id).map_err(|e| {
+                            ContinuityStoreError::Corruption(format!(
+                                "invalid session id in store: {e}"
+                            ))
+                        })?,
+                    ));
+                }
+                Ok(bindings)
+            })
+        })
+        .await
+    }
+
     /// Run one delta mutation inside ONE writer transaction that enforces
     /// and advances the continuity cursor — and, on a file that does not
     /// carry the head-canonical channel yet, converges the schema and arms

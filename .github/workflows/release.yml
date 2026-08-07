@@ -181,7 +181,7 @@ jobs:
           # release runner wants the predictable ./target path.) rpc_gateway is the
           # SDK stdin-RPC gateway; mobkit_gateway is the console/HTTP one — SDK
           # users need rpc_gateway, so both ship.
-          cargo build -p meerkat-mobkit --bin mobkit_gateway --bin rpc_gateway \
+          cargo build -p meerkat-mobkit --bin mobkit_gateway --bin rpc_gateway --bin mobkit_repair \
             --release --target "${{ matrix.target }}"
 
       - name: Ad-hoc codesign macOS binaries
@@ -189,7 +189,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for bin in mobkit_gateway rpc_gateway; do
+          for bin in mobkit_gateway rpc_gateway mobkit_repair; do
             codesign --force --sign - "target/${{ matrix.target }}/release/${bin}"
           done
 
@@ -204,7 +204,7 @@ jobs:
           VERSION="${VERSION#v}"; VERSION="${VERSION//\//-}"
           mkdir -p dist
           # cargo bin name -> published archive prefix
-          BINS=("mobkit_gateway:mobkit-gateway" "rpc_gateway:mobkit-rpc-gateway")
+          BINS=("mobkit_gateway:mobkit-gateway" "rpc_gateway:mobkit-rpc-gateway" "mobkit_repair:mobkit-repair")
           for entry in "${BINS[@]}"; do
             bin="${entry%%:*}"; prefix="${entry##*:}"
             if [[ "${RUNNER_OS}" == "Windows" ]]; then
