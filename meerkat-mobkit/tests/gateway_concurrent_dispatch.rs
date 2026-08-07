@@ -9,6 +9,14 @@
 //! The test drives the real binary: it triggers a spawn whose build round-
 //! trips `callback/build_agent`, withholds the callback response, and
 //! asserts an interleaved `mobkit/status` still answers.
+//!
+//! The recall-specific regression goes further: it parks the build of ONE
+//! identity on its unanswered callback and asserts
+//! `mobkit/agent_memory/recall` for that SAME identity still answers through
+//! the full runtime path (identity status read + memory provider). This is
+//! byte-for-byte HomeCore's re-entrancy shape - the host calling back into
+//! the gateway from inside `callback/build_agent` - and it must never queue
+//! behind the parked build.
 
 #![allow(
     clippy::expect_used,
@@ -442,5 +450,161 @@ fn rpc_dispatch_serves_requests_while_a_callback_is_pending() {
     assert!(
         spawn.get("result").is_some() || spawn.get("error").is_some(),
         "spawn response malformed: {spawn}"
+    );
+}
+
+/// Methods `answer_identity_provider_callback` knows how to answer with a
+/// schema-correct result. Everything else gets a `null` acknowledgement so a
+/// new optional callback verb cannot wedge this harness, EXCEPT
+/// `callback/build_agent`, which the recall regression deliberately withholds.
+const KNOWN_PROVIDER_CALLBACKS: &[&str] = &[
+    "callback/roster_provider/roster",
+    "callback/continuity_store/resolve_many",
+    "callback/continuity_store/load_session_snapshot",
+    "callback/continuity_store/delete_session_snapshot_if_current_revision",
+    "callback/continuity_store/save_session_snapshot",
+    "callback/continuity_store/upsert_continuity_record",
+    "callback/continuity_store/delete_continuity_record",
+    "callback/lease_provider/acquire_leases",
+    "callback/lease_provider/renew_leases",
+    "callback/lease_provider/release_leases",
+];
+
+fn answer_provider_callback_holding_builds(
+    gateway: &mut Gateway,
+    message: &Value,
+    release_seen: &Cell<bool>,
+) {
+    let Some(method) = message.get("method").and_then(Value::as_str) else {
+        return;
+    };
+    if method == "callback/build_agent" {
+        return;
+    }
+    if KNOWN_PROVIDER_CALLBACKS.contains(&method) {
+        answer_identity_provider_callback(gateway, message, release_seen);
+        return;
+    }
+    if let Some(id) = message.get("id").cloned() {
+        gateway.send(json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null }));
+    }
+}
+
+/// HomeCore's exact re-entrancy shape (seam inventory row 6): the host calls
+/// `mobkit/agent_memory/recall` from INSIDE a callback the gateway is waiting
+/// on, for the very identity whose build is parked on that callback. The
+/// recall must be served concurrently through the full runtime path
+/// (identity status read + configured memory provider), not queue behind the
+/// parked build until the callback deadline. This is the deadlock that drove
+/// HomeCore to read the memory sqlite directly; it was fixed by the
+/// concurrent dispatch loop (#260) and this test pins the recall path
+/// specifically, locks and all.
+#[test]
+fn agent_memory_recall_answers_while_the_same_identity_build_is_parked() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let scratch_dir = tempfile::tempdir().expect("scratch dir");
+    let mut gateway = Gateway::start();
+    let release_seen = Cell::new(false);
+
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "init",
+        "method": "mobkit/init",
+        "params": {
+            "persistent_state": state_dir.path(),
+            "mob_config": MOB_CONFIG,
+            "has_roster_provider": true,
+            "has_continuity_store": true,
+            "has_lease_provider": true,
+            "has_session_builder": true,
+            "scratch_dir": scratch_dir.path(),
+            "runtime_options": {
+                "demo_llm": true,
+                "agent_memory": true,
+                "identity_bootstrap_mode": { "mode": "lazy_materialize" }
+            }
+        }
+    }));
+    let init = gateway
+        .wait_for(
+            Duration::from_mins(1),
+            |gateway, message| {
+                answer_provider_callback_holding_builds(gateway, message, &release_seen);
+            },
+            |m| is_response_with_id(m, "init"),
+        )
+        .expect("identity-first init response");
+    assert!(
+        init["result"]["contract_version"].is_string(),
+        "identity-first init failed: {init}"
+    );
+
+    // Lazy bootstrap registered agent:alpha without materializing it. This
+    // dispatch triggers the callback-built materialization and parks the
+    // dispatch RPC on the unanswered callback/build_agent.
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "dispatch",
+        "method": "mobkit/dispatch",
+        "params": {
+            "identity": "agent:alpha",
+            "dispatch_input": { "content": "hello", "origin": "connector" }
+        }
+    }));
+    let build_callback = gateway
+        .wait_for(
+            Duration::from_mins(1),
+            |gateway, message| {
+                answer_provider_callback_holding_builds(gateway, message, &release_seen);
+            },
+            |m| is_callback_request(m, "callback/build_agent"),
+        )
+        .expect("callback/build_agent request for agent:alpha");
+    let callback_id = build_callback["id"].clone();
+
+    // THE regression: with agent:alpha's build parked (its lifecycle
+    // authority held across the callback await), recall for that SAME
+    // identity must still answer. A recall that queues behind the build - on
+    // the dispatch loop or on any runtime lock the build holds - times this
+    // wait out.
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "recall",
+        "method": "mobkit/agent_memory/recall",
+        "params": { "identity": "agent:alpha" }
+    }));
+    let recall = gateway
+        .wait_for(
+            Duration::from_secs(15),
+            |gateway, message| {
+                answer_provider_callback_holding_builds(gateway, message, &release_seen);
+            },
+            |m| is_response_with_id(m, "recall"),
+        )
+        .expect("agent_memory/recall must answer while callback/build_agent is pending");
+    assert!(
+        recall["result"]["records"].is_array(),
+        "recall must succeed through the configured memory provider, not \
+         merely fail fast: {recall}"
+    );
+
+    // Unblock the parked build and prove the dispatch was parked, not lost.
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": callback_id,
+        "result": {}
+    }));
+    let dispatch = gateway
+        .wait_for(
+            Duration::from_mins(1),
+            |gateway, message| {
+                answer_provider_callback_holding_builds(gateway, message, &release_seen);
+            },
+            |m| is_response_with_id(m, "dispatch"),
+        )
+        .expect("dispatch response after callback reply");
+    assert!(
+        dispatch.get("result").is_some() || dispatch.get("error").is_some(),
+        "dispatch response malformed: {dispatch}"
     );
 }
