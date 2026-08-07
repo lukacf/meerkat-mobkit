@@ -33,6 +33,14 @@
 //! Output: one JSON report document on stdout (and to `--report <path>` if
 //! given); human progress goes to stderr. Exit code is 0 when every
 //! selected session ended in a non-refused outcome, 1 otherwise.
+//!
+//! Byte semantics (field-misread twice, so stated here and in the report):
+//! `bytes_before`/`bytes_after` measure the live HEAD transcript - the
+//! strand a resume actually serves and the provider actually reads - NOT
+//! the on-disk file. Audited rewrites RETAIN prior strands by design, so
+//! the store file does not shrink after a successful apply; the head does.
+//! This is a head-size repair (provider-input pressure), not a disk-space
+//! repair.
 
 use std::sync::Arc;
 
@@ -67,7 +75,14 @@ struct RepairReport {
     applied: bool,
     sessions: Vec<SessionReport>,
     refused: usize,
+    /// Constant clarifier shipped IN the report because it was misread twice
+    /// in the field: bytes measure the healed HEAD strand, not the file.
+    bytes_semantics: &'static str,
 }
+
+const BYTES_SEMANTICS: &str = "bytes_before/bytes_after measure the live HEAD transcript (what \
+     a resume serves and the provider reads), not the on-disk file: audited rewrites retain \
+     prior strands by design, so the store file does not shrink after apply";
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -176,12 +191,43 @@ async fn run() -> Result<i32, Box<dyn std::error::Error>> {
         applied: apply,
         sessions: reports,
         refused,
+        bytes_semantics: BYTES_SEMANTICS,
     };
     let rendered = serde_json::to_string_pretty(&report)?;
     println!("{rendered}");
     if let Some(path) = report_path {
         std::fs::write(&path, &rendered)?;
         eprintln!("mobkit-repair: report written to {path}");
+    }
+    if apply
+        && report
+            .sessions
+            .iter()
+            .any(|session| session.outcome == "applied")
+    {
+        // Step 5 of the procedure is LOAD-BEARING and easy to skip (called
+        // out by two production operators): the runtime scratch store still
+        // projects the PRE-repair transcript, and a boot that reads it will
+        // serve the bloated head as if the repair never happened. Say it
+        // loudly at the exact moment the operator is about to restart.
+        eprintln!();
+        eprintln!(
+            "mobkit-repair: APPLY COMPLETE - ONE STEP REMAINS BEFORE RESTARTING THE GATEWAY:"
+        );
+        eprintln!(
+            "mobkit-repair:   remove the runtime scratch store (the runtime.db / runtime.sqlite \
+             file set next to this continuity store)."
+        );
+        eprintln!(
+            "mobkit-repair:   It still projects the PRE-repair transcript; the next boot must \
+             mint runtime authority from the healed durable rows (the reset-reseed lane). \
+             Skipping this step makes the repair appear to have not happened."
+        );
+        eprintln!(
+            "mobkit-repair:   Note: the store FILE does not shrink - audited rewrites retain \
+             prior strands; the healed HEAD is what got smaller (see bytes_semantics in the \
+             report)."
+        );
     }
     Ok(i32::from(refused != 0))
 }
