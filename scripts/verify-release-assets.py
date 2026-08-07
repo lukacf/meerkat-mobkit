@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 
-ARCHIVE_PREFIXES = ("mobkit-gateway", "mobkit-rpc-gateway")
+ARCHIVE_PREFIXES = ("mobkit-gateway", "mobkit-rpc-gateway", "mobkit-repair")
 TARGET_ARCHIVES = (
     ("x86_64-unknown-linux-gnu", "tar.gz"),
     ("aarch64-unknown-linux-gnu", "tar.gz"),
