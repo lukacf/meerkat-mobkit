@@ -46,6 +46,22 @@ external_addressable = true
 comms = true
 "#;
 
+/// Same mob, but the profile DECLARES workgraph. Used by the
+/// declared-vs-resolved regression (activation-41): a declared category must
+/// be present on the member's resolved tool surface.
+const MOB_CONFIG_WORKGRAPH: &str = r#"
+[mob]
+id = "gateway-concurrent-dispatch-test"
+
+[profiles.default]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.default.tools]
+comms = true
+workgraph = true
+"#;
+
 struct Gateway {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -488,6 +504,125 @@ fn answer_provider_callback_holding_builds(
     if let Some(id) = message.get("id").cloned() {
         gateway.send(json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null }));
     }
+}
+
+/// Declared-vs-resolved capability invariant, CREATE half (activation-41).
+/// A callback-built member whose profile declares `tools.workgraph = true`
+/// must expose `workgraph_*` on its resolved tool surface when the member is
+/// CREATED (the create path threads profile.tools -> category overrides;
+/// meerkat-mob build.rs:253). The RESUME half is the open upstream defect:
+/// apply_resumed_session_metadata overwrites tool-category overrides from
+/// creation-era metadata.tooling with no resume-override mask (build.rs:472,
+/// profile.rs:260) - a resumed member created before the flag flip never
+/// resolves the category. This test pins the half that works so the upstream
+/// merge has a green baseline, and `mobkit/identity/resolved_tools` is the
+/// instrument both fleets now gate on.
+#[test]
+fn callback_built_member_resolves_declared_workgraph_tools_on_create() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let scratch_dir = tempfile::tempdir().expect("scratch dir");
+    let mut gateway = Gateway::start();
+    let release_seen = Cell::new(false);
+
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "init",
+        "method": "mobkit/init",
+        "params": {
+            "persistent_state": state_dir.path(),
+            "mob_config": MOB_CONFIG_WORKGRAPH,
+            "has_roster_provider": true,
+            "has_continuity_store": true,
+            "has_lease_provider": true,
+            "has_session_builder": true,
+            "scratch_dir": scratch_dir.path(),
+            "runtime_options": {
+                "demo_llm": true,
+                "identity_bootstrap_mode": { "mode": "lazy_materialize" }
+            }
+        }
+    }));
+    let init = gateway
+        .wait_for(
+            Duration::from_mins(1),
+            |gateway, message| {
+                answer_provider_callback_holding_builds(gateway, message, &release_seen);
+            },
+            |m| is_response_with_id(m, "init"),
+        )
+        .expect("identity-first init response");
+    assert!(
+        init["result"]["contract_version"].is_string(),
+        "identity-first init failed: {init}"
+    );
+
+    // Trigger the callback-built materialization (fresh member: CREATE path)
+    // and answer the build callback immediately.
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "dispatch",
+        "method": "mobkit/dispatch",
+        "params": {
+            "identity": "agent:alpha",
+            "dispatch_input": { "content": "hello", "origin": "connector" }
+        }
+    }));
+    let build_callback = gateway
+        .wait_for(
+            Duration::from_mins(1),
+            |gateway, message| {
+                answer_provider_callback_holding_builds(gateway, message, &release_seen);
+            },
+            |m| is_callback_request(m, "callback/build_agent"),
+        )
+        .expect("callback/build_agent request for agent:alpha");
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": build_callback["id"].clone(),
+        "result": {}
+    }));
+    let dispatch = gateway
+        .wait_for(
+            Duration::from_mins(1),
+            |gateway, message| {
+                answer_provider_callback_holding_builds(gateway, message, &release_seen);
+            },
+            |m| is_response_with_id(m, "dispatch"),
+        )
+        .expect("dispatch response after callback reply");
+    assert!(
+        dispatch.get("result").is_some(),
+        "dispatch must succeed so the member is Active with a live session: {dispatch}"
+    );
+
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "tools",
+        "method": "mobkit/identity/resolved_tools",
+        "params": { "identity": "agent:alpha" }
+    }));
+    let resolved = gateway
+        .wait_for(
+            Duration::from_secs(30),
+            |gateway, message| {
+                answer_provider_callback_holding_builds(gateway, message, &release_seen);
+            },
+            |m| is_response_with_id(m, "tools"),
+        )
+        .expect("resolved_tools response");
+    let tools: Vec<String> = resolved["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("resolved_tools must return a tools array: {resolved}"))
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    assert!(
+        tools.iter().any(|name| name.starts_with("workgraph_")),
+        "profile declares tools.workgraph = true, so a CREATED member's \
+         resolved surface must carry workgraph_* (fail-open declared-vs-\
+         resolved divergence, activation-41 class). Resolved: {tools:?}"
+    );
 }
 
 /// HomeCore's exact re-entrancy shape (seam inventory row 6): the host calls
