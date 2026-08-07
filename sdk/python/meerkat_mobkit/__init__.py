@@ -27,6 +27,7 @@ from .jobs import (
 from .identity_first_models import (
     CompletionCursor,
     CompletionProgress,
+    ConsoleIdentityRecord,
     IdentityBootstrapCounts,
     IdentityBootstrapEntry,
     IdentityBootstrapMode,
@@ -212,6 +213,7 @@ __all__ = [
     "IdentityBootstrapCounts",
     "IdentityBootstrapEntry",
     "IdentityBootstrapStatus",
+    "ConsoleIdentityRecord",
     "MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY",
     # Turn-completion identity
     "CompletionCursor",
