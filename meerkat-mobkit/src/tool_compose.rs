@@ -32,14 +32,48 @@ impl ComposedExternalTools {
     /// Compose `primary` over an optional pre-existing dispatcher. With no
     /// fallback this is the identity — callers can use it unconditionally on
     /// the slot they are about to fill.
+    ///
+    /// Name collisions are legal (primary wins) but never silent: a
+    /// pre-installed tool that stops being dispatchable is the same defect
+    /// class as the clobber this type exists to prevent, just scoped to one
+    /// name — and it is exactly how a host tool named `memory` disables the
+    /// agent-memory recorder while every layer still reports the tool
+    /// present.
     pub fn over(
         primary: Arc<dyn AgentToolDispatcher>,
         fallback: Option<Arc<dyn AgentToolDispatcher>>,
     ) -> Arc<dyn AgentToolDispatcher> {
         match fallback {
             None => primary,
-            Some(fallback) => Arc::new(Self { primary, fallback }),
+            Some(fallback) => {
+                let composed = Self { primary, fallback };
+                let shadowed = composed.shadowed_fallback_names();
+                if !shadowed.is_empty() {
+                    tracing::warn!(
+                        shadowed = %shadowed.join(", "),
+                        "external-tool composition shadows pre-installed tools: the \
+                         installing dispatcher wins these names and the pre-installed \
+                         implementations become unreachable. If 'memory' is listed, the \
+                         agent-memory recorder is disabled for this member — rename the \
+                         host tool or disable agent_memory.recorder_tool"
+                    );
+                }
+                Arc::new(composed)
+            }
         }
+    }
+
+    /// Fallback tool names the primary also advertises — present in the
+    /// merged catalog, but their pre-installed implementations are
+    /// unreachable through this composition.
+    fn shadowed_fallback_names(&self) -> Vec<String> {
+        let primary = self.primary.tools();
+        self.fallback
+            .tools()
+            .iter()
+            .filter(|tool| primary.iter().any(|existing| existing.name == tool.name))
+            .map(|tool| tool.name.to_string())
+            .collect()
     }
 
     fn primary_advertises(&self, name: &str) -> bool {
@@ -192,6 +226,31 @@ mod tests {
             1,
             "context calls must not degrade to plain dispatch"
         );
+    }
+
+    #[tokio::test]
+    async fn shadowed_fallback_names_name_exactly_the_unreachable_tools() {
+        // "shared" collides (primary wins, fallback copy unreachable);
+        // "memory" survives untouched. The composition-time warn is driven by
+        // this list, so pinning it pins the observability contract: a host
+        // tool shadowing the agent-memory recorder is loud, never silent.
+        let composed = ComposedExternalTools {
+            primary: Probe::new(vec!["shared", "python_tool"]),
+            fallback: Probe::new(vec!["shared", "memory"]),
+        };
+        assert_eq!(composed.shadowed_fallback_names(), vec!["shared"]);
+
+        let recorder_shadowed = ComposedExternalTools {
+            primary: Probe::new(vec!["memory"]),
+            fallback: Probe::new(vec!["memory"]),
+        };
+        assert_eq!(recorder_shadowed.shadowed_fallback_names(), vec!["memory"]);
+
+        let disjoint = ComposedExternalTools {
+            primary: Probe::new(vec!["python_tool"]),
+            fallback: Probe::new(vec!["memory"]),
+        };
+        assert!(disjoint.shadowed_fallback_names().is_empty());
     }
 
     #[tokio::test]
