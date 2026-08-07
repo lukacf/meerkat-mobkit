@@ -9,22 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.8.13] - 2026-08-06
 
-Paired release on meerkat 0.8.18 (burst-wake FIFO fix, preserving_live
-audited-history acceptance, and the first-wake interaction-threaded
-steer-content fix). Field-driven: every fix below was drilled against
-HomeCore's byte-exact window-4 evidence or OB3's 69-board rig, and OB3
-field-accepted the 0.8.18 pairing against this exact branch.
+Paired release on meerkat 0.8.20 (the direct pairing: 0.8.19's
+resume-authoring fix and 0.8.20's singular input-lane authority ship
+together under one adoption; no intermediate 0.8.19 artifact exists).
+Field-driven: every fix below was drilled against HomeCore's byte-exact
+production corpus or OB3's 69-board rig, and the exact shipping pair
+(this tree + the 0.8.20 release tree) passed the 17-member restore gate,
+the three-boot accretion drill, and a real end-to-end member
+resurrection before tagging.
 
 ### Changed
 
-- **Paired on meerkat 0.8.18.** All meerkat crates repin to the published
-  0.8.18 line (both workspace pin sites). This pairing is MANDATORY: the
-  cold-mint graph hydration below requires meerkat's preserving_live
-  audited-history acceptance (0.8.17+), and the console steer path into a
-  not-yet-resident member requires meerkat's first-wake queue-behind-
-  kickoff fix (0.8.18) - the regression pinning it
-  (steer_into_non_resident_member_delivers_content) runs live in this
-  pairing.
+- **Paired on meerkat 0.8.20.** All meerkat crates repin to the published
+  0.8.20 line (both workspace pin sites). The pairing floor is MANDATORY:
+  cold-mint graph hydration requires preserving_live audited-history
+  acceptance (0.8.17+), the first-wake steer regression requires the
+  queue-behind-kickoff fix (0.8.18+), and resumed builds author no prompt
+  rows under 0.8.19+'s resume contract - all guarded live by this
+  branch's regression suite on the exact pairing.
 
 ### Fixed
 

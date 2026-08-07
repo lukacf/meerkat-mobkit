@@ -183,7 +183,7 @@ async fn run() -> Result<i32, Box<dyn std::error::Error>> {
         std::fs::write(&path, &rendered)?;
         eprintln!("mobkit-repair: report written to {path}");
     }
-    Ok(if refused == 0 { 0 } else { 1 })
+    Ok(i32::from(refused != 0))
 }
 
 /// Repair one session through the typed rewrite door. Every failure is a
