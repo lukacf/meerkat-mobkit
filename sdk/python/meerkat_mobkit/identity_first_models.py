@@ -930,3 +930,40 @@ class IdentityInspection:
             peer_reachable_count=int(data.get("peer_reachable_count", 0)),
             completion_cursor=_completion_cursor_from(data, "completion_cursor"),
         )
+
+
+@dataclass(frozen=True)
+class ConsoleIdentityRecord:
+    """One roster member from ``mobkit/console/list_identities``.
+
+    The typed identity -> (session, profile) map: ``session_id`` is the
+    member's current durable binding and the adopted roster profile rides
+    ``labels`` (``labels["role"]`` in the shipped gateways). This is the
+    supported replacement for reading the continuity store directly.
+    """
+
+    identity: str
+    display_name: str
+    runtime_key: str
+    runtime_member_id: str
+    visibility: str
+    addressable: bool
+    health: str
+    session_id: str | None = None
+    topology_peers: list[str] = field(default_factory=list)
+    labels: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ConsoleIdentityRecord:
+        return cls(
+            identity=data["identity"],
+            display_name=str(data.get("display_name", "")),
+            runtime_key=str(data.get("runtime_key", "")),
+            runtime_member_id=str(data.get("runtime_member_id", "")),
+            visibility=str(data.get("visibility", "")),
+            addressable=bool(data.get("addressable", False)),
+            health=str(data.get("health", "")),
+            session_id=data.get("session_id"),
+            topology_peers=[str(peer) for peer in data.get("topology_peers", [])],
+            labels={str(k): str(v) for k, v in (data.get("labels") or {}).items()},
+        )

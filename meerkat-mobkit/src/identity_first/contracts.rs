@@ -460,6 +460,38 @@ pub trait ContinuityIncrementalSessions: Send + Sync {
         &self,
         id: &meerkat_core::types::SessionId,
     ) -> Result<Vec<meerkat_core::TranscriptRewriteRecord>, meerkat_core::SessionStoreError>;
+
+    /// meerkat 0.8.21 format-door crossing, bridged for continuity stores.
+    ///
+    /// The default performs REAL verification, never a stub: an existing
+    /// head row is rematerialized through the single-snapshot
+    /// [`Self::load_canonical_session`] read and reverified against the
+    /// stored CAS token before `AlreadyCurrent` is minted. Absent and
+    /// blob-canonical sessions return `NotApplicable`, exactly the crossing
+    /// contract's absence arm - the legacy WholeBlob lane is preserved
+    /// unchanged, and physical blob-to-head CONVERSION (the 1.11 crossing)
+    /// remains an explicit per-store implementation, not a default.
+    async fn cross_head_canonical_authority(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<
+        meerkat_core::session_store::HeadCanonicalAuthorityCrossing,
+        meerkat_core::SessionStoreError,
+    > {
+        let Some(head) = self.load_canonical_head(id).await? else {
+            return Ok(meerkat_core::session_store::HeadCanonicalAuthorityCrossing::NotApplicable);
+        };
+        let token = meerkat_core::session_store::session_head_cas_token(&head)?;
+        let session = self
+            .load_canonical_session(id)
+            .await?
+            .ok_or_else(|| meerkat_core::SessionStoreError::NotFound(id.clone()))?;
+        let materialization = head.verify_materialized_session(session)?;
+        meerkat_core::session_store::HeadCanonicalAuthorityCrossing::already_current(
+            materialization,
+            token,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------

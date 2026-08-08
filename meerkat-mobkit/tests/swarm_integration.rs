@@ -154,6 +154,14 @@ impl SessionServiceHistoryExt for CheckpointerCancelProbeSessionService {
 
 #[async_trait::async_trait]
 impl MobSessionService for CheckpointerCancelProbeSessionService {
+    async fn observe_session_resume_authority(
+        &self,
+        _session_id: &meerkat::SessionId,
+    ) -> Result<meerkat_mob::SessionResumeAuthority, meerkat::SessionError> {
+        // Test double: truthfully an empty authority bundle (the ephemeral
+        // arm of the meerkat 0.8.21 resume-verdict contract).
+        Ok(meerkat_mob::SessionResumeAuthority::default())
+    }
     async fn create_session_under_runtime_turn_boundary(
         &self,
         req: CreateSessionRequest,

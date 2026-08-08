@@ -737,6 +737,73 @@ class MobKitRuntime:
         di = DispatchInput(content=text, origin=origin, correlation_id=correlation_id)
         return await self.dispatch(identity, di)
 
+    async def list_identities(self) -> list[Any]:
+        """Typed roster listing via ``mobkit/console/list_identities``.
+
+        One call returns every roster member as a
+        :class:`~meerkat_mobkit.identity_first_models.ConsoleIdentityRecord`:
+        ``identity``, current ``session_id`` binding, ``labels`` (the adopted
+        roster profile rides ``labels["role"]`` in the shipped gateways),
+        addressability and health. This is the supported identity ->
+        (session, profile) map; hosts must not read the continuity store
+        directly for it.
+
+        Served over the gateway's console HTTP surface, so it requires
+        ``rust_http_base_url`` (available once the gateway is started).
+        Call it OUTSIDE build/tool callbacks (once around boot/reconcile,
+        cached) rather than per member build.
+        """
+        from .identity_first_models import ConsoleIdentityRecord
+
+        raw = await self._console_rpc("mobkit/console/list_identities", {})
+        records = raw.get("identities", []) if isinstance(raw, dict) else []
+        return [
+            ConsoleIdentityRecord.from_dict(record)
+            for record in records
+            if isinstance(record, dict)
+        ]
+
+    async def _console_rpc(self, method: str, params: dict[str, Any]) -> Any:
+        """One JSON-RPC call over the gateway's console HTTP route."""
+        base = self.rust_http_base_url
+        if not base:
+            raise NotConnectedError(
+                f"{method} is served over the console HTTP surface and requires "
+                "rust_http_base_url; start the gateway or call "
+                "runtime.set_rust_http_base('http://127.0.0.1:8081')"
+            )
+        request_id = _next_request_id(method)
+        payload = _rpc_request(request_id, method, params)
+        req = urllib_request.Request(
+            base.rstrip("/") + "/console/rpc",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "content-type": "application/json",
+                "accept": "application/json",
+            },
+        )
+
+        def _post() -> str:
+            with urllib_request.urlopen(req) as response:
+                return response.read().decode("utf-8", errors="replace")
+
+        try:
+            response_text = await asyncio.to_thread(_post)
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise TransportError(
+                f"console RPC {method} failed (status={exc.code}): {detail}"
+            ) from exc
+        except URLError as exc:
+            raise TransportError(f"console RPC {method} failed: {exc.reason}") from exc
+        response = json.loads(response_text)
+        if "error" in response:
+            raise _rpc_error_from_payload(
+                response["error"], request_id=request_id, method=method
+            )
+        return response.get("result")
+
     async def subscribe(self, identity: str) -> Any:
         """Subscribe to identity-scoped events."""
         raw = await self._rpc("mobkit/subscribe", {"identity": identity})

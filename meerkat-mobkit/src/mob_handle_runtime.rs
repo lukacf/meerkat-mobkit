@@ -4259,11 +4259,19 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<(), SessionError> {
                 self.inner.prepare_session_for_resume(session_id).await
             }
-            async fn materialize_session_for_resume(
+            // meerkat 0.8.21: the operational resume entry is the provided
+            // `materialize_session_resume_verdict`, composed from THIS
+            // wrapper's `load_session_for_resume` (so the archived-terminal
+            // overlay still applies) plus the delegated authority
+            // observation below. Delegating the verdict itself to `inner`
+            // would silently bypass the overlay.
+            async fn observe_session_resume_authority(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
-            ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
-                self.inner.materialize_session_for_resume(session_id).await
+            ) -> Result<meerkat_mob::SessionResumeAuthority, SessionError> {
+                self.inner
+                    .observe_session_resume_authority(session_id)
+                    .await
             }
 
             async fn create_session_under_runtime_turn_boundary(
@@ -5000,11 +5008,16 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<(), SessionError> {
         self.inner.prepare_session_for_resume(session_id).await
     }
-    async fn materialize_session_for_resume(
+    // meerkat 0.8.21: operational resume rides the provided
+    // `materialize_session_resume_verdict` default over this wrapper's own
+    // load/observe pair; only the authority observation delegates.
+    async fn observe_session_resume_authority(
         &self,
         session_id: &meerkat_core::types::SessionId,
-    ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
-        self.inner.materialize_session_for_resume(session_id).await
+    ) -> Result<meerkat_mob::SessionResumeAuthority, SessionError> {
+        self.inner
+            .observe_session_resume_authority(session_id)
+            .await
     }
 
     async fn create_session_under_runtime_turn_boundary(
@@ -9150,6 +9163,14 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+        async fn observe_session_resume_authority(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::SessionResumeAuthority, SessionError> {
+            // Test double: truthfully an empty authority bundle (the ephemeral
+            // arm of the meerkat 0.8.21 resume-verdict contract).
+            Ok(meerkat_mob::SessionResumeAuthority::default())
+        }
         async fn prepare_session_for_resume(
             &self,
             _session_id: &meerkat_core::types::SessionId,
@@ -9474,6 +9495,14 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        async fn observe_session_resume_authority(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::SessionResumeAuthority, SessionError> {
+            // Test double: truthfully an empty authority bundle (the ephemeral
+            // arm of the meerkat 0.8.21 resume-verdict contract).
+            Ok(meerkat_mob::SessionResumeAuthority::default())
+        }
         async fn prepare_session_for_resume(
             &self,
             _session_id: &meerkat_core::types::SessionId,

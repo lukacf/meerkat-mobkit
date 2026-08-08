@@ -7563,6 +7563,7 @@ external_addressable = true
                 Arc::clone(&concrete_service),
                 adapter.clone(),
                 storage_layout.schedule_db(),
+                tools.firing_host_binding,
             )
         });
         // §8.6 Hygienist apply seam: the CONCRETE service implements
@@ -8770,6 +8771,7 @@ external_addressable = true
         service,
         adapter,
         schedule_store_path,
+        schedule_firing_host_binding,
     )) = schedule_host_inputs
     {
         let mob_state = runtime.mob_runtime().agent_mob_mcp_state();
@@ -8846,7 +8848,7 @@ external_addressable = true
             schedule_store_path,
             Default::default(),
         );
-        (
+        let schedule_host =
             meerkat_mobkit::schedule_wiring::spawn_schedule_host_with_identity_runtime(
                 service,
                 adapter,
@@ -8857,9 +8859,21 @@ external_addressable = true
                 runnable_host,
                 workgraph_service.clone(),
                 schedule_owner_id.clone(),
-            ),
-            Some(watchdog),
-        )
+            );
+        if schedule_host.is_some() {
+            // The firing host now drains the store: firing-intent schedule
+            // writes (create/update/resume) are admissible from here on
+            // (Bug C stopgap — the gate refused them until this point).
+            schedule_firing_host_binding.bind();
+        } else {
+            tracing::warn!(
+                "schedule host failed to spawn over the attached schedule store: \
+                 firing-intent schedule writes (create/update/resume) stay \
+                 refused so schedules cannot be accepted durably and then \
+                 silently never fire"
+            );
+        }
+        (schedule_host, Some(watchdog))
     } else {
         if !gateway_options.host_runnables.is_empty() {
             tracing::warn!(
