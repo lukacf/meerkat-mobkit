@@ -814,6 +814,40 @@ fn print_migrate_report_text(report: &meerkat_mobkit::MobKitMigrateReport) {
         report.state_dir.display(),
         report.fenced_databases.len()
     );
+    if let Some(backfill) = &report.head_canonical_backfill {
+        // The head-canonical crossing is the one irreversible thing this verb
+        // does, so its outcome is printed before anything else and states
+        // explicitly whether the ledger advanced.
+        println!(
+            "head-canonical backfill: {} converted of {} pending",
+            backfill.converted.len(),
+            backfill.pending_before
+        );
+        if !backfill.skipped_unparseable.is_empty() {
+            println!(
+                "  skipped {} malformed blob row(s) (never convertible; not blocking)",
+                backfill.skipped_unparseable.len()
+            );
+        }
+        for (session_id, failure) in &backfill.failures {
+            if session_id.is_empty() {
+                println!("  REFUSED: {failure}");
+            } else {
+                println!("  FAILED {session_id}: {failure}");
+            }
+        }
+        if backfill.ledger_stamped {
+            println!(
+                "  ledger STAMPED v2 - the corpus is wholly head-canonical; \
+                 rollback to a pre-head-canonical release is no longer possible"
+            );
+        } else if backfill.applied {
+            println!(
+                "  ledger LEFT AT v1 - the crossing is incomplete, so rollback \
+                 remains available; re-run to resume"
+            );
+        }
+    }
     for twin in &report.twins {
         println!("twin [{}]:", twin.slot);
         for path in &twin.paths {

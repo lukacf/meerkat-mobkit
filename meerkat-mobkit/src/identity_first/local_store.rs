@@ -116,7 +116,12 @@ pub const HEAD_CANONICAL_SCHEMA_VERSION: i64 = 2;
 /// only once a head row exists, so it is committed at exactly two moments:
 /// by a delta write that actually creates head state (armed inside that
 /// write's own transaction, so a REFUSED write leaves the file at v1), and
-/// by explicit operator action (`storage-migrate --apply`). Merely
+/// by explicit operator action (`storage-migrate --apply`) — which stamps
+/// only AFTER [`LocalContinuityStore::backfill_head_canonical_sessions_at`]
+/// has given every legacy blob a head row. Until 0.8.16 that second moment
+/// stamped unconditionally while converting nothing, so an operator paid the
+/// whole one-way cost and received an unconverted corpus; the stamp now
+/// rides on complete conversion and a partial crossing stays at v1. Merely
 /// launching a new gateway leaves rollback to the previous release intact.
 pub(crate) const MOBKIT_CONTINUITY_DOMAIN: meerkat_sqlite::SchemaDomain =
     meerkat_sqlite::SchemaDomain {
@@ -759,16 +764,14 @@ impl LocalContinuityStore {
             meerkat_sqlite::open(path.as_ref(), meerkat_sqlite::ConnectionProfile::PRIMARY)
                 .map_err(|e| mechanics_err("open writer for head-canonical backfill", e))?;
 
-        let pending = pending_head_canonical_sessions(&conn)?;
+        let (pending, unparseable) = pending_head_canonical_sessions(&conn)?;
         let mut report = HeadCanonicalBackfillReport {
             pending_before: pending.len(),
             applied: apply,
+            skipped_unparseable: unparseable,
             ..HeadCanonicalBackfillReport::default()
         };
-        if !apply || pending.is_empty() {
-            // Nothing to stamp on an empty pending set either: a corpus with
-            // no legacy blobs is not "converted by this run", and claiming
-            // otherwise would let an empty run advance the ledger.
+        if !apply {
             return Ok(report);
         }
 
@@ -797,13 +800,17 @@ impl LocalContinuityStore {
             }
         }
 
-        // Stamp ONLY when the corpus is wholly across. Any failure, or any
-        // session that disappeared mid-run, leaves the file at v1.
+        // Stamp ONLY when the corpus is wholly across — which includes a
+        // corpus that had nothing to convert. The stamp means "no legacy
+        // blob is left unconverted", not "this run did work"; withholding it
+        // from an already-clean corpus would strand such a file at v1
+        // forever. Any failure, or any session that disappeared mid-run,
+        // leaves the file at v1 and rollback available.
         if report.failures.is_empty()
             && report.vanished.is_empty()
             && report.converted.len() == report.pending_before
         {
-            let remaining = pending_head_canonical_sessions(&conn)?;
+            let (remaining, _) = pending_head_canonical_sessions(&conn)?;
             if remaining.is_empty() {
                 let tx = conn
                     .transaction()
@@ -4472,7 +4479,11 @@ mod tests {
             .expect("count blobs");
         assert_eq!(blobs, 1, "the legacy blob must be retained as an archive");
 
-        // ---- re-running is idempotent and does not re-stamp ----
+        // ---- re-running is idempotent ----
+        // The stamp asserts "no legacy blob is left unconverted", not "this
+        // run did work", so a second run re-affirms it as a no-op rather than
+        // withholding it. What must NOT happen is re-converting a session or
+        // duplicating its head row.
         let again = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true)
             .expect("second apply");
         assert_eq!(
@@ -4480,9 +4491,12 @@ mod tests {
             "already-converted session re-listed"
         );
         assert!(
-            !again.ledger_stamped,
-            "an empty run must not claim to have stamped"
+            again.converted.is_empty(),
+            "re-converted an already-converted session"
         );
+        assert!(again.failures.is_empty(), "{:?}", again.failures);
+        assert_eq!(head_row_count(&path), 1, "second run duplicated head rows");
+        assert_eq!(continuity_domain_version(&path), Some(2));
     }
 
     #[test]
@@ -5777,7 +5791,7 @@ pub(crate) struct PendingLegacySession {
 /// `converted.len() == pending_before` with empty `failures`/`vanished` is
 /// the only shape that stamps the ledger; every other shape leaves the file
 /// at v1 and rollback available.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HeadCanonicalBackfillReport {
     /// Sessions holding a legacy blob with no head row, before the run.
     pub pending_before: usize,
@@ -5787,6 +5801,11 @@ pub struct HeadCanonicalBackfillReport {
     pub vanished: Vec<String>,
     /// `(session_id, error)`; an empty session id is a run-level refusal.
     pub failures: Vec<(String, String)>,
+    /// Blob rows whose session id or identity is not well formed. These
+    /// were never convertible and do NOT block the ledger stamp; they are
+    /// surfaced so an operator sees the garbage rather than inheriting it
+    /// silently.
+    pub skipped_unparseable: Vec<String>,
     /// True only when the whole corpus crossed in this run.
     pub ledger_stamped: bool,
     /// False for a dry run, which mutates nothing including the DDL.
@@ -5810,7 +5829,7 @@ impl HeadCanonicalBackfillReport {
 /// count without applying the DDL first.
 fn pending_head_canonical_sessions(
     conn: &Connection,
-) -> Result<Vec<PendingLegacySession>, ContinuityStoreError> {
+) -> Result<(Vec<PendingLegacySession>, Vec<String>), ContinuityStoreError> {
     let heads_exist: bool = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='continuity_session_heads'",
@@ -5844,10 +5863,23 @@ fn pending_head_canonical_sessions(
         })
         .map_err(|e| sqlite_err("query pending legacy sessions", e))?;
     let mut pending = Vec::new();
+    let mut unparseable = Vec::new();
     for row in rows {
-        pending.push(row.map_err(|e| sqlite_err("read pending legacy session", e))?);
+        let row = row.map_err(|e| sqlite_err("read pending legacy session", e))?;
+        // A row whose session id or identity is not well formed was never a
+        // mobkit session and can never be converted by anything. Treating it
+        // as a conversion FAILURE would block the ledger stamp permanently
+        // and strand an otherwise-healthy corpus over one piece of garbage,
+        // so it is surfaced separately and excluded from the pending set.
+        let parseable = meerkat_core::types::SessionId::parse(&row.session_id).is_ok()
+            && AgentIdentity::parse(&row.identity).is_ok();
+        if parseable {
+            pending.push(row);
+        } else {
+            unparseable.push(row.session_id);
+        }
     }
-    Ok(pending)
+    Ok((pending, unparseable))
 }
 
 /// Convert one legacy blob session in its own transaction.
