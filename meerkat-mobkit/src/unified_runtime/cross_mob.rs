@@ -16,8 +16,9 @@ use super::UnifiedRuntime;
 /// (registered via `register_peer_mob`) or a [`RemoteMobProxy`] for
 /// peers reachable over TCP/UDS.
 ///
-/// Phase 1 wires the structural seam — see `runtime/cross_mob_remote.rs`
-/// for the Phase 2 plan that fills in real cross-process control RPC.
+/// The remote arm speaks the cross-process control protocol; see
+/// `runtime/cross_mob_remote.rs` for the client and
+/// `runtime/cross_mob_control.rs` for the wire shape and the listener.
 enum LocalOrRemote {
     /// Same-process peer with its member plane and optional identity authority.
     Local(Box<PeerMobAuthority>),
@@ -150,10 +151,10 @@ pub enum CrossMobError {
     /// are part of the physical edge: without them a structurally wired peer
     /// cannot receive messages across isolated mob realms.
     InprocAlias(String),
-    /// A cross-process control-channel call failed. Phase 1 returns this
-    /// for any TCP/UDS contact entry that does not also have an
-    /// in-process `MobHandle` registered — the seam is laid out, the
-    /// real client lands in Phase 2.
+    /// A cross-process control-channel call failed: the peer gateway is
+    /// unreachable, has no control listener bound, or rejected the
+    /// request. The inner error carries the endpoint and the peer's
+    /// rejection code when one was returned.
     Remote(RemoteMobError),
 }
 
@@ -1290,8 +1291,8 @@ impl UnifiedRuntime {
     /// The destination mob is dispatched as either [`LocalOrRemote::Local`]
     /// (when an `Arc<MobHandle>` was registered via [`Self::register_peer_mob`])
     /// or [`LocalOrRemote::Remote`] (when only a contact-directory TCP/UDS
-    /// entry exists). Phase 1 ships the structural seam; Phase 2 wires the
-    /// real cross-process control RPC — see
+    /// entry exists). The remote arm performs real cross-process control
+    /// RPC against the peer gateway's control listener - see
     /// `runtime::cross_mob_remote::RemoteMobProxy`.
     pub async fn wire_cross_mob(
         &self,
@@ -1987,12 +1988,14 @@ fn build_external_peer_spec(
     }
 }
 
-/// Build a TCP peer descriptor.
+/// Build an UNSIGNED TCP peer descriptor (test/fixture helper).
 ///
-/// Uses the comms-layer address scheme `tcp://host:port`. **Phase-1 seam**:
-/// goes through [`TrustedPeerDescriptor::test_only_unsigned`]. Callers
-/// that need a real signed descriptor (Ed25519-stamped) should construct
-/// it via [`build_external_peer_spec`] with an explicit pubkey instead.
+/// Uses the comms-layer address scheme `tcp://host:port` and goes through
+/// [`TrustedPeerDescriptor::test_only_unsigned`], so the result carries no
+/// pubkey and is rejected by every fail-closed wire path in this module.
+/// Production callers get signed descriptors from the wire/lookup flow
+/// (which routes through [`build_external_peer_spec`] with a real pubkey);
+/// this helper exists for tests that assert address canonicalization.
 pub fn build_tcp_peer_spec(
     comms_name: &str,
     peer_id: &str,
@@ -2002,11 +2005,11 @@ pub fn build_tcp_peer_spec(
         .map_err(CrossMobError::PeerSpec)
 }
 
-/// Build a UDS peer descriptor.
+/// Build an UNSIGNED UDS peer descriptor (test/fixture helper).
 ///
-/// Uses the comms-layer address scheme `uds:///path` (triple slash —
-/// `uds://` + absolute path). See [`build_tcp_peer_spec`] for the
-/// Phase-1 vs signed-descriptor seam note.
+/// Uses the comms-layer address scheme `uds:///path` (triple slash -
+/// `uds://` + absolute path). See [`build_tcp_peer_spec`] for why this
+/// stays unsigned and what production callers use instead.
 pub fn build_uds_peer_spec(
     comms_name: &str,
     peer_id: &str,

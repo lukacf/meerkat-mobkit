@@ -1,16 +1,15 @@
-//! Cross-mob control protocol — Phase 2 of the cross-mob transport story.
+//! Cross-mob control protocol: the control-plane RPC that crosses
+//! processes.
 //!
-//! Phase 1 (sibling commit) wired the structural seam (`RemoteMobProxy`,
-//! `LocalOrRemote` dispatch, contact-directory transport awareness). Phase
-//! 2 (this module) ships the actual control-plane RPC that crosses
-//! processes:
-//!
-//! * `ControlRequest` / `ControlResponse` — the on-the-wire types.
-//! * [`serve_control_listener`] — accepts TCP/UDS connections on a gateway,
-//!   reads framed requests, dispatches them against a local
-//!   [`MobHandle`] / [`MobSessionService`], and writes back framed responses.
-//! * [`RemoteControlClient`] — opens a connection lazily, sends a single
-//!   request, reads the response. Used by [`super::cross_mob_remote::RemoteMobProxy`].
+//! * `ControlRequest` / `ControlResponse` - the on-the-wire types.
+//! * [`serve_tcp_control`] / [`serve_uds_control`] - accept connections on
+//!   a gateway's control listener, read framed requests, dispatch them
+//!   against a local mob via a [`ControlHandler`], and write back framed
+//!   responses. `UnifiedRuntime::start_control_listener` binds the
+//!   listener and spawns the serve task.
+//! * [`RemoteControlClient`] - opens a connection per request, sends a
+//!   single frame, reads the response. Used by
+//!   [`super::cross_mob_remote::RemoteMobProxy`].
 //!
 //! # Wire shape
 //!
@@ -171,10 +170,10 @@ pub struct RemoteControlClient;
 impl RemoteControlClient {
     /// Send `request` to `endpoint`, await one response, and return it.
     ///
-    /// Opens a fresh connection per request — control RPC frequency is
+    /// Opens a fresh connection per request - control RPC frequency is
     /// low (one message per wire/unwire/inject call) and lazy-reconnect
-    /// keeps the implementation simple. Phase 3 (post-this-PR) can pool
-    /// connections if profiling shows it matters.
+    /// keeps the implementation simple. Connection pooling can come later
+    /// if profiling ever shows it matters.
     pub async fn send(
         endpoint: &RemoteEndpoint,
         request: &ControlRequest,
@@ -270,8 +269,9 @@ pub trait ControlHandler: Send + Sync + 'static {
 }
 
 /// Real `ControlHandler` that dispatches requests against a local
-/// `MobHandle`. Constructed by `UnifiedRuntime::from_parts` when the
-/// contact directory advertises a TCP/UDS endpoint for this gateway.
+/// `MobHandle`. Constructed by `UnifiedRuntime::start_control_listener`
+/// when a control listener is configured (builder `control_listen()` or
+/// the mobkit_gateway `--control-listen` flag).
 pub struct MobHandleControlHandler {
     handle: meerkat_mob::MobHandle,
     identity_runtime: Option<std::sync::Arc<crate::identity_first::IdentityRuntime>>,
