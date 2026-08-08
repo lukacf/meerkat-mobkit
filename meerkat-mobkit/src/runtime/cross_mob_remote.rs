@@ -164,6 +164,26 @@ impl RemoteEndpoint {
     }
 }
 
+/// Comms facts for a remote member, as returned by the peer gateway's
+/// `LookupMember` control operation.
+///
+/// `pubkey_b64` and `advertised_address` are `None` when the peer gateway
+/// could not resolve them (member without a comms runtime, or a control
+/// handler running without session-service access). Remote wiring fails
+/// closed on either absence: a descriptor without the member's own
+/// transport key or a dialable socket address can never deliver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteMemberInfo {
+    pub peer_id: String,
+    pub comms_name: String,
+    /// The member's transport pubkey (base64, optional `ed25519:` prefix).
+    pub pubkey_b64: Option<String>,
+    /// The member's dialable envelope-listener address (`tcp://host:port`,
+    /// `uds:///path`) or `inproc://name` for members without a socket
+    /// transport.
+    pub advertised_address: Option<String>,
+}
+
 /// A proxy for a mob that lives in a different process.
 ///
 /// Every method opens a control connection to the peer gateway's
@@ -315,13 +335,13 @@ impl RemoteMobProxy {
         }
     }
 
-    /// Look up a remote member's peer info via the control channel.
+    /// Look up a remote member's comms facts via the control channel.
     /// Used during `wire_cross_mob` to discover what `TrustedPeerDescriptor`
     /// to build for the local-side wire without caller-supplied bookkeeping.
     pub async fn lookup_member(
         &self,
         remote_member: &str,
-    ) -> Result<(String, String), RemoteMobError> {
+    ) -> Result<RemoteMemberInfo, RemoteMobError> {
         let request = super::cross_mob_control::ControlRequest::LookupMember {
             remote_member: remote_member.to_string(),
         };
@@ -336,7 +356,14 @@ impl RemoteMobProxy {
             super::cross_mob_control::ControlResponse::Member {
                 peer_id,
                 comms_name,
-            } => Ok((peer_id, comms_name)),
+                pubkey_b64,
+                advertised_address,
+            } => Ok(RemoteMemberInfo {
+                peer_id,
+                comms_name,
+                pubkey_b64,
+                advertised_address,
+            }),
             super::cross_mob_control::ControlResponse::Err { code, message } => {
                 Err(RemoteMobError::Rejected {
                     mob_id: self.mob_id.clone(),

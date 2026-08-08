@@ -206,12 +206,40 @@ pub enum ControlRequest {
 pub enum ControlResponse {
     /// Operation succeeded (no payload).
     Ok,
-    /// Inject succeeded — return the bridge session id that accepted the
-    /// injection so the caller can correlate downstream events.
+    /// Inject succeeded - the far side admitted the dispatch and returns
+    /// the bridge session id that accepted it, so the caller can correlate
+    /// downstream events.
+    ///
+    /// This is NOT a durability receipt. It classifies as dispatch
+    /// admission only: the receiving runtime accepted the turn into the
+    /// named session, and whether that turn commits durably is the
+    /// receiving runtime's business. Coarse transport ACKs (this response
+    /// included) must never be inferred as durable=true. Callers that need
+    /// durable admission over remote paths reconcile by idempotent
+    /// re-submit with WorkRef dedup - the protocol deliberately has no
+    /// resend verb.
     Injected { session_id: String },
-    /// LookupMember succeeded — return the remote member's peer info so
-    /// the caller can build a `TrustedPeerDescriptor` pointing at it.
-    Member { peer_id: String, comms_name: String },
+    /// LookupMember succeeded - return the remote member's comms facts so
+    /// the caller can build a signed `TrustedPeerDescriptor` pointing at
+    /// it.
+    Member {
+        peer_id: String,
+        comms_name: String,
+        /// The member's transport pubkey as the roster carries it (base64,
+        /// optional `ed25519:` prefix). `None` when the member has no
+        /// comms runtime. Descriptors for this member MUST use this key:
+        /// the peer-id/pubkey consistency check rejects any other (the
+        /// gateway key included).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pubkey_b64: Option<String>,
+        /// The member's dialable envelope-listener address as its live
+        /// comms runtime advertises it (`tcp://host:port` with the real
+        /// bound port, `uds:///path`, or `inproc://name` for members
+        /// without a socket transport). `None` when the serving gateway's
+        /// control handler has no session-service access.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        advertised_address: Option<String>,
+    },
     /// Operation failed. `code` is a stable short string for machine
     /// dispatch (`unknown_member`, `mob_error`, `decode`, ...); `message`
     /// is human-readable.
@@ -385,6 +413,12 @@ pub trait ControlHandler: Send + Sync + 'static {
 pub struct MobHandleControlHandler {
     handle: meerkat_mob::MobHandle,
     identity_authority: ControlIdentityAuthority,
+    /// Session-service access for member-fact resolution: `LookupMember`
+    /// reaches through it to the member's live comms runtime for the
+    /// advertised envelope-listener address (the roster does not persist
+    /// transport addresses). `None` degrades LookupMember to roster facts
+    /// only, which remote wire callers reject fail-closed.
+    session_service: Option<std::sync::Arc<dyn meerkat_mob::MobSessionService>>,
 }
 
 /// How the handler resolves the durable identity authority for generated
@@ -422,6 +456,7 @@ impl MobHandleControlHandler {
         Self {
             handle,
             identity_authority: ControlIdentityAuthority::None,
+            session_service: None,
         }
     }
 
@@ -434,6 +469,7 @@ impl MobHandleControlHandler {
         Self {
             handle,
             identity_authority: ControlIdentityAuthority::Fixed(identity_runtime),
+            session_service: None,
         }
     }
 
@@ -449,7 +485,20 @@ impl MobHandleControlHandler {
         Self {
             handle,
             identity_authority: ControlIdentityAuthority::Shared(identity_slot),
+            session_service: None,
         }
+    }
+
+    /// Attach the session service that owns member comms runtimes, so
+    /// `LookupMember` can report each member's advertised envelope-listener
+    /// address alongside its roster facts.
+    #[must_use]
+    pub fn with_session_service(
+        mut self,
+        session_service: std::sync::Arc<dyn meerkat_mob::MobSessionService>,
+    ) -> Self {
+        self.session_service = Some(session_service);
+        self
     }
 }
 
@@ -460,6 +509,7 @@ impl ControlHandler for MobHandleControlHandler {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ControlResponse> + Send + '_>> {
         let handle = self.handle.clone();
         let identity_runtime = self.identity_authority.current();
+        let session_service = self.session_service.clone();
         Box::pin(async move {
             match request {
                 ControlRequest::Wire {
@@ -511,7 +561,13 @@ impl ControlHandler for MobHandleControlHandler {
                     handle_inject(&handle, &remote_member, content, identity_runtime.as_ref()).await
                 }
                 ControlRequest::LookupMember { remote_member } => {
-                    handle_lookup_member(&handle, &remote_member, identity_runtime.as_ref()).await
+                    handle_lookup_member(
+                        &handle,
+                        session_service.as_ref(),
+                        &remote_member,
+                        identity_runtime.as_ref(),
+                    )
+                    .await
                 }
             }
         })
@@ -593,44 +649,58 @@ struct WireControlParams<'a> {
     wire: bool,
 }
 
+/// Build the `TrustedPeerDescriptor` a remote Wire/Unwire request installs
+/// on this side.
+///
+/// Requests arriving over the remote control channel must carry a peer
+/// address that is dialable from THIS process and the calling MEMBER's own
+/// transport pubkey. `inproc://` fails closed: it used to slip through the
+/// relaxed unsigned branch and install a descriptor that could never
+/// deliver an envelope across processes. A missing pubkey also fails
+/// closed: meerkat-comms keys its trust store by pubkey, so an unsigned
+/// row would admit any sender at ingress. The gateway key is not accepted
+/// either - `unsigned_with_pubkey` enforces peer_id == UUIDv5(pubkey), and
+/// only the member's transport key satisfies that.
+fn build_remote_wire_descriptor(
+    params: &WireControlParams<'_>,
+) -> Result<meerkat_core::comms::TrustedPeerDescriptor, (String, String)> {
+    if params.local_peer_spec_address.starts_with("inproc://") {
+        return Err((
+            "inproc_address_rejected".to_string(),
+            format!(
+                "peer address '{}' is inproc:// and unreachable from another process; the \
+                 calling gateway must advertise a tcp:// or uds:// member comms address",
+                params.local_peer_spec_address
+            ),
+        ));
+    }
+    let Some(pubkey_b64) = params.local_pubkey_b64.filter(|value| !value.is_empty()) else {
+        return Err((
+            "missing_pubkey".to_string(),
+            "remote wire requests must carry the calling member's Ed25519 transport pubkey; \
+             an unsigned descriptor would admit any sender at comms ingress"
+                .to_string(),
+        ));
+    };
+    let pubkey = crate::auth::peer_keys::decode_pubkey_b64(pubkey_b64)
+        .map_err(|err| ("decode".to_string(), format!("local_pubkey_b64: {err}")))?;
+    meerkat_core::comms::TrustedPeerDescriptor::unsigned_with_pubkey(
+        params.local_comms_name,
+        params.local_peer_id,
+        pubkey,
+        params.local_peer_spec_address,
+    )
+    .map_err(|err| ("peer_spec".to_string(), err))
+}
+
 async fn handle_wire(
     handle: &meerkat_mob::MobHandle,
     params: WireControlParams<'_>,
     identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
 ) -> ControlResponse {
-    let pubkey = match params.local_pubkey_b64 {
-        Some(s) if !s.is_empty() => match crate::auth::peer_keys::decode_pubkey_b64(s) {
-            Ok(bytes) => Some(bytes),
-            Err(err) => {
-                return ControlResponse::Err {
-                    code: "decode".to_string(),
-                    message: format!("local_pubkey_b64: {err}"),
-                };
-            }
-        },
-        _ => None,
-    };
-    let spec_result = match pubkey {
-        Some(bytes) => meerkat_core::comms::TrustedPeerDescriptor::unsigned_with_pubkey(
-            params.local_comms_name,
-            params.local_peer_id,
-            bytes,
-            params.local_peer_spec_address,
-        ),
-        None => meerkat_core::comms::TrustedPeerDescriptor::test_only_unsigned(
-            params.local_comms_name,
-            params.local_peer_id,
-            params.local_peer_spec_address,
-        ),
-    };
-    let spec = match spec_result {
+    let spec = match build_remote_wire_descriptor(&params) {
         Ok(spec) => spec,
-        Err(err) => {
-            return ControlResponse::Err {
-                code: "peer_spec".to_string(),
-                message: err,
-            };
-        }
+        Err((code, message)) => return ControlResponse::Err { code, message },
     };
     // The control plane speaks the public alias space; the local roster
     // holds comms-safe encoded ids (meerkat 0.7 MemberCommsName), so encode
@@ -706,13 +776,20 @@ async fn handle_inject(
 
 async fn handle_lookup_member(
     handle: &meerkat_mob::MobHandle,
+    session_service: Option<&std::sync::Arc<dyn meerkat_mob::MobSessionService>>,
     remote_member: &str,
     identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
 ) -> ControlResponse {
     let operation_handle = handle.clone();
+    let operation_service = session_service.cloned();
     let operation_member = crate::member_comms_id::runtime_alias_str(remote_member).into_owned();
     match run_control_member_operation(identity_runtime, remote_member, move || async move {
-        handle_lookup_member_raw(&operation_handle, &operation_member).await
+        handle_lookup_member_raw(
+            &operation_handle,
+            operation_service.as_ref(),
+            &operation_member,
+        )
+        .await
     })
     .await
     {
@@ -723,6 +800,7 @@ async fn handle_lookup_member(
 
 async fn handle_lookup_member_raw(
     handle: &meerkat_mob::MobHandle,
+    session_service: Option<&std::sync::Arc<dyn meerkat_mob::MobSessionService>>,
     remote_member: &str,
 ) -> Result<ControlResponse, (String, String)> {
     let mid = crate::member_comms_id::mob_member_id(remote_member);
@@ -769,9 +847,22 @@ async fn handle_lookup_member_raw(
             ));
         }
     };
+    let pubkey_b64 = entry.transport_public_key().map(str::to_string);
+    // The member's dialable envelope-listener address lives on its live
+    // comms runtime, not in the roster; resolve it through the session
+    // service when the control handler was given one.
+    let mut advertised_address = None;
+    if let Some(service) = session_service
+        && let Some(session_id) = handle.resolve_bridge_session_id(&mid).await
+        && let Some(comms) = service.comms_runtime(&session_id).await
+    {
+        advertised_address = comms.advertised_address();
+    }
     Ok(ControlResponse::Member {
         peer_id,
         comms_name,
+        pubkey_b64,
+        advertised_address,
     })
 }
 
@@ -928,10 +1019,88 @@ mod tests {
                     ControlRequest::LookupMember { remote_member } => ControlResponse::Member {
                         peer_id: format!("peer-id-for-{remote_member}"),
                         comms_name: format!("mob/role/{remote_member}"),
+                        pubkey_b64: None,
+                        advertised_address: None,
                     },
                 }
             })
         }
+    }
+
+    /// Base64 of the 32-byte pubkey `[42u8; 32]` (same constant the
+    /// contact-directory tests use).
+    const TEST_PUBKEY_B64: &str = "KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio=";
+
+    fn wire_params<'a>(
+        address: &'a str,
+        peer_id: &'a str,
+        pubkey_b64: Option<&'a str>,
+    ) -> WireControlParams<'a> {
+        WireControlParams {
+            remote_member: "bob",
+            local_peer_spec_address: address,
+            local_comms_name: "mob-a/worker/alice",
+            local_peer_id: peer_id,
+            local_pubkey_b64: pubkey_b64,
+            wire: true,
+        }
+    }
+
+    /// Regression: the remote Wire handler used to route inproc:// through
+    /// the relaxed unsigned branch, silently installing a descriptor that
+    /// could never deliver across processes.
+    #[test]
+    fn remote_wire_descriptor_rejects_inproc_addresses() {
+        let params = wire_params(
+            "inproc://mob-a/worker/alice",
+            "00000000-0000-4000-8000-000000000001",
+            Some(TEST_PUBKEY_B64),
+        );
+        let (code, _) = build_remote_wire_descriptor(&params).expect_err("inproc must fail");
+        assert_eq!(code, "inproc_address_rejected");
+    }
+
+    #[test]
+    fn remote_wire_descriptor_requires_pubkey() {
+        for pubkey in [None, Some("")] {
+            let params = wire_params(
+                "tcp://127.0.0.1:9001",
+                "00000000-0000-4000-8000-000000000001",
+                pubkey,
+            );
+            let (code, _) =
+                build_remote_wire_descriptor(&params).expect_err("missing pubkey must fail");
+            assert_eq!(code, "missing_pubkey");
+        }
+    }
+
+    #[test]
+    fn remote_wire_descriptor_builds_signed_descriptor() {
+        let derived_peer_id =
+            meerkat_core::comms::PeerId::from_ed25519_pubkey(&[42u8; 32]).to_string();
+        let params = wire_params(
+            "tcp://127.0.0.1:9001",
+            &derived_peer_id,
+            Some(TEST_PUBKEY_B64),
+        );
+        let spec = build_remote_wire_descriptor(&params).expect("descriptor");
+        assert_eq!(spec.pubkey, [42u8; 32]);
+        assert_eq!(spec.address.endpoint(), "127.0.0.1:9001");
+    }
+
+    /// The peer-id/pubkey consistency check is what forces the MEMBER
+    /// transport key onto this path: a mismatched key (e.g. the gateway
+    /// key) must be rejected, not installed.
+    #[test]
+    fn remote_wire_descriptor_rejects_mismatched_pubkey() {
+        let params = wire_params(
+            "tcp://127.0.0.1:9001",
+            "00000000-0000-4000-8000-000000000001",
+            Some(TEST_PUBKEY_B64),
+        );
+        let (code, _) =
+            build_remote_wire_descriptor(&params).expect_err("mismatched pubkey must fail");
+        assert_eq!(code, "peer_spec");
     }
 
     #[test]

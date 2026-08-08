@@ -134,7 +134,9 @@ async fn mobpack_runtime_catalog_state(
     if runtime.has_contact_directory() {
         runtime_methods.push("mobkit/cross_mob/directory".to_string());
     }
-    if runtime.has_peer_mob_handles().await && runtime.has_inproc_contacts() {
+    if (runtime.has_peer_mob_handles().await && runtime.has_inproc_contacts())
+        || runtime.has_remote_contacts()
+    {
         runtime_methods.extend([
             "mobkit/cross_mob/wire".to_string(),
             "mobkit/cross_mob/unwire".to_string(),
@@ -1821,10 +1823,13 @@ async fn handle_unified_rpc_json_inner(
             if runtime.has_contact_directory() {
                 methods.push("mobkit/cross_mob/directory");
             }
-            // High-level wire/unwire/send require peer mob handles AND inproc contacts.
-            // resolve_contact() rejects non-Inproc transports at execution time, so
-            // advertising these methods for TCP/UDS-only deployments guarantees failures.
-            if runtime.has_peer_mob_handles().await && runtime.has_inproc_contacts() {
+            // High-level wire/unwire/send are reachable through two shapes:
+            // same-process peers (registered handles + inproc contacts) and
+            // cross-process peers (TCP/UDS contact entries served by the
+            // remote gateway's control listener).
+            if (runtime.has_peer_mob_handles().await && runtime.has_inproc_contacts())
+                || runtime.has_remote_contacts()
+            {
                 methods.extend_from_slice(&[
                     "mobkit/cross_mob/wire",
                     "mobkit/cross_mob/unwire",

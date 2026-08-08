@@ -596,7 +596,7 @@ impl UnifiedRuntime {
         if self.has_contact_directory() {
             runtime_methods.push("mobkit/cross_mob/directory".to_string());
         }
-        if has_peer_mob_handles && self.has_inproc_contacts() {
+        if (has_peer_mob_handles && self.has_inproc_contacts()) || self.has_remote_contacts() {
             runtime_methods.extend([
                 "mobkit/cross_mob/wire".to_string(),
                 "mobkit/cross_mob/unwire".to_string(),
