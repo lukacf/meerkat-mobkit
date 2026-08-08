@@ -740,6 +740,11 @@ const STORAGE_MIGRATE_USAGE: &str = "usage: mobkit_gateway storage-migrate --sta
      Dry-run by default; --apply mutates under the exclusive maintenance \
      fence. --adopt <path> resolves a divergent file-name twin by adopting \
      that copy and archiving the rest read-only (requires --apply).\n\
+     --acknowledge-skipped <SESSION_ID> (repeatable) authorises the ledger \
+     bump to proceed despite a blob row that cannot be parsed as a session. \
+     Acknowledgement is BY ROW ID, never by count: a row you did not name \
+     still blocks, so a later run cannot silently authorise a different set \
+     than the one you read.\n\
      Exit codes: 0 clean, 1 refusals or fence/store failure, 2 usage error.";
 
 /// Maintenance verb: `mobkit_gateway storage-migrate`. Runs the five-case
@@ -751,6 +756,8 @@ fn run_storage_migrate(args: &[String]) -> i32 {
     let mut adopt: Option<PathBuf> = None;
     let mut apply = false;
     let mut json = false;
+    let mut acknowledged_rows: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -765,6 +772,17 @@ fn run_storage_migrate(args: &[String]) -> i32 {
                 Some(value) => adopt = Some(PathBuf::from(value)),
                 None => {
                     eprintln!("--adopt requires a path\n{STORAGE_MIGRATE_USAGE}");
+                    return 2;
+                }
+            },
+            "--acknowledge-skipped" => match iter.next() {
+                Some(value) => {
+                    acknowledged_rows.insert(value.clone());
+                }
+                None => {
+                    eprintln!(
+                        "--acknowledge-skipped requires a session id\n{STORAGE_MIGRATE_USAGE}"
+                    );
                     return 2;
                 }
             },
@@ -789,7 +807,12 @@ fn run_storage_migrate(args: &[String]) -> i32 {
     } else {
         meerkat_mobkit::MigrateMode::DryRun
     };
-    let report = meerkat_mobkit::migrate_state_dir(&state_dir, mode, adopt.as_deref());
+    let report = meerkat_mobkit::migrate_state_dir_acknowledging_skipped(
+        &state_dir,
+        mode,
+        adopt.as_deref(),
+        &acknowledged_rows,
+    );
     if json {
         match serde_json::to_string_pretty(&report) {
             Ok(text) => println!("{text}"),

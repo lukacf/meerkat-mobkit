@@ -219,7 +219,7 @@ pub use storage_migrate::{
     PruneAction, PruneArtifactKind, RenameAction, RowDivergenceEntry, SiblingRename, TwinReport,
     TwinResolution, enumerate_state_dir_artifacts, enumerate_state_dir_databases,
     is_registered_backup_artifact_name, is_registered_quarantine_artifact_name, migrate_state_dir,
-    prune_state_dir,
+    migrate_state_dir_acknowledging_skipped, prune_state_dir,
 };
 pub use storage_provider::{
     DiskMobKitStorageProvider, MobKitLeaseAuthority, MobKitRealmOpenContext, MobKitRealmStoreSet,

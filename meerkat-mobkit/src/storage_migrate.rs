@@ -589,7 +589,12 @@ pub fn migrate_state_dir(
     mode: MigrateMode,
     adopt: Option<&Path>,
 ) -> MobKitMigrateReport {
-    migrate_state_dir_acknowledging_skipped(state_dir, mode, adopt, false)
+    migrate_state_dir_acknowledging_skipped(
+        state_dir,
+        mode,
+        adopt,
+        &std::collections::BTreeSet::new(),
+    )
 }
 
 /// [`migrate_state_dir`], with explicit acknowledgement of blob rows that
@@ -599,7 +604,7 @@ pub fn migrate_state_dir_acknowledging_skipped(
     state_dir: &Path,
     mode: MigrateMode,
     adopt: Option<&Path>,
-    acknowledge_skipped: bool,
+    acknowledged_rows: &std::collections::BTreeSet<String>,
 ) -> MobKitMigrateReport {
     let mut report = MobKitMigrateReport::new(mode, state_dir);
     if !state_dir.is_dir() {
@@ -702,7 +707,7 @@ pub fn migrate_state_dir_acknowledging_skipped(
             &unfenced,
             &mut report.errors,
             &mut backfill_report,
-            acknowledge_skipped,
+            acknowledged_rows,
         );
         report.head_canonical_backfill = backfill_report;
         let after = read_ledger_matrix(state_dir);
@@ -939,7 +944,7 @@ fn open_stores_through_ledgered_constructors(
     unfenced: &[PathBuf],
     errors: &mut Vec<String>,
     backfill_report: &mut Option<HeadCanonicalBackfillReport>,
-    acknowledge_skipped: bool,
+    acknowledged_rows: &std::collections::BTreeSet<String>,
 ) {
     match layout.continuity_db() {
         Ok(resolved) if resolved.path.is_file() && !unfenced.contains(&resolved.path) => {
@@ -965,7 +970,7 @@ fn open_stores_through_ledgered_constructors(
                 match LocalContinuityStore::backfill_head_canonical_sessions_at(
                     &resolved.path,
                     true,
-                    acknowledge_skipped,
+                    acknowledged_rows,
                 ) {
                     Ok(backfill) => {
                         for (session_id, failure) in &backfill.failures {

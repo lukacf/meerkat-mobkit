@@ -759,7 +759,7 @@ impl LocalContinuityStore {
     pub fn backfill_head_canonical_sessions_at(
         path: impl AsRef<Path>,
         apply: bool,
-        acknowledge_skipped: bool,
+        acknowledged_rows: &std::collections::BTreeSet<String>,
     ) -> Result<HeadCanonicalBackfillReport, ContinuityStoreError> {
         let mut conn =
             meerkat_sqlite::open(path.as_ref(), meerkat_sqlite::ConnectionProfile::PRIMARY)
@@ -815,13 +815,28 @@ impl LocalContinuityStore {
         // be undone. So the operator acknowledges them explicitly or the
         // ledger does not advance; nobody is stranded, but nothing crosses
         // the one-way door without a human having seen what is left behind.
-        if !report.skipped_unparseable.is_empty() && !acknowledge_skipped {
+        // Acknowledgement is by STABLE ROW IDENTITY, never by count. An
+        // operator who read a list of three rows must not silently authorise
+        // a different three on a later run, so every skipped row has to be
+        // named. Unnamed rows are reported individually rather than as a
+        // total, because the operator has to be able to act on them.
+        let unacknowledged: Vec<&String> = report
+            .skipped_unparseable
+            .iter()
+            .filter(|row| !acknowledged_rows.contains(*row))
+            .collect();
+        if !unacknowledged.is_empty() {
             report.failures.push((
                 String::new(),
                 format!(
                     "refusing ledger stamp: {} blob row(s) could not be parsed as sessions and \
-                     were not converted; re-run with acknowledgement to stamp without them",
-                    report.skipped_unparseable.len()
+                     were not acknowledged: {}",
+                    unacknowledged.len(),
+                    unacknowledged
+                        .iter()
+                        .map(|row| row.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             ));
         }
@@ -1585,6 +1600,28 @@ fn migrate_legacy_blob_in_txn(
     let Some(session) = blob_session_in_txn(tx, id)? else {
         return Ok(None);
     };
+    // IDENTITY EQUALITY, BEFORE ANY WRITE.
+    //
+    // The row key and the blob's own `Session.id` must agree. If they do not,
+    // every write below would be misattributed: the orphan delete clears rows
+    // for the ROW key while the strand/rewrite/head writes are laid out from
+    // the DECODED session, so a row keyed A carrying session B can write — or
+    // overwrite — B's head row. A later re-census refuses the ledger stamp,
+    // but by then the damage is durable: a stamp guard is not a write guard.
+    //
+    // So this is checked here, at the top of the shared primitive, rather
+    // than in any one caller: the lazy delta-write path reaches it too, and a
+    // mismatch is equally a defect there. Refuse the row, write nothing, and
+    // let the caller report it by key.
+    if session.id() != id {
+        tracing::error!(
+            row_session_id = %id,
+            blob_session_id = %session.id(),
+            identity = %identity,
+            "refusing legacy conversion: stored blob decodes to a DIFFERENT session than its row key"
+        );
+        return Err(SessionStoreError::Corrupted(id.clone()));
+    }
     // Clear any ORPHAN rows first — strand/rewrite rows for this session
     // that no head row adopts.
     //
@@ -4453,6 +4490,7 @@ mod tests {
 
     #[test]
     fn backfill_converts_a_ledgered_v1_corpus_and_stamps_only_on_complete_conversion() {
+        use std::collections::BTreeSet;
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("continuity.sqlite3");
         let identity = AgentIdentity::parse("triage:main").expect("identity");
@@ -4470,8 +4508,12 @@ mod tests {
         assert_eq!(head_row_count(&path), 0, "fixture must have no head row");
 
         // ---- dry run mutates nothing, including the ledger ----
-        let dry = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, false, false)
-            .expect("dry run");
+        let dry = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            false,
+            &BTreeSet::new(),
+        )
+        .expect("dry run");
         assert_eq!(dry.pending_before, 1);
         assert!(!dry.applied);
         assert!(!dry.ledger_stamped);
@@ -4480,8 +4522,12 @@ mod tests {
         assert_eq!(head_row_count(&path), 0, "dry run converted");
 
         // ---- apply converts, retains the blob, and stamps ----
-        let applied = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true, false)
-            .expect("apply");
+        let applied = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            true,
+            &BTreeSet::new(),
+        )
+        .expect("apply");
         assert_eq!(applied.converted.len(), 1);
         assert!(applied.failures.is_empty(), "{:?}", applied.failures);
         assert!(applied.complete());
@@ -4503,8 +4549,12 @@ mod tests {
         // run did work", so a second run re-affirms it as a no-op rather than
         // withholding it. What must NOT happen is re-converting a session or
         // duplicating its head row.
-        let again = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true, false)
-            .expect("second apply");
+        let again = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            true,
+            &BTreeSet::new(),
+        )
+        .expect("second apply");
         assert_eq!(
             again.pending_before, 0,
             "already-converted session re-listed"
@@ -4520,6 +4570,7 @@ mod tests {
 
     #[test]
     fn backfill_leaves_the_ledger_at_v1_when_a_session_cannot_convert() {
+        use std::collections::BTreeSet;
         // The whole point of deferring the stamp: a corpus that did not fully
         // cross keeps rollback to a pre-head-canonical release available.
         let dir = tempfile::tempdir().expect("tempdir");
@@ -4541,8 +4592,12 @@ mod tests {
             .expect("plant undecodable blob");
         }
 
-        let applied = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true, false)
-            .expect("apply");
+        let applied = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            true,
+            &BTreeSet::new(),
+        )
+        .expect("apply");
         assert_eq!(applied.pending_before, 2);
         assert!(!applied.failures.is_empty(), "undecodable blob must fail");
         assert!(!applied.complete());
@@ -4558,7 +4613,170 @@ mod tests {
     }
 
     #[test]
+    fn a_post_failure_file_resumes_on_the_remainder_without_reconverting() {
+        use std::collections::BTreeSet;
+        // Idempotence on a CLEAN file is the easy input. The interesting one
+        // is the file a failed crossing leaves behind: A already has a head
+        // row, so the census must skip it and retry only B. If that is wrong,
+        // resumability is broken exactly where an operator needs it.
+        // (Raised by the deployment owner reviewing the rollback spec.)
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("triage:main").expect("identity");
+        let good = session_with(&["keep me"]);
+        plant_ledgered_v1_blob(&path, &identity, &good);
+        // Session ids are UUIDv7, so one created later sorts later: B is
+        // attempted after A has already committed its own transaction.
+        // B is a REAL session whose stored BYTES are corrupt, so the row's
+        // session_id and the blob's own id agree. (A blob whose internal id
+        // disagrees with its row is a different defect, and the re-census
+        // correctly refuses to stamp on it — which is how this fixture was
+        // caught being wrong.)
+        let doomed_session = session_with(&["recovered"]);
+        let doomed = doomed_session.id().clone();
+        let doomed_bytes = serde_json::to_vec(&doomed_session).expect("encode");
+        {
+            let conn = Connection::open(&path).expect("plant");
+            conn.execute(
+                "INSERT INTO session_snapshots (session_id, identity, generation, \
+                 checkpoint_version, fencing_token, data) VALUES (?1, ?2, 3, 5, 9, X'6E6F7065')",
+                rusqlite::params![doomed.to_string(), identity.as_str()],
+            )
+            .expect("plant doomed blob");
+        }
+
+        // ---- the failed crossing ----
+        let failed = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            true,
+            &BTreeSet::new(),
+        )
+        .expect("first apply");
+        assert_eq!(failed.pending_before, 2);
+        assert_eq!(failed.converted, vec![good.id().to_string()]);
+        assert_eq!(failed.failures.len(), 1);
+        assert!(!failed.ledger_stamped);
+        assert_eq!(continuity_domain_version(&path), Some(1));
+        assert_eq!(head_row_count(&path), 1);
+
+        // ---- re-run on the POST-FAILURE file: resume, do not re-convert ----
+        let resumed = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            true,
+            &BTreeSet::new(),
+        )
+        .expect("resume apply");
+        assert_eq!(
+            resumed.pending_before, 1,
+            "census must skip the already-converted session and retry only the remainder"
+        );
+        assert!(resumed.converted.is_empty(), "B still cannot convert");
+        assert_eq!(head_row_count(&path), 1, "A was re-converted or duplicated");
+        assert_eq!(continuity_domain_version(&path), Some(1));
+
+        // ---- repair B, re-run: the corpus completes and only then stamps ----
+        {
+            let conn = Connection::open(&path).expect("repair");
+            conn.execute(
+                "UPDATE session_snapshots SET data = ?2 WHERE session_id = ?1",
+                rusqlite::params![doomed.to_string(), doomed_bytes],
+            )
+            .expect("repair blob");
+        }
+        let finished = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            true,
+            &BTreeSet::new(),
+        )
+        .expect("final apply");
+        assert_eq!(finished.pending_before, 1);
+        assert_eq!(finished.converted.len(), 1);
+        assert!(finished.ledger_stamped, "completed corpus must stamp");
+        assert_eq!(head_row_count(&path), 2);
+        assert_eq!(continuity_domain_version(&path), Some(2));
+    }
+
+    #[test]
+    fn an_identity_mismatch_writes_nothing_at_all() {
+        use std::collections::BTreeSet;
+        // A blob that decodes PERFECTLY but into a DIFFERENT session than its
+        // row key. Every write in the conversion is laid out from the decoded
+        // session while the orphan delete targets the row key, so without a
+        // guard this misattributes head/strand rows to the blob's session —
+        // durably, before any re-census can refuse the ledger.
+        //
+        // The assertion is therefore ZERO ROWS WRITTEN, not "the ledger
+        // stayed at v1". A stamp guard is not a write guard.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("triage:main").expect("identity");
+        let anchor_session = session_with(&["anchor"]);
+        plant_ledgered_v1_blob(&path, &identity, &anchor_session);
+
+        // Row key R, blob containing a different session V.
+        let row_key = meerkat_core::types::SessionId::new();
+        let victim = session_with(&["victim"]);
+        {
+            let conn = Connection::open(&path).expect("plant");
+            conn.execute(
+                "INSERT INTO session_snapshots (session_id, identity, generation, \
+                 checkpoint_version, fencing_token, data) VALUES (?1, ?2, 3, 5, 9, ?3)",
+                rusqlite::params![
+                    row_key.to_string(),
+                    identity.as_str(),
+                    serde_json::to_vec(&victim).expect("encode")
+                ],
+            )
+            .expect("plant mismatched blob");
+        }
+
+        let report = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            true,
+            &BTreeSet::new(),
+        )
+        .expect("apply");
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|(row, _)| row == &row_key.to_string()),
+            "the mismatched row must be reported as a failure: {:?}",
+            report.failures
+        );
+        assert!(!report.ledger_stamped);
+
+        let conn = Connection::open(&path).expect("probe");
+        // NOTHING was written under the blob's id.
+        for table in ["continuity_session_heads", "continuity_strand_messages"] {
+            let n: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE session_id = ?1"),
+                    rusqlite::params![victim.id().to_string()],
+                    |row| row.get(0),
+                )
+                .expect("count victim rows");
+            assert_eq!(n, 0, "{table} was written under the BLOB's session id");
+        }
+        // ...nor under the row key.
+        let under_key: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM continuity_session_heads WHERE session_id = ?1",
+                rusqlite::params![row_key.to_string()],
+                |row| row.get(0),
+            )
+            .expect("count row-key heads");
+        assert_eq!(
+            under_key, 0,
+            "a head row was written for a refused conversion"
+        );
+        // The healthy session still converted; one bad row does not strand it.
+        assert_eq!(report.converted, vec![anchor_session.id().to_string()]);
+    }
+
+    #[test]
     fn malformed_blob_rows_block_the_stamp_until_acknowledged() {
+        use std::collections::BTreeSet;
         // A row this classifier calls malformed may be a corrupted session OR
         // a real one the classifier is too strict about. Those are the same
         // from here, so the irreversible step waits for a human.
@@ -4579,8 +4797,12 @@ mod tests {
 
         // Unacknowledged: the convertible session still converts, but the
         // ledger refuses to advance.
-        let blocked = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true, false)
-            .expect("apply");
+        let blocked = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            true,
+            &BTreeSet::new(),
+        )
+        .expect("apply");
         assert_eq!(
             blocked.converted.len(),
             1,
@@ -4594,9 +4816,23 @@ mod tests {
         );
         assert_eq!(continuity_domain_version(&path), Some(1));
 
-        // Acknowledged: the operator has seen the list, so it may cross.
-        let allowed = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true, true)
-            .expect("apply acknowledged");
+        // Acknowledged BY NAME: acknowledging a different id must not work,
+        // so the set carries the exact row the operator read.
+        let wrong: BTreeSet<String> = ["some-other-row".to_string()].into_iter().collect();
+        let still_blocked =
+            LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true, &wrong)
+                .expect("apply with wrong ack");
+        assert!(
+            !still_blocked.ledger_stamped,
+            "acknowledging a DIFFERENT row must not authorise the stamp"
+        );
+        let acknowledge_all: BTreeSet<String> = ["not-a-uuid".to_string()].into_iter().collect();
+        let allowed = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            true,
+            &acknowledge_all,
+        )
+        .expect("apply acknowledged");
         assert_eq!(allowed.skipped_unparseable, vec!["not-a-uuid".to_string()]);
         assert!(
             allowed.ledger_stamped,
