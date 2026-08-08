@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.15] - 2026-08-08
+
+Paired release on meerkat v0.8.21.
+
+### Changed
+- Adapted to the meerkat 0.8.21 resume-verdict contract: session-service wrappers delegate `observe_session_resume_authority`; the operational resume entry is the upstream verdict composer, running through each wrapper's own overlaid load.
+- `cross_head_canonical_authority` (required upstream format-door crossing): the continuity adapter routes to the owning store (superseded sessions present as absent), and the mobkit continuity trait carries a bridged default performing real reverification; absent/blob-canonical sessions return `NotApplicable`, preserving the legacy lane.
+- Schedule claim results consume the upstream `TransitionCommit` carrier.
+- Meerkat pins `=0.8.21`.
+
+### Fixed
+- Firing-intent schedule writes (`create`/`update`/`resume`) refuse typed while a gateway-owned store has no firing host bound (Bug C class); caller-injected library stores are never gated.
+- External-tool composition warns per shadowed pre-installed tool (the scoped form of the recorder clobber).
+- mobkit-repair prints a load-bearing post-apply reminder for the runtime scratch-store drop and ships `bytes_semantics` in its report (head-strand bytes, not disk).
+
+### Added
+- Regressions pinning the resume-tooling defect (activation-41) on both halves: a created member resolves declared categories, and a category declared AFTER creation resolves on resume (the meerkat 0.8.21 unified merge).
+- Binary-level regression pinning same-identity typed agent-memory recall while the member's `callback/build_agent` is parked.
+- Python SDK: typed `MobKitRuntime.list_identities()` returning `ConsoleIdentityRecord` (the supported identity -> session/profile map).
+- `docs/proposals/simplification-audit-mobkit.md`: capability audit under the owner's simplification directive; seeds the 0.8.16 program.
+
+
 ## [0.8.13] - 2026-08-06
 
 Paired release on meerkat 0.8.20 (the direct pairing: 0.8.19's
