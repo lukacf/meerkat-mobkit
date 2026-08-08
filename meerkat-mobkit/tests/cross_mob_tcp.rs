@@ -1,26 +1,21 @@
-//! Cross-mob TCP transport plumbing — Phase 1 surface tests.
+//! Cross-mob TCP transport plumbing - surface tests.
 //!
-//! These tests pin the structural contract delivered by Unit 3 of the
-//! 0.6.x cross-mob work:
+//! These tests pin the structural contract of the TCP contact path:
 //!
 //! 1. `ContactDirectory::from_toml` accepts `tcp://host:port` entries.
 //! 2. `UnifiedRuntime::has_remote_contacts()` flips on for TCP entries.
 //! 3. The peer-spec helpers `build_tcp_peer_spec` produce valid
 //!    comms-layer addresses.
-//! 4. `wire_cross_mob` no longer returns the legacy
-//!    `TransportNotSupported` early-reject — it goes through the new
-//!    `LocalOrRemote` dispatcher and surfaces the
-//!    `Remote(ControlChannelUnavailable)` seam for cross-process peers.
+//! 4. `wire_cross_mob` routes TCP contacts through the `LocalOrRemote`
+//!    dispatcher (local roster checks first, then the real cross-process
+//!    control client).
 //! 5. `wire_local` / `unwire_local` accept `tcp://` addresses and
 //!    pass them through to the comms-layer trust store unchanged
 //!    (no early scheme rejection in mobkit).
 //!
-//! Phase 2 (cross-process control RPC) replaces the
-//! `ControlChannelUnavailable` stub with a real client; that work lands
-//! in a sibling unit and an updated test will assert end-to-end delivery.
-//!
-//! Two-runtime ephemeral-port / TempDir scaffolding is in place so the
-//! Phase-2 update is a pure additive edit — no test-rebuild required.
+//! The end-to-end proof (two runtimes, real control listeners, signed
+//! envelope delivery both ways) lives in
+//! `tests/cross_mob_control_round_trip.rs`.
 
 #![allow(
     clippy::expect_used,
@@ -151,11 +146,8 @@ async fn unified_runtime_with_tcp_contact_reports_remote_contacts() {
 
 #[tokio::test]
 async fn wire_cross_mob_over_tcp_surfaces_remote_seam() {
-    // Phase 1: with no `register_peer_mob`, a TCP contact entry routes
-    // through the `RemoteMobProxy`. The Phase 1 stub returns
-    // `ControlChannelUnavailable` so callers see the seam without a
-    // silent misroute. Phase 2 replaces this with a real control-channel
-    // client.
+    // With no `register_peer_mob`, a TCP contact entry routes through the
+    // `RemoteMobProxy` (the real control-channel client).
     let port_b = ephemeral_port().await;
     let dir_a = ContactDirectory::from_toml(&format!(
         r#"
