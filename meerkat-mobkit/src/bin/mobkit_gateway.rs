@@ -10,6 +10,7 @@ use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionServic
 use meerkat_mob::ids::AgentIdentity;
 use meerkat_mob::{MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 use meerkat_mobkit::contact_directory::ContactDirectory;
+use meerkat_mobkit::runtime::cross_mob_control::ControlListenAddr;
 use meerkat_mobkit::{
     AuthPolicy, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore, ConsolePolicy,
     ConsoleUiConfig, ConventionalPaths, GatewayPeerKeys, MOBKIT_CONTRACT_VERSION,
@@ -187,6 +188,7 @@ fn config_fingerprint(
     project_root: &Path,
     context_root: Option<&Path>,
     compaction: Option<&meerkat_core::config::CompactionRuntimeConfig>,
+    control_listen: Option<&ControlListenAddr>,
     paths: &ConventionalPaths,
 ) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
@@ -228,6 +230,13 @@ fn config_fingerprint(
         hasher.update(policy.recent_turn_budget.to_le_bytes());
         hasher.update(policy.max_summary_tokens.to_le_bytes());
         hasher.update(policy.min_turns_between_compactions.to_le_bytes());
+    }
+    hasher.update(b"\n");
+    // The control listener binds at launch; resuming a live gateway that was
+    // launched without (or with a different) --control-listen would silently
+    // drop the flag, so the address participates in the resume key.
+    if let Some(addr) = control_listen {
+        hasher.update(addr.to_string().as_bytes());
     }
     hasher.update(b"\n");
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
@@ -1015,6 +1024,17 @@ fn main() {
     if args.first().map(String::as_str) == Some("storage-prune") {
         std::process::exit(run_storage_prune(&args[1..]));
     }
+    // --control-listen <tcp://host:port | uds:///path>: bind the cross-mob
+    // control listener so remote gateways can wire/unwire/inject/lookup
+    // members of this runtime. Validated here so a typo is a launch error,
+    // not a silently ignored flag.
+    let control_listen = match parse_control_listen_arg(&args) {
+        Ok(value) => value,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         "mobkit_gateway starting (console/HTTP gateway)"
@@ -1033,14 +1053,29 @@ fn main() {
             std::process::exit(1);
         }
     };
-    if let Err(error) = runtime.block_on(Box::pin(run())) {
+    if let Err(error) = runtime.block_on(Box::pin(run(control_listen))) {
         let response = init_error(Value::Null, -32603, error.to_string());
         print_json_line(&response);
         std::process::exit(1);
     }
 }
 
-async fn run() -> anyhow::Result<()> {
+/// Extract and validate the optional `--control-listen <addr>` flag.
+fn parse_control_listen_arg(args: &[String]) -> Result<Option<ControlListenAddr>, String> {
+    let Some(position) = args.iter().position(|arg| arg == "--control-listen") else {
+        return Ok(None);
+    };
+    let Some(value) = args.get(position + 1) else {
+        return Err(
+            "--control-listen requires an address (tcp://host:port or uds:///path)".to_string(),
+        );
+    };
+    ControlListenAddr::parse(value)
+        .map(Some)
+        .map_err(|error| format!("--control-listen: {error}"))
+}
+
+async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
     let mut init_line = String::new();
@@ -1122,6 +1157,7 @@ async fn run() -> anyhow::Result<()> {
         &project_root,
         context_root.as_deref(),
         compaction_policy.as_ref(),
+        control_listen.as_ref(),
         &paths,
     )?;
     let registry_file = layout
@@ -1471,6 +1507,17 @@ async fn run() -> anyhow::Result<()> {
         None
     };
 
+    // Bind the cross-mob control listener after identity-first attachment so
+    // its startup log reflects the final authority posture (the handler
+    // re-reads the identity slot per request either way).
+    if let Some(addr) = control_listen.as_ref() {
+        let advertised = runtime
+            .start_control_listener(addr)
+            .await
+            .map_err(|error| anyhow!("--control-listen {addr}: {error}"))?;
+        tracing::info!(%advertised, "cross-mob control listener bound");
+    }
+
     // Start schedule delivery only after identity-first attachment. The host
     // owns a snapshot of the authority Arc, so starting it before this point
     // would permanently reject every generated `rt:*` target.
@@ -1703,6 +1750,7 @@ mod tests {
             temp.path(),
             None,
             None,
+            None,
             &paths,
         )?;
         let read_only = config_fingerprint(
@@ -1715,6 +1763,7 @@ mod tests {
             temp.path(),
             temp.path(),
             temp.path(),
+            None,
             None,
             None,
             &paths,
@@ -1752,6 +1801,7 @@ mod tests {
             temp.path(),
             None,
             None,
+            None,
             &paths,
         )?;
         let pinned_key = config_fingerprint(
@@ -1766,6 +1816,7 @@ mod tests {
             temp.path(),
             None,
             Some(&pinned),
+            None,
             &paths,
         )?;
         let lower_key = config_fingerprint(
@@ -1780,6 +1831,7 @@ mod tests {
             temp.path(),
             None,
             Some(&lower),
+            None,
             &paths,
         )?;
 

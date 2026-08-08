@@ -169,6 +169,12 @@ impl UnifiedRuntime {
             task.abort();
             let _ = task.await;
         }
+        // Stop accepting cross-mob control RPC before the mob quiesces so a
+        // late inbound wire/inject cannot race member teardown.
+        if let Some(task) = self.cross_mob_control_task.lock().await.take() {
+            task.abort();
+            let _ = task.await;
+        }
         let identity_runtime = self.identity_runtime().cloned();
         if let Some(identity_runtime) = identity_runtime.as_ref() {
             // Close request admission before any supervisor is drained. A

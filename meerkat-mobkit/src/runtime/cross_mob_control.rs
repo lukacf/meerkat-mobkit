@@ -40,6 +40,116 @@ use tokio::net::{UnixListener, UnixStream};
 
 use super::cross_mob_remote::{RemoteEndpoint, RemoteMobError};
 
+/// Address a gateway binds its cross-mob control listener on.
+///
+/// Accepts the same spelling the contact directory uses for remote peers
+/// (`tcp://host:port`, `uds:///path`), parsed through the same
+/// [`crate::contact_directory`] transport parser so the two surfaces never
+/// drift. `inproc` is rejected: a control listener only makes sense across
+/// processes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlListenAddr {
+    /// TCP `host:port`. Port 0 binds an ephemeral port; the bound port is
+    /// reported by [`BoundControlListener::advertised_address`].
+    Tcp(String),
+    /// Unix-domain-socket path.
+    Uds(String),
+}
+
+impl ControlListenAddr {
+    /// Parse `tcp://host:port` or `uds:///path`.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match crate::contact_directory::parse_transport(s) {
+            Some(crate::contact_directory::MobTransport::Tcp(addr)) => Ok(Self::Tcp(addr)),
+            Some(crate::contact_directory::MobTransport::Uds(path)) => Ok(Self::Uds(path)),
+            Some(crate::contact_directory::MobTransport::Inproc) => Err(
+                "control listener requires a cross-process address (tcp://host:port or \
+                 uds:///path); 'inproc' has no listener"
+                    .to_string(),
+            ),
+            None => Err(format!(
+                "invalid control listen address '{s}': expected tcp://host:port or uds:///path"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for ControlListenAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tcp(addr) => write!(f, "tcp://{addr}"),
+            Self::Uds(path) => write!(f, "uds://{path}"),
+        }
+    }
+}
+
+/// A control listener that has been bound but not yet served.
+///
+/// Binding is split from serving so callers learn the concrete local
+/// address (the real port for `tcp://host:0`) before the accept loop
+/// starts, and can surface it to tests and peer configuration.
+pub enum BoundControlListener {
+    Tcp {
+        listener: TcpListener,
+        advertised: String,
+    },
+    #[cfg(unix)]
+    Uds {
+        listener: UnixListener,
+        advertised: String,
+    },
+}
+
+impl BoundControlListener {
+    /// Bind `addr`. For TCP the advertised address carries the kernel-
+    /// assigned port when the caller bound port 0. For UDS the advertised
+    /// address is `uds://{path}`.
+    pub async fn bind(addr: &ControlListenAddr) -> Result<Self, std::io::Error> {
+        match addr {
+            ControlListenAddr::Tcp(spec) => {
+                let listener = TcpListener::bind(spec).await?;
+                let local = listener.local_addr()?;
+                Ok(Self::Tcp {
+                    listener,
+                    advertised: format!("tcp://{local}"),
+                })
+            }
+            #[cfg(unix)]
+            ControlListenAddr::Uds(path) => {
+                let listener = UnixListener::bind(std::path::Path::new(path))?;
+                Ok(Self::Uds {
+                    listener,
+                    advertised: format!("uds://{path}"),
+                })
+            }
+            #[cfg(not(unix))]
+            ControlListenAddr::Uds(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "unix domain sockets are not supported on this platform",
+            )),
+        }
+    }
+
+    /// The dialable address of this listener (`tcp://ip:port` with the
+    /// real bound port, or `uds:///path`).
+    pub fn advertised_address(&self) -> &str {
+        match self {
+            Self::Tcp { advertised, .. } => advertised,
+            #[cfg(unix)]
+            Self::Uds { advertised, .. } => advertised,
+        }
+    }
+
+    /// Serve control requests until the owning task is aborted.
+    pub async fn serve(self, handler: std::sync::Arc<dyn ControlHandler>) {
+        match self {
+            Self::Tcp { listener, .. } => serve_tcp_control(listener, handler).await,
+            #[cfg(unix)]
+            Self::Uds { listener, .. } => serve_uds_control(listener, handler).await,
+        }
+    }
+}
+
 /// Maximum control payload size. Control messages are tiny (a few hundred
 /// bytes typical, ~1 KiB max for an injected text turn) — we cap well below
 /// that so a misbehaving peer can't tie up reads.
@@ -274,7 +384,35 @@ pub trait ControlHandler: Send + Sync + 'static {
 /// the mobkit_gateway `--control-listen` flag).
 pub struct MobHandleControlHandler {
     handle: meerkat_mob::MobHandle,
-    identity_runtime: Option<std::sync::Arc<crate::identity_first::IdentityRuntime>>,
+    identity_authority: ControlIdentityAuthority,
+}
+
+/// How the handler resolves the durable identity authority for generated
+/// member aliases. `Shared` re-reads a host-owned slot on every request:
+/// gateways attach identity-first AFTER the base runtime (and thus after
+/// the control listener) exists, so capturing `identity_runtime()` at
+/// listener start would permanently capture `None`.
+enum ControlIdentityAuthority {
+    None,
+    Fixed(std::sync::Arc<crate::identity_first::IdentityRuntime>),
+    Shared(
+        std::sync::Arc<
+            std::sync::RwLock<Option<std::sync::Arc<crate::identity_first::IdentityRuntime>>>,
+        >,
+    ),
+}
+
+impl ControlIdentityAuthority {
+    fn current(&self) -> Option<std::sync::Arc<crate::identity_first::IdentityRuntime>> {
+        match self {
+            Self::None => None,
+            Self::Fixed(runtime) => Some(std::sync::Arc::clone(runtime)),
+            Self::Shared(slot) => slot
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+        }
+    }
 }
 
 impl MobHandleControlHandler {
@@ -283,7 +421,7 @@ impl MobHandleControlHandler {
     pub fn new(handle: meerkat_mob::MobHandle) -> Self {
         Self {
             handle,
-            identity_runtime: None,
+            identity_authority: ControlIdentityAuthority::None,
         }
     }
 
@@ -295,7 +433,22 @@ impl MobHandleControlHandler {
     ) -> Self {
         Self {
             handle,
-            identity_runtime: Some(identity_runtime),
+            identity_authority: ControlIdentityAuthority::Fixed(identity_runtime),
+        }
+    }
+
+    /// Construct a handler whose identity authority is re-read from a
+    /// host-owned slot on every request, so identity-first attachment that
+    /// happens after the listener starts is still honored.
+    pub fn with_shared_identity_authority(
+        handle: meerkat_mob::MobHandle,
+        identity_slot: std::sync::Arc<
+            std::sync::RwLock<Option<std::sync::Arc<crate::identity_first::IdentityRuntime>>>,
+        >,
+    ) -> Self {
+        Self {
+            handle,
+            identity_authority: ControlIdentityAuthority::Shared(identity_slot),
         }
     }
 }
@@ -306,7 +459,7 @@ impl ControlHandler for MobHandleControlHandler {
         request: ControlRequest,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ControlResponse> + Send + '_>> {
         let handle = self.handle.clone();
-        let identity_runtime = self.identity_runtime.clone();
+        let identity_runtime = self.identity_authority.current();
         Box::pin(async move {
             match request {
                 ControlRequest::Wire {
@@ -779,6 +932,86 @@ mod tests {
                 }
             })
         }
+    }
+
+    #[test]
+    fn control_listen_addr_parses_contact_directory_spellings() {
+        assert_eq!(
+            ControlListenAddr::parse("tcp://127.0.0.1:9001"),
+            Ok(ControlListenAddr::Tcp("127.0.0.1:9001".to_string())),
+        );
+        assert_eq!(
+            ControlListenAddr::parse("uds:///var/run/mob.sock"),
+            Ok(ControlListenAddr::Uds("/var/run/mob.sock".to_string())),
+        );
+        assert!(ControlListenAddr::parse("inproc").is_err());
+        assert!(ControlListenAddr::parse("ftp://nope").is_err());
+        assert!(ControlListenAddr::parse("127.0.0.1:9001").is_err());
+    }
+
+    #[test]
+    fn control_listen_addr_display_round_trips() {
+        for spec in ["tcp://127.0.0.1:9001", "uds:///var/run/mob.sock"] {
+            let addr = ControlListenAddr::parse(spec).expect("parse");
+            assert_eq!(addr.to_string(), spec);
+        }
+    }
+
+    /// `tcp://host:0` binds an ephemeral port and the bound listener reports
+    /// the real dialable address; a control request round-trips through it.
+    #[tokio::test]
+    async fn bound_listener_reports_real_port_and_serves() {
+        let addr = ControlListenAddr::parse("tcp://127.0.0.1:0").expect("parse");
+        let bound = BoundControlListener::bind(&addr).await.expect("bind");
+        let advertised = bound.advertised_address().to_string();
+        let dial = advertised.strip_prefix("tcp://").expect("tcp scheme");
+        assert!(
+            !dial.ends_with(":0"),
+            "advertised address must carry the kernel-assigned port: {advertised}"
+        );
+        let handler: Arc<dyn ControlHandler> = Arc::new(EchoHandler);
+        let server = tokio::spawn(bound.serve(handler));
+
+        let endpoint = RemoteEndpoint::Tcp(dial.to_string());
+        let request = ControlRequest::LookupMember {
+            remote_member: "alice".to_string(),
+        };
+        let response = RemoteControlClient::send(&endpoint, &request, DEFAULT_CONTROL_TIMEOUT)
+            .await
+            .expect("control rpc");
+        assert!(matches!(response, ControlResponse::Member { .. }));
+        server.abort();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bound_uds_listener_serves() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("control.sock");
+        let addr = ControlListenAddr::Uds(path.display().to_string());
+        let bound = BoundControlListener::bind(&addr).await.expect("bind");
+        assert_eq!(
+            bound.advertised_address(),
+            format!("uds://{}", path.display())
+        );
+        let handler: Arc<dyn ControlHandler> = Arc::new(EchoHandler);
+        let server = tokio::spawn(bound.serve(handler));
+
+        let endpoint = RemoteEndpoint::Uds(path.display().to_string());
+        let request = ControlRequest::Inject {
+            remote_member: "bob".to_string(),
+            content: serde_json::json!({"text": "hi"}),
+        };
+        let response = RemoteControlClient::send(&endpoint, &request, DEFAULT_CONTROL_TIMEOUT)
+            .await
+            .expect("control rpc");
+        assert_eq!(
+            response,
+            ControlResponse::Injected {
+                session_id: "session-for-bob".to_string(),
+            },
+        );
+        server.abort();
     }
 
     #[tokio::test]

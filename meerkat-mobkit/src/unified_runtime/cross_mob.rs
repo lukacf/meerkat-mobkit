@@ -156,6 +156,9 @@ pub enum CrossMobError {
     /// request. The inner error carries the endpoint and the peer's
     /// rejection code when one was returned.
     Remote(RemoteMobError),
+    /// The local cross-mob control listener could not be started (bind
+    /// failure, double start, unsupported transport on this platform).
+    ControlListener(String),
 }
 
 impl std::fmt::Display for CrossMobError {
@@ -185,6 +188,9 @@ impl std::fmt::Display for CrossMobError {
             ),
             Self::PeerSpec(reason) => write!(f, "peer spec error: {reason}"),
             Self::InprocAlias(reason) => write!(f, "inproc alias error: {reason}"),
+            Self::ControlListener(reason) => {
+                write!(f, "cross-mob control listener error: {reason}")
+            }
             Self::MissingPeerPubkey { mob_id } => match mob_id {
                 Some(id) => write!(
                     f,
@@ -1260,6 +1266,57 @@ impl UnifiedRuntime {
     /// Set the contact directory for cross-mob address resolution.
     pub fn set_contact_directory(&mut self, directory: ContactDirectory) {
         self.contact_directory = Some(directory);
+    }
+
+    /// Bind the cross-mob control listener and start serving control RPC
+    /// (wire/unwire/inject/lookup) from remote gateways.
+    ///
+    /// Returns the dialable bound address (`tcp://ip:port` with the real
+    /// kernel-assigned port for `tcp://host:0`, or `uds:///path`) - this is
+    /// what peers put in their contact directories. The serve task is owned
+    /// by the runtime and aborted on [`UnifiedRuntime::shutdown`].
+    ///
+    /// The handler re-reads the identity authority per request, so calling
+    /// this before `attach_identity_first_context` is safe: generated
+    /// `rt:*` aliases fail closed until the authority is attached and are
+    /// admitted afterwards.
+    pub async fn start_control_listener(
+        &self,
+        addr: &crate::runtime::cross_mob_control::ControlListenAddr,
+    ) -> Result<String, CrossMobError> {
+        let mut task_slot = self.cross_mob_control_task.lock().await;
+        if task_slot.is_some() {
+            return Err(CrossMobError::ControlListener(
+                "control listener already running".to_string(),
+            ));
+        }
+        let bound = crate::runtime::cross_mob_control::BoundControlListener::bind(addr)
+            .await
+            .map_err(|error| CrossMobError::ControlListener(format!("bind {addr}: {error}")))?;
+        let advertised = bound.advertised_address().to_string();
+        let handler: std::sync::Arc<dyn crate::runtime::cross_mob_control::ControlHandler> =
+            std::sync::Arc::new(
+                crate::runtime::cross_mob_control::MobHandleControlHandler::with_shared_identity_authority(
+                    self.mob_handle(),
+                    std::sync::Arc::clone(&self.implicit_delegate_identity_runtime),
+                ),
+            );
+        *task_slot = Some(tokio::spawn(bound.serve(handler)));
+        *self
+            .cross_mob_control_advertised
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(advertised.clone());
+        Ok(advertised)
+    }
+
+    /// The dialable address of the running cross-mob control listener, or
+    /// `None` when no listener was started. For `tcp://host:0` binds this
+    /// carries the real kernel-assigned port.
+    pub fn control_listener_advertised_address(&self) -> Option<String> {
+        self.cross_mob_control_advertised
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Install the long-lived Ed25519 keypair this gateway advertises via

@@ -160,6 +160,16 @@ pub struct UnifiedRuntime {
     // Cross-mob communication
     contact_directory: Option<crate::contact_directory::ContactDirectory>,
     peer_mob_handles: tokio::sync::RwLock<BTreeMap<String, cross_mob::PeerMobAuthority>>,
+    /// Serve task of the cross-mob control listener, when one was started
+    /// via [`UnifiedRuntime::start_control_listener`]. Aborted on shutdown
+    /// like the other runtime-owned background tasks.
+    cross_mob_control_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    /// The dialable address the control listener actually bound
+    /// (`tcp://ip:port` with the real port for `host:0` binds, or
+    /// `uds:///path`). This is the address remote peers are told to put in
+    /// their contact directories, and the address stamped into outbound
+    /// remote wire requests as this gateway's control endpoint.
+    cross_mob_control_advertised: std::sync::RwLock<Option<String>>,
     /// Long-lived Ed25519 signing identity for cross-process peering.
     /// `None` is the default for inproc-only deployments and tests;
     /// production gateways set this via
@@ -302,6 +312,8 @@ impl UnifiedRuntime {
             agent_memory_steward_task: tokio::sync::Mutex::new(None),
             contact_directory: None,
             peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
+            cross_mob_control_task: tokio::sync::Mutex::new(None),
+            cross_mob_control_advertised: std::sync::RwLock::new(None),
             gateway_peer_keys: None,
             session_bridge: None,
             identity_first_context: None,

@@ -120,6 +120,7 @@ pub struct UnifiedRuntimeBuilder {
     pre_spawn_hook: Option<PreSpawnHook>,
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
     contact_directory: Option<ContactDirectory>,
+    control_listen: Option<String>,
     persistent_metadata: Option<Arc<dyn PersistentMetadataStore>>,
     access_controller: Option<crate::access::AccessController>,
     topology_control_policy: crate::topology_control::TopologyControlPolicy,
@@ -642,6 +643,18 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    /// Bind a cross-mob control listener on startup so remote gateways can
+    /// wire/unwire/inject/lookup members of this runtime.
+    ///
+    /// Accepts the contact-directory address spelling: `tcp://host:port`
+    /// (port 0 binds an ephemeral port) or `uds:///path`. The concrete
+    /// bound address is queryable after build via
+    /// [`UnifiedRuntime::control_listener_advertised_address`].
+    pub fn control_listen(mut self, addr: impl Into<String>) -> Self {
+        self.control_listen = Some(addr.into());
+        self
+    }
+
     /// Install a persistent metadata store. Used for the structural-events
     /// subscription cursor — see `runtime::metadata::PersistentMetadataStore`.
     /// When unset, the builder defaults to an `InMemoryMetadataStore`, which
@@ -696,6 +709,20 @@ impl UnifiedRuntimeBuilder {
         self.identity_bootstrap_mode
             .validate()
             .map_err(UnifiedRuntimeBuilderError::ConflictingConfiguration)?;
+
+        // Validate the control-listen address up front so a typo fails the
+        // build before any expensive bootstrap; the actual bind happens
+        // after the runtime exists (near the end of build()).
+        let control_listen = self
+            .control_listen
+            .as_deref()
+            .map(crate::runtime::cross_mob_control::ControlListenAddr::parse)
+            .transpose()
+            .map_err(|error| {
+                UnifiedRuntimeBuilderError::ConflictingConfiguration(format!(
+                    "control_listen(): {error}"
+                ))
+            })?;
 
         let has_persistent_state = self.persistent_state_path.is_some();
         // Same-root pairing is a documented requirement of
@@ -1398,6 +1425,18 @@ impl UnifiedRuntimeBuilder {
         {
             let report = runtime.reconcile_edges().await;
             *runtime.bootstrap_edges_report.write().await = Some(report);
+        }
+
+        // Bind the cross-mob control listener last among the fallible
+        // steps: the fully assembled runtime owns the serve task, so a bind
+        // failure follows the same cooperative shutdown path as the other
+        // late bootstrap errors above.
+        if let Some(addr) = control_listen.as_ref()
+            && let Err(error) = runtime.start_control_listener(addr).await
+        {
+            let build_error = UnifiedRuntimeBuilderError::Io(format!("control_listen(): {error}"));
+            runtime.shutdown().await;
+            return Err(build_error);
         }
 
         // Start event log ingestion if configured
