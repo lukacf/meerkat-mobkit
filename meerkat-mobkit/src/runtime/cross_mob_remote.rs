@@ -1,53 +1,33 @@
-//! Cross-mob remote-handle proxy.
+//! Cross-mob remote-mob proxy: the client side of cross-process cross-mob
+//! operations.
 //!
-//! `cross_mob.rs` historically dispatched all wire/unwire/send operations
-//! against an `Arc<MobHandle>` registered via `register_peer_mob`, which
-//! only works for peers living in the *same* process (inproc transport).
-//! This module introduces the seam for **remote** peers — mobs that live
-//! in a different process or on a different host, reachable over TCP or
-//! UDS.
+//! `cross_mob.rs` dispatches wire/unwire/send operations as
+//! `LocalOrRemote`: same-process peers registered via `register_peer_mob`
+//! use their `MobHandle` directly; peers whose contact-directory entry
+//! names a `tcp://host:port` or `uds:///path` transport are reached through
+//! [`RemoteMobProxy`], which speaks the control protocol defined in
+//! [`super::cross_mob_control`] (length-prefixed JSON frames, one
+//! request/response pair per connection).
 //!
-//! # Design (Phase 1)
+//! [`RemoteMobProxy`] carries four operations against the peer gateway's
+//! control listener:
 //!
-//! Per the 0.6 cross-mob plan we picked design **(A)** — a `LocalOrRemote`
-//! enum at the cross-mob dispatch site (`cross_mob.rs`). The local arm
-//! uses the existing `MobHandle` path; the remote arm uses [`RemoteMobProxy`]
-//! to talk to the peer mob's admin endpoint over TCP/UDS.
+//! * [`RemoteMobProxy::wire_remote`] / [`RemoteMobProxy::unwire_remote`]
+//!   install or remove a `TrustedPeerDescriptor` for one of OUR members on
+//!   a member of the remote mob.
+//! * [`RemoteMobProxy::inject_message`] performs an app-level external-turn
+//!   injection into a remote member's session (`send_cross_mob`).
+//! * [`RemoteMobProxy::lookup_member`] discovers a remote member's comms
+//!   facts (peer id, comms name, transport pubkey, advertised address) so
+//!   the local side can build a signed descriptor without caller-supplied
+//!   bookkeeping.
 //!
-//! Phase 1 lands the **structural seam**: the `RemoteMobProxy` type, the
-//! `LocalOrRemote` enum, and the contact-directory scheme (`tcp://host:port`,
-//! `uds:///path`) flowing all the way through. Wire setup at the comms
-//! layer already supports those addresses — outbound message routing uses
-//! `meerkat_comms::Router`, which dispatches by `PeerAddr` scheme. The
-//! per-member transport just works once peer specs carry the correct
-//! address.
-//!
-//! What this module does **not** ship in Phase 1:
-//!
-//! 1. **Cross-process control RPC.** A real `RemoteMobProxy::wire` would
-//!    open a TCP/UDS connection to the peer mob's admin endpoint, send a
-//!    `WIRE` request, and await acknowledgment. Today the methods on
-//!    `RemoteMobProxy` return [`RemoteMobError::ControlChannelUnavailable`]
-//!    so callers learn the seam exists but is not yet wired.
-//! 2. **Ed25519-signed peer descriptors.** Sibling Unit 4 lands signed
-//!    descriptor authoring; this unit keeps using
-//!    `TrustedPeerSpec::new(...)` (which is structurally `test_only_unsigned`
-//!    in the 0.5.x core seam). The seam where Unit 4 will plug in is the
-//!    helpers `build_tcp_peer_spec` / `build_uds_peer_spec` in
-//!    `cross_mob.rs`.
-//!
-//! # Phase 2 plan (out of scope here)
-//!
-//! - Add a small JSON-over-CBOR control protocol with three operations:
-//!   `WireRequest { local_member, peer_spec }`,
-//!   `UnwireRequest { local_member, peer_spec }`,
-//!   `InjectRequest { remote_member, content, handling_mode }`.
-//!   Frame with `meerkat_comms::transport::codec::TransportCodec` (length-prefix
-//!   CBOR) — same wire shape as agent envelopes, distinct payload type.
-//! - Bind a control listener on each `UnifiedRuntime` startup when the
-//!   contact directory advertises a TCP/UDS endpoint for *this* mob.
-//! - `RemoteMobProxy` opens the connection lazily and reuses it for
-//!   subsequent calls; reconnect on drop.
+//! The server side is [`super::cross_mob_control::MobHandleControlHandler`],
+//! bound by `UnifiedRuntime::start_control_listener` (builder
+//! `control_listen()` or the gateway `--control-listen` flag). Each request
+//! opens a fresh connection; control RPC frequency is low (one message per
+//! wire/unwire/inject call), so connection pooling is deliberately not
+//! implemented.
 
 use crate::contact_directory::{ContactEntry, MobTransport};
 
@@ -184,12 +164,33 @@ impl RemoteEndpoint {
     }
 }
 
+/// Comms facts for a remote member, as returned by the peer gateway's
+/// `LookupMember` control operation.
+///
+/// `pubkey_b64` and `advertised_address` are `None` when the peer gateway
+/// could not resolve them (member without a comms runtime, or a control
+/// handler running without session-service access). Remote wiring fails
+/// closed on either absence: a descriptor without the member's own
+/// transport key or a dialable socket address can never deliver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteMemberInfo {
+    pub peer_id: String,
+    pub comms_name: String,
+    /// The member's transport pubkey (base64, optional `ed25519:` prefix).
+    pub pubkey_b64: Option<String>,
+    /// The member's dialable envelope-listener address (`tcp://host:port`,
+    /// `uds:///path`) or `inproc://name` for members without a socket
+    /// transport.
+    pub advertised_address: Option<String>,
+}
+
 /// A proxy for a mob that lives in a different process.
 ///
-/// Phase 1: a structural placeholder. The methods are stubs that return
-/// [`RemoteMobError::ControlChannelUnavailable`] so call sites can be
-/// written against the final shape; Phase 2 will replace these with a
-/// real control-channel client.
+/// Every method opens a control connection to the peer gateway's
+/// TCP/UDS control listener, sends one framed request, and awaits the
+/// framed response. [`RemoteMobError::ControlChannelUnavailable`] means
+/// the peer gateway is unreachable or has no control listener bound at
+/// the configured endpoint.
 #[derive(Debug, Clone)]
 pub struct RemoteMobProxy {
     mob_id: String,
@@ -334,13 +335,13 @@ impl RemoteMobProxy {
         }
     }
 
-    /// Look up a remote member's peer info via the control channel.
+    /// Look up a remote member's comms facts via the control channel.
     /// Used during `wire_cross_mob` to discover what `TrustedPeerDescriptor`
     /// to build for the local-side wire without caller-supplied bookkeeping.
     pub async fn lookup_member(
         &self,
         remote_member: &str,
-    ) -> Result<(String, String), RemoteMobError> {
+    ) -> Result<RemoteMemberInfo, RemoteMobError> {
         let request = super::cross_mob_control::ControlRequest::LookupMember {
             remote_member: remote_member.to_string(),
         };
@@ -355,7 +356,14 @@ impl RemoteMobProxy {
             super::cross_mob_control::ControlResponse::Member {
                 peer_id,
                 comms_name,
-            } => Ok((peer_id, comms_name)),
+                pubkey_b64,
+                advertised_address,
+            } => Ok(RemoteMemberInfo {
+                peer_id,
+                comms_name,
+                pubkey_b64,
+                advertised_address,
+            }),
             super::cross_mob_control::ControlResponse::Err { code, message } => {
                 Err(RemoteMobError::Rejected {
                     mob_id: self.mob_id.clone(),

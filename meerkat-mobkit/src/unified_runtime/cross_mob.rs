@@ -8,7 +8,7 @@ use meerkat_mob::{MobHandle, PeerTarget};
 
 use crate::auth::peer_keys::GatewayPeerKeys;
 use crate::contact_directory::{ContactDirectory, ContactEntry, MobTransport};
-use crate::runtime::cross_mob_remote::{RemoteMobError, RemoteMobProxy};
+use crate::runtime::cross_mob_remote::{RemoteMemberInfo, RemoteMobError, RemoteMobProxy};
 
 use super::UnifiedRuntime;
 
@@ -16,8 +16,9 @@ use super::UnifiedRuntime;
 /// (registered via `register_peer_mob`) or a [`RemoteMobProxy`] for
 /// peers reachable over TCP/UDS.
 ///
-/// Phase 1 wires the structural seam — see `runtime/cross_mob_remote.rs`
-/// for the Phase 2 plan that fills in real cross-process control RPC.
+/// The remote arm speaks the cross-process control protocol; see
+/// `runtime/cross_mob_remote.rs` for the client and
+/// `runtime/cross_mob_control.rs` for the wire shape and the listener.
 enum LocalOrRemote {
     /// Same-process peer with its member plane and optional identity authority.
     Local(Box<PeerMobAuthority>),
@@ -38,6 +39,10 @@ struct MemberPeerInfo {
     peer_id: String,
     comms_name: String,
     pubkey: [u8; 32],
+    /// Raw roster transport-pubkey string (base64, optional `ed25519:`
+    /// prefix), forwarded verbatim on remote wire requests so the far side
+    /// can build a signed descriptor for this member.
+    pubkey_b64: String,
 }
 
 struct BilateralAliasRollback<'a> {
@@ -150,11 +155,36 @@ pub enum CrossMobError {
     /// are part of the physical edge: without them a structurally wired peer
     /// cannot receive messages across isolated mob realms.
     InprocAlias(String),
-    /// A cross-process control-channel call failed. Phase 1 returns this
-    /// for any TCP/UDS contact entry that does not also have an
-    /// in-process `MobHandle` registered — the seam is laid out, the
-    /// real client lands in Phase 2.
+    /// A cross-process control-channel call failed: the peer gateway is
+    /// unreachable, has no control listener bound, or rejected the
+    /// request. The inner error carries the endpoint and the peer's
+    /// rejection code when one was returned.
     Remote(RemoteMobError),
+    /// The local cross-mob control listener could not be started (bind
+    /// failure, double start, unsupported transport on this platform).
+    ControlListener(String),
+    /// Remote cross-mob wiring requires the LOCAL member to be reachable
+    /// over a real transport: the descriptor shipped to the peer gateway
+    /// must carry an address its comms router can dial. Members default to
+    /// inproc comms; give them a socket listener (rpc_gateway
+    /// `runtime_options.member_comms_address`, or `comms.mode = "tcp"`
+    /// plus `comms.address` in the meerkat config) and bind the control
+    /// listener (`control_listen` / `--control-listen`) on both gateways.
+    LocalMemberNotRemotelyAddressable {
+        member_id: String,
+        mob_id: String,
+        /// What the member's comms runtime advertised (`None` when the
+        /// member has no comms runtime at all).
+        advertised: Option<String>,
+    },
+    /// The remote gateway answered `LookupMember` without a dialable comms
+    /// address or transport pubkey for the target member, so no routable
+    /// signed descriptor can be built for it.
+    RemoteMemberNotRemotelyAddressable {
+        member_id: String,
+        mob_id: String,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for CrossMobError {
@@ -184,6 +214,35 @@ impl std::fmt::Display for CrossMobError {
             ),
             Self::PeerSpec(reason) => write!(f, "peer spec error: {reason}"),
             Self::InprocAlias(reason) => write!(f, "inproc alias error: {reason}"),
+            Self::ControlListener(reason) => {
+                write!(f, "cross-mob control listener error: {reason}")
+            }
+            Self::LocalMemberNotRemotelyAddressable {
+                member_id,
+                mob_id,
+                advertised,
+            } => write!(
+                f,
+                "local member '{member_id}' in mob '{mob_id}' is not remotely addressable \
+                 (its comms runtime advertises {}); remote cross-mob wiring needs a member \
+                 socket transport - set runtime_options.member_comms_address (rpc_gateway) or \
+                 comms.mode=\"tcp\" with comms.address in the meerkat config, and bind \
+                 control_listen / --control-listen on the peer gateways",
+                match advertised {
+                    Some(address) => format!("'{address}'"),
+                    None => "no address (no comms runtime)".to_string(),
+                }
+            ),
+            Self::RemoteMemberNotRemotelyAddressable {
+                member_id,
+                mob_id,
+                detail,
+            } => write!(
+                f,
+                "remote member '{member_id}' in mob '{mob_id}' is not remotely addressable: \
+                 {detail}; the peer gateway must run its members with a socket comms transport \
+                 and serve LookupMember with session-service access"
+            ),
             Self::MissingPeerPubkey { mob_id } => match mob_id {
                 Some(id) => write!(
                     f,
@@ -461,7 +520,64 @@ async fn member_peer_info(
         peer_id,
         comms_name,
         pubkey,
+        pubkey_b64: pubkey_b64.to_string(),
     })
+}
+
+/// The member's live comms-listener address as its runtime advertises it
+/// (`tcp://host:port` with the real bound port when configured with port
+/// 0), or `None` when the member has no comms runtime. `inproc://...`
+/// comes back as-is; remote-wire callers reject it fail-closed.
+async fn member_comms_advertised_address(
+    mob_runtime: &crate::MobRuntime,
+    handle: &MobHandle,
+    member: &AgentIdentity,
+) -> Option<String> {
+    let session_id = handle.resolve_bridge_session_id(member).await?;
+    let service = mob_runtime.session_service()?;
+    let comms = service.comms_runtime(&session_id).await?;
+    comms.advertised_address()
+}
+
+/// Build the descriptor for a remote member from the facts its gateway
+/// returned via `LookupMember`. Fails closed when the remote member is not
+/// remotely addressable: a descriptor must carry an address the local
+/// comms router can dial and the MEMBER's own transport pubkey (the
+/// peer-id/pubkey consistency check rejects any other key, the contact
+/// directory's gateway key included).
+fn build_remote_member_spec(
+    info: &RemoteMemberInfo,
+    remote_member_id: &str,
+    remote_mob_id: &str,
+) -> Result<TrustedPeerDescriptor, CrossMobError> {
+    let not_addressable = |detail: String| CrossMobError::RemoteMemberNotRemotelyAddressable {
+        member_id: remote_member_id.to_string(),
+        mob_id: remote_mob_id.to_string(),
+        detail,
+    };
+    let address = info
+        .advertised_address
+        .as_deref()
+        .filter(|address| !address.starts_with("inproc://"))
+        .ok_or_else(|| {
+            not_addressable(match &info.advertised_address {
+                Some(address) => {
+                    format!("advertised address '{address}' is not dialable across processes")
+                }
+                None => "the peer gateway reported no advertised comms address for this member"
+                    .to_string(),
+            })
+        })?;
+    let pubkey_b64 = info.pubkey_b64.as_deref().ok_or_else(|| {
+        not_addressable("the peer gateway reported no transport pubkey for this member".to_string())
+    })?;
+    let pubkey = crate::auth::peer_keys::decode_pubkey_b64(pubkey_b64).map_err(|err| {
+        CrossMobError::PeerSpec(format!(
+            "remote member '{remote_member_id}' in mob '{remote_mob_id}' has an invalid \
+             transport pubkey: {err}"
+        ))
+    })?;
+    build_external_peer_spec(&info.comms_name, &info.peer_id, address, Some(pubkey))
 }
 
 async fn member_can_address_peer(
@@ -829,14 +945,14 @@ async fn unwire_bilateral_transaction(
 async fn wire_cross_mob_transaction(
     entry: ContactEntry,
     remote: LocalOrRemote,
-    local_handle: MobHandle,
+    local_runtime: crate::MobRuntime,
     local_mid: AgentIdentity,
     local_mob_id: String,
     local_member_id: String,
     remote_member_id: String,
     remote_mob_id: String,
-    pubkey_b64: Option<String>,
 ) -> Result<(), CrossMobError> {
+    let local_handle = local_runtime.handle();
     let local_info = member_peer_info(&local_handle, &local_mid, &local_mob_id).await?;
     match remote {
         LocalOrRemote::Local(remote_authority) => {
@@ -889,16 +1005,29 @@ async fn wire_cross_mob_transaction(
             Ok(())
         }
         LocalOrRemote::Remote(proxy) => {
-            let (remote_peer_id, remote_comms_name) = proxy
+            // Resolve the LOCAL member's dialable comms address before
+            // mutating anything: the far side installs it as the reply
+            // route, and an inproc:// (or absent) address can never
+            // deliver an envelope across processes. Failing here leaves
+            // both rosters untouched.
+            let local_address =
+                member_comms_advertised_address(&local_runtime, &local_handle, &local_mid).await;
+            let local_address = match local_address {
+                Some(address) if !address.starts_with("inproc://") => address,
+                other => {
+                    return Err(CrossMobError::LocalMemberNotRemotelyAddressable {
+                        member_id: local_member_id.clone(),
+                        mob_id: local_mob_id.clone(),
+                        advertised: other,
+                    });
+                }
+            };
+            let remote_info = proxy
                 .lookup_member(&remote_member_id)
                 .await
                 .map_err(CrossMobError::Remote)?;
-            let remote_spec = build_peer_spec(
-                &remote_comms_name,
-                &remote_peer_id,
-                &entry.transport,
-                entry.pubkey,
-            )?;
+            let remote_spec =
+                build_remote_member_spec(&remote_info, &remote_member_id, &remote_mob_id)?;
             mutate_member_unchecked(
                 local_handle.clone(),
                 &local_member_id,
@@ -906,23 +1035,19 @@ async fn wire_cross_mob_transaction(
                 true,
             )
             .await?;
-            let local_spec_address = format!("inproc://{}", local_info.comms_name);
             if let Err(remote_error) = proxy
                 .wire_remote(
                     &remote_member_id,
-                    &local_spec_address,
+                    &local_address,
                     &local_info.comms_name,
                     &local_info.peer_id,
-                    pubkey_b64,
+                    Some(local_info.pubkey_b64.clone()),
                 )
                 .await
             {
-                if let Ok(spec) = build_peer_spec(
-                    &remote_comms_name,
-                    &remote_peer_id,
-                    &entry.transport,
-                    entry.pubkey,
-                ) {
+                if let Ok(spec) =
+                    build_remote_member_spec(&remote_info, &remote_member_id, &remote_mob_id)
+                {
                     let _ = mutate_member_unchecked(
                         local_handle,
                         &local_member_id,
@@ -942,14 +1067,14 @@ async fn wire_cross_mob_transaction(
 async fn unwire_cross_mob_transaction(
     entry: ContactEntry,
     remote: LocalOrRemote,
-    local_handle: MobHandle,
+    local_runtime: crate::MobRuntime,
     local_mid: AgentIdentity,
     local_mob_id: String,
     local_member_id: String,
     remote_member_id: String,
     remote_mob_id: String,
-    pubkey_b64: Option<String>,
 ) -> Result<(), CrossMobError> {
+    let local_handle = local_runtime.handle();
     let mut first_error = None;
     let local_info = member_peer_info(&local_handle, &local_mid, &local_mob_id)
         .await
@@ -996,16 +1121,11 @@ async fn unwire_cross_mob_transaction(
             }
         }
         LocalOrRemote::Remote(proxy) => {
-            if let Ok((remote_peer_id, remote_comms_name)) =
-                proxy.lookup_member(&remote_member_id).await
-                && let Ok(spec) = build_peer_spec(
-                    &remote_comms_name,
-                    &remote_peer_id,
-                    &entry.transport,
-                    entry.pubkey,
-                )
+            if let Ok(remote_info) = proxy.lookup_member(&remote_member_id).await
+                && let Ok(spec) =
+                    build_remote_member_spec(&remote_info, &remote_member_id, &remote_mob_id)
                 && let Err(error) = mutate_member_unchecked(
-                    local_handle,
+                    local_handle.clone(),
                     &local_member_id,
                     PeerTarget::External(spec),
                     false,
@@ -1015,19 +1135,37 @@ async fn unwire_cross_mob_transaction(
                 first_error = Some(error);
             }
             if let Some(local_info) = &local_info {
-                let local_spec_address = format!("inproc://{}", local_info.comms_name);
-                if let Err(error) = proxy
-                    .unwire_remote(
-                        &remote_member_id,
-                        &local_spec_address,
-                        &local_info.comms_name,
-                        &local_info.peer_id,
-                        pubkey_b64,
-                    )
+                // The far side removes trust rows by descriptor, so the
+                // unwire request needs the same dialable address + member
+                // pubkey the wire installed; its strict handler rejects
+                // inproc:// either way.
+                match member_comms_advertised_address(&local_runtime, &local_handle, &local_mid)
                     .await
-                    && first_error.is_none()
                 {
-                    first_error = Some(CrossMobError::Remote(error));
+                    Some(local_address) if !local_address.starts_with("inproc://") => {
+                        if let Err(error) = proxy
+                            .unwire_remote(
+                                &remote_member_id,
+                                &local_address,
+                                &local_info.comms_name,
+                                &local_info.peer_id,
+                                Some(local_info.pubkey_b64.clone()),
+                            )
+                            .await
+                            && first_error.is_none()
+                        {
+                            first_error = Some(CrossMobError::Remote(error));
+                        }
+                    }
+                    other => {
+                        if first_error.is_none() {
+                            first_error = Some(CrossMobError::LocalMemberNotRemotelyAddressable {
+                                member_id: local_member_id.clone(),
+                                mob_id: local_mob_id.clone(),
+                                advertised: other,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -1261,6 +1399,60 @@ impl UnifiedRuntime {
         self.contact_directory = Some(directory);
     }
 
+    /// Bind the cross-mob control listener and start serving control RPC
+    /// (wire/unwire/inject/lookup) from remote gateways.
+    ///
+    /// Returns the dialable bound address (`tcp://ip:port` with the real
+    /// kernel-assigned port for `tcp://host:0`, or `uds:///path`) - this is
+    /// what peers put in their contact directories. The serve task is owned
+    /// by the runtime and aborted on [`UnifiedRuntime::shutdown`].
+    ///
+    /// The handler re-reads the identity authority per request, so calling
+    /// this before `attach_identity_first_context` is safe: generated
+    /// `rt:*` aliases fail closed until the authority is attached and are
+    /// admitted afterwards.
+    pub async fn start_control_listener(
+        &self,
+        addr: &crate::runtime::cross_mob_control::ControlListenAddr,
+    ) -> Result<String, CrossMobError> {
+        let mut task_slot = self.cross_mob_control_task.lock().await;
+        if task_slot.is_some() {
+            return Err(CrossMobError::ControlListener(
+                "control listener already running".to_string(),
+            ));
+        }
+        let bound = crate::runtime::cross_mob_control::BoundControlListener::bind(addr)
+            .await
+            .map_err(|error| CrossMobError::ControlListener(format!("bind {addr}: {error}")))?;
+        let advertised = bound.advertised_address().to_string();
+        let mut handler =
+            crate::runtime::cross_mob_control::MobHandleControlHandler::with_shared_identity_authority(
+                self.mob_handle(),
+                std::sync::Arc::clone(&self.implicit_delegate_identity_runtime),
+            );
+        if let Some(service) = self.mob_runtime.session_service() {
+            handler = handler.with_session_service(std::sync::Arc::clone(service));
+        }
+        let handler: std::sync::Arc<dyn crate::runtime::cross_mob_control::ControlHandler> =
+            std::sync::Arc::new(handler);
+        *task_slot = Some(tokio::spawn(bound.serve(handler)));
+        *self
+            .cross_mob_control_advertised
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(advertised.clone());
+        Ok(advertised)
+    }
+
+    /// The dialable address of the running cross-mob control listener, or
+    /// `None` when no listener was started. For `tcp://host:0` binds this
+    /// carries the real kernel-assigned port.
+    pub fn control_listener_advertised_address(&self) -> Option<String> {
+        self.cross_mob_control_advertised
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Install the long-lived Ed25519 keypair this gateway advertises via
     /// `mobkit/peer_pubkey` and (when meerkat-comms grows out-of-process
     /// transports) signs outbound envelopes with.
@@ -1290,8 +1482,8 @@ impl UnifiedRuntime {
     /// The destination mob is dispatched as either [`LocalOrRemote::Local`]
     /// (when an `Arc<MobHandle>` was registered via [`Self::register_peer_mob`])
     /// or [`LocalOrRemote::Remote`] (when only a contact-directory TCP/UDS
-    /// entry exists). Phase 1 ships the structural seam; Phase 2 wires the
-    /// real cross-process control RPC — see
+    /// entry exists). The remote arm performs real cross-process control
+    /// RPC against the peer gateway's control listener - see
     /// `runtime::cross_mob_remote::RemoteMobProxy`.
     pub async fn wire_cross_mob(
         &self,
@@ -1344,11 +1536,8 @@ impl UnifiedRuntime {
             LocalOrRemote::Remote(_) => None,
         };
         let remote_identity_authoritative = remote_target.is_some();
-        let pubkey_b64 = self
-            .gateway_peer_keys
-            .as_ref()
-            .map(crate::auth::peer_keys::GatewayPeerKeys::pubkey_b64);
         let remote_mob_id = remote_mob_id.to_string();
+        let local_runtime = self.mob_runtime.clone();
         run_member_authority_transaction(
             [local_target, remote_target],
             format!("{local_member_id} <-> {remote_member_id}"),
@@ -1379,13 +1568,12 @@ impl UnifiedRuntime {
                 wire_cross_mob_transaction(
                     entry,
                     remote,
-                    local_handle,
+                    local_runtime,
                     local_mid,
                     local_mob_id,
                     local_member_id,
                     remote_member_id,
                     remote_mob_id,
-                    pubkey_b64,
                 )
                 .await
             },
@@ -1448,11 +1636,8 @@ impl UnifiedRuntime {
             LocalOrRemote::Remote(_) => None,
         };
         let remote_identity_authoritative = remote_target.is_some();
-        let pubkey_b64 = self
-            .gateway_peer_keys
-            .as_ref()
-            .map(crate::auth::peer_keys::GatewayPeerKeys::pubkey_b64);
         let remote_mob_id = remote_mob_id.to_string();
+        let local_runtime = self.mob_runtime.clone();
         run_member_authority_transaction(
             [local_target, remote_target],
             format!("{local_member_id} <-> {remote_member_id}"),
@@ -1483,13 +1668,12 @@ impl UnifiedRuntime {
                 unwire_cross_mob_transaction(
                     entry,
                     remote,
-                    local_handle,
+                    local_runtime,
                     local_mid,
                     local_mob_id,
                     local_member_id,
                     remote_member_id,
                     remote_mob_id,
-                    pubkey_b64,
                 )
                 .await
             },
@@ -1884,6 +2068,7 @@ impl UnifiedRuntime {
             peer_id,
             comms_name,
             pubkey,
+            pubkey_b64: pubkey_b64.to_string(),
         })
     }
 
@@ -1987,12 +2172,14 @@ fn build_external_peer_spec(
     }
 }
 
-/// Build a TCP peer descriptor.
+/// Build an UNSIGNED TCP peer descriptor (test/fixture helper).
 ///
-/// Uses the comms-layer address scheme `tcp://host:port`. **Phase-1 seam**:
-/// goes through [`TrustedPeerDescriptor::test_only_unsigned`]. Callers
-/// that need a real signed descriptor (Ed25519-stamped) should construct
-/// it via [`build_external_peer_spec`] with an explicit pubkey instead.
+/// Uses the comms-layer address scheme `tcp://host:port` and goes through
+/// [`TrustedPeerDescriptor::test_only_unsigned`], so the result carries no
+/// pubkey and is rejected by every fail-closed wire path in this module.
+/// Production callers get signed descriptors from the wire/lookup flow
+/// (which routes through [`build_external_peer_spec`] with a real pubkey);
+/// this helper exists for tests that assert address canonicalization.
 pub fn build_tcp_peer_spec(
     comms_name: &str,
     peer_id: &str,
@@ -2002,11 +2189,11 @@ pub fn build_tcp_peer_spec(
         .map_err(CrossMobError::PeerSpec)
 }
 
-/// Build a UDS peer descriptor.
+/// Build an UNSIGNED UDS peer descriptor (test/fixture helper).
 ///
-/// Uses the comms-layer address scheme `uds:///path` (triple slash —
-/// `uds://` + absolute path). See [`build_tcp_peer_spec`] for the
-/// Phase-1 vs signed-descriptor seam note.
+/// Uses the comms-layer address scheme `uds:///path` (triple slash -
+/// `uds://` + absolute path). See [`build_tcp_peer_spec`] for why this
+/// stays unsigned and what production callers use instead.
 pub fn build_uds_peer_spec(
     comms_name: &str,
     peer_id: &str,

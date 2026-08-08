@@ -173,7 +173,10 @@ fn parse_entry(mob_id: &str, value: &toml::Value) -> Result<ContactEntry, Contac
     })
 }
 
-fn parse_transport(s: &str) -> Option<MobTransport> {
+/// Parse a transport string (`inproc`, `tcp://host:port`, `uds:///path`).
+/// Shared with the control-listen address parser so the two surfaces never
+/// drift on address spelling.
+pub(crate) fn parse_transport(s: &str) -> Option<MobTransport> {
     if s == "inproc" {
         return Some(MobTransport::Inproc);
     }
