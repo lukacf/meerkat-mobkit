@@ -1352,3 +1352,201 @@ fn auth_error_reason(error: &DecisionPolicyError) -> &'static str {
         _ => "policy_denied",
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod access_projection_tests {
+    //! Unit coverage for the console access-projection primitives.
+    //!
+    //! These decide what a caller is permitted to SEE and DO in the admin
+    //! console. They were previously exercised only indirectly, through the
+    //! route-level binaries (`console_route_auth`, `access_control`), so a
+    //! change that widened a grant could pass every existing test as long as
+    //! the routes still returned 200. The invariant worth pinning is that
+    //! projection can only ever *narrow* an affordance the body already
+    //! claimed — never introduce one.
+
+    use super::*;
+    use crate::access::{AccessControlConfig, AccessGroup, AccessRule};
+    use std::collections::BTreeMap;
+
+    /// `alice` is in group `ops`, which may only VIEW. She may not send,
+    /// retire, respawn, spawn, or administer.
+    fn view_only_controller() -> AccessController {
+        AccessController::new(AccessControlConfig {
+            enabled: true,
+            admins: vec!["root@example.test".to_string()],
+            groups: BTreeMap::from([(
+                "ops".to_string(),
+                AccessGroup {
+                    description: None,
+                    members: vec!["alice@example.test".to_string()],
+                },
+            )]),
+            rules: vec![AccessRule {
+                id: "ops-view-all".to_string(),
+                groups: vec!["ops".to_string()],
+                actions: vec![crate::access::ACTION_AGENT_VIEW.to_string()],
+                ..AccessRule::default()
+            }],
+        })
+        .expect("controller")
+    }
+
+    fn member(identity: &str) -> ConsoleMember {
+        ConsoleMember {
+            agent_identity: identity.to_string(),
+            role: "worker".to_string(),
+            state: "active".to_string(),
+            model_capabilities: ConsoleModelCapabilities::default(),
+            runtime_mode: None,
+            session_id: None,
+            wired_to: Vec::new(),
+            labels: BTreeMap::new(),
+            progress: None,
+        }
+    }
+
+    fn snapshot(modules: Vec<String>, members: Vec<ConsoleMember>) -> ConsoleLiveSnapshot {
+        ConsoleLiveSnapshot {
+            runtime_id: None,
+            running: true,
+            loaded_modules: modules,
+            agents: Vec::new(),
+            members,
+            has_mob_runtime: true,
+        }
+    }
+
+    // ---- intersect_bool: the core "narrow, never widen" primitive ----------
+
+    #[test]
+    fn intersect_bool_cannot_grant_an_affordance_the_body_did_not_claim() {
+        let mut object = serde_json::Map::new();
+        object.insert("can_send_message".to_string(), Value::Bool(false));
+        intersect_bool(&mut object, "can_send_message", true);
+        assert_eq!(
+            object.get("can_send_message").and_then(Value::as_bool),
+            Some(false),
+            "a permissive view must not turn a false affordance true"
+        );
+    }
+
+    #[test]
+    fn intersect_bool_treats_an_absent_key_as_denied_not_permitted() {
+        let mut object = serde_json::Map::new();
+        intersect_bool(&mut object, "can_retire", true);
+        assert_eq!(
+            object.get("can_retire").and_then(Value::as_bool),
+            Some(false),
+            "a missing affordance must default closed, not open"
+        );
+    }
+
+    #[test]
+    fn intersect_bool_revokes_when_the_view_denies() {
+        let mut object = serde_json::Map::new();
+        object.insert("can_retire".to_string(), Value::Bool(true));
+        intersect_bool(&mut object, "can_retire", false);
+        assert_eq!(
+            object.get("can_retire").and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn intersect_bool_preserves_only_when_body_and_view_agree() {
+        let mut object = serde_json::Map::new();
+        object.insert("can_send_message".to_string(), Value::Bool(true));
+        intersect_bool(&mut object, "can_send_message", true);
+        assert_eq!(
+            object.get("can_send_message").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    // ---- filter_snapshot_for_access ---------------------------------------
+
+    #[test]
+    fn unenforced_access_does_not_filter_the_snapshot() {
+        // Documents the bypass explicitly: with enforcement off the projection
+        // is deliberately a no-op, so a caller sees the whole roster.
+        let controller = AccessController::disabled();
+        let view = controller.view_for_subject(None);
+        assert!(!view.enforced());
+        let mut snap = snapshot(
+            vec!["module-a".to_string()],
+            vec![member("agent:alpha"), member("agent:beta")],
+        );
+        filter_snapshot_for_access(&mut snap, &view);
+        assert_eq!(snap.members.len(), 2);
+        assert_eq!(snap.loaded_modules.len(), 1);
+    }
+
+    #[test]
+    fn enforced_access_gates_the_module_fallback_rows() {
+        // Module ids double as sidebar rows when no roster member survives
+        // filtering. A caller with no grant over them must not be shown the
+        // fallback — otherwise denial leaks the module inventory.
+        let controller = view_only_controller();
+        let view = controller.view_for_subject(Some("nobody@example.test"));
+        assert!(view.enforced());
+        let mut snap = snapshot(
+            vec!["module-a".to_string(), "module-b".to_string()],
+            vec![member("agent:alpha")],
+        );
+        filter_snapshot_for_access(&mut snap, &view);
+        assert!(
+            snap.loaded_modules.is_empty(),
+            "a fully-denied caller must not see module fallback rows"
+        );
+        assert!(
+            snap.members.is_empty(),
+            "a fully-denied caller must not see roster members"
+        );
+    }
+
+    // ---- apply_access_to_experience ---------------------------------------
+
+    #[test]
+    fn access_section_is_reported_even_when_enforcement_is_off() {
+        let controller = AccessController::disabled();
+        let view = controller.view_for_subject(None);
+        let mut body = serde_json::json!({});
+        apply_access_to_experience(&mut body, &view);
+        let access = body.get("access").expect("access section");
+        assert_eq!(access.get("available").and_then(Value::as_bool), Some(true));
+        assert_eq!(access.get("enabled").and_then(Value::as_bool), Some(false));
+    }
+
+    #[test]
+    fn projection_cannot_escalate_a_denied_runtime_capability() {
+        // `ops` may view but not spawn. Even though the body claims the
+        // capability, the projection must intersect it away.
+        let controller = view_only_controller();
+        let view = controller.view_for_subject(Some("alice@example.test"));
+        assert!(view.enforced());
+        let mut body = serde_json::json!({
+            "runtime_capabilities": {
+                "can_send_messages": true,
+                "can_spawn_members": true,
+                "can_wire_members": true,
+            }
+        });
+        apply_access_to_experience(&mut body, &view);
+        let caps = body
+            .get("runtime_capabilities")
+            .and_then(Value::as_object)
+            .expect("capabilities");
+        assert_eq!(
+            caps.get("can_spawn_members").and_then(Value::as_bool),
+            Some(false),
+            "view-only subject must not retain spawn"
+        );
+        assert_eq!(
+            caps.get("can_wire_members").and_then(Value::as_bool),
+            Some(false),
+            "view-only subject must not retain runtime admin"
+        );
+    }
+}
