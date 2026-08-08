@@ -107,6 +107,11 @@ struct RuntimeRegistryEntry {
     http_base_url: String,
     pid: u32,
     updated_at_ms: u64,
+    /// Dialable cross-mob control-listener address of the live gateway, so
+    /// a resumed launch can still report it. Serde-defaulted: registries
+    /// written by older gateways simply resume with no control address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    control_listen_address: Option<String>,
 }
 
 fn current_time_ms() -> u64 {
@@ -693,6 +698,7 @@ fn init_response(
     runtime_id: &str,
     http_base_url: &str,
     launch_state: &str,
+    control_listen_address: Option<&str>,
 ) -> Value {
     json!({
         "jsonrpc": "2.0",
@@ -702,6 +708,11 @@ fn init_response(
             "runtime_id": runtime_id,
             "http_base_url": http_base_url,
             "launch_state": launch_state,
+            // Dialable address of the cross-mob control listener when the
+            // gateway was launched with --control-listen (real bound port
+            // for tcp://host:0); null otherwise. Peers put this address in
+            // their contact directories. Wire-additive optional field.
+            "control_listen_address": control_listen_address,
         }
     })
 }
@@ -1184,6 +1195,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
             &entry.runtime_id,
             &entry.http_base_url,
             "resumed",
+            entry.control_listen_address.as_deref(),
         ));
         return Ok(());
     }
@@ -1597,6 +1609,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         listener.local_addr().context("missing local addr")?.port()
     );
 
+    let control_listen_address = runtime.control_listener_advertised_address();
     registry.entries.retain(|entry| entry.key != key);
     registry.entries.push(RuntimeRegistryEntry {
         key: key.clone(),
@@ -1604,6 +1617,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         http_base_url: http_base_url.clone(),
         pid: std::process::id(),
         updated_at_ms: current_time_ms(),
+        control_listen_address: control_listen_address.clone(),
     });
     save_registry(&registry_file, &registry)?;
 
@@ -1612,6 +1626,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         &runtime_id,
         &http_base_url,
         "created",
+        control_listen_address.as_deref(),
     ));
 
     let decisions = runtime_decision_state(&runtime_id, console_ui, console_read_only);

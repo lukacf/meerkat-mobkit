@@ -174,9 +174,12 @@ pub struct UnifiedRuntime {
     /// `None` is the default for inproc-only deployments and tests;
     /// production gateways set this via
     /// [`UnifiedRuntime::set_gateway_peer_keys`] during bootstrap so the
-    /// `mobkit/peer_pubkey` RPC and non-inproc `wire_*` paths can stamp
-    /// a real pubkey on outbound descriptors.
-    gateway_peer_keys: Option<crate::auth::peer_keys::GatewayPeerKeys>,
+    /// `mobkit/peer_pubkey` RPC can advertise it and the cross-mob control
+    /// listener can sign its responses. A shared late-bound slot (the same
+    /// pattern as the identity authority): the control listener may start
+    /// before the host installs keys, and its serve task re-reads this
+    /// slot per request.
+    gateway_peer_keys: crate::runtime::cross_mob_control::ControlSignerSlot,
 
     // Identity-first session bridge
     session_bridge: Option<Arc<dyn crate::identity_first::bridge::SessionBridge>>,
@@ -314,7 +317,7 @@ impl UnifiedRuntime {
             peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
             cross_mob_control_task: tokio::sync::Mutex::new(None),
             cross_mob_control_advertised: std::sync::RwLock::new(None),
-            gateway_peer_keys: None,
+            gateway_peer_keys: crate::runtime::cross_mob_control::unsigned_control_signer(),
             session_bridge: None,
             identity_first_context: None,
             access_controller: None,

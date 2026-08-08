@@ -32,6 +32,7 @@
 
 use std::time::Duration;
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -140,12 +141,18 @@ impl BoundControlListener {
         }
     }
 
-    /// Serve control requests until the owning task is aborted.
-    pub async fn serve(self, handler: std::sync::Arc<dyn ControlHandler>) {
+    /// Serve control requests until the owning task is aborted. Responses
+    /// are signed with the gateway key when `signer` holds one (re-read
+    /// per request, so late-installed keys take effect).
+    pub async fn serve(
+        self,
+        handler: std::sync::Arc<dyn ControlHandler>,
+        signer: ControlSignerSlot,
+    ) {
         match self {
-            Self::Tcp { listener, .. } => serve_tcp_control(listener, handler).await,
+            Self::Tcp { listener, .. } => serve_tcp_control(listener, handler, signer).await,
             #[cfg(unix)]
-            Self::Uds { listener, .. } => serve_uds_control(listener, handler).await,
+            Self::Uds { listener, .. } => serve_uds_control(listener, handler, signer).await,
         }
     }
 }
@@ -172,11 +179,17 @@ pub enum ControlRequest {
         local_peer_spec_address: String,
         local_comms_name: String,
         local_peer_id: String,
-        /// Optional Ed25519 pubkey of the calling gateway. When present,
+        /// Ed25519 transport pubkey of the calling MEMBER. When present,
         /// the receiving gateway builds a signed `TrustedPeerDescriptor`
         /// so meerkat-comms can verify envelope signatures.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         local_pubkey_b64: Option<String>,
+        /// Client-minted freshness nonce. It rides inside the request
+        /// bytes, so the response signature (which covers the request
+        /// digest) cannot be replayed for a later request. Old servers
+        /// ignore it; old clients omit it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nonce: Option<String>,
     },
     /// Unwire a previously-wired peer.
     Unwire {
@@ -186,6 +199,8 @@ pub enum ControlRequest {
         local_peer_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         local_pubkey_b64: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nonce: Option<String>,
     },
     /// Inject an external-turn message into a remote member's session.
     /// Used by `send_cross_mob` for app-level injection.
@@ -193,11 +208,17 @@ pub enum ControlRequest {
         remote_member: String,
         /// JSON-encoded `meerkat_core::ContentInput`.
         content: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nonce: Option<String>,
     },
     /// Look up a member's comms info on the remote side. Used during
     /// `wire_cross_mob` to discover the remote member's peer_id and
     /// derived comms_name without requiring caller-supplied bookkeeping.
-    LookupMember { remote_member: String },
+    LookupMember {
+        remote_member: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nonce: Option<String>,
+    },
 }
 
 /// Cross-mob control response.
@@ -205,7 +226,13 @@ pub enum ControlRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum ControlResponse {
     /// Operation succeeded (no payload).
-    Ok,
+    Ok {
+        /// Gateway signature over this response bound to the exact request
+        /// bytes - see [`control_response_signing_payload`]. Absent when
+        /// the serving gateway has no signing keys installed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sig_b64: Option<String>,
+    },
     /// Inject succeeded - the far side admitted the dispatch and returns
     /// the bridge session id that accepted it, so the caller can correlate
     /// downstream events.
@@ -218,7 +245,11 @@ pub enum ControlResponse {
     /// durable admission over remote paths reconcile by idempotent
     /// re-submit with WorkRef dedup - the protocol deliberately has no
     /// resend verb.
-    Injected { session_id: String },
+    Injected {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sig_b64: Option<String>,
+    },
     /// LookupMember succeeded - return the remote member's comms facts so
     /// the caller can build a signed `TrustedPeerDescriptor` pointing at
     /// it.
@@ -239,11 +270,138 @@ pub enum ControlResponse {
         /// control handler has no session-service access.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         advertised_address: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sig_b64: Option<String>,
     },
     /// Operation failed. `code` is a stable short string for machine
     /// dispatch (`unknown_member`, `mob_error`, `decode`, ...); `message`
     /// is human-readable.
     Err { code: String, message: String },
+}
+
+/// Domain-separation context for control-response signatures. Versioned so
+/// a future payload change cannot be confused with this one.
+pub const CONTROL_SIG_CONTEXT: &str = "mobkit-cross-mob-control-v1";
+
+/// Live signing authority for control responses: the gateway keypair,
+/// late-bound because hosts install keys after the runtime (and possibly
+/// after the listener) exists. `None` serves unsigned responses, which
+/// clients with a pinned peer pubkey reject.
+pub type ControlSignerSlot = std::sync::Arc<
+    std::sync::RwLock<Option<std::sync::Arc<crate::auth::peer_keys::GatewayPeerKeys>>>,
+>;
+
+/// A signer slot that never signs (tests, deployments without keys).
+pub fn unsigned_control_signer() -> ControlSignerSlot {
+    std::sync::Arc::new(std::sync::RwLock::new(None))
+}
+
+fn control_request_digest_hex(request_bytes: &[u8]) -> String {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(request_bytes);
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}
+
+/// The deterministic byte string a control-response signature covers.
+///
+/// Built from the semantic response fields plus the SHA-256 of the exact
+/// request bytes the server read off the wire - never from re-serialized
+/// JSON, so there is no canonicalization to get wrong. Binding the request
+/// digest means a signature is only valid for the one request (including
+/// its client-minted nonce) that elicited it: a MITM can neither
+/// substitute member facts in a `Member` response nor replay a previous
+/// response for a fresh request. `Err` responses are not trusted material
+/// and are never signed.
+pub fn control_response_signing_payload(
+    request_bytes: &[u8],
+    response: &ControlResponse,
+) -> Option<String> {
+    let facts = match response {
+        ControlResponse::Ok { .. } => "ok".to_string(),
+        ControlResponse::Injected { session_id, .. } => format!("injected\n{session_id}"),
+        ControlResponse::Member {
+            peer_id,
+            comms_name,
+            pubkey_b64,
+            advertised_address,
+            ..
+        } => format!(
+            "member\n{peer_id}\n{comms_name}\n{}\n{}",
+            pubkey_b64.as_deref().unwrap_or(""),
+            advertised_address.as_deref().unwrap_or("")
+        ),
+        ControlResponse::Err { .. } => return None,
+    };
+    Some(format!(
+        "{CONTROL_SIG_CONTEXT}\n{}\n{facts}",
+        control_request_digest_hex(request_bytes)
+    ))
+}
+
+/// Sign `response` in place with the gateway key. No-op for `Err`.
+fn sign_control_response(
+    signer: &crate::auth::peer_keys::GatewayPeerKeys,
+    request_bytes: &[u8],
+    response: &mut ControlResponse,
+) {
+    use ed25519_dalek::Signer;
+    let Some(payload) = control_response_signing_payload(request_bytes, response) else {
+        return;
+    };
+    let signature = signer.signing_key().sign(payload.as_bytes());
+    let encoded = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+    match response {
+        ControlResponse::Ok { sig_b64 }
+        | ControlResponse::Injected { sig_b64, .. }
+        | ControlResponse::Member { sig_b64, .. } => *sig_b64 = Some(encoded),
+        ControlResponse::Err { .. } => {}
+    }
+}
+
+/// Verify a control response against the pinned gateway pubkey and the
+/// exact request bytes that were sent. `Err` responses pass unverified:
+/// they are failure reports, not trusted material, and rejecting them
+/// would only change WHICH error the caller sees.
+pub fn verify_control_response(
+    pinned_pubkey: &[u8; 32],
+    request_bytes: &[u8],
+    response: &ControlResponse,
+) -> Result<(), String> {
+    let Some(payload) = control_response_signing_payload(request_bytes, response) else {
+        return Ok(());
+    };
+    let sig_b64 = match response {
+        ControlResponse::Ok { sig_b64 }
+        | ControlResponse::Injected { sig_b64, .. }
+        | ControlResponse::Member { sig_b64, .. } => sig_b64.as_deref(),
+        ControlResponse::Err { .. } => None,
+    };
+    let Some(sig_b64) = sig_b64 else {
+        return Err(
+            "response is unsigned; the peer gateway has no signing keys installed or predates \
+             signed control responses"
+                .to_string(),
+        );
+    };
+    let sig_bytes = base64::engine::general_purpose::STANDARD
+        .decode(sig_b64)
+        .map_err(|err| format!("signature is not valid base64: {err}"))?;
+    let sig_bytes: [u8; 64] = sig_bytes
+        .try_into()
+        .map_err(|_| "signature must be 64 bytes".to_string())?;
+    let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(pinned_pubkey)
+        .map_err(|err| format!("pinned pubkey is not a valid Ed25519 key: {err}"))?;
+    verifying_key
+        .verify_strict(payload.as_bytes(), &signature)
+        .map_err(|_| "signature does not verify against the pinned gateway pubkey".to_string())
 }
 
 /// Open a control connection to a remote endpoint.
@@ -317,7 +475,20 @@ impl RemoteControlClient {
         request: &ControlRequest,
         timeout: Duration,
     ) -> Result<ControlResponse, RemoteMobError> {
-        tokio::time::timeout(timeout, Self::send_inner(endpoint, request))
+        let payload =
+            serde_json::to_vec(request).map_err(|err| encode_error(endpoint, err.to_string()))?;
+        Self::send_payload(endpoint, &payload, timeout).await
+    }
+
+    /// Send pre-serialized request bytes. Callers that verify signed
+    /// responses use this form so the exact bytes on the wire (the input
+    /// to the response's request digest) are in their hands.
+    pub async fn send_payload(
+        endpoint: &RemoteEndpoint,
+        payload: &[u8],
+        timeout: Duration,
+    ) -> Result<ControlResponse, RemoteMobError> {
+        tokio::time::timeout(timeout, Self::send_inner(endpoint, payload))
             .await
             .map_err(|_| RemoteMobError::ControlChannelUnavailable {
                 mob_id: String::new(),
@@ -328,7 +499,7 @@ impl RemoteControlClient {
 
     async fn send_inner(
         endpoint: &RemoteEndpoint,
-        request: &ControlRequest,
+        payload: &[u8],
     ) -> Result<ControlResponse, RemoteMobError> {
         let mut stream = match endpoint {
             RemoteEndpoint::Tcp(addr) => ControlStream::Tcp(
@@ -350,10 +521,8 @@ impl RemoteControlClient {
                 });
             }
         };
-        let payload =
-            serde_json::to_vec(request).map_err(|err| encode_error(endpoint, err.to_string()))?;
         stream
-            .write_frame(&payload)
+            .write_frame(payload)
             .await
             .map_err(|err| io_error("write", endpoint, err))?;
         let response_payload = stream
@@ -518,6 +687,7 @@ impl ControlHandler for MobHandleControlHandler {
                     local_comms_name,
                     local_peer_id,
                     local_pubkey_b64,
+                    nonce: _,
                 } => {
                     handle_wire(
                         &handle,
@@ -539,6 +709,7 @@ impl ControlHandler for MobHandleControlHandler {
                     local_comms_name,
                     local_peer_id,
                     local_pubkey_b64,
+                    nonce: _,
                 } => {
                     handle_wire(
                         &handle,
@@ -557,10 +728,14 @@ impl ControlHandler for MobHandleControlHandler {
                 ControlRequest::Inject {
                     remote_member,
                     content,
+                    nonce: _,
                 } => {
                     handle_inject(&handle, &remote_member, content, identity_runtime.as_ref()).await
                 }
-                ControlRequest::LookupMember { remote_member } => {
+                ControlRequest::LookupMember {
+                    remote_member,
+                    nonce: _,
+                } => {
                     handle_lookup_member(
                         &handle,
                         session_service.as_ref(),
@@ -725,7 +900,7 @@ async fn handle_wire(
         })
         .await;
     match result {
-        Ok(()) => ControlResponse::Ok,
+        Ok(()) => ControlResponse::Ok { sig_b64: None },
         Err((code, message)) => ControlResponse::Err { code, message },
     }
 }
@@ -769,7 +944,10 @@ async fn handle_inject(
     })
     .await
     {
-        Ok(session_id) => ControlResponse::Injected { session_id },
+        Ok(session_id) => ControlResponse::Injected {
+            session_id,
+            sig_b64: None,
+        },
         Err((code, message)) => ControlResponse::Err { code, message },
     }
 }
@@ -863,6 +1041,7 @@ async fn handle_lookup_member_raw(
         comms_name,
         pubkey_b64,
         advertised_address,
+        sig_b64: None,
     })
 }
 
@@ -871,7 +1050,11 @@ async fn handle_lookup_member_raw(
 /// Each accepted connection is read-frame, dispatched to the handler,
 /// response-written, then closed. The listener accepts indefinitely; cancel
 /// via `tokio::select!` against your shutdown signal.
-pub async fn serve_tcp_control(listener: TcpListener, handler: std::sync::Arc<dyn ControlHandler>) {
+pub async fn serve_tcp_control(
+    listener: TcpListener,
+    handler: std::sync::Arc<dyn ControlHandler>,
+    signer: ControlSignerSlot,
+) {
     loop {
         let (stream, _peer_addr) = match listener.accept().await {
             Ok(pair) => pair,
@@ -881,7 +1064,8 @@ pub async fn serve_tcp_control(listener: TcpListener, handler: std::sync::Arc<dy
             }
         };
         let handler = handler.clone();
-        tokio::spawn(serve_one_tcp(stream, handler));
+        let signer = std::sync::Arc::clone(&signer);
+        tokio::spawn(serve_one_tcp(stream, handler, signer));
     }
 }
 
@@ -890,6 +1074,7 @@ pub async fn serve_tcp_control(listener: TcpListener, handler: std::sync::Arc<dy
 pub async fn serve_uds_control(
     listener: UnixListener,
     handler: std::sync::Arc<dyn ControlHandler>,
+    signer: ControlSignerSlot,
 ) {
     loop {
         let (stream, _peer_addr) = match listener.accept().await {
@@ -900,22 +1085,35 @@ pub async fn serve_uds_control(
             }
         };
         let handler = handler.clone();
-        tokio::spawn(serve_one_uds(stream, handler));
+        let signer = std::sync::Arc::clone(&signer);
+        tokio::spawn(serve_one_uds(stream, handler, signer));
     }
 }
 
-async fn serve_one_tcp(stream: TcpStream, handler: std::sync::Arc<dyn ControlHandler>) {
+async fn serve_one_tcp(
+    stream: TcpStream,
+    handler: std::sync::Arc<dyn ControlHandler>,
+    signer: ControlSignerSlot,
+) {
     let mut s = ControlStream::Tcp(stream);
-    serve_one(&mut s, handler).await;
+    serve_one(&mut s, handler, signer).await;
 }
 
 #[cfg(unix)]
-async fn serve_one_uds(stream: UnixStream, handler: std::sync::Arc<dyn ControlHandler>) {
+async fn serve_one_uds(
+    stream: UnixStream,
+    handler: std::sync::Arc<dyn ControlHandler>,
+    signer: ControlSignerSlot,
+) {
     let mut s = ControlStream::Uds(stream);
-    serve_one(&mut s, handler).await;
+    serve_one(&mut s, handler, signer).await;
 }
 
-async fn serve_one(stream: &mut ControlStream, handler: std::sync::Arc<dyn ControlHandler>) {
+async fn serve_one(
+    stream: &mut ControlStream,
+    handler: std::sync::Arc<dyn ControlHandler>,
+    signer: ControlSignerSlot,
+) {
     let payload = match stream.read_frame().await {
         Ok(buf) => buf,
         Err(err) => {
@@ -935,7 +1133,17 @@ async fn serve_one(stream: &mut ControlStream, handler: std::sync::Arc<dyn Contr
             return;
         }
     };
-    let response = handler.handle(request).await;
+    let mut response = handler.handle(request).await;
+    // Bind the response to this gateway's pinned identity and to the exact
+    // request bytes. Re-read per request: hosts install keys after the
+    // listener exists.
+    let keys = signer
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some(keys) = keys {
+        sign_control_response(&keys, &payload, &mut response);
+    }
     let response_payload = serde_json::to_vec(&response).unwrap_or_default();
     let _ = stream.write_frame(&response_payload).await;
 }
@@ -1011,16 +1219,18 @@ mod tests {
             Box::pin(async move {
                 match request {
                     ControlRequest::Wire { .. } | ControlRequest::Unwire { .. } => {
-                        ControlResponse::Ok
+                        ControlResponse::Ok { sig_b64: None }
                     }
                     ControlRequest::Inject { remote_member, .. } => ControlResponse::Injected {
                         session_id: format!("session-for-{remote_member}"),
+                        sig_b64: None,
                     },
-                    ControlRequest::LookupMember { remote_member } => ControlResponse::Member {
+                    ControlRequest::LookupMember { remote_member, .. } => ControlResponse::Member {
                         peer_id: format!("peer-id-for-{remote_member}"),
                         comms_name: format!("mob/role/{remote_member}"),
                         pubkey_b64: None,
                         advertised_address: None,
+                        sig_b64: None,
                     },
                 }
             })
@@ -1103,6 +1313,164 @@ mod tests {
         assert_eq!(code, "peer_spec");
     }
 
+    fn signer_with(keys: crate::auth::peer_keys::GatewayPeerKeys) -> ControlSignerSlot {
+        Arc::new(std::sync::RwLock::new(Some(Arc::new(keys))))
+    }
+
+    /// A signed response verifies against the pinned key and the exact
+    /// request bytes - and against nothing else: different request bytes
+    /// (a replay for a fresh nonce) and a different pinned key both fail.
+    #[tokio::test]
+    async fn signed_responses_verify_against_pinned_gateway_key() {
+        let keys = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let pinned = keys.pubkey_bytes();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handler: Arc<dyn ControlHandler> = Arc::new(EchoHandler);
+        let server = tokio::spawn(serve_tcp_control(listener, handler, signer_with(keys)));
+
+        let request = ControlRequest::LookupMember {
+            remote_member: "alice".to_string(),
+            nonce: Some("nonce-1".to_string()),
+        };
+        let payload = serde_json::to_vec(&request).expect("encode");
+        let endpoint = RemoteEndpoint::Tcp(addr.to_string());
+        let response =
+            RemoteControlClient::send_payload(&endpoint, &payload, DEFAULT_CONTROL_TIMEOUT)
+                .await
+                .expect("control rpc");
+        verify_control_response(&pinned, &payload, &response).expect("signature verifies");
+
+        let replayed_request = ControlRequest::LookupMember {
+            remote_member: "alice".to_string(),
+            nonce: Some("nonce-2".to_string()),
+        };
+        let replayed_payload = serde_json::to_vec(&replayed_request).expect("encode");
+        assert!(
+            verify_control_response(&pinned, &replayed_payload, &response).is_err(),
+            "a response must not verify for different request bytes (replay)"
+        );
+        let other_key = crate::auth::peer_keys::GatewayPeerKeys::ephemeral().pubkey_bytes();
+        assert!(
+            verify_control_response(&other_key, &payload, &response).is_err(),
+            "a response must not verify against a different pinned key"
+        );
+        server.abort();
+    }
+
+    #[test]
+    fn unsigned_response_fails_verification_when_pinned() {
+        let pinned = crate::auth::peer_keys::GatewayPeerKeys::ephemeral().pubkey_bytes();
+        let response = ControlResponse::Ok { sig_b64: None };
+        let err =
+            verify_control_response(&pinned, b"{}", &response).expect_err("unsigned must fail");
+        assert!(err.contains("unsigned"), "got: {err}");
+    }
+
+    /// `Err` responses are failure reports, not trusted material: they
+    /// carry no signature and pass verification unchanged (rejecting them
+    /// would only swap WHICH error the caller sees).
+    #[test]
+    fn error_responses_skip_verification() {
+        let pinned = crate::auth::peer_keys::GatewayPeerKeys::ephemeral().pubkey_bytes();
+        let response = ControlResponse::Err {
+            code: "unknown_member".to_string(),
+            message: "nope".to_string(),
+        };
+        verify_control_response(&pinned, b"{}", &response).expect("Err passes through");
+    }
+
+    /// Strict-when-pinned at the proxy: a contact that pins a gateway
+    /// pubkey rejects unsigned responses typed; the explicit
+    /// `require_signed_control = false` opt-out accepts them.
+    #[tokio::test]
+    async fn pinned_contact_requires_signed_control_responses() {
+        use crate::contact_directory::{ContactEntry, MobTransport};
+        use crate::runtime::cross_mob_remote::RemoteMobProxy;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handler: Arc<dyn ControlHandler> = Arc::new(EchoHandler);
+        let server = tokio::spawn(serve_tcp_control(
+            listener,
+            handler,
+            unsigned_control_signer(),
+        ));
+        let pinned = crate::auth::peer_keys::GatewayPeerKeys::ephemeral().pubkey_bytes();
+
+        let strict_entry = ContactEntry {
+            mob_id: "remote".to_string(),
+            transport: MobTransport::Tcp(addr.to_string()),
+            pubkey: Some(pinned),
+            require_signed_control: None,
+        };
+        let proxy = RemoteMobProxy::from_entry(&strict_entry)
+            .expect("tcp ok")
+            .expect("some");
+        let err = proxy
+            .lookup_member("alice")
+            .await
+            .expect_err("unsigned response must fail a pinned contact");
+        assert!(
+            matches!(err, RemoteMobError::ControlResponseUnauthenticated { .. }),
+            "got {err:?}"
+        );
+
+        let opt_out_entry = ContactEntry {
+            require_signed_control: Some(false),
+            ..strict_entry
+        };
+        let proxy = RemoteMobProxy::from_entry(&opt_out_entry)
+            .expect("tcp ok")
+            .expect("some");
+        proxy
+            .lookup_member("alice")
+            .await
+            .expect("explicit opt-out accepts unsigned responses");
+        server.abort();
+    }
+
+    /// End-to-end signed exchange through the proxy: a pinned contact
+    /// talking to a gateway that signs with the matching key succeeds.
+    #[tokio::test]
+    async fn pinned_contact_accepts_signed_responses() {
+        use crate::contact_directory::{ContactEntry, MobTransport};
+        use crate::runtime::cross_mob_remote::RemoteMobProxy;
+
+        let keys = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let pinned = keys.pubkey_bytes();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handler: Arc<dyn ControlHandler> = Arc::new(EchoHandler);
+        let server = tokio::spawn(serve_tcp_control(listener, handler, signer_with(keys)));
+
+        let entry = ContactEntry {
+            mob_id: "remote".to_string(),
+            transport: MobTransport::Tcp(addr.to_string()),
+            pubkey: Some(pinned),
+            require_signed_control: None,
+        };
+        let proxy = RemoteMobProxy::from_entry(&entry)
+            .expect("tcp ok")
+            .expect("some");
+        let info = proxy
+            .lookup_member("alice")
+            .await
+            .expect("signed lookup verifies");
+        assert_eq!(info.peer_id, "peer-id-for-alice");
+        proxy
+            .wire_remote(
+                "alice",
+                "tcp://127.0.0.1:9001",
+                "demo/role/alice",
+                "00000000-0000-4000-8000-000000000001",
+                None,
+            )
+            .await
+            .expect("signed wire ack verifies");
+        server.abort();
+    }
+
     #[test]
     fn control_listen_addr_parses_contact_directory_spellings() {
         assert_eq!(
@@ -1139,11 +1507,12 @@ mod tests {
             "advertised address must carry the kernel-assigned port: {advertised}"
         );
         let handler: Arc<dyn ControlHandler> = Arc::new(EchoHandler);
-        let server = tokio::spawn(bound.serve(handler));
+        let server = tokio::spawn(bound.serve(handler, unsigned_control_signer()));
 
         let endpoint = RemoteEndpoint::Tcp(dial.to_string());
         let request = ControlRequest::LookupMember {
             remote_member: "alice".to_string(),
+            nonce: None,
         };
         let response = RemoteControlClient::send(&endpoint, &request, DEFAULT_CONTROL_TIMEOUT)
             .await
@@ -1164,12 +1533,13 @@ mod tests {
             format!("uds://{}", path.display())
         );
         let handler: Arc<dyn ControlHandler> = Arc::new(EchoHandler);
-        let server = tokio::spawn(bound.serve(handler));
+        let server = tokio::spawn(bound.serve(handler, unsigned_control_signer()));
 
         let endpoint = RemoteEndpoint::Uds(path.display().to_string());
         let request = ControlRequest::Inject {
             remote_member: "bob".to_string(),
             content: serde_json::json!({"text": "hi"}),
+            nonce: None,
         };
         let response = RemoteControlClient::send(&endpoint, &request, DEFAULT_CONTROL_TIMEOUT)
             .await
@@ -1178,6 +1548,7 @@ mod tests {
             response,
             ControlResponse::Injected {
                 session_id: "session-for-bob".to_string(),
+                sig_b64: None,
             },
         );
         server.abort();
@@ -1188,12 +1559,17 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("addr");
         let handler: Arc<dyn ControlHandler> = Arc::new(EchoHandler);
-        let server = tokio::spawn(serve_tcp_control(listener, handler));
+        let server = tokio::spawn(serve_tcp_control(
+            listener,
+            handler,
+            unsigned_control_signer(),
+        ));
 
         let endpoint = RemoteEndpoint::Tcp(addr.to_string());
         let request = ControlRequest::Inject {
             remote_member: "alice".to_string(),
             content: serde_json::json!({"text": "hello"}),
+            nonce: None,
         };
         let response = RemoteControlClient::send(&endpoint, &request, DEFAULT_CONTROL_TIMEOUT)
             .await
@@ -1202,6 +1578,7 @@ mod tests {
             response,
             ControlResponse::Injected {
                 session_id: "session-for-alice".to_string(),
+                sig_b64: None,
             },
         );
         server.abort();
@@ -1212,7 +1589,11 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("addr");
         let handler: Arc<dyn ControlHandler> = Arc::new(EchoHandler);
-        let server = tokio::spawn(serve_tcp_control(listener, handler));
+        let server = tokio::spawn(serve_tcp_control(
+            listener,
+            handler,
+            unsigned_control_signer(),
+        ));
 
         let endpoint = RemoteEndpoint::Tcp(addr.to_string());
         let request = ControlRequest::Wire {
@@ -1221,11 +1602,12 @@ mod tests {
             local_comms_name: "demo/role/alice".to_string(),
             local_peer_id: "00000000-0000-4000-8000-000000000001".to_string(),
             local_pubkey_b64: None,
+            nonce: None,
         };
         let response = RemoteControlClient::send(&endpoint, &request, DEFAULT_CONTROL_TIMEOUT)
             .await
             .expect("control rpc");
-        assert_eq!(response, ControlResponse::Ok);
+        assert_eq!(response, ControlResponse::Ok { sig_b64: None });
         server.abort();
     }
 
@@ -1234,7 +1616,11 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("addr");
         let handler: Arc<dyn ControlHandler> = Arc::new(EchoHandler);
-        let _server = tokio::spawn(serve_tcp_control(listener, handler));
+        let _server = tokio::spawn(serve_tcp_control(
+            listener,
+            handler,
+            unsigned_control_signer(),
+        ));
 
         // Send raw garbage bytes as a "control request" — server should
         // respond with a `decode` error instead of dropping the connection

@@ -1435,7 +1435,9 @@ impl UnifiedRuntime {
         }
         let handler: std::sync::Arc<dyn crate::runtime::cross_mob_control::ControlHandler> =
             std::sync::Arc::new(handler);
-        *task_slot = Some(tokio::spawn(bound.serve(handler)));
+        *task_slot = Some(tokio::spawn(
+            bound.serve(handler, std::sync::Arc::clone(&self.gateway_peer_keys)),
+        ));
         *self
             .cross_mob_control_advertised
             .write()
@@ -1454,20 +1456,27 @@ impl UnifiedRuntime {
     }
 
     /// Install the long-lived Ed25519 keypair this gateway advertises via
-    /// `mobkit/peer_pubkey` and (when meerkat-comms grows out-of-process
-    /// transports) signs outbound envelopes with.
+    /// `mobkit/peer_pubkey` and signs cross-mob control responses with.
     ///
     /// Inproc-only deployments and most tests skip this — the in-process
     /// router authorises by identity map and signature verification is
     /// moot. Production gateways and any cross-process integration test
-    /// must call this.
+    /// must call this. Takes effect immediately for a control listener
+    /// that is already serving (the serve task re-reads the slot per
+    /// request).
     pub fn set_gateway_peer_keys(&mut self, keys: GatewayPeerKeys) {
-        self.gateway_peer_keys = Some(keys);
+        *self
+            .gateway_peer_keys
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::sync::Arc::new(keys));
     }
 
-    /// Borrow the local gateway keypair if one was installed.
-    pub fn gateway_peer_keys(&self) -> Option<&GatewayPeerKeys> {
-        self.gateway_peer_keys.as_ref()
+    /// The local gateway keypair if one was installed.
+    pub fn gateway_peer_keys(&self) -> Option<std::sync::Arc<GatewayPeerKeys>> {
+        self.gateway_peer_keys
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Wire a local member to a member in an external mob.

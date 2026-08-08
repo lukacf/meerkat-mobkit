@@ -34,6 +34,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine;
+use meerkat_mobkit::contact_directory::ContactDirectory;
+use meerkat_mobkit::runtime::cross_mob_control::ControlListenAddr;
 use meerkat_mobkit::unified_runtime::EventLogError;
 use meerkat_mobkit::{
     AuthPolicy, AuthProvider, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore,
@@ -96,6 +98,12 @@ struct GatewayRuntimeOptions {
     /// Bind each locally hosted member to a signed loopback TCP endpoint so
     /// peer-only external members in another process can return traffic.
     member_comms_address: Option<String>,
+    /// `runtime_options.contacts_toml`: the cross-mob contact directory as
+    /// inline TOML (same format as `config/contacts.toml` on
+    /// mobkit_gateway). Inline because SDK-driven gateways receive all
+    /// launch config through init params, and cross-process tests must
+    /// write a peer's bound address into the directory at spawn time.
+    contacts: Option<ContactDirectory>,
     agent_memory: Option<GatewayAgentMemoryOptions>,
     /// WorkGraph service construction switch (default on). `false` disables
     /// the store, member tools, overlays, and the mobkit/workgraph/* RPCs.
@@ -219,6 +227,7 @@ impl Default for GatewayRuntimeOptions {
             access: None,
             demo_llm: false,
             member_comms_address: None,
+            contacts: None,
             agent_memory: None,
             workgraph: GatewayWorkgraphOption::Enabled,
             live: GatewayLiveOption::Disabled,
@@ -2784,6 +2793,7 @@ fn parse_gateway_runtime_options(
         "console_fetch_timeout_ms",
         "demo_llm",
         "member_comms_address",
+        "contacts_toml",
         "max_sessions",
         "event_log",
         "agent_memory",
@@ -2983,6 +2993,15 @@ fn parse_gateway_runtime_options(
             );
         }
         parsed.member_comms_address = Some(address.to_string());
+    }
+    if let Some(value) = runtime_options.get("contacts_toml") {
+        let text = value
+            .as_str()
+            .ok_or_else(|| "runtime_options.contacts_toml must be a TOML string".to_string())?;
+        parsed.contacts = Some(
+            ContactDirectory::from_toml(text)
+                .map_err(|error| format!("runtime_options.contacts_toml is invalid: {error}"))?,
+        );
     }
     if let Some(value) = runtime_options.get("max_sessions") {
         let max_sessions = value
@@ -6758,7 +6777,7 @@ fn agent_tool_error(message: String) -> AgentError {
 }
 
 /// Persistent mode: reads JSON-RPC over stdin, bootstraps unified runtime, serves HTTP.
-fn run_persistent() {
+fn run_persistent(control_listen: Option<ControlListenAddr>) {
     // Meerkat 0.7's generated machine-authority apply path needs deep worker
     // stacks (mirrors meerkat-rpc's explicit 16 MiB tokio worker sizing).
     match tokio::runtime::Builder::new_multi_thread()
@@ -6766,7 +6785,7 @@ fn run_persistent() {
         .thread_stack_size(16 * 1024 * 1024)
         .build()
     {
-        Ok(runtime) => runtime.block_on(run_persistent_inner()),
+        Ok(runtime) => runtime.block_on(run_persistent_inner(control_listen)),
         Err(error) => {
             eprintln!("failed to build tokio runtime: {error}");
             std::process::exit(1);
@@ -6774,7 +6793,7 @@ fn run_persistent() {
     }
 }
 
-async fn run_persistent_inner() {
+async fn run_persistent_inner(control_listen: Option<ControlListenAddr>) {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     // Initialize tracing subscriber so meerkat-mob/meerkat-runtime errors
@@ -8885,6 +8904,48 @@ external_addressable = true
         (None, None)
     };
 
+    // Cross-mob surfaces: install the inline contact directory (while the
+    // runtime is still exclusively owned), the gateway signing identity,
+    // and the control listener. The listener starts after identity-first
+    // attachment above, but its handler re-reads the identity authority
+    // per request either way.
+    if let Some(directory) = gateway_options.contacts.clone() {
+        runtime.set_contact_directory(directory);
+    }
+    // The gateway keypair signs cross-mob control responses (peers with
+    // this gateway's pubkey pinned verify them) and backs mobkit/peer_pubkey.
+    // Persistent boots keep it stable across restarts in the state dir;
+    // ephemeral boots mint a per-process key.
+    let gateway_peer_keys = match persistent_state.as_ref() {
+        Some(state_path) => match meerkat_mobkit::GatewayPeerKeys::load_or_create(state_path) {
+            Ok(keys) => keys,
+            Err(error) => fail_init(
+                &request_id,
+                -32603,
+                format!(
+                    "failed to load or mint the gateway peer key under {}: {error}",
+                    state_path.display()
+                ),
+            ),
+        },
+        None => meerkat_mobkit::GatewayPeerKeys::ephemeral(),
+    };
+    runtime.set_gateway_peer_keys(gateway_peer_keys);
+    let control_listen_address = match control_listen.as_ref() {
+        Some(addr) => match runtime.start_control_listener(addr).await {
+            Ok(advertised) => {
+                tracing::info!(%advertised, "cross-mob control listener bound");
+                Some(advertised)
+            }
+            Err(error) => fail_init(
+                &request_id,
+                -32603,
+                format!("--control-listen {addr}: {error}"),
+            ),
+        },
+        None => None,
+    };
+
     let runtime = Arc::new(runtime);
     if let Some(detached_jobs) = gateway_detached_jobs.as_ref() {
         match detached_jobs.health_projection().await {
@@ -9013,6 +9074,13 @@ external_addressable = true
             // Complete, bounded host wait for the private shutdown request.
             // SDKs keep callback admission and stdin alive for this horizon.
             "stdio_shutdown_horizon_ms": GATEWAY_SHUTDOWN_HORIZON_MS,
+            // Dialable address of the cross-mob control listener when the
+            // gateway was launched with --control-listen (`tcp://ip:port`
+            // with the real kernel-assigned port for host:0 binds, or
+            // `uds:///path`); null otherwise. Peers put this address in
+            // their contact directories. Wire-additive: older SDKs ignore
+            // unknown result fields.
+            "control_listen_address": control_listen_address,
         }
     });
     let _ = stdout_tx
@@ -9197,11 +9265,45 @@ fn main() {
         );
         return;
     }
+    // --control-listen <tcp://host:port | uds:///path>: bind the cross-mob
+    // control listener so remote gateways can wire/unwire/inject/lookup
+    // members of this runtime. Mirrors the mobkit_gateway flag; validated
+    // here so a typo is a launch error, not a silently ignored flag. The
+    // bound address is reported back in the mobkit/init response as
+    // `control_listen_address` (important for tcp://host:0 ephemeral ports).
+    let control_listen = match parse_control_listen_arg(&args[1..]) {
+        Ok(value) => value,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
     if args.iter().any(|a| a == "--persistent") {
-        run_persistent();
+        run_persistent(control_listen);
     } else {
+        if control_listen.is_some() {
+            eprintln!(
+                "--control-listen requires --persistent (the single-shot gateway hosts no long-lived runtime to serve control RPC)"
+            );
+            std::process::exit(2);
+        }
         run_single_shot();
     }
+}
+
+/// Extract and validate the optional `--control-listen <addr>` flag.
+fn parse_control_listen_arg(args: &[String]) -> Result<Option<ControlListenAddr>, String> {
+    let Some(position) = args.iter().position(|arg| arg == "--control-listen") else {
+        return Ok(None);
+    };
+    let Some(value) = args.get(position + 1) else {
+        return Err(
+            "--control-listen requires an address (tcp://host:port or uds:///path)".to_string(),
+        );
+    };
+    ControlListenAddr::parse(value)
+        .map(Some)
+        .map_err(|error| format!("--control-listen: {error}"))
 }
 
 // ---------------------------------------------------------------------------
