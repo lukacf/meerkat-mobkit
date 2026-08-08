@@ -589,6 +589,18 @@ pub fn migrate_state_dir(
     mode: MigrateMode,
     adopt: Option<&Path>,
 ) -> MobKitMigrateReport {
+    migrate_state_dir_acknowledging_skipped(state_dir, mode, adopt, false)
+}
+
+/// [`migrate_state_dir`], with explicit acknowledgement of blob rows that
+/// cannot be parsed as sessions. Without it the ledger refuses to advance
+/// while any such row exists — see the backfill's stamp guard.
+pub fn migrate_state_dir_acknowledging_skipped(
+    state_dir: &Path,
+    mode: MigrateMode,
+    adopt: Option<&Path>,
+    acknowledge_skipped: bool,
+) -> MobKitMigrateReport {
     let mut report = MobKitMigrateReport::new(mode, state_dir);
     if !state_dir.is_dir() {
         report.errors.push(format!(
@@ -690,6 +702,7 @@ pub fn migrate_state_dir(
             &unfenced,
             &mut report.errors,
             &mut backfill_report,
+            acknowledge_skipped,
         );
         report.head_canonical_backfill = backfill_report;
         let after = read_ledger_matrix(state_dir);
@@ -926,6 +939,7 @@ fn open_stores_through_ledgered_constructors(
     unfenced: &[PathBuf],
     errors: &mut Vec<String>,
     backfill_report: &mut Option<HeadCanonicalBackfillReport>,
+    acknowledge_skipped: bool,
 ) {
     match layout.continuity_db() {
         Ok(resolved) if resolved.path.is_file() && !unfenced.contains(&resolved.path) => {
@@ -951,6 +965,7 @@ fn open_stores_through_ledgered_constructors(
                 match LocalContinuityStore::backfill_head_canonical_sessions_at(
                     &resolved.path,
                     true,
+                    acknowledge_skipped,
                 ) {
                     Ok(backfill) => {
                         for (session_id, failure) in &backfill.failures {
@@ -1879,6 +1894,18 @@ mod tests {
         conn
     }
 
+    /// A well-formed `(session_id, serialized Session)` pair. Fixtures that
+    /// plant continuity blobs need real sessions now that `--apply` converts
+    /// them before stamping the ledger.
+    fn legacy_session_blob(text: &str) -> (String, Vec<u8>) {
+        let mut session = meerkat_core::Session::new();
+        session.push(meerkat_core::Message::User(
+            meerkat_core::UserMessage::text(text.to_string()),
+        ));
+        let id = session.id().to_string();
+        (id, serde_json::to_vec(&session).expect("encode session"))
+    }
+
     fn insert_snapshot(conn: &Connection, session_id: &str, identity: &str, data: &[u8]) {
         conn.execute(
             "INSERT INTO session_snapshots \
@@ -2490,13 +2517,18 @@ mod tests {
         let state = temp.path();
         let legacy = state.join("continuity.db");
         let canonical = state.join("continuity.sqlite3");
+        // Real sessions, because apply now CONVERTS before it stamps: a row
+        // that is not a decodable session would (correctly) withhold the
+        // ledger bump and this test is about twin adoption, not conversion.
+        let keep = legacy_session_blob("keep-me");
+        let lose = legacy_session_blob("archive-me");
         {
             let conn = create_legacy_continuity(&legacy);
-            insert_snapshot(&conn, "s-keep", "test:alice", b"keep-me");
+            insert_snapshot(&conn, &keep.0, "test:alice", &keep.1);
         }
         {
             let conn = create_legacy_continuity(&canonical);
-            insert_snapshot(&conn, "s-lose", "test:alice", b"archive-me");
+            insert_snapshot(&conn, &lose.0, "test:alice", &lose.1);
         }
         let other_digest = file_digest_hex(&canonical);
 
@@ -2541,12 +2573,25 @@ mod tests {
         let conn = Connection::open(&canonical).expect("reopen canonical");
         let data: Vec<u8> = conn
             .query_row(
-                "SELECT data FROM session_snapshots WHERE session_id = 's-keep'",
-                [],
+                "SELECT data FROM session_snapshots WHERE session_id = ?1",
+                rusqlite::params![keep.0],
                 |row| row.get(0),
             )
             .expect("adopted row");
-        assert_eq!(data, b"keep-me");
+        assert_eq!(data, keep.1, "adopted copy must carry the kept session");
+        // The adopted copy is the one that survived: the archived twin's
+        // session is absent from the canonical file.
+        let lost: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_snapshots WHERE session_id = ?1",
+                rusqlite::params![lose.0],
+                |row| row.get(0),
+            )
+            .expect("archived row absent");
+        assert_eq!(
+            lost, 0,
+            "archived twin's session must not be in the adopted copy"
+        );
         drop(conn);
         assert!(!legacy.exists());
         let layout = MobKitStorageLayout::with_injected_roots(state.to_path_buf(), None);

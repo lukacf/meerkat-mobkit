@@ -759,6 +759,7 @@ impl LocalContinuityStore {
     pub fn backfill_head_canonical_sessions_at(
         path: impl AsRef<Path>,
         apply: bool,
+        acknowledge_skipped: bool,
     ) -> Result<HeadCanonicalBackfillReport, ContinuityStoreError> {
         let mut conn =
             meerkat_sqlite::open(path.as_ref(), meerkat_sqlite::ConnectionProfile::PRIMARY)
@@ -806,6 +807,24 @@ impl LocalContinuityStore {
         // from an already-clean corpus would strand such a file at v1
         // forever. Any failure, or any session that disappeared mid-run,
         // leaves the file at v1 and rollback available.
+        // Malformed rows BLOCK by default. A row this classifier calls
+        // malformed may be a corrupted durable session, or a real session the
+        // classifier is simply too strict about — a widened identity grammar,
+        // a shape written by an older binary. Those are indistinguishable
+        // here, and the distinction only matters at the one step that cannot
+        // be undone. So the operator acknowledges them explicitly or the
+        // ledger does not advance; nobody is stranded, but nothing crosses
+        // the one-way door without a human having seen what is left behind.
+        if !report.skipped_unparseable.is_empty() && !acknowledge_skipped {
+            report.failures.push((
+                String::new(),
+                format!(
+                    "refusing ledger stamp: {} blob row(s) could not be parsed as sessions and \
+                     were not converted; re-run with acknowledgement to stamp without them",
+                    report.skipped_unparseable.len()
+                ),
+            ));
+        }
         if report.failures.is_empty()
             && report.vanished.is_empty()
             && report.converted.len() == report.pending_before
@@ -4451,7 +4470,7 @@ mod tests {
         assert_eq!(head_row_count(&path), 0, "fixture must have no head row");
 
         // ---- dry run mutates nothing, including the ledger ----
-        let dry = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, false)
+        let dry = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, false, false)
             .expect("dry run");
         assert_eq!(dry.pending_before, 1);
         assert!(!dry.applied);
@@ -4461,8 +4480,8 @@ mod tests {
         assert_eq!(head_row_count(&path), 0, "dry run converted");
 
         // ---- apply converts, retains the blob, and stamps ----
-        let applied =
-            LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true).expect("apply");
+        let applied = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true, false)
+            .expect("apply");
         assert_eq!(applied.converted.len(), 1);
         assert!(applied.failures.is_empty(), "{:?}", applied.failures);
         assert!(applied.complete());
@@ -4484,7 +4503,7 @@ mod tests {
         // run did work", so a second run re-affirms it as a no-op rather than
         // withholding it. What must NOT happen is re-converting a session or
         // duplicating its head row.
-        let again = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true)
+        let again = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true, false)
             .expect("second apply");
         assert_eq!(
             again.pending_before, 0,
@@ -4522,8 +4541,8 @@ mod tests {
             .expect("plant undecodable blob");
         }
 
-        let applied =
-            LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true).expect("apply");
+        let applied = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true, false)
+            .expect("apply");
         assert_eq!(applied.pending_before, 2);
         assert!(!applied.failures.is_empty(), "undecodable blob must fail");
         assert!(!applied.complete());
@@ -4536,6 +4555,54 @@ mod tests {
             Some(1),
             "partial run must leave the file at v1"
         );
+    }
+
+    #[test]
+    fn malformed_blob_rows_block_the_stamp_until_acknowledged() {
+        // A row this classifier calls malformed may be a corrupted session OR
+        // a real one the classifier is too strict about. Those are the same
+        // from here, so the irreversible step waits for a human.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("triage:main").expect("identity");
+        let session = session_with(&["ok"]);
+        plant_ledgered_v1_blob(&path, &identity, &session);
+        {
+            let conn = Connection::open(&path).expect("plant");
+            conn.execute(
+                "INSERT INTO session_snapshots (session_id, identity, generation, \
+                 checkpoint_version, fencing_token, data) VALUES ('not-a-uuid', ?1, 3, 5, 9, X'00')",
+                rusqlite::params![identity.as_str()],
+            )
+            .expect("plant malformed row");
+        }
+
+        // Unacknowledged: the convertible session still converts, but the
+        // ledger refuses to advance.
+        let blocked = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true, false)
+            .expect("apply");
+        assert_eq!(
+            blocked.converted.len(),
+            1,
+            "convertible session must convert"
+        );
+        assert_eq!(blocked.skipped_unparseable, vec!["not-a-uuid".to_string()]);
+        assert!(!blocked.failures.is_empty(), "must record the refusal");
+        assert!(
+            !blocked.ledger_stamped,
+            "malformed row must block the stamp"
+        );
+        assert_eq!(continuity_domain_version(&path), Some(1));
+
+        // Acknowledged: the operator has seen the list, so it may cross.
+        let allowed = LocalContinuityStore::backfill_head_canonical_sessions_at(&path, true, true)
+            .expect("apply acknowledged");
+        assert_eq!(allowed.skipped_unparseable, vec!["not-a-uuid".to_string()]);
+        assert!(
+            allowed.ledger_stamped,
+            "acknowledgement must permit the stamp"
+        );
+        assert_eq!(continuity_domain_version(&path), Some(2));
     }
 
     fn cursor(
