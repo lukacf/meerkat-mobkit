@@ -59,6 +59,16 @@ pub enum RemoteMobError {
     /// We received a response we couldn't decode — peer is speaking a
     /// different protocol or sent corrupted data.
     Decode { endpoint: String, message: String },
+    /// The contact directory pins this gateway's pubkey and requires
+    /// signed control responses, but the response could not be
+    /// authenticated (unsigned, malformed signature, or signed by a
+    /// different key). Distinct from [`Self::Rejected`]: the peer did not
+    /// refuse the request; its ANSWER could not be trusted.
+    ControlResponseUnauthenticated {
+        mob_id: String,
+        endpoint: String,
+        reason: String,
+    },
 }
 
 impl RemoteMobError {
@@ -121,6 +131,21 @@ impl std::fmt::Display for RemoteMobError {
                 write!(
                     f,
                     "control response decode failed for {endpoint}: {message}"
+                )
+            }
+            Self::ControlResponseUnauthenticated {
+                mob_id,
+                endpoint,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "remote mob '{mob_id}' control response ({endpoint}) failed \
+                     authentication against the pinned gateway pubkey: {reason}. Upgrade the \
+                     peer gateway to one that signs control responses (0.8.16+ with gateway \
+                     keys installed), fix the pinned pubkey, or set \
+                     require_signed_control = false on this contact to accept unsigned \
+                     responses"
                 )
             }
         }
@@ -195,6 +220,13 @@ pub struct RemoteMemberInfo {
 pub struct RemoteMobProxy {
     mob_id: String,
     endpoint: RemoteEndpoint,
+    /// The peer GATEWAY's pinned Ed25519 pubkey from the contact
+    /// directory, used to authenticate control responses.
+    pinned_pubkey: Option<[u8; 32]>,
+    /// Strict-when-pinned: a pinned pubkey requires signed responses
+    /// unless the contact explicitly opted out
+    /// (`require_signed_control = false`).
+    require_signed_responses: bool,
 }
 
 impl RemoteMobProxy {
@@ -202,17 +234,19 @@ impl RemoteMobProxy {
     /// `Inproc` entries — those are served by an `Arc<MobHandle>` via
     /// `LocalOrRemote::Local` instead.
     pub fn from_entry(entry: &ContactEntry) -> Result<Option<Self>, RemoteMobError> {
-        match &entry.transport {
-            MobTransport::Inproc => Ok(None),
-            MobTransport::Tcp(addr) => Ok(Some(Self {
-                mob_id: entry.mob_id.clone(),
-                endpoint: RemoteEndpoint::Tcp(addr.clone()),
-            })),
-            MobTransport::Uds(path) => Ok(Some(Self {
-                mob_id: entry.mob_id.clone(),
-                endpoint: RemoteEndpoint::Uds(path.clone()),
-            })),
-        }
+        let endpoint = match &entry.transport {
+            MobTransport::Inproc => return Ok(None),
+            MobTransport::Tcp(addr) => RemoteEndpoint::Tcp(addr.clone()),
+            MobTransport::Uds(path) => RemoteEndpoint::Uds(path.clone()),
+        };
+        let require_signed_responses =
+            entry.pubkey.is_some() && entry.require_signed_control.unwrap_or(true);
+        Ok(Some(Self {
+            mob_id: entry.mob_id.clone(),
+            endpoint,
+            pinned_pubkey: entry.pubkey,
+            require_signed_responses,
+        }))
     }
 
     /// The peer mob's identifier.
@@ -223,6 +257,44 @@ impl RemoteMobProxy {
     /// The peer mob's control endpoint.
     pub fn endpoint(&self) -> &RemoteEndpoint {
         &self.endpoint
+    }
+
+    /// Fresh per-request nonce. It rides inside the request bytes, and the
+    /// response signature covers the digest of those bytes, so a signed
+    /// response can never be replayed for a later request.
+    fn mint_nonce() -> Option<String> {
+        Some(uuid::Uuid::new_v4().simple().to_string())
+    }
+
+    /// Serialize, send, and (when this contact pins a gateway pubkey and
+    /// requires it) authenticate one control request/response exchange.
+    async fn dispatch(
+        &self,
+        request: &super::cross_mob_control::ControlRequest,
+    ) -> Result<super::cross_mob_control::ControlResponse, RemoteMobError> {
+        let payload = serde_json::to_vec(request).map_err(|err| RemoteMobError::Encode {
+            endpoint: self.endpoint.comms_address(),
+            message: err.to_string(),
+        })?;
+        let response = super::cross_mob_control::RemoteControlClient::send_payload(
+            &self.endpoint,
+            &payload,
+            super::cross_mob_control::DEFAULT_CONTROL_TIMEOUT,
+        )
+        .await
+        .map_err(|err| self.attach_mob_id(err))?;
+        if self.require_signed_responses
+            && let Some(pinned) = self.pinned_pubkey.as_ref()
+            && let Err(reason) =
+                super::cross_mob_control::verify_control_response(pinned, &payload, &response)
+        {
+            return Err(RemoteMobError::ControlResponseUnauthenticated {
+                mob_id: self.mob_id.clone(),
+                endpoint: self.endpoint.comms_address(),
+                reason,
+            });
+        }
+        Ok(response)
     }
 
     /// Wire a peer on the remote side.
@@ -245,6 +317,7 @@ impl RemoteMobProxy {
             local_comms_name: local_comms_name.to_string(),
             local_peer_id: local_peer_id.to_string(),
             local_pubkey_b64,
+            nonce: Self::mint_nonce(),
         };
         self.dispatch_no_payload(request, "wire").await
     }
@@ -264,6 +337,7 @@ impl RemoteMobProxy {
             local_comms_name: local_comms_name.to_string(),
             local_peer_id: local_peer_id.to_string(),
             local_pubkey_b64,
+            nonce: Self::mint_nonce(),
         };
         self.dispatch_no_payload(request, "unwire").await
     }
@@ -281,16 +355,13 @@ impl RemoteMobProxy {
         let request = super::cross_mob_control::ControlRequest::Inject {
             remote_member: remote_member.to_string(),
             content: content_json,
+            nonce: Self::mint_nonce(),
         };
-        let response = super::cross_mob_control::RemoteControlClient::send(
-            &self.endpoint,
-            &request,
-            super::cross_mob_control::DEFAULT_CONTROL_TIMEOUT,
-        )
-        .await
-        .map_err(|err| self.attach_mob_id(err))?;
+        let response = self.dispatch(&request).await?;
         match response {
-            super::cross_mob_control::ControlResponse::Injected { session_id } => Ok(session_id),
+            super::cross_mob_control::ControlResponse::Injected { session_id, .. } => {
+                Ok(session_id)
+            }
             super::cross_mob_control::ControlResponse::Err { code, message } => {
                 Err(RemoteMobError::Rejected {
                     mob_id: self.mob_id.clone(),
@@ -311,15 +382,9 @@ impl RemoteMobProxy {
         request: super::cross_mob_control::ControlRequest,
         operation: &'static str,
     ) -> Result<(), RemoteMobError> {
-        let response = super::cross_mob_control::RemoteControlClient::send(
-            &self.endpoint,
-            &request,
-            super::cross_mob_control::DEFAULT_CONTROL_TIMEOUT,
-        )
-        .await
-        .map_err(|err| self.attach_mob_id(err))?;
+        let response = self.dispatch(&request).await?;
         match response {
-            super::cross_mob_control::ControlResponse::Ok => Ok(()),
+            super::cross_mob_control::ControlResponse::Ok { .. } => Ok(()),
             super::cross_mob_control::ControlResponse::Err { code, message } => {
                 Err(RemoteMobError::Rejected {
                     mob_id: self.mob_id.clone(),
@@ -344,20 +409,16 @@ impl RemoteMobProxy {
     ) -> Result<RemoteMemberInfo, RemoteMobError> {
         let request = super::cross_mob_control::ControlRequest::LookupMember {
             remote_member: remote_member.to_string(),
+            nonce: Self::mint_nonce(),
         };
-        let response = super::cross_mob_control::RemoteControlClient::send(
-            &self.endpoint,
-            &request,
-            super::cross_mob_control::DEFAULT_CONTROL_TIMEOUT,
-        )
-        .await
-        .map_err(|err| self.attach_mob_id(err))?;
+        let response = self.dispatch(&request).await?;
         match response {
             super::cross_mob_control::ControlResponse::Member {
                 peer_id,
                 comms_name,
                 pubkey_b64,
                 advertised_address,
+                sig_b64: _,
             } => Ok(RemoteMemberInfo {
                 peer_id,
                 comms_name,
@@ -408,6 +469,7 @@ mod tests {
             mob_id: "demo".to_string(),
             transport: MobTransport::Inproc,
             pubkey: None,
+            require_signed_control: None,
         };
         let proxy = RemoteMobProxy::from_entry(&entry).expect("inproc is supported");
         assert!(proxy.is_none());
@@ -419,6 +481,7 @@ mod tests {
             mob_id: "remote".to_string(),
             transport: MobTransport::Tcp("127.0.0.1:9001".to_string()),
             pubkey: None,
+            require_signed_control: None,
         };
         let proxy = RemoteMobProxy::from_entry(&entry)
             .expect("tcp is supported")
@@ -435,6 +498,7 @@ mod tests {
             mob_id: "remote-uds".to_string(),
             transport: MobTransport::Uds("/tmp/cross-mob.sock".to_string()),
             pubkey: None,
+            require_signed_control: None,
         };
         let proxy = RemoteMobProxy::from_entry(&entry)
             .expect("uds is supported")
@@ -457,6 +521,7 @@ mod tests {
             mob_id: "remote".to_string(),
             transport: MobTransport::Tcp("127.0.0.1:1".to_string()),
             pubkey: None,
+            require_signed_control: None,
         };
         let proxy = RemoteMobProxy::from_entry(&entry)
             .expect("tcp ok")

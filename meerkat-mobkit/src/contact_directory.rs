@@ -34,6 +34,14 @@ pub struct ContactEntry {
     /// is `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pubkey: Option<[u8; 32]>,
+    /// Whether control responses from this peer must be signed by the
+    /// pinned `pubkey`. `None` (the default) means STRICT WHEN PINNED: a
+    /// contact that pins a pubkey requires signed control responses, a
+    /// contact without one performs no verification. Set to `false` only
+    /// to keep talking to a pre-0.8.16 gateway that pins a key but cannot
+    /// sign control responses yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_signed_control: Option<bool>,
 }
 
 /// Error loading or parsing a contact directory.
@@ -133,6 +141,7 @@ fn parse_entry(mob_id: &str, value: &toml::Value) -> Result<ContactEntry, Contac
             mob_id: mob_id.to_string(),
             transport,
             pubkey: None,
+            require_signed_control: None,
         });
     }
 
@@ -160,10 +169,21 @@ fn parse_entry(mob_id: &str, value: &toml::Value) -> Result<ContactEntry, Contac
                 })?),
                 None => None,
             };
+        let require_signed_control =
+            match tbl.get("require_signed_control") {
+                None => None,
+                Some(value) => Some(value.as_bool().ok_or_else(|| {
+                    ContactDirectoryError::InvalidTransport {
+                        mob_id: mob_id.to_string(),
+                        value: format!("require_signed_control must be a boolean, got {value}"),
+                    }
+                })?),
+            };
         return Ok(ContactEntry {
             mob_id: mob_id.to_string(),
             transport,
             pubkey,
+            require_signed_control,
         });
     }
 

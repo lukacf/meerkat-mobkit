@@ -8905,12 +8905,32 @@ external_addressable = true
     };
 
     // Cross-mob surfaces: install the inline contact directory (while the
-    // runtime is still exclusively owned) and bind the control listener.
-    // The listener starts after identity-first attachment above, but its
-    // handler re-reads the identity authority per request either way.
+    // runtime is still exclusively owned), the gateway signing identity,
+    // and the control listener. The listener starts after identity-first
+    // attachment above, but its handler re-reads the identity authority
+    // per request either way.
     if let Some(directory) = gateway_options.contacts.clone() {
         runtime.set_contact_directory(directory);
     }
+    // The gateway keypair signs cross-mob control responses (peers with
+    // this gateway's pubkey pinned verify them) and backs mobkit/peer_pubkey.
+    // Persistent boots keep it stable across restarts in the state dir;
+    // ephemeral boots mint a per-process key.
+    let gateway_peer_keys = match persistent_state.as_ref() {
+        Some(state_path) => match meerkat_mobkit::GatewayPeerKeys::load_or_create(state_path) {
+            Ok(keys) => keys,
+            Err(error) => fail_init(
+                &request_id,
+                -32603,
+                format!(
+                    "failed to load or mint the gateway peer key under {}: {error}",
+                    state_path.display()
+                ),
+            ),
+        },
+        None => meerkat_mobkit::GatewayPeerKeys::ephemeral(),
+    };
+    runtime.set_gateway_peer_keys(gateway_peer_keys);
     let control_listen_address = match control_listen.as_ref() {
         Some(addr) => match runtime.start_control_listener(addr).await {
             Ok(advertised) => {
