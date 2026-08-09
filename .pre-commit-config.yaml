@@ -71,8 +71,8 @@ repos:
     hooks:
       - id: cargo-test
         name: workspace unit gate
-        entry: scripts/repo-cargo nextest run --workspace --lib --no-fail-fast
-        language: system
+        entry: scripts/pre-push-unit.sh
+        language: script
         types: [rust]
         pass_filenames: false
         stages: [pre-push]
