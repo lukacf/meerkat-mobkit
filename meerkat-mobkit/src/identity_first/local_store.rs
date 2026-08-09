@@ -740,9 +740,20 @@ impl LocalContinuityStore {
     /// - **The blob is retained.** [`migrate_legacy_blob_in_txn`] leaves the
     ///   `session_snapshots` row untouched as a frozen archive.
     /// - **The ledger stamps only on complete conversion.** A partial run
-    ///   leaves the file at v1, so rollback to a pre-head-canonical release
-    ///   stays available until the whole corpus has crossed. This is why the
-    ///   stamp is not folded into the per-session transaction.
+    ///   leaves the file at v1, so CONTINUITY DOES NOT BECOME THE DOMAIN THAT
+    ///   BLOCKS an older binary. This is why the stamp is not folded into the
+    ///   per-session transaction.
+    ///
+    ///   Deliberately NOT "rollback stays available": a real state directory
+    ///   carries several ledgered domains (runtime-store, schedule-store,
+    ///   workgraph, console, metadata, continuity), and any one of them being
+    ///   ahead of the target binary refuses the open on its own. Measured on
+    ///   a production clone, `rpc_gateway` 0.8.5 refused at
+    ///   `runtime-store` (file v2, binary ceiling v1) and never reached
+    ///   continuity at all. So holding this domain at v1 is necessary for
+    ///   rollback and nowhere near sufficient; whether rollback is actually
+    ///   available is a per-domain question about the WHOLE state dir and is
+    ///   not a claim this function is entitled to make.
     /// - **Dry-run mutates nothing**, including the DDL: a caller inspecting
     ///   a v1 file gets a count and no schema change.
     ///
@@ -835,7 +846,10 @@ impl LocalContinuityStore {
         // blob is left unconverted", not "this run did work"; withholding it
         // from an already-clean corpus would strand such a file at v1
         // forever. Any failure, or any session that disappeared mid-run,
-        // leaves the file at v1 and rollback available.
+        // leaves the file at v1, so continuity does not become the domain
+        // that blocks an older binary. Whether rollback is available at all
+        // depends on every other ledgered domain in the state dir, which this
+        // verb neither inspects nor controls.
         // Malformed rows BLOCK by default. A row this classifier calls
         // malformed may be a corrupted durable session, or a real session the
         // classifier is simply too strict about — a widened identity grammar,
