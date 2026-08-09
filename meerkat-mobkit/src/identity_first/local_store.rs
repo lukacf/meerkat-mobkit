@@ -884,20 +884,47 @@ impl LocalContinuityStore {
             ));
         }
         if report.failures.is_empty() && report.vanished.is_empty() {
-            let mut remaining = blob_rows_without_head(&conn)?;
+            // A failure HERE must not discard the report. By this point
+            // sessions have been converted and committed in their own
+            // transactions; returning Err would hand the operator an error
+            // with no record of the work that already happened, and they
+            // would have no way to know whether to expect it on a re-run.
+            // Record it as a failure and return the report instead.
+            let mut remaining = match blob_rows_without_head(&conn) {
+                Ok(rows) => rows,
+                Err(error) => {
+                    report.failures.push((
+                        String::new(),
+                        format!("refusing ledger stamp: final verification failed: {error}"),
+                    ));
+                    return Ok(report);
+                }
+            };
             // A row the operator explicitly acknowledged as unparseable will
             // never have a head — that is what acknowledging it meant. It is
             // not evidence of unfinished work, so it must not block the stamp
             // the acknowledgement was given to permit.
             remaining.retain(|row| !acknowledged_rows.contains(row));
             if remaining.is_empty() {
-                let tx = conn
-                    .transaction()
-                    .map_err(|e| sqlite_err("begin head-canonical ledger stamp", e))?;
-                stamp_head_canonical_ledger_in_txn(&tx)?;
-                tx.commit()
-                    .map_err(|e| sqlite_err("commit head-canonical ledger stamp", e))?;
-                report.ledger_stamped = true;
+                match conn.transaction() {
+                    Ok(tx) => match stamp_head_canonical_ledger_in_txn(&tx).and_then(|()| {
+                        tx.commit()
+                            .map_err(|e| sqlite_err("commit head-canonical ledger stamp", e))
+                    }) {
+                        Ok(()) => report.ledger_stamped = true,
+                        // Conversions stand; only the stamp failed. The file
+                        // stays at v1, which is the safe outcome, and the
+                        // operator keeps the record of what converted.
+                        Err(error) => report.failures.push((
+                            String::new(),
+                            format!("conversions committed but ledger stamp failed: {error}"),
+                        )),
+                    },
+                    Err(error) => report.failures.push((
+                        String::new(),
+                        format!("conversions committed but ledger stamp could not begin: {error}"),
+                    )),
+                }
             } else {
                 // Re-census disagreed with the per-session results. Refuse to
                 // stamp rather than trust the optimistic count.
@@ -4904,6 +4931,49 @@ mod tests {
     }
 
     #[test]
+    fn a_late_failure_preserves_the_record_of_work_already_done() {
+        use std::collections::BTreeSet;
+        // P1: a failure at the re-census or stamp used to return Err and
+        // discard the whole report, handing the operator an error with no
+        // record of the sessions that had already converted and committed.
+        // They would have no way to know what to expect on a re-run.
+        //
+        // Provoked here through the ordinary blocking path: an unacknowledged
+        // malformed row makes the run refuse the stamp AFTER a healthy
+        // session has converted. The refusal must arrive as a report, not as
+        // a discarded one.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("triage:main").expect("identity");
+        let healthy = session_with(&["kept"]);
+        plant_ledgered_v1_blob(&path, &identity, &healthy);
+        {
+            let conn = Connection::open(&path).expect("plant");
+            conn.execute(
+                "INSERT INTO session_snapshots (session_id, identity, generation, \
+                 checkpoint_version, fencing_token, data) VALUES ('not-a-uuid', ?1, 3, 5, 9, X'00')",
+                rusqlite::params![identity.as_str()],
+            )
+            .expect("plant malformed");
+        }
+
+        let report = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            true,
+            &BTreeSet::new(),
+        )
+        .expect("a blocked stamp must still return a report, not an Err");
+        assert_eq!(
+            report.converted,
+            vec![healthy.id().to_string()],
+            "the record of the converted session must survive the refusal"
+        );
+        assert!(!report.failures.is_empty(), "the refusal must be recorded");
+        assert!(!report.ledger_stamped);
+        assert_eq!(head_row_count(&path), 1, "the conversion itself must stand");
+    }
+
+    #[test]
     fn a_dry_run_does_not_change_the_journal_mode_or_create_sidecars() {
         use std::collections::BTreeSet;
         // "Dry run mutates nothing" has to include PRAGMAs. The writer
@@ -6379,9 +6449,14 @@ pub struct HeadCanonicalBackfillReport {
     /// `(session_id, error)`; an empty session id is a run-level refusal.
     pub failures: Vec<(String, String)>,
     /// Blob rows whose session id or identity is not well formed. These
-    /// were never convertible and do NOT block the ledger stamp; they are
-    /// surfaced so an operator sees the garbage rather than inheriting it
-    /// silently.
+    /// could not be parsed as sessions and were therefore not converted.
+    ///
+    /// These BLOCK the ledger stamp until acknowledged by id. An earlier
+    /// design skipped them silently on the reasoning that a row which was
+    /// never a session can never be converted — true, but it makes a parser
+    /// bug indistinguishable from genuine garbage at the one step that
+    /// cannot be undone, so a real session classified too strictly would be
+    /// dropped and the ledger advanced over it.
     pub skipped_unparseable: Vec<String>,
     /// True only when the whole corpus crossed in this run.
     pub ledger_stamped: bool,

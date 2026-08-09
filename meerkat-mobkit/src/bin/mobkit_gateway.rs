@@ -848,8 +848,11 @@ fn print_migrate_report_text(report: &meerkat_mobkit::MobKitMigrateReport) {
         );
         if !backfill.skipped_unparseable.is_empty() {
             println!(
-                "  skipped {} malformed blob row(s) (never convertible; not blocking)",
-                backfill.skipped_unparseable.len()
+                "  {} blob row(s) could not be parsed as sessions and are NOT converted; \
+                 the ledger will not advance until each is acknowledged by id \
+                 (--acknowledge-skipped <SESSION_ID>): {}",
+                backfill.skipped_unparseable.len(),
+                backfill.skipped_unparseable.join(", ")
             );
         }
         for (session_id, failure) in &backfill.failures {

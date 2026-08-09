@@ -812,6 +812,32 @@ pub fn migrate_state_dir_acknowledging_skipped(
     // surface in the doctor census and convert through the explicit
     // one-time importer instead.
 
+    // A DRY RUN MUST STILL REPORT THE CENSUS. The whole purpose of dry run
+    // is to answer "what would --apply do to this corpus", and the answer is
+    // dominated by how many legacy sessions would be converted. Without this
+    // the operator gets renames and leftovers and total silence on the one
+    // irreversible thing the verb does.
+    //
+    // The engine's own dry-run path opens READ-ONLY and mutates nothing,
+    // including the journal mode, so this is safe to run in the same mode
+    // that promises to change nothing.
+    if !apply
+        && let Ok(resolved) = layout.continuity_db()
+        && resolved.path.is_file()
+        && !unfenced.contains(&resolved.path)
+    {
+        match LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &resolved.path,
+            false,
+            acknowledged_rows,
+        ) {
+            Ok(census) => report.head_canonical_backfill = Some(census),
+            Err(error) => report
+                .errors
+                .push(format!("continuity head-canonical census failed: {error}")),
+        }
+    }
+
     // ── Case 5: deprecated leftovers (report-only). ──────────────────────
     let scope = DiagnoseScope::new(vec![state_dir.to_path_buf()]);
     let diagnosis = storage_doctor::diagnose_state_dir_blocking(&scope, None);
