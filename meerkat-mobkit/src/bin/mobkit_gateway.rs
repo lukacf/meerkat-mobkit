@@ -844,7 +844,7 @@ fn print_migrate_report_text(report: &meerkat_mobkit::MobKitMigrateReport) {
         println!(
             "head-canonical backfill: {} converted of {} pending",
             backfill.converted.len(),
-            backfill.pending_before
+            backfill.examined
         );
         if !backfill.skipped_unparseable.is_empty() {
             println!(

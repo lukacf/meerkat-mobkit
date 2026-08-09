@@ -767,7 +767,7 @@ impl LocalContinuityStore {
 
         let (pending, unparseable) = pending_head_canonical_sessions(&conn)?;
         let mut report = HeadCanonicalBackfillReport {
-            pending_before: pending.len(),
+            examined: pending.len(),
             applied: apply,
             skipped_unparseable: unparseable,
             ..HeadCanonicalBackfillReport::default()
@@ -789,12 +789,24 @@ impl LocalContinuityStore {
 
         for candidate in pending {
             match backfill_one_session(&mut conn, &candidate) {
-                Ok(true) => report.converted.push(candidate.session_id.clone()),
+                Ok(BackfillOutcome::Converted) => {
+                    report.converted.push(candidate.session_id.clone());
+                }
+                // A conversion the deployment had already outgrown, replaced.
+                // Reported separately: an operator re-running after a failed
+                // crossing needs to see that prior work was redone, not just
+                // that the run "succeeded".
+                Ok(BackfillOutcome::Reconverted) => {
+                    report.reconverted.push(candidate.session_id.clone());
+                }
+                Ok(BackfillOutcome::AlreadyCurrent) => {}
                 // The blob vanished between census and conversion. Not a
                 // failure, but not a conversion either — record it so a
                 // complete-conversion claim cannot be made on a corpus that
                 // changed under the fence.
-                Ok(false) => report.vanished.push(candidate.session_id.clone()),
+                Ok(BackfillOutcome::Vanished) => {
+                    report.vanished.push(candidate.session_id.clone());
+                }
                 Err(error) => report
                     .failures
                     .push((candidate.session_id.clone(), error.to_string())),
@@ -840,11 +852,13 @@ impl LocalContinuityStore {
                 ),
             ));
         }
-        if report.failures.is_empty()
-            && report.vanished.is_empty()
-            && report.converted.len() == report.pending_before
-        {
-            let (remaining, _) = pending_head_canonical_sessions(&conn)?;
+        if report.failures.is_empty() && report.vanished.is_empty() {
+            let mut remaining = blob_rows_without_head(&conn)?;
+            // A row the operator explicitly acknowledged as unparseable will
+            // never have a head — that is what acknowledging it meant. It is
+            // not evidence of unfinished work, so it must not block the stamp
+            // the acknowledgement was given to permit.
+            remaining.retain(|row| !acknowledged_rows.contains(row));
             if remaining.is_empty() {
                 let tx = conn
                     .transaction()
@@ -4514,7 +4528,7 @@ mod tests {
             &BTreeSet::new(),
         )
         .expect("dry run");
-        assert_eq!(dry.pending_before, 1);
+        assert_eq!(dry.examined, 1);
         assert!(!dry.applied);
         assert!(!dry.ledger_stamped);
         assert!(dry.converted.is_empty());
@@ -4555,10 +4569,9 @@ mod tests {
             &BTreeSet::new(),
         )
         .expect("second apply");
-        assert_eq!(
-            again.pending_before, 0,
-            "already-converted session re-listed"
-        );
+        // Examined counts EVERY blob row, so an already-converted session is
+        // still examined — it just produces no work.
+        assert_eq!(again.examined, 1);
         assert!(
             again.converted.is_empty(),
             "re-converted an already-converted session"
@@ -4598,7 +4611,7 @@ mod tests {
             &BTreeSet::new(),
         )
         .expect("apply");
-        assert_eq!(applied.pending_before, 2);
+        assert_eq!(applied.examined, 2);
         assert!(!applied.failures.is_empty(), "undecodable blob must fail");
         assert!(!applied.complete());
         assert!(
@@ -4652,7 +4665,7 @@ mod tests {
             &BTreeSet::new(),
         )
         .expect("first apply");
-        assert_eq!(failed.pending_before, 2);
+        assert_eq!(failed.examined, 2);
         assert_eq!(failed.converted, vec![good.id().to_string()]);
         assert_eq!(failed.failures.len(), 1);
         assert!(!failed.ledger_stamped);
@@ -4667,8 +4680,12 @@ mod tests {
         )
         .expect("resume apply");
         assert_eq!(
-            resumed.pending_before, 1,
-            "census must skip the already-converted session and retry only the remainder"
+            resumed.examined, 2,
+            "both rows are examined; A produces no work, B is retried"
+        );
+        assert!(
+            resumed.reconverted.is_empty(),
+            "A did not change, so it must not be reconverted"
         );
         assert!(resumed.converted.is_empty(), "B still cannot convert");
         assert_eq!(head_row_count(&path), 1, "A was re-converted or duplicated");
@@ -4689,11 +4706,97 @@ mod tests {
             &BTreeSet::new(),
         )
         .expect("final apply");
-        assert_eq!(finished.pending_before, 1);
+        assert_eq!(finished.examined, 2);
         assert_eq!(finished.converted.len(), 1);
         assert!(finished.ledger_stamped, "completed corpus must stamp");
         assert_eq!(head_row_count(&path), 2);
         assert_eq!(continuity_domain_version(&path), Some(2));
+    }
+
+    #[test]
+    fn a_blob_that_changed_after_conversion_is_reconverted_before_the_stamp() {
+        use std::collections::BTreeSet;
+        // The live-household sequence, which is the DEFAULT path rather than
+        // an edge case: a crossing fails partway, the ledger stays at v1, and
+        // AT v1 THE WHOLE-DOCUMENT PATH IS STILL THE ACTIVE WRITER. So the
+        // deployment keeps appending to blobs that were already converted.
+        // On retry, a census keyed on "has a head row" would skip them and
+        // stamp, burying every message written in the gap.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("triage:main").expect("identity");
+        let mut session = session_with(&["first"]);
+        plant_ledgered_v1_blob(&path, &identity, &session);
+        // A second row that cannot convert, so the first run fails partway.
+        let doomed = meerkat_core::types::SessionId::new();
+        {
+            let conn = Connection::open(&path).expect("plant");
+            conn.execute(
+                "INSERT INTO session_snapshots (session_id, identity, generation, \
+                 checkpoint_version, fencing_token, data) VALUES (?1, ?2, 3, 5, 9, X'6E6F7065')",
+                rusqlite::params![doomed.to_string(), identity.as_str()],
+            )
+            .expect("plant doomed");
+        }
+        let failed = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            true,
+            &BTreeSet::new(),
+        )
+        .expect("first apply");
+        assert_eq!(failed.converted, vec![session.id().to_string()]);
+        assert!(!failed.ledger_stamped);
+
+        // ---- the household keeps running: a message lands in the LEGACY blob ----
+        session.push(meerkat_core::Message::User(
+            meerkat_core::UserMessage::text("written after the failed crossing".to_string()),
+        ));
+        {
+            let conn = Connection::open(&path).expect("append");
+            conn.execute(
+                "UPDATE session_snapshots SET data = ?2 WHERE session_id = ?1",
+                rusqlite::params![
+                    session.id().to_string(),
+                    serde_json::to_vec(&session).expect("encode")
+                ],
+            )
+            .expect("update blob");
+            // ...and the unconvertible row is removed so the retry completes.
+            conn.execute(
+                "DELETE FROM session_snapshots WHERE session_id = ?1",
+                rusqlite::params![doomed.to_string()],
+            )
+            .expect("drop doomed");
+        }
+
+        // ---- retry ----
+        let retry = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            true,
+            &BTreeSet::new(),
+        )
+        .expect("retry apply");
+        assert_eq!(
+            retry.reconverted,
+            vec![session.id().to_string()],
+            "a blob that changed after conversion must be RECONVERTED, not skipped"
+        );
+        assert!(retry.ledger_stamped, "the completed corpus must stamp");
+
+        // The head now reflects BOTH messages. Without the fix it would carry
+        // one, and the second would exist only in a blob nothing reads.
+        let conn = Connection::open(&path).expect("probe");
+        let count: i64 = conn
+            .query_row(
+                "SELECT message_count FROM continuity_session_heads WHERE session_id = ?1",
+                rusqlite::params![session.id().to_string()],
+                |row| row.get(0),
+            )
+            .expect("head row");
+        assert_eq!(
+            count, 2,
+            "the head is stale: the message written after the failed crossing was buried"
+        );
     }
 
     #[test]
@@ -6091,17 +6194,26 @@ pub(crate) struct PendingLegacySession {
 
 /// Outcome of an offline head-canonical backfill.
 ///
-/// `converted.len() == pending_before` with empty `failures`/`vanished` is
+/// `converted.len() == examined` with empty `failures`/`vanished` is
 /// the only shape that stamps the ledger; every other shape leaves the file
 /// at v1 and rollback available.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HeadCanonicalBackfillReport {
-    /// Sessions holding a legacy blob with no head row, before the run.
-    pub pending_before: usize,
+    /// Legacy blob rows the run examined. EVERY blob row, converted or not:
+    /// a row that already has a head row is still examined, because its blob
+    /// may have changed since that conversion. Do not read this as "work to
+    /// do" — `converted` + `reconverted` is the work that happened.
+    pub examined: usize,
     /// Session ids that now carry a head row because of this run.
     pub converted: Vec<String>,
     /// Sessions whose blob disappeared between census and conversion.
     pub vanished: Vec<String>,
+    /// Sessions that HAD been converted but whose legacy blob changed
+    /// afterwards, so their head-canonical rows were replaced. Non-empty here
+    /// means the deployment kept writing between a failed crossing and this
+    /// retry — which is normal, and exactly the case that would otherwise
+    /// have buried those messages.
+    pub reconverted: Vec<String>,
     /// `(session_id, error)`; an empty session id is a run-level refusal.
     pub failures: Vec<(String, String)>,
     /// Blob rows whose session id or identity is not well formed. These
@@ -6121,7 +6233,7 @@ impl HeadCanonicalBackfillReport {
     pub fn complete(&self) -> bool {
         self.failures.is_empty()
             && self.vanished.is_empty()
-            && self.converted.len() == self.pending_before
+            && self.converted.len() == self.examined
     }
 }
 
@@ -6141,12 +6253,20 @@ fn pending_head_canonical_sessions(
         )
         .map_err(|e| sqlite_err("probe head-canonical table", e))?
         > 0;
+    // EVERY blob row, not only those lacking a head.
+    //
+    // "has a head row" is not "converted and current". A partial crossing
+    // leaves the ledger at v1, and AT v1 THE WHOLE-DOCUMENT PATH IS STILL THE
+    // ACTIVE WRITER — so between a failed run and its retry the deployment
+    // keeps appending to exactly the blobs already converted. Filtering those
+    // out here would skip them on the retry, stamp, and bury every message
+    // written in the gap inside a retained blob nothing reads afterwards.
+    // Silent, and discovered only when an agent appears to have forgotten a
+    // conversation. So the census returns them and the driver compares
+    // CONTENT.
     let sql = if heads_exist {
         "SELECT s.session_id, s.identity, s.generation, s.checkpoint_version, s.fencing_token \
-         FROM session_snapshots s \
-         LEFT JOIN continuity_session_heads h ON h.session_id = s.session_id \
-         WHERE h.session_id IS NULL \
-         ORDER BY s.session_id"
+         FROM session_snapshots s ORDER BY s.session_id"
     } else {
         "SELECT session_id, identity, generation, checkpoint_version, fencing_token \
          FROM session_snapshots ORDER BY session_id"
@@ -6190,10 +6310,46 @@ fn pending_head_canonical_sessions(
 /// `Ok(false)` means the blob was gone by the time the transaction opened —
 /// reported rather than silently counted, so a complete-conversion claim
 /// cannot be made about a corpus that changed under the fence.
+/// Blob rows with no head row, for the final pre-stamp verification.
+///
+/// The census deliberately returns EVERY blob row so the driver can compare
+/// content, so it can no longer double as "is anything unconverted?". This
+/// asks that narrower question in SQL, with no decode: it catches a row that
+/// appeared during the run, or a write that did not land, without trusting
+/// the loop's own optimistic account of itself.
+fn blob_rows_without_head(conn: &Connection) -> Result<Vec<String>, ContinuityStoreError> {
+    let heads_exist: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='continuity_session_heads'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| sqlite_err("probe head-canonical table", e))?
+        > 0;
+    if !heads_exist {
+        return Ok(vec!["<no head-canonical tables>".to_string()]);
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.session_id FROM session_snapshots s \
+             LEFT JOIN continuity_session_heads h ON h.session_id = s.session_id \
+             WHERE h.session_id IS NULL ORDER BY s.session_id",
+        )
+        .map_err(|e| sqlite_err("prepare unconverted census", e))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| sqlite_err("query unconverted rows", e))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| sqlite_err("read unconverted row", e))?);
+    }
+    Ok(out)
+}
+
 fn backfill_one_session(
     conn: &mut Connection,
     candidate: &PendingLegacySession,
-) -> Result<bool, ContinuityStoreError> {
+) -> Result<BackfillOutcome, ContinuityStoreError> {
     let session_id = meerkat_core::types::SessionId::parse(&candidate.session_id)
         .map_err(|e| ContinuityStoreError::Io(format!("malformed session id in blob row: {e}")))?;
     let identity = AgentIdentity::parse(&candidate.identity)
@@ -6215,6 +6371,60 @@ fn backfill_one_session(
     let generation = stamp("generation", candidate.generation)?;
     let checkpoint_version = stamp("checkpoint_version", candidate.checkpoint_version)?;
     let fencing_token = stamp("fencing_token", candidate.fencing_token)?;
+    // STALENESS, BY CONTENT.
+    //
+    // A head row means this session was converted at SOME point, not that the
+    // conversion still reflects the blob. Compare the blob's own head
+    // revision against the stored one and reconvert on divergence.
+    //
+    // The comparison is a content digest, never a message count or a
+    // timestamp: a message added and then removed between runs leaves a count
+    // unchanged while the content differs, and a timestamp says nothing about
+    // what the bytes hold.
+    let existing = head_row_in_txn(&tx, &session_id)
+        .map_err(|e| ContinuityStoreError::Io(format!("read existing head row: {e}")))?;
+    let mut replaced = false;
+    if let Some((stored, _token)) = existing.as_ref() {
+        let session = blob_session_in_txn(&tx, &session_id)
+            .map_err(|e| ContinuityStoreError::Io(format!("read blob for staleness check: {e}")))?;
+        match session {
+            Some(session) => {
+                if session.id() != &session_id {
+                    // The identity guard below refuses this, but do not touch
+                    // the existing head on the way there.
+                    return Err(ContinuityStoreError::Io(format!(
+                        "blob for {session_id} decodes to a different session; refusing"
+                    )));
+                }
+                let (_layout, expected) = layout_for_blob_session(&session).map_err(|e| {
+                    ContinuityStoreError::Io(format!("recompute head for staleness check: {e}"))
+                })?;
+                if expected.head_revision == stored.head_revision {
+                    // Converted and still current — nothing to do.
+                    tx.commit()
+                        .map_err(|e| sqlite_err("commit no-op backfill", e))?;
+                    return Ok(BackfillOutcome::AlreadyCurrent);
+                }
+                tracing::info!(
+                    session_id = %session_id,
+                    stored_revision = %stored.head_revision,
+                    blob_revision = %expected.head_revision,
+                    "legacy blob changed since its conversion; replacing the head-canonical rows"
+                );
+                delete_head_canonical_rows_in_txn(
+                    &tx,
+                    "session_id = ?1",
+                    &[&session_id.to_string()],
+                )?;
+                replaced = true;
+            }
+            None => {
+                tx.commit()
+                    .map_err(|e| sqlite_err("commit vanished backfill", e))?;
+                return Ok(BackfillOutcome::Vanished);
+            }
+        }
+    }
     let migrated = migrate_legacy_blob_in_txn(
         &tx,
         &session_id,
@@ -6226,5 +6436,22 @@ fn backfill_one_session(
     .map_err(|e| ContinuityStoreError::Io(format!("head-canonical conversion failed: {e}")))?;
     tx.commit()
         .map_err(|e| sqlite_err("commit legacy session backfill", e))?;
-    Ok(migrated.is_some())
+    Ok(match (migrated.is_some(), replaced) {
+        (false, _) => BackfillOutcome::Vanished,
+        (true, true) => BackfillOutcome::Reconverted,
+        (true, false) => BackfillOutcome::Converted,
+    })
+}
+
+/// What one row did, so the report can distinguish a first conversion from a
+/// replacement of a conversion the deployment had already outgrown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackfillOutcome {
+    Converted,
+    /// The blob changed after an earlier conversion; head rows were replaced.
+    Reconverted,
+    /// Already converted and still current.
+    AlreadyCurrent,
+    /// The blob was gone by the time the transaction opened.
+    Vanished,
 }
