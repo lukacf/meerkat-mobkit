@@ -761,9 +761,26 @@ impl LocalContinuityStore {
         apply: bool,
         acknowledged_rows: &std::collections::BTreeSet<String>,
     ) -> Result<HeadCanonicalBackfillReport, ContinuityStoreError> {
-        let mut conn =
+        // A dry run opens READ-ONLY, and that is a correctness requirement
+        // rather than tidiness. The writer profile sets `journal_mode=WAL`,
+        // which is a durable change to the file: a caller inspecting a
+        // DELETE-mode corpus would find it converted to WAL (and `-wal` /
+        // `-shm` siblings created) purely by asking what a migration WOULD do.
+        // "Dry run mutates nothing" has to include the pragmas, or an
+        // operator cannot use it to inspect a file they are not ready to
+        // change.
+        let mut conn = if apply {
             meerkat_sqlite::open(path.as_ref(), meerkat_sqlite::ConnectionProfile::PRIMARY)
-                .map_err(|e| mechanics_err("open writer for head-canonical backfill", e))?;
+                .map_err(|e| mechanics_err("open writer for head-canonical backfill", e))?
+        } else {
+            Connection::open_with_flags(
+                path.as_ref(),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+                    | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+            )
+            .map_err(|e| sqlite_err("open read-only for head-canonical dry run", e))?
+        };
 
         let (pending, unparseable) = pending_head_canonical_sessions(&conn)?;
         let mut report = HeadCanonicalBackfillReport {
@@ -4796,6 +4813,64 @@ mod tests {
         assert_eq!(
             count, 2,
             "the head is stale: the message written after the failed crossing was buried"
+        );
+    }
+
+    #[test]
+    fn a_dry_run_does_not_change_the_journal_mode_or_create_sidecars() {
+        use std::collections::BTreeSet;
+        // "Dry run mutates nothing" has to include PRAGMAs. The writer
+        // profile sets journal_mode=WAL, so inspecting a DELETE-mode corpus
+        // with a dry run used to convert it to WAL and leave -wal/-shm
+        // siblings behind -- a durable change to a file the operator had
+        // explicitly declined to modify.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("triage:main").expect("identity");
+        let session = session_with(&["hello"]);
+        plant_ledgered_v1_blob(&path, &identity, &session);
+
+        // Force the file to DELETE mode and close every connection.
+        {
+            let conn = Connection::open(&path).expect("open");
+            let mode: String = conn
+                .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
+                .expect("set delete mode");
+            assert_eq!(
+                mode.to_lowercase(),
+                "delete",
+                "fixture must start in DELETE"
+            );
+        }
+        let before_bytes = std::fs::read(&path).expect("read before");
+
+        let dry = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            false,
+            &BTreeSet::new(),
+        )
+        .expect("dry run");
+        assert!(!dry.applied);
+        assert_eq!(dry.examined, 1);
+
+        let conn = Connection::open(&path).expect("probe");
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("read mode");
+        assert_eq!(
+            mode.to_lowercase(),
+            "delete",
+            "a dry run converted the journal mode to WAL"
+        );
+        drop(conn);
+        assert_eq!(
+            std::fs::read(&path).expect("read after"),
+            before_bytes,
+            "a dry run changed the database bytes"
+        );
+        assert!(
+            !path.with_extension("sqlite3-wal").exists(),
+            "a dry run created a -wal sidecar"
         );
     }
 
