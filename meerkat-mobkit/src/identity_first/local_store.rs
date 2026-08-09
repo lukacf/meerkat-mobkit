@@ -4816,6 +4816,79 @@ mod tests {
         );
     }
 
+    /// Harness for the ROLLBACK PROOF, not a unit test — builds a corpus in
+    /// the exact post-failure state the proof requires and leaves it on disk
+    /// for an older binary to open.
+    ///
+    ///   MOBKIT_ROLLBACK_CORPUS=/path/to/dir \
+    ///     cargo test -p meerkat-mobkit --lib --all-features \
+    ///     build_mid_run_failed_corpus_for_rollback_proof -- --ignored --nocapture
+    ///
+    /// Ordering is what makes the failure MID-RUN rather than pre-flight:
+    /// session ids are UUIDv7, so the healthy session created first sorts
+    /// first, converts, and COMMITS its own transaction before the poison row
+    /// is attempted. A pre-flight failure would leave no head rows at all and
+    /// would prove nothing.
+    #[test]
+    #[ignore = "harness: writes a corpus for the external rollback proof"]
+    fn build_mid_run_failed_corpus_for_rollback_proof() {
+        use std::collections::BTreeSet;
+        let dir = std::env::var("MOBKIT_ROLLBACK_CORPUS")
+            .expect("set MOBKIT_ROLLBACK_CORPUS to an existing directory");
+        let path = std::path::Path::new(&dir).join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("triage:main").expect("identity");
+        let healthy = session_with(&["message one", "message two"]);
+        plant_ledgered_v1_blob(&path, &identity, &healthy);
+        let doomed = meerkat_core::types::SessionId::new();
+        {
+            let conn = Connection::open(&path).expect("plant");
+            conn.execute(
+                "INSERT INTO session_snapshots (session_id, identity, generation, \
+                 checkpoint_version, fencing_token, data) VALUES (?1, ?2, 3, 5, 9, X'6E6F7065')",
+                rusqlite::params![doomed.to_string(), identity.as_str()],
+            )
+            .expect("plant doomed");
+        }
+        let report = LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &path,
+            true,
+            &BTreeSet::new(),
+        )
+        .expect("apply");
+
+        // The three conditions that make this a MID-RUN failure. If any fails,
+        // the corpus is not the input the proof is about.
+        assert_eq!(
+            report.converted,
+            vec![healthy.id().to_string()],
+            "A must convert"
+        );
+        assert!(!report.failures.is_empty(), "B must fail");
+        assert!(!report.ledger_stamped, "the ledger must NOT have advanced");
+        assert_eq!(
+            head_row_count(&path),
+            1,
+            "exactly one head row (A) must exist"
+        );
+        assert_eq!(
+            continuity_domain_version(&path),
+            Some(1),
+            "file must remain v1"
+        );
+        let conn = Connection::open(&path).expect("probe");
+        let blobs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_snapshots", [], |r| r.get(0))
+            .expect("count blobs");
+        assert_eq!(blobs, 2, "both blobs must be retained");
+
+        println!("ROLLBACK_CORPUS_PATH={}", path.display());
+        println!("ROLLBACK_HEALTHY_SESSION={}", healthy.id());
+        println!("ROLLBACK_DOOMED_SESSION={doomed}");
+        println!("ROLLBACK_LEDGER_VERSION=1");
+        println!("ROLLBACK_HEAD_ROWS=1");
+        println!("ROLLBACK_BLOB_ROWS=2");
+    }
+
     #[test]
     fn a_dry_run_does_not_change_the_journal_mode_or_create_sidecars() {
         use std::collections::BTreeSet;
