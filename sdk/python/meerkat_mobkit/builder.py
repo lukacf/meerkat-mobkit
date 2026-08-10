@@ -382,6 +382,9 @@ class MobKitBuilder:
                         "runsPerHour",
                         "min_interactions",
                         "minInteractions",
+                        "max_output_tokens",
+                        "maxOutputTokens",
+                        "minInteractions",
                         "model",
                     }
                 )
@@ -393,6 +396,10 @@ class MobKitBuilder:
                 distiller_wire: dict[str, Any] = {}
                 if "enabled" in distiller:
                     distiller_wire["enabled"] = distiller["enabled"]
+                if "max_output_tokens" in distiller:
+                    distiller_wire["max_output_tokens"] = distiller["max_output_tokens"]
+                elif "maxOutputTokens" in distiller:
+                    distiller_wire["max_output_tokens"] = distiller["maxOutputTokens"]
                 if "runs_per_hour" in distiller:
                     distiller_wire["runs_per_hour"] = distiller["runs_per_hour"]
                 elif "runsPerHour" in distiller:
@@ -421,6 +428,8 @@ class MobKitBuilder:
                         "runsPerDay",
                         "min_signals",
                         "minSignals",
+                        "max_output_tokens",
+                        "maxOutputTokens",
                     }
                 )
                 if unknown:
@@ -443,6 +452,14 @@ class MobKitBuilder:
                     steward_wire["runs_per_day"] = steward["runs_per_day"]
                 elif "runsPerDay" in steward:
                     steward_wire["runs_per_day"] = steward["runsPerDay"]
+                # Exposed because a hard-wired ceiling left a production
+                # reasoning-model steward committing zero ops for four days
+                # with no reachable knob. A field the SDK will not forward is
+                # unreachable no matter what Rust does.
+                if "max_output_tokens" in steward:
+                    steward_wire["max_output_tokens"] = steward["max_output_tokens"]
+                elif "maxOutputTokens" in steward:
+                    steward_wire["max_output_tokens"] = steward["maxOutputTokens"]
                 if "min_signals" in steward:
                     steward_wire["min_signals"] = steward["min_signals"]
                 elif "minSignals" in steward:
@@ -454,7 +471,15 @@ class MobKitBuilder:
         if hygienist is not None:
             if isinstance(hygienist, dict):
                 unknown = sorted(
-                    set(hygienist) - {"enabled", "runs_per_day", "runsPerDay", "model"}
+                    set(hygienist)
+                    - {
+                        "enabled",
+                        "runs_per_day",
+                        "runsPerDay",
+                        "model",
+                        "max_output_tokens",
+                        "maxOutputTokens",
+                    }
                 )
                 if unknown:
                     raise ValueError(
@@ -464,6 +489,10 @@ class MobKitBuilder:
                 hygienist_wire: dict[str, Any] = {}
                 if "enabled" in hygienist:
                     hygienist_wire["enabled"] = hygienist["enabled"]
+                if "max_output_tokens" in hygienist:
+                    hygienist_wire["max_output_tokens"] = hygienist["max_output_tokens"]
+                elif "maxOutputTokens" in hygienist:
+                    hygienist_wire["max_output_tokens"] = hygienist["maxOutputTokens"]
                 if "runs_per_day" in hygienist:
                     hygienist_wire["runs_per_day"] = hygienist["runs_per_day"]
                 elif "runsPerDay" in hygienist:

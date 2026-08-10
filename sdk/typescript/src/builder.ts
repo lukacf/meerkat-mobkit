@@ -74,9 +74,17 @@ const STEWARD_KEYS = new Set([
   "perMob",
   "runsPerDay",
   "minSignals",
+  "maxOutputTokens",
+  "max_output_tokens",
 ]);
 
-const HYGIENIST_KEYS = new Set(["enabled", "runsPerDay", "model"]);
+const HYGIENIST_KEYS = new Set([
+  "enabled",
+  "runsPerDay",
+  "model",
+  "maxOutputTokens",
+  "max_output_tokens",
+]);
 
 function rejectUnknownKeys(
   config: object,
@@ -411,6 +419,8 @@ export class MobKitBuilder {
         perMob?: boolean;
         runsPerDay?: number;
         minSignals?: number;
+        /** Output-token ceiling for the dream call. Unset keeps the profile default. */
+        maxOutputTokens?: number;
       };
       hygienist?: boolean | {
         enabled?: boolean;
@@ -522,6 +532,9 @@ export class MobKitBuilder {
         }
         if (config.steward.perMob !== undefined) {
           steward.per_mob = config.steward.perMob;
+        }
+        if (config.steward.maxOutputTokens !== undefined) {
+          steward.max_output_tokens = config.steward.maxOutputTokens;
         }
         if (config.steward.runsPerDay !== undefined) {
           steward.runs_per_day = config.steward.runsPerDay;
