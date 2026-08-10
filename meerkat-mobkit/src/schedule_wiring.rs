@@ -2161,6 +2161,41 @@ mod tests {
         rowid
     }
 
+    /// 0.8.22 semantics change: claiming due work is fenced behind a
+    /// store-issued executor lease. `ScheduleStore::claim_due_occurrences` now
+    /// takes the exact witness as argument #1 and there is deliberately no
+    /// unfenced compatibility method, so any test that dequeues schedule work
+    /// must first acquire the realm's singular firing authority (the driver
+    /// does the same for its whole incarnation). Panics on `Busy`: these tests
+    /// own a private tempdir store with no firing host, so a busy lease would
+    /// be a real defect rather than a race worth tolerating.
+    ///
+    /// Note the two lease durations are different clocks: this one bounds the
+    /// EXECUTOR incarnation, while `ClaimDueRequest::lease_duration` bounds the
+    /// per-OCCURRENCE claim.
+    async fn acquire_test_executor_lease(
+        store: &dyn ScheduleStore,
+        owner_id: &str,
+    ) -> meerkat_schedule::ScheduleExecutorLease {
+        match store
+            .acquire_executor_lease(meerkat_schedule::AcquireScheduleExecutorLeaseRequest {
+                owner_id: owner_id.to_string(),
+                lease_duration: chrono::Duration::minutes(5),
+            })
+            .await
+            .expect("acquire schedule executor lease")
+        {
+            meerkat_schedule::AcquireScheduleExecutorLeaseOutcome::Acquired(lease) => lease,
+            meerkat_schedule::AcquireScheduleExecutorLeaseOutcome::Busy {
+                current_owner_id,
+                ..
+            } => panic!(
+                "a private test store must not report a busy executor lease \
+                 (held by {current_owner_id})"
+            ),
+        }
+    }
+
     /// meerkat 0.7.19 carry guard (asks 16-19): a poisoned occurrence row no
     /// longer starves the whole claim — the sqlite claim scan skips it as a
     /// typed row fault and claims healthy due neighbors. This is the exact
@@ -2192,15 +2227,26 @@ mod tests {
             .expect("insert poisoned row");
         }
 
-        let claimed = service
-            .store()
-            .claim_due_occurrences(meerkat::ClaimDueRequest {
-                owner_id: "carry-test".to_string(),
-                limit: 8,
-                lease_duration: chrono::Duration::seconds(60),
-            })
+        let schedule_store = service.store();
+        let executor_lease =
+            acquire_test_executor_lease(schedule_store.as_ref(), "carry-test-executor").await;
+        let claimed = schedule_store
+            .claim_due_occurrences(
+                &executor_lease,
+                meerkat::ClaimDueRequest {
+                    owner_id: "carry-test".to_string(),
+                    limit: 8,
+                    lease_duration: chrono::Duration::seconds(60),
+                },
+            )
             .await
             .expect("claim must tolerate the poisoned neighbor (meerkat >= 0.7.19)");
+        // Release before asserting so a failing assertion cannot leave the
+        // realm's firing authority held for the rest of the lease window.
+        schedule_store
+            .release_executor_lease(executor_lease)
+            .await
+            .expect("release schedule executor lease");
         assert_eq!(
             claimed
                 .transitions
@@ -3385,15 +3431,25 @@ schedule = true
             eprintln!("occurrences after create: {rows:?}");
         }
         // Simulate driver ticks: refill + claim, several rounds.
+        // 0.8.22: claiming is fenced behind a store-issued executor lease, so
+        // the simulated driver holds ONE executor incarnation across all ticks
+        // (a real driver does the same); 5 minutes covers six fast rounds, so
+        // no renewal is needed.
+        let schedule_store = service.store();
+        let executor_owner = "runaway-probe-executor";
+        let executor_lease =
+            acquire_test_executor_lease(schedule_store.as_ref(), executor_owner).await;
         for round in 0..6 {
             let _ = service.refill_horizon(&created.schedule_id).await;
-            let _ = service
-                .store()
-                .claim_due_occurrences(meerkat::ClaimDueRequest {
-                    owner_id: "runaway-probe".to_string(),
-                    limit: 8,
-                    lease_duration: chrono::Duration::seconds(60),
-                })
+            let _ = schedule_store
+                .claim_due_occurrences(
+                    &executor_lease,
+                    meerkat::ClaimDueRequest {
+                        owner_id: "runaway-probe".to_string(),
+                        limit: 8,
+                        lease_duration: chrono::Duration::seconds(60),
+                    },
+                )
                 .await;
             {
                 let conn = rusqlite::Connection::open(&store_path).expect("open");
@@ -3410,6 +3466,31 @@ schedule = true
                 );
             }
         }
+        // The per-round claim is deliberately `let _ =` (a benign claim error
+        // must not fail this planner-convergence guard). Under 0.8.22 that
+        // swallow also hides `ExecutorLeaseStale`, so the simulated driver
+        // could silently degrade to "refill only" and still go green. Observe
+        // the store's firing authority to prove every round claimed under a
+        // live lease. Test 1 needs no such guard: its claim is `.expect`-
+        // checked, so a stale lease already fails it loudly.
+        let observation = schedule_store
+            .observe_executor_lease()
+            .await
+            .expect("observe schedule executor lease");
+        // Release before asserting so a failing assertion cannot leave the
+        // realm's firing authority held for the rest of the lease window.
+        schedule_store
+            .release_executor_lease(executor_lease)
+            .await
+            .expect("release schedule executor lease");
+        let active = observation
+            .active
+            .expect("the simulated driver's executor lease must still be live after six rounds");
+        assert_eq!(
+            active.owner_id.as_str(),
+            executor_owner,
+            "every round's claim must have run under this test's own firing authority"
+        );
         let total = count_occurrences(store_path.clone());
         assert!(
             total <= 1,

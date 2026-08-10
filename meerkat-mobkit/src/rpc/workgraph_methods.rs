@@ -1151,6 +1151,26 @@ mod tests {
                 },
                 mode: Default::default(),
                 completion_policy: Default::default(),
+                // meerkat 0.8.22 promoted the item-shaping fields of
+                // `CreateWorkItemRequest` onto `GoalCreateRequest`. Eight of
+                // the ten already existed on `CreateWorkItemRequest` in
+                // 0.8.21, where `create_goal` filled them from
+                // `..CreateWorkItemRequest::default()`; the two join policies
+                // are new in 0.8.22 and so had no prior value to preserve.
+                // The values below therefore reproduce the pre-port item
+                // exactly. Both join policies are inert here in any case:
+                // this fixture creates no `parent` edges, so no child can
+                // fail or cancel into this goal.
+                failed_child_join_policy: Default::default(),
+                cancelled_child_join_policy: Default::default(),
+                priority: Default::default(),
+                labels: Default::default(),
+                due_at: None,
+                not_before: None,
+                snoozed_until: None,
+                external_refs: Vec::new(),
+                evidence_refs: Vec::new(),
+                status: None,
                 delegated_authority: Default::default(),
                 projection_policy: Default::default(),
             })

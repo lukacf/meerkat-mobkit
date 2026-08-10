@@ -697,9 +697,18 @@ impl<B: SessionAgentBuilder + 'static> LiveProjectionSink for GatewayLiveProject
         &self,
         session_id: &SessionId,
         stop_reason: StopReason,
-        usage: Usage,
+        usage: meerkat_core::TurnUsage,
         response_id: Option<&str>,
     ) -> Result<(), LiveProjectionError> {
+        // 0.8.22: the sink receives a per-turn `TurnUsage` where 0.8.21 passed
+        // the same per-turn value as a flat `Usage`. The value's meaning did
+        // not change - only its evidence: `TurnUsage` carries the provider's
+        // normalized token accounting alongside the flat counters. The real
+        // turn's accounting is forwarded untouched. The single-counted ZERO
+        // used when the realtime materializer already booked this turn is
+        // host-declared at the drain below, NOT `Usage::default()` - see the
+        // comment there before simplifying it away.
+        //
         // CC2: synthesize `AssistantTurnCompleted` BEFORE draining the
         // buffered display-text path — the staging materializer commits any
         // staged spoken-transcript items for `response_id` here (the
@@ -722,7 +731,7 @@ impl<B: SessionAgentBuilder + 'static> LiveProjectionSink for GatewayLiveProject
                 Ok(outcome) => {
                     // If the materializer fired it has already recorded the
                     // authoritative usage for this turn; the drain below must
-                    // then forward `Usage::default()` to stay single-counted.
+                    // then forward typed zero usage to stay single-counted.
                     realtime_materialized = !outcome.is_inert();
                 }
                 Err(
@@ -742,10 +751,24 @@ impl<B: SessionAgentBuilder + 'static> LiveProjectionSink for GatewayLiveProject
         if realtime_materialized && blocks.is_empty() {
             return Ok(());
         }
+        // 0.8.22: `append_external_assistant_output` still takes the flat
+        // `Usage`, but the agent-side boundary now runs
+        // `TurnUsage::try_from_usage` on it and rejects a `Usage` whose
+        // `provider_accounting` is `None`. A bare `Usage::default()` (the
+        // 0.8.21 zero) would therefore fail the drain with a typed
+        // `ConfigError` on exactly the turns where realtime materialized AND
+        // display text was buffered. Zero usage must be *host-declared* so it
+        // carries normalized accounting; the real usage is restored to flat
+        // form (accounting re-attached) via `into_inner`.
         let usage_for_drain = if realtime_materialized {
-            Usage::default()
+            meerkat_core::TurnUsage::host_declared(
+                meerkat_core::Provider::Other,
+                "realtime-usage-already-recorded",
+                Usage::default(),
+            )
+            .into_inner()
         } else {
-            usage
+            usage.into_inner()
         };
         self.service
             .append_external_assistant_output(session_id, blocks, stop_reason, usage_for_drain)

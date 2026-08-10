@@ -369,6 +369,17 @@ impl meerkat_core::AgentLlmClient for ReplaySanitizingAgentLlmClient {
     ) -> Result<meerkat_core::schema::CompiledSchema, meerkat_core::schema::SchemaError> {
         self.inner.compile_schema(output_schema)
     }
+
+    // meerkat 0.8.22 adds `target_cache_lowering_capabilities` with an
+    // `Ok(Vec::new())` default. NOT forwarded, deliberately: its contract is
+    // "capabilities only from the lowering this client would use for THIS
+    // exact request", and `stream_response` above rewrites every message
+    // through `sanitize_message_for_stateless_replay` before the inner client
+    // sees it. Forwarding the caller's unsanitized messages would author a
+    // cache proof over bytes this wrapper never puts on the wire. The empty
+    // default is the truthful "no target lowering available", which is also
+    // what `request_pressure` (same measurement class, same reason) already
+    // answers here.
 }
 
 #[async_trait]
@@ -413,6 +424,16 @@ impl LlmClient for ReplaySanitizingLlmClient {
     ) -> Result<meerkat_core::schema::CompiledSchema, meerkat_core::schema::SchemaError> {
         self.inner.compile_schema(output_schema)
     }
+
+    // meerkat 0.8.22 adds `authored_cache_breakpoints` with an `Ok(Vec::new())`
+    // default. NOT forwarded, for the same reason as
+    // `target_cache_lowering_capabilities` on the `AgentLlmClient` wrapper
+    // above: `LlmClientAdapter` builds the request from the CANONICAL messages
+    // and asks this client to claim breakpoints over it, while `stream` below
+    // rewrites that request through
+    // `sanitize_llm_request_for_stateless_replay` before it leaves. A
+    // forwarded claim would describe a lowering that never reached the
+    // provider. Empty is the truthful claim set.
 }
 
 /// Async hook called before each session is created. Receives the mutable
@@ -521,11 +542,28 @@ impl PreBuildMobSessionService {
         let meerkat_mob::ResumeSessionLoad::Revivable(mut session) = load else {
             return Ok(load);
         };
+        self.overlay_runtime_archived_terminal_in_place(&mut session)
+            .await?;
+        Ok(meerkat_mob::ResumeSessionLoad::Revivable(session))
+    }
+
+    /// Body-level form of the overlay above.
+    ///
+    /// meerkat 0.8.22 moved operational resume off this wrapper's
+    /// `load_session_for_resume`: `materialize_session_resume_verdict` now
+    /// hands back an already-authorized body produced by the inner service's
+    /// durable-tail convergence. That override therefore applies the overlay
+    /// to the verdict's body directly, which needs the projection separated
+    /// from the `ResumeSessionLoad` carrier.
+    async fn overlay_runtime_archived_terminal_in_place(
+        &self,
+        session: &mut meerkat_core::Session,
+    ) -> Result<(), SessionError> {
         if session.lifecycle_terminal().is_some() {
-            return Ok(meerkat_mob::ResumeSessionLoad::Revivable(session));
+            return Ok(());
         }
         let Some(store) = self.archived_terminal_authority.as_ref() else {
-            return Ok(meerkat_mob::ResumeSessionLoad::Revivable(session));
+            return Ok(());
         };
         let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(session.id());
         let store_error = |detail: String| {
@@ -568,7 +606,7 @@ impl PreBuildMobSessionService {
                     ))
                 })?;
         }
-        Ok(meerkat_mob::ResumeSessionLoad::Revivable(session))
+        Ok(())
     }
 
     async fn prepare_create_request(
@@ -3903,6 +3941,30 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .revoke_mob_host_binding(mob_id, expected_binding_json, receipt_json)
             .await
     }
+
+    // meerkat 0.8.22: durable semantic high-water admission for V5 direct
+    // member binds. Its trait default is `Err(Unsupported)` - unlike the other
+    // two methods this facade leaves un-overridden
+    // (`activate_head_canonical_runtime_authority`,
+    // `load_session_resume_observation`), whose defaults forward through the
+    // `session_authority_ops()` carrier this facade already points at `inner`.
+    // `MeerkatMachine` turns any error here into a fail-closed
+    // `RuntimeDriverError::Internal`, so an unforwarded default would make
+    // every direct member bind fail on this facade's authority while the
+    // backing store implements the CAS. No projection or write-epoch bump is
+    // owed: this row is not a session snapshot.
+    async fn admit_direct_member_incarnation_high_water(
+        &self,
+        member_session_id: &str,
+        candidate: &meerkat_contracts::wire::supervisor_bridge::BridgeDirectMemberIncarnation,
+    ) -> Result<
+        meerkat_contracts::wire::supervisor_bridge::BridgeDirectMemberIncarnation,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .admit_direct_member_incarnation_high_water(member_session_id, candidate)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -4056,6 +4118,19 @@ macro_rules! delegate_mob_session_service {
                 id: &meerkat_core::types::SessionId,
             ) -> Result<(), SessionError> {
                 self.inner.interrupt(id).await
+            }
+            // meerkat 0.8.22 adds the exact-run hard cancel to `SessionService`
+            // with an `Err(Unsupported)` default. This wrapper already forwards
+            // the exact-run cooperative sibling
+            // (`cancel_after_boundary_for_run`); without the same forward here
+            // the decorator would answer "unsupported" on its own authority and
+            // hide the inner service's real exact-run interrupt.
+            async fn interrupt_run_if_current(
+                &self,
+                id: &meerkat_core::types::SessionId,
+                expected_run_id: &meerkat_core::lifecycle::RunId,
+            ) -> Result<bool, SessionError> {
+                self.inner.interrupt_run_if_current(id, expected_run_id).await
             }
             async fn cancel_after_boundary(
                 &self,
@@ -4253,18 +4328,50 @@ macro_rules! delegate_mob_session_service {
                 let load = self.inner.load_session_for_resume(session_id).await?;
                 self.overlay_runtime_archived_terminal(load).await
             }
-            async fn prepare_session_for_resume(
+            // meerkat 0.8.22: the required `prepare_session_for_resume` hook
+            // is DELETED from the trait. Its durable-tail convergence moved
+            // inside `PersistentSessionService`'s override of
+            // `materialize_session_resume_verdict`; the trait DEFAULT of that
+            // method is the non-persistent composition (read-only
+            // observations plus a `NonPersistent` receipt, no convergence).
+            // So a wrapper that merely drops the old passthrough compiles
+            // while recreating actors from stale committed authority whenever
+            // the physical head is ahead after a power cut. This override
+            // delegates the verdict to `inner` so its persistent convergence
+            // is reached, then re-applies the archived-terminal overlay to
+            // the authorized body. Under 0.8.21 the overlay rode along for
+            // free because the provided default composed from THIS wrapper's
+            // `load_session_for_resume`; the persistent route no longer calls
+            // that method, so the projection has to be re-applied here or the
+            // 0.8.6 "archived collapses into active" host confusion returns.
+            //
+            // `materialization == Revivable` is the exact 0.8.22 analogue of
+            // the `ResumeSessionLoad::Revivable` arm the overlay used to key
+            // on: `prepare_committed_boundary_resume` picks Revivable from
+            // the same two store facts this overlay probes (catalog terminal
+            // archived, or a Retired/Destroyed lifecycle row), so an `Active`
+            // materialization from that store can never be a body the overlay
+            // would have stamped. Widening the match would be a behaviour
+            // change, not a port fix.
+            async fn materialize_session_resume_verdict(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
-            ) -> Result<(), SessionError> {
-                self.inner.prepare_session_for_resume(session_id).await
+            ) -> Result<meerkat_mob::SessionResumeVerdict, SessionError> {
+                let mut verdict = self
+                    .inner
+                    .materialize_session_resume_verdict(session_id)
+                    .await?;
+                if let meerkat_mob::SessionResumeVerdict::ResumeAuthorized {
+                    materialization: meerkat_mob::SessionResumeMaterialization::Revivable,
+                    session,
+                    ..
+                } = &mut verdict
+                {
+                    self.overlay_runtime_archived_terminal_in_place(session)
+                        .await?;
+                }
+                Ok(verdict)
             }
-            // meerkat 0.8.21: the operational resume entry is the provided
-            // `materialize_session_resume_verdict`, composed from THIS
-            // wrapper's `load_session_for_resume` (so the archived-terminal
-            // overlay still applies) plus the delegated authority
-            // observation below. Delegating the verdict itself to `inner`
-            // would silently bypass the overlay.
             async fn observe_session_resume_authority(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -4285,9 +4392,14 @@ macro_rules! delegate_mob_session_service {
                     .await?;
                 Ok(self.complete_create(result, context).await)
             }
+            // meerkat 0.8.22: exact-actor creation now carries the
+            // owner-issued resume preparation receipt so persistent
+            // materialization can consume the already-converged committed
+            // boundary instead of repeating recovery. Forward it untouched.
             async fn create_session_with_actor_witness_under_runtime_turn_boundary(
                 &self,
                 req: meerkat_core::service::CreateSessionRequest,
+                resume_preparation: Option<meerkat_mob::SessionResumePreparationReceipt>,
                 actor_witness_slot: &meerkat_session::LiveSessionActorWitnessSlot,
             ) -> Result<meerkat_core::RunResult, SessionError> {
                 let (req, context) = self.prepare_create_request(req).await?;
@@ -4295,6 +4407,7 @@ macro_rules! delegate_mob_session_service {
                     .inner
                     .create_session_with_actor_witness_under_runtime_turn_boundary(
                         req,
+                        resume_preparation,
                         actor_witness_slot,
                     )
                     .await?;
@@ -4315,10 +4428,14 @@ macro_rules! delegate_mob_session_service {
                     .await?;
                 Ok(self.complete_create(result, context).await)
             }
+            // meerkat 0.8.22: same receipt threading as above, but the
+            // machine-authorized archived route requires it unconditionally
+            // (persistent materialization rejects a missing receipt).
             async fn create_session_with_machine_archived_resume_authority_and_actor_witness_under_runtime_turn_boundary(
                 &self,
                 req: meerkat_core::service::CreateSessionRequest,
                 authorization: meerkat_runtime::ArchivedSessionActorMaterializationAuthorization,
+                resume_preparation: meerkat_mob::SessionResumePreparationReceipt,
                 actor_witness_slot: &meerkat_session::LiveSessionActorWitnessSlot,
             ) -> Result<meerkat_core::RunResult, SessionError> {
                 let (req, context) = self.prepare_create_request(req).await?;
@@ -4327,6 +4444,7 @@ macro_rules! delegate_mob_session_service {
                     .create_session_with_machine_archived_resume_authority_and_actor_witness_under_runtime_turn_boundary(
                         req,
                         authorization,
+                        resume_preparation,
                         actor_witness_slot,
                     )
                     .await?;
@@ -4361,6 +4479,25 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<(), SessionError> {
                 self.inner
                     .interrupt_with_machine_authority(session_id, authority)
+                    .await
+            }
+            // meerkat 0.8.22: new exact-run machine-authorized hard cancel,
+            // trait default `Err(Unsupported)`. The mob provisioner's
+            // `CoreExecutorInterruptHandle::hard_cancel_run_if_current` calls
+            // this on the service it was handed - i.e. THIS wrapper - and only
+            // absorbs `NotRunning`, so an unforwarded default turns every
+            // exact-run cancel into `control_failed_runtime`. Forward bare: the
+            // `..._if_live` tolerance next door is specific to the idempotent
+            // cooperative-quiescence seam, and inventing a second tolerance here
+            // would mask a genuinely refused hard cancel.
+            async fn interrupt_run_with_machine_authority(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                expected_run_id: &meerkat_core::lifecycle::RunId,
+                authority: meerkat_runtime::MachineSessionControlAuthority,
+            ) -> Result<bool, SessionError> {
+                self.inner
+                    .interrupt_run_with_machine_authority(session_id, expected_run_id, authority)
                     .await
             }
             async fn cancel_after_boundary_with_machine_authority(
@@ -4418,6 +4555,28 @@ macro_rules! delegate_mob_session_service {
                 session_id: &meerkat_core::types::SessionId,
             ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
                 self.inner.load_revivable_retired_session(session_id).await
+            }
+            // meerkat 0.8.22: durable transcript fork moved onto the session
+            // service with an `Err(Unsupported)` default, and the mob handle's
+            // fork-based spawn calls it on the service it holds. Same forwarding
+            // class as `load_revivable_retired_session` above: not forwarding
+            // would make this wrapper claim the inner persistent service has no
+            // fork authority.
+            async fn fork_persisted_session(
+                &self,
+                source_session_id: &meerkat_core::types::SessionId,
+                message_count: Option<usize>,
+                tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+                target: meerkat_core::DurableSessionForkTarget,
+            ) -> Result<meerkat_core::SessionForkResult, SessionError> {
+                self.inner
+                    .fork_persisted_session(
+                        source_session_id,
+                        message_count,
+                        tool_access_policy,
+                        target,
+                    )
+                    .await
             }
             async fn load_persisted_session_metadata(
                 &self,
@@ -4494,6 +4653,28 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<(), SessionError> {
                 self.inner
                     .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary(session_id)
+                    .await
+            }
+            // meerkat 0.8.22: member-session disposal moved from the boundary
+            // archive above to this deadline-aware sibling, whose trait default
+            // is `Err(Unsupported)`. The provisioner routes only `Ok(())` and
+            // `NotFound` specially, so an unforwarded default makes EVERY member
+            // retirement archive fail and wedges the roster anchor in `retiring`.
+            // Bare forward on purpose: this mirrors the non-deadline boundary
+            // variant above, which is exactly the seam disposal used at 0.8.21.
+            // The stopped-session Retire tolerance lives only on
+            // `archive_with_mob_lifecycle_authority`, and it did not cover the
+            // disposal path before either - widening it here would be a
+            // behaviour change, not a port fix.
+            async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_before(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                deadline: meerkat_core::time_compat::Instant,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_before(
+                        session_id, deadline,
+                    )
                     .await
             }
             async fn execution_snapshot(
@@ -4673,9 +4854,14 @@ macro_rules! delegate_mob_session_service {
                     )
                     .await
             }
-            async fn publish_interaction_terminals(
+            // meerkat 0.8.22: terminal publication is keyed by the exact
+            // service-minted actor incarnation, not by SessionId. Retirement
+            // drops its mutation gate before calling publication code, so a
+            // delayed predecessor callback resolved only by id could target a
+            // successor actor. Forward the witness verbatim.
+            async fn publish_interaction_terminals_for_actor(
                 &self,
-                session_id: &meerkat_core::types::SessionId,
+                actor_witness: &meerkat_session::LiveSessionActorWitness,
                 events: &[meerkat_core::event::AgentEvent],
             ) -> Result<
                 Vec<
@@ -4684,7 +4870,7 @@ macro_rules! delegate_mob_session_service {
                 SessionError,
             > {
                 self.inner
-                    .publish_interaction_terminals(session_id, events)
+                    .publish_interaction_terminals_for_actor(actor_witness, events)
                     .await
             }
             async fn discard_live_session(
@@ -4812,6 +4998,17 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
     }
     async fn interrupt(&self, id: &meerkat_core::types::SessionId) -> Result<(), SessionError> {
         self.inner.interrupt(id).await
+    }
+    // meerkat 0.8.22 exact-run hard cancel, default `Err(Unsupported)` (see the
+    // same seam in `delegate_mob_session_service!`).
+    async fn interrupt_run_if_current(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        expected_run_id: &meerkat_core::lifecycle::RunId,
+    ) -> Result<bool, SessionError> {
+        self.inner
+            .interrupt_run_if_current(id, expected_run_id)
+            .await
     }
     async fn cancel_after_boundary(
         &self,
@@ -5002,15 +5199,22 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
         self.inner.load_session_for_resume(session_id).await
     }
-    async fn prepare_session_for_resume(
+    // meerkat 0.8.22: the required `prepare_session_for_resume` hook is
+    // DELETED; durable-tail convergence now lives inside
+    // `PersistentSessionService`'s override of
+    // `materialize_session_resume_verdict`, whose trait DEFAULT converges
+    // nothing. This wrapper adds no resume-side projection of its own, so the
+    // whole verdict delegates to `inner` - dropping the old passthrough and
+    // relying on the default would compile while silently resuming from stale
+    // committed authority.
+    async fn materialize_session_resume_verdict(
         &self,
         session_id: &meerkat_core::types::SessionId,
-    ) -> Result<(), SessionError> {
-        self.inner.prepare_session_for_resume(session_id).await
+    ) -> Result<meerkat_mob::SessionResumeVerdict, SessionError> {
+        self.inner
+            .materialize_session_resume_verdict(session_id)
+            .await
     }
-    // meerkat 0.8.21: operational resume rides the provided
-    // `materialize_session_resume_verdict` default over this wrapper's own
-    // load/observe pair; only the authority observation delegates.
     async fn observe_session_resume_authority(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -5032,15 +5236,22 @@ impl MobSessionService for AfterCreateMobSessionService {
         Ok(self.complete_create(result, context).await)
     }
 
+    // meerkat 0.8.22: forward the owner-issued resume preparation receipt
+    // (see the same seam in `delegate_mob_session_service!`).
     async fn create_session_with_actor_witness_under_runtime_turn_boundary(
         &self,
         req: meerkat_core::service::CreateSessionRequest,
+        resume_preparation: Option<meerkat_mob::SessionResumePreparationReceipt>,
         actor_witness_slot: &meerkat_session::LiveSessionActorWitnessSlot,
     ) -> Result<meerkat_core::RunResult, SessionError> {
         let (req, context) = self.prepare_create_request(req);
         let result = self
             .inner
-            .create_session_with_actor_witness_under_runtime_turn_boundary(req, actor_witness_slot)
+            .create_session_with_actor_witness_under_runtime_turn_boundary(
+                req,
+                resume_preparation,
+                actor_witness_slot,
+            )
             .await?;
         Ok(self.complete_create(result, context).await)
     }
@@ -5065,6 +5276,7 @@ impl MobSessionService for AfterCreateMobSessionService {
         &self,
         req: meerkat_core::service::CreateSessionRequest,
         authorization: meerkat_runtime::ArchivedSessionActorMaterializationAuthorization,
+        resume_preparation: meerkat_mob::SessionResumePreparationReceipt,
         actor_witness_slot: &meerkat_session::LiveSessionActorWitnessSlot,
     ) -> Result<meerkat_core::RunResult, SessionError> {
         let (req, context) = self.prepare_create_request(req);
@@ -5073,6 +5285,7 @@ impl MobSessionService for AfterCreateMobSessionService {
             .create_session_with_machine_archived_resume_authority_and_actor_witness_under_runtime_turn_boundary(
                 req,
                 authorization,
+                resume_preparation,
                 actor_witness_slot,
             )
             .await?;
@@ -5107,6 +5320,19 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<(), SessionError> {
         self.inner
             .interrupt_with_machine_authority(session_id, authority)
+            .await
+    }
+    // meerkat 0.8.22 exact-run machine-authorized hard cancel, default
+    // `Err(Unsupported)` (see the same seam in
+    // `delegate_mob_session_service!`).
+    async fn interrupt_run_with_machine_authority(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        expected_run_id: &meerkat_core::lifecycle::RunId,
+        authority: meerkat_runtime::MachineSessionControlAuthority,
+    ) -> Result<bool, SessionError> {
+        self.inner
+            .interrupt_run_with_machine_authority(session_id, expected_run_id, authority)
             .await
     }
     async fn cancel_after_boundary_with_machine_authority(
@@ -5160,6 +5386,19 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
         self.inner.load_revivable_retired_session(session_id).await
     }
+    // meerkat 0.8.22 durable transcript fork, default `Err(Unsupported)` (see
+    // the same seam in `delegate_mob_session_service!`).
+    async fn fork_persisted_session(
+        &self,
+        source_session_id: &meerkat_core::types::SessionId,
+        message_count: Option<usize>,
+        tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+        target: meerkat_core::DurableSessionForkTarget,
+    ) -> Result<meerkat_core::SessionForkResult, SessionError> {
+        self.inner
+            .fork_persisted_session(source_session_id, message_count, tool_access_policy, target)
+            .await
+    }
     async fn load_persisted_session_metadata(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -5208,6 +5447,20 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<(), SessionError> {
         self.inner
             .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary(session_id)
+            .await
+    }
+    // meerkat 0.8.22 deadline-aware disposal archive, default
+    // `Err(Unsupported)` (see the same seam in
+    // `delegate_mob_session_service!`).
+    async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_before(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        deadline: meerkat_core::time_compat::Instant,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_before(
+                session_id, deadline,
+            )
             .await
     }
     async fn execution_snapshot(
@@ -5306,16 +5559,18 @@ impl MobSessionService for AfterCreateMobSessionService {
             )
             .await
     }
-    async fn publish_interaction_terminals(
+    // meerkat 0.8.22: keyed by the exact actor incarnation, not SessionId
+    // (see the same seam in `delegate_mob_session_service!`).
+    async fn publish_interaction_terminals_for_actor(
         &self,
-        session_id: &meerkat_core::types::SessionId,
+        actor_witness: &meerkat_session::LiveSessionActorWitness,
         events: &[meerkat_core::event::AgentEvent],
     ) -> Result<
         Vec<meerkat_core::lifecycle::core_executor::CoreInteractionTerminalPublicationReceipt>,
         SessionError,
     > {
         self.inner
-            .publish_interaction_terminals(session_id, events)
+            .publish_interaction_terminals_for_actor(actor_witness, events)
             .await
     }
     async fn discard_live_session(
@@ -9168,14 +9423,12 @@ realm_profile = "worker-v2"
             _session_id: &meerkat_core::types::SessionId,
         ) -> Result<meerkat_mob::SessionResumeAuthority, SessionError> {
             // Test double: truthfully an empty authority bundle (the ephemeral
-            // arm of the meerkat 0.8.21 resume-verdict contract).
+            // arm of the meerkat 0.8.22 resume-verdict contract). meerkat
+            // 0.8.22 deleted `prepare_session_for_resume`; this double owns
+            // nothing durable to converge, so the trait's non-persistent
+            // `materialize_session_resume_verdict` default is the truthful
+            // answer and is deliberately left un-overridden here.
             Ok(meerkat_mob::SessionResumeAuthority::default())
-        }
-        async fn prepare_session_for_resume(
-            &self,
-            _session_id: &meerkat_core::types::SessionId,
-        ) -> Result<(), SessionError> {
-            Ok(())
         }
         async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
             &self,
@@ -9500,14 +9753,12 @@ realm_profile = "worker-v2"
             _session_id: &meerkat_core::types::SessionId,
         ) -> Result<meerkat_mob::SessionResumeAuthority, SessionError> {
             // Test double: truthfully an empty authority bundle (the ephemeral
-            // arm of the meerkat 0.8.21 resume-verdict contract).
+            // arm of the meerkat 0.8.22 resume-verdict contract). meerkat
+            // 0.8.22 deleted `prepare_session_for_resume`; this double owns
+            // nothing durable to converge, so the trait's non-persistent
+            // `materialize_session_resume_verdict` default is the truthful
+            // answer and is deliberately left un-overridden here.
             Ok(meerkat_mob::SessionResumeAuthority::default())
-        }
-        async fn prepare_session_for_resume(
-            &self,
-            _session_id: &meerkat_core::types::SessionId,
-        ) -> Result<(), SessionError> {
-            Ok(())
         }
         async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
             &self,

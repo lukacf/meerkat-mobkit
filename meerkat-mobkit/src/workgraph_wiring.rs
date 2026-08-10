@@ -620,6 +620,26 @@ mod tests {
                 },
                 mode: Default::default(),
                 completion_policy: Default::default(),
+                // meerkat 0.8.22 promoted the item-shaping fields of
+                // `CreateWorkItemRequest` onto `GoalCreateRequest`. Eight of
+                // the ten already existed on `CreateWorkItemRequest` in
+                // 0.8.21, where `create_goal` filled them from
+                // `..CreateWorkItemRequest::default()`; the two join policies
+                // are new in 0.8.22 and so had no prior value to preserve.
+                // The values below therefore reproduce the pre-port item
+                // exactly. Both join policies are inert here in any case:
+                // this fixture creates no `parent` edges, so no child can
+                // fail or cancel into this goal.
+                failed_child_join_policy: Default::default(),
+                cancelled_child_join_policy: Default::default(),
+                priority: Default::default(),
+                labels: Default::default(),
+                due_at: None,
+                not_before: None,
+                snoozed_until: None,
+                external_refs: Vec::new(),
+                evidence_refs: Vec::new(),
+                status: None,
                 delegated_authority: Default::default(),
                 projection_policy: Default::default(),
             })
@@ -777,6 +797,21 @@ comms = true
                 },
                 mode,
                 completion_policy: Default::default(),
+                // meerkat 0.8.22 item-shaping passthrough (see the note on the
+                // other fixture above): eight of these came from
+                // `CreateWorkItemRequest::default()` in 0.8.21, the two join
+                // policies are new in 0.8.22, and both join policies are inert
+                // for a fixture that builds no `parent` edges.
+                failed_child_join_policy: Default::default(),
+                cancelled_child_join_policy: Default::default(),
+                priority: Default::default(),
+                labels: Default::default(),
+                due_at: None,
+                not_before: None,
+                snoozed_until: None,
+                external_refs: Vec::new(),
+                evidence_refs: Vec::new(),
+                status: None,
                 delegated_authority: Default::default(),
                 projection_policy: Default::default(),
             })
@@ -1527,20 +1562,26 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for AdmissionStoreProbe {
+        // meerkat 0.8.22 deleted `prepare_session_for_resume` from this trait.
+        // Durable-tail convergence now lives inside `PersistentSessionService`'s
+        // OVERRIDE of `materialize_session_resume_verdict`; the trait default
+        // routes to `materialize_nonpersistent_session_resume_verdict`, which
+        // only re-observes authority around `load_session_for_resume`.
+        //
+        // Inheriting that default is TRUTHFUL here, and only here, because this
+        // probe is a direct implementer with no durable tail of its own: its
+        // `delegate` is consulted for `load_persisted_session` alone, and every
+        // construction site passes an `EphemeralSessionService`. A wrapper over
+        // a persistent inner service must NOT inherit the default - it would
+        // compile while silently dropping convergence.
         async fn observe_session_resume_authority(
             &self,
             _session_id: &meerkat_core::types::SessionId,
         ) -> Result<meerkat_mob::SessionResumeAuthority, meerkat_core::service::SessionError>
         {
             // Test double: truthfully an empty authority bundle (the ephemeral
-            // arm of the meerkat 0.8.21 resume-verdict contract).
+            // arm of the meerkat 0.8.22 resume-verdict contract).
             Ok(meerkat_mob::SessionResumeAuthority::default())
-        }
-        async fn prepare_session_for_resume(
-            &self,
-            _session_id: &meerkat_core::types::SessionId,
-        ) -> Result<(), meerkat_core::service::SessionError> {
-            Ok(())
         }
         async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
             &self,
@@ -1711,20 +1752,20 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for SwitchableStore {
+        // Same 0.8.22 transition as `AdmissionStoreProbe` above:
+        // `prepare_session_for_resume` is gone from the trait, and inheriting
+        // the non-persistent `materialize_session_resume_verdict` default is
+        // truthful because this switch only routes `load_persisted_session`
+        // between two ephemeral-backed probes - it owns no durable tail to
+        // converge.
         async fn observe_session_resume_authority(
             &self,
             _session_id: &meerkat_core::types::SessionId,
         ) -> Result<meerkat_mob::SessionResumeAuthority, meerkat_core::service::SessionError>
         {
             // Test double: truthfully an empty authority bundle (the ephemeral
-            // arm of the meerkat 0.8.21 resume-verdict contract).
+            // arm of the meerkat 0.8.22 resume-verdict contract).
             Ok(meerkat_mob::SessionResumeAuthority::default())
-        }
-        async fn prepare_session_for_resume(
-            &self,
-            _session_id: &meerkat_core::types::SessionId,
-        ) -> Result<(), meerkat_core::service::SessionError> {
-            Ok(())
         }
         async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
             &self,

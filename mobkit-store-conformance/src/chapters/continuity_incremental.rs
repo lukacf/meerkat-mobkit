@@ -253,6 +253,20 @@ impl SessionStore for RegisteringIncremental {
 
 #[async_trait]
 impl IncrementalSessionStore for RegisteringIncremental {
+    // meerkat 0.8.22 made store activation a REQUIRED, no-default seam: the
+    // backend must enumerate its physical session identities, cross and
+    // verify each, and return the complete result from one write transaction,
+    // never deriving the census from `SessionStore::list`. This conformance
+    // wrapper owns no physical format authority - it only registers
+    // observations - so activation delegates verbatim to the wrapped store,
+    // exactly as the crossing below does. Registering identities here would
+    // fabricate a census this wrapper did not perform.
+    async fn activate_head_canonical_store(
+        &self,
+    ) -> Result<meerkat_core::session_store::HeadCanonicalStoreActivation, SessionStoreError> {
+        self.inner.activate_head_canonical_store().await
+    }
+
     // meerkat 0.8.21 format-door crossing: the conformance wrapper only
     // registers observations; physical format authority belongs to the
     // wrapped store, so the crossing delegates verbatim.
