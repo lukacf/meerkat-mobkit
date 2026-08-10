@@ -335,6 +335,7 @@ async fn identity_first_contracts_customizer_mock_modifies_draft() {
         binding: None,
     };
     let mut draft = AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: None,
         system_prompt: None,
         additional_instructions: vec![],
@@ -943,6 +944,7 @@ async fn identity_first_contracts_session_hook_customizer_adapter_model_mutation
         binding: None,
     };
     let mut draft = AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: None,
         system_prompt: None,
         additional_instructions: vec![],
@@ -1015,6 +1017,7 @@ async fn identity_first_contracts_session_hook_customizer_preserves_provider_par
         ..Default::default()
     };
     let mut draft = AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: None,
         system_prompt: None,
         additional_instructions: vec![],
@@ -1077,6 +1080,7 @@ async fn identity_first_contracts_session_hook_customizer_resume_warning() {
         binding: None,
     };
     let mut draft = AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: None,
         system_prompt: None,
         additional_instructions: vec![],
@@ -1136,6 +1140,7 @@ async fn identity_first_contracts_session_hook_customizer_unsupported_field_warn
         binding: None,
     };
     let mut draft = AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: Some("claude-sonnet-4-6".to_string()),
         system_prompt: Some("original prompt".to_string()),
         additional_instructions: vec![],

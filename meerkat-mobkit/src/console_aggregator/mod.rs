@@ -5248,7 +5248,7 @@ mod tests {
     use futures::StreamExt;
     use meerkat::{AgentFactory, Config, build_ephemeral_service};
     use meerkat_client::types::LlmStream;
-    use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest, TestClient};
+    use meerkat_client::{LlmClient, LlmError, LlmEvent, LlmRequest, TestClient};
     use meerkat_core::{
         AppendSystemContextRequest, AppendSystemContextResult, CommsRuntime, EventStream,
         RunResult, SessionControlError, SessionError, SessionHistoryPage, SessionHistoryQuery,
@@ -5328,7 +5328,7 @@ mod tests {
             Ok(messages.to_vec())
         }
 
-        fn stream<'a>(&'a self, _request: &'a LlmRequest) -> LlmStream<'a> {
+        fn stream<'a>(&'a self, request: &'a LlmRequest) -> LlmStream<'a> {
             let delay = self.delay;
             let delayed_text = futures::stream::once(async move {
                 tokio::time::sleep(delay).await;
@@ -5337,14 +5337,15 @@ mod tests {
                     meta: None,
                 })
             });
-            let done = futures::stream::once(async {
-                Ok(LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: StopReason::EndTurn,
-                    },
-                })
-            });
-            Box::pin(delayed_text.chain(done))
+            // meerkat 0.8.22 rejects a turn whose stream carried no normalized
+            // provider accounting, so the terminal `Done` never travels alone.
+            let [usage, done] = crate::mob_handle_runtime::test_llm_usage::usage_then_done(
+                request,
+                meerkat_core::Provider::Other,
+                StopReason::EndTurn,
+            );
+            let tail = futures::stream::iter(vec![Ok(usage), Ok(done)]);
+            Box::pin(delayed_text.chain(tail))
         }
 
         fn provider(&self) -> meerkat_core::Provider {
@@ -6162,8 +6163,16 @@ mod tests {
         }
     }
 
+    /// `TestClient::default()` DOES synthesize accounting under 0.8.22, but
+    /// under `Provider::Other` - and every profile here is `gpt-5.5`, whose
+    /// canonical owner is `Provider::OpenAI`, so the turn would fail closed
+    /// with `normalized_provider_accounting_identity_mismatch`. See the rule
+    /// in `tests/support/llm_usage.rs`.
     async fn build_single_member_runtime() -> UnifiedRuntime {
-        build_single_member_runtime_with_client(Arc::new(TestClient::default())).await
+        build_single_member_runtime_with_client(Arc::new(TestClient::for_provider(
+            meerkat_core::Provider::OpenAI,
+        )))
+        .await
     }
 
     async fn build_single_member_runtime_with_client(client: Arc<dyn LlmClient>) -> UnifiedRuntime {
@@ -6217,7 +6226,7 @@ comms = true
         .expect("definition parses");
         UnifiedRuntime::builder()
             .definition(definition)
-            .default_llm_client(Arc::new(TestClient::default()))
+            .default_llm_client(Arc::new(TestClient::for_provider(meerkat_core::Provider::OpenAI)))
             .build()
             .await
             .expect("runtime builds")
@@ -6320,7 +6329,9 @@ comms = true
             .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
-                default_llm_client: Some(Arc::new(TestClient::default())),
+                default_llm_client: Some(Arc::new(TestClient::for_provider(
+                    meerkat_core::Provider::OpenAI,
+                ))),
             });
         let runtime = Arc::new(
             UnifiedRuntime::bootstrap(

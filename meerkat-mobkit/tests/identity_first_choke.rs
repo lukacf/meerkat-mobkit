@@ -1266,6 +1266,7 @@ async fn identity_first_choke_20_session_hook_adapter_unsupported_mutation() {
     };
     let spec = make_spec("triage:main");
     let mut draft = AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: None,
         system_prompt: None,
         additional_instructions: vec![],

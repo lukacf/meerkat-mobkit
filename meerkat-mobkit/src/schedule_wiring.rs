@@ -2273,7 +2273,7 @@ mod tests {
         }
         fn stream<'a>(
             &'a self,
-            _request: &'a meerkat_client::LlmRequest,
+            request: &'a meerkat_client::LlmRequest,
         ) -> std::pin::Pin<
             Box<
                 dyn futures::Stream<
@@ -2283,16 +2283,20 @@ mod tests {
             >,
         > {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // meerkat 0.8.22 rejects a turn whose stream carried no normalized
+            // provider accounting, so the terminal `Done` never travels alone.
+            let [usage, done] = crate::mob_handle_runtime::test_llm_usage::usage_then_done(
+                request,
+                meerkat_core::Provider::OpenAI,
+                meerkat_core::types::StopReason::EndTurn,
+            );
             Box::pin(futures::stream::iter(vec![
                 Ok(meerkat_client::LlmEvent::TextDelta {
                     delta: "done".to_string(),
                     meta: None,
                 }),
-                Ok(meerkat_client::LlmEvent::Done {
-                    outcome: meerkat_client::LlmDoneOutcome::Success {
-                        stop_reason: meerkat_core::types::StopReason::EndTurn,
-                    },
-                }),
+                Ok(usage),
+                Ok(done),
             ]))
         }
         fn provider(&self) -> meerkat_core::Provider {
@@ -2815,7 +2819,15 @@ external_addressable = true
         .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
-            default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+            // `TestClient::default()` DOES synthesize accounting under 0.8.22,
+            // but under `Provider::Other` - and every profile here is
+            // `gpt-5.5`, whose canonical owner is `Provider::OpenAI`, so the
+            // turn would fail closed with
+            // `normalized_provider_accounting_identity_mismatch`. See the rule
+            // in `tests/support/llm_usage.rs`.
+            default_llm_client: Some(Arc::new(meerkat_client::TestClient::for_provider(
+                meerkat_core::Provider::OpenAI,
+            ))),
         });
         let runtime = crate::UnifiedRuntime::bootstrap(
             mob_spec,
@@ -3039,7 +3051,15 @@ schedule = true
         .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
-            default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+            // `TestClient::default()` DOES synthesize accounting under 0.8.22,
+            // but under `Provider::Other` - and every profile here is
+            // `gpt-5.5`, whose canonical owner is `Provider::OpenAI`, so the
+            // turn would fail closed with
+            // `normalized_provider_accounting_identity_mismatch`. See the rule
+            // in `tests/support/llm_usage.rs`.
+            default_llm_client: Some(Arc::new(meerkat_client::TestClient::for_provider(
+                meerkat_core::Provider::OpenAI,
+            ))),
         });
         let runtime = crate::UnifiedRuntime::bootstrap(
             mob_spec,

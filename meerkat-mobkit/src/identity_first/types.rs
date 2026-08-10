@@ -1106,6 +1106,60 @@ impl PartialEq for LocalExternalToolOverlay {
 
 impl Eq for LocalExternalToolOverlay {}
 
+/// In-process overlay carrying a host-supplied `CompactionCurator` for an
+/// identity's agent build.
+///
+/// Same shape and reasons as [`LocalExternalToolOverlay`]: a trait object is
+/// not `Debug`/`PartialEq`/`Serialize`, and a curator is host code that
+/// cannot cross a wire boundary, so the slot is `#[serde(default, skip)]` on
+/// [`AgentBuildDraft`] and compares by presence only.
+///
+/// NOT YET WIRED. This is the draft half of the curator carrier: nothing in
+/// this crate reads it, because there is no carrier for it on `SpawnMemberSpec`
+/// or `SessionBuildOptions` upstream to hand it to. Landing the slot now keeps
+/// customizers and the draft contract stable for when that seam exists; until
+/// then a value set here is inert.
+#[derive(Clone, Default)]
+pub struct CompactionCuratorOverlay {
+    curator: Option<Arc<dyn meerkat_core::compact::CompactionCurator>>,
+}
+
+impl CompactionCuratorOverlay {
+    pub fn new(curator: Arc<dyn meerkat_core::compact::CompactionCurator>) -> Self {
+        Self {
+            curator: Some(curator),
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self { curator: None }
+    }
+
+    pub fn curator(&self) -> Option<Arc<dyn meerkat_core::compact::CompactionCurator>> {
+        self.curator.clone()
+    }
+
+    pub fn is_some(&self) -> bool {
+        self.curator.is_some()
+    }
+}
+
+impl std::fmt::Debug for CompactionCuratorOverlay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompactionCuratorOverlay")
+            .field("curator", &self.curator.is_some())
+            .finish()
+    }
+}
+
+impl PartialEq for CompactionCuratorOverlay {
+    fn eq(&self, other: &Self) -> bool {
+        self.curator.is_some() == other.curator.is_some()
+    }
+}
+
+impl Eq for CompactionCuratorOverlay {}
+
 /// Mutable draft that `AgentCustomizer` modifies.
 ///
 /// `external_tools` remains the serializable SDK/gateway declaration surface.
@@ -1141,6 +1195,22 @@ pub struct AgentBuildDraft {
     /// wire payload written before this field existed still deserializes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_params: Option<meerkat_core::lifecycle::run_primitive::ProviderParamsOverride>,
+    /// Host-supplied compaction curator for this identity.
+    ///
+    /// NOT YET WIRED - see [`CompactionCuratorOverlay`]. Nothing reads this
+    /// field: the downstream carrier (`SpawnMemberSpec` / `SessionBuildOptions`)
+    /// does not exist upstream yet. Serde-skipped like `local_external_tools`,
+    /// so no persisted draft or wire payload changes.
+    ///
+    /// IN-PROCESS ONLY, and that is a real limit, not a formality: the gateway
+    /// customizer round-trips the whole draft through
+    /// `serde_json::to_value` / `from_value` (see `provider_params` above), so
+    /// a curator set on the far side of that hop is dropped, exactly like
+    /// `local_external_tools`. Making this usable from a gateway or SDK
+    /// customizer needs a wire-side carrier too, not just an upstream
+    /// `SpawnMemberSpec` field.
+    #[serde(default, skip)]
+    pub compaction_curator: CompactionCuratorOverlay,
 }
 
 // ---------------------------------------------------------------------------

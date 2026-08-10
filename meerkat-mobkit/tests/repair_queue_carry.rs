@@ -27,7 +27,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionService};
 use meerkat_client::types::LlmStream;
-use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
+use meerkat_client::{LlmClient, LlmError, LlmEvent, LlmRequest};
 use meerkat_mob::{MobDefinition, MobStorage};
 use meerkat_mobkit::identity_first::{
     AgentAddressability, AgentBuildDraft, AgentRuntimeServices, BridgeError, DurabilityPolicy,
@@ -40,6 +40,11 @@ use meerkat_mobkit::{
 };
 use meerkat_runtime::SessionServiceRuntimeExt;
 use tokio::sync::watch;
+
+/// The one definition of the normalized-provider-accounting contract every
+/// MobKit LLM double must satisfy under meerkat 0.8.22. See the module docs.
+#[path = "support/llm_usage.rs"]
+mod llm_usage;
 
 /// Deterministic LLM whose stream blocks until the shared gate opens, and
 /// which records EVERY message of every request it is asked to run (carried
@@ -80,14 +85,13 @@ impl LlmClient for GatedRecordingClient {
                 meta: None,
             })
         });
-        let done = futures::stream::once(async {
-            Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success {
-                    stop_reason: meerkat_core::StopReason::EndTurn,
-                },
-            })
-        });
-        Box::pin(text.chain(done))
+        // meerkat 0.8.22 rejects a turn whose stream carried no normalized
+        // provider accounting, so the terminal `Done` never travels alone.
+        let provider = LlmClient::provider(self);
+        let [usage, done] =
+            llm_usage::usage_then_done(request, provider, meerkat_core::StopReason::EndTurn);
+        let tail = futures::stream::iter(vec![Ok(usage), Ok(done)]);
+        Box::pin(text.chain(tail))
     }
 
     fn provider(&self) -> meerkat_core::Provider {
@@ -114,6 +118,7 @@ struct Harness {
 
 fn empty_draft(spec: &DurableAgentSpec) -> AgentBuildDraft {
     AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: None,
         system_prompt: None,
         additional_instructions: spec.additional_instructions.clone(),

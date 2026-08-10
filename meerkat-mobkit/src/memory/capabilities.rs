@@ -33,7 +33,7 @@
 //!
 //! [`SqliteAgentMemoryStore`]: crate::memory::sqlite_store::SqliteAgentMemoryStore
 //! [`AgentMemoryProvider`]: crate::identity_first::agent_memory::AgentMemoryProvider
-//! [`SelectedRecordFetch`]: crate::memory::selector::SelectedRecordFetch
+//! [`SelectedRecordFetch`]: crate::memory::factory_handle::SelectedRecordFetch
 
 use std::sync::Arc;
 

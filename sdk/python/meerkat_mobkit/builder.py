@@ -246,6 +246,22 @@ class MobKitBuilder:
         With no arguments this enables the gateway default. Keyword arguments
         use Python names and serialize to the Rust gateway's snake_case wire
         keys, for example ``agent_memory(selection="contextual", max_entries=3)``.
+
+        ``store`` accepts only ``"sqlite"`` (the default). ``store="markdown"``
+        is retired as a live store: the gateway refuses it at init (-32014) and
+        names the migration, which is one lossless step - point the default
+        sqlite store at the SAME agent-memory directory and it imports every
+        un-imported ``.md`` file on first open, preserving ids, tags and
+        timestamps and renaming each source ``.md.imported``. Tag CONTENT is
+        preserved; the store collates tags, so order is not.
+
+        ``selector`` is RETIRED. The LLM recall-selector stage was removed
+        unactivated, so recall is the deterministic lexical path on every turn.
+        The key is still accepted and still forwarded (the gateway boots fine
+        on it, so raising here would be stricter than the server), but only
+        ``"off"`` still means anything: ``"default"`` and ``"profile:<path>"``
+        are taken and discarded, with the deprecation warning going to the
+        GATEWAY log, not to this caller. A later release rejects the key.
         """
         if kwargs:
             if config is not True:
@@ -331,6 +347,10 @@ class MobKitBuilder:
             wire["defang_inbound"] = config["defang_inbound"]
         elif "defangInbound" in config:
             wire["defang_inbound"] = config["defangInbound"]
+        # Forwarded verbatim on purpose. `store="markdown"` is retired and the
+        # gateway refuses it with a typed migration verdict; re-deciding that
+        # here would be a second definition of one policy, and this SDK would
+        # be the copy that goes stale.
         if "store" in config:
             wire["store"] = config["store"]
         if "llm_writes" in config:

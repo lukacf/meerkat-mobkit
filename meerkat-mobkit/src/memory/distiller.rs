@@ -73,7 +73,7 @@ use crate::memory::guards::{BackgroundBudget, BackgroundBudgetConfig};
 use crate::memory::records::{
     EvidenceRef, ManifestTier, MemoryAuthor, MemoryKind, MemoryScope, NewMemoryRecord, RecordMeta,
 };
-use crate::memory::selector::FactorySelectorHandle;
+use crate::memory::factory_handle::FactorySelectorHandle;
 use crate::memory::taint::{MemberAgentEventSink, SessionTaintTracker};
 
 /// Embedded prompt bundle (crate-local copy of
@@ -101,8 +101,21 @@ const MAX_TRANSCRIPT_MESSAGE_BYTES: usize = 4 * 1024;
 const MAX_TRANSCRIPT_TOTAL_BYTES: usize = 48 * 1024;
 /// Window-state entries are bounded; least-recently-active evict first.
 const MAX_TRACKED_WINDOWS: usize = 4096;
-/// Output budget for the structured op list.
-const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 2048;
+/// Output budget for the structured op list, overridable per deployment via
+/// [`DistillerConfig::max_output_tokens`].
+///
+/// Why this is 16_384 and not the 2048 it used to be: on a REASONING model
+/// the provider spends ONE budget on reasoning tokens AND the visible answer,
+/// so a ceiling sized for a non-reasoning model is consumed before the op
+/// list begins, and the truncation is silent rather than an error. The
+/// steward's sibling constant at the old 4096 is why a production fleet
+/// committed ZERO ops across twelve consecutive runs over four days; this
+/// stage had the same defect one power of two lower.
+///
+/// 16_384 is the largest value that cannot be a hard provider rejection on
+/// any text model in meerkat's catalog (the smallest cataloged ceiling is
+/// `gpt-5.4-mini`'s 16_384), and an unreached ceiling costs nothing.
+const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_384;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -234,6 +247,27 @@ impl DistillerProfile {
         Ok(self)
     }
 
+    /// Replace the profile's output-token ceiling (the config-block
+    /// override). Fail-loud in the same shape as [`Self::with_model_override`]:
+    /// a zero budget cannot produce an answer, so it is a typed error rather
+    /// than an extraction that silently proposes nothing.
+    ///
+    /// Deliberately no upper bound: the real ceiling is the model's, it is
+    /// context-dependent, and the provider rejects an over-large request
+    /// loudly - unlike the under-large one this override exists to fix.
+    pub fn with_max_output_tokens(
+        mut self,
+        max_output_tokens: u32,
+    ) -> Result<Self, DistillerError> {
+        if max_output_tokens == 0 {
+            return Err(DistillerError::Profile(
+                "distiller max_output_tokens override must be greater than zero".to_string(),
+            ));
+        }
+        self.params.max_output_tokens = max_output_tokens;
+        Ok(self)
+    }
+
     /// Load an external calibration profile (fail-loud), same layout rules
     /// as the Selector's loader.
     pub fn load(path: &Path) -> Result<Self, DistillerError> {
@@ -338,6 +372,18 @@ pub struct DistillerConfig {
     pub min_interactions: u32,
     /// Optional model override applied to the embedded default profile.
     pub model: Option<String>,
+    /// Output-token ceiling for the extraction call. `None` keeps the
+    /// embedded profile's default.
+    ///
+    /// Exposed because a REASONING model spends this single budget on
+    /// reasoning tokens AND the visible answer, so a ceiling sized for a
+    /// non-reasoning model truncates the op list to nothing without raising
+    /// an error. The defect was not that the default was wrong but that it
+    /// was a private constant a deployment could neither see nor change;
+    /// [`crate::memory::steward::StewardConfig::max_output_tokens`] carries
+    /// the production incident that made it visible, and
+    /// [`crate::memory::hygienist::HygienistConfig`] has the same knob.
+    pub max_output_tokens: Option<u32>,
 }
 
 impl Default for DistillerConfig {
@@ -347,6 +393,7 @@ impl Default for DistillerConfig {
             runs_per_hour: crate::memory::guards::DEFAULT_RUNS_PER_HOUR,
             min_interactions: 3,
             model: None,
+            max_output_tokens: None,
         }
     }
 }
@@ -848,7 +895,7 @@ impl FactoryDistillerHandle {
 #[async_trait]
 impl DistillerClientHandle for FactoryDistillerHandle {
     async fn client(&self) -> Result<Arc<dyn LlmClient>, DistillerError> {
-        use crate::memory::selector::{SelectorError, SelectorHandle};
+        use crate::memory::factory_handle::{SelectorError, SelectorHandle};
         self.inner.client().await.map_err(|err| match err {
             SelectorError::Auth(msg) => DistillerError::Auth(msg),
             other => DistillerError::Client(other.to_string()),
@@ -856,7 +903,7 @@ impl DistillerClientHandle for FactoryDistillerHandle {
     }
 
     fn invalidate(&self) {
-        use crate::memory::selector::SelectorHandle;
+        use crate::memory::factory_handle::SelectorHandle;
         self.inner.invalidate();
     }
 }
@@ -877,7 +924,7 @@ pub fn render_prompt(
         manifest
             .iter()
             .take(profile.params.max_manifest_records)
-            .map(crate::memory::selector::render_manifest_row)
+            .map(crate::memory::factory_handle::render_manifest_row)
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -952,6 +999,12 @@ fn render_discards(entries: &[DiscardEntry]) -> String {
     lines.join("\n")
 }
 
+/// One bounded completion against the profile's model/params.
+///
+/// `temperature` is set unconditionally on purpose: whether it reaches the
+/// wire is the provider client's decision, which already consults the model's
+/// catalog row. See [`crate::memory::steward::complete_text`] for the full
+/// reasoning.
 async fn complete_text(
     client: &dyn LlmClient,
     profile: &DistillerProfile,
@@ -2738,6 +2791,19 @@ mod tests {
             .with_model_override("claude-haiku-4-5")
             .expect("catalog model accepted");
         assert_eq!(overridden.model, "claude-haiku-4-5");
+    }
+
+    /// The budget override is the reachable half of the output-ceiling fix: a
+    /// zero budget is a typed error, not an extraction that silently proposes
+    /// nothing.
+    #[test]
+    fn max_output_tokens_override_is_fail_loud() {
+        let profile = DistillerProfile::embedded_default();
+        assert!(profile.clone().with_max_output_tokens(0).is_err());
+        let raised = profile
+            .with_max_output_tokens(32_768)
+            .expect("nonzero budget accepted");
+        assert_eq!(raised.params.max_output_tokens, 32_768);
     }
 
     // -- §8.6 seams: harvest classification, follow-up hook, cursor ----------

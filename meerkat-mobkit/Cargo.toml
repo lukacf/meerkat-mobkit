@@ -86,15 +86,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [features]
 integration-real-tests = []
 
-# Calibration-harness seam for the memory Selector (§8.3/§11):
-# `scripts/memory-evals --mode live` drives this binary per fixture. Named
-# explicitly so the CLI name is hyphenated.
-[[bin]]
-name = "selector-eval"
-path = "src/bin/selector_eval.rs"
-
 # Calibration-harness seam for the memory Distiller (§8.4/§11); same contract
-# as selector-eval, fixture in / structured ops out.
+# as the other calibration bins, fixture in / structured ops out.
+# `scripts/memory-evals --mode live` drives these binaries per fixture. Each is
+# named explicitly so the CLI name is hyphenated.
 [[bin]]
 name = "distiller-eval"
 path = "src/bin/distiller_eval.rs"

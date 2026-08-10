@@ -144,8 +144,9 @@ impl SpawnMemberCustomizer for MemorySpawnCustomizer {
 /// runtime keeps this correct on any caller runtime flavor (no
 /// `block_in_place` panic on current-thread runtimes, and the coordinator's
 /// internal `tokio::time::timeout`s get a live timer driver). Bounded by the
-/// coordinator's own recall budget (2× `recall_timeout_ms` for the selector
-/// stage), so a spawn never hangs on memory.
+/// coordinator's own recall budget (`recall_timeout_ms`; the 2× build-time
+/// extension retired with the §8.3 selector stage), so a spawn never hangs
+/// on memory.
 fn block_on_build_injection(
     coordinator: &RecallCoordinator,
     identity: &AgentIdentity,

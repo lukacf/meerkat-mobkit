@@ -10264,11 +10264,13 @@ mod tests {
         cursor_is_after, dedupe_console_members_by_identity, externalize_image_upload_placeholders,
         externalize_single_image_upload, handle_console_aggregator_rpc, handle_console_runtime_rpc,
         handle_console_runtime_rpc_with_visibility, member_id_matches_durable_identity,
-        project_console_members_from_handle, query_timeline_snapshot, timeline_query_from_http,
+        memory_panel_scope_action, project_console_members_from_handle, query_timeline_snapshot,
+        timeline_query_from_http,
     };
     use crate::access::{
         ACTION_AGENT_MEMORY_DELETE, ACTION_AGENT_MEMORY_READ, ACTION_AGENT_MEMORY_WRITE,
-        ACTION_AGENT_SEND, ACTION_AGENT_VIEW, AccessController,
+        ACTION_AGENT_SEND, ACTION_AGENT_VIEW, ACTION_MOB_MEMORY_READ, ACTION_OPERATOR_MEMORY_READ,
+        AccessController,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
     use crate::console_aggregator::{
@@ -10305,6 +10307,44 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    /// §10.3 fail-closed panel guard. Operator-scope rows are cross-mob
+    /// personal facts, so they need their OWN grant: folding the operator
+    /// arm into the unscoped `agent.memory.read` action would silently
+    /// widen console read authority rather than remove an inert branch.
+    /// Pinned per scope kind so a fold shows up as a test failure, not as a
+    /// quiet permission grant.
+    #[test]
+    fn memory_panel_read_action_is_distinct_per_scope_kind() {
+        use crate::memory::records::MemoryScope;
+
+        let identity = MemoryScope::Identity {
+            realm: "family".to_string(),
+            identity: "identity:luka".to_string(),
+        };
+        let mob = MemoryScope::Mob {
+            realm: "family".to_string(),
+            mob: "mob:home".to_string(),
+        };
+        let operator = MemoryScope::Operator {
+            realm: "family".to_string(),
+            operator: "op:luka".to_string(),
+        };
+        let realm = MemoryScope::Realm {
+            realm: "family".to_string(),
+        };
+
+        assert_eq!(memory_panel_scope_action(&identity), ACTION_AGENT_MEMORY_READ);
+        assert_eq!(memory_panel_scope_action(&mob), ACTION_MOB_MEMORY_READ);
+        assert_eq!(
+            memory_panel_scope_action(&operator),
+            ACTION_OPERATOR_MEMORY_READ,
+            "operator rows must not ride the unscoped agent.memory.read grant"
+        );
+        // Realm rows deliberately DO ride the unscoped grant (§10.3).
+        assert_eq!(memory_panel_scope_action(&realm), ACTION_AGENT_MEMORY_READ);
+        assert_ne!(ACTION_OPERATOR_MEMORY_READ, ACTION_AGENT_MEMORY_READ);
+    }
 
     struct BlockingIdentityBridge {
         deliver_calls: Arc<AtomicUsize>,

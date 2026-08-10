@@ -751,6 +751,7 @@ mod tests {
             binding: None,
         };
         let mut draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: None,
             system_prompt: None,
             additional_instructions: vec![],
@@ -1176,6 +1177,7 @@ mod tests {
 
         // The SDK returns the mutated draft
         let returned_draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: Some("gpt-5".to_string()),
             system_prompt: Some("You are a helpful agent.".to_string()),
             additional_instructions: vec!["Be concise.".to_string()],
@@ -1227,6 +1229,7 @@ mod tests {
             binding: None,
         };
         let mut draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: None,
             system_prompt: None,
             additional_instructions: vec![],
@@ -1307,6 +1310,7 @@ mod tests {
         // mint a FRESH scope so the host re-registers handlers under the new scope.
         let mock = Arc::new(MockBridge::new());
         let returned_draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: None,
             system_prompt: None,
             additional_instructions: vec![],
@@ -1351,6 +1355,7 @@ mod tests {
         let mut scopes = Vec::new();
         for _ in 0..2 {
             let mut draft = AgentBuildDraft {
+                compaction_curator: Default::default(),
                 model: None,
                 system_prompt: None,
                 additional_instructions: vec![],

@@ -81,7 +81,11 @@ fn current_session_json() -> Value {
             },
         ],
         StopReason::EndTurn,
-        Usage::default(),
+        // 0.8.22 requires declared provider accounting on the append seam.
+        // This fixture pins the LEGACY on-disk shape, so the identity must
+        // match the meta it asserts at the bottom of the file (OpenAI/gpt-4o),
+        // not a current-catalog model.
+        meerkat_core::TurnUsage::host_declared(Provider::OpenAI, "gpt-4o", Usage::default()),
     );
 
     serde_json::to_value(&session).expect("serialize current session")

@@ -167,10 +167,6 @@ struct GatewayAgentMemoryOptions {
     config: meerkat_mobkit::AgentMemoryConfig,
     path: std::path::PathBuf,
     store: GatewayAgentMemoryStoreKind,
-    /// §8.3 selector switch from `agent_memory.selector`. `None` = not
-    /// configured; the wiring then falls back to the
-    /// `MOBKIT_AGENT_MEMORY_SELECTOR` env var (config takes precedence).
-    selector: Option<meerkat_mobkit::memory::selector::SelectorSpec>,
     /// §8.4 distiller block from `agent_memory.distiller`. Disabled by
     /// default (flipping it is a calibration decision, §11).
     distiller: meerkat_mobkit::memory::distiller::DistillerConfig,
@@ -186,12 +182,56 @@ struct GatewayAgentMemoryOptions {
 /// Which bundled store backs agent memory. SQLite is the default now that
 /// the P1 recall coordinator and injection ledger ride on it
 /// (docs/design/agent-memory-architecture.md §15); existing markdown files
-/// are auto-imported on first open. Markdown remains selectable.
+/// are auto-imported on first open.
+///
+/// Markdown is still a RECOGNIZED value - it parses, it censuses, and the
+/// per-knob `requires store='sqlite'` refusals below still name it - but it
+/// is no longer a live execution backend: selecting it now fails init with
+/// [`AgentMemoryStoreMigration`]. The markdown READER stays fully intact for
+/// the deliberate one-shot import (`SqliteAgentMemoryStore::open` migrates
+/// un-imported `.md` files on first open), which is the supported path off
+/// markdown and the thing the migration error points at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum GatewayAgentMemoryStoreKind {
     Markdown,
     #[default]
     Sqlite,
+}
+
+/// A typed refusal for an agent-memory store kind that is no longer a live
+/// execution backend. Typed rather than a bare string so the refusal has one
+/// definition, one code, and one message that tests can pin - a migration
+/// verdict, not an incidental open failure.
+///
+/// It rides the existing `STORAGE_RESOLUTION_CODE` because that is exactly
+/// what it is from a client's point of view: this durable storage slot
+/// cannot be resolved as configured. No new wire code is minted, so SDKs
+/// that already branch on -32014 keep working unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentMemoryStoreMigration {
+    /// `agent_memory.store = "markdown"` selected as the LIVE backend.
+    MarkdownIsImportOnly,
+}
+
+impl AgentMemoryStoreMigration {
+    const fn code(self) -> i64 {
+        STORAGE_RESOLUTION_CODE
+    }
+
+    fn message(self) -> String {
+        match self {
+            Self::MarkdownIsImportOnly => "runtime_options.agent_memory.store='markdown' is \
+                 retired as a live store and cannot back a running gateway: it has no manifest, \
+                 no injection ledger, no taint firewall and no judgment plane, so a markdown \
+                 deployment silently loses every §7-§10 guarantee the sqlite store provides. \
+                 Migration is one step and lossless: set store='sqlite' (or drop the key - \
+                 sqlite is the default) against the SAME agent-memory directory. \
+                 SqliteAgentMemoryStore::open imports every un-imported .md file on first open, \
+                 preserving memory ids, tags and timestamps, and renames each source file to \
+                 .md.imported rather than deleting it."
+                .to_string(),
+        }
+    }
 }
 
 /// §7.2: `operator_scope = "provisional"` composes operator-scope recall
@@ -1490,6 +1530,35 @@ actions = ["agent.view"]
         assert_eq!(slot.backend, "MarkdownAgentMemoryStore");
     }
 
+    /// The live markdown backend is retired, but the refusal has to be a
+    /// MIGRATION verdict, not a shrug: it must name the target store and the
+    /// lossless import that gets a deployment there. Pinned so the message
+    /// cannot decay into "unsupported store".
+    #[test]
+    fn markdown_live_store_refusal_names_the_migration() {
+        let migration = AgentMemoryStoreMigration::MarkdownIsImportOnly;
+        assert_eq!(migration.code(), STORAGE_RESOLUTION_CODE);
+        let message = migration.message();
+        assert!(message.contains("store='sqlite'"), "{message}");
+        assert!(message.contains("SAME agent-memory directory"), "{message}");
+        assert!(message.contains(".md.imported"), "{message}");
+    }
+
+    /// The store kind still PARSES as markdown; only the live construction
+    /// path refuses. Keeping the parse arm is what makes the refusal say
+    /// "migrate" instead of "unknown value 'markdown'".
+    #[test]
+    fn markdown_store_kind_still_parses() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({ "runtime_options": { "agent_memory": { "store": "markdown" } } });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        assert_eq!(
+            options.agent_memory.expect("agent memory options").store,
+            GatewayAgentMemoryStoreKind::Markdown
+        );
+    }
+
     #[test]
     fn gateway_runtime_options_parse_agent_memory_defang_inbound() {
         let tmp = tempfile::tempdir().expect("temp dir");
@@ -2315,102 +2384,47 @@ actions = ["agent.view"]
         }
     }
 
+    /// The §8.3 selector knob is retired but still ACCEPTED: an unknown
+    /// `runtime_options.agent_memory` key is a fail-loud init refusal, so
+    /// rejecting it would brick every deployment that pinned it (including
+    /// the ones that pinned `"off"`, i.e. asked for exactly today's
+    /// behaviour). Any value parses; non-off values warn and are ignored.
     #[test]
-    fn gateway_runtime_options_parse_agent_memory_selector() {
-        use meerkat_mobkit::memory::selector::SelectorSpec;
-
+    fn retired_agent_memory_selector_key_is_accepted_and_ignored() {
         let tmp = tempfile::tempdir().expect("temp dir");
-
-        // Default: not configured — the env var stays the fallback.
-        for params in [
-            json!({ "runtime_options": { "agent_memory": true } }),
-            json!({ "runtime_options": { "agent_memory": {} } }),
-        ] {
-            let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
-                .expect("agent memory config should parse");
-            let agent_memory = options.agent_memory.expect("agent memory options");
-            assert_eq!(agent_memory.selector, None);
-        }
-
-        for (value, want) in [
-            ("off", SelectorSpec::Off),
-            ("default", SelectorSpec::Default),
-            (
-                "profile:/etc/mobkit/selector.toml",
-                SelectorSpec::Profile(std::path::PathBuf::from("/etc/mobkit/selector.toml")),
-            ),
-        ] {
+        for value in ["off", "default", "profile:/etc/mobkit/selector.toml", "on"] {
             let params = json!({
                 "runtime_options": { "agent_memory": { "selector": value } }
             });
-            let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
-                .expect("selector value should parse");
-            let agent_memory = options.agent_memory.expect("agent memory options");
-            assert_eq!(agent_memory.selector, Some(want), "selector '{value}'");
+            parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .unwrap_or_else(|err| panic!("selector '{value}' must still parse: {err}"));
         }
-    }
-
-    #[test]
-    fn gateway_runtime_options_reject_bad_agent_memory_selector() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        for (block, needle) in [
-            (json!({ "selector": "on" }), "'off', 'default'"),
-            (json!({ "selector": "profile:" }), "'off', 'default'"),
-            (json!({ "selector": true }), "must be a string"),
-            (
-                // The markdown provider has no manifest; a configured
-                // selector would silently do nothing.
-                json!({ "store": "markdown", "selector": "default" }),
-                "selector requires store='sqlite'",
-            ),
-        ] {
-            let params = json!({ "runtime_options": { "agent_memory": block } });
-            let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
-                Ok(_) => panic!("selector config must fail loudly: {params}"),
-                Err(err) => err,
-            };
-            assert!(err.contains(needle), "{err} (wanted '{needle}')");
-        }
-
-        // Explicit off with markdown is fine (nothing to enforce).
+        // Retired everywhere, including alongside the markdown store: the
+        // old `selector requires store='sqlite'` refusal had nothing left
+        // to guard.
         let params = json!({
             "runtime_options": {
-                "agent_memory": { "store": "markdown", "selector": "off" }
+                "agent_memory": { "store": "markdown", "selector": "default" }
             }
         });
-        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
-            .expect("selector=off with markdown should parse");
-        let agent_memory = options.agent_memory.expect("agent memory options");
-        assert_eq!(
-            agent_memory.selector,
-            Some(meerkat_mobkit::memory::selector::SelectorSpec::Off)
-        );
+        parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("a retired knob cannot constrain the store kind");
     }
 
+    /// Type validation does NOT loosen: the value is still a string or a
+    /// loud parse refusal, so a structurally wrong config is never silently
+    /// swallowed by the accept-and-ignore path.
     #[test]
-    fn selector_config_takes_precedence_over_env_fallback() {
-        use meerkat_mobkit::memory::selector::SelectorSpec;
-
-        // The crate denies `unsafe`, so the env var cannot be mutated in a
-        // test; precedence is shown structurally instead. With the env
-        // unset (nextest never sets MOBKIT_AGENT_MEMORY_SELECTOR), the env
-        // fallback alone resolves to Off — so a non-Off result for a
-        // configured spec proves the config path won, not the env.
-        assert_eq!(
-            resolve_selector_spec(Some(&SelectorSpec::Default)).expect("configured spec resolves"),
-            SelectorSpec::Default,
-            "agent_memory.selector must be used ahead of the env fallback"
-        );
-        let profile = SelectorSpec::Profile(std::path::PathBuf::from("/etc/mobkit/selector.toml"));
-        assert_eq!(
-            resolve_selector_spec(Some(&profile)).expect("configured profile resolves"),
-            profile
-        );
-        assert_eq!(
-            resolve_selector_spec(None).expect("env fallback resolves"),
-            SelectorSpec::Off,
-            "unset config must fall back to MOBKIT_AGENT_MEMORY_SELECTOR (unset ⇒ off)"
-        );
+    fn retired_agent_memory_selector_key_still_rejects_non_strings() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": { "agent_memory": { "selector": true } }
+        });
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("a non-string selector value must fail loudly"),
+            Err(err) => err,
+        };
+        assert!(err.contains("must be a string"), "{err}");
     }
 
     #[test]
@@ -2836,8 +2850,32 @@ fn parse_gateway_runtime_options(
     {
         parsed.routing_routes = parse_gateway_routing_config_path(path)?;
     }
+    // DEPRECATED (phase A: accept-and-ignore). The static TOML scheduling
+    // oracle - gateway-loaded `[[schedules]]` silently injected into
+    // `mobkit/scheduling/{evaluate,dispatch}` params - is superseded by the
+    // durable schedule store and its host-runnable targets, which survive
+    // restarts, claim occurrences and report firing.
+    //
+    // The key is still ACCEPTED and still fully VALIDATED. It cannot become
+    // a hard reject yet: both SDKs auto-populate `scheduling_files` from a
+    // disk convention with no opt-in, and `runtime_options` rejects unknown
+    // keys fail-loud, so a one-release cut would brick init for every
+    // deployment that merely has those files on disk. Validation is
+    // deliberately NOT loosened either - a malformed schedules file is still
+    // a loud init refusal, exactly as before, so accept-and-ignore never
+    // becomes swallow-and-hope. Phase B (reject) ships a release later.
     if let Some(files) = runtime_options.get("scheduling_files") {
-        parsed.schedules = parse_gateway_scheduling_files(files)?;
+        let ignored = parse_gateway_scheduling_files(files)?;
+        if !ignored.is_empty() {
+            tracing::warn!(
+                schedules = ignored.len(),
+                "runtime_options.scheduling_files is DEPRECATED and its schedules are now \
+                 IGNORED: the gateway no longer answers mobkit/scheduling/evaluate|dispatch from \
+                 a static TOML oracle. Callers must pass `schedules` explicitly, or move to the \
+                 durable schedule store (which is what actually fires). The key still parses and \
+                 still validates; a later release rejects it outright."
+            );
+        }
     }
     if let Some(path) = runtime_options
         .get("gating_config_path")
@@ -3369,6 +3407,10 @@ fn parse_gateway_auth_config(value: &Value) -> Result<RuntimeDecisionState, Stri
     })
 }
 
+/// Warn once per process, not once per request: a deprecated method on a
+/// busy gateway would otherwise drown the log it is trying to be seen in.
+static MODULE_PLANE_SCHEDULING_DEPRECATION: std::sync::Once = std::sync::Once::new();
+
 fn apply_gateway_runtime_config_to_request(
     request_line: &str,
     schedules: &[ScheduleDefinition],
@@ -3379,10 +3421,34 @@ fn apply_gateway_runtime_config_to_request(
     };
     let method = request.get("method").and_then(Value::as_str).unwrap_or("");
     match method {
-        "mobkit/scheduling/evaluate" | "mobkit/scheduling/dispatch" if !schedules.is_empty() => {
+        // DEPRECATED (phase A: accept-and-ignore). The module-plane
+        // scheduling vocabulary is a stateless "given these definitions and
+        // this tick, what is due" oracle: it never claims an occurrence,
+        // never records a firing, and forgets everything between calls, so
+        // it cannot be the thing a deployment actually schedules on. The
+        // durable schedule store is.
+        //
+        // The methods still answer - they are NOT rejected here, and an
+        // explicit `schedules` param evaluates exactly as before. What is
+        // gone is the gateway-side ORACLE: `schedules` is never injected
+        // from static TOML any more (`schedules` is now always empty), so a
+        // caller that relied on the gateway to supply them gets a loud
+        // `Invalid params: schedules must be an array` instead of a silently
+        // stale answer. Phase B (reject) ships a release later.
+        "mobkit/scheduling/evaluate" | "mobkit/scheduling/dispatch" => {
+            MODULE_PLANE_SCHEDULING_DEPRECATION.call_once(|| {
+                tracing::warn!(
+                    method,
+                    "mobkit/scheduling/* is DEPRECATED: it is a stateless per-tick oracle with no \
+                     claim, no durability and no firing record. Move to the durable schedule \
+                     store (schedule tools / host-runnable targets). Gateway-side injection of \
+                     static `schedules` is already gone; a later release rejects these methods."
+                );
+            });
             let params = request.get_mut("params").and_then(Value::as_object_mut);
             if let Some(params) = params
                 && !params.contains_key("schedules")
+                && !schedules.is_empty()
             {
                 params.insert(
                     "schedules".to_string(),
@@ -3535,7 +3601,6 @@ fn parse_gateway_agent_memory_config(
             config: meerkat_mobkit::AgentMemoryConfig::default(),
             path,
             store: GatewayAgentMemoryStoreKind::default(),
-            selector: None,
             distiller: meerkat_mobkit::memory::distiller::DistillerConfig::default(),
             steward: meerkat_mobkit::memory::steward::StewardConfig::default(),
             hygienist: meerkat_mobkit::memory::hygienist::HygienistConfig::default(),
@@ -3743,37 +3808,31 @@ fn parse_gateway_agent_memory_config(
             }
         },
     };
-    // §8.3 selector switch. When set it takes precedence over the
-    // MOBKIT_AGENT_MEMORY_SELECTOR env var; when absent the env var stays
-    // the fallback.
-    let selector = match object.get("selector") {
-        None => None,
-        Some(value) => {
-            let value = value.as_str().map(str::trim).ok_or_else(|| {
-                "runtime_options.agent_memory.selector must be a string \
-                 ('off', 'default', or 'profile:<path>')"
-                    .to_string()
-            })?;
-            match value {
-                "off" => Some(meerkat_mobkit::memory::selector::SelectorSpec::Off),
-                "default" => Some(meerkat_mobkit::memory::selector::SelectorSpec::Default),
-                other => match other.strip_prefix("profile:") {
-                    Some(path) if !path.trim().is_empty() => {
-                        Some(meerkat_mobkit::memory::selector::SelectorSpec::Profile(
-                            std::path::PathBuf::from(path.trim()),
-                        ))
-                    }
-                    _ => {
-                        return Err(format!(
-                            "runtime_options.agent_memory.selector must be 'off', 'default', \
-                             or 'profile:<path>' (got '{other}'); this option overrides the \
-                             MOBKIT_AGENT_MEMORY_SELECTOR environment variable"
-                        ));
-                    }
-                },
-            }
+    // §8.3 selector switch: RETIRED. The LLM Selector stage shipped behind
+    // this knob and was never activated (default off, in config and in the
+    // MOBKIT_AGENT_MEMORY_SELECTOR env fallback alike), so it is gone and
+    // recall is the deterministic lexical path on every turn.
+    //
+    // The key is still ACCEPTED, not rejected: `runtime_options` rejects
+    // unknown keys fail-loud, so dropping it from the supported set would
+    // brick init for any deployment that pinned `selector = "off"` - a
+    // config that already asked for exactly today's behaviour. Anything
+    // other than off/empty gets a loud deprecation warning and is ignored.
+    if let Some(value) = object.get("selector") {
+        let value = value.as_str().map(str::trim).ok_or_else(|| {
+            "runtime_options.agent_memory.selector must be a string \
+             (the option is retired; only 'off' remains meaningful)"
+                .to_string()
+        })?;
+        if !matches!(value, "" | "off") {
+            tracing::warn!(
+                configured = %value,
+                "runtime_options.agent_memory.selector is RETIRED and ignored: the §8.3 LLM \
+                 Selector stage was removed unactivated, so recall is the deterministic lexical \
+                 path. Remove the key from your gateway config; a later release rejects it."
+            );
         }
-    };
+    }
     // §8.4 distiller block: fail-loud parse; enabled defaults false.
     let distiller = match object.get("distiller") {
         None => meerkat_mobkit::memory::distiller::DistillerConfig::default(),
@@ -3800,15 +3859,6 @@ fn parse_gateway_agent_memory_config(
             "runtime_options.agent_memory.llm_writes/content_trust require store='sqlite'"
                 .to_string(),
         );
-    }
-    // Same rationale for the selector: the markdown provider has no
-    // manifest, so a configured selector would silently do nothing.
-    if store == GatewayAgentMemoryStoreKind::Markdown
-        && selector
-            .as_ref()
-            .is_some_and(|spec| *spec != meerkat_mobkit::memory::selector::SelectorSpec::Off)
-    {
-        return Err("runtime_options.agent_memory.selector requires store='sqlite'".to_string());
     }
     // And for the distiller: manifests, tombstones, and the authored-write
     // seam all live on the sqlite store.
@@ -3869,7 +3919,6 @@ fn parse_gateway_agent_memory_config(
         },
         path,
         store,
-        selector,
         distiller,
         steward,
         hygienist,
@@ -3890,7 +3939,13 @@ fn parse_gateway_distiller_config(
     let object = value.as_object().ok_or_else(|| {
         "runtime_options.agent_memory.distiller must be a boolean or object".to_string()
     })?;
-    let supported = ["enabled", "runs_per_hour", "min_interactions", "model"];
+    let supported = [
+        "enabled",
+        "runs_per_hour",
+        "min_interactions",
+        "model",
+        "max_output_tokens",
+    ];
     let unsupported = object
         .keys()
         .filter(|key| !supported.contains(&key.as_str()))
@@ -3947,6 +4002,21 @@ fn parse_gateway_distiller_config(
             })?;
         config.model = Some(model.to_string());
     }
+    // See the steward parser: this ceiling is exposed because a hard-wired one
+    // failed invisibly in the field. Upper bound is the profile method's job.
+    if let Some(value) = object.get("max_output_tokens") {
+        let max = value.as_u64().ok_or_else(|| {
+            "runtime_options.agent_memory.distiller.max_output_tokens must be a positive integer"
+                .to_string()
+        })?;
+        if max == 0 || max > u64::from(u32::MAX) {
+            return Err(
+                "runtime_options.agent_memory.distiller.max_output_tokens must be a positive integer"
+                    .to_string(),
+            );
+        }
+        config.max_output_tokens = Some(max as u32);
+    }
     Ok(config)
 }
 
@@ -3972,6 +4042,7 @@ fn parse_gateway_steward_config(
         "per_mob",
         "runs_per_day",
         "min_signals",
+        "max_output_tokens",
     ];
     let unsupported = object
         .keys()
@@ -4033,6 +4104,24 @@ fn parse_gateway_steward_config(
         }
         config.runs_per_day = runs as u32;
     }
+    // Exposed because a fleet ran this steward on a reasoning model against a
+    // hard-wired ceiling and committed zero ops for four days with no reachable
+    // way to raise it. The upper bound is deliberately NOT enforced here: the
+    // profile method owns validation, and a ceiling the provider rejects is a
+    // loud 400, whereas one that is too low fails invisibly.
+    if let Some(value) = object.get("max_output_tokens") {
+        let max = value.as_u64().ok_or_else(|| {
+            "runtime_options.agent_memory.steward.max_output_tokens must be a positive integer"
+                .to_string()
+        })?;
+        if max == 0 || max > u64::from(u32::MAX) {
+            return Err(
+                "runtime_options.agent_memory.steward.max_output_tokens must be a positive integer"
+                    .to_string(),
+            );
+        }
+        config.max_output_tokens = Some(max as u32);
+    }
     if let Some(value) = object.get("min_signals") {
         let min = value.as_u64().ok_or_else(|| {
             "runtime_options.agent_memory.steward.min_signals must be a positive integer"
@@ -4063,7 +4152,7 @@ fn parse_gateway_hygienist_config(
     let object = value.as_object().ok_or_else(|| {
         "runtime_options.agent_memory.hygienist must be a boolean or object".to_string()
     })?;
-    let supported = ["enabled", "runs_per_day", "model"];
+    let supported = ["enabled", "runs_per_day", "model", "max_output_tokens"];
     let unsupported = object
         .keys()
         .filter(|key| !supported.contains(&key.as_str()))
@@ -4107,22 +4196,22 @@ fn parse_gateway_hygienist_config(
             })?;
         config.model = Some(model.to_string());
     }
-    Ok(config)
-}
-
-/// §8.3 selector precedence: `agent_memory.selector` config wins; the
-/// `MOBKIT_AGENT_MEMORY_SELECTOR` env var stays as the fallback for
-/// deployments that have not migrated to the config option.
-fn resolve_selector_spec(
-    configured: Option<&meerkat_mobkit::memory::selector::SelectorSpec>,
-) -> Result<
-    meerkat_mobkit::memory::selector::SelectorSpec,
-    meerkat_mobkit::memory::selector::SelectorError,
-> {
-    match configured {
-        Some(spec) => Ok(spec.clone()),
-        None => meerkat_mobkit::memory::selector::spec_from_env(),
+    // See the steward parser: this ceiling is exposed because a hard-wired one
+    // failed invisibly in the field. Upper bound is the profile method's job.
+    if let Some(value) = object.get("max_output_tokens") {
+        let max = value.as_u64().ok_or_else(|| {
+            "runtime_options.agent_memory.hygienist.max_output_tokens must be a positive integer"
+                .to_string()
+        })?;
+        if max == 0 || max > u64::from(u32::MAX) {
+            return Err(
+                "runtime_options.agent_memory.hygienist.max_output_tokens must be a positive integer"
+                    .to_string(),
+            );
+        }
+        config.max_output_tokens = Some(max as u32);
     }
+    Ok(config)
 }
 
 /// Original single-shot mode: reads request from env, runs once, prints response.
@@ -8260,16 +8349,16 @@ external_addressable = true
                 // fail-closed store opens above.
                 let provider: Arc<dyn meerkat_mobkit::AgentMemoryProvider> =
                     match agent_memory.store {
-                        GatewayAgentMemoryStoreKind::Markdown => Arc::new(
-                            meerkat_mobkit::MarkdownAgentMemoryStore::open(&agent_memory.path)
-                                .unwrap_or_else(|e| {
-                                    fail_init(
-                                        &request_id,
-                                        STORAGE_RESOLUTION_CODE,
-                                        format!("failed to open agent memory store: {e}"),
-                                    );
-                                }),
-                        ),
+                        // The live markdown execution path is retired: refuse
+                        // with the typed migration verdict instead of booting
+                        // a store that silently has no firewall, no ledger
+                        // and no judgment plane. The markdown READER is
+                        // untouched and still runs, as the one-shot import
+                        // inside SqliteAgentMemoryStore::open.
+                        GatewayAgentMemoryStoreKind::Markdown => {
+                            let migration = AgentMemoryStoreMigration::MarkdownIsImportOnly;
+                            fail_init(&request_id, migration.code(), migration.message())
+                        }
                         GatewayAgentMemoryStoreKind::Sqlite => Arc::new(
                             meerkat_mobkit::SqliteAgentMemoryStore::open(&agent_memory.path)
                                 .unwrap_or_else(|e| {
@@ -8426,8 +8515,21 @@ external_addressable = true
                     // compaction boundaries and on demand, applied
                     // through meerkat's typed transcript-revision
                     // extension on the concrete session service.
+                    //
+                    // PARKED for this release: the engine, its config parse
+                    // and every fail-loud guard below stay exactly as they
+                    // were (this is a park, not a deletion - `enabled`
+                    // already defaults false), but the stage is off the
+                    // promoted surface and is not covered by the release's
+                    // support posture. Enabling it is opt-in and says so.
                     if agent_memory.hygienist.enabled {
                         use meerkat_mobkit::memory::hygienist as memory_hygienist;
+                        tracing::warn!(
+                            "agent_memory.hygienist is PARKED for this release: it edits durable \
+                             transcripts through the revision seam and is not part of the \
+                             promoted, supported surface. It runs because you asked for it; \
+                             treat it as experimental."
+                        );
                         let Some(steward_spans) = steward_store.clone() else {
                             fail_init(
                                 &request_id,
@@ -8557,67 +8659,6 @@ external_addressable = true
             } else {
                 None
             };
-        // §8.3 LLM Selector (P1.3): process-wide install BEFORE the memory
-        // customizer/injector are constructed below, so their coordinators
-        // snapshot the stage. Operator switch is
-        // `agent_memory.selector = "off" | "default" | "profile:<path>"`;
-        // the MOBKIT_AGENT_MEMORY_SELECTOR env var remains a fallback for
-        // unmigrated deployments, with config taking precedence.
-        {
-            use meerkat_mobkit::memory::selector as memory_selector;
-            let configured = gateway_options
-                .agent_memory
-                .as_ref()
-                .and_then(|agent_memory| agent_memory.selector.as_ref());
-            let spec = resolve_selector_spec(configured).unwrap_or_else(|e| {
-                fail_init(&request_id, -32602, format!("agent memory selector: {e}"));
-            });
-            let profile = memory_selector::profile_for_spec(&spec).unwrap_or_else(|e| {
-                fail_init(&request_id, -32602, format!("agent memory selector: {e}"));
-            });
-            if let Some(profile) = profile {
-                let Some(agent_memory) = gateway_options.agent_memory.as_ref() else {
-                    fail_init(
-                        &request_id,
-                        -32602,
-                        "agent memory selector requires runtime_options.agent_memory".to_string(),
-                    );
-                };
-                // M4 de-weld: the selector needs a provider that can fetch
-                // selected record bodies — a capability, not a store kind.
-                // The provider's own fetch handle also replaces the second
-                // concrete store open this block used to make.
-                let fetch = agent_memory_provider
-                    .as_ref()
-                    .and_then(|provider| provider.as_selected_record_fetch())
-                    .unwrap_or_else(|| {
-                        fail_init(
-                            &request_id,
-                            -32602,
-                            "agent memory selector requires a provider with selected-record \
-                             fetch support (SelectedRecordFetch)"
-                                .to_string(),
-                        );
-                    });
-                let factory_state = storage_layout.state_dir().to_path_buf();
-                let handle = memory_selector::FactorySelectorHandle::new(
-                    factory_state,
-                    meerkat::Config::default(),
-                    agent_memory.config.realm.clone(),
-                    &profile,
-                );
-                let model = profile.model.clone();
-                memory_selector::install(Arc::new(memory_selector::SelectorRuntime {
-                    stage: Arc::new(memory_selector::SelectorStage::new(
-                        profile,
-                        Arc::new(handle),
-                    )),
-                    fetch,
-                }));
-                tracing::info!(model = %model, "agent memory selector installed");
-            }
-        }
-
         // §7.2 / §16 Q1 operator-resolver seam. The PROVISIONAL keying is
         // the console auth principal; that resolver lives with the console
         // auth wiring and plugs in here as one line of glue. Until it is
@@ -8859,14 +8900,30 @@ external_addressable = true
                 "failed to ensure steward dream schedule; the steward will not dream on this gateway",
             );
         }
-        // The firing driver discards its own tick errors upstream; the
-        // watchdog is what turns "everything stays pending forever" into a
-        // loud, row-level diagnosis in the gateway log.
+        // The firing driver discards its own tick errors upstream, so the
+        // claim watchdog is the only thing that turns "everything stays
+        // pending forever" into a row-level diagnosis.
+        //
+        // Stated as a RESIDENT LIVENESS CONTRACT rather than a promise about
+        // a future log line: the handle below is held for the process
+        // lifetime, and these are the numbers it holds the pipeline to. A
+        // reader who greps the boot log now learns the cadence and the
+        // overdue threshold instead of learning that a watchdog exists.
+        let watchdog_config =
+            meerkat_mobkit::schedule_wiring::ScheduleClaimWatchdogConfig::default();
+        tracing::info!(
+            poll_interval_secs = watchdog_config.poll_interval.as_secs(),
+            overdue_threshold_secs = watchdog_config.overdue_threshold.as_secs(),
+            heartbeat_polls = watchdog_config.heartbeat_polls,
+            "schedule claim watchdog resident: probes the firing pipeline on this cadence, ERROR \
+             on a new or changed stall report, WARN heartbeat while it persists, INFO on recovery"
+        );
         let watchdog = meerkat_mobkit::schedule_wiring::spawn_schedule_claim_watchdog(
             schedule_service.clone(),
-            schedule_store_path,
-            Default::default(),
+            schedule_store_path.clone(),
+            watchdog_config,
         );
+        let schedule_service_for_probe = schedule_service.clone();
         let schedule_host =
             meerkat_mobkit::schedule_wiring::spawn_schedule_host_with_identity_runtime(
                 service,
@@ -8884,12 +8941,43 @@ external_addressable = true
             // writes (create/update/resume) are admissible from here on
             // (Bug C stopgap — the gate refused them until this point).
             schedule_firing_host_binding.bind();
+            // One probe NOW, with the host up, so the boot log carries an
+            // observed verdict about the firing pipeline instead of a claim
+            // about a watchdog that has not ticked yet. Deliberately WARN,
+            // not ERROR, for a stall found here: a gateway that was down
+            // across a due time legitimately restarts with a backlog the
+            // host has not drained yet. The resident watchdog above is what
+            // escalates - if the same report is still there on its cadence,
+            // it is a real stall and it says so at ERROR.
+            match meerkat_mobkit::schedule_wiring::probe_schedule_firing_pipeline(
+                &schedule_service_for_probe,
+                &schedule_store_path,
+                watchdog_config.overdue_threshold,
+            )
+            .await
+            {
+                meerkat_mobkit::schedule_wiring::ScheduleFiringProbe::Healthy => {
+                    tracing::info!("schedule firing pipeline healthy at boot");
+                }
+                meerkat_mobkit::schedule_wiring::ScheduleFiringProbe::Stalled { report } => {
+                    tracing::warn!(
+                        %report,
+                        poll_interval_secs = watchdog_config.poll_interval.as_secs(),
+                        "schedule firing pipeline is not delivering at boot; the resident claim \
+                         watchdog re-probes on its cadence and escalates to ERROR if this \
+                         persists (a restart backlog clears on the first host ticks)"
+                    );
+                }
+            }
         } else {
+            // Present-state verdict, not a prediction: the host is NOT
+            // running, and the write gate is therefore still closed. Both
+            // halves are observed facts at this point in boot.
             tracing::warn!(
-                "schedule host failed to spawn over the attached schedule store: \
-                 firing-intent schedule writes (create/update/resume) stay \
-                 refused so schedules cannot be accepted durably and then \
-                 silently never fire"
+                "schedule host did not spawn over the attached schedule store: no firing driver \
+                 is running in this gateway, and the firing-intent write gate is consequently \
+                 still closed, so create/update/resume are being refused rather than accepted \
+                 durably into a store nothing drains"
             );
         }
         (schedule_host, Some(watchdog))

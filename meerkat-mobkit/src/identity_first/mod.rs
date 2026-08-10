@@ -39,7 +39,7 @@ pub use local_store::{
 };
 pub use orchestrator::{
     ReconcileAction, RestoreFlowResult, RestoreOutcome, compute_reconcile_actions,
-    lazy_register_flow, restore_flow, restore_flow_for_bootstrap,
+    lazy_register_flow, restore_flow,
 };
 pub use runtime::{
     ContinuityRepairPolicy, IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig,

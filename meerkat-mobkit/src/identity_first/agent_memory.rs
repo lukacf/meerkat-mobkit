@@ -463,7 +463,7 @@ pub trait AgentMemoryProvider: Send + Sync {
     /// §8.3 Selector body fetch for selector-chosen record ids.
     fn as_selected_record_fetch(
         &self,
-    ) -> Option<Arc<dyn crate::memory::selector::SelectedRecordFetch>> {
+    ) -> Option<Arc<dyn crate::memory::factory_handle::SelectedRecordFetch>> {
         None
     }
 
@@ -2240,6 +2240,7 @@ mod tests {
 
     fn draft() -> AgentBuildDraft {
         AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: None,
             system_prompt: None,
             additional_instructions: Vec::new(),

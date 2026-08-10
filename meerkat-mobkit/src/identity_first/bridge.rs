@@ -3486,6 +3486,7 @@ mod tests {
         let mut labels = std::collections::BTreeMap::new();
         labels.insert("team".to_string(), "ops".to_string());
         let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: Some("gpt-test".to_string()),
             system_prompt: Some("system override".to_string()),
             additional_instructions: vec!["stay focused".to_string()],
@@ -3562,6 +3563,7 @@ mod tests {
     fn build_spawn_spec_keeps_profile_snapshot_for_pinned_provider() {
         let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
         let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: Some("gpt-test".to_string()),
             system_prompt: None,
             additional_instructions: Vec::new(),
@@ -3600,6 +3602,7 @@ mod tests {
     fn build_spawn_spec_derives_pair_provider_for_catalog_model_pin() {
         let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
         let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: Some("claude-opus-4-8".to_string()),
             system_prompt: None,
             additional_instructions: Vec::new(),
@@ -3656,6 +3659,7 @@ mod tests {
 
     fn draft_with_provider_params(params: Option<ProviderParamsOverride>) -> AgentBuildDraft {
         AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: None,
             system_prompt: None,
             additional_instructions: Vec::new(),
@@ -3966,6 +3970,7 @@ mod tests {
     fn build_spawn_spec_model_override_works_without_base_profile() {
         let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
         let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: Some("gpt-test".to_string()),
             system_prompt: None,
             additional_instructions: Vec::new(),
@@ -4012,6 +4017,7 @@ mod tests {
             .expect("wire binding"),
         );
         let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: None,
             system_prompt: None,
             additional_instructions: Vec::new(),
@@ -4053,6 +4059,7 @@ mod tests {
     fn external_binding_spawn_specs_require_generated_owner_context() {
         let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
         let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: None,
             system_prompt: None,
             additional_instructions: Vec::new(),
@@ -4174,6 +4181,7 @@ mod tests {
     fn resume_spawn_spec_authors_nothing() {
         let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
         let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: None,
             system_prompt: Some("explicit customizer prompt".to_string()),
             additional_instructions: Vec::new(),

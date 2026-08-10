@@ -1669,7 +1669,7 @@ impl AgentMemoryProvider for SqliteAgentMemoryStore {
 
     fn as_selected_record_fetch(
         &self,
-    ) -> Option<Arc<dyn crate::memory::selector::SelectedRecordFetch>> {
+    ) -> Option<Arc<dyn crate::memory::factory_handle::SelectedRecordFetch>> {
         Some(Arc::new(self.clone()))
     }
 
@@ -2742,12 +2742,17 @@ impl crate::memory::distiller::TombstoneSource for SqliteAgentMemoryStore {
     }
 }
 
-/// Body fetch for selector-chosen ids (§8.3): a plain by-id read over the
-/// composed scopes, wire-compat projected, returned in `ids` order. Only
-/// active records in the requested scopes qualify — the selector judged a
-/// manifest of exactly those.
+/// Id-addressed body fetch: a plain by-id read over the composed scopes,
+/// wire-compat projected, returned in `ids` order. Only active records in
+/// the requested scopes qualify — an id outside them is simply absent from
+/// the result, never an error.
+///
+/// Introduced for the §8.3 selector, which is retired; the capability stays
+/// because it is the store's only scope-aware, provenance-labelling body
+/// read, and `fetch_records_annotated` below is where §7.2 scope/trust
+/// labels enter the injection renderer at all.
 #[async_trait]
-impl crate::memory::selector::SelectedRecordFetch for SqliteAgentMemoryStore {
+impl crate::memory::factory_handle::SelectedRecordFetch for SqliteAgentMemoryStore {
     async fn fetch_records(
         &self,
         scopes: &[MemoryScope],
@@ -2781,7 +2786,7 @@ impl crate::memory::selector::SelectedRecordFetch for SqliteAgentMemoryStore {
         &self,
         scopes: &[MemoryScope],
         ids: &[String],
-    ) -> Result<Vec<crate::memory::selector::AnnotatedRecord>, AgentMemoryError> {
+    ) -> Result<Vec<crate::memory::factory_handle::AnnotatedRecord>, AgentMemoryError> {
         let store = self.clone();
         let scopes = scopes.to_vec();
         let ids = ids.to_vec();
@@ -2799,11 +2804,11 @@ impl crate::memory::selector::SelectedRecordFetch for SqliteAgentMemoryStore {
                         // The full MemoryRecord is in hand before projection
                         // strips it — carry scope + trust so injected bodies
                         // render their §7.2 labels.
-                        let provenance = Some(crate::memory::selector::RecordProvenance {
+                        let provenance = Some(crate::memory::factory_handle::RecordProvenance {
                             scope: record.scope.clone(),
                             trust: record.trust,
                         });
-                        records.push(crate::memory::selector::AnnotatedRecord {
+                        records.push(crate::memory::factory_handle::AnnotatedRecord {
                             record: project_record(record),
                             provenance,
                         });
@@ -3695,6 +3700,42 @@ mod tests {
             realm: realm.to_string(),
             identity: identity()?.as_str().to_string(),
         })
+    }
+
+    /// `scope_kind` is PERSISTED SCHEMA, not runtime configuration: rows
+    /// already on disk carry every kind this store ever wrote, and a scope
+    /// whose decode arm is missing does not "become inert", it makes those
+    /// rows undecodable. The operator arm in particular reads as inert (the
+    /// scope only composes into recall when a resolver is installed) while
+    /// being exactly the arm a stored-row decode break would hit. Pinned
+    /// here as a full round-trip so removing any arm fails loudly.
+    #[test]
+    fn every_scope_kind_round_trips_through_the_persisted_encoding()
+    -> Result<(), Box<dyn Error>> {
+        let scopes = [
+            MemoryScope::Identity {
+                realm: "family".to_string(),
+                identity: "identity:luka".to_string(),
+            },
+            MemoryScope::Mob {
+                realm: "family".to_string(),
+                mob: "mob:home".to_string(),
+            },
+            MemoryScope::Operator {
+                realm: "family".to_string(),
+                operator: "op:luka".to_string(),
+            },
+            MemoryScope::Realm {
+                realm: "family".to_string(),
+            },
+        ];
+        for scope in scopes {
+            let decoded = scope_from_parts(scope.kind_str(), scope.key(), "family")?;
+            assert_eq!(decoded, scope, "scope kind '{}'", scope.kind_str());
+        }
+        // An unknown kind is still a loud parse error, not a silent default.
+        assert!(scope_from_parts("galaxy", "g", "family").is_err());
+        Ok(())
     }
 
     fn new_memory(title: &str, body: &str) -> NewAgentMemory {

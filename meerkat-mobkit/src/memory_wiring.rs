@@ -174,6 +174,11 @@ pub fn attach_memory_engines(
                 .with_model_override(model)
                 .map_err(|e| format!("agent memory distiller: {e}"))?;
         }
+        if let Some(max_output_tokens) = engines.distiller.max_output_tokens {
+            profile = profile
+                .with_max_output_tokens(max_output_tokens)
+                .map_err(|e| format!("agent memory distiller: {e}"))?;
+        }
         let handle =
             FactoryDistillerHandle::new(state, meerkat::Config::default(), &realm, &profile);
         let engine = Arc::new(DistillerEngine::new(
@@ -208,6 +213,11 @@ pub fn attach_memory_engines(
         if let Some(model) = engines.steward.model.as_deref() {
             profile = profile
                 .with_model_override(model)
+                .map_err(|e| format!("agent memory steward: {e}"))?;
+        }
+        if let Some(max_output_tokens) = engines.steward.max_output_tokens {
+            profile = profile
+                .with_max_output_tokens(max_output_tokens)
                 .map_err(|e| format!("agent memory steward: {e}"))?;
         }
         let transcripts_source: Arc<dyn crate::memory::distiller::TranscriptSource> =

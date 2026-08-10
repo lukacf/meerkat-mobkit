@@ -599,6 +599,7 @@ fn identity_first_types_agent_build_context_roundtrip() {
 #[test]
 fn identity_first_types_agent_build_draft_roundtrip() {
     let draft = AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: Some("claude-sonnet-4-6".to_string()),
         system_prompt: Some("You are a helpful agent.".to_string()),
         additional_instructions: vec!["Be concise.".to_string()],
@@ -633,6 +634,7 @@ fn identity_first_types_agent_build_draft_provider_params_roundtrip() {
     use meerkat_core::model_profile::capabilities::{OpenAiPromptCacheMode, OpenAiPromptCacheTtl};
 
     let draft = AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: None,
         system_prompt: None,
         additional_instructions: vec![],

@@ -371,7 +371,14 @@ export class MobKitBuilder {
       instructionHeader?: string;
       perTurnInjection?: "off" | "budgeted";
       defangInbound?: boolean;
-      store?: "sqlite" | "markdown";
+      /**
+       * `"markdown"` is deliberately absent: it is retired as a live store and
+       * the gateway now refuses it at init (-32014). A compile error here beats
+       * a boot failure. Existing markdown files still migrate - point the
+       * default sqlite store at the same agent-memory directory and it imports
+       * them on first open.
+       */
+      store?: "sqlite";
       llmWrites?: "observed" | "quarantined";
       recorderTool?: boolean;
       contentTrust?: {
@@ -379,7 +386,17 @@ export class MobKitBuilder {
         untrustedTools?: string[];
         trustedTools?: string[];
       };
-      selector?: "off" | "default" | `profile:${string}`;
+      /**
+       * RETIRED, and narrowed to the one value that still means anything.
+       * The §8.3 LLM recall-selector stage was removed unactivated, so recall
+       * is the deterministic lexical path on every turn. The KEY stays in the
+       * whitelist and stays forwarded, because the gateway still accepts it
+       * (dropping it here would raise on a config the gateway boots fine);
+       * what is gone is `"default"` and `profile:<path>`, which the gateway
+       * now takes and silently discards with only a server-side warning. A
+       * compile error beats a knob that looks wired and is not.
+       */
+      selector?: "off";
       operatorScope?: "off" | "provisional";
       distiller?: boolean | {
         enabled?: boolean;

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
+use meerkat_client::{LlmClient, LlmError, LlmEvent, LlmRequest};
 use meerkat_core::types::StopReason;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::{
@@ -26,6 +26,11 @@ use meerkat_mobkit::{
     SqliteAgentMemoryStore, TaintLlmWriteGate, TaintableStore, UnifiedRuntime,
 };
 use serde_json::json;
+
+/// The one definition of the normalized-provider-accounting contract every
+/// MobKit LLM double must satisfy under meerkat 0.8.22. See the module docs.
+#[path = "support/llm_usage.rs"]
+mod llm_usage;
 
 const MOB_TOML: &str = r#"
 [mob]
@@ -105,6 +110,17 @@ impl LlmClient for ScriptedClient {
         self.notify.notify_waiters();
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         let tool_name = self.tool_name.to_string();
+        // meerkat 0.8.22 rejects a turn whose stream carried no normalized
+        // provider accounting, so the terminal `Done` never travels alone -
+        // and a tool-use turn is a completing turn too. Minted per branch up
+        // front so the stream body never borrows `request`.
+        let provider = LlmClient::provider(self);
+        let [ingest_usage, ingest_done] =
+            llm_usage::usage_then_done(request, provider, StopReason::ToolUse);
+        let [memory_usage, memory_done] =
+            llm_usage::usage_then_done(request, provider, StopReason::ToolUse);
+        let [text_usage, text_done] =
+            llm_usage::usage_then_done(request, provider, StopReason::EndTurn);
         Box::pin(async_stream::stream! {
             match call {
                 0 => {
@@ -114,9 +130,8 @@ impl LlmClient for ScriptedClient {
                         args: json!({}),
                         meta: None,
                     });
-                    yield Ok(LlmEvent::Done {
-                        outcome: LlmDoneOutcome::Success { stop_reason: StopReason::ToolUse },
-                    });
+                    yield Ok(ingest_usage);
+                    yield Ok(ingest_done);
                 }
                 1 => {
                     yield Ok(LlmEvent::ToolCallComplete {
@@ -129,15 +144,13 @@ impl LlmClient for ScriptedClient {
                         }),
                         meta: None,
                     });
-                    yield Ok(LlmEvent::Done {
-                        outcome: LlmDoneOutcome::Success { stop_reason: StopReason::ToolUse },
-                    });
+                    yield Ok(memory_usage);
+                    yield Ok(memory_done);
                 }
                 _ => {
                     yield Ok(LlmEvent::TextDelta { delta: "noted".to_string(), meta: None });
-                    yield Ok(LlmEvent::Done {
-                        outcome: LlmDoneOutcome::Success { stop_reason: StopReason::EndTurn },
-                    });
+                    yield Ok(text_usage);
+                    yield Ok(text_done);
                 }
             }
         })

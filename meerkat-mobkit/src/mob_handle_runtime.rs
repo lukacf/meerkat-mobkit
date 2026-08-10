@@ -37,6 +37,21 @@ use crate::storage_health::{
     scratch_ring_buffer_slots,
 };
 
+/// The single definition of MobKit's normalized-provider-accounting contract
+/// for LLM test doubles, shared with the integration tests that include the
+/// same file through `#[path = "support/llm_usage.rs"]`.
+///
+/// meerkat 0.8.22 fails a turn closed when its stream carried no
+/// `LlmEvent::UsageUpdate`, and `LlmEvent::Done` is still constructible on its
+/// own - so a double that omits usage compiles and then fails every turn. The
+/// helpers in that file cannot hand out a `Done` without the `UsageUpdate`
+/// that must precede it. In-crate `#[cfg(test)]` doubles live in the lib and
+/// cannot reach `tests/`, so they reach the ONE definition from here rather
+/// than growing a second copy that can drift.
+#[cfg(test)]
+#[path = "../tests/support/llm_usage.rs"]
+pub(crate) mod test_llm_usage;
+
 pub(crate) const DELEGATE_IDLE_RETIRE_SECS_LABEL: &str = "implicit_delegate_idle_retire_secs";
 pub(crate) const DELEGATE_IDLE_RETIRE_DISABLED_LABEL: &str = "disabled";
 
@@ -8738,14 +8753,15 @@ realm_profile = "worker-v2"
             Ok(messages.to_vec())
         }
 
-        fn stream<'a>(&'a self, _request: &'a LlmRequest) -> LlmStream<'a> {
-            Box::pin(futures::stream::iter([Ok(
-                meerkat_client::LlmEvent::Done {
-                    outcome: meerkat_client::LlmDoneOutcome::Success {
-                        stop_reason: meerkat_core::StopReason::EndTurn,
-                    },
-                },
-            )]))
+        fn stream<'a>(&'a self, request: &'a LlmRequest) -> LlmStream<'a> {
+            // meerkat 0.8.22 rejects a turn whose stream carried no normalized
+            // provider accounting, so the terminal `Done` never travels alone.
+            let [usage, done] = super::test_llm_usage::usage_then_done(
+                request,
+                meerkat_core::Provider::OpenAI,
+                meerkat_core::StopReason::EndTurn,
+            );
+            Box::pin(futures::stream::iter(vec![Ok(usage), Ok(done)]))
         }
 
         fn provider(&self) -> meerkat_core::Provider {
@@ -8838,7 +8854,17 @@ realm_profile = "worker-v2"
             Ok(meerkat_core::agent::LlmStreamResult::new(
                 Vec::new(),
                 meerkat_core::StopReason::EndTurn,
-                meerkat_core::Usage::default(),
+                // `LlmStreamResult::new` still takes a flat `Usage`, so a bare
+                // `Usage::default()` compiles and then fails the turn closed
+                // with `normalized_provider_accounting_unavailable`. At the
+                // agent-client seam the factory pins `provider()`/`model()` to
+                // the canonical identity, so they ARE the identity the commit
+                // check compares against.
+                super::test_llm_usage::agent_turn_usage(
+                    self.provider(),
+                    self.model(),
+                    meerkat_core::Usage::default(),
+                ),
             ))
         }
 
@@ -12608,7 +12634,15 @@ realm_profile = "worker-v2"
             None,
             None,
         );
-        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+        // `TestClient::default()` DOES synthesize accounting under 0.8.22, but
+        // under `Provider::Other` - and every profile in these tests is
+        // `gpt-5.5`, whose canonical owner is `Provider::OpenAI`, so the spawn
+        // turn would fail closed with
+        // `normalized_provider_accounting_identity_mismatch`. See the rule in
+        // `tests/support/llm_usage.rs`.
+        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::for_provider(
+            meerkat_core::Provider::OpenAI,
+        )));
         let runtime = MobRuntime::bootstrap(spec)
             .await
             .unwrap_or_else(|e| panic!("{e}"));
@@ -12669,7 +12703,9 @@ realm_profile = "worker-v2"
             None,
             None,
         );
-        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::for_provider(
+            meerkat_core::Provider::OpenAI,
+        )));
 
         let runtime = MobRuntime::bootstrap(spec)
             .await
@@ -12728,7 +12764,9 @@ realm_profile = "worker-v2"
             None,
             None,
         );
-        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::for_provider(
+            meerkat_core::Provider::OpenAI,
+        )));
 
         let runtime = MobRuntime::bootstrap(spec)
             .await
@@ -12789,8 +12827,9 @@ realm_profile = "worker-v2"
             None,
             None,
         );
-        restarted_spec.options.default_llm_client =
-            Some(Arc::new(meerkat_client::TestClient::default()));
+        restarted_spec.options.default_llm_client = Some(Arc::new(
+            meerkat_client::TestClient::for_provider(meerkat_core::Provider::OpenAI),
+        ));
 
         let restarted = MobRuntime::bootstrap(restarted_spec)
             .await

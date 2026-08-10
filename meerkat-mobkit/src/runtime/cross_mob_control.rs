@@ -21,15 +21,40 @@
 //!
 //! # Trust
 //!
-//! The control listener does NOT verify Ed25519 signatures itself. Trust
-//! is delegated to the contact directory: when a peer mobkit calls
-//! `RemoteMobProxy::wire_remote`, it includes the *peer's* expected
-//! `peer_pubkey_b64` in the request. The remote gateway feeds that pubkey
-//! into the resulting `TrustedPeerDescriptor`, and `meerkat-comms` rejects
-//! envelope traffic that doesn't match it. So the control channel itself
-//! is unauthenticated, but the artifacts it produces (peer descriptors)
-//! are signature-checked at every subsequent comms ingress.
+//! Descriptor trust is delegated to the contact directory: when a peer
+//! mobkit calls `RemoteMobProxy::wire_remote`, it includes the *peer's*
+//! expected `peer_pubkey_b64` in the request. The remote gateway feeds
+//! that pubkey into the resulting `TrustedPeerDescriptor`, and
+//! `meerkat-comms` rejects envelope traffic that doesn't match it. So the
+//! artifacts the control channel produces (peer descriptors) are
+//! signature-checked at every subsequent comms ingress regardless of what
+//! the control channel itself does.
+//!
+//! That delegation covers the ENVELOPE plane only. It says nothing about
+//! who may drive the control plane itself: an unauthorized
+//! [`ControlRequest::Inject`] reaches a member's session without ever
+//! minting a descriptor. Two independent authenticities therefore live
+//! here:
+//!
+//! * **Server authenticity** ([`verify_control_response`]) - the serving
+//!   gateway signs its responses, and a caller that pins the peer's pubkey
+//!   refuses answers it cannot attribute.
+//! * **Caller authorization** ([`ControlAuthorizer`]) - the calling
+//!   gateway signs its requests with its own keypair, and the serving
+//!   gateway matches that identity against a [`ControlGrantTable`] that
+//!   binds it to specific verbs and a member scope. Anything outside the
+//!   grant is refused before dispatch with a typed
+//!   [`ControlAuthzDenial`].
+//!
+//! Caller authorization is INERT until a grant table is installed:
+//! [`ControlAuthorizer::open`] (the default a plain
+//! `UnifiedRuntime::start_control_listener` uses) authorizes nothing, so
+//! deployments that have not configured grants behave exactly as before.
+//! Callers stamp their signature unconditionally, which is why the field
+//! is additive per variant rather than a wrapper frame - see
+//! [`ControlCaller`].
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -144,15 +169,38 @@ impl BoundControlListener {
     /// Serve control requests until the owning task is aborted. Responses
     /// are signed with the gateway key when `signer` holds one (re-read
     /// per request, so late-installed keys take effect).
+    ///
+    /// No caller authorization: every decodable request is dispatched. Use
+    /// [`Self::serve_with_authorizer`] to bind callers to scoped grants.
     pub async fn serve(
         self,
         handler: std::sync::Arc<dyn ControlHandler>,
         signer: ControlSignerSlot,
     ) {
+        self.serve_with_authorizer(
+            handler,
+            signer,
+            std::sync::Arc::new(ControlAuthorizer::open()),
+        )
+        .await;
+    }
+
+    /// Serve control requests, refusing anything `authorizer` does not
+    /// admit before it reaches the handler.
+    pub async fn serve_with_authorizer(
+        self,
+        handler: std::sync::Arc<dyn ControlHandler>,
+        signer: ControlSignerSlot,
+        authorizer: std::sync::Arc<ControlAuthorizer>,
+    ) {
         match self {
-            Self::Tcp { listener, .. } => serve_tcp_control(listener, handler, signer).await,
+            Self::Tcp { listener, .. } => {
+                serve_tcp_control_with_authorizer(listener, handler, signer, authorizer).await;
+            }
             #[cfg(unix)]
-            Self::Uds { listener, .. } => serve_uds_control(listener, handler, signer).await,
+            Self::Uds { listener, .. } => {
+                serve_uds_control_with_authorizer(listener, handler, signer, authorizer).await;
+            }
         }
     }
 }
@@ -190,6 +238,11 @@ pub enum ControlRequest {
         /// ignore it; old clients omit it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         nonce: Option<String>,
+        /// Calling gateway's authentication - see [`ControlCaller`].
+        /// `None` from callers that hold no gateway keypair and from
+        /// gateways that predate caller authorization.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<ControlCaller>,
     },
     /// Unwire a previously-wired peer.
     Unwire {
@@ -201,6 +254,8 @@ pub enum ControlRequest {
         local_pubkey_b64: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         nonce: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<ControlCaller>,
     },
     /// Inject an external-turn message into a remote member's session.
     /// Used by `send_cross_mob` for app-level injection.
@@ -210,6 +265,8 @@ pub enum ControlRequest {
         content: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         nonce: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<ControlCaller>,
     },
     /// Look up a member's comms info on the remote side. Used during
     /// `wire_cross_mob` to discover the remote member's peer_id and
@@ -218,7 +275,73 @@ pub enum ControlRequest {
         remote_member: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         nonce: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<ControlCaller>,
     },
+}
+
+impl ControlRequest {
+    /// Which control verb this request carries. The unit of grant
+    /// authorization together with [`Self::remote_member`].
+    pub fn verb(&self) -> ControlVerb {
+        match self {
+            Self::Wire { .. } => ControlVerb::Wire,
+            Self::Unwire { .. } => ControlVerb::Unwire,
+            Self::Inject { .. } => ControlVerb::Inject,
+            Self::LookupMember { .. } => ControlVerb::LookupMember,
+        }
+    }
+
+    /// The member of the RECEIVING mob this request reaches. Every verb
+    /// names exactly one, which is what makes a member scope expressible.
+    pub fn remote_member(&self) -> &str {
+        match self {
+            Self::Wire { remote_member, .. }
+            | Self::Unwire { remote_member, .. }
+            | Self::Inject { remote_member, .. }
+            | Self::LookupMember { remote_member, .. } => remote_member,
+        }
+    }
+
+    /// Borrow the caller authentication, if the caller stamped one.
+    ///
+    /// UNVERIFIED CLAIM. A [`ControlHandler`] that reads this is holding
+    /// whatever the sender wrote: on a listener in [`ControlAuthorizer::Open`]
+    /// mode nothing checked the signature at all, and even under
+    /// [`ControlAuthorizer::Grants`] the verification happened at the
+    /// listener seam, not here. Never make an authorization decision from
+    /// this accessor - express the policy as a [`ControlGrant`] and let
+    /// `serve_*_with_authorizer` refuse before dispatch. Logging and
+    /// attribution are the intended uses.
+    pub fn caller(&self) -> Option<&ControlCaller> {
+        match self {
+            Self::Wire { caller, .. }
+            | Self::Unwire { caller, .. }
+            | Self::Inject { caller, .. }
+            | Self::LookupMember { caller, .. } => caller.as_ref(),
+        }
+    }
+
+    fn caller_mut(&mut self) -> Option<&mut ControlCaller> {
+        match self {
+            Self::Wire { caller, .. }
+            | Self::Unwire { caller, .. }
+            | Self::Inject { caller, .. }
+            | Self::LookupMember { caller, .. } => caller.as_mut(),
+        }
+    }
+
+    /// Replace the caller authentication. Used by
+    /// [`sign_control_request_as_caller`]; tests use it to strip or forge
+    /// credentials.
+    pub fn set_caller(&mut self, value: Option<ControlCaller>) {
+        match self {
+            Self::Wire { caller, .. }
+            | Self::Unwire { caller, .. }
+            | Self::Inject { caller, .. }
+            | Self::LookupMember { caller, .. } => *caller = value,
+        }
+    }
 }
 
 /// Cross-mob control response.
@@ -402,6 +525,828 @@ pub fn verify_control_response(
     verifying_key
         .verify_strict(payload.as_bytes(), &signature)
         .map_err(|_| "signature does not verify against the pinned gateway pubkey".to_string())
+}
+
+// ---------------------------------------------------------------------
+// Caller authorization: scoped grants on the control channel
+// ---------------------------------------------------------------------
+
+/// Authentication the CALLING gateway stamps onto every control request it
+/// sends when it holds a keypair.
+///
+/// Carried as an optional field on each [`ControlRequest`] variant rather
+/// than as a wrapper frame, deliberately: serde ignores unknown fields, so
+/// a gateway that predates caller authorization still decodes and serves
+/// these requests unchanged, and a gateway that enforces grants sees
+/// `None` from an old caller and refuses it typed. A wrapper variant would
+/// instead have made every pre-0.8.22 gateway answer `decode` to every
+/// new caller, which is a fleet-wide outage rather than a rollout.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ControlCaller {
+    /// The calling gateway's Ed25519 pubkey - base64, optional `ed25519:`
+    /// prefix, the same spelling `mobkit/peer_pubkey` reports and the
+    /// contact directory pins. This is the identity a grant is keyed by.
+    /// The CLAIM is worthless on its own; it is believed only once
+    /// `sig_b64` verifies against it.
+    pub pubkey_b64: String,
+    /// Signature over [`control_request_signing_payload`] for this exact
+    /// request, made with the key `pubkey_b64` names.
+    pub sig_b64: String,
+    /// Which peer this request was minted for - the contact-directory mob
+    /// id the caller dialed. Signed material, so a captured request cannot
+    /// be replayed against a DIFFERENT gateway where the same caller also
+    /// holds a grant. Enforced only when the serving authorizer was built
+    /// with an expected audience (see
+    /// [`ControlAuthorizer::with_grants_for_audience`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
+}
+
+/// One control operation, as a grantable unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlVerb {
+    Wire,
+    Unwire,
+    Inject,
+    LookupMember,
+}
+
+impl ControlVerb {
+    /// Stable config/wire spelling.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Wire => "wire",
+            Self::Unwire => "unwire",
+            Self::Inject => "inject",
+            Self::LookupMember => "lookup_member",
+        }
+    }
+
+    /// Parse the config spelling. `None` for anything else - grant config
+    /// fails closed on an unknown verb rather than silently granting less
+    /// (or more) than the operator wrote.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "wire" => Some(Self::Wire),
+            "unwire" => Some(Self::Unwire),
+            "inject" => Some(Self::Inject),
+            "lookup_member" => Some(Self::LookupMember),
+            _ => None,
+        }
+    }
+
+    /// Every verb, for `verbs = ["*"]` style config and for tests.
+    pub fn all() -> [Self; 4] {
+        [Self::Wire, Self::Unwire, Self::Inject, Self::LookupMember]
+    }
+}
+
+impl std::fmt::Display for ControlVerb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Domain-separation context for caller (request) signatures. Distinct
+/// from [`CONTROL_SIG_CONTEXT`] so a response signature can never be
+/// replayed as a request signature or vice versa. Versioned: a payload
+/// shape change must bump this.
+pub const CONTROL_CALLER_SIG_CONTEXT: &str = "mobkit-cross-mob-control-caller-v1";
+
+/// Length-prefix one field into the signing payload.
+///
+/// Length-prefixed rather than newline-delimited so a value that itself
+/// contains newlines cannot forge extra fields - without this, a crafted
+/// `remote_member` could make one verb's payload byte-identical to
+/// another's and let a narrow grant be spent on a wider request.
+fn push_signed_field(out: &mut String, value: &str) {
+    use std::fmt::Write;
+    let _ = writeln!(out, "{}:{value}", value.len());
+}
+
+/// SHA-256 of an injected content payload, as it appears in the signing
+/// payload. Digested rather than inlined because the content is arbitrary
+/// JSON of unbounded shape.
+///
+/// The `unwrap_or_default` below is unreachable, not a swallow: serializing
+/// an already-parsed `serde_json::Value` cannot fail (no non-finite floats,
+/// no non-string keys). It matters that it stays unreachable - a shape that
+/// COULD fail would make every failing content digest to the same empty
+/// input, and one signature would then cover any of them.
+fn control_content_digest_hex(content: &serde_json::Value) -> String {
+    control_request_digest_hex(&serde_json::to_vec(content).unwrap_or_default())
+}
+
+/// The deterministic byte string a caller signature covers.
+///
+/// Derived from the request's semantic fields rather than from the raw
+/// frame bytes, because the signature itself rides inside those bytes and
+/// cannot cover itself. Both sides compute it from a decoded
+/// [`ControlRequest`], so there is no canonical-JSON problem for the
+/// scalar fields; the one non-scalar field (`Inject.content`) enters as a
+/// SHA-256 of its serialization, which round-trips stably because both
+/// sides serialize a `serde_json::Value` (a request whose raw bytes do not
+/// round-trip - duplicate object keys, say - simply fails to verify, which
+/// is fail-closed).
+pub fn control_request_signing_payload(request: &ControlRequest) -> String {
+    let mut payload = String::new();
+    payload.push_str(CONTROL_CALLER_SIG_CONTEXT);
+    payload.push('\n');
+    push_signed_field(&mut payload, request.verb().as_str());
+    // INVARIANT: every semantically meaningful field of every variant must
+    // be pushed here. The match destructures exhaustively (no `..`) on
+    // purpose - a field added to a variant must break this build rather
+    // than silently become MITM-malleable, since the signature covers this
+    // derived payload and not the raw bytes.
+    match request {
+        ControlRequest::Wire {
+            remote_member,
+            local_peer_spec_address,
+            local_comms_name,
+            local_peer_id,
+            local_pubkey_b64,
+            nonce,
+            // The credential envelope is handled below: `sig_b64` cannot
+            // cover itself and `pubkey_b64` IS the verifying key, so the
+            // only envelope field that needs signing is the audience.
+            caller: _caller,
+        }
+        | ControlRequest::Unwire {
+            remote_member,
+            local_peer_spec_address,
+            local_comms_name,
+            local_peer_id,
+            local_pubkey_b64,
+            nonce,
+            caller: _caller,
+        } => {
+            push_signed_field(&mut payload, remote_member);
+            push_signed_field(&mut payload, local_peer_spec_address);
+            push_signed_field(&mut payload, local_comms_name);
+            push_signed_field(&mut payload, local_peer_id);
+            push_signed_field(&mut payload, local_pubkey_b64.as_deref().unwrap_or(""));
+            push_signed_field(&mut payload, nonce.as_deref().unwrap_or(""));
+        }
+        ControlRequest::Inject {
+            remote_member,
+            content,
+            nonce,
+            caller: _caller,
+        } => {
+            push_signed_field(&mut payload, remote_member);
+            push_signed_field(&mut payload, &control_content_digest_hex(content));
+            push_signed_field(&mut payload, nonce.as_deref().unwrap_or(""));
+        }
+        ControlRequest::LookupMember {
+            remote_member,
+            nonce,
+            caller: _caller,
+        } => {
+            push_signed_field(&mut payload, remote_member);
+            push_signed_field(&mut payload, nonce.as_deref().unwrap_or(""));
+        }
+    }
+    push_signed_field(
+        &mut payload,
+        request
+            .caller()
+            .and_then(|caller| caller.audience.as_deref())
+            .unwrap_or(""),
+    );
+    payload
+}
+
+/// Stamp this gateway's caller authentication onto `request`.
+///
+/// `audience` is the contact-directory mob id being dialed; it binds the
+/// signature to one peer. Overwrites any existing caller envelope - the
+/// signature is minted over the request as it will go on the wire.
+pub fn sign_control_request_as_caller(
+    keys: &crate::auth::peer_keys::GatewayPeerKeys,
+    audience: Option<&str>,
+    request: &mut ControlRequest,
+) {
+    use ed25519_dalek::Signer;
+    request.set_caller(Some(ControlCaller {
+        pubkey_b64: keys.pubkey_b64(),
+        sig_b64: String::new(),
+        audience: audience.map(str::to_string),
+    }));
+    let payload = control_request_signing_payload(request);
+    let signature = keys.signing_key().sign(payload.as_bytes());
+    let encoded = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+    if let Some(caller) = request.caller_mut() {
+        caller.sig_b64 = encoded;
+    }
+}
+
+/// Why a control request was refused before dispatch.
+///
+/// Typed so the serving side cannot accidentally answer a policy refusal
+/// with a handler-shaped error (and so the codes below stay stable for
+/// machine dispatch on the calling side).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlAuthzDenial {
+    /// The request carried no caller credential at all, but this listener
+    /// enforces grants.
+    UnauthenticatedCaller { verb: ControlVerb },
+    /// The credential was present but structurally unusable (pubkey or
+    /// signature not decodable).
+    InvalidCallerCredential { reason: String },
+    /// The signature did not verify against the claimed pubkey, so the
+    /// claimed identity is not established.
+    InvalidCallerSignature { pubkey_b64: String },
+    /// The caller authenticated successfully but holds no grant here.
+    CallerNotGranted { pubkey_b64: String },
+    /// The caller holds a grant, but not for this verb.
+    VerbNotGranted { label: String, verb: ControlVerb },
+    /// The caller holds a grant for this verb, but not on this member.
+    MemberNotGranted {
+        label: String,
+        verb: ControlVerb,
+        member: String,
+    },
+    /// The request was minted for a different gateway.
+    AudienceMismatch {
+        label: String,
+        expected: String,
+        presented: String,
+    },
+}
+
+/// Every stable denial code this module can answer with. Callers use it to
+/// classify a peer's `Err` response as an authorization refusal rather
+/// than string-matching one code at a time.
+pub const CONTROL_AUTHZ_DENIAL_CODES: [&str; 7] = [
+    "unauthenticated_caller",
+    "invalid_caller_credential",
+    "invalid_caller_signature",
+    "caller_not_granted",
+    "verb_not_granted",
+    "member_not_granted",
+    "audience_mismatch",
+];
+
+impl ControlAuthzDenial {
+    /// Stable short code, carried in [`ControlResponse::Err`].
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::UnauthenticatedCaller { .. } => "unauthenticated_caller",
+            Self::InvalidCallerCredential { .. } => "invalid_caller_credential",
+            Self::InvalidCallerSignature { .. } => "invalid_caller_signature",
+            Self::CallerNotGranted { .. } => "caller_not_granted",
+            Self::VerbNotGranted { .. } => "verb_not_granted",
+            Self::MemberNotGranted { .. } => "member_not_granted",
+            Self::AudienceMismatch { .. } => "audience_mismatch",
+        }
+    }
+
+    /// Whether a peer-reported error code names an authorization refusal.
+    pub fn is_denial_code(code: &str) -> bool {
+        CONTROL_AUTHZ_DENIAL_CODES.contains(&code)
+    }
+}
+
+impl std::fmt::Display for ControlAuthzDenial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnauthenticatedCaller { verb } => write!(
+                f,
+                "control verb '{verb}' requires a signed caller credential on this listener; \
+                 the calling gateway must install a keypair (set_gateway_peer_keys) and be \
+                 listed in this gateway's control grant table"
+            ),
+            Self::InvalidCallerCredential { reason } => {
+                write!(f, "caller credential is unusable: {reason}")
+            }
+            Self::InvalidCallerSignature { pubkey_b64 } => write!(
+                f,
+                "caller signature does not verify against the presented pubkey '{pubkey_b64}'"
+            ),
+            Self::CallerNotGranted { pubkey_b64 } => write!(
+                f,
+                "caller '{pubkey_b64}' holds no control grant on this gateway"
+            ),
+            Self::VerbNotGranted { label, verb } => write!(
+                f,
+                "caller '{label}' is not granted control verb '{verb}' on this gateway"
+            ),
+            Self::MemberNotGranted {
+                label,
+                verb,
+                member,
+            } => write!(
+                f,
+                "caller '{label}' is not granted control verb '{verb}' on member '{member}'"
+            ),
+            Self::AudienceMismatch {
+                label,
+                expected,
+                presented,
+            } => write!(
+                f,
+                "caller '{label}' presented a request minted for '{presented}', but this \
+                 gateway answers for '{expected}'"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ControlAuthzDenial {}
+
+/// Which members of the local mob a grant reaches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlMemberScope {
+    /// Every member, present and future.
+    All,
+    /// Only these member aliases, held in the PUBLIC alias space and
+    /// ALREADY normalized. Build with [`Self::members`] rather than this
+    /// variant directly: [`Self::contains`] normalizes the request side
+    /// exactly once, so an entry stashed here in the comms-safe roster
+    /// spelling matches nothing (fail-closed, but silently).
+    Members(BTreeSet<String>),
+}
+
+impl ControlMemberScope {
+    /// Build a member scope from public aliases. `*` anywhere in the list
+    /// widens to [`Self::All`].
+    pub fn members<I, S>(aliases: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut set = BTreeSet::new();
+        for alias in aliases {
+            let alias = alias.as_ref();
+            if alias == "*" {
+                return Self::All;
+            }
+            set.insert(normalize_member_alias(alias));
+        }
+        Self::Members(set)
+    }
+
+    /// Whether this scope reaches `member`.
+    ///
+    /// Both sides are normalized through `runtime_alias_str` first, for
+    /// the same reason `is_reserved_generated_alias` decodes before it
+    /// checks: raw control surfaces may present either the public alias
+    /// (`rt:worker:0`) or its comms-safe roster encoding, and a scope that
+    /// only matched one spelling would be bypassable with the other. This
+    /// is the same normalization `handle_wire` / `handle_inject` /
+    /// `handle_lookup_member` apply, so the scope decides on exactly the
+    /// member the handler will reach.
+    ///
+    /// Normalize EXACTLY ONCE per side. `runtime_alias_str` is not
+    /// idempotent (`mk--mk--foo` -> `mk--foo` -> `foo`), so re-normalizing
+    /// the stored side here would let a grant written for one public alias
+    /// admit a different member - a fail-open, not a cleanup. The stored
+    /// side is normalized on the way in, by [`Self::members`].
+    pub fn contains(&self, member: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Members(members) => members.contains(&normalize_member_alias(member)),
+        }
+    }
+}
+
+fn normalize_member_alias(member: &str) -> String {
+    crate::member_comms_id::runtime_alias_str(member).into_owned()
+}
+
+/// What one caller identity may do on this gateway's control channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlGrant {
+    label: String,
+    verbs: BTreeSet<ControlVerb>,
+    members: ControlMemberScope,
+}
+
+impl ControlGrant {
+    /// Build a grant. `label` is the operator-facing name of the caller
+    /// (its mob id, typically) and is only used for logs and refusal
+    /// messages - the authoritative identity is the pubkey this grant is
+    /// filed under in the [`ControlGrantTable`].
+    pub fn new<I>(label: impl Into<String>, verbs: I, members: ControlMemberScope) -> Self
+    where
+        I: IntoIterator<Item = ControlVerb>,
+    {
+        Self {
+            label: label.into(),
+            verbs: verbs.into_iter().collect(),
+            members,
+        }
+    }
+
+    /// Operator-facing caller name.
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Verbs this caller may use.
+    pub fn verbs(&self) -> &BTreeSet<ControlVerb> {
+        &self.verbs
+    }
+
+    /// Members this caller may reach.
+    pub fn members(&self) -> &ControlMemberScope {
+        &self.members
+    }
+
+    /// Check one request against this grant.
+    fn permits(&self, verb: ControlVerb, member: &str) -> Result<(), ControlAuthzDenial> {
+        if !self.verbs.contains(&verb) {
+            return Err(ControlAuthzDenial::VerbNotGranted {
+                label: self.label.clone(),
+                verb,
+            });
+        }
+        if !self.members.contains(member) {
+            return Err(ControlAuthzDenial::MemberNotGranted {
+                label: self.label.clone(),
+                verb,
+                member: member.to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Caller pubkey -> grant. Keyed by the 32-byte Ed25519 pubkey because
+/// that is the only part of a caller's claim this gateway can verify; the
+/// operator-facing label lives inside the grant.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ControlGrantTable {
+    grants: BTreeMap<[u8; 32], ControlGrant>,
+}
+
+impl ControlGrantTable {
+    /// An empty table. NOTE: an empty table grants NOTHING - it refuses
+    /// every caller. Emptiness never means "no policy configured"; that
+    /// state is [`ControlAuthorizer::open`], which must be named
+    /// explicitly.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// File a grant under a caller pubkey, replacing any previous one.
+    pub fn insert(&mut self, caller_pubkey: [u8; 32], grant: ControlGrant) -> Option<ControlGrant> {
+        self.grants.insert(caller_pubkey, grant)
+    }
+
+    /// The grant for a caller pubkey, if any.
+    pub fn get(&self, caller_pubkey: &[u8; 32]) -> Option<&ControlGrant> {
+        self.grants.get(caller_pubkey)
+    }
+
+    /// Number of filed callers.
+    pub fn len(&self) -> usize {
+        self.grants.len()
+    }
+
+    /// Whether no caller is filed (i.e. everything is refused).
+    pub fn is_empty(&self) -> bool {
+        self.grants.is_empty()
+    }
+
+    /// Parse a `[control_grants]` section:
+    ///
+    /// ```toml
+    /// [control_grants.ops-mob]
+    /// pubkey = "ed25519:KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio="
+    /// verbs = ["lookup_member", "wire", "unwire"]
+    /// members = ["bob"]          # omit, or ["*"], for every member
+    /// ```
+    ///
+    /// Returns `Ok(None)` when the section is ABSENT, which is what keeps
+    /// this backward compatible: a config that never mentions grants must
+    /// stay on [`ControlAuthorizer::open`] rather than silently becoming a
+    /// deny-all table. A present-but-empty section is `Ok(Some(empty))` -
+    /// an operator who wrote the section and listed nobody meant deny-all.
+    ///
+    /// Keys inside a caller entry are CLOSED: anything other than
+    /// `pubkey`, `verbs`, `members` is an error rather than an ignored
+    /// key. See the check in the loop for why silence there widens.
+    pub fn from_toml(text: &str) -> Result<Option<Self>, ControlGrantConfigError> {
+        let table: toml::Value =
+            toml::from_str(text).map_err(|err| ControlGrantConfigError::Parse(err.to_string()))?;
+        let Some(section) = table.get("control_grants") else {
+            return Ok(None);
+        };
+        let section = section
+            .as_table()
+            .ok_or_else(|| ControlGrantConfigError::Parse(
+                "control_grants must be a table of caller labels, e.g. [control_grants.ops-mob]"
+                    .to_string(),
+            ))?;
+        let mut out = Self::new();
+        let mut labels_by_pubkey: BTreeMap<[u8; 32], String> = BTreeMap::new();
+        for (label, value) in section {
+            let entry = value
+                .as_table()
+                .ok_or_else(|| ControlGrantConfigError::InvalidField {
+                    label: label.clone(),
+                    detail: "each caller must be a table with pubkey/verbs/members".to_string(),
+                })?;
+            // Unknown keys fail closed. Ignoring them WIDENS the grant on a
+            // typo: `member = ["bob"]` (singular) leaves `members` absent,
+            // and an absent `members` means ControlMemberScope::All - the
+            // operator wrote one member and silently got every member,
+            // present and future. The same silence would drop a narrowing
+            // key a newer config carries but this binary cannot enforce.
+            // Notes belong in `#` comments, which never reach this map.
+            for (key, _) in entry {
+                if !matches!(key.as_str(), "pubkey" | "verbs" | "members") {
+                    return Err(ControlGrantConfigError::InvalidField {
+                        label: label.clone(),
+                        detail: format!(
+                            "unknown key '{key}'; a control grant accepts only pubkey, verbs, \
+                             and members (did you mean 'members'?)"
+                        ),
+                    });
+                }
+            }
+            let pubkey_text = entry
+                .get("pubkey")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| ControlGrantConfigError::InvalidField {
+                    label: label.clone(),
+                    detail: "missing 'pubkey' (base64 Ed25519, optional ed25519: prefix)"
+                        .to_string(),
+                })?;
+            let pubkey = crate::auth::peer_keys::decode_pubkey_b64(pubkey_text).map_err(|err| {
+                ControlGrantConfigError::InvalidPubkey {
+                    label: label.clone(),
+                    reason: err.to_string(),
+                }
+            })?;
+            if let Some(other) = labels_by_pubkey.get(&pubkey) {
+                // Two labels on one key is an ambiguous policy: whichever
+                // grant won would be arbitrary. Refuse rather than pick.
+                return Err(ControlGrantConfigError::DuplicatePubkey {
+                    label: label.clone(),
+                    other: other.clone(),
+                });
+            }
+            let verb_values = entry
+                .get("verbs")
+                .and_then(|value| value.as_array())
+                .ok_or_else(|| ControlGrantConfigError::InvalidField {
+                    label: label.clone(),
+                    detail: "missing 'verbs' array; a caller with no verbs reaches nothing"
+                        .to_string(),
+                })?;
+            let mut verbs = BTreeSet::new();
+            for verb_value in verb_values {
+                let verb_text =
+                    verb_value
+                        .as_str()
+                        .ok_or_else(|| ControlGrantConfigError::InvalidField {
+                            label: label.clone(),
+                            detail: "'verbs' entries must be strings".to_string(),
+                        })?;
+                if verb_text == "*" {
+                    verbs.extend(ControlVerb::all());
+                    continue;
+                }
+                let verb = ControlVerb::parse(verb_text).ok_or_else(|| {
+                    ControlGrantConfigError::UnknownVerb {
+                        label: label.clone(),
+                        verb: verb_text.to_string(),
+                    }
+                })?;
+                verbs.insert(verb);
+            }
+            if verbs.is_empty() {
+                return Err(ControlGrantConfigError::InvalidField {
+                    label: label.clone(),
+                    detail: "'verbs' is empty; remove the caller instead of granting nothing"
+                        .to_string(),
+                });
+            }
+            let members = match entry.get("members") {
+                None => ControlMemberScope::All,
+                Some(value) => {
+                    let items =
+                        value
+                            .as_array()
+                            .ok_or_else(|| ControlGrantConfigError::InvalidField {
+                                label: label.clone(),
+                                detail: "'members' must be an array of member aliases".to_string(),
+                            })?;
+                    let mut aliases = Vec::with_capacity(items.len());
+                    for item in items {
+                        let alias =
+                            item.as_str()
+                                .ok_or_else(|| ControlGrantConfigError::InvalidField {
+                                    label: label.clone(),
+                                    detail: "'members' entries must be strings".to_string(),
+                                })?;
+                        aliases.push(alias.to_string());
+                    }
+                    ControlMemberScope::members(aliases)
+                }
+            };
+            labels_by_pubkey.insert(pubkey, label.clone());
+            out.insert(pubkey, ControlGrant::new(label.clone(), verbs, members));
+        }
+        Ok(Some(out))
+    }
+}
+
+/// Errors parsing a `[control_grants]` section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlGrantConfigError {
+    Parse(String),
+    InvalidPubkey { label: String, reason: String },
+    DuplicatePubkey { label: String, other: String },
+    UnknownVerb { label: String, verb: String },
+    InvalidField { label: String, detail: String },
+}
+
+impl std::fmt::Display for ControlGrantConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse(reason) => write!(f, "control grant parse error: {reason}"),
+            Self::InvalidPubkey { label, reason } => {
+                write!(f, "control grant '{label}' has an invalid pubkey: {reason}")
+            }
+            Self::DuplicatePubkey { label, other } => write!(
+                f,
+                "control grants '{label}' and '{other}' name the same caller pubkey; one caller \
+                 must have exactly one grant"
+            ),
+            Self::UnknownVerb { label, verb } => write!(
+                f,
+                "control grant '{label}' names unknown verb '{verb}'; expected one of \
+                 wire, unwire, inject, lookup_member (or '*')"
+            ),
+            Self::InvalidField { label, detail } => {
+                write!(f, "control grant '{label}': {detail}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ControlGrantConfigError {}
+
+/// A caller whose credential verified and whose grant admitted the
+/// request. Returned for logging and attribution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizedCaller {
+    pub label: String,
+    pub pubkey: [u8; 32],
+}
+
+/// Caller-authorization policy for a control listener.
+///
+/// Two modes, and only two, so "no policy" can never be spelled the same
+/// way as "empty policy":
+///
+/// * [`Self::Open`] - authorize nothing. Every decodable request is
+///   dispatched, exactly as before caller authorization existed. Any
+///   credential a caller stamps is left UNVERIFIED here on purpose: there
+///   is nothing to authorize, and verifying would turn a future payload
+///   revision into a cross-version outage for deployments that never
+///   opted in.
+/// * [`Self::Grants`] - enforce. A request must carry a credential that
+///   verifies, name a caller filed in the table, and fall inside that
+///   caller's verbs and member scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlAuthorizer {
+    Open,
+    Grants {
+        table: ControlGrantTable,
+        /// When set, requests must have been minted for this audience
+        /// (the mob id peers use for this gateway in their contact
+        /// directories).
+        expected_audience: Option<String>,
+    },
+}
+
+impl ControlAuthorizer {
+    /// No caller authorization - the pre-grant behaviour.
+    pub fn open() -> Self {
+        Self::Open
+    }
+
+    /// Enforce `table`. An EMPTY table refuses every caller; emptiness is
+    /// never a fallback to [`Self::open`].
+    pub fn with_grants(table: ControlGrantTable) -> Self {
+        Self::Grants {
+            table,
+            expected_audience: None,
+        }
+    }
+
+    /// Enforce `table` and additionally require that requests were minted
+    /// for `audience` - the mob id peers name this gateway by. Use when
+    /// one caller holds grants on several gateways and a captured request
+    /// must not be replayable across them.
+    pub fn with_grants_for_audience(
+        table: ControlGrantTable,
+        audience: impl Into<String>,
+    ) -> Self {
+        Self::Grants {
+            table,
+            expected_audience: Some(audience.into()),
+        }
+    }
+
+    /// Parse a `[control_grants]` section into an authorizer: absent
+    /// section yields [`Self::Open`], present section yields
+    /// [`Self::Grants`].
+    pub fn from_toml(text: &str) -> Result<Self, ControlGrantConfigError> {
+        Ok(match ControlGrantTable::from_toml(text)? {
+            Some(table) => Self::with_grants(table),
+            None => Self::Open,
+        })
+    }
+
+    /// Whether this authorizer refuses anything at all.
+    pub fn is_enforcing(&self) -> bool {
+        matches!(self, Self::Grants { .. })
+    }
+
+    /// Authorize one request. `Ok(None)` means the listener does not
+    /// enforce grants; `Ok(Some(caller))` names the admitted caller.
+    pub fn authorize(
+        &self,
+        request: &ControlRequest,
+    ) -> Result<Option<AuthorizedCaller>, ControlAuthzDenial> {
+        let Self::Grants {
+            table,
+            expected_audience,
+        } = self
+        else {
+            return Ok(None);
+        };
+        let verb = request.verb();
+        let Some(caller) = request.caller() else {
+            return Err(ControlAuthzDenial::UnauthenticatedCaller { verb });
+        };
+        let pubkey = crate::auth::peer_keys::decode_pubkey_b64(&caller.pubkey_b64).map_err(
+            |err| ControlAuthzDenial::InvalidCallerCredential {
+                reason: format!("caller pubkey: {err}"),
+            },
+        )?;
+        // Verify the signature BEFORE consulting the table, so an
+        // unauthenticated prober cannot use the difference between
+        // "not granted" and "bad signature" to enumerate which pubkeys
+        // hold grants here.
+        verify_caller_signature(&pubkey, caller, request)?;
+        let Some(grant) = table.get(&pubkey) else {
+            return Err(ControlAuthzDenial::CallerNotGranted {
+                pubkey_b64: caller.pubkey_b64.clone(),
+            });
+        };
+        if let Some(expected) = expected_audience.as_deref() {
+            let presented = caller.audience.as_deref().unwrap_or("");
+            if presented != expected {
+                return Err(ControlAuthzDenial::AudienceMismatch {
+                    label: grant.label().to_string(),
+                    expected: expected.to_string(),
+                    presented: presented.to_string(),
+                });
+            }
+        }
+        grant.permits(verb, request.remote_member())?;
+        Ok(Some(AuthorizedCaller {
+            label: grant.label().to_string(),
+            pubkey,
+        }))
+    }
+}
+
+fn verify_caller_signature(
+    pubkey: &[u8; 32],
+    caller: &ControlCaller,
+    request: &ControlRequest,
+) -> Result<(), ControlAuthzDenial> {
+    let sig_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&caller.sig_b64)
+        .map_err(|err| ControlAuthzDenial::InvalidCallerCredential {
+            reason: format!("caller signature is not valid base64: {err}"),
+        })?;
+    let sig_bytes: [u8; 64] =
+        sig_bytes
+            .try_into()
+            .map_err(|_| ControlAuthzDenial::InvalidCallerCredential {
+                reason: "caller signature must be 64 bytes".to_string(),
+            })?;
+    let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(pubkey).map_err(|err| {
+        ControlAuthzDenial::InvalidCallerCredential {
+            reason: format!("caller pubkey is not a valid Ed25519 key: {err}"),
+        }
+    })?;
+    let payload = control_request_signing_payload(request);
+    verifying_key
+        .verify_strict(payload.as_bytes(), &signature)
+        .map_err(|_| ControlAuthzDenial::InvalidCallerSignature {
+            pubkey_b64: caller.pubkey_b64.clone(),
+        })
 }
 
 /// Open a control connection to a remote endpoint.
@@ -680,6 +1625,10 @@ impl ControlHandler for MobHandleControlHandler {
         let identity_runtime = self.identity_authority.current();
         let session_service = self.session_service.clone();
         Box::pin(async move {
+            // `nonce` and `caller` are consumed at the listener seam
+            // (response signing binds the nonce via the request digest;
+            // `serve_one` authorizes the caller before dispatch), so the
+            // handler never re-derives authority from them.
             match request {
                 ControlRequest::Wire {
                     remote_member,
@@ -688,6 +1637,7 @@ impl ControlHandler for MobHandleControlHandler {
                     local_peer_id,
                     local_pubkey_b64,
                     nonce: _,
+                    caller: _,
                 } => {
                     handle_wire(
                         &handle,
@@ -710,6 +1660,7 @@ impl ControlHandler for MobHandleControlHandler {
                     local_peer_id,
                     local_pubkey_b64,
                     nonce: _,
+                    caller: _,
                 } => {
                     handle_wire(
                         &handle,
@@ -729,12 +1680,14 @@ impl ControlHandler for MobHandleControlHandler {
                     remote_member,
                     content,
                     nonce: _,
+                    caller: _,
                 } => {
                     handle_inject(&handle, &remote_member, content, identity_runtime.as_ref()).await
                 }
                 ControlRequest::LookupMember {
                     remote_member,
                     nonce: _,
+                    caller: _,
                 } => {
                     handle_lookup_member(
                         &handle,
@@ -1055,6 +2008,23 @@ pub async fn serve_tcp_control(
     handler: std::sync::Arc<dyn ControlHandler>,
     signer: ControlSignerSlot,
 ) {
+    serve_tcp_control_with_authorizer(
+        listener,
+        handler,
+        signer,
+        std::sync::Arc::new(ControlAuthorizer::open()),
+    )
+    .await;
+}
+
+/// Same as [`serve_tcp_control`], but refusing requests `authorizer` does
+/// not admit before they reach the handler.
+pub async fn serve_tcp_control_with_authorizer(
+    listener: TcpListener,
+    handler: std::sync::Arc<dyn ControlHandler>,
+    signer: ControlSignerSlot,
+    authorizer: std::sync::Arc<ControlAuthorizer>,
+) {
     loop {
         let (stream, _peer_addr) = match listener.accept().await {
             Ok(pair) => pair,
@@ -1065,7 +2035,8 @@ pub async fn serve_tcp_control(
         };
         let handler = handler.clone();
         let signer = std::sync::Arc::clone(&signer);
-        tokio::spawn(serve_one_tcp(stream, handler, signer));
+        let authorizer = std::sync::Arc::clone(&authorizer);
+        tokio::spawn(serve_one_tcp(stream, handler, signer, authorizer));
     }
 }
 
@@ -1075,6 +2046,23 @@ pub async fn serve_uds_control(
     listener: UnixListener,
     handler: std::sync::Arc<dyn ControlHandler>,
     signer: ControlSignerSlot,
+) {
+    serve_uds_control_with_authorizer(
+        listener,
+        handler,
+        signer,
+        std::sync::Arc::new(ControlAuthorizer::open()),
+    )
+    .await;
+}
+
+/// Same as [`serve_uds_control`], but grant-enforcing.
+#[cfg(unix)]
+pub async fn serve_uds_control_with_authorizer(
+    listener: UnixListener,
+    handler: std::sync::Arc<dyn ControlHandler>,
+    signer: ControlSignerSlot,
+    authorizer: std::sync::Arc<ControlAuthorizer>,
 ) {
     loop {
         let (stream, _peer_addr) = match listener.accept().await {
@@ -1086,7 +2074,8 @@ pub async fn serve_uds_control(
         };
         let handler = handler.clone();
         let signer = std::sync::Arc::clone(&signer);
-        tokio::spawn(serve_one_uds(stream, handler, signer));
+        let authorizer = std::sync::Arc::clone(&authorizer);
+        tokio::spawn(serve_one_uds(stream, handler, signer, authorizer));
     }
 }
 
@@ -1094,9 +2083,10 @@ async fn serve_one_tcp(
     stream: TcpStream,
     handler: std::sync::Arc<dyn ControlHandler>,
     signer: ControlSignerSlot,
+    authorizer: std::sync::Arc<ControlAuthorizer>,
 ) {
     let mut s = ControlStream::Tcp(stream);
-    serve_one(&mut s, handler, signer).await;
+    serve_one(&mut s, handler, signer, authorizer).await;
 }
 
 #[cfg(unix)]
@@ -1104,15 +2094,17 @@ async fn serve_one_uds(
     stream: UnixStream,
     handler: std::sync::Arc<dyn ControlHandler>,
     signer: ControlSignerSlot,
+    authorizer: std::sync::Arc<ControlAuthorizer>,
 ) {
     let mut s = ControlStream::Uds(stream);
-    serve_one(&mut s, handler, signer).await;
+    serve_one(&mut s, handler, signer, authorizer).await;
 }
 
 async fn serve_one(
     stream: &mut ControlStream,
     handler: std::sync::Arc<dyn ControlHandler>,
     signer: ControlSignerSlot,
+    authorizer: std::sync::Arc<ControlAuthorizer>,
 ) {
     let payload = match stream.read_frame().await {
         Ok(buf) => buf,
@@ -1133,6 +2125,36 @@ async fn serve_one(
             return;
         }
     };
+    // Authorize BEFORE dispatch, not inside the handler: an ungranted
+    // caller must not learn whether the named member exists, and the check
+    // has to cover every ControlHandler implementation rather than only
+    // the one that happens to be mounted.
+    let verb = request.verb();
+    match authorizer.authorize(&request) {
+        Ok(None) => {}
+        Ok(Some(caller)) => {
+            tracing::debug!(
+                caller = %caller.label,
+                verb = %verb,
+                "cross-mob control request admitted by grant"
+            );
+        }
+        Err(denial) => {
+            tracing::warn!(
+                code = denial.code(),
+                verb = %verb,
+                reason = %denial,
+                "cross-mob control request refused by grant policy"
+            );
+            let response = ControlResponse::Err {
+                code: denial.code().to_string(),
+                message: denial.to_string(),
+            };
+            let response_payload = serde_json::to_vec(&response).unwrap_or_default();
+            let _ = stream.write_frame(&response_payload).await;
+            return;
+        }
+    }
     let mut response = handler.handle(request).await;
     // Bind the response to this gateway's pinned identity and to the exact
     // request bytes. Re-read per request: hosts install keys after the
@@ -1332,6 +2354,7 @@ mod tests {
         let request = ControlRequest::LookupMember {
             remote_member: "alice".to_string(),
             nonce: Some("nonce-1".to_string()),
+            caller: None,
         };
         let payload = serde_json::to_vec(&request).expect("encode");
         let endpoint = RemoteEndpoint::Tcp(addr.to_string());
@@ -1344,6 +2367,7 @@ mod tests {
         let replayed_request = ControlRequest::LookupMember {
             remote_member: "alice".to_string(),
             nonce: Some("nonce-2".to_string()),
+            caller: None,
         };
         let replayed_payload = serde_json::to_vec(&replayed_request).expect("encode");
         assert!(
@@ -1513,6 +2537,7 @@ mod tests {
         let request = ControlRequest::LookupMember {
             remote_member: "alice".to_string(),
             nonce: None,
+            caller: None,
         };
         let response = RemoteControlClient::send(&endpoint, &request, DEFAULT_CONTROL_TIMEOUT)
             .await
@@ -1540,6 +2565,7 @@ mod tests {
             remote_member: "bob".to_string(),
             content: serde_json::json!({"text": "hi"}),
             nonce: None,
+            caller: None,
         };
         let response = RemoteControlClient::send(&endpoint, &request, DEFAULT_CONTROL_TIMEOUT)
             .await
@@ -1570,6 +2596,7 @@ mod tests {
             remote_member: "alice".to_string(),
             content: serde_json::json!({"text": "hello"}),
             nonce: None,
+            caller: None,
         };
         let response = RemoteControlClient::send(&endpoint, &request, DEFAULT_CONTROL_TIMEOUT)
             .await
@@ -1603,6 +2630,7 @@ mod tests {
             local_peer_id: "00000000-0000-4000-8000-000000000001".to_string(),
             local_pubkey_b64: None,
             nonce: None,
+            caller: None,
         };
         let response = RemoteControlClient::send(&endpoint, &request, DEFAULT_CONTROL_TIMEOUT)
             .await
@@ -1693,5 +2721,634 @@ mod tests {
 
         assert_eq!(error.0, "identity_authority_unavailable");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    // -- caller authorization (scoped grants) --
+
+    fn lookup_request(member: &str) -> ControlRequest {
+        ControlRequest::LookupMember {
+            remote_member: member.to_string(),
+            nonce: Some("nonce".to_string()),
+            caller: None,
+        }
+    }
+
+    fn inject_request(member: &str) -> ControlRequest {
+        ControlRequest::Inject {
+            remote_member: member.to_string(),
+            content: serde_json::json!({"text": "hi"}),
+            nonce: Some("nonce".to_string()),
+            caller: None,
+        }
+    }
+
+    fn signed_as(
+        keys: &crate::auth::peer_keys::GatewayPeerKeys,
+        audience: Option<&str>,
+        mut request: ControlRequest,
+    ) -> ControlRequest {
+        sign_control_request_as_caller(keys, audience, &mut request);
+        request
+    }
+
+    fn table_for(
+        keys: &crate::auth::peer_keys::GatewayPeerKeys,
+        verbs: &[ControlVerb],
+        members: ControlMemberScope,
+    ) -> ControlGrantTable {
+        let mut table = ControlGrantTable::new();
+        table.insert(
+            keys.pubkey_bytes(),
+            ControlGrant::new("peer-mob", verbs.iter().copied(), members),
+        );
+        table
+    }
+
+    #[test]
+    fn control_verb_config_spellings_round_trip() {
+        for verb in ControlVerb::all() {
+            assert_eq!(ControlVerb::parse(verb.as_str()), Some(verb));
+        }
+        assert_eq!(ControlVerb::parse("delete_everything"), None);
+    }
+
+    /// Back-compat: a listener with no grant table dispatches exactly what
+    /// it dispatched before caller authorization existed, credential or
+    /// not.
+    #[test]
+    fn open_authorizer_admits_unauthenticated_requests() {
+        let authorizer = ControlAuthorizer::open();
+        assert!(!authorizer.is_enforcing());
+        assert_eq!(
+            authorizer.authorize(&inject_request("bob")),
+            Ok(None),
+            "open mode authorizes nothing and refuses nothing"
+        );
+    }
+
+    /// Regression guard for the classic fail-open bug in this shape of
+    /// code: an EMPTY grant table must deny everyone, never fall back to
+    /// open. `ControlAuthorizer::open()` is the only permissive mode and
+    /// it has to be named explicitly.
+    #[test]
+    fn empty_grant_table_denies_every_caller() {
+        let keys = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let authorizer = ControlAuthorizer::with_grants(ControlGrantTable::new());
+        assert!(authorizer.is_enforcing());
+        let denial = authorizer
+            .authorize(&signed_as(&keys, None, lookup_request("bob")))
+            .expect_err("an empty table grants nothing");
+        assert_eq!(denial.code(), "caller_not_granted");
+    }
+
+    #[test]
+    fn unauthenticated_request_is_refused_when_grants_are_enforced() {
+        let keys = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let authorizer = ControlAuthorizer::with_grants(table_for(
+            &keys,
+            &ControlVerb::all(),
+            ControlMemberScope::All,
+        ));
+        let denial = authorizer
+            .authorize(&inject_request("bob"))
+            .expect_err("no credential must be refused");
+        assert_eq!(denial.code(), "unauthenticated_caller");
+    }
+
+    #[test]
+    fn granted_caller_is_admitted() {
+        let keys = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let authorizer = ControlAuthorizer::with_grants(table_for(
+            &keys,
+            &[ControlVerb::Inject],
+            ControlMemberScope::members(["bob"]),
+        ));
+        let admitted = authorizer
+            .authorize(&signed_as(&keys, None, inject_request("bob")))
+            .expect("granted verb and member")
+            .expect("enforcing mode names the caller");
+        assert_eq!(admitted.label, "peer-mob");
+        assert_eq!(admitted.pubkey, keys.pubkey_bytes());
+    }
+
+    /// The scope is a REFUSAL surface, not a hint: the same authenticated
+    /// caller that may inject into bob may not inject into carol, and may
+    /// not wire at all.
+    #[test]
+    fn verb_and_member_outside_the_grant_are_refused() {
+        let keys = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let authorizer = ControlAuthorizer::with_grants(table_for(
+            &keys,
+            &[ControlVerb::Inject],
+            ControlMemberScope::members(["bob"]),
+        ));
+
+        let verb_denial = authorizer
+            .authorize(&signed_as(&keys, None, lookup_request("bob")))
+            .expect_err("lookup_member is not granted");
+        assert_eq!(verb_denial.code(), "verb_not_granted");
+
+        let member_denial = authorizer
+            .authorize(&signed_as(&keys, None, inject_request("carol")))
+            .expect_err("carol is outside the member scope");
+        assert_eq!(member_denial.code(), "member_not_granted");
+    }
+
+    /// A caller that is not in the table at all is refused even with a
+    /// perfectly valid signature.
+    #[test]
+    fn unknown_caller_is_refused() {
+        let granted = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let stranger = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let authorizer = ControlAuthorizer::with_grants(table_for(
+            &granted,
+            &ControlVerb::all(),
+            ControlMemberScope::All,
+        ));
+        let denial = authorizer
+            .authorize(&signed_as(&stranger, None, inject_request("bob")))
+            .expect_err("a stranger holds no grant");
+        assert_eq!(denial.code(), "caller_not_granted");
+    }
+
+    /// Member scope must compare in one alias space. Raw control surfaces
+    /// may present either the public alias or its comms-safe roster
+    /// encoding; a scope that matched only one spelling would be
+    /// bypassable with the other (the reason
+    /// `is_reserved_generated_alias` decodes first, too).
+    #[test]
+    fn member_scope_matches_the_encoded_roster_alias() {
+        let scope = ControlMemberScope::members(["rt:worker:0"]);
+        let encoded = crate::member_comms_id::mob_member_id_str("rt:worker:0").into_owned();
+        assert_ne!(encoded, "rt:worker:0", "fixture must exercise the encoding");
+        assert!(scope.contains("rt:worker:0"));
+        assert!(scope.contains(&encoded));
+        assert!(!scope.contains("rt:worker:1"));
+
+        let encoded_scope = ControlMemberScope::members([encoded.as_str()]);
+        assert!(encoded_scope.contains("rt:worker:0"));
+    }
+
+    #[test]
+    fn wildcard_member_entry_widens_to_all() {
+        assert_eq!(
+            ControlMemberScope::members(["bob", "*"]),
+            ControlMemberScope::All
+        );
+    }
+
+    /// The signature covers the semantic fields, so mutating any of them
+    /// after signing invalidates it. This is what stops a MITM from
+    /// re-pointing a granted caller's request at another member.
+    #[test]
+    fn tampering_with_the_request_breaks_the_caller_signature() {
+        let keys = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let authorizer = ControlAuthorizer::with_grants(table_for(
+            &keys,
+            &ControlVerb::all(),
+            ControlMemberScope::All,
+        ));
+        let mut request = signed_as(&keys, None, inject_request("bob"));
+        let caller = request.caller().cloned().expect("signed");
+        request = inject_request("carol");
+        request.set_caller(Some(caller));
+        let denial = authorizer
+            .authorize(&request)
+            .expect_err("a moved signature must not verify");
+        assert_eq!(denial.code(), "invalid_caller_signature");
+    }
+
+    /// A caller cannot claim a pubkey it does not hold: the signature is
+    /// checked against the presented key before the table is consulted.
+    #[test]
+    fn claimed_pubkey_without_the_matching_key_is_refused() {
+        let victim = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let attacker = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let authorizer = ControlAuthorizer::with_grants(table_for(
+            &victim,
+            &ControlVerb::all(),
+            ControlMemberScope::All,
+        ));
+        let mut request = signed_as(&attacker, None, inject_request("bob"));
+        if let Some(caller) = request.caller().cloned() {
+            request.set_caller(Some(ControlCaller {
+                pubkey_b64: victim.pubkey_b64(),
+                ..caller
+            }));
+        }
+        let denial = authorizer
+            .authorize(&request)
+            .expect_err("claiming the granted pubkey must not admit the attacker");
+        assert_eq!(denial.code(), "invalid_caller_signature");
+    }
+
+    /// The audience is signed material, so a request minted for one
+    /// gateway cannot be replayed at another where the same caller also
+    /// holds a grant.
+    #[test]
+    fn audience_binding_refuses_a_request_minted_for_another_gateway() {
+        let keys = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let authorizer = ControlAuthorizer::with_grants_for_audience(
+            table_for(&keys, &ControlVerb::all(), ControlMemberScope::All),
+            "mob-b",
+        );
+        authorizer
+            .authorize(&signed_as(&keys, Some("mob-b"), inject_request("bob")))
+            .expect("matching audience is admitted");
+        let denial = authorizer
+            .authorize(&signed_as(&keys, Some("mob-c"), inject_request("bob")))
+            .expect_err("a request minted for mob-c must not spend here");
+        assert_eq!(denial.code(), "audience_mismatch");
+        let missing = authorizer
+            .authorize(&signed_as(&keys, None, inject_request("bob")))
+            .expect_err("an audience-less request must not spend on a bound listener");
+        assert_eq!(missing.code(), "audience_mismatch");
+    }
+
+    /// The signing payload is derived from a decoded request on both
+    /// sides, so it has to survive the JSON round trip the wire imposes -
+    /// including the one non-scalar field (`Inject.content`).
+    #[test]
+    fn inject_signing_payload_survives_the_json_round_trip() {
+        let content = serde_json::json!({
+            "text": "hi",
+            "nested": {
+                "b": 1.5,
+                "a": [1, 2, {"z": true, "n": null}],
+                "unicode": "naïve\nwith newline\tand tab",
+            },
+            "big": 9_007_199_254_740_993_u64,
+        });
+        let request = ControlRequest::Inject {
+            remote_member: "bob".to_string(),
+            content,
+            nonce: Some("nonce".to_string()),
+            caller: None,
+        };
+        let bytes = serde_json::to_vec(&request).expect("encode");
+        let decoded: ControlRequest = serde_json::from_slice(&bytes).expect("decode");
+        assert_eq!(
+            control_request_signing_payload(&request),
+            control_request_signing_payload(&decoded),
+            "a signature minted by the caller must verify against the decoded request"
+        );
+    }
+
+    /// Fields are length-prefixed, so a value containing the delimiter
+    /// cannot forge a different field layout and let a narrow grant be
+    /// spent on a wider request.
+    #[test]
+    fn signing_payload_is_not_field_injectable() {
+        let split = ControlRequest::LookupMember {
+            remote_member: "a".to_string(),
+            nonce: Some("b".to_string()),
+            caller: None,
+        };
+        let merged = ControlRequest::LookupMember {
+            remote_member: "a\n1:b".to_string(),
+            nonce: None,
+            caller: None,
+        };
+        assert_ne!(
+            control_request_signing_payload(&split),
+            control_request_signing_payload(&merged)
+        );
+    }
+
+    /// Request and response signatures live in separate domains, so
+    /// neither can be replayed as the other.
+    #[test]
+    fn caller_and_response_signature_contexts_are_distinct() {
+        assert_ne!(CONTROL_CALLER_SIG_CONTEXT, CONTROL_SIG_CONTEXT);
+        assert!(
+            control_request_signing_payload(&lookup_request("bob"))
+                .starts_with(CONTROL_CALLER_SIG_CONTEXT)
+        );
+    }
+
+    #[test]
+    fn grant_toml_parses_verbs_and_member_scope() {
+        let table = ControlGrantTable::from_toml(&format!(
+            r#"
+            [control_grants.ops-mob]
+            pubkey = "{TEST_PUBKEY_B64}"
+            verbs = ["inject", "lookup_member"]
+            members = ["bob"]
+            "#
+        ))
+        .expect("parse")
+        .expect("section is present");
+        let grant = table.get(&[42u8; 32]).expect("filed under the pubkey");
+        assert_eq!(grant.label(), "ops-mob");
+        assert_eq!(
+            grant.verbs(),
+            &[ControlVerb::Inject, ControlVerb::LookupMember]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+        assert!(grant.members().contains("bob"));
+        assert!(!grant.members().contains("carol"));
+    }
+
+    /// Absent section means "no policy configured", which must stay open -
+    /// not become a deny-all table that would break every deployment that
+    /// never opted in.
+    #[test]
+    fn absent_grant_section_leaves_the_listener_open() {
+        assert_eq!(
+            ControlGrantTable::from_toml("[mobs]\nremote = \"inproc\"\n").expect("parse"),
+            None
+        );
+        assert!(matches!(
+            ControlAuthorizer::from_toml("[mobs]\nremote = \"inproc\"\n").expect("parse"),
+            ControlAuthorizer::Open
+        ));
+    }
+
+    #[test]
+    fn grant_toml_omitting_members_grants_every_member() {
+        let table = ControlGrantTable::from_toml(&format!(
+            r#"
+            [control_grants.ops-mob]
+            pubkey = "{TEST_PUBKEY_B64}"
+            verbs = ["*"]
+            "#
+        ))
+        .expect("parse")
+        .expect("section is present");
+        let grant = table.get(&[42u8; 32]).expect("filed");
+        assert_eq!(grant.verbs().len(), ControlVerb::all().len());
+        assert_eq!(grant.members(), &ControlMemberScope::All);
+    }
+
+    #[test]
+    fn grant_toml_fails_closed_on_bad_policy() {
+        let unknown_verb = ControlGrantTable::from_toml(&format!(
+            r#"
+            [control_grants.ops-mob]
+            pubkey = "{TEST_PUBKEY_B64}"
+            verbs = ["inject", "drop_database"]
+            "#
+        ))
+        .expect_err("unknown verb must fail closed");
+        assert!(matches!(
+            unknown_verb,
+            ControlGrantConfigError::UnknownVerb { .. }
+        ));
+
+        let empty_verbs = ControlGrantTable::from_toml(&format!(
+            r#"
+            [control_grants.ops-mob]
+            pubkey = "{TEST_PUBKEY_B64}"
+            verbs = []
+            "#
+        ))
+        .expect_err("an empty verb list is a typo, not a policy");
+        assert!(matches!(
+            empty_verbs,
+            ControlGrantConfigError::InvalidField { .. }
+        ));
+
+        let missing_verbs = ControlGrantTable::from_toml(&format!(
+            r#"
+            [control_grants.ops-mob]
+            pubkey = "{TEST_PUBKEY_B64}"
+            "#
+        ))
+        .expect_err("verbs is mandatory");
+        assert!(matches!(
+            missing_verbs,
+            ControlGrantConfigError::InvalidField { .. }
+        ));
+
+        let duplicate = ControlGrantTable::from_toml(&format!(
+            r#"
+            [control_grants.ops-mob]
+            pubkey = "{TEST_PUBKEY_B64}"
+            verbs = ["inject"]
+
+            [control_grants.other-mob]
+            pubkey = "{TEST_PUBKEY_B64}"
+            verbs = ["wire"]
+            "#
+        ))
+        .expect_err("one caller must have exactly one grant");
+        assert!(matches!(
+            duplicate,
+            ControlGrantConfigError::DuplicatePubkey { .. }
+        ));
+
+        let bad_key = ControlGrantTable::from_toml(
+            r#"
+            [control_grants.ops-mob]
+            pubkey = "not-base64!!"
+            verbs = ["inject"]
+            "#,
+        )
+        .expect_err("an undecodable pubkey must fail closed");
+        assert!(matches!(
+            bad_key,
+            ControlGrantConfigError::InvalidPubkey { .. }
+        ));
+    }
+
+    /// An ignored key WIDENS this policy, so keys are closed.
+    ///
+    /// `member` (singular) leaves `members` absent, and an absent `members`
+    /// means every member - so tolerating the typo would silently turn a
+    /// one-member grant into a whole-mob grant. Same for any narrowing key
+    /// a newer config carries that this binary cannot enforce.
+    #[test]
+    fn grant_toml_rejects_unknown_keys_rather_than_widening() {
+        let typo = ControlGrantTable::from_toml(&format!(
+            r#"
+            [control_grants.ops-mob]
+            pubkey = "{TEST_PUBKEY_B64}"
+            verbs = ["inject"]
+            member = ["bob"]
+            "#
+        ))
+        .expect_err("a singular 'member' typo must not silently grant every member");
+        assert!(matches!(typo, ControlGrantConfigError::InvalidField { .. }));
+
+        // Positive control: the same policy spelled correctly loads, and
+        // scopes to exactly the one member.
+        let table = ControlGrantTable::from_toml(&format!(
+            r#"
+            [control_grants.ops-mob]
+            pubkey = "{TEST_PUBKEY_B64}"
+            verbs = ["inject"]
+            members = ["bob"]
+            "#
+        ))
+        .expect("parse")
+        .expect("section is present");
+        let grant = table.get(&[42u8; 32]).expect("filed");
+        assert!(grant.members().contains("bob"));
+        assert!(!grant.members().contains("carol"));
+    }
+
+    /// End to end over a real socket: the grant-enforcing listener refuses
+    /// an out-of-scope verb before the handler ever sees it, and the
+    /// calling proxy surfaces the refusal as its own typed error rather
+    /// than a generic rejection.
+    #[tokio::test]
+    async fn grant_enforcing_listener_refuses_ungranted_verbs_over_tcp() {
+        use crate::contact_directory::{ContactEntry, MobTransport};
+        use crate::runtime::cross_mob_remote::{RemoteMobError, RemoteMobProxy};
+
+        let caller_keys = Arc::new(crate::auth::peer_keys::GatewayPeerKeys::ephemeral());
+        let authorizer = Arc::new(ControlAuthorizer::with_grants(table_for(
+            &caller_keys,
+            &[ControlVerb::LookupMember],
+            ControlMemberScope::members(["alice"]),
+        )));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handler: Arc<dyn ControlHandler> = Arc::new(EchoHandler);
+        let server = tokio::spawn(serve_tcp_control_with_authorizer(
+            listener,
+            handler,
+            unsigned_control_signer(),
+            authorizer,
+        ));
+
+        let entry = ContactEntry {
+            mob_id: "remote".to_string(),
+            transport: MobTransport::Tcp(addr.to_string()),
+            pubkey: None,
+            require_signed_control: None,
+        };
+        let proxy = RemoteMobProxy::from_entry_with_caller(&entry, Some(Arc::clone(&caller_keys)))
+            .expect("tcp ok")
+            .expect("some");
+
+        proxy
+            .lookup_member("alice")
+            .await
+            .expect("granted verb on a granted member is admitted");
+
+        let member_denied = proxy
+            .lookup_member("bob")
+            .await
+            .expect_err("bob is outside the member scope");
+        assert!(
+            matches!(
+                member_denied,
+                RemoteMobError::ControlRequestUnauthorized { ref code, .. }
+                    if code == "member_not_granted"
+            ),
+            "got {member_denied:?}"
+        );
+
+        let verb_denied = proxy
+            .inject_message("alice", serde_json::json!({"text": "hi"}))
+            .await
+            .expect_err("inject is outside the verb scope");
+        assert!(
+            matches!(
+                verb_denied,
+                RemoteMobError::ControlRequestUnauthorized { ref code, .. }
+                    if code == "verb_not_granted"
+            ),
+            "got {verb_denied:?}"
+        );
+
+        // A gateway with no keypair cannot authenticate at all.
+        let anonymous = RemoteMobProxy::from_entry(&entry)
+            .expect("tcp ok")
+            .expect("some");
+        let anonymous_denied = anonymous
+            .lookup_member("alice")
+            .await
+            .expect_err("an unauthenticated caller must be refused");
+        assert!(
+            matches!(
+                anonymous_denied,
+                RemoteMobError::ControlRequestUnauthorized { ref code, .. }
+                    if code == "unauthenticated_caller"
+            ),
+            "got {anonymous_denied:?}"
+        );
+        server.abort();
+    }
+
+    /// Back-compat over a real socket: an open listener serves an
+    /// authenticated caller unchanged (the credential is inert), which is
+    /// what lets callers sign unconditionally during a rollout.
+    #[tokio::test]
+    async fn open_listener_serves_authenticated_callers_unchanged() {
+        use crate::contact_directory::{ContactEntry, MobTransport};
+        use crate::runtime::cross_mob_remote::RemoteMobProxy;
+
+        let caller_keys = Arc::new(crate::auth::peer_keys::GatewayPeerKeys::ephemeral());
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handler: Arc<dyn ControlHandler> = Arc::new(EchoHandler);
+        let server = tokio::spawn(serve_tcp_control(
+            listener,
+            handler,
+            unsigned_control_signer(),
+        ));
+
+        let entry = ContactEntry {
+            mob_id: "remote".to_string(),
+            transport: MobTransport::Tcp(addr.to_string()),
+            pubkey: None,
+            require_signed_control: None,
+        };
+        let proxy = RemoteMobProxy::from_entry_with_caller(&entry, Some(caller_keys))
+            .expect("tcp ok")
+            .expect("some");
+        let info = proxy
+            .lookup_member("alice")
+            .await
+            .expect("an open listener ignores the credential");
+        assert_eq!(info.peer_id, "peer-id-for-alice");
+        server.abort();
+    }
+
+    /// A signed caller credential rides inside the request bytes, so the
+    /// server's response signature (which digests those bytes) still
+    /// verifies for the caller that produced them - the two authenticities
+    /// compose rather than collide.
+    #[tokio::test]
+    async fn signed_caller_and_signed_response_compose() {
+        use crate::contact_directory::{ContactEntry, MobTransport};
+        use crate::runtime::cross_mob_remote::RemoteMobProxy;
+
+        let caller_keys = Arc::new(crate::auth::peer_keys::GatewayPeerKeys::ephemeral());
+        let server_keys = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let pinned = server_keys.pubkey_bytes();
+        let authorizer = Arc::new(ControlAuthorizer::with_grants(table_for(
+            &caller_keys,
+            &ControlVerb::all(),
+            ControlMemberScope::All,
+        )));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handler: Arc<dyn ControlHandler> = Arc::new(EchoHandler);
+        let server = tokio::spawn(serve_tcp_control_with_authorizer(
+            listener,
+            handler,
+            signer_with(server_keys),
+            authorizer,
+        ));
+
+        let entry = ContactEntry {
+            mob_id: "remote".to_string(),
+            transport: MobTransport::Tcp(addr.to_string()),
+            pubkey: Some(pinned),
+            require_signed_control: None,
+        };
+        let proxy = RemoteMobProxy::from_entry_with_caller(&entry, Some(caller_keys))
+            .expect("tcp ok")
+            .expect("some");
+        let info = proxy
+            .lookup_member("alice")
+            .await
+            .expect("authorized request, authenticated answer");
+        assert_eq!(info.peer_id, "peer-id-for-alice");
+        server.abort();
     }
 }

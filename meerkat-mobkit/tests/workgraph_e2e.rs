@@ -11,11 +11,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
+use meerkat_client::{LlmClient, LlmError, LlmEvent, LlmRequest};
 use meerkat_core::types::StopReason;
 use meerkat_mob::{MobDefinition, SpawnMemberSpec};
 use meerkat_mobkit::{UnifiedRuntime, handle_unified_rpc_json};
 use serde_json::{Value, json};
+
+/// The one definition of the normalized-provider-accounting contract every
+/// MobKit LLM double must satisfy under meerkat 0.8.22. See the module docs.
+#[path = "support/llm_usage.rs"]
+mod llm_usage;
 
 /// Profile opted into workgraph tools; comms on so console sends deliver.
 const WORKGRAPH_E2E_TOML: &str = r#"
@@ -81,16 +86,17 @@ impl LlmClient for CaptureClient {
             .collect();
         self.requests.lock().unwrap().push(tool_names);
         self.notify.notify_waiters();
+        // meerkat 0.8.22 rejects a turn whose stream carried no normalized
+        // provider accounting, so the terminal `Done` never travels alone.
+        let [usage, done] =
+            llm_usage::usage_then_done(request, meerkat::Provider::OpenAI, StopReason::EndTurn);
         Box::pin(async_stream::stream! {
             yield Ok(LlmEvent::TextDelta {
                 delta: "ok".to_string(),
                 meta: None,
             });
-            yield Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success {
-                    stop_reason: StopReason::EndTurn,
-                },
-            });
+            yield Ok(usage);
+            yield Ok(done);
         })
     }
 

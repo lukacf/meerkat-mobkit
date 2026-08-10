@@ -23,13 +23,26 @@ use meerkat_mobkit::{
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+/// The one definition of the normalized-provider-accounting contract every
+/// MobKit LLM double must satisfy under meerkat 0.8.22. See the module docs.
+#[path = "support/llm_usage.rs"]
+mod llm_usage;
+
 struct Fixture {
     _temp_dir: TempDir,
     runtime: UnifiedRuntime,
 }
 
+/// `TestClient::default()` DOES synthesize accounting under 0.8.22, but under
+/// `Provider::Other` - and the flow profile is `gpt-5.5`, whose canonical owner
+/// is `Provider::OpenAI`, so the turn would fail closed with
+/// `normalized_provider_accounting_identity_mismatch`. See the rule in
+/// `tests/support/llm_usage.rs`.
 async fn build_unified_runtime_with_flow() -> Fixture {
-    build_unified_runtime_with_flow_and_client(Arc::new(TestClient::default())).await
+    build_unified_runtime_with_flow_and_client(Arc::new(TestClient::for_provider(
+        meerkat::Provider::OpenAI,
+    )))
+    .await
 }
 
 async fn build_unified_runtime_with_flow_and_client(
@@ -267,17 +280,24 @@ struct HangingTestClient;
 impl meerkat::LlmClient for HangingTestClient {
     fn stream<'a>(
         &'a self,
-        _request: &'a meerkat::LlmRequest,
+        request: &'a meerkat::LlmRequest,
     ) -> std::pin::Pin<
         Box<dyn futures::Stream<Item = Result<meerkat::LlmEvent, meerkat::LlmError>> + Send + 'a>,
     > {
+        // The turn is meant to still be in flight when the test tears the
+        // runtime down, so this tail is not expected to be reached. It carries
+        // normalized accounting anyway: under 0.8.22 a reached `Done` without
+        // it fails the turn closed, and "unreachable" is a property of the
+        // test's timing, not of this client.
+        let [usage, done] = llm_usage::usage_then_done(
+            request,
+            meerkat::Provider::OpenAI,
+            meerkat::StopReason::EndTurn,
+        );
         Box::pin(async_stream::stream! {
             tokio::time::sleep(Duration::from_mins(5)).await;
-            yield Ok(meerkat::LlmEvent::Done {
-                outcome: meerkat::LlmDoneOutcome::Success {
-                    stop_reason: meerkat::StopReason::EndTurn,
-                },
-            });
+            yield Ok(usage);
+            yield Ok(done);
         })
     }
 

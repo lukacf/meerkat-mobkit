@@ -572,15 +572,17 @@ impl IdentityFirstRuntimeContext {
             self.runtime.fail_identity_bootstrap(generation, &error);
             return Err(error);
         }
-        self.apply_roster_controlled(generation, roster, true).await
+        self.apply_roster_controlled(generation, roster).await
     }
 
     /// Apply a roster under the runtime's single bootstrap controller.
     ///
-    /// Startup callers may skip snapshot payloads for bridges that explicitly
-    /// opt out because they discard [`RestoreOutcome`] after registration.
-    /// The existing public refresh API must preserve its historical payload,
-    /// so it always selects the full restore path.
+    /// Startup and the public refresh API now share ONE restore path. The
+    /// former split (bootstrap skipped snapshot payloads for opted-out
+    /// bridges, public refresh always loaded them) meant console add-member
+    /// and every reconcile pass paid a full session-blob read per Ready
+    /// member for a payload nothing reads. `restore_flow` owns the single
+    /// read-on-need rule; see its docs.
     async fn prepare_controlled_bootstrap(&self) -> Result<(), IdentityRuntimeError> {
         if self.runtime.bootstrap_shutdown.load(Ordering::Acquire) {
             return Err(IdentityRuntimeError::Internal(
@@ -603,7 +605,6 @@ impl IdentityFirstRuntimeContext {
         &self,
         generation: u64,
         roster: &[DurableAgentSpec],
-        optimize_startup_snapshot_load: bool,
     ) -> Result<super::orchestrator::RestoreFlowResult, IdentityRuntimeError> {
         if let Err(message) = self.bootstrap_mode.validate() {
             let error = IdentityRuntimeError::Internal(message);
@@ -633,17 +634,10 @@ impl IdentityFirstRuntimeContext {
             self.runtime.fail_identity_bootstrap(generation, &error);
             return Err(error);
         }
-        let result = match (&self.bootstrap_mode, optimize_startup_snapshot_load) {
-            (IdentityBootstrapMode::EagerMaterialize, true) => {
-                super::orchestrator::restore_flow_for_bootstrap(
-                    &self.runtime,
-                    roster,
-                    self.topology_provider.as_deref(),
-                    self.customizer.as_deref(),
-                )
-                .await
-            }
-            (IdentityBootstrapMode::EagerMaterialize, false) => {
+        // One eager path for both startup and refresh: the snapshot-policy
+        // twin is gone, so there is nothing left for the caller to select.
+        let result = match &self.bootstrap_mode {
+            IdentityBootstrapMode::EagerMaterialize => {
                 super::orchestrator::restore_flow(
                     &self.runtime,
                     roster,
@@ -652,11 +646,8 @@ impl IdentityFirstRuntimeContext {
                 )
                 .await
             }
-            (
-                IdentityBootstrapMode::LazyMaterialize
-                | IdentityBootstrapMode::LazyWithBackgroundWarm { .. },
-                _,
-            ) => {
+            IdentityBootstrapMode::LazyMaterialize
+            | IdentityBootstrapMode::LazyWithBackgroundWarm { .. } => {
                 super::orchestrator::lazy_register_flow(
                     &self.runtime,
                     roster,
@@ -715,8 +706,7 @@ impl IdentityFirstRuntimeContext {
             }
         };
 
-        self.apply_roster_controlled(generation, &roster, false)
-            .await
+        self.apply_roster_controlled(generation, &roster).await
     }
 
     /// Cancellation-safe reconcile for RPC/host request boundaries.
@@ -4173,6 +4163,7 @@ impl IdentityRuntime {
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
             provider_params: None,
+            compaction_curator: Default::default(),
         };
         if let Some(customizer) = self.customizer.read().await.clone() {
             let customize = customizer.customize_build(&build_context, &spec, &mut draft);
@@ -7643,6 +7634,7 @@ impl IdentityRuntime {
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
             provider_params: None,
+            compaction_curator: Default::default(),
         };
         if self.bridge.is_some() {
             let active_peers = self.entries.read().await.keys().cloned().collect();

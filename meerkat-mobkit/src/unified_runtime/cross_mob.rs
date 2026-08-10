@@ -1411,9 +1411,39 @@ impl UnifiedRuntime {
     /// this before `attach_identity_first_context` is safe: generated
     /// `rt:*` aliases fail closed until the authority is attached and are
     /// admitted afterwards.
+    ///
+    /// This form performs NO caller authorization: any peer that can reach
+    /// the bound endpoint may drive every control verb against every
+    /// member. Deployments that expose the listener beyond a trusted
+    /// network should use [`Self::start_control_listener_with_authorizer`]
+    /// with a populated grant table.
     pub async fn start_control_listener(
         &self,
         addr: &crate::runtime::cross_mob_control::ControlListenAddr,
+    ) -> Result<String, CrossMobError> {
+        tracing::warn!(
+            %addr,
+            "cross-mob control listener starting without a caller grant table: every peer that \
+             can reach this endpoint may wire, unwire, inject, and look up any member; install \
+             grants via start_control_listener_with_authorizer"
+        );
+        self.start_control_listener_with_authorizer(
+            addr,
+            std::sync::Arc::new(crate::runtime::cross_mob_control::ControlAuthorizer::open()),
+        )
+        .await
+    }
+
+    /// Bind the cross-mob control listener with caller authorization.
+    ///
+    /// `authorizer` is supplied by the host rather than held on the
+    /// runtime because grants come from configuration the caller already
+    /// holds before it starts the listener - unlike the gateway keypair,
+    /// which hosts install late and which therefore needs a live slot.
+    pub async fn start_control_listener_with_authorizer(
+        &self,
+        addr: &crate::runtime::cross_mob_control::ControlListenAddr,
+        authorizer: std::sync::Arc<crate::runtime::cross_mob_control::ControlAuthorizer>,
     ) -> Result<String, CrossMobError> {
         let mut task_slot = self.cross_mob_control_task.lock().await;
         if task_slot.is_some() {
@@ -1435,9 +1465,11 @@ impl UnifiedRuntime {
         }
         let handler: std::sync::Arc<dyn crate::runtime::cross_mob_control::ControlHandler> =
             std::sync::Arc::new(handler);
-        *task_slot = Some(tokio::spawn(
-            bound.serve(handler, std::sync::Arc::clone(&self.gateway_peer_keys)),
-        ));
+        *task_slot = Some(tokio::spawn(bound.serve_with_authorizer(
+            handler,
+            std::sync::Arc::clone(&self.gateway_peer_keys),
+            authorizer,
+        )));
         *self
             .cross_mob_control_advertised
             .write()
@@ -2011,7 +2043,12 @@ impl UnifiedRuntime {
         {
             return Ok(LocalOrRemote::Local(Box::new(authority)));
         }
-        match RemoteMobProxy::from_entry(entry)? {
+        // Authenticate ourselves to the peer with this gateway's keypair
+        // so a peer that enforces scoped control grants can attribute the
+        // call. `None` (no keypair installed) still dispatches: peers that
+        // do not enforce grants are unaffected, and peers that do refuse
+        // us typed rather than silently.
+        match RemoteMobProxy::from_entry_with_caller(entry, self.gateway_peer_keys())? {
             Some(proxy) => Ok(LocalOrRemote::Remote(proxy)),
             None => Err(CrossMobError::NoPeerHandle(entry.mob_id.clone())),
         }

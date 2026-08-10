@@ -1565,12 +1565,25 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
             }
         }
         // Same silent-stall guard as rpc_gateway: the upstream driver
-        // discards tick errors, so stalls only become visible here.
+        // discards tick errors, so stalls only become visible here. Stated
+        // as a resident liveness contract (cadence + threshold + escalation)
+        // rather than a promise about a future log line, and paired with one
+        // observed verdict once the host is up.
+        let watchdog_config =
+            meerkat_mobkit::schedule_wiring::ScheduleClaimWatchdogConfig::default();
+        tracing::info!(
+            poll_interval_secs = watchdog_config.poll_interval.as_secs(),
+            overdue_threshold_secs = watchdog_config.overdue_threshold.as_secs(),
+            heartbeat_polls = watchdog_config.heartbeat_polls,
+            "schedule claim watchdog resident: probes the firing pipeline on this cadence, ERROR \
+             on a new or changed stall report, WARN heartbeat while it persists, INFO on recovery"
+        );
         let watchdog = meerkat_mobkit::schedule_wiring::spawn_schedule_claim_watchdog(
             schedule_service.clone(),
-            schedule_store_path,
-            Default::default(),
+            schedule_store_path.clone(),
+            watchdog_config,
         );
+        let schedule_service_for_probe = schedule_service.clone();
         let schedule_host =
             meerkat_mobkit::schedule_wiring::spawn_schedule_host_with_identity_runtime(
                 service,
@@ -1588,12 +1601,40 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
             // writes (create/update/resume) are admissible from here on
             // (Bug C stopgap — the gate refused them until this point).
             schedule_firing_host_binding.bind();
+            // One probe NOW, with the host up: an observed verdict rather
+            // than a claim about a watchdog that has not ticked yet. WARN,
+            // not ERROR - a gateway that was down across a due time restarts
+            // with a legitimate backlog. The resident watchdog escalates if
+            // the same report survives its cadence.
+            match meerkat_mobkit::schedule_wiring::probe_schedule_firing_pipeline(
+                &schedule_service_for_probe,
+                &schedule_store_path,
+                watchdog_config.overdue_threshold,
+            )
+            .await
+            {
+                meerkat_mobkit::schedule_wiring::ScheduleFiringProbe::Healthy => {
+                    tracing::info!("schedule firing pipeline healthy at boot");
+                }
+                meerkat_mobkit::schedule_wiring::ScheduleFiringProbe::Stalled { report } => {
+                    tracing::warn!(
+                        %report,
+                        poll_interval_secs = watchdog_config.poll_interval.as_secs(),
+                        "schedule firing pipeline is not delivering at boot; the resident claim \
+                         watchdog re-probes on its cadence and escalates to ERROR if this \
+                         persists (a restart backlog clears on the first host ticks)"
+                    );
+                }
+            }
         } else {
+            // Present-state verdict, not a prediction: the host is NOT
+            // running and the firing-intent write gate is consequently still
+            // closed. Both halves are observed facts at this point in boot.
             tracing::warn!(
-                "schedule host failed to spawn over the attached schedule store: \
-                 firing-intent schedule writes (create/update/resume) stay \
-                 refused so schedules cannot be accepted durably and then \
-                 silently never fire"
+                "schedule host did not spawn over the attached schedule store: no firing driver \
+                 is running in this gateway, and the firing-intent write gate is consequently \
+                 still closed, so create/update/resume are being refused rather than accepted \
+                 durably into a store nothing drains"
             );
         }
         (schedule_host, Some(watchdog))

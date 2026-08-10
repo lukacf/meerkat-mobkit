@@ -20,7 +20,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use futures::{Stream, stream};
 use meerkat::AgentToolDispatcher;
-use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
+use meerkat_client::{LlmError, LlmEvent, LlmRequest};
 use meerkat_core::lifecycle::run_primitive::ModelId;
 use meerkat_core::types::{ContentInput, HandlingMode};
 use meerkat_core::{AgentEvent, Provider, StopReason};
@@ -38,6 +38,11 @@ use tower::ServiceExt;
 
 #[path = "../../examples/001-incident-command-center-pack/incident_command_center.rs"]
 mod incident_command_center;
+
+/// The one definition of the normalized-provider-accounting contract every
+/// MobKit LLM double must satisfy under meerkat 0.8.22. See the module docs.
+#[path = "support/llm_usage.rs"]
+mod llm_usage;
 
 use incident_command_center::{
     IncidentSessionHook, IncidentToolDispatcher, build_runtime_bundle_with_default_client,
@@ -82,16 +87,20 @@ impl meerkat_client::LlmClient for IncidentPackTestClient {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(request.model.clone());
+        // meerkat 0.8.22 rejects a turn whose stream carried no normalized
+        // provider accounting, so the terminal `Done` never travels alone.
+        // This double is deliberately pointed at several models across the
+        // pack's profiles, so the accounting identity is derived per request
+        // rather than restated as one literal.
+        let provider = meerkat_client::LlmClient::provider(self);
+        let [usage, done] = llm_usage::usage_then_done(request, provider, StopReason::EndTurn);
         Box::pin(stream::iter([
             Ok(LlmEvent::TextDelta {
                 delta: "ok".to_string(),
                 meta: None,
             }),
-            Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success {
-                    stop_reason: StopReason::EndTurn,
-                },
-            }),
+            Ok(usage),
+            Ok(done),
         ]))
     }
 

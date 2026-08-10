@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use futures::stream;
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
-use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest, TestClient};
+use meerkat_client::{LlmClient, LlmError, LlmEvent, LlmRequest, TestClient};
 use meerkat_comms::{InprocRegistry, PeerMeta};
 use meerkat_core::types::HandlingMode;
 use meerkat_core::{Message, Provider, StopReason};
@@ -30,6 +30,11 @@ use meerkat_mobkit::{
     TopologyControlMode, TopologyControlPolicy, TopologyEdge, TopologyEndpoint, TopologyMutation,
     TopologyOperationStatus, UnifiedRuntime,
 };
+
+/// The one definition of the normalized-provider-accounting contract every
+/// MobKit LLM double must satisfy under meerkat 0.8.22. See the module docs.
+#[path = "support/llm_usage.rs"]
+mod llm_usage;
 
 static TOPOLOGY_TEST_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -61,8 +66,19 @@ fn topology_access(actions: &[&str]) -> AccessController {
     .expect("topology access controller")
 }
 
+/// `TestClient::default()` DOES synthesize accounting under 0.8.22, but under
+/// `Provider::Other` - and every profile here is `gpt-5.5`, whose canonical
+/// owner is `Provider::OpenAI`, so the turn would fail closed with
+/// `normalized_provider_accounting_identity_mismatch`. See the rule in
+/// `tests/support/llm_usage.rs`.
 async fn build_runtime(root: &Path, authority: &str, member: &str) -> UnifiedRuntime {
-    build_runtime_with_client(root, authority, member, Arc::new(TestClient::default())).await
+    build_runtime_with_client(
+        root,
+        authority,
+        member,
+        Arc::new(TestClient::for_provider(Provider::OpenAI)),
+    )
+    .await
 }
 
 async fn build_runtime_with_client(
@@ -223,7 +239,7 @@ comms = true
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
-            default_llm_client: Some(Arc::new(TestClient::default())),
+            default_llm_client: Some(Arc::new(TestClient::for_provider(Provider::OpenAI))),
         });
     let module_config = MobKitConfig {
         modules: vec![],
@@ -292,33 +308,33 @@ impl LlmClient for ToolSendClient {
         request: &'a LlmRequest,
     ) -> Pin<Box<dyn futures::Stream<Item = Result<LlmEvent, LlmError>> + Send + 'a>> {
         let replay = serde_json::to_string(&request.messages).unwrap_or_default();
+        // meerkat 0.8.22 rejects a turn whose stream carried no normalized
+        // provider accounting, so the terminal `Done` never travels alone on
+        // ANY branch below - the silent spawn turn included.
+        let provider = LlmClient::provider(self);
         if matches!(
             request.messages.last(),
             Some(Message::User(user)) if user.text_content().contains("You have been spawned as")
         ) {
-            return Box::pin(stream::iter(vec![Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success {
-                    stop_reason: StopReason::EndTurn,
-                },
-            })]));
+            let [usage, done] = llm_usage::usage_then_done(request, provider, StopReason::EndTurn);
+            return Box::pin(stream::iter(vec![Ok(usage), Ok(done)]));
         }
         let _ = self.observations.send(replay);
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         if call == 0 {
+            let [usage, done] = llm_usage::usage_then_done(request, provider, StopReason::EndTurn);
             return Box::pin(stream::iter(vec![
                 Ok(LlmEvent::TextDelta {
                     delta: "local turn observed".to_string(),
                     meta: None,
                 }),
-                Ok(LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: StopReason::EndTurn,
-                    },
-                }),
+                Ok(usage),
+                Ok(done),
             ]));
         }
         let script_call = call - 1;
         if script_call.is_multiple_of(3) {
+            let [usage, done] = llm_usage::usage_then_done(request, provider, StopReason::ToolUse);
             Box::pin(stream::iter(vec![
                 Ok(LlmEvent::ToolCallComplete {
                     id: format!("peers-{script_call}"),
@@ -326,11 +342,8 @@ impl LlmClient for ToolSendClient {
                     args: serde_json::json!({}),
                     meta: None,
                 }),
-                Ok(LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: StopReason::ToolUse,
-                    },
-                }),
+                Ok(usage),
+                Ok(done),
             ]))
         } else if script_call % 3 == 1 {
             let body = self
@@ -338,6 +351,7 @@ impl LlmClient for ToolSendClient {
                 .get(script_call / 3)
                 .cloned()
                 .unwrap_or_else(|| format!("unexpected scripted send {script_call}"));
+            let [usage, done] = llm_usage::usage_then_done(request, provider, StopReason::ToolUse);
             Box::pin(stream::iter(vec![
                 Ok(LlmEvent::ToolCallComplete {
                     id: format!("send-{script_call}"),
@@ -349,23 +363,18 @@ impl LlmClient for ToolSendClient {
                     }),
                     meta: None,
                 }),
-                Ok(LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: StopReason::ToolUse,
-                    },
-                }),
+                Ok(usage),
+                Ok(done),
             ]))
         } else {
+            let [usage, done] = llm_usage::usage_then_done(request, provider, StopReason::EndTurn);
             Box::pin(stream::iter(vec![
                 Ok(LlmEvent::TextDelta {
                     delta: "tool observed".to_string(),
                     meta: None,
                 }),
-                Ok(LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: StopReason::EndTurn,
-                    },
-                }),
+                Ok(usage),
+                Ok(done),
             ]))
         }
     }
@@ -399,27 +408,26 @@ impl LlmClient for RecordingClient {
         request: &'a LlmRequest,
     ) -> Pin<Box<dyn futures::Stream<Item = Result<LlmEvent, LlmError>> + Send + 'a>> {
         let replay = serde_json::to_string(&request.messages).unwrap_or_default();
+        // meerkat 0.8.22 rejects a turn whose stream carried no normalized
+        // provider accounting, so the terminal `Done` never travels alone on
+        // ANY branch below - the silent spawn turn included.
+        let provider = LlmClient::provider(self);
         if matches!(
             request.messages.last(),
             Some(Message::User(user)) if user.text_content().contains("You have been spawned as")
         ) {
-            return Box::pin(stream::iter(vec![Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success {
-                    stop_reason: StopReason::EndTurn,
-                },
-            })]));
+            let [usage, done] = llm_usage::usage_then_done(request, provider, StopReason::EndTurn);
+            return Box::pin(stream::iter(vec![Ok(usage), Ok(done)]));
         }
         let _ = self.observations.send(replay);
+        let [usage, done] = llm_usage::usage_then_done(request, provider, StopReason::EndTurn);
         Box::pin(stream::iter(vec![
             Ok(LlmEvent::TextDelta {
                 delta: "peer input observed".to_string(),
                 meta: None,
             }),
-            Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success {
-                    stop_reason: StopReason::EndTurn,
-                },
-            }),
+            Ok(usage),
+            Ok(done),
         ]))
     }
 
@@ -1351,7 +1359,7 @@ async fn disabled_and_read_only_modes_fail_closed_at_the_runtime_surface() {
         root.path(),
         "disabled-mode",
         "alice",
-        Arc::new(TestClient::default()),
+        Arc::new(TestClient::for_provider(Provider::OpenAI)),
         TopologyControlPolicy::default(),
     )
     .await;
@@ -1384,7 +1392,7 @@ async fn disabled_and_read_only_modes_fail_closed_at_the_runtime_surface() {
         root.path(),
         "read-only-mode",
         "alice",
-        Arc::new(TestClient::default()),
+        Arc::new(TestClient::for_provider(Provider::OpenAI)),
         read_only_policy,
     )
     .await;
