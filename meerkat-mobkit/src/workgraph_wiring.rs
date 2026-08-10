@@ -1562,6 +1562,20 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for AdmissionStoreProbe {
+
+    // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
+    // without a default, so that a PERSISTENT decorator cannot inherit a
+    // composition that converges nothing and silently resume from stale
+    // committed authority after a power cut. This probe is non-persistent, so
+    // it opts in EXPLICITLY through the public helper rather than hand-rolling
+    // the composition. The helper is fail-closed: it refuses if
+    // `supports_persistent_sessions()` is ever true here.
+    async fn materialize_session_resume_verdict(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError> {
+        meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
+    }
         // meerkat 0.8.22 deleted `prepare_session_for_resume` from this trait.
         // Durable-tail convergence now lives inside `PersistentSessionService`'s
         // OVERRIDE of `materialize_session_resume_verdict`; the trait default
@@ -1752,6 +1766,20 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for SwitchableStore {
+
+    // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
+    // without a default, so that a PERSISTENT decorator cannot inherit a
+    // composition that converges nothing and silently resume from stale
+    // committed authority after a power cut. This probe is non-persistent, so
+    // it opts in EXPLICITLY through the public helper rather than hand-rolling
+    // the composition. The helper is fail-closed: it refuses if
+    // `supports_persistent_sessions()` is ever true here.
+    async fn materialize_session_resume_verdict(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError> {
+        meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
+    }
         // Same 0.8.22 transition as `AdmissionStoreProbe` above:
         // `prepare_session_for_resume` is gone from the trait, and inheriting
         // the non-persistent `materialize_session_resume_verdict` default is

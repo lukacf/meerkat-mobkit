@@ -9444,6 +9444,20 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+
+    // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
+    // without a default, so that a PERSISTENT decorator cannot inherit a
+    // composition that converges nothing and silently resume from stale
+    // committed authority after a power cut. This probe is non-persistent, so
+    // it opts in EXPLICITLY through the public helper rather than hand-rolling
+    // the composition. The helper is fail-closed: it refuses if
+    // `supports_persistent_sessions()` is ever true here.
+    async fn materialize_session_resume_verdict(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError> {
+        meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
+    }
         async fn observe_session_resume_authority(
             &self,
             _session_id: &meerkat_core::types::SessionId,
@@ -9774,6 +9788,20 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+
+    // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
+    // without a default, so that a PERSISTENT decorator cannot inherit a
+    // composition that converges nothing and silently resume from stale
+    // committed authority after a power cut. This probe is non-persistent, so
+    // it opts in EXPLICITLY through the public helper rather than hand-rolling
+    // the composition. The helper is fail-closed: it refuses if
+    // `supports_persistent_sessions()` is ever true here.
+    async fn materialize_session_resume_verdict(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError> {
+        meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
+    }
         async fn observe_session_resume_authority(
             &self,
             _session_id: &meerkat_core::types::SessionId,
