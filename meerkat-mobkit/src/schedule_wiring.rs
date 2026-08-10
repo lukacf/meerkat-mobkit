@@ -1203,6 +1203,80 @@ pub enum ScheduleFiringProbe {
     },
 }
 
+/// The store's own answer to "does any host currently hold this realm's
+/// singular schedule firing authority?"
+///
+/// meerkat 0.8.22 fences `claim_due_occurrences` behind a store-issued
+/// executor lease, and `observe_executor_lease` is its deliberately
+/// NON-AUTHORIZING read: the observation carries no bearer token, so taking
+/// it can never grant, steal, or disturb the live driver's claim authority.
+/// Mobkit uses it to STATE durable firing-host liveness instead of inferring
+/// it from "nothing got claimed, so the driver must be dead".
+///
+/// This is evidence about the whole realm store, not about this process: the
+/// lease is singular per store, so a held lease can belong to another
+/// gateway. It is therefore not a substitute for the process-local firing
+/// host binding, which answers a different question (does a driver live in
+/// THIS process) for a different purpose (the firing-intent write gate).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScheduleFiringAuthority {
+    /// A host holds the executor lease at the store's own clock.
+    ///
+    /// A BOUNDED fact, not proof of liveness: it says the holder renewed
+    /// inside its lease window (60s by default), so a host that died within
+    /// the last lease period still reads `Held` until that lease expires.
+    /// Callers that report this to a human must say so - a crashed
+    /// predecessor and a healthy driver are indistinguishable here.
+    Held {
+        /// Executor incarnation identity, not a stable host name: a
+        /// restarted process mints a new one.
+        owner_id: String,
+        /// Monotonic liveness epoch the store advances on every takeover.
+        fencing_token: u64,
+        /// Lease remaining, measured entirely on the store's clock (the
+        /// observation carries the store's `now`, so this never mixes clocks
+        /// with the observing process).
+        expires_in_secs: i64,
+    },
+    /// No host holds the lease at the store's own clock. Instantaneous: a
+    /// host that has only just spawned acquires on its FIRST tick, so a
+    /// vacancy read at boot is not yet evidence of a dead driver.
+    Vacant,
+    /// The store cannot answer: a pre-lease schedule store, a custom store
+    /// that does not implement the read, or a transient store failure. This
+    /// is evidence for neither side and must never be reported as vacancy.
+    Unobservable { detail: String },
+}
+
+/// Read durable firing-host liveness straight from the store.
+///
+/// Never fails: an unanswerable store is a typed [`ScheduleFiringAuthority`]
+/// variant rather than an error, because every caller here is a diagnostic
+/// that must keep reporting the rest of its verdict.
+pub async fn observe_schedule_firing_authority(
+    schedule_service: &ScheduleService,
+) -> ScheduleFiringAuthority {
+    match schedule_service.firing_host_status().await {
+        Ok(observation) => {
+            // The store's clock, captured before the active holder is moved
+            // out: expiry is computed store-clock against store-clock, never
+            // against this process's wall time.
+            let store_now_utc = observation.store_now_utc;
+            match observation.active {
+                Some(active) => ScheduleFiringAuthority::Held {
+                    fencing_token: active.fencing_token,
+                    expires_in_secs: (active.expires_at_utc - store_now_utc).num_seconds(),
+                    owner_id: active.owner_id,
+                },
+                None => ScheduleFiringAuthority::Vacant,
+            }
+        }
+        Err(error) => ScheduleFiringAuthority::Unobservable {
+            detail: error.to_string(),
+        },
+    }
+}
+
 fn triage_poisoned_rows(
     store_path: &Path,
     table: &str,
@@ -1255,6 +1329,13 @@ fn triage_poisoned_rows(
 /// surface uses (`service.list()`, `store.list_occurrences()`) still fail
 /// wholesale on it. This probe stays as the read-only belt-and-suspenders
 /// that names the row.
+///
+/// meerkat 0.8.22 removes the guesswork from the OTHER half of the verdict:
+/// when due work is unclaimed, the probe asks the store who holds the
+/// singular executor lease ([`observe_schedule_firing_authority`]) instead of
+/// inferring a dead driver. Everything here remains a read - the lease
+/// observation carries no bearer token, so this probe still cannot claim,
+/// transition, or race the real driver.
 pub async fn probe_schedule_firing_pipeline(
     schedule_service: &ScheduleService,
     store_path: &Path,
@@ -1356,7 +1437,7 @@ pub async fn probe_schedule_firing_pipeline(
         }
     }
     let mut report = format!(
-        "{} pending occurrence(s) overdue by more than {}s and never claimed (oldest due {}); the firing driver's claim loop is failing silently",
+        "{} pending occurrence(s) overdue by more than {}s and never claimed (oldest due {})",
         pending_overdue.len(),
         overdue_threshold.as_secs(),
         pending_overdue
@@ -1364,6 +1445,45 @@ pub async fn probe_schedule_firing_pipeline(
             .map(|o| o.due_at_utc.to_rfc3339())
             .unwrap_or_default(),
     );
+    // Do not reconstruct a fact the store will tell you. Before 0.8.22 this
+    // sentence could only INFER "the firing driver's claim loop is failing
+    // silently" from unclaimed work. meerkat 0.8.22 fences claiming behind a
+    // store-issued executor lease, so the store can now name whether any host
+    // holds firing authority at all - which splits the one symptom into two
+    // very different diagnoses (nothing is draining vs. a lease-holding host
+    // that cannot claim). The read is non-authorizing and cannot race the
+    // driver.
+    //
+    // Deliberately NOT in this string: the remaining lease seconds. The
+    // watchdog dedupes by exact report text (ERROR on a new or changed
+    // report, WARN heartbeat while unchanged), so a per-poll countdown would
+    // make every poll of a persistent stall look like a new incident. Owner
+    // and fencing token are stable for as long as one host holds authority;
+    // the countdown belongs in a structured log field, not in the identity of
+    // the report.
+    match observe_schedule_firing_authority(schedule_service).await {
+        ScheduleFiringAuthority::Held {
+            owner_id,
+            fencing_token,
+            ..
+        } => report.push_str(&format!(
+            "; the store's firing authority IS held (executor {owner_id}, fencing token \
+             {fencing_token}), so the stall is downstream of the lease, in the claim itself. \
+             Held is a bounded fact, not proof of liveness: it says the holder renewed inside \
+             its lease window, so a host that died within the last lease period still reads \
+             held until that lease expires"
+        )),
+        ScheduleFiringAuthority::Vacant => report.push_str(
+            "; the store's firing authority is vacant AT THIS INSTANT - no host anywhere holds \
+             the executor lease. A host that has just spawned acquires it on its first tick, so \
+             at boot this clears within one tick; a lease still vacant at watchdog cadence means \
+             nothing is draining this store",
+        ),
+        ScheduleFiringAuthority::Unobservable { detail } => report.push_str(&format!(
+            "; the firing driver's claim loop is failing silently (the store's firing authority \
+             is not observable here, so vacancy is neither proven nor ruled out: {detail})"
+        )),
+    }
     if classify_errors.is_empty() {
         report.push_str(
             "; every overdue occurrence classifies cleanly, so the abort is in the claim/lease transaction or a row outside the overdue set",
@@ -3533,6 +3653,13 @@ schedule = true
 
     /// HomeCore Observation A: due occurrences sit pending with no lease and
     /// the driver says nothing. The probe must call that out loudly.
+    ///
+    /// 0.8.22: the WHY half of that report is no longer inferred. This store
+    /// has no firing host, so nothing ever acquires the store-issued executor
+    /// lease and the probe's direct `observe_executor_lease` read is
+    /// deterministically vacant. Pinned here because the vacancy clause is the
+    /// difference between "nothing is draining this store" and "a live host
+    /// cannot claim" - two diagnoses the old single sentence conflated.
     #[tokio::test]
     async fn schedule_claim_watchdog_probe_flags_overdue_unclaimed_occurrences() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3543,6 +3670,13 @@ schedule = true
         let overdue = chrono::Utc::now() - chrono::Duration::minutes(10);
         age_first_occurrence(&store_path, overdue);
 
+        // The store's own answer, read directly rather than inferred.
+        assert_eq!(
+            observe_schedule_firing_authority(&service).await,
+            ScheduleFiringAuthority::Vacant,
+            "a store with no firing host must report vacant firing authority"
+        );
+
         let probe =
             probe_schedule_firing_pipeline(&service, &store_path, Duration::from_mins(1)).await;
         let ScheduleFiringProbe::Stalled { report } = probe else {
@@ -3551,6 +3685,10 @@ schedule = true
         assert!(
             report.contains("never claimed"),
             "report must state the claim stall: {report}"
+        );
+        assert!(
+            report.contains("firing authority is vacant"),
+            "report must name the store's own firing-authority verdict, not infer one: {report}"
         );
     }
 

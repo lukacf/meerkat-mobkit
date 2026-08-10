@@ -620,12 +620,7 @@ impl MobKitConsoleAggregator {
                         .cloned()
                         .unwrap_or_default();
                     if Box::pin(console_identity_record_visible(entry, &record)).await {
-                        durable_matches.push((
-                            entry.clone(),
-                            identity_runtime.clone(),
-                            parsed_identity,
-                            record,
-                        ));
+                        durable_matches.push((entry.clone(), record));
                     }
                 }
             }
@@ -633,7 +628,7 @@ impl MobKitConsoleAggregator {
         if durable_matches.len() > 1 {
             let candidates = durable_matches
                 .iter()
-                .map(|(_, _, _, record)| record.runtime_member_id.clone())
+                .map(|(_, record)| record.runtime_member_id.clone())
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
@@ -641,9 +636,7 @@ impl MobKitConsoleAggregator {
             )
             .into());
         }
-        if let Some((entry, identity_runtime, parsed_identity, mut record)) =
-            durable_matches.into_iter().next()
-        {
+        if let Some((entry, record)) = durable_matches.into_iter().next() {
             let durable_live_records = Box::pin(self.live_records_for_durable_record(
                 &entry,
                 identity,
@@ -661,19 +654,12 @@ impl MobKitConsoleAggregator {
             {
                 return Err(ambiguous_error.into());
             }
-            if let Some(rebound_record) = self_heal_durable_session_mismatch(
-                &entry,
-                &identity_runtime,
-                &parsed_identity,
-                identity,
-                &record,
-                &durable_live_records,
-            )
-            .await
-            .map_err(ConsoleLogError::from)?
-            {
-                record = rebound_record;
-            }
+            // Read-only: a durable/live session split-brain is REPORTED here,
+            // never repaired. Repair is a write-path act (delivery, retire),
+            // because repairing suspends the identity, re-acquires its lease
+            // and advances its continuity fence - authority mutation an
+            // `agent.view` grant must never be able to trigger, least of all
+            // into `Broken` when that fence advance fails.
             if let Some(stale_error) =
                 stale_durable_record_error(identity, &record, &durable_live_records)
             {
@@ -724,13 +710,13 @@ impl MobKitConsoleAggregator {
                 .cloned()
                 .unwrap_or_default();
             if Box::pin(console_identity_record_visible(entry, &record)).await {
-                runtime_id_matches.push((entry.clone(), identity_runtime, status.identity, record));
+                runtime_id_matches.push((entry.clone(), record));
             }
         }
         if runtime_id_matches.len() > 1 {
             let candidates = runtime_id_matches
                 .iter()
-                .map(|(_, _, _, record)| record.identity.clone())
+                .map(|(_, record)| record.identity.clone())
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
@@ -738,9 +724,7 @@ impl MobKitConsoleAggregator {
             )
             .into());
         }
-        if let Some((entry, identity_runtime, parsed_identity, mut record)) =
-            runtime_id_matches.into_iter().next()
-        {
+        if let Some((entry, record)) = runtime_id_matches.into_iter().next() {
             let durable_live_records = Box::pin(self.live_records_for_durable_record(
                 &entry,
                 identity,
@@ -758,19 +742,8 @@ impl MobKitConsoleAggregator {
             {
                 return Err(ambiguous_error.into());
             }
-            if let Some(rebound_record) = self_heal_durable_session_mismatch(
-                &entry,
-                &identity_runtime,
-                &parsed_identity,
-                identity,
-                &record,
-                &durable_live_records,
-            )
-            .await
-            .map_err(ConsoleLogError::from)?
-            {
-                record = rebound_record;
-            }
+            // Read-only: report the split-brain, do not repair it (see the
+            // durable-match branch above).
             if let Some(stale_error) =
                 stale_durable_record_error(identity, &record, &durable_live_records)
             {
@@ -809,8 +782,11 @@ impl MobKitConsoleAggregator {
             let Some(record) = identity_record_for_resolved_member(&resolved).await else {
                 return Ok(None);
             };
+            // Read-only counterpart of the reconciling form the write paths
+            // use: the console reports the stale binding instead of rebinding
+            // it.
             if let Some(stale_error) =
-                reconcile_stale_live_record_binding(&resolved.entry, identity, &record).await
+                stale_live_record_binding_error(&resolved.entry, identity, &record).await
             {
                 return Err(stale_error.into());
             }
@@ -820,7 +796,7 @@ impl MobKitConsoleAggregator {
                     .await
                 && let Ok(status) = identity_runtime.status(&parsed_identity).await
             {
-                let mut durable_record = identity_record_for_status(&resolved.entry, &status);
+                let durable_record = identity_record_for_status(&resolved.entry, &status);
                 let durable_live_records = Box::pin(self.live_records_for_durable_record(
                     &resolved.entry,
                     identity,
@@ -838,19 +814,8 @@ impl MobKitConsoleAggregator {
                 {
                     return Err(ambiguous_error.into());
                 }
-                if let Some(rebound_record) = self_heal_durable_session_mismatch(
-                    &resolved.entry,
-                    identity_runtime,
-                    &parsed_identity,
-                    identity,
-                    &durable_record,
-                    &durable_live_records,
-                )
-                .await
-                .map_err(ConsoleLogError::from)?
-                {
-                    durable_record = rebound_record;
-                }
+                // Read-only: report the split-brain, do not repair it (see the
+                // durable-match branch above).
                 if let Some(stale_error) =
                     stale_durable_record_error(identity, &durable_record, &durable_live_records)
                 {
@@ -2306,6 +2271,47 @@ async fn visible_live_records_for_entry(
     visible
 }
 
+/// Read-only counterpart of [`reconcile_stale_live_record_binding`].
+///
+/// Same detection, zero authority mutation: where the reconciling form would
+/// rebind a session-only split-brain, this one reports it. Console reads are
+/// projections - a rebind suspends the identity, re-acquires its lease and
+/// advances its continuity fence, and a failed fence advance parks the
+/// identity `Broken`. No `agent.view` grant may reach that. The reconciling
+/// form stays on the delivery/retire write paths.
+async fn stale_live_record_binding_error(
+    entry: &RuntimeEntry,
+    requested_identity: &str,
+    live_record: &ConsoleIdentityRecord,
+) -> Option<String> {
+    let identity_runtime = entry.identity_runtime.as_ref()?;
+    for status in identity_runtime.statuses().await {
+        let matches_runtime = status
+            .agent_runtime_id
+            .as_ref()
+            .is_some_and(|runtime_id| runtime_id.as_str() == live_record.runtime_member_id);
+        if !matches_runtime {
+            continue;
+        }
+        // `stale_durable_record_error` already covers the session-mismatch
+        // case the reconciling form heals, so the read path needs no separate
+        // message for it.
+        let durable_record = identity_record_for_status(entry, &status);
+        if let Some(stale_error) = stale_durable_record_error(
+            requested_identity,
+            &durable_record,
+            std::slice::from_ref(live_record),
+        ) {
+            return Some(stale_error);
+        }
+    }
+    None
+}
+
+/// Write-path reconciliation: heals a session-only split-brain by rebinding
+/// durable authority to the live session. Only legitimate from a write
+/// (delivery, retire) - see [`stale_live_record_binding_error`] for the read
+/// projection.
 async fn reconcile_stale_live_record_binding(
     entry: &RuntimeEntry,
     requested_identity: &str,
@@ -2369,6 +2375,13 @@ async fn reconcile_stale_live_record_binding(
     None
 }
 
+/// Write-path repair of a durable/live session split-brain.
+///
+/// WRITE PATHS ONLY. This suspends the identity, re-acquires its lease and
+/// advances its continuity fence; a failed advance leaves the identity
+/// `Broken`. Console reads must not call it - they report the condition
+/// through `stale_durable_record_error` and let the next delivery or retire
+/// perform the repair.
 async fn self_heal_durable_session_mismatch(
     entry: &RuntimeEntry,
     identity_runtime: &Arc<crate::identity_first::IdentityRuntime>,
@@ -6226,7 +6239,9 @@ comms = true
         .expect("definition parses");
         UnifiedRuntime::builder()
             .definition(definition)
-            .default_llm_client(Arc::new(TestClient::for_provider(meerkat_core::Provider::OpenAI)))
+            .default_llm_client(Arc::new(TestClient::for_provider(
+                meerkat_core::Provider::OpenAI,
+            )))
             .build()
             .await
             .expect("runtime builds")
@@ -7569,6 +7584,167 @@ comms = true
         assert_eq!(
             inspection.identity.session_id.as_deref(),
             Some(live_session_string.as_str())
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    /// A console READ is a projection, never a repair.
+    ///
+    /// `inspect_identity` backs three `agent.view`-permissioned console
+    /// methods. Healing a durable/live session split-brain from there put a
+    /// VIEW grant one failed fence advance away from parking the identity
+    /// `Broken` (Suspend -> `acquire_leases` -> `advance_existing_continuity_fence`).
+    /// The read now reports the condition and leaves every field of identity
+    /// authority untouched; the delivery write path still performs the repair,
+    /// so the observable outcome for legitimate callers is preserved.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn console_read_reports_session_split_brain_without_mutating_identity_authority()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("identity-session-read-projection-test").await;
+        let mut labels = BTreeMap::new();
+        labels.insert("agent_identity".to_string(), "review:singleton".to_string());
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:0".to_string(),
+                Some("You are the live Review Agent.".into()),
+                None,
+                None,
+            )
+            .with_labels(labels),
+        )
+        .await;
+        let live_session_id = runtime
+            .mob_handle()
+            .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
+                "rt:review:singleton:0",
+            ))
+            .await
+            .expect("live member has bridge session");
+
+        let identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()?
+                ),
+                lease_provider: Arc::new(crate::identity_first::LocalLeaseProvider::new()),
+                runtime_instance_id: "console-aggregator-read-projection-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        let identity = crate::identity_first::AgentIdentity::parse("review:singleton")?;
+        let stale_session_id = SessionId::new();
+        assert_ne!(stale_session_id, live_session_id);
+        let record = crate::identity_first::ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                "rt:review:singleton:0",
+            )?,
+            session_id: stale_session_id.clone(),
+            generation: crate::identity_first::ContinuityGeneration::new(1),
+            checkpoint_version: crate::identity_first::CheckpointVersion::new(3),
+        };
+        identity_runtime
+            .register(
+                crate::identity_first::DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: crate::identity_first::AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                },
+                crate::identity_first::IdentityLifecycleState::Active,
+                Some(record),
+                Some(crate::identity_first::LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: crate::identity_first::FencingToken::new(7),
+                    ttl: Duration::from_mins(5),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-a".to_string(),
+                RuntimeEntry {
+                    runtime_key: "runtime-a".to_string(),
+                    identity_namespace: String::new(),
+                    runtime: runtime.mob_runtime().clone(),
+                    identity_runtime: Some(identity_runtime.clone()),
+                    console_events: runtime.console_events(),
+                    visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+                },
+            );
+
+        let before = identity_runtime.status(&identity).await?;
+
+        let read_error = aggregator
+            .inspect_identity("review:singleton")
+            .await
+            .err()
+            .map(|err| err.to_string())
+            .expect("a console read must report the split-brain, not heal it");
+        assert!(
+            read_error.contains("stale durable identity alias"),
+            "{read_error}"
+        );
+
+        let after = identity_runtime.status(&identity).await?;
+        assert_eq!(
+            after.session_id,
+            Some(stale_session_id),
+            "a console read must not rebind durable session authority"
+        );
+        assert_eq!(
+            after.state, before.state,
+            "a console read must not move the identity lifecycle state"
+        );
+        assert_eq!(
+            after.generation, before.generation,
+            "a console read must not advance the continuity generation"
+        );
+        assert_eq!(
+            after.lease.as_ref().map(|lease| lease.fencing_token),
+            before.lease.as_ref().map(|lease| lease.fencing_token),
+            "a console read must not re-lease or advance the fencing token"
+        );
+
+        // Observable outcome preserved: the repair still happens, on the
+        // canonical delivery write path.
+        aggregator
+            .reserve_identity_first_interaction(
+                ConsoleSendRequest {
+                    identity: "review:singleton".to_string(),
+                    content: json!("hello"),
+                    origin: "console:test".to_string(),
+                    idempotency_key: "session-read-projection-reserve".to_string(),
+                    handling_mode: Some("queue".to_string()),
+                },
+                None,
+            )
+            .await
+            .expect("the write path must still heal the split-brain");
+        assert_eq!(
+            identity_runtime.status(&identity).await?.session_id,
+            Some(live_session_id),
+            "delivery is the canonical place the rebind happens"
         );
 
         let _ = runtime.mob_handle().stop().await;

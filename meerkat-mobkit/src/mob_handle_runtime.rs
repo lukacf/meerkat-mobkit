@@ -6220,6 +6220,7 @@ impl MobBootstrapSpec {
             false,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
@@ -6260,6 +6261,7 @@ impl MobBootstrapSpec {
             false,
             false,
             None,
+            None,
             Some(Arc::new(hook)),
             CapabilityFlags::default(),
             None,
@@ -6279,6 +6281,7 @@ impl MobBootstrapSpec {
         ephemeral_blobs: bool,
         ephemeral_runtime_store: bool,
         schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
+        workgraph_store: Option<Arc<dyn meerkat::WorkGraphStore>>,
         hook: Option<PreBuildHook>,
         caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
@@ -6295,6 +6298,7 @@ impl MobBootstrapSpec {
             ephemeral_blobs,
             ephemeral_runtime_store,
             schedule_store,
+            workgraph_store,
             hook,
             caps,
             after_create_hook,
@@ -6320,6 +6324,7 @@ impl MobBootstrapSpec {
         ephemeral_blobs: bool,
         ephemeral_runtime_store: bool,
         schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
+        workgraph_store: Option<Arc<dyn meerkat::WorkGraphStore>>,
         hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
@@ -6503,7 +6508,25 @@ impl MobBootstrapSpec {
         // beside runtime.sqlite (boot-without on open failure — a
         // sanctioned, health-visible degradation).
         let (workgraph_service, workgraph_admission_slot, workgraph_slot) =
-            if let Some(provider) = provider_meerkat_stores.as_ref() {
+            if let Some(store) = workgraph_store {
+                // Per-slot injection (item 5) wins over the composite
+                // provider's bundle. The ORDER is load-bearing: this fn is
+                // `pub(crate)` and reachable WITHOUT `UnifiedRuntimeBuilder`'s
+                // conflict check, so if the provider arm ran first an
+                // explicitly injected store would be dropped silently rather
+                // than refused.
+                let (service, slot) = crate::workgraph_wiring::attach_workgraph_tools_with_store(
+                    &builder,
+                    store,
+                    definition.id.as_str(),
+                );
+                (
+                    Some(service),
+                    Some(slot),
+                    StorageSlotSummary::persistent("workgraph", "custom workgraph store")
+                        .with_detail("caller-injected store; durability rides with the injector"),
+                )
+            } else if let Some(provider) = provider_meerkat_stores.as_ref() {
                 let service = meerkat::WorkGraphService::with_scope(
                     Arc::clone(&provider.workgraph_store),
                     definition.id.as_str(),
@@ -6629,6 +6652,7 @@ impl MobBootstrapSpec {
         session_store_kind: &str,
         custom_blob_store: Option<BlobStoreInjection>,
         schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
+        workgraph_store: Option<Arc<dyn meerkat::WorkGraphStore>>,
         hook: Option<PreBuildHook>,
         caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
@@ -6643,6 +6667,7 @@ impl MobBootstrapSpec {
             session_store_kind,
             custom_blob_store,
             schedule_store,
+            workgraph_store,
             hook,
             caps,
             after_create_hook,
@@ -6665,6 +6690,7 @@ impl MobBootstrapSpec {
         session_store_kind: &str,
         custom_blob_store: Option<BlobStoreInjection>,
         schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
+        workgraph_store: Option<Arc<dyn meerkat::WorkGraphStore>>,
         hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
@@ -6776,24 +6802,31 @@ impl MobBootstrapSpec {
                  attaches schedule tools without a firing host",
             )
         });
-        let (workgraph_service, workgraph_admission_slot) =
-            if let Some(provider) = provider_meerkat_stores.as_ref() {
-                // M4b single-bundle: the workgraph rides the composite
-                // provider's meerkat-level bundle instead of process-local
-                // memory.
-                let service = meerkat::WorkGraphService::with_scope(
-                    Arc::clone(&provider.workgraph_store),
-                    definition.id.as_str(),
-                    meerkat::WorkNamespace::default(),
-                );
-                let slot = crate::workgraph_wiring::install_workgraph_tools(&builder, &service);
-                (service, slot)
-            } else {
-                crate::workgraph_wiring::attach_workgraph_tools_ephemeral(
-                    &builder,
-                    definition.id.as_str(),
-                )
-            };
+        let (workgraph_service, workgraph_admission_slot) = if let Some(store) = workgraph_store {
+            // Per-slot injection (item 5) wins over the provider bundle,
+            // for the same reachability reason as the persistent arm.
+            crate::workgraph_wiring::attach_workgraph_tools_with_store(
+                &builder,
+                store,
+                definition.id.as_str(),
+            )
+        } else if let Some(provider) = provider_meerkat_stores.as_ref() {
+            // M4b single-bundle: the workgraph rides the composite
+            // provider's meerkat-level bundle instead of process-local
+            // memory.
+            let service = meerkat::WorkGraphService::with_scope(
+                Arc::clone(&provider.workgraph_store),
+                definition.id.as_str(),
+                meerkat::WorkNamespace::default(),
+            );
+            let slot = crate::workgraph_wiring::install_workgraph_tools(&builder, &service);
+            (service, slot)
+        } else {
+            crate::workgraph_wiring::attach_workgraph_tools_ephemeral(
+                &builder,
+                definition.id.as_str(),
+            )
+        };
         let session_service: Arc<dyn MobSessionService> =
             if let Some(custom_session_store) = custom_session_store {
                 let concrete_session_service =
@@ -9444,20 +9477,20 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
-
-    // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
-    // without a default, so that a PERSISTENT decorator cannot inherit a
-    // composition that converges nothing and silently resume from stale
-    // committed authority after a power cut. This probe is non-persistent, so
-    // it opts in EXPLICITLY through the public helper rather than hand-rolling
-    // the composition. The helper is fail-closed: it refuses if
-    // `supports_persistent_sessions()` is ever true here.
-    async fn materialize_session_resume_verdict(
-        &self,
-        session_id: &meerkat_core::types::SessionId,
-    ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError> {
-        meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
-    }
+        // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
+        // without a default, so that a PERSISTENT decorator cannot inherit a
+        // composition that converges nothing and silently resume from stale
+        // committed authority after a power cut. This probe is non-persistent, so
+        // it opts in EXPLICITLY through the public helper rather than hand-rolling
+        // the composition. The helper is fail-closed: it refuses if
+        // `supports_persistent_sessions()` is ever true here.
+        async fn materialize_session_resume_verdict(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError>
+        {
+            meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
+        }
         async fn observe_session_resume_authority(
             &self,
             _session_id: &meerkat_core::types::SessionId,
@@ -9788,20 +9821,20 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
-
-    // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
-    // without a default, so that a PERSISTENT decorator cannot inherit a
-    // composition that converges nothing and silently resume from stale
-    // committed authority after a power cut. This probe is non-persistent, so
-    // it opts in EXPLICITLY through the public helper rather than hand-rolling
-    // the composition. The helper is fail-closed: it refuses if
-    // `supports_persistent_sessions()` is ever true here.
-    async fn materialize_session_resume_verdict(
-        &self,
-        session_id: &meerkat_core::types::SessionId,
-    ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError> {
-        meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
-    }
+        // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
+        // without a default, so that a PERSISTENT decorator cannot inherit a
+        // composition that converges nothing and silently resume from stale
+        // committed authority after a power cut. This probe is non-persistent, so
+        // it opts in EXPLICITLY through the public helper rather than hand-rolling
+        // the composition. The helper is fail-closed: it refuses if
+        // `supports_persistent_sessions()` is ever true here.
+        async fn materialize_session_resume_verdict(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError>
+        {
+            meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
+        }
         async fn observe_session_resume_authority(
             &self,
             _session_id: &meerkat_core::types::SessionId,
@@ -12333,6 +12366,7 @@ realm_profile = "worker-v2"
             true,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
@@ -12349,6 +12383,69 @@ realm_profile = "worker-v2"
             meerkat_core::DurabilityResolution::DeclaredEphemeral
         );
         assert_eq!(runtime_slot.backend, "InMemoryRuntimeStore");
+    }
+
+    /// 0.8.16 item 5: a caller-injected `WorkGraphStore` suppresses the local
+    /// SQLite fallback and is reported as its own census slot.
+    ///
+    /// The load-bearing assertion is the ABSENT file, not the populated slot.
+    /// `persistent_inner_with_provider_stores` is `pub(crate)` and reachable
+    /// without `UnifiedRuntimeBuilder`'s conflict check, so the injected arm
+    /// has to be ordered ahead of the provider arm; if the order regresses,
+    /// the fallback runs and `workgraph.sqlite3` appears here.
+    #[test]
+    fn injected_workgraph_store_suppresses_the_local_sqlite_file() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let store_path = dir.path().to_path_buf();
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(store_path.join("sessions.db"))
+                .unwrap_or_else(|e| panic!("{e}")),
+        );
+        let definition = meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"test\"\n")
+            .unwrap_or_else(|e| panic!("{e}"));
+
+        let spec = MobBootstrapSpec::persistent_inner(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            store_path.clone(),
+            4,
+            session_store,
+            "SqliteSessionStore",
+            None,
+            false,
+            false,
+            None,
+            Some(Arc::new(meerkat::MemoryWorkGraphStore::new())),
+            None,
+            CapabilityFlags::default(),
+            None,
+            None,
+        )
+        .unwrap_or_else(|e| panic!("injected workgraph store must compose: {e}"));
+
+        // Positive control: persistent composition demonstrably ran in this
+        // directory, so the absent workgraph file below means "suppressed",
+        // not "nothing happened here".
+        assert!(
+            store_path
+                .join(crate::storage_layout::RUNTIME_DB_FILE_NAME)
+                .exists(),
+            "persistent composition must have run in the state dir"
+        );
+        assert!(
+            !store_path
+                .join(crate::workgraph_wiring::WORKGRAPH_STORE_FILE)
+                .exists(),
+            "an injected workgraph store must suppress the local SQLite fallback"
+        );
+
+        let summary = spec.resolved_storage.unwrap_or_else(|| panic!("summary"));
+        let workgraph_slot = summary
+            .slots
+            .iter()
+            .find(|slot| slot.declaration.domain == "workgraph")
+            .unwrap_or_else(|| panic!("workgraph slot recorded"));
+        assert_eq!(workgraph_slot.backend, "custom workgraph store");
     }
 
     /// H1: the happy persistent path reports disk-backed blobs and the
@@ -12434,6 +12531,7 @@ realm_profile = "worker-v2"
             false,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
@@ -12455,6 +12553,7 @@ realm_profile = "worker-v2"
             Some(BlobStoreInjection::Core(memory_blobs)),
             true,
             false,
+            None,
             None,
             None,
             CapabilityFlags::default(),
@@ -12495,6 +12594,7 @@ realm_profile = "worker-v2"
             false,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
@@ -12525,6 +12625,7 @@ realm_profile = "worker-v2"
             4,
             None,
             "test session store",
+            None,
             None,
             None,
             None,
@@ -12570,6 +12671,7 @@ realm_profile = "worker-v2"
             None,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
@@ -12601,6 +12703,7 @@ realm_profile = "worker-v2"
             4,
             None,
             "test session store",
+            None,
             None,
             None,
             None,
@@ -12655,6 +12758,7 @@ realm_profile = "worker-v2"
             4,
             None,
             "test session store",
+            None,
             None,
             None,
             None,
@@ -12727,6 +12831,7 @@ realm_profile = "worker-v2"
             None,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
@@ -12785,6 +12890,7 @@ realm_profile = "worker-v2"
             4,
             Some(custom_store.clone()),
             "test session store",
+            None,
             None,
             None,
             None,
@@ -12848,6 +12954,7 @@ realm_profile = "worker-v2"
             4,
             Some(custom_store.clone()),
             "test session store",
+            None,
             None,
             None,
             None,

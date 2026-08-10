@@ -134,11 +134,16 @@ pub fn install_workgraph_tools(
 /// legitimately-delegated agents.
 ///
 /// Round-3 finding R1: `workgraph_attention_reassign` mints an Active
-/// binding on the NEW target, and upstream has no occupancy check — so a
-/// coordinate-mode member could land a second Active binding on an occupied
-/// member (bricking it with `MultipleActiveBindings`) where an ABAC-granted
-/// operator on the RPC surface is refused, and could race the RPC guards.
-/// Both dispatch paths therefore intercept the reassign: when the
+/// binding on the NEW target, so a coordinate-mode member could land a second
+/// occupying binding on an occupied member where an ABAC-granted operator on
+/// the RPC surface is refused, and could race the RPC guards. Upstream ask 25
+/// closes the exact-key Active/Active half of that in the store
+/// (`active_target_occupant_tx`), but not the paused, cross-spelling or
+/// session-identity-alias cases, and an admitted duplicate is no longer the
+/// hard `MultipleActiveBindings` failure it once was - the turn overlay
+/// arbitrates newest-binding-wins and silently starves the loser's goal (see
+/// [`crate::workgraph_admission`]'s module docs for the full subsumption
+/// split). Both dispatch paths therefore intercept the reassign: when the
 /// late-bound [`WorkGraphAdmissionSlot`] is filled (by
 /// `MobRuntime::bootstrap` — the wrapper is constructed before the mob
 /// exists), the call holds the runtime-wide admission across the forward
@@ -150,7 +155,7 @@ pub fn install_workgraph_tools(
 /// dispatch entry points — the trait `dispatch` funnels into
 /// `dispatch_with_context` with a default (witness-less) context, and a
 /// missing projection is an immediate `access_denied` for
-/// `workgraph_attention_reassign` before any store access (meerkat 0.7.23,
+/// `workgraph_attention_reassign` before any store access (meerkat 0.8.22,
 /// meerkat-workgraph/src/tool_surface.rs; `WorkGraphToolSurface::new` bakes
 /// in no projection). A witness-less reassign therefore forwards directly
 /// into that cheap upstream denial instead of queueing on the global gate +
@@ -175,7 +180,7 @@ struct ScopePinnedWorkGraphTools {
 }
 
 /// The subset of the upstream `workgraph_attention_reassign` tool schema the
-/// admission guard needs (meerkat 0.7.23, meerkat-workgraph/src/tools.rs
+/// admission guard needs (meerkat 0.8.22, meerkat-workgraph/src/tools.rs
 /// `attention_reassign_schema`: `binding_id`, `expected_revision`, `target`
 /// all required; `target` is the tagged session/owner `GoalAttentionTarget`).
 #[derive(serde::Deserialize)]
@@ -434,6 +439,83 @@ pub fn attach_workgraph_tools_ephemeral(
     (service, slot)
 }
 
+/// Per-slot workgraph injection: scope a CALLER-SUPPLIED [`WorkGraphStore`] to
+/// `realm_id` and attach its tool surface to `builder`.
+///
+/// The twin of [`crate::schedule_wiring::attach_schedule_tools_with_store`],
+/// and the one seam that lets an embedder put the workgraph on its own
+/// durable backend WITHOUT implementing a whole
+/// [`MobKitStorageProvider`](crate::storage_provider::MobKitStorageProvider):
+/// the composite provider is a single realm bundle, so routing the workgraph
+/// through it drags continuity, lease authority, console, metadata, blobs,
+/// agent memory, schedule, runtime and jobs along with it.
+///
+/// Returns the tool-plane [`WorkGraphAdmissionSlot`] with the SAME obligation
+/// [`install_workgraph_tools`] carries: register it on the bootstrap spec
+/// ([`MobBootstrapSpec::with_workgraph_admission_slot`](crate::MobBootstrapSpec::with_workgraph_admission_slot))
+/// or the agent plane's `workgraph_attention_reassign` skips the
+/// duplicate-binding guard the RPC surfaces enforce.
+///
+/// # Cross-process admission: what an injected store does NOT get
+///
+/// The duplicate-binding sidecar lock is keyed on the runtime's STATE DIR
+/// ([`workgraph_admission_sidecar_path`](crate::workgraph_admission::workgraph_admission_sidecar_path)),
+/// not on the store's location, and the injected backend may live anywhere.
+/// Two runtimes sharing ONE injected store from DIFFERENT state dirs
+/// therefore take two different sidecars and serialize nothing against each
+/// other: what survives is each process's in-process gate plus the store's
+/// own transactional occupancy guard, which covers only the exact-key
+/// Active/Active case (the paused, cross-spelling and session-identity-alias
+/// residuals stay check-then-act). Nothing here refuses that topology - the
+/// provider-bundle path shares the same state-dir keying - so a caller that
+/// shares one backend across state dirs must serialize admissions itself.
+/// Co-processes on one state dir - the documented
+/// gateway-plus-library-mode shape - are unaffected.
+///
+/// # Durability posture: this is an injection, not a provider bundle
+///
+/// A caller-injected slot deliberately does NOT go through
+/// `storage_provider::open_provider_meerkat_stores`, so it takes neither
+/// `ensure_realm_manifest_pin_with_candidates` nor
+/// `enforce_fail_closed_durability`. That is the same ruling the schedule,
+/// blob, continuity, lease and console setters already carry, and it is a
+/// ruling rather than an oversight.
+///
+/// `enforce_fail_closed_durability` judges a PROVIDER-DECLARED
+/// [`meerkat_core::DurabilityDeclaration`] - a `DurabilityResolution` the
+/// provider asserts and mobkit holds it to. A bare `Arc<dyn WorkGraphStore>`
+/// asserts nothing, and mobkit cannot derive the missing assertion:
+/// `WorkGraphStore::kind()` is a BACKEND-SHAPE tag, not a durability oracle.
+/// `Custom` covers every third-party backend indistinguishably - a durable
+/// Postgres and an in-process test double both report it - and `Sqlite` says
+/// nothing about the caller-supplied path behind it (a tmpfs or temp-dir file
+/// reports `Sqlite` exactly as a durable one does). Gating on `kind()` would
+/// therefore refuse legitimate durable backends and admit non-durable ones,
+/// which is worse than not gating. So durability rides with the injector, and
+/// the storage census must label the slot caller-injected rather than assert
+/// a resolution mobkit never established. An embedder that wants the
+/// fail-closed rule applied to its workgraph has the seam for it: supply a
+/// `MobKitStorageProvider` whose `meerkat_provider()` declares the `workgraph`
+/// domain.
+///
+/// For the same reason `workgraph` must NOT be added to
+/// `storage_provider::REQUIRED_MOBKIT_DURABILITY_DOMAINS`:
+/// that constant enumerates the MOBKIT-level slots a `MobKitStorageProvider`
+/// must declare exactly once, and its completeness check would then refuse
+/// every existing provider implementation. The workgraph is a MEERKAT-level
+/// slot; on the provider path it is already covered by
+/// `enforce_fail_closed_durability` over the meerkat `RealmStoreSet`.
+#[must_use]
+pub fn attach_workgraph_tools_with_store(
+    builder: &FactoryAgentBuilder,
+    store: Arc<dyn WorkGraphStore>,
+    realm_id: &str,
+) -> (WorkGraphService, WorkGraphAdmissionSlot) {
+    let service = scoped_workgraph_service(store, realm_id);
+    let slot = install_workgraph_tools(builder, &service);
+    (service, slot)
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -520,6 +602,34 @@ mod tests {
         assert!(
             !dir.path().join(WORKGRAPH_STORE_FILE).exists(),
             "ephemeral variant must not create a store file"
+        );
+    }
+
+    /// Per-slot injection: the caller's own durable store backs the surface,
+    /// at the caller's own path - mobkit neither opens nor names it, and the
+    /// conventional store file beside the runtime DB is never created.
+    #[tokio::test]
+    async fn injected_store_variant_uses_the_callers_backend() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let builder = test_builder(dir.path());
+        let injected_path = dir.path().join("elsewhere").join("caller-owned.sqlite3");
+        std::fs::create_dir_all(injected_path.parent().expect("parent")).expect("caller dir");
+        let store: Arc<dyn WorkGraphStore> =
+            Arc::new(SqliteWorkGraphStore::open(&injected_path).expect("caller store"));
+
+        let (service, _slot) =
+            attach_workgraph_tools_with_store(&builder, store, "injected-realm-slot");
+
+        assert!(slot_is_filled(&builder));
+        assert_eq!(service.default_realm_id(), "injected-realm-slot");
+        assert_eq!(service.store().kind(), WorkGraphStoreKind::Sqlite);
+        assert!(
+            injected_path.exists(),
+            "the caller's own path backs the slot"
+        );
+        assert!(
+            !dir.path().join(WORKGRAPH_STORE_FILE).exists(),
+            "injection must not open mobkit's conventional store file"
         );
     }
 
@@ -858,10 +968,13 @@ comms = true
 
     /// Round-3 R1: a coordinate-mode member's `workgraph_attention_reassign`
     /// onto an occupied member must be refused with a conflict that names
-    /// the occupying binding — upstream would happily mint the second Active
-    /// binding (bricking the member with `MultipleActiveBindings`), which
-    /// the RPC surfaces already refuse to an ABAC-granted operator. A free
-    /// target must still forward and succeed.
+    /// the occupying binding, exactly as the RPC surfaces refuse it to an
+    /// ABAC-granted operator. The refusal must come from MOBKIT here: the
+    /// message asserted below is the admission's, taken before the forward,
+    /// so this test pins the tool plane's interception rather than the
+    /// upstream store guard (ask 25) that would also catch this particular
+    /// Active-vs-Active, same-target-key case. A free target must still
+    /// forward and succeed.
     #[tokio::test(flavor = "multi_thread")]
     async fn tool_plane_reassign_onto_an_occupied_target_names_the_occupant() {
         let (runtime, service, dispatcher, _dir) = bootstrapped_tool_plane().await;
@@ -1562,20 +1675,20 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for AdmissionStoreProbe {
-
-    // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
-    // without a default, so that a PERSISTENT decorator cannot inherit a
-    // composition that converges nothing and silently resume from stale
-    // committed authority after a power cut. This probe is non-persistent, so
-    // it opts in EXPLICITLY through the public helper rather than hand-rolling
-    // the composition. The helper is fail-closed: it refuses if
-    // `supports_persistent_sessions()` is ever true here.
-    async fn materialize_session_resume_verdict(
-        &self,
-        session_id: &meerkat_core::types::SessionId,
-    ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError> {
-        meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
-    }
+        // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
+        // without a default, so that a PERSISTENT decorator cannot inherit a
+        // composition that converges nothing and silently resume from stale
+        // committed authority after a power cut. This probe is non-persistent, so
+        // it opts in EXPLICITLY through the public helper rather than hand-rolling
+        // the composition. The helper is fail-closed: it refuses if
+        // `supports_persistent_sessions()` is ever true here.
+        async fn materialize_session_resume_verdict(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError>
+        {
+            meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
+        }
         // meerkat 0.8.22 deleted `prepare_session_for_resume` from this trait.
         // Durable-tail convergence now lives inside `PersistentSessionService`'s
         // OVERRIDE of `materialize_session_resume_verdict`; the trait default
@@ -1766,20 +1879,20 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for SwitchableStore {
-
-    // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
-    // without a default, so that a PERSISTENT decorator cannot inherit a
-    // composition that converges nothing and silently resume from stale
-    // committed authority after a power cut. This probe is non-persistent, so
-    // it opts in EXPLICITLY through the public helper rather than hand-rolling
-    // the composition. The helper is fail-closed: it refuses if
-    // `supports_persistent_sessions()` is ever true here.
-    async fn materialize_session_resume_verdict(
-        &self,
-        session_id: &meerkat_core::types::SessionId,
-    ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError> {
-        meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
-    }
+        // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
+        // without a default, so that a PERSISTENT decorator cannot inherit a
+        // composition that converges nothing and silently resume from stale
+        // committed authority after a power cut. This probe is non-persistent, so
+        // it opts in EXPLICITLY through the public helper rather than hand-rolling
+        // the composition. The helper is fail-closed: it refuses if
+        // `supports_persistent_sessions()` is ever true here.
+        async fn materialize_session_resume_verdict(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError>
+        {
+            meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
+        }
         // Same 0.8.22 transition as `AdmissionStoreProbe` above:
         // `prepare_session_for_resume` is gone from the trait, and inheriting
         // the non-persistent `materialize_session_resume_verdict` default is
@@ -1957,13 +2070,16 @@ comms = true
         runtime.handle().stop().await.expect("stop");
     }
 
-    /// Round-6 T1 (the two-row brick): before the fix, an owner-spelled
+    /// Round-6 T1 (the two-row duplicate): before the fix, an owner-spelled
     /// member session row was stored session-spelled, and a roster-BLIND
-    /// admission then admitted an identity-form create for the same member —
-    /// two occupying rows, a bricked member. Both writes now normalize
-    /// through the shared session store, so the second conflicts. Uses the
-    /// `lowered_owner` wire alias for the first row — both owner spellings
-    /// must canonicalize.
+    /// admission then admitted an identity-form create for the same member -
+    /// two occupying rows on one member. That is exactly the cross-spelling
+    /// residual the upstream store guard does NOT catch (its two `target_key`
+    /// spellings differ), so mobkit still owns this refusal; since ask 25 the
+    /// consequence of losing it is a silently starved goal rather than the
+    /// former hard turn failure. Both writes now normalize through the shared
+    /// session store, so the second conflicts. Uses the `lowered_owner` wire
+    /// alias for the first row - both owner spellings must canonicalize.
     #[tokio::test(flavor = "multi_thread")]
     async fn owner_spelled_session_rows_cannot_reopen_the_blind_duplicate_window() {
         let (runtime_knows, service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
@@ -1996,11 +2112,11 @@ comms = true
         let error = rpc_goal_create(
             &service,
             &blind,
-            "identity-form second row of the round-6 brick",
+            "identity-form second row of the round-6 duplicate",
             serde_json::json!({ "kind": "identity", "identity": "helper" }),
         )
         .await
-        .expect_err("the identity-form create must conflict, not brick the member");
+        .expect_err("the identity-form create must conflict, not duplicate the binding");
         assert_eq!(error.code, crate::rpc::WORKGRAPH_CONFLICT_CODE, "{error:?}");
         assert!(
             error.message.contains(occupant),

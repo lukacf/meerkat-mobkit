@@ -1634,8 +1634,52 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
                 "schedule host did not spawn over the attached schedule store: no firing driver \
                  is running in this gateway, and the firing-intent write gate is consequently \
                  still closed, so create/update/resume are being refused rather than accepted \
-                 durably into a store nothing drains"
+                 durably"
             );
+            // Same as rpc_gateway: the old tail ("into a store nothing
+            // drains") generalized a process-local fact to the whole store.
+            // meerkat 0.8.22's executor lease is singular per realm store, so
+            // the store names the holder instead of mobkit guessing. It is one
+            // instantaneous read, not a liveness verdict - a peer mid-restart
+            // reads vacant and a crashed predecessor still reads held until
+            // its lease expires, so each arm says what it actually proves.
+            // Read only: the observation carries no bearer token and cannot
+            // take authority from a holder.
+            match meerkat_mobkit::schedule_wiring::observe_schedule_firing_authority(
+                &schedule_service_for_probe,
+            )
+            .await
+            {
+                meerkat_mobkit::schedule_wiring::ScheduleFiringAuthority::Held {
+                    owner_id,
+                    fencing_token,
+                    expires_in_secs,
+                } => tracing::warn!(
+                    executor_owner_id = %owner_id,
+                    fencing_token,
+                    lease_expires_in_secs = expires_in_secs,
+                    "the schedule store itself reports SOME process holding the realm's singular \
+                     firing authority, so durable schedules may still be drained elsewhere; note \
+                     the holder can also be this deployment's own crashed predecessor, whose \
+                     lease stays live until it expires, so check the owner id and expiry above \
+                     before concluding anything is actually draining. This gateway's \
+                     firing-intent write gate stays closed either way: it gates on a LOCAL host"
+                ),
+                meerkat_mobkit::schedule_wiring::ScheduleFiringAuthority::Vacant => tracing::warn!(
+                    "the schedule store itself reports its firing authority vacant AT THIS \
+                     INSTANT: no process holds the executor lease. A peer gateway mid-restart is \
+                     vacant only until its first tick, so this is proof of an unattended store \
+                     only if it persists - the resident claim watchdog is what escalates once \
+                     durable work actually goes unclaimed"
+                ),
+                meerkat_mobkit::schedule_wiring::ScheduleFiringAuthority::Unobservable {
+                    detail,
+                } => tracing::warn!(
+                    %detail,
+                    "the schedule store cannot report firing authority, so whether any other \
+                     process drains this store is unknown from here"
+                ),
+            }
         }
         (schedule_host, Some(watchdog))
     } else {

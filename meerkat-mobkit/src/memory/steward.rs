@@ -80,12 +80,12 @@ use crate::memory::capabilities::{
 use crate::memory::coordinator::DEFAULT_INSTRUCTION_HEADER;
 use crate::memory::distiller::TranscriptSource;
 use crate::memory::events::{MemoryEventSink, MemoryTimelineEvent};
+use crate::memory::factory_handle::FactorySelectorHandle;
 use crate::memory::guards::{BackgroundBudget, BackgroundBudgetConfig};
 use crate::memory::records::{
     EvidenceRef, ManifestTier, MemoryAuthor, MemoryKind, MemoryRecord, MemoryScope,
     NewMemoryRecord, RecordMeta, RecordStatus, TrustTier, UsageEvent,
 };
-use crate::memory::factory_handle::FactorySelectorHandle;
 use crate::memory::staged::{StagedBatchKind, StagedMutationBatch, StagedOp};
 use crate::memory::taint::MemberAgentEventSink;
 use crate::runtime::{GatingResolutionNotice, GatingResolutionObserver};
@@ -144,7 +144,7 @@ pub const DEFAULT_MIN_SIGNALS: u32 = 3;
 /// Output-token ceiling for one dream call, overridable per deployment via
 /// [`StewardConfig::max_output_tokens`].
 ///
-/// Why this is 16_384 and not the 4096 it used to be: on a REASONING model
+/// Why this is 16_384 and not the 4096 it used to be: the provider spends
 /// the provider spends ONE budget on reasoning tokens AND the visible answer,
 /// so a ceiling sized for a non-reasoning model is consumed before the
 /// structured op list begins. The truncation is silent - the call returns a
@@ -171,6 +171,13 @@ pub enum StewardError {
     Config(String),
     Auth(String),
     Client(String),
+    /// The model stopped because it hit the output ceiling. Carried as its
+    /// own variant because the alternative - a truncated body returned as an
+    /// ordinary success - is how a production fleet ran this stage for four
+    /// days committing zero ops while the error blamed the model's JSON.
+    Truncated {
+        max_output_tokens: u32,
+    },
     Parse(String),
     Store(String),
 }
@@ -182,6 +189,12 @@ impl std::fmt::Display for StewardError {
             Self::Config(msg) => write!(f, "steward config error: {msg}"),
             Self::Auth(msg) => write!(f, "steward auth error: {msg}"),
             Self::Client(msg) => write!(f, "steward client error: {msg}"),
+            Self::Truncated { max_output_tokens } => write!(
+                f,
+                "steward response hit the output ceiling of {max_output_tokens} tokens and was \
+                 truncated; raise it via the steward config's max_output_tokens (models spend this \
+                 same budget on thinking/reasoning tokens as well as the answer)"
+            ),
             Self::Parse(msg) => write!(f, "steward parse error: {msg}"),
             Self::Store(msg) => write!(f, "steward store error: {msg}"),
         }
@@ -473,8 +486,8 @@ pub struct StewardConfig {
     ///
     /// # Why this is exposed
     ///
-    /// On a REASONING model the provider spends this single budget on
-    /// reasoning tokens AND the visible answer, so a ceiling sized for a
+    /// The provider spends this SINGLE budget on thinking/reasoning tokens
+    /// AND the visible answer, so a ceiling sized for a
     /// non-reasoning model truncates the answer to nothing.
     ///
     /// The failure is not loud *here*, but the providers do report it. All
@@ -491,13 +504,22 @@ pub struct StewardConfig {
     /// budget. Raising the ceiling reduces how often that happens; it does
     /// not make it observable. See [`complete_text`] for the seam.
     ///
-    /// A production fleet ran a steward on a reasoning model against the old
+    /// A production fleet ran a steward against the old
     /// hard-wired 4096 and committed ZERO ops across twelve consecutive runs
     /// over four days, with no reachable way to raise it - the number was a
     /// private constant and `StewardConfig` did not carry it. That is the
     /// defect this field closes: not that the default was wrong, but that a
     /// downstream could neither see it nor change it.
     ///
+    ///
+    /// NOTE ON THE CATALOG, because it misleads: `supports_reasoning: false` does
+    /// NOT mean a model does not reason. It means the model takes no OpenAI-style
+    /// reasoning-EFFORT PARAMETER. `claude-sonnet-4-6` carries
+    /// `thinking: ThinkingSupport::AnthropicAdaptiveAndEnabled` while reporting
+    /// `supports_reasoning: false`, and it spends output budget on thinking exactly
+    /// as an OpenAI reasoning model does. **No catalogued model is immune to this
+    /// trap by virtue of that flag.** Choosing a model on it is choosing on a
+    /// parameter's presence, not on behaviour.
     /// Sibling knobs exist on [`DistillerConfig`] and [`HygienistConfig`] for
     /// the same reason; all three subsystems had the identical gap.
     ///
@@ -3832,7 +3854,17 @@ pub async fn complete_text(
         match event.map_err(classify_llm_error)? {
             LlmEvent::TextDelta { delta, .. } => text.push_str(&delta),
             LlmEvent::Done { outcome } => match outcome {
-                LlmDoneOutcome::Success { .. } => break,
+                LlmDoneOutcome::Success { stop_reason } => {
+                    // Do NOT discard stop_reason. A MaxTokens stop arrives with a
+                    // partial or empty body; returning it as a short answer sends a
+                    // truncation into a strict parse, which then blames the model.
+                    if matches!(stop_reason, meerkat_core::StopReason::MaxTokens) {
+                        return Err(StewardError::Truncated {
+                            max_output_tokens: profile.params.max_output_tokens,
+                        });
+                    }
+                    break;
+                }
                 LlmDoneOutcome::Error { error } => return Err(classify_llm_error(error)),
             },
             _ => {}

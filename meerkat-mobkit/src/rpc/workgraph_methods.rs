@@ -19,9 +19,12 @@
 //!   normalize-at-write section of [`crate::workgraph_admission`]'s module
 //!   docs.
 //! - `goal/create`, `attention/resume` and `attention/reassign` refuse to
-//!   give a target a second Active-or-Paused binding (upstream would brick
-//!   the member with `MultipleActiveBindings` on every scoped turn). The
-//!   check lives in [`crate::workgraph_admission::WorkGraphAdmission`] —
+//!   give a target a second Active-or-Paused binding. Upstream ask 25 refuses
+//!   the Active-vs-Active, identical-target-key half of that in the store
+//!   itself; mobkit still owns the paused, cross-spelling and
+//!   session-identity-alias cases, where an admitted duplicate makes the turn
+//!   overlay arbitrate newest-binding-wins and silently starve the losing
+//!   goal. The check lives in [`crate::workgraph_admission::WorkGraphAdmission`] —
 //!   shared with the agent tool plane's `workgraph_attention_reassign` —
 //!   which resolves session↔identity target aliases through the mob roster
 //!   and the shared session store's member-binding metadata, and serializes
@@ -127,7 +130,7 @@ pub(crate) fn workgraph_unavailable_error() -> JsonRpcError {
 
 /// Upstream `validate_workgraph_attention_projection_current` spells a stale
 /// authority witness as a generic `InvalidTransition` with this message
-/// prefix (meerkat 0.7.23, meerkat-workgraph/src/tool_surface.rs). The
+/// prefix (meerkat 0.8.22, meerkat-workgraph/src/tool_surface.rs). The
 /// variant carries no structure to match on, so the prefix is pinned by
 /// `stale_attention_witness_maps_to_conflict`.
 const STALE_ATTENTION_WITNESS_PREFIX: &str = "stale WorkGraph attention projection";
@@ -244,7 +247,7 @@ fn normalize_attention_status_param(object: &mut Map<String, Value>) -> Result<(
 
 /// Goal/attention methods must stay in the service's default namespace:
 /// upstream turn-overlay resolution lists attention with `namespace: None`
-/// — the default only (meerkat 0.7.23, meerkat/src/surface.rs,
+/// — the default only (meerkat 0.8.22, meerkat/src/surface.rs,
 /// `resolve_workgraph_attention_projection_for_session`) — so a goal or
 /// binding filed anywhere else is silently inert: it never reaches its
 /// member. Reject rather than accept-and-strand. Item-level methods keep
@@ -431,7 +434,7 @@ fn reassign_error_to_rpc(
                 .and_then(|value| value.as_str().map(str::to_string))
                 .unwrap_or_else(|| format!("{mode:?}"));
             let detail = format!(
-                "attention binding {binding_id} is in '{mode}' mode; meerkat 0.7.23 derives the \
+                "attention binding {binding_id} is in '{mode}' mode; meerkat 0.8.22 derives the \
                  derived_from link authority reassignment requires only for coordinate-mode \
                  bindings — pause the binding or recreate the goal with mode 'coordinate'",
             );

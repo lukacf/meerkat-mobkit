@@ -98,6 +98,7 @@ pub struct UnifiedRuntimeBuilder {
     ephemeral_blobs: bool,
     ephemeral_runtime_store: bool,
     schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
+    workgraph_store: Option<Arc<dyn meerkat::WorkGraphStore>>,
     storage_provider: Option<Arc<dyn crate::storage_provider::MobKitStorageProvider>>,
     // Materialized from `storage_provider` (M4b): the meerkat-level bundle
     // opened through `meerkat_provider()` for non-disk backends, and the
@@ -489,6 +490,35 @@ impl UnifiedRuntimeBuilder {
     /// handoffs).
     pub fn schedule_store(mut self, store: Arc<dyn meerkat::ScheduleStore>) -> Self {
         self.schedule_store = Some(store);
+        self
+    }
+
+    /// Set an external [`WorkGraphStore`](meerkat::WorkGraphStore) (item 5):
+    /// the agent-facing workgraph tools attach over the caller's store
+    /// instead of the SQLite file beside `runtime.sqlite`. Injectable
+    /// INDEPENDENTLY of continuity, schedule, lease, console and blob - that
+    /// independence is the point of the item, replacing the previous
+    /// all-or-nothing composition where a durable workgraph was reachable
+    /// only by adopting a whole composite provider.
+    ///
+    /// Durability rides with the injector. Mobkit does NOT gate on
+    /// [`WorkGraphStore::kind()`](meerkat::WorkGraphStore::kind), which is a
+    /// backend-SHAPE tag and not a durability oracle: the path behind
+    /// `Sqlite` is caller-supplied and says nothing about whether it
+    /// survives a restart, and `Custom` says nothing either way.
+    ///
+    /// Two things an injected store does NOT get, both deliberate:
+    /// - It is a MEERKAT-level slot, so it is absent from
+    ///   `storage_provider::REQUIRED_MOBKIT_DURABILITY_DOMAINS` and from the
+    ///   mobkit `RealmStoreSet`. On the provider path the workgraph rides
+    ///   `provider_meerkat_stores` instead, and per-slot injection takes
+    ///   precedence over it.
+    /// - The cross-process admission sidecar is keyed on the STATE DIR, not
+    ///   on the store. An injected backend can live anywhere, so the sidecar
+    ///   serializes co-processes sharing a state dir rather than co-processes
+    ///   sharing this store.
+    pub fn workgraph_store(mut self, store: Arc<dyn meerkat::WorkGraphStore>) -> Self {
+        self.workgraph_store = Some(store);
         self
     }
 
@@ -1523,6 +1553,13 @@ impl UnifiedRuntimeBuilder {
             ("blob_store()", self.blob_store.is_some()),
             ("binary_blob_store()", self.binary_blob_store.is_some()),
             ("schedule_store()", self.schedule_store.is_some()),
+            // The workgraph is a meerkat-level slot, so it is NOT part of the
+            // mobkit `RealmStoreSet` this seam materializes - the provider's
+            // workgraph rides `provider_meerkat_stores`. It still conflicts:
+            // two independent channels would otherwise both claim the slot,
+            // and per-slot injection silently winning is exactly the
+            // ambiguity the typed error exists to prevent.
+            ("workgraph_store()", self.workgraph_store.is_some()),
             ("with_console_log_store()", self.console_log_store.is_some()),
             ("persistent_metadata()", self.persistent_metadata.is_some()),
         ]
@@ -1751,6 +1788,7 @@ impl UnifiedRuntimeBuilder {
                 self.ephemeral_blobs,
                 self.ephemeral_runtime_store,
                 self.schedule_store.clone(),
+                self.workgraph_store.clone(),
                 hook,
                 caps,
                 after_hook.clone(),
@@ -1786,6 +1824,7 @@ impl UnifiedRuntimeBuilder {
                 self.custom_session_store_kind(),
                 self.blob_injection()?,
                 self.schedule_store.clone(),
+                self.workgraph_store.clone(),
                 hook,
                 caps,
                 after_hook,
@@ -1808,6 +1847,7 @@ impl UnifiedRuntimeBuilder {
                 self.custom_session_store_kind(),
                 self.blob_injection()?,
                 self.schedule_store.clone(),
+                self.workgraph_store.clone(),
                 hook,
                 caps,
                 after_hook,

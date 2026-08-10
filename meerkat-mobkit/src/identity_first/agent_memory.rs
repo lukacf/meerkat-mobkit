@@ -474,6 +474,25 @@ pub trait AgentMemoryProvider: Send + Sync {
     }
 }
 
+/// The markdown-era agent-memory store. IMPORT AND FIXTURE USE ONLY - it is
+/// no longer a supported LIVE execution backend.
+///
+/// The gateway already refuses `agent_memory.store = "markdown"` with the
+/// typed `AgentMemoryStoreMigration::MarkdownIsImportOnly` verdict
+/// (`src/bin/rpc_gateway.rs`): a markdown deployment has no manifest, no
+/// injection ledger, no taint firewall and no judgment plane, so it silently
+/// loses every guarantee the SQLite store provides. The supported path off
+/// markdown is `SqliteAgentMemoryStore::open`, which imports every
+/// un-imported `.md` file on first open (ids, tags and timestamps preserved,
+/// source renamed to `.md.imported`).
+///
+/// What is deliberately preserved is the PARSER - `read_markdown_records`
+/// and this type's file layout (`path_for`) - because the one-shot import
+/// and its tests depend on it. The `AgentMemoryProvider` impl below is the
+/// live execution path; deleting it is ratified but blocked while
+/// `persistent_agent_memory()` in `unified_runtime/builder.rs` still
+/// constructs this store as a live provider. Do not add new live
+/// construction sites.
 #[derive(Debug, Clone)]
 pub struct MarkdownAgentMemoryStore {
     root: PathBuf,

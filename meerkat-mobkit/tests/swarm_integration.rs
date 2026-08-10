@@ -117,7 +117,9 @@ impl SessionService for CheckpointerCancelProbeSessionService {
         id: &SessionId,
         expected_run_id: &meerkat_core::lifecycle::RunId,
     ) -> Result<bool, SessionError> {
-        self.inner.interrupt_run_if_current(id, expected_run_id).await
+        self.inner
+            .interrupt_run_if_current(id, expected_run_id)
+            .await
     }
 
     async fn read(&self, id: &SessionId) -> Result<SessionView, SessionError> {
@@ -180,7 +182,9 @@ impl MobSessionService for CheckpointerCancelProbeSessionService {
         &self,
         session_id: &meerkat::SessionId,
     ) -> Result<meerkat_mob::SessionResumeAuthority, meerkat::SessionError> {
-        self.inner.observe_session_resume_authority(session_id).await
+        self.inner
+            .observe_session_resume_authority(session_id)
+            .await
     }
 
     // meerkat 0.8.22 DELETED the required `prepare_session_for_resume` hook

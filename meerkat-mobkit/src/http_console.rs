@@ -10334,7 +10334,10 @@ mod tests {
             realm: "family".to_string(),
         };
 
-        assert_eq!(memory_panel_scope_action(&identity), ACTION_AGENT_MEMORY_READ);
+        assert_eq!(
+            memory_panel_scope_action(&identity),
+            ACTION_AGENT_MEMORY_READ
+        );
         assert_eq!(memory_panel_scope_action(&mob), ACTION_MOB_MEMORY_READ);
         assert_eq!(
             memory_panel_scope_action(&operator),

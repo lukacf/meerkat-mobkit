@@ -2384,31 +2384,59 @@ actions = ["agent.view"]
         }
     }
 
-    /// The §8.3 selector knob is retired but still ACCEPTED: an unknown
-    /// `runtime_options.agent_memory` key is a fail-loud init refusal, so
-    /// rejecting it would brick every deployment that pinned it (including
-    /// the ones that pinned `"off"`, i.e. asked for exactly today's
-    /// behaviour). Any value parses; non-off values warn and are ignored.
+    /// The §8.3 selector knob is retired. `off`/empty is still ACCEPTED,
+    /// because that config asked for exactly today's behaviour and refusing
+    /// it would brick an init for no gain. Every OTHER value is REFUSED,
+    /// typed, at init: it asked for a stage that no longer exists, and
+    /// accepting it would hand that caller something different from what it
+    /// configured while the only notice went to a gateway log the consumer
+    /// may not read. Silently-inert configuration is the exact class this
+    /// release program exists to remove.
     #[test]
-    fn retired_agent_memory_selector_key_is_accepted_and_ignored() {
+    fn retired_agent_memory_selector_accepts_off_and_refuses_the_rest() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        for value in ["off", "default", "profile:/etc/mobkit/selector.toml", "on"] {
+        for value in ["off", ""] {
             let params = json!({
                 "runtime_options": { "agent_memory": { "selector": value } }
             });
-            parse_gateway_runtime_options(&params, Some(tmp.path()))
-                .unwrap_or_else(|err| panic!("selector '{value}' must still parse: {err}"));
+            parse_gateway_runtime_options(&params, Some(tmp.path())).unwrap_or_else(|err| {
+                panic!("selector '{value}' states today's behaviour and must parse: {err}")
+            });
         }
-        // Retired everywhere, including alongside the markdown store: the
-        // old `selector requires store='sqlite'` refusal had nothing left
-        // to guard.
+        for value in ["default", "profile:/etc/mobkit/selector.toml", "on"] {
+            let params = json!({
+                "runtime_options": { "agent_memory": { "selector": value } }
+            });
+            let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+                Ok(_) => {
+                    panic!("retired selector '{value}' must be refused, not silently ignored")
+                }
+                Err(err) => err,
+            };
+            assert!(
+                err.contains("RETIRED") && err.contains(value),
+                "refusal must name the retirement and the offending value, got: {err}"
+            );
+        }
+        // Retired EVERYWHERE, so the store kind no longer changes the answer.
+        // The old refusal here was `selector requires store='sqlite'` - a
+        // COUPLING complaint. That coupling is gone, but the value is still
+        // refused, now for the retirement itself. Pinning the reason (not
+        // merely "some error") is the point: a store-kind message reappearing
+        // here would mean the coupling rule outlived the knob it guarded.
         let params = json!({
             "runtime_options": {
                 "agent_memory": { "store": "markdown", "selector": "default" }
             }
         });
-        parse_gateway_runtime_options(&params, Some(tmp.path()))
-            .expect("a retired knob cannot constrain the store kind");
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("a retired selector must be refused whatever the store kind"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("RETIRED"),
+            "the refusal must cite the retirement, not the old store-kind coupling, got: {err}"
+        );
     }
 
     /// Type validation does NOT loosen: the value is still a string or a
@@ -3824,13 +3852,24 @@ fn parse_gateway_agent_memory_config(
              (the option is retired; only 'off' remains meaningful)"
                 .to_string()
         })?;
+        // `off`/empty asked for exactly today's behaviour, so it is accepted
+        // silently and nothing is lost. ANY OTHER VALUE ASKED FOR A STAGE THAT
+        // NO LONGER EXISTS, and accepting it would silently give that caller
+        // something different from what it configured - the declared-but-inert
+        // failure this release program exists to remove. A warning is not
+        // enough: it goes to the GATEWAY log, which the configuring consumer
+        // may not be reading. A downstream fleet spent thirteen days blind to
+        // a real failure for exactly that reason. So this refuses, typed, at
+        // init, and names the migration.
         if !matches!(value, "" | "off") {
-            tracing::warn!(
-                configured = %value,
-                "runtime_options.agent_memory.selector is RETIRED and ignored: the §8.3 LLM \
-                 Selector stage was removed unactivated, so recall is the deterministic lexical \
-                 path. Remove the key from your gateway config; a later release rejects it."
-            );
+            return Err(format!(
+                "runtime_options.agent_memory.selector = '{value}' is RETIRED and cannot be \
+                 honoured: the §8.3 LLM Selector stage was removed unactivated, so recall is \
+                 now the deterministic lexical path on every turn. Remove the key, or set it \
+                 to 'off' to state that intent explicitly. Refusing rather than ignoring, so \
+                 you learn this here instead of discovering later that a configured stage \
+                 never ran."
+            ));
         }
     }
     // §8.4 distiller block: fail-loud parse; enabled defaults false.
@@ -4104,7 +4143,7 @@ fn parse_gateway_steward_config(
         }
         config.runs_per_day = runs as u32;
     }
-    // Exposed because a fleet ran this steward on a reasoning model against a
+    // Exposed because a fleet ran this steward against a
     // hard-wired ceiling and committed zero ops for four days with no reachable
     // way to raise it. The upper bound is deliberately NOT enforced here: the
     // profile method owns validation, and a ceiling the provider rejects is a
@@ -8977,8 +9016,53 @@ external_addressable = true
                 "schedule host did not spawn over the attached schedule store: no firing driver \
                  is running in this gateway, and the firing-intent write gate is consequently \
                  still closed, so create/update/resume are being refused rather than accepted \
-                 durably into a store nothing drains"
+                 durably"
             );
+            // The old tail of that sentence ("into a store nothing drains")
+            // generalized a process-local fact to the whole store. meerkat
+            // 0.8.22 lets the store answer that question itself: the executor
+            // lease is singular per realm store, so the holder (if any) is
+            // named rather than guessed at. It is one instantaneous read, not
+            // a liveness verdict - a peer mid-restart reads vacant, and a
+            // crashed predecessor still reads held until its lease expires,
+            // so each arm below says what it actually proves. Read only: the
+            // observation carries no bearer token and cannot take firing
+            // authority away from whoever holds it.
+            match meerkat_mobkit::schedule_wiring::observe_schedule_firing_authority(
+                &schedule_service_for_probe,
+            )
+            .await
+            {
+                meerkat_mobkit::schedule_wiring::ScheduleFiringAuthority::Held {
+                    owner_id,
+                    fencing_token,
+                    expires_in_secs,
+                } => tracing::warn!(
+                    executor_owner_id = %owner_id,
+                    fencing_token,
+                    lease_expires_in_secs = expires_in_secs,
+                    "the schedule store itself reports SOME process holding the realm's singular \
+                     firing authority, so durable schedules may still be drained elsewhere; note \
+                     the holder can also be this deployment's own crashed predecessor, whose \
+                     lease stays live until it expires, so check the owner id and expiry above \
+                     before concluding anything is actually draining. This gateway's \
+                     firing-intent write gate stays closed either way: it gates on a LOCAL host"
+                ),
+                meerkat_mobkit::schedule_wiring::ScheduleFiringAuthority::Vacant => tracing::warn!(
+                    "the schedule store itself reports its firing authority vacant AT THIS \
+                     INSTANT: no process holds the executor lease. A peer gateway mid-restart is \
+                     vacant only until its first tick, so this is proof of an unattended store \
+                     only if it persists - the resident claim watchdog is what escalates once \
+                     durable work actually goes unclaimed"
+                ),
+                meerkat_mobkit::schedule_wiring::ScheduleFiringAuthority::Unobservable {
+                    detail,
+                } => tracing::warn!(
+                    %detail,
+                    "the schedule store cannot report firing authority, so whether any other \
+                     process drains this store is unknown from here"
+                ),
+            }
         }
         (schedule_host, Some(watchdog))
     } else {

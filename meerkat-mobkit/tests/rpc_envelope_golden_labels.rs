@@ -201,7 +201,8 @@ impl Fixture {
     /// *after* `set_access_controller`: the router snapshots the controller
     /// (and the metadata table) at construction time.
     fn console(&self, read_only: bool) -> axum::Router {
-        self.runtime.build_console_json_router(decision_state(read_only))
+        self.runtime
+            .build_console_json_router(decision_state(read_only))
     }
 
     async fn shutdown(self) {
@@ -379,7 +380,11 @@ fn key_set(value: &Value) -> Vec<String> {
 fn assert_success_envelope(label: &str, envelope: &Value, expected_result: &Value) {
     assert_eq!(
         key_set(envelope),
-        vec!["id".to_string(), "jsonrpc".to_string(), "result".to_string()],
+        vec![
+            "id".to_string(),
+            "jsonrpc".to_string(),
+            "result".to_string()
+        ],
         "{label}: success envelope must carry exactly jsonrpc/id/result: {envelope:#?}"
     );
     assert_eq!(envelope["jsonrpc"], json!("2.0"), "{label}: {envelope:#?}");
@@ -430,12 +435,15 @@ fn assert_error_envelope(
         Some(data) => {
             assert_eq!(
                 key_set(&envelope["error"]),
-                vec!["code".to_string(), "data".to_string(), "message".to_string()],
+                vec![
+                    "code".to_string(),
+                    "data".to_string(),
+                    "message".to_string()
+                ],
                 "{label}: error object must carry code/message/data: {envelope:#?}"
             );
             assert_eq!(
-                &envelope["error"]["data"],
-                data,
+                &envelope["error"]["data"], data,
                 "{label}: error data: {envelope:#?}"
             );
         }
@@ -821,7 +829,12 @@ async fn label_scope_and_clearing_semantics_are_pinned_on_both_transports() {
     );
     assert_success_envelope(
         "http mob_labels/get ignores run_id",
-        &http(&console, "mobkit/mob_labels/get", json!({ "run_id": RUN_ID })).await,
+        &http(
+            &console,
+            "mobkit/mob_labels/get",
+            json!({ "run_id": RUN_ID }),
+        )
+        .await,
         &json!({ "labels": { "scope": "mob" } }),
     );
 
@@ -1033,7 +1046,11 @@ async fn wire_serialization_diverges_between_transports() {
     let envelope: Value = serde_json::from_slice(&body).expect("notification json");
     assert_eq!(
         key_set(&envelope),
-        vec!["id".to_string(), "jsonrpc".to_string(), "result".to_string()],
+        vec![
+            "id".to_string(),
+            "jsonrpc".to_string(),
+            "result".to_string()
+        ],
         "console answers notifications with a full envelope: {envelope:#?}"
     );
     assert_eq!(
@@ -1257,7 +1274,11 @@ async fn stdio_label_verbs_consult_neither_console_read_only_nor_abac() {
         );
         assert_eq!(
             key_set(&envelope),
-            vec!["id".to_string(), "jsonrpc".to_string(), "result".to_string()],
+            vec![
+                "id".to_string(),
+                "jsonrpc".to_string(),
+                "result".to_string()
+            ],
             "stdio {method}: {envelope:#?}"
         );
     }
@@ -1308,7 +1329,9 @@ async fn capabilities_advertise_label_verbs_differently_per_transport() {
         advertised_methods(&stdio(&fixture.runtime, "mobkit/capabilities", json!({})).await);
     for method in ALL_LABEL_VERBS {
         assert!(
-            stdio_methods.iter().any(|listed| listed.as_str() == *method),
+            stdio_methods
+                .iter()
+                .any(|listed| listed.as_str() == *method),
             "stdio capabilities must advertise {method} unconditionally: {stdio_methods:?}"
         );
     }
@@ -1317,7 +1340,9 @@ async fn capabilities_advertise_label_verbs_differently_per_transport() {
         advertised_methods(&http(&fixture.console(false), "mobkit/capabilities", json!({})).await);
     for method in ALL_LABEL_VERBS {
         assert!(
-            writable_methods.iter().any(|listed| listed.as_str() == *method),
+            writable_methods
+                .iter()
+                .any(|listed| listed.as_str() == *method),
             "writable console must advertise {method}: {writable_methods:?}"
         );
     }
@@ -1326,13 +1351,17 @@ async fn capabilities_advertise_label_verbs_differently_per_transport() {
         advertised_methods(&http(&fixture.console(true), "mobkit/capabilities", json!({})).await);
     for method in READ_LABEL_VERBS {
         assert!(
-            read_only_methods.iter().any(|listed| listed.as_str() == *method),
+            read_only_methods
+                .iter()
+                .any(|listed| listed.as_str() == *method),
             "read-only console must still advertise {method}: {read_only_methods:?}"
         );
     }
     for method in MUTATING_LABEL_VERBS {
         assert!(
-            !read_only_methods.iter().any(|listed| listed.as_str() == *method),
+            !read_only_methods
+                .iter()
+                .any(|listed| listed.as_str() == *method),
             "read-only console must not advertise {method}: {read_only_methods:?}"
         );
     }
@@ -1355,7 +1384,9 @@ async fn console_capabilities_drop_label_verbs_without_the_runtime_admin_grant()
         advertised_methods(&http(&console, "mobkit/capabilities", json!({})).await);
     for method in ALL_LABEL_VERBS {
         assert!(
-            !console_methods.iter().any(|listed| listed.as_str() == *method),
+            !console_methods
+                .iter()
+                .any(|listed| listed.as_str() == *method),
             "console must not advertise {method} without the {LABEL_GRANT_ACTION} grant: \
              {console_methods:?}"
         );
@@ -1365,7 +1396,9 @@ async fn console_capabilities_drop_label_verbs_without_the_runtime_admin_grant()
         advertised_methods(&stdio(&fixture.runtime, "mobkit/capabilities", json!({})).await);
     for method in ALL_LABEL_VERBS {
         assert!(
-            stdio_methods.iter().any(|listed| listed.as_str() == *method),
+            stdio_methods
+                .iter()
+                .any(|listed| listed.as_str() == *method),
             "stdio capabilities ignore the access view and still advertise {method}: \
              {stdio_methods:?}"
         );

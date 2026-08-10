@@ -3710,8 +3710,7 @@ mod tests {
     /// being exactly the arm a stored-row decode break would hit. Pinned
     /// here as a full round-trip so removing any arm fails loudly.
     #[test]
-    fn every_scope_kind_round_trips_through_the_persisted_encoding()
-    -> Result<(), Box<dyn Error>> {
+    fn every_scope_kind_round_trips_through_the_persisted_encoding() -> Result<(), Box<dyn Error>> {
         let scopes = [
             MemoryScope::Identity {
                 realm: "family".to_string(),

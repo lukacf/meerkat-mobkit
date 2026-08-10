@@ -1034,12 +1034,12 @@ impl ControlGrantTable {
         let Some(section) = table.get("control_grants") else {
             return Ok(None);
         };
-        let section = section
-            .as_table()
-            .ok_or_else(|| ControlGrantConfigError::Parse(
+        let section = section.as_table().ok_or_else(|| {
+            ControlGrantConfigError::Parse(
                 "control_grants must be a table of caller labels, e.g. [control_grants.ops-mob]"
                     .to_string(),
-            ))?;
+            )
+        })?;
         let mut out = Self::new();
         let mut labels_by_pubkey: BTreeMap<[u8; 32], String> = BTreeMap::new();
         for (label, value) in section {
@@ -1244,10 +1244,7 @@ impl ControlAuthorizer {
     /// for `audience` - the mob id peers name this gateway by. Use when
     /// one caller holds grants on several gateways and a captured request
     /// must not be replayable across them.
-    pub fn with_grants_for_audience(
-        table: ControlGrantTable,
-        audience: impl Into<String>,
-    ) -> Self {
+    pub fn with_grants_for_audience(table: ControlGrantTable, audience: impl Into<String>) -> Self {
         Self::Grants {
             table,
             expected_audience: Some(audience.into()),
@@ -1286,11 +1283,12 @@ impl ControlAuthorizer {
         let Some(caller) = request.caller() else {
             return Err(ControlAuthzDenial::UnauthenticatedCaller { verb });
         };
-        let pubkey = crate::auth::peer_keys::decode_pubkey_b64(&caller.pubkey_b64).map_err(
-            |err| ControlAuthzDenial::InvalidCallerCredential {
-                reason: format!("caller pubkey: {err}"),
-            },
-        )?;
+        let pubkey =
+            crate::auth::peer_keys::decode_pubkey_b64(&caller.pubkey_b64).map_err(|err| {
+                ControlAuthzDenial::InvalidCallerCredential {
+                    reason: format!("caller pubkey: {err}"),
+                }
+            })?;
         // Verify the signature BEFORE consulting the table, so an
         // unauthenticated prober cannot use the difference between
         // "not granted" and "bad signature" to enumerate which pubkeys

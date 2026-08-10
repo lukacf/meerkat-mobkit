@@ -111,11 +111,7 @@ pub fn usage_event(request: &LlmRequest, client_declared: Provider) -> LlmEvent 
 /// `presented_tokens` - budget, `last_input_tokens`, or the compaction
 /// trigger. `Usage::default()` reports zero presented tokens, which silently
 /// disarms those assertions.
-pub fn usage_event_with(
-    request: &LlmRequest,
-    client_declared: Provider,
-    usage: Usage,
-) -> LlmEvent {
+pub fn usage_event_with(request: &LlmRequest, client_declared: Provider, usage: Usage) -> LlmEvent {
     LlmEvent::UsageUpdate {
         usage: turn_usage(&request.model, client_declared, usage),
     }
