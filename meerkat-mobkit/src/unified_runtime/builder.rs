@@ -559,30 +559,63 @@ impl UnifiedRuntimeBuilder {
     }
 
     /// Enable or disable builtin tools (default: true).
+    ///
+    /// NOT a containment control for mob members. This sets the agent
+    /// factory's runtime DEFAULT, and a default only applies where the
+    /// per-session intent is `ToolCategoryOverride::Inherit`. A member built
+    /// from an inline mob profile never inherits: `build_agent_config` maps
+    /// every `profile.tools.*` boolean through
+    /// `ToolCategoryOverride::from_effective`, which returns only
+    /// `Enable`/`Disable` and never `Inherit`
+    /// (`meerkat-core/src/session.rs:6656-6658`), and `resolve()` ignores the
+    /// runtime default for those two (`:6626-6632`). So a profile declaring
+    /// `tools.builtins = true` still gets builtins after `builtins(false)`.
+    /// This flag governs sessions built through the same factory that are not
+    /// profile-driven. For per-member containment set `profiles.<name>.tools`
+    /// (or a `tool_access_policy`), not this.
     pub fn builtins(mut self, enabled: bool) -> Self {
         self.capability_flags.builtins = enabled;
         self
     }
 
     /// Enable or disable shell tool (default: true).
+    ///
+    /// A profile's `tools.shell` wins on the definition path; this is a
+    /// factory default, not member containment. See [`Self::builtins`].
     pub fn shell(mut self, enabled: bool) -> Self {
         self.capability_flags.shell = enabled;
         self
     }
 
     /// Enable or disable mob tools (default: true).
+    ///
+    /// A profile's `tools.mob` wins on the definition path; see
+    /// [`Self::builtins`]. Narrower still: the factory never reads its own
+    /// mob default when composing, because `effective_mob` is derived from
+    /// the build's mob operator authority context
+    /// (`meerkat/src/factory.rs:5462-5467`).
     pub fn mob(mut self, enabled: bool) -> Self {
         self.capability_flags.mob = enabled;
         self
     }
 
     /// Enable or disable comms (default: true).
+    ///
+    /// A profile's `tools.comms` wins on the definition path; see
+    /// [`Self::builtins`]. Note also that `tools.comms = false` is refused
+    /// outright for mob members (`meerkat-mob/src/build.rs:170-173`), and the
+    /// factory's own comms default is consulted only when the build carries
+    /// no comms name, which the mob path always sets
+    /// (`meerkat/src/factory.rs:4977-4981`, `meerkat-mob/src/build.rs:212`).
     pub fn comms(mut self, enabled: bool) -> Self {
         self.capability_flags.comms = enabled;
         self
     }
 
     /// Enable or disable memory tools (default: true).
+    ///
+    /// A profile's `tools.memory` wins on the definition path; this is a
+    /// factory default, not member containment. See [`Self::builtins`].
     pub fn memory(mut self, enabled: bool) -> Self {
         self.capability_flags.memory = enabled;
         self
@@ -1712,6 +1745,46 @@ impl UnifiedRuntimeBuilder {
         };
         caps.image_generation |=
             crate::mob_handle_runtime::mob_definition_may_use_image_generation(&definition);
+        // Declared-versus-resolved capability invariant. This is the ONLY
+        // sound place for it: on the definition path `self.schedule_store`
+        // PROVES whether the agent factory's schedule dispatcher slot gets
+        // filled, because all three arms below route schedule tools through
+        // that one argument (`persistent_inner_with_provider_stores` and
+        // `ephemeral_runtime_backed_with_provider_stores` both call
+        // `attach_schedule_tools_with_store` iff it is `Some`; the temp-dir
+        // arm delegates to the latter). `materialize_storage_provider()` has
+        // already run in `build()`, so a provider-supplied schedule store is
+        // reflected here too.
+        //
+        // The legacy `mob_spec()` path is deliberately NOT checked: a
+        // pre-built spec arrives with its dispatcher slots already filled by
+        // whoever composed it, so `schedule_store` would not determine the
+        // resolved surface there and the check would emit false warnings.
+        //
+        // Coverage, stated exactly: this runs on `UnifiedRuntimeBuilder`
+        // definition builds only. Neither first-party gateway reaches it -
+        // both compose a `MobBootstrapSpec` by hand and enter through
+        // `UnifiedRuntime::bootstrap*` (`bin/mobkit_gateway.rs:1380`,
+        // `bin/rpc_gateway.rs:8261`), which takes the finished spec and never
+        // calls `resolve_mob_spec`. Their equivalent of this gap - a schedule
+        // store that fails to open, leaving the slot empty - is already
+        // declared as a degraded storage slot rather than dropped silently
+        // (`bin/mobkit_gateway.rs:524-530`, `bin/rpc_gateway.rs:7658-7667`).
+        //
+        // Build-time evaluation covers later materialization and resume as
+        // well: the resolved surface is the composition's dispatcher slots,
+        // fixed for the process, and inline profile declarations come from
+        // this same definition. Warnings only - parking a member whose
+        // declared capability is absent needs a typed hold that does not
+        // exist yet.
+        crate::capability_invariant::warn_declared_capability_gaps(
+            definition.id.as_str(),
+            &crate::capability_invariant::compare_declared_capabilities(
+                &definition,
+                crate::capability_invariant::ResolvedToolSurface::default()
+                    .with_schedule_tools(self.schedule_store.is_some()),
+            ),
+        );
         let max_sessions = self.max_sessions.unwrap_or(DEFAULT_MAX_SESSIONS);
         if max_sessions == 0 {
             return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
@@ -2049,6 +2122,129 @@ comms = true
         assert!(
             spec.runtime_adapter.is_some(),
             "definition-based ephemeral specs should expose runtime authority",
+        );
+    }
+
+    /// Captures a subscriber's formatted output for assertions.
+    #[derive(Clone, Default)]
+    struct CaptureWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CaptureWriter {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(
+                &self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+            .into_owned()
+        }
+    }
+
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+        type Writer = CaptureWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capability_invariant_definition() -> MobDefinition {
+        MobDefinition::from_toml(
+            r#"
+[mob]
+id = "builder-capability-invariant"
+
+[profiles.planner]
+model = "gpt-5.5"
+runtime_mode = "autonomous_host"
+
+[profiles.planner.tools]
+comms = true
+schedule = true
+"#,
+        )
+        .expect("definition parses")
+    }
+
+    /// Item 12: the declared-versus-resolved capability invariant is actually
+    /// REACHED from the definition path, and it observes a TRANSITION rather
+    /// than a total. Both arms assert the unconditional summary line, so the
+    /// clean arm's missing warning means "no gap" and not "never evaluated" -
+    /// the positive control for a negative assertion.
+    ///
+    /// `#[tokio::test]` runs on the current-thread scheduler, so the
+    /// thread-local subscriber installed here stays default across the
+    /// awaits below.
+    #[tokio::test]
+    async fn definition_path_reports_a_declared_but_unresolved_schedule_capability() {
+        let unresolved_logs = {
+            let writer = CaptureWriter::default();
+            let guard = tracing::subscriber::set_default(
+                tracing_subscriber::fmt()
+                    .with_writer(writer.clone())
+                    .with_max_level(tracing::Level::INFO)
+                    .finish(),
+            );
+            UnifiedRuntimeBuilder::default()
+                .definition(capability_invariant_definition())
+                .resolve_mob_spec()
+                .await
+                .expect("spec resolves");
+            drop(guard);
+            writer.contents()
+        };
+        assert!(
+            unresolved_logs.contains("declared-versus-resolved capability invariant evaluated"),
+            "the invariant must run on the definition path, got: {unresolved_logs}"
+        );
+        assert!(
+            unresolved_logs.contains("the composed runtime surface cannot serve"),
+            "an unresolved schedule declaration must warn, got: {unresolved_logs}"
+        );
+        assert!(
+            unresolved_logs.contains("planner"),
+            "the warning must name the declaring profile, got: {unresolved_logs}"
+        );
+
+        let resolved_logs = {
+            let writer = CaptureWriter::default();
+            let guard = tracing::subscriber::set_default(
+                tracing_subscriber::fmt()
+                    .with_writer(writer.clone())
+                    .with_max_level(tracing::Level::INFO)
+                    .finish(),
+            );
+            UnifiedRuntimeBuilder::default()
+                .definition(capability_invariant_definition())
+                .schedule_store(Arc::new(meerkat::MemoryScheduleStore::new()))
+                .resolve_mob_spec()
+                .await
+                .expect("spec resolves");
+            drop(guard);
+            writer.contents()
+        };
+        assert!(
+            resolved_logs.contains("declared-versus-resolved capability invariant evaluated"),
+            "positive control: the invariant must run on the clean arm too: {resolved_logs}"
+        );
+        assert!(
+            !resolved_logs.contains("the composed runtime surface cannot serve"),
+            "an injected schedule store resolves the declaration, got: {resolved_logs}"
         );
     }
 

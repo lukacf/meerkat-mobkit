@@ -47,6 +47,7 @@ mod gating;
 mod memory;
 pub mod metadata;
 mod module_boundary;
+pub mod remote_host;
 mod routing;
 mod rpc;
 pub(crate) mod scheduling;

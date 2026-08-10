@@ -1565,19 +1565,67 @@ impl IdentityRuntime {
             snapshot.complete = false;
             snapshot.ready = false;
             snapshot.error = None;
+            // Per-identity causes are pass-scoped. `begin_identity_bootstrap`
+            // already rebuilds every entry with `error: None`, but it runs only
+            // AFTER the prepare/provider await, and `fail_identity_bootstrap`
+            // is reachable before that (prepare failure in `bootstrap_roster`,
+            // roster-provider failure in `refresh_desired_topology`). Without
+            // this reset, its `entry.error.is_none()` guard cannot tell "this
+            // identity produced its own cause during THIS pass" from "left
+            // over from the last pass", and an early failure would report a
+            // previous pass's cause beside the current pass's `error`.
+            // Only causes are cleared: `refresh_aggregates` reads `entry.state`
+            // exclusively, so no count, `ready`, or `materialization_terminal`
+            // value moves here.
+            for entry in snapshot.identities.values_mut() {
+                entry.error = None;
+            }
         });
         current_generation
     }
 
+    /// Record a PASS-level bootstrap failure.
+    ///
+    /// Terminality is preserved deliberately: the barrier rule is
+    /// `complete && dormant == 0 && warming == 0`
+    /// ([`IdentityBootstrapStatus::materialization_terminal`]), and an eager
+    /// pass seeds the whole roster `Warming`, so leaving those entries alone
+    /// would hang `wait_identity_bootstrap_terminal` until its timeout
+    /// instead of returning a truthful failure snapshot.
+    ///
+    /// What must NOT happen is attributing the pass cause to each identity
+    /// as if it were that identity's own. `restore_flow` fails the entire
+    /// pass on ONE member's error, so a 17-member eager roster reported 17
+    /// identities Broken with one member's `bridge create_session:` detail
+    /// copied verbatim onto the other 16 - a cause that belongs to a
+    /// different agent (HomeCore activation-33 shape). The stamped entries
+    /// now say exactly what is known: the pass died before this identity's
+    /// own outcome was recorded. A cause the identity actually produced
+    /// during the pass (`mark_bootstrap_from_lifecycle`,
+    /// `mark_bootstrap_materialization_finished`) is authoritative and is
+    /// never overwritten. That equivalence between "the entry already has a
+    /// cause" and "this pass produced it" is not free: it holds because
+    /// `begin_identity_bootstrap_pending` resets per-entry causes when the
+    /// pass opens, which is the only reason this `is_none()` guard cannot
+    /// resurrect a previous pass's cause. The pass cause still rides
+    /// `snapshot.error`, which the type documents as the pass-level slot and
+    /// which every reader (RPC status, `wait_identity_bootstrap`, the Python
+    /// SDK model) already parses.
     fn fail_identity_bootstrap(&self, generation: u64, error: &IdentityRuntimeError) {
         self.modify_bootstrap_status(Some(generation), |snapshot| {
             let detail = error.to_string();
+            let unattributed = format!(
+                "identity bootstrap pass failed before this identity reached its own \
+                 outcome: {detail}"
+            );
             snapshot.complete = true;
-            snapshot.error = Some(detail.clone());
+            snapshot.error = Some(detail);
             for entry in snapshot.identities.values_mut() {
                 if entry.state != IdentityBootstrapState::Active {
                     entry.state = IdentityBootstrapState::Broken;
-                    entry.error = Some(detail.clone());
+                    if entry.error.is_none() {
+                        entry.error = Some(unattributed.clone());
+                    }
                 }
             }
             snapshot.refresh_aggregates();
@@ -12624,6 +12672,229 @@ mod foreground_shutdown_tests {
         assert!(
             *receiver.borrow(),
             "a task subscribed after close must still observe shutdown"
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod bootstrap_failure_attribution_tests {
+    use super::*;
+    use crate::identity_first::{LocalContinuityStore, LocalLeaseProvider};
+
+    fn make_runtime() -> Result<IdentityRuntime, ContinuityStoreError> {
+        Ok(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "bootstrap-failure-attribution-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }))
+    }
+
+    /// `restore_flow` fails the WHOLE pass on one member's error, and an
+    /// eager pass seeds every roster identity `Warming`, so the pass-failure
+    /// stamp used to copy one member's cause onto every other member. This
+    /// pins the three things that must simultaneously hold afterwards:
+    /// terminality (or the wait barrier hangs), the pass cause in the
+    /// pass-level slot, and no borrowed cause on a bystander.
+    #[test]
+    fn pass_failure_keeps_terminality_without_borrowing_one_members_cause()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = make_runtime()?;
+        let culprit = AgentIdentity::parse("agent:culprit")?;
+        let bystander = AgentIdentity::parse("agent:bystander")?;
+        let survivor = AgentIdentity::parse("agent:survivor")?;
+        let culprit_cause = "bridge create_session: culprit exploded";
+
+        let generation =
+            runtime.begin_identity_bootstrap_pending(IdentityBootstrapMode::EagerMaterialize);
+        assert!(
+            runtime.modify_bootstrap_status(Some(generation), |snapshot| {
+                snapshot.identities.insert(
+                    culprit.clone(),
+                    IdentityBootstrapEntry {
+                        state: IdentityBootstrapState::Broken,
+                        error: Some(culprit_cause.to_string()),
+                    },
+                );
+                snapshot.identities.insert(
+                    bystander.clone(),
+                    IdentityBootstrapEntry {
+                        state: IdentityBootstrapState::Warming,
+                        error: None,
+                    },
+                );
+                snapshot.identities.insert(
+                    survivor.clone(),
+                    IdentityBootstrapEntry {
+                        state: IdentityBootstrapState::Active,
+                        error: None,
+                    },
+                );
+                snapshot.refresh_aggregates();
+            }),
+            "seeding must land on the generation under test"
+        );
+
+        // Positive control: prove the pre-failure snapshot is NOT already in
+        // the state the post-failure assertions claim. Without this, a seeding
+        // bug that produced a Broken, cause-less bystander would let every
+        // assertion below pass vacuously.
+        let before = runtime.identity_bootstrap_status();
+        assert!(before.error.is_none());
+        assert!(!before.materialization_terminal());
+        let before_bystander = before
+            .identities
+            .get(&bystander)
+            .ok_or_else(|| "seeded bystander entry".to_string())?;
+        assert_eq!(before_bystander.state, IdentityBootstrapState::Warming);
+        assert!(before_bystander.error.is_none());
+
+        // `IdentityRuntimeError`'s `Display` prefixes `Internal` ("internal:
+        // {msg}"), and `fail_identity_bootstrap` stamps `error.to_string()`,
+        // not the inner message. Pin the rendered form so the test tracks the
+        // mechanism instead of one variant's wording.
+        let pass_error = IdentityRuntimeError::Internal(culprit_cause.to_string());
+        let pass_detail = pass_error.to_string();
+        runtime.fail_identity_bootstrap(generation, &pass_error);
+
+        let after = runtime.identity_bootstrap_status();
+        // The pass cause rides the slot the type documents for it.
+        assert_eq!(after.error.as_deref(), Some(pass_detail.as_str()));
+        // Terminality survives: `wait_identity_bootstrap_terminal` returns a
+        // truthful failure snapshot instead of waiting out its timeout.
+        assert!(after.complete);
+        assert!(after.materialization_terminal());
+        assert!(!after.ready);
+
+        // An identity that already reached Active is not retro-broken.
+        let survivor_entry = after
+            .identities
+            .get(&survivor)
+            .ok_or_else(|| "survivor entry".to_string())?;
+        assert_eq!(survivor_entry.state, IdentityBootstrapState::Active);
+        assert!(survivor_entry.error.is_none());
+
+        // The identity that actually failed keeps ITS own cause verbatim.
+        let culprit_entry = after
+            .identities
+            .get(&culprit)
+            .ok_or_else(|| "culprit entry".to_string())?;
+        assert_eq!(culprit_entry.state, IdentityBootstrapState::Broken);
+        assert_eq!(culprit_entry.error.as_deref(), Some(culprit_cause));
+
+        // The bystander transitions Warming -> Broken for terminality, but
+        // must not report the culprit's cause as its own, and must not be
+        // left cause-less either (17 Broken with no reason on record was the
+        // original operator complaint).
+        let bystander_entry = after
+            .identities
+            .get(&bystander)
+            .ok_or_else(|| "bystander entry".to_string())?;
+        assert_eq!(bystander_entry.state, IdentityBootstrapState::Broken);
+        let bystander_error = bystander_entry
+            .error
+            .as_deref()
+            .ok_or_else(|| "a Broken entry must carry a reason".to_string())?;
+        assert_ne!(
+            bystander_error, culprit_cause,
+            "the culprit's raw cause must never be reported as the bystander's own"
+        );
+        // The discriminating assertion: the rendered pass detail is EXACTLY
+        // what the previous implementation stamped on every non-Active entry,
+        // so this is the one that fails if the borrowed-cause behaviour comes
+        // back. (`assert_ne!` against `culprit_cause` alone would pass under
+        // the old code too, because `Display` prefixes it.)
+        assert_ne!(
+            bystander_error, pass_detail,
+            "a bystander must never carry the raw pass detail as its own cause"
+        );
+        assert!(
+            bystander_error.starts_with("identity bootstrap pass failed before this identity"),
+            "an unattributed entry must be labelled pass-level: {bystander_error}"
+        );
+        Ok(())
+    }
+
+    /// The `entry.error.is_none()` guard above is only truthful because a
+    /// pass RESETS per-entry causes when it opens. Two failure paths stamp
+    /// entries that `begin_identity_bootstrap` has not yet republished -
+    /// `bootstrap_roster`'s prepare failure and `refresh_desired_topology`'s
+    /// roster-provider failure - so without the reset a pass would report the
+    /// PREVIOUS pass's cause per identity beside its own `status.error`.
+    #[test]
+    fn a_new_pass_does_not_report_the_previous_passs_cause()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = make_runtime()?;
+        let identity = AgentIdentity::parse("agent:stale")?;
+        let first_cause = "pass one: resume rejected";
+
+        let first =
+            runtime.begin_identity_bootstrap_pending(IdentityBootstrapMode::EagerMaterialize);
+        assert!(
+            runtime.modify_bootstrap_status(Some(first), |snapshot| {
+                snapshot.identities.insert(
+                    identity.clone(),
+                    IdentityBootstrapEntry {
+                        state: IdentityBootstrapState::Broken,
+                        error: Some(first_cause.to_string()),
+                    },
+                );
+                snapshot.refresh_aggregates();
+            }),
+            "seeding must land on the first generation"
+        );
+
+        // Positive control: the stale cause really IS on the entry before the
+        // next pass opens, so the assertions below observe a transition rather
+        // than a state that was never there.
+        let stale = runtime.identity_bootstrap_status();
+        let stale_entry = stale
+            .identities
+            .get(&identity)
+            .ok_or_else(|| "seeded pass-one entry".to_string())?;
+        assert_eq!(stale_entry.error.as_deref(), Some(first_cause));
+
+        // Pass two fails before `begin_identity_bootstrap` republishes entries.
+        let second =
+            runtime.begin_identity_bootstrap_pending(IdentityBootstrapMode::EagerMaterialize);
+        let cleared = runtime.identity_bootstrap_status();
+        let cleared_entry = cleared
+            .identities
+            .get(&identity)
+            .ok_or_else(|| "entry survives the pass boundary".to_string())?;
+        assert!(
+            cleared_entry.error.is_none(),
+            "opening a pass must drop the previous pass's cause"
+        );
+        assert_eq!(
+            cleared_entry.state,
+            IdentityBootstrapState::Broken,
+            "only causes are pass-scoped; states are not touched here"
+        );
+
+        let pass_error =
+            IdentityRuntimeError::Internal("pass two: roster provider down".to_string());
+        let pass_detail = pass_error.to_string();
+        runtime.fail_identity_bootstrap(second, &pass_error);
+
+        let after = runtime.identity_bootstrap_status();
+        assert_eq!(after.error.as_deref(), Some(pass_detail.as_str()));
+        let entry_error = after
+            .identities
+            .get(&identity)
+            .and_then(|entry| entry.error.as_deref())
+            .ok_or_else(|| "a Broken entry must carry a reason".to_string())?;
+        assert!(
+            entry_error.contains("pass two: roster provider down"),
+            "an entry stamped by pass two must name pass two: {entry_error}"
+        );
+        assert!(
+            !entry_error.contains("pass one"),
+            "pass one's cause must not survive into pass two: {entry_error}"
         );
         Ok(())
     }

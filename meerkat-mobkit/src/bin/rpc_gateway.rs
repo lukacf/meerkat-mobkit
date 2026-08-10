@@ -17,13 +17,15 @@
 )]
 //! Phase 0b binary — JSON-RPC gateway bridging SDK clients to the unified runtime.
 
-/// Default tracing filter when `RUST_LOG` is unset: this crate's own targets
-/// at INFO, dependencies at WARN. Operationally significant boot phases (the
-/// one-time head-canonical conversion, continuity repair) report at INFO from
-/// `meerkat_mobkit`; the old blanket "warn" default hid them, and a 2026-07
-/// production deploy was aborted when a supervisor read a silent-but-working
-/// migration as a hang.
-const DEFAULT_TRACING_FILTER: &str = "warn,meerkat_mobkit=info,rpc_gateway=info";
+/// This binary's own tracing target. Feeds
+/// `gateway_composition::default_tracing_filter`, which builds the same
+/// filter string this binary used to carry as its own constant: this crate's
+/// own targets at INFO, dependencies at WARN. Operationally significant boot
+/// phases (the one-time head-canonical conversion, continuity repair) report
+/// at INFO from `meerkat_mobkit`; the old blanket "warn" default hid them,
+/// and a 2026-07 production deploy was aborted when a supervisor read a
+/// silent-but-working migration as a hang.
+const GATEWAY_TRACING_TARGET: &str = "rpc_gateway";
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
@@ -496,8 +498,10 @@ mod tests {
     #[test]
     fn default_tracing_filter_surfaces_own_info_keeps_deps_at_warn() {
         use tracing_subscriber::layer::SubscriberExt;
-        let filter = tracing_subscriber::EnvFilter::try_new(DEFAULT_TRACING_FILTER)
-            .expect("default filter must parse");
+        let filter = tracing_subscriber::EnvFilter::try_new(
+            meerkat_mobkit::gateway_composition::default_tracing_filter(GATEWAY_TRACING_TARGET),
+        )
+        .expect("default filter must parse");
         let subscriber = tracing_subscriber::registry().with(filter);
         tracing::subscriber::with_default(subscriber, || {
             assert!(
@@ -3841,11 +3845,19 @@ fn parse_gateway_agent_memory_config(
     // MOBKIT_AGENT_MEMORY_SELECTOR env fallback alike), so it is gone and
     // recall is the deterministic lexical path on every turn.
     //
-    // The key is still ACCEPTED, not rejected: `runtime_options` rejects
+    // The KEY is still ACCEPTED, not rejected: `runtime_options` rejects
     // unknown keys fail-loud, so dropping it from the supported set would
     // brick init for any deployment that pinned `selector = "off"` - a
-    // config that already asked for exactly today's behaviour. Anything
-    // other than off/empty gets a loud deprecation warning and is ignored.
+    // config that already asked for exactly today's behaviour.
+    //
+    // The VALUE is a separate question, and the answer is NOT
+    // warn-and-ignore: only off/empty is accepted, and every other value is
+    // REFUSED at init just below, with the reasoning stated there. Both
+    // halves are pinned by the unit test
+    // `retired_agent_memory_selector_accepts_off_and_refuses_the_rest`.
+    // Two SDK docstrings still describe the old accept-and-warn shape and
+    // are wrong about this gateway - `sdk/python/meerkat_mobkit/builder.py`
+    // and `sdk/typescript/src/builder.ts`. The code here is the authority.
     if let Some(value) = object.get("selector") {
         let value = value.as_str().map(str::trim).ok_or_else(|| {
             "runtime_options.agent_memory.selector must be a string \
@@ -4253,10 +4265,70 @@ fn parse_gateway_hygienist_config(
     Ok(config)
 }
 
-/// Original single-shot mode: reads request from env, runs once, prints response.
-fn run_single_shot() {
-    let request = std::env::var("MOBKIT_RPC_REQUEST")
-        .expect("MOBKIT_RPC_REQUEST must be set for rpc_gateway");
+/// Environment variable carrying the one request the no-argument mode
+/// answers. Set by the SDKs' per-call transports and by nothing else in this
+/// tree: `create_gateway_sync_transport` / `create_gateway_async_transport`
+/// (Python, private) and `createGatewaySyncTransport` /
+/// `createGatewayAsyncTransport` (TypeScript, exported).
+const SINGLE_SHOT_REQUEST_ENV: &str = "MOBKIT_RPC_REQUEST";
+
+/// Usage for a genuinely bare invocation: no `--persistent`, and no
+/// single-shot request in the environment either. That combination used to
+/// land on an `.expect()` panic whose message named an environment variable
+/// and never mentioned `--persistent`, which is the mode an operator running
+/// `./rpc_gateway` by hand actually wants.
+const BARE_INVOCATION_USAGE: &str = r#"rpc_gateway: no mode selected.
+
+usage:
+  rpc_gateway --persistent [--control-listen <tcp://host:port | uds:///path>]
+      The long-lived gateway. Reads one `mobkit/init` request on stdin, then
+      serves JSON-RPC over stdin/stdout until the host closes it. Every SDK
+      persistent transport and every deployment uses this mode.
+
+  MOBKIT_RPC_REQUEST='<one JSON-RPC request>' rpc_gateway
+      Single-shot module-plane probe: answers exactly one request against a
+      fixed built-in demo module and exits. It hosts no mob, no session and
+      no agent. The SDK per-call transports use this mode.
+
+  rpc_gateway --version"#;
+
+/// Single-shot mode: reads one request from the environment, answers it
+/// against a fixed built-in demo module, and exits.
+///
+/// RETAINED DELIBERATELY. The simplification program lists this mode for
+/// deletion, but the TypeScript SDK still EXPORTS the constructors that spawn
+/// this binary with no arguments - `MobkitTypedClient` and
+/// `MobkitAsyncClient.fromGatewayBin`, plus the two transport factories,
+/// under an explicit "Low-level clients (backward compat)" heading in
+/// `sdk/typescript/src/index.ts`. Deleting the mode here without deleting
+/// those exports turns every downstream caller into a runtime failure with no
+/// compile-time signal anywhere. The Python twins are already private
+/// (`meerkat_mobkit._client`, pinned off the public surface by
+/// `TestLegacySymbolsRemoved`), but `sdk/python/scripts/productization.py`
+/// still drives them. The cut is one atomic change across this file,
+/// `handle_mobkit_rpc_json` in `src/rpc.rs`, and the SDK factories, and it is
+/// gated on the downstream census.
+///
+/// `args` is argv without the program name, used only to name unrecognized
+/// flags in the usage error.
+fn run_single_shot(args: &[String]) {
+    let request = match std::env::var(SINGLE_SHOT_REQUEST_ENV) {
+        Ok(request) => request,
+        Err(std::env::VarError::NotPresent) => {
+            if !args.is_empty() {
+                eprintln!("rpc_gateway: unrecognized arguments: {}", args.join(" "));
+            }
+            eprintln!("{BARE_INVOCATION_USAGE}");
+            std::process::exit(2);
+        }
+        Err(std::env::VarError::NotUnicode(_)) => {
+            eprintln!(
+                "rpc_gateway: {SINGLE_SHOT_REQUEST_ENV} is set but is not valid UTF-8; it must \
+                 be one JSON-RPC request object"
+            );
+            std::process::exit(2);
+        }
+    };
 
     let config = MobKitConfig {
         modules: vec![shell_module(
@@ -6906,13 +6978,10 @@ fn agent_tool_error(message: String) -> AgentError {
 
 /// Persistent mode: reads JSON-RPC over stdin, bootstraps unified runtime, serves HTTP.
 fn run_persistent(control_listen: Option<ControlListenAddr>) {
-    // Meerkat 0.7's generated machine-authority apply path needs deep worker
-    // stacks (mirrors meerkat-rpc's explicit 16 MiB tokio worker sizing).
-    match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_stack_size(16 * 1024 * 1024)
-        .build()
-    {
+    // Deep worker stacks for the generated machine-authority apply path; the
+    // builder is shared with mobkit_gateway, the failure reporting is not
+    // (this binary has no init handshake to answer at this point).
+    match meerkat_mobkit::gateway_composition::gateway_tokio_runtime() {
         Ok(runtime) => runtime.block_on(run_persistent_inner(control_listen)),
         Err(error) => {
             eprintln!("failed to build tokio runtime: {error}");
@@ -6935,15 +7004,9 @@ async fn run_persistent_inner(control_listen: Option<ControlListenAddr>) {
     // the old blanket "warn" default they were invisible, and a 2026-07
     // production deploy was aborted because a supervisor read a
     // silent-but-working migration as a hang. RUST_LOG still overrides
-    // everything.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_TRACING_FILTER)),
-        )
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .init();
+    // everything. Shared with mobkit_gateway so the two gateways cannot
+    // drift on observability posture.
+    meerkat_mobkit::gateway_composition::init_gateway_tracing(GATEWAY_TRACING_TARGET);
 
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
@@ -8873,28 +8936,16 @@ external_addressable = true
         schedule_firing_host_binding,
     )) = schedule_host_inputs
     {
-        let mob_state = runtime.mob_runtime().agent_mob_mcp_state();
-        mob_target_registry.set_mob_state(mob_state.clone());
-        match meerkat_mobkit::schedule_wiring::repair_resumable_session_targets_to_mob_members(
+        // Shared with mobkit_gateway. Kept a separate call from the host spawn
+        // below on purpose: this gateway registers the steward dream BETWEEN
+        // the two, and folding them into one helper would have silently
+        // reordered a durable-store boot sequence.
+        let mob_state = meerkat_mobkit::gateway_composition::adopt_schedule_mob_targets(
+            &runtime,
             &schedule_service,
             &mob_target_registry,
         )
-        .await
-        {
-            Ok(repaired) if repaired > 0 => {
-                tracing::info!(
-                    repaired,
-                    "repaired persisted resumable-session schedules to identity mob targets"
-                );
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "failed to repair persisted resumable-session schedules to identity mob targets",
-                );
-            }
-        }
+        .await;
         // §8.5 / upstream ask 7 (P5): drive the memory steward's dream through
         // the durable schedule host instead of a bare interval loop. Register
         // the dream as a host runnable and find-or-create its cadence schedule
@@ -8939,131 +8990,29 @@ external_addressable = true
                 "failed to ensure steward dream schedule; the steward will not dream on this gateway",
             );
         }
-        // The firing driver discards its own tick errors upstream, so the
-        // claim watchdog is the only thing that turns "everything stays
-        // pending forever" into a row-level diagnosis.
-        //
-        // Stated as a RESIDENT LIVENESS CONTRACT rather than a promise about
-        // a future log line: the handle below is held for the process
-        // lifetime, and these are the numbers it holds the pipeline to. A
-        // reader who greps the boot log now learns the cadence and the
-        // overdue threshold instead of learning that a watchdog exists.
-        let watchdog_config =
-            meerkat_mobkit::schedule_wiring::ScheduleClaimWatchdogConfig::default();
-        tracing::info!(
-            poll_interval_secs = watchdog_config.poll_interval.as_secs(),
-            overdue_threshold_secs = watchdog_config.overdue_threshold.as_secs(),
-            heartbeat_polls = watchdog_config.heartbeat_polls,
-            "schedule claim watchdog resident: probes the firing pipeline on this cadence, ERROR \
-             on a new or changed stall report, WARN heartbeat while it persists, INFO on recovery"
-        );
-        let watchdog = meerkat_mobkit::schedule_wiring::spawn_schedule_claim_watchdog(
-            schedule_service.clone(),
-            schedule_store_path.clone(),
-            watchdog_config,
-        );
-        let schedule_service_for_probe = schedule_service.clone();
-        let schedule_host =
-            meerkat_mobkit::schedule_wiring::spawn_schedule_host_with_identity_runtime(
-                service,
-                adapter,
-                schedule_service,
+        // Shared with mobkit_gateway: the watchdog liveness contract log, the
+        // host spawn, the firing-intent gate bind and the boot probe were
+        // byte-identical in both binaries, every log string included. The one
+        // real divergence, this gateway's runnable host (steward dream + the
+        // SDK-declared `runtime_options.host_runnables` composed just above),
+        // is now a named FIELD instead of a positional argument nobody could
+        // see was a divergence.
+        let (schedule_host, watchdog) =
+            meerkat_mobkit::gateway_composition::spawn_gateway_schedule_host(
+                &runtime,
                 mob_state,
-                runtime.mob_handle(),
-                runtime.identity_runtime().cloned(),
-                runnable_host,
-                workgraph_service.clone(),
-                schedule_owner_id.clone(),
-            );
-        if schedule_host.is_some() {
-            // The firing host now drains the store: firing-intent schedule
-            // writes (create/update/resume) are admissible from here on
-            // (Bug C stopgap — the gate refused them until this point).
-            schedule_firing_host_binding.bind();
-            // One probe NOW, with the host up, so the boot log carries an
-            // observed verdict about the firing pipeline instead of a claim
-            // about a watchdog that has not ticked yet. Deliberately WARN,
-            // not ERROR, for a stall found here: a gateway that was down
-            // across a due time legitimately restarts with a backlog the
-            // host has not drained yet. The resident watchdog above is what
-            // escalates - if the same report is still there on its cadence,
-            // it is a real stall and it says so at ERROR.
-            match meerkat_mobkit::schedule_wiring::probe_schedule_firing_pipeline(
-                &schedule_service_for_probe,
-                &schedule_store_path,
-                watchdog_config.overdue_threshold,
+                meerkat_mobkit::gateway_composition::GatewayScheduleHostInputs {
+                    schedule_service,
+                    session_service: service,
+                    runtime_adapter: adapter,
+                    schedule_store_path,
+                    firing_host_binding: schedule_firing_host_binding,
+                    runnable_host,
+                    workgraph_service: workgraph_service.clone(),
+                    owner_id: schedule_owner_id.clone(),
+                },
             )
-            .await
-            {
-                meerkat_mobkit::schedule_wiring::ScheduleFiringProbe::Healthy => {
-                    tracing::info!("schedule firing pipeline healthy at boot");
-                }
-                meerkat_mobkit::schedule_wiring::ScheduleFiringProbe::Stalled { report } => {
-                    tracing::warn!(
-                        %report,
-                        poll_interval_secs = watchdog_config.poll_interval.as_secs(),
-                        "schedule firing pipeline is not delivering at boot; the resident claim \
-                         watchdog re-probes on its cadence and escalates to ERROR if this \
-                         persists (a restart backlog clears on the first host ticks)"
-                    );
-                }
-            }
-        } else {
-            // Present-state verdict, not a prediction: the host is NOT
-            // running, and the write gate is therefore still closed. Both
-            // halves are observed facts at this point in boot.
-            tracing::warn!(
-                "schedule host did not spawn over the attached schedule store: no firing driver \
-                 is running in this gateway, and the firing-intent write gate is consequently \
-                 still closed, so create/update/resume are being refused rather than accepted \
-                 durably"
-            );
-            // The old tail of that sentence ("into a store nothing drains")
-            // generalized a process-local fact to the whole store. meerkat
-            // 0.8.22 lets the store answer that question itself: the executor
-            // lease is singular per realm store, so the holder (if any) is
-            // named rather than guessed at. It is one instantaneous read, not
-            // a liveness verdict - a peer mid-restart reads vacant, and a
-            // crashed predecessor still reads held until its lease expires,
-            // so each arm below says what it actually proves. Read only: the
-            // observation carries no bearer token and cannot take firing
-            // authority away from whoever holds it.
-            match meerkat_mobkit::schedule_wiring::observe_schedule_firing_authority(
-                &schedule_service_for_probe,
-            )
-            .await
-            {
-                meerkat_mobkit::schedule_wiring::ScheduleFiringAuthority::Held {
-                    owner_id,
-                    fencing_token,
-                    expires_in_secs,
-                } => tracing::warn!(
-                    executor_owner_id = %owner_id,
-                    fencing_token,
-                    lease_expires_in_secs = expires_in_secs,
-                    "the schedule store itself reports SOME process holding the realm's singular \
-                     firing authority, so durable schedules may still be drained elsewhere; note \
-                     the holder can also be this deployment's own crashed predecessor, whose \
-                     lease stays live until it expires, so check the owner id and expiry above \
-                     before concluding anything is actually draining. This gateway's \
-                     firing-intent write gate stays closed either way: it gates on a LOCAL host"
-                ),
-                meerkat_mobkit::schedule_wiring::ScheduleFiringAuthority::Vacant => tracing::warn!(
-                    "the schedule store itself reports its firing authority vacant AT THIS \
-                     INSTANT: no process holds the executor lease. A peer gateway mid-restart is \
-                     vacant only until its first tick, so this is proof of an unattended store \
-                     only if it persists - the resident claim watchdog is what escalates once \
-                     durable work actually goes unclaimed"
-                ),
-                meerkat_mobkit::schedule_wiring::ScheduleFiringAuthority::Unobservable {
-                    detail,
-                } => tracing::warn!(
-                    %detail,
-                    "the schedule store cannot report firing authority, so whether any other \
-                     process drains this store is unknown from here"
-                ),
-            }
-        }
+            .await;
         (schedule_host, Some(watchdog))
     } else {
         if !gateway_options.host_runnables.is_empty() {
@@ -9279,7 +9228,12 @@ external_addressable = true
         loop {
             let request_line = tokio::select! {
                 line = rpc_rx.recv() => line,
-                _ = tokio::signal::ctrl_c() => {
+                // SIGINT *and* SIGTERM: a container stop sends SIGTERM, and
+                // waiting on ctrl_c alone meant the graceful path never ran
+                // on an ordinary deploy, leaving the schedule executor lease
+                // held for up to its duration. See
+                // `meerkat_mobkit::shutdown_signal`.
+                _ = meerkat_mobkit::shutdown_signal::shutdown_signal() => {
                     interrupted_with_open_stdin = true;
                     None
                 },
@@ -9443,13 +9397,14 @@ fn main() {
     // here so a typo is a launch error, not a silently ignored flag. The
     // bound address is reported back in the mobkit/init response as
     // `control_listen_address` (important for tcp://host:0 ephemeral ports).
-    let control_listen = match parse_control_listen_arg(&args[1..]) {
-        Ok(value) => value,
-        Err(message) => {
-            eprintln!("{message}");
-            std::process::exit(2);
-        }
-    };
+    let control_listen =
+        match meerkat_mobkit::gateway_composition::parse_control_listen_arg(&args[1..]) {
+            Ok(value) => value,
+            Err(message) => {
+                eprintln!("{message}");
+                std::process::exit(2);
+            }
+        };
     if args.iter().any(|a| a == "--persistent") {
         run_persistent(control_listen);
     } else {
@@ -9459,23 +9414,8 @@ fn main() {
             );
             std::process::exit(2);
         }
-        run_single_shot();
+        run_single_shot(&args[1..]);
     }
-}
-
-/// Extract and validate the optional `--control-listen <addr>` flag.
-fn parse_control_listen_arg(args: &[String]) -> Result<Option<ControlListenAddr>, String> {
-    let Some(position) = args.iter().position(|arg| arg == "--control-listen") else {
-        return Ok(None);
-    };
-    let Some(value) = args.get(position + 1) else {
-        return Err(
-            "--control-listen requires an address (tcp://host:port or uds:///path)".to_string(),
-        );
-    };
-    ControlListenAddr::parse(value)
-        .map(Some)
-        .map_err(|error| format!("--control-listen: {error}"))
 }
 
 // ---------------------------------------------------------------------------

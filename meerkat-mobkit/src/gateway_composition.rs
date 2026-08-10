@@ -1,0 +1,517 @@
+//! Shared composition-root scaffolding for the two gateway binaries
+//! (simplification item 10, "unify gateway composition roots").
+//!
+//! # Charter, and how it differs from [`crate::gateway_wiring`]
+//!
+//! [`crate::gateway_wiring`] owns ONE thing: opening the identity substrate
+//! (continuity store + lease provider) so both gateways get the same durable
+//! identity semantics. That module is deliberately narrow.
+//!
+//! This module owns the COMPOSITION ROOT itself: the process-level boot
+//! scaffolding a gateway binary performs, in order, around the runtime it
+//! builds. Two bands live here today:
+//!
+//! 1. The boot preamble - things done before any runtime exists (tokio
+//!    runtime, tracing subscriber, argv parsing).
+//! 2. Post-bootstrap surface attachment that both binaries perform with
+//!    identical observable behaviour (the schedule firing host).
+//!
+//! The rule for adding to this module: a seam belongs here when BOTH
+//! binaries must do it and the observable behaviour (log strings, ordering,
+//! error posture) is already identical. Substrate construction belongs in
+//! `gateway_wiring`; if a seam here starts opening stores, it has forked the
+//! charter and should move.
+//!
+//! # Surveyed divergence still outstanding (item 10 remainder)
+//!
+//! This is the structural history the item asks for. Every claim below was
+//! read off the source in this tree, and is cited BY SYMBOL, never by line
+//! number: both binaries are under active edit, and a line-numbered survey
+//! decays into a survey that sends its reader to the wrong place while still
+//! looking authoritative.
+//!
+//! The two roots are `run` in `src/bin/mobkit_gateway.rs` (~570 lines) and
+//! `run_persistent_inner` in `src/bin/rpc_gateway.rs` (~2,390 lines).
+//!
+//! - **Init params.** `mobkit_gateway` deserializes a typed `InitParams`
+//!   struct straight off the TOP LEVEL of `params` (`parse_init_request`).
+//!   `rpc_gateway` reads exactly one ad-hoc top-level key
+//!   (`params.get("mob_config")`) and routes everything else through
+//!   `parse_gateway_runtime_options`, which reads the NESTED
+//!   `params.runtime_options` object. These are not merely two different
+//!   types: `console_read_only` and `compaction` exist in BOTH vocabularies
+//!   at DIFFERENT nesting depths, so converging them is wire-visible to both
+//!   SDKs. They also disagree on strictness - `InitParams` derives a plain
+//!   `Deserialize` and silently ignores unknown keys, while
+//!   `parse_gateway_runtime_options` refuses them ("unsupported
+//!   runtime_options fields"). Largest single remaining piece.
+//!
+//! - **Bootstrap entry point.** `mobkit_gateway` calls
+//!   `UnifiedRuntime::bootstrap`, which keeps the in-memory metadata store.
+//!   `rpc_gateway` calls `bootstrap_with_options` and passes a
+//!   `SqliteMetadataStore` whenever `persistent_state` is set. So the
+//!   console metadata cursor is durable on one binary and declared-ephemeral
+//!   on the other, for the same on-disk state directory.
+//!
+//! - **Console log store.** `rpc_gateway` installs `SqliteConsoleLogStore`
+//!   for persistent launches (`set_console_log_store`). `mobkit_gateway`
+//!   never calls `set_console_log_store`; its console timeline is in-memory
+//!   by contract, declared through `StorageSlotSummary::declared_ephemeral`
+//!   for both the `console` and the `metadata` slot.
+//!
+//! - **Identity mechanism.** Two different attachment paths, not two
+//!   configurations of one. `mobkit_gateway` builds an
+//!   `IdentityFirstRuntimeContext` and calls
+//!   `attach_identity_first_context`, default ON
+//!   (`params.identity_first.unwrap_or(true)`). `rpc_gateway` builds a
+//!   `crate::rpc::IdentityFirstContext` and threads it through the stdio
+//!   dispatcher rather than attaching it to the runtime; it is gated on the
+//!   SDK's `has_roster_provider` flag.
+//!
+//! - **Console identity seam.** Each binary installs a DIFFERENT one, and
+//!   neither installs the other's: `mobkit_gateway` calls
+//!   `runtime.set_console_identity_roster`, `rpc_gateway` calls
+//!   `runtime.set_console_operator_resolver`.
+//!
+//! - **Memory / steward / gating / job surfaces.** Present only in
+//!   `rpc_gateway`: `GatewayMobPurposeSource`, `GatewayMemoryGatingBridge`,
+//!   `GatewayMemoryConflictBridge`, the `StewardEngine` slot,
+//!   `register_gating_resolution_observer`, `set_memory_panel_store`,
+//!   `set_error_hook` and `set_job_health_projection`. `mobkit_gateway`
+//!   wires none of them, so the agent-memory panel, the promotion gate and
+//!   the job-health projection are structurally absent from the
+//!   console-only gateway.
+//!
+//! - **Runnable hosts.** `rpc_gateway` composes a `gateway_runnable_host`
+//!   from the steward dream plus SDK-declared
+//!   `runtime_options.host_runnables`, and warns when they are configured
+//!   with no host to run them. `mobkit_gateway` passes `None` and has no
+//!   host-runnable vocabulary at all. This is the one divergence
+//!   [`spawn_gateway_schedule_host`] below makes explicit rather than
+//!   implicit: it is now a named field, not a hard-coded argument.
+//!
+//! - **Callback plane.** `rpc_gateway` owns `StdioCallbackBridge`,
+//!   `DetachedCallbackJobRuntime`, `CallbackToolDispatcher` and
+//!   `StdioCallbackAgentBuilder` - ~2,600 lines from the first of those to
+//!   the start of `run_persistent`. `mobkit_gateway` has no callback plane;
+//!   it builds agents directly through `FactoryAgentBuilder`. These cannot
+//!   converge without the init-param convergence above, because the callback
+//!   plane only exists when an SDK host is on the other end of stdin.
+//!
+//! - **Registry / resume.** `mobkit_gateway` maintains a cross-process
+//!   runtime registry keyed by a config fingerprint and can answer
+//!   `launch_state: "resumed"` without booting a runtime at all.
+//!   `rpc_gateway` has no such concept.
+//!
+//! Called by BOTH binaries with matching semantics, recorded so the next
+//! reader does not re-survey them. This is the set that was CHECKED, not a
+//! closed census, and several of these are called twice per binary (once in
+//! the persistent branch and once in the ephemeral one), so do not read a
+//! single call site as the whole story: `set_contact_directory`,
+//! `set_access_controller`, `set_gateway_peer_keys`,
+//! `start_control_listener`, `with_session_write_epochs`,
+//! `with_session_runtime_adapter`, `with_workgraph_service`,
+//! `with_workgraph_admission_slot`, `with_workgraph_admission_sidecar`,
+//! `with_runtime_archived_terminal_authority`,
+//! `with_committed_boundary_recoverer`, `with_runtime_services`,
+//! `with_image_generation_machine`, and the direct `spec.runtime_adapter` /
+//! `spec.resolved_storage` / `spec.binary_blob_store` /
+//! `spec.committed_boundary_recoverer` assignments.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use meerkat::surface::ScheduleHostHandle;
+use meerkat::{
+    PersistentSessionService, ScheduleRunnableHost, ScheduleService, SessionAgentBuilder,
+    WorkGraphService,
+};
+use meerkat_mob_mcp::MobMcpState;
+use meerkat_runtime::MeerkatMachine;
+
+use crate::runtime::cross_mob_control::ControlListenAddr;
+use crate::schedule_wiring::{
+    ScheduleClaimWatchdogConfig, ScheduleFiringHostBinding, ScheduleMobTargetRegistry,
+};
+use crate::unified_runtime::UnifiedRuntime;
+
+// ---------------------------------------------------------------------------
+// Boot preamble
+// ---------------------------------------------------------------------------
+
+/// Worker stack size for gateway tokio runtimes.
+///
+/// Meerkat's generated machine-authority apply path needs deep worker stacks;
+/// this mirrors meerkat-rpc's explicit 16 MiB tokio worker sizing. Both
+/// gateway binaries had this constant inline and identical.
+const GATEWAY_WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
+
+/// Build the multi-threaded tokio runtime both gateway binaries run on.
+///
+/// The error is returned rather than handled: the two binaries report a
+/// build failure differently on purpose - `mobkit_gateway` emits a JSON-RPC
+/// init error on stdout (its parent is an SDK reading the handshake),
+/// `rpc_gateway` writes to stderr. Only the builder itself is shared.
+pub fn gateway_tokio_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(GATEWAY_WORKER_STACK_BYTES)
+        .build()
+}
+
+/// Default tracing filter for a gateway binary when `RUST_LOG` is unset:
+/// this crate's own targets at INFO, the binary's own target at INFO,
+/// dependencies at WARN.
+///
+/// The binary target is a parameter and NOT a shared constant. Collapsing
+/// the two filters into one string would silence whichever binary lost its
+/// target, and the operationally significant boot phases (the one-time
+/// head-canonical conversion, continuity repair, storage-verb migration
+/// progress) report at INFO. A 2026-07 production deploy was aborted because
+/// a supervisor read a silent-but-working migration as a hang.
+pub fn default_tracing_filter(binary_target: &str) -> String {
+    format!("warn,meerkat_mobkit=info,{binary_target}=info")
+}
+
+/// Install the gateway tracing subscriber on stderr.
+///
+/// Stderr, never stdout: stdout carries the init JSON handshake and the
+/// storage verbs' report output. `RUST_LOG` overrides the default filter.
+pub fn init_gateway_tracing(binary_target: &str) {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new(default_tracing_filter(binary_target))
+            }),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
+}
+
+/// Extract and validate the optional `--control-listen <addr>` flag.
+///
+/// `args` is argv WITHOUT the program name at both call sites, arrived at
+/// two different ways: `mobkit_gateway` collects `std::env::args().skip(1)`,
+/// `rpc_gateway` collects the whole argv and passes `&args[1..]`. The scan is
+/// by exact flag match, so the distinction would not matter anyway, but it is
+/// stated because it did not hold when this doc was first written.
+pub fn parse_control_listen_arg(args: &[String]) -> Result<Option<ControlListenAddr>, String> {
+    let Some(position) = args.iter().position(|arg| arg == "--control-listen") else {
+        return Ok(None);
+    };
+    let Some(value) = args.get(position + 1) else {
+        return Err(
+            "--control-listen requires an address (tcp://host:port or uds:///path)".to_string(),
+        );
+    };
+    ControlListenAddr::parse(value)
+        .map(Some)
+        .map_err(|error| format!("--control-listen: {error}"))
+}
+
+// ---------------------------------------------------------------------------
+// Schedule firing host
+// ---------------------------------------------------------------------------
+
+/// Everything [`spawn_gateway_schedule_host`] consumes.
+///
+/// A struct rather than a long argument list because the two binaries built
+/// their tuples in DIFFERENT field orders: `rpc_gateway` puts the
+/// `MeerkatMachine` adapter fourth, right after the session service, while
+/// `mobkit_gateway`'s `ScheduleHostInputs` alias has no adapter at all and a
+/// later `.map` APPENDS it last. That is exactly the kind of divergence that
+/// silently swaps two same-typed arguments.
+pub struct GatewayScheduleHostInputs<B: SessionAgentBuilder + 'static> {
+    pub schedule_service: ScheduleService,
+    /// The CONCRETE persistent service: the runtime-backed firing host needs
+    /// the typed form, not the erased `dyn MobSessionService` the bootstrap
+    /// spec consumes.
+    pub session_service: Arc<PersistentSessionService<B>>,
+    pub runtime_adapter: Arc<MeerkatMachine>,
+    pub schedule_store_path: PathBuf,
+    pub firing_host_binding: ScheduleFiringHostBinding,
+    /// Host-runnable targets. `rpc_gateway` composes the steward dream plus
+    /// SDK-declared runnables here; `mobkit_gateway` has none.
+    pub runnable_host: Option<Arc<dyn ScheduleRunnableHost>>,
+    pub workgraph_service: Option<WorkGraphService>,
+    pub owner_id: String,
+}
+
+/// Point the mob-target registry at the live mob state and repair persisted
+/// resumable-session schedules to identity mob targets.
+///
+/// Split out from [`spawn_gateway_schedule_host`] deliberately:
+/// `rpc_gateway` performs steward-dream registration BETWEEN this step and
+/// the host spawn, and folding both into one call would have reordered a
+/// durable-store boot sequence to no benefit. Returns the mob state so the
+/// caller can hand it to the host spawn.
+pub async fn adopt_schedule_mob_targets(
+    runtime: &UnifiedRuntime,
+    schedule_service: &ScheduleService,
+    mob_target_registry: &ScheduleMobTargetRegistry,
+) -> Option<Arc<MobMcpState>> {
+    let mob_state = runtime.mob_runtime().agent_mob_mcp_state();
+    mob_target_registry.set_mob_state(mob_state.clone());
+    match crate::schedule_wiring::repair_resumable_session_targets_to_mob_members(
+        schedule_service,
+        mob_target_registry,
+    )
+    .await
+    {
+        Ok(repaired) if repaired > 0 => {
+            tracing::info!(
+                repaired,
+                "repaired persisted resumable-session schedules to identity mob targets"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "failed to repair persisted resumable-session schedules to identity mob targets",
+            );
+        }
+    }
+    mob_state
+}
+
+/// Spawn the resident claim watchdog and the runtime-backed schedule firing
+/// host, bind the firing-intent write gate if the host came up, and report
+/// one observed verdict about the pipeline.
+///
+/// Both gateways ran byte-identical versions of this block, including every
+/// log string. The only behavioural difference was the runnable host, which
+/// is now the named [`GatewayScheduleHostInputs::runnable_host`] field.
+///
+/// Ordering is load-bearing and preserved exactly: the watchdog contract is
+/// logged BEFORE the watchdog is spawned, `firing_host_binding.bind()`
+/// happens only AFTER the host is confirmed up (binding earlier would admit
+/// firing-intent writes into a store nothing local drains), and the probe
+/// runs only on the bound path.
+pub async fn spawn_gateway_schedule_host<B: SessionAgentBuilder + 'static>(
+    runtime: &UnifiedRuntime,
+    mob_state: Option<Arc<MobMcpState>>,
+    inputs: GatewayScheduleHostInputs<B>,
+) -> (Option<ScheduleHostHandle>, tokio::task::JoinHandle<()>) {
+    let GatewayScheduleHostInputs {
+        schedule_service,
+        session_service,
+        runtime_adapter,
+        schedule_store_path,
+        firing_host_binding,
+        runnable_host,
+        workgraph_service,
+        owner_id,
+    } = inputs;
+    // The firing driver discards its own tick errors upstream, so the claim
+    // watchdog is the only thing that turns "everything stays pending
+    // forever" into a row-level diagnosis.
+    //
+    // Stated as a RESIDENT LIVENESS CONTRACT rather than a promise about a
+    // future log line: the handle returned below is held for the process
+    // lifetime, and these are the numbers it holds the pipeline to. A reader
+    // who greps the boot log now learns the cadence and the overdue
+    // threshold instead of learning that a watchdog exists.
+    let watchdog_config = ScheduleClaimWatchdogConfig::default();
+    tracing::info!(
+        poll_interval_secs = watchdog_config.poll_interval.as_secs(),
+        overdue_threshold_secs = watchdog_config.overdue_threshold.as_secs(),
+        heartbeat_polls = watchdog_config.heartbeat_polls,
+        "schedule claim watchdog resident: probes the firing pipeline on this cadence, ERROR on \
+         a new or changed stall report, WARN heartbeat while it persists, INFO on recovery"
+    );
+    let watchdog = crate::schedule_wiring::spawn_schedule_claim_watchdog(
+        schedule_service.clone(),
+        schedule_store_path.clone(),
+        watchdog_config,
+    );
+    let schedule_service_for_probe = schedule_service.clone();
+    let schedule_host = crate::schedule_wiring::spawn_schedule_host_with_identity_runtime(
+        session_service,
+        runtime_adapter,
+        schedule_service,
+        mob_state,
+        runtime.mob_handle(),
+        runtime.identity_runtime().cloned(),
+        runnable_host,
+        workgraph_service,
+        owner_id,
+    );
+    if schedule_host.is_some() {
+        // The firing host now drains the store: firing-intent schedule writes
+        // (create/update/resume) are admissible from here on (Bug C stopgap -
+        // the gate refused them until this point).
+        firing_host_binding.bind();
+        // One probe NOW, with the host up, so the boot log carries an
+        // observed verdict about the firing pipeline instead of a claim about
+        // a watchdog that has not ticked yet. Deliberately WARN, not ERROR,
+        // for a stall found here: a gateway that was down across a due time
+        // legitimately restarts with a backlog the host has not drained yet.
+        // The resident watchdog above is what escalates - if the same report
+        // is still there on its cadence, it is a real stall and it says so at
+        // ERROR.
+        match crate::schedule_wiring::probe_schedule_firing_pipeline(
+            &schedule_service_for_probe,
+            &schedule_store_path,
+            watchdog_config.overdue_threshold,
+        )
+        .await
+        {
+            crate::schedule_wiring::ScheduleFiringProbe::Healthy => {
+                tracing::info!("schedule firing pipeline healthy at boot");
+            }
+            crate::schedule_wiring::ScheduleFiringProbe::Stalled { report } => {
+                tracing::warn!(
+                    %report,
+                    poll_interval_secs = watchdog_config.poll_interval.as_secs(),
+                    "schedule firing pipeline is not delivering at boot; the resident claim \
+                     watchdog re-probes on its cadence and escalates to ERROR if this persists \
+                     (a restart backlog clears on the first host ticks)"
+                );
+            }
+        }
+    } else {
+        // Present-state verdict, not a prediction: the host is NOT running,
+        // and the write gate is therefore still closed. Both halves are
+        // observed facts at this point in boot.
+        tracing::warn!(
+            "schedule host did not spawn over the attached schedule store: no firing driver is \
+             running in this gateway, and the firing-intent write gate is consequently still \
+             closed, so create/update/resume are being refused rather than accepted durably"
+        );
+        // The old tail of that sentence ("into a store nothing drains")
+        // generalized a process-local fact to the whole store. meerkat 0.8.22
+        // lets the store answer that question itself: the executor lease is
+        // singular per realm store, so the holder (if any) is named rather
+        // than guessed at. It is one instantaneous read, not a liveness
+        // verdict - a peer mid-restart reads vacant, and a crashed
+        // predecessor still reads held until its lease expires, so each arm
+        // below says what it actually proves. Read only: the observation
+        // carries no bearer token and cannot take firing authority away from
+        // whoever holds it.
+        match crate::schedule_wiring::observe_schedule_firing_authority(&schedule_service_for_probe)
+            .await
+        {
+            // Bound as `holder_id`, not `owner_id`, for readability only -
+            // shadowing the moved-from `owner_id` input would compile fine,
+            // but this arm reports ANOTHER process's identity, and neither
+            // original call site had a name that could be confused with it
+            // in scope here (they used `schedule_owner_id` / `runtime_id`).
+            // The log FIELD name is unchanged, so the envelope is identical.
+            crate::schedule_wiring::ScheduleFiringAuthority::Held {
+                owner_id: holder_id,
+                fencing_token,
+                expires_in_secs,
+            } => tracing::warn!(
+                executor_owner_id = %holder_id,
+                fencing_token,
+                lease_expires_in_secs = expires_in_secs,
+                "the schedule store itself reports SOME process holding the realm's singular \
+                 firing authority, so durable schedules may still be drained elsewhere; note the \
+                 holder can also be this deployment's own crashed predecessor, whose lease stays \
+                 live until it expires, so check the owner id and expiry above before concluding \
+                 anything is actually draining. This gateway's firing-intent write gate stays \
+                 closed either way: it gates on a LOCAL host"
+            ),
+            crate::schedule_wiring::ScheduleFiringAuthority::Vacant => tracing::warn!(
+                "the schedule store itself reports its firing authority vacant AT THIS INSTANT: \
+                 no process holds the executor lease. A peer gateway mid-restart is vacant only \
+                 until its first tick, so this is proof of an unattended store only if it \
+                 persists - the resident claim watchdog is what escalates once durable work \
+                 actually goes unclaimed"
+            ),
+            crate::schedule_wiring::ScheduleFiringAuthority::Unobservable { detail } => {
+                tracing::warn!(
+                    %detail,
+                    "the schedule store cannot report firing authority, so whether any other \
+                     process drains this store is unknown from here"
+                );
+            }
+        }
+    }
+    (schedule_host, watchdog)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Golden envelope for the shared filter builder: the exact strings the
+    /// two binaries carried as their own constants before this module
+    /// existed. This is a byte-level pin, not a behavioural one - each
+    /// binary keeps its own `EnvFilter`-level test proving its target
+    /// actually passes at INFO while dependencies stay at WARN.
+    #[test]
+    fn default_tracing_filter_reproduces_both_binary_constants() {
+        assert_eq!(
+            default_tracing_filter("rpc_gateway"),
+            "warn,meerkat_mobkit=info,rpc_gateway=info"
+        );
+        assert_eq!(
+            default_tracing_filter("mobkit_gateway"),
+            "warn,meerkat_mobkit=info,mobkit_gateway=info"
+        );
+    }
+
+    /// The filter must keep the crate's own target at INFO for every binary:
+    /// dropping `meerkat_mobkit=info` is the regression that made a working
+    /// migration look like a hang, and it would not be visible in a test
+    /// that only checked the binary's own target.
+    #[test]
+    fn default_tracing_filter_always_keeps_the_crate_at_info() {
+        for target in ["rpc_gateway", "mobkit_gateway", "some_future_gateway"] {
+            let filter = default_tracing_filter(target);
+            assert!(
+                filter.contains("meerkat_mobkit=info"),
+                "filter for {target} dropped the crate's own INFO target: {filter}"
+            );
+            assert!(
+                filter.starts_with("warn,"),
+                "filter for {target} lost the dependency WARN default: {filter}"
+            );
+        }
+    }
+
+    #[test]
+    fn control_listen_arg_absent_is_none() -> Result<(), String> {
+        let args = vec!["--persistent".to_string()];
+        assert!(parse_control_listen_arg(&args)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn control_listen_arg_parses_tcp() -> Result<(), String> {
+        let args = vec![
+            "--persistent".to_string(),
+            "--control-listen".to_string(),
+            "tcp://127.0.0.1:0".to_string(),
+        ];
+        assert!(parse_control_listen_arg(&args)?.is_some());
+        Ok(())
+    }
+
+    /// A trailing `--control-listen` is a launch error, not a silently
+    /// ignored flag: both binaries exit 2 on this.
+    #[test]
+    fn control_listen_arg_without_value_is_an_error() {
+        let args = vec!["--control-listen".to_string()];
+        let error = parse_control_listen_arg(&args).err().unwrap_or_default();
+        assert!(
+            error.contains("requires an address"),
+            "unexpected error text: {error}"
+        );
+    }
+
+    /// `inproc` has no listener; the refusal must name the flag so the
+    /// operator can tell which argument was rejected.
+    #[test]
+    fn control_listen_arg_rejects_inproc_and_names_the_flag() {
+        let args = vec!["--control-listen".to_string(), "inproc".to_string()];
+        let error = parse_control_listen_arg(&args).err().unwrap_or_default();
+        assert!(
+            error.starts_with("--control-listen: "),
+            "refusal must name the flag: {error}"
+        );
+    }
+}

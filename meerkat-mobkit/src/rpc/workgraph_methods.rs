@@ -34,6 +34,17 @@
 //!   upstream turn overlays resolve nowhere else.
 //! - The `attention/list` `status` filter accepts the SDKs' bare-string
 //!   spelling beside upstream's internally-tagged object form.
+//! - `events` already carries meerkat's TRANSACTIONAL `WorkGraphFact` rows:
+//!   `WorkGraphEvent::facts` serializes verbatim through this dispatch (it is
+//!   only elided when empty). `facts` is its projected sibling - the same
+//!   ledger page reduced to
+//!   [`WorkGraphFactEnvelope`](crate::workgraph_events::WorkGraphFactEnvelope)
+//!   rows, which is exactly the shape the fact stream publishes. It exists so
+//!   a reconnecting stream client has a catch-up read in the stream's own
+//!   shape instead of every SDK re-deriving the projection. Facts are LOSSY
+//!   WAKE ACCELERANTS: they carry identifiers only, and a client reconciles
+//!   authoritative state through `get`/`list`/`ready`/`snapshot`. Nothing on
+//!   this surface may treat a fact as authority.
 
 use meerkat::{
     AddEvidenceRequest, AttentionListRequest, AttentionPauseRequest, AttentionProjectionRequest,
@@ -58,6 +69,7 @@ pub(crate) const WORKGRAPH_READ_METHODS: &[&str] = &[
     "mobkit/workgraph/get",
     "mobkit/workgraph/ready",
     "mobkit/workgraph/events",
+    "mobkit/workgraph/facts",
     "mobkit/workgraph/attention/list",
     "mobkit/workgraph/goal/status",
 ];
@@ -501,6 +513,25 @@ pub(crate) enum WorkgraphSurface<'a> {
     },
 }
 
+/// Params for `mobkit/workgraph/facts`.
+///
+/// Deliberately narrower than `events`: `namespace` is not accepted, because
+/// the projection is scoped exactly like the fact tail (this service's realm
+/// and default namespace). `deny_unknown_fields` makes that refusal explicit -
+/// silently ignoring a supplied `namespace` would read to a caller as a filter
+/// that works.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FactsParams {
+    /// Exclusive lower bound; pass back
+    /// `WorkGraphFactPage::next_after_seq`.
+    #[serde(default)]
+    after_seq: Option<i64>,
+    /// Page size, clamped into `1..=MAX_FACT_POLL_LIMIT` by the projection.
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
 pub(crate) async fn handle_workgraph_method(
     service: Option<&WorkGraphService>,
     admission: &WorkGraphAdmission,
@@ -573,6 +604,19 @@ pub(crate) async fn handle_workgraph_method(
                 .await
                 .map_err(workgraph_error_to_rpc)?;
             Ok(serde_json::json!({ "events": events }))
+        }
+        "mobkit/workgraph/facts" => {
+            let request: FactsParams = parse_request(object)?;
+            let page = crate::workgraph_events::poll_workgraph_facts(
+                service,
+                request.after_seq,
+                request
+                    .limit
+                    .unwrap_or(crate::workgraph_events::DEFAULT_FACT_POLL_LIMIT),
+            )
+            .await
+            .map_err(workgraph_error_to_rpc)?;
+            Ok(to_result_value(&page))
         }
         "mobkit/workgraph/attention/list" => {
             reject_non_default_namespace(service, &object)?;
@@ -1018,6 +1062,40 @@ mod tests {
         }
         assert!(is_workgraph_method("mobkit/workgraph/bogus"));
         assert!(!is_workgraph_method("mobkit/memory/query"));
+    }
+
+    /// The fact projection is a READ. Every surface catalog and ABAC gate is
+    /// driven off these arrays (`rpc.rs` advertises `WORKGRAPH_READ_METHODS`,
+    /// `http_console.rs` maps `is_workgraph_read_method` to `workgraph.view`),
+    /// so a fact page can never reach a caller who may not read WorkGraph.
+    #[test]
+    fn facts_is_a_read_method_on_every_surface() {
+        assert!(WORKGRAPH_READ_METHODS.contains(&"mobkit/workgraph/facts"));
+        assert!(is_workgraph_read_method("mobkit/workgraph/facts"));
+        assert!(!is_workgraph_mutating_method("mobkit/workgraph/facts"));
+        // Positive control: the predicate can say yes to a known mutator.
+        assert!(is_workgraph_mutating_method("mobkit/workgraph/close"));
+    }
+
+    #[test]
+    fn facts_params_refuse_a_silently_ignored_namespace() {
+        let empty: FactsParams =
+            serde_json::from_value(serde_json::json!({})).expect("empty params parse");
+        assert_eq!(empty.after_seq, None);
+        assert_eq!(empty.limit, None);
+
+        let cursor: FactsParams = serde_json::from_value(serde_json::json!({
+            "after_seq": 42,
+            "limit": 8,
+        }))
+        .expect("cursor params parse");
+        assert_eq!(cursor.after_seq, Some(42));
+        assert_eq!(cursor.limit, Some(8));
+
+        // A namespace filter does not exist here; accepting and dropping it
+        // would read as a working scope narrowing.
+        serde_json::from_value::<FactsParams>(serde_json::json!({ "namespace": "other" }))
+            .expect_err("namespace must be refused, not ignored");
     }
 
     #[test]

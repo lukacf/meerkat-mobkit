@@ -278,6 +278,23 @@ pub enum ControlRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caller: Option<ControlCaller>,
     },
+    /// Ask the serving gateway to describe ITSELF as a runtime host:
+    /// endpoint identity, capabilities, placement labels. Read-only, and
+    /// it names no member. See [`super::remote_host`].
+    HostDescribe {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nonce: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<ControlCaller>,
+    },
+    /// Ask the serving gateway for its own runtime-host health
+    /// projection. Read-only, names no member.
+    HostHealth {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nonce: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<ControlCaller>,
+    },
 }
 
 impl ControlRequest {
@@ -289,17 +306,22 @@ impl ControlRequest {
             Self::Unwire { .. } => ControlVerb::Unwire,
             Self::Inject { .. } => ControlVerb::Inject,
             Self::LookupMember { .. } => ControlVerb::LookupMember,
+            Self::HostDescribe { .. } => ControlVerb::HostDescribe,
+            Self::HostHealth { .. } => ControlVerb::HostHealth,
         }
     }
 
-    /// The member of the RECEIVING mob this request reaches. Every verb
-    /// names exactly one, which is what makes a member scope expressible.
+    /// The member of the RECEIVING mob this request reaches. Every
+    /// MEMBER-plane verb names exactly one, which is what makes a member
+    /// scope expressible; host-plane verbs address the gateway itself and
+    /// answer [`HOST_PLANE_MEMBER`].
     pub fn remote_member(&self) -> &str {
         match self {
             Self::Wire { remote_member, .. }
             | Self::Unwire { remote_member, .. }
             | Self::Inject { remote_member, .. }
             | Self::LookupMember { remote_member, .. } => remote_member,
+            Self::HostDescribe { .. } | Self::HostHealth { .. } => HOST_PLANE_MEMBER,
         }
     }
 
@@ -318,7 +340,9 @@ impl ControlRequest {
             Self::Wire { caller, .. }
             | Self::Unwire { caller, .. }
             | Self::Inject { caller, .. }
-            | Self::LookupMember { caller, .. } => caller.as_ref(),
+            | Self::LookupMember { caller, .. }
+            | Self::HostDescribe { caller, .. }
+            | Self::HostHealth { caller, .. } => caller.as_ref(),
         }
     }
 
@@ -327,7 +351,9 @@ impl ControlRequest {
             Self::Wire { caller, .. }
             | Self::Unwire { caller, .. }
             | Self::Inject { caller, .. }
-            | Self::LookupMember { caller, .. } => caller.as_mut(),
+            | Self::LookupMember { caller, .. }
+            | Self::HostDescribe { caller, .. }
+            | Self::HostHealth { caller, .. } => caller.as_mut(),
         }
     }
 
@@ -339,7 +365,9 @@ impl ControlRequest {
             Self::Wire { caller, .. }
             | Self::Unwire { caller, .. }
             | Self::Inject { caller, .. }
-            | Self::LookupMember { caller, .. } => *caller = value,
+            | Self::LookupMember { caller, .. }
+            | Self::HostDescribe { caller, .. }
+            | Self::HostHealth { caller, .. } => *caller = value,
         }
     }
 }
@@ -396,6 +424,28 @@ pub enum ControlResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sig_b64: Option<String>,
     },
+    /// `HostDescribe` succeeded - the serving gateway's own read-only
+    /// runtime-host projection.
+    ///
+    /// TRUSTED MATERIAL, unlike `Err`: a controller pins a host identity
+    /// and pairs durably off these facts, so the signature covers a
+    /// length-prefixed digest of every field (see
+    /// [`super::remote_host::HostFacts::signing_digest_hex`]) rather than
+    /// a newline-joined string. Placement labels are operator-supplied,
+    /// so newline injection into the signed material has to be
+    /// impossible, not merely unlikely.
+    Host {
+        facts: super::remote_host::HostFacts,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sig_b64: Option<String>,
+    },
+    /// `HostHealth` succeeded - the serving gateway's own health
+    /// projection, in meerkat's health vocabulary.
+    HostHealth {
+        health: meerkat_contracts::RuntimeHostHealth,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sig_b64: Option<String>,
+    },
     /// Operation failed. `code` is a stable short string for machine
     /// dispatch (`unknown_member`, `mob_error`, `decode`, ...); `message`
     /// is human-readable.
@@ -420,9 +470,16 @@ pub fn unsigned_control_signer() -> ControlSignerSlot {
 }
 
 fn control_request_digest_hex(request_bytes: &[u8]) -> String {
+    sha256_hex(request_bytes)
+}
+
+/// Lowercase hex SHA-256. Shared with [`super::remote_host`] so the
+/// control plane has exactly one digest implementation rather than two
+/// that can drift.
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest;
     let mut hasher = sha2::Sha256::new();
-    hasher.update(request_bytes);
+    hasher.update(bytes);
     let digest = hasher.finalize();
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
@@ -460,6 +517,17 @@ pub fn control_response_signing_payload(
             pubkey_b64.as_deref().unwrap_or(""),
             advertised_address.as_deref().unwrap_or("")
         ),
+        // Host facts and health enter as fixed-width hex digests over a
+        // length-prefixed canonical encoding, so an operator-supplied
+        // label containing a newline cannot forge a different projection
+        // that signs identically. Never inline these fields here.
+        ControlResponse::Host { facts, .. } => {
+            format!("host\n{}", facts.signing_digest_hex())
+        }
+        ControlResponse::HostHealth { health, .. } => format!(
+            "host_health\n{}",
+            super::remote_host::host_health_digest_hex(health)
+        ),
         ControlResponse::Err { .. } => return None,
     };
     Some(format!(
@@ -483,7 +551,9 @@ fn sign_control_response(
     match response {
         ControlResponse::Ok { sig_b64 }
         | ControlResponse::Injected { sig_b64, .. }
-        | ControlResponse::Member { sig_b64, .. } => *sig_b64 = Some(encoded),
+        | ControlResponse::Member { sig_b64, .. }
+        | ControlResponse::Host { sig_b64, .. }
+        | ControlResponse::HostHealth { sig_b64, .. } => *sig_b64 = Some(encoded),
         ControlResponse::Err { .. } => {}
     }
 }
@@ -503,7 +573,9 @@ pub fn verify_control_response(
     let sig_b64 = match response {
         ControlResponse::Ok { sig_b64 }
         | ControlResponse::Injected { sig_b64, .. }
-        | ControlResponse::Member { sig_b64, .. } => sig_b64.as_deref(),
+        | ControlResponse::Member { sig_b64, .. }
+        | ControlResponse::Host { sig_b64, .. }
+        | ControlResponse::HostHealth { sig_b64, .. } => sig_b64.as_deref(),
         ControlResponse::Err { .. } => None,
     };
     let Some(sig_b64) = sig_b64 else {
@@ -563,6 +635,15 @@ pub struct ControlCaller {
 }
 
 /// One control operation, as a grantable unit.
+///
+/// Two planes live in this enum:
+///
+/// * The MEMBER plane ([`Self::member_plane`]) - every verb that names a
+///   member of the receiving mob and reaches it.
+/// * The HOST plane ([`Self::is_host_plane`]) - read-only projections a
+///   gateway makes about ITSELF as a runtime host (see
+///   [`super::remote_host`]). These name no member, mutate nothing, and
+///   are never covered by `verbs = ["*"]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlVerb {
@@ -570,6 +651,10 @@ pub enum ControlVerb {
     Unwire,
     Inject,
     LookupMember,
+    /// Runtime-host identity, capability and placement-label projection.
+    HostDescribe,
+    /// Runtime-host health projection.
+    HostHealth,
 }
 
 impl ControlVerb {
@@ -580,6 +665,8 @@ impl ControlVerb {
             Self::Unwire => "unwire",
             Self::Inject => "inject",
             Self::LookupMember => "lookup_member",
+            Self::HostDescribe => "host_describe",
+            Self::HostHealth => "host_health",
         }
     }
 
@@ -592,15 +679,58 @@ impl ControlVerb {
             "unwire" => Some(Self::Unwire),
             "inject" => Some(Self::Inject),
             "lookup_member" => Some(Self::LookupMember),
+            "host_describe" => Some(Self::HostDescribe),
+            "host_health" => Some(Self::HostHealth),
             _ => None,
         }
     }
 
-    /// Every verb, for `verbs = ["*"]` style config and for tests.
-    pub fn all() -> [Self; 4] {
+    /// Every verb this gateway knows, for tests and for exhaustive
+    /// tables. NOT what `verbs = ["*"]` expands to - see
+    /// [`Self::member_plane`].
+    pub fn all() -> [Self; 6] {
+        [
+            Self::Wire,
+            Self::Unwire,
+            Self::Inject,
+            Self::LookupMember,
+            Self::HostDescribe,
+            Self::HostHealth,
+        ]
+    }
+
+    /// What `verbs = ["*"]` expands to: the member-plane verbs, and only
+    /// those.
+    ///
+    /// Host-plane verbs are deliberately EXCLUDED. Every `*` grant
+    /// already deployed was written when this enum held four verbs, and
+    /// widening those grants by adding variants here would be a silent
+    /// privilege change made by an upgrade rather than by an operator.
+    /// A gateway that wants to serve host facts to a caller names
+    /// `host_describe` / `host_health` explicitly.
+    pub fn member_plane() -> [Self; 4] {
         [Self::Wire, Self::Unwire, Self::Inject, Self::LookupMember]
     }
+
+    /// Whether this verb addresses the HOST rather than a member.
+    /// Host-plane verbs carry [`HOST_PLANE_MEMBER`] as their member and
+    /// are exempt from member scoping (there is no member to scope).
+    pub fn is_host_plane(&self) -> bool {
+        match self {
+            Self::HostDescribe | Self::HostHealth => true,
+            Self::Wire | Self::Unwire | Self::Inject | Self::LookupMember => false,
+        }
+    }
 }
+
+/// The member a host-plane request names: none.
+///
+/// Host-plane verbs address the serving gateway itself, so
+/// [`ControlRequest::remote_member`] has nothing to return for them. The
+/// authorization path never consults it either - [`ControlGrant`] exempts
+/// host-plane verbs from member scoping AFTER the verb check - so this is
+/// an attribution/logging value, not an authorization input.
+pub const HOST_PLANE_MEMBER: &str = "";
 
 impl std::fmt::Display for ControlVerb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -620,7 +750,7 @@ pub const CONTROL_CALLER_SIG_CONTEXT: &str = "mobkit-cross-mob-control-caller-v1
 /// contains newlines cannot forge extra fields - without this, a crafted
 /// `remote_member` could make one verb's payload byte-identical to
 /// another's and let a narrow grant be spent on a wider request.
-fn push_signed_field(out: &mut String, value: &str) {
+pub(crate) fn push_signed_field(out: &mut String, value: &str) {
     use std::fmt::Write;
     let _ = writeln!(out, "{}:{value}", value.len());
 }
@@ -704,6 +834,19 @@ pub fn control_request_signing_payload(request: &ControlRequest) -> String {
             caller: _caller,
         } => {
             push_signed_field(&mut payload, remote_member);
+            push_signed_field(&mut payload, nonce.as_deref().unwrap_or(""));
+        }
+        // Host-plane requests carry no member and no arguments: the verb
+        // (already pushed above, and distinct per variant) plus the
+        // nonce plus the audience is the whole semantic content.
+        ControlRequest::HostDescribe {
+            nonce,
+            caller: _caller,
+        }
+        | ControlRequest::HostHealth {
+            nonce,
+            caller: _caller,
+        } => {
             push_signed_field(&mut payload, nonce.as_deref().unwrap_or(""));
         }
     }
@@ -827,6 +970,12 @@ impl std::fmt::Display for ControlAuthzDenial {
             Self::CallerNotGranted { pubkey_b64 } => write!(
                 f,
                 "caller '{pubkey_b64}' holds no control grant on this gateway"
+            ),
+            Self::VerbNotGranted { label, verb } if verb.is_host_plane() => write!(
+                f,
+                "caller '{label}' is not granted host-plane control verb '{verb}' on this \
+                 gateway; host-plane verbs are never covered by verbs = [\"*\"] and must be \
+                 named explicitly"
             ),
             Self::VerbNotGranted { label, verb } => write!(
                 f,
@@ -955,12 +1104,25 @@ impl ControlGrant {
     }
 
     /// Check one request against this grant.
+    ///
+    /// ORDER IS LOAD-BEARING: the verb check runs first and unconditionally,
+    /// so the host-plane exemption below is only ever reachable for a verb
+    /// the operator named explicitly. Hoisting the exemption above the verb
+    /// check would turn it into a bypass.
     fn permits(&self, verb: ControlVerb, member: &str) -> Result<(), ControlAuthzDenial> {
         if !self.verbs.contains(&verb) {
             return Err(ControlAuthzDenial::VerbNotGranted {
                 label: self.label.clone(),
                 verb,
             });
+        }
+        // Host-plane verbs address the serving gateway itself, so there is
+        // no member to scope. Requiring `members = ["*"]` to reach them
+        // would be worse than exempting them: an operator granting a
+        // read-only host projection would have to widen the SAME grant's
+        // `inject` to every member to do it.
+        if verb.is_host_plane() {
+            return Ok(());
         }
         if !self.members.contains(member) {
             return Err(ControlAuthzDenial::MemberNotGranted {
@@ -1106,8 +1268,13 @@ impl ControlGrantTable {
                             label: label.clone(),
                             detail: "'verbs' entries must be strings".to_string(),
                         })?;
+                // `*` expands to the MEMBER plane only. Every `*` grant
+                // already written by an operator meant "the four verbs
+                // that reach my members"; letting a new enum variant
+                // widen it would be a privilege change made by an
+                // upgrade instead of by the operator.
                 if verb_text == "*" {
-                    verbs.extend(ControlVerb::all());
+                    verbs.extend(ControlVerb::member_plane());
                     continue;
                 }
                 let verb = ControlVerb::parse(verb_text).ok_or_else(|| {
@@ -1531,6 +1698,12 @@ pub struct MobHandleControlHandler {
     /// transport addresses). `None` degrades LookupMember to roster facts
     /// only, which remote wire callers reject fail-closed.
     session_service: Option<std::sync::Arc<dyn meerkat_mob::MobSessionService>>,
+    /// Source of the read-only runtime-host projections. `None` - the
+    /// default for every existing construction path - answers
+    /// [`super::remote_host::HOST_PLANE_UNAVAILABLE_CODE`] to both host
+    /// verbs, so serving host facts is opt-in and no gateway starts
+    /// describing itself because it was upgraded.
+    host_facts: Option<std::sync::Arc<dyn super::remote_host::HostFactsProvider>>,
 }
 
 /// How the handler resolves the durable identity authority for generated
@@ -1569,6 +1742,7 @@ impl MobHandleControlHandler {
             handle,
             identity_authority: ControlIdentityAuthority::None,
             session_service: None,
+            host_facts: None,
         }
     }
 
@@ -1582,6 +1756,7 @@ impl MobHandleControlHandler {
             handle,
             identity_authority: ControlIdentityAuthority::Fixed(identity_runtime),
             session_service: None,
+            host_facts: None,
         }
     }
 
@@ -1598,6 +1773,7 @@ impl MobHandleControlHandler {
             handle,
             identity_authority: ControlIdentityAuthority::Shared(identity_slot),
             session_service: None,
+            host_facts: None,
         }
     }
 
@@ -1612,6 +1788,62 @@ impl MobHandleControlHandler {
         self.session_service = Some(session_service);
         self
     }
+
+    /// Serve the read-only runtime-host projections from `provider`.
+    ///
+    /// Until a host installs one, `HostDescribe` / `HostHealth` are
+    /// refused typed. The provider is a pure projection source: nothing
+    /// it returns can mutate this gateway's mob, and nothing a caller
+    /// sends through these verbs reaches the mob at all.
+    #[must_use]
+    pub fn with_host_facts(
+        mut self,
+        provider: std::sync::Arc<dyn super::remote_host::HostFactsProvider>,
+    ) -> Self {
+        self.host_facts = Some(provider);
+        self
+    }
+}
+
+/// The typed refusal a gateway without a host-facts provider answers.
+fn host_plane_unavailable(verb: ControlVerb) -> ControlResponse {
+    ControlResponse::Err {
+        code: super::remote_host::HOST_PLANE_UNAVAILABLE_CODE.to_string(),
+        message: format!(
+            "this gateway serves no runtime-host facts, so '{verb}' has nothing to answer; \
+             install one with MobHandleControlHandler::with_host_facts"
+        ),
+    }
+}
+
+/// Answer `HostDescribe`.
+///
+/// Split out of the dispatch match so the absent-provider path is
+/// exercisable without constructing a `MobHandle`: the test calls the
+/// same function the handler does, rather than a restatement of it.
+fn host_describe_response(
+    provider: Option<&dyn super::remote_host::HostFactsProvider>,
+) -> ControlResponse {
+    match provider {
+        Some(provider) => ControlResponse::Host {
+            facts: provider.describe(),
+            sig_b64: None,
+        },
+        None => host_plane_unavailable(ControlVerb::HostDescribe),
+    }
+}
+
+/// Answer `HostHealth`. See [`host_describe_response`].
+fn host_health_response(
+    provider: Option<&dyn super::remote_host::HostFactsProvider>,
+) -> ControlResponse {
+    match provider {
+        Some(provider) => ControlResponse::HostHealth {
+            health: provider.health(),
+            sig_b64: None,
+        },
+        None => host_plane_unavailable(ControlVerb::HostHealth),
+    }
 }
 
 impl ControlHandler for MobHandleControlHandler {
@@ -1622,6 +1854,7 @@ impl ControlHandler for MobHandleControlHandler {
         let handle = self.handle.clone();
         let identity_runtime = self.identity_authority.current();
         let session_service = self.session_service.clone();
+        let host_facts = self.host_facts.clone();
         Box::pin(async move {
             // `nonce` and `caller` are consumed at the listener seam
             // (response signing binds the nonce via the request digest;
@@ -1695,6 +1928,18 @@ impl ControlHandler for MobHandleControlHandler {
                     )
                     .await
                 }
+                // The host plane never touches `handle`: these two arms
+                // read a projection and return it. A runtime host that
+                // could reach the mob from here would be the competing
+                // authority the design forbids.
+                ControlRequest::HostDescribe {
+                    nonce: _,
+                    caller: _,
+                } => host_describe_response(host_facts.as_deref()),
+                ControlRequest::HostHealth {
+                    nonce: _,
+                    caller: _,
+                } => host_health_response(host_facts.as_deref()),
             }
         })
     }
@@ -2252,8 +2497,57 @@ mod tests {
                         advertised_address: None,
                         sig_b64: None,
                     },
+                    ControlRequest::HostDescribe { .. } => ControlResponse::Host {
+                        facts: echo_host_facts(),
+                        sig_b64: None,
+                    },
+                    ControlRequest::HostHealth { .. } => ControlResponse::HostHealth {
+                        health: echo_host_health(),
+                        sig_b64: None,
+                    },
                 }
             })
+        }
+    }
+
+    fn echo_host_capabilities() -> meerkat_contracts::RuntimeHostCapabilities {
+        meerkat_contracts::RuntimeHostCapabilities {
+            contract_version: meerkat_contracts::ContractVersion::CURRENT,
+            features: meerkat_contracts::RuntimeHostFeatureFlags {
+                runtime_backed_sessions: true,
+                mobs: true,
+                mcp_live: false,
+                comms: true,
+                blobs: false,
+                session_events: true,
+                session_streams: false,
+                schedules: false,
+                skills: false,
+                event_replay: false,
+                artifacts: false,
+                approvals: false,
+                external_members: false,
+                secure_remote_rpc: false,
+                multi_host_mobs: false,
+                durable_jobs: false,
+            },
+        }
+    }
+
+    fn echo_host_facts() -> super::super::remote_host::HostFacts {
+        super::super::remote_host::HostFacts::new(
+            "echo-host",
+            TEST_PUBKEY_B64,
+            "tcp://127.0.0.1:7801",
+            echo_host_capabilities(),
+        )
+    }
+
+    fn echo_host_health() -> meerkat_contracts::RuntimeHostHealth {
+        meerkat_contracts::RuntimeHostHealth {
+            contract_version: meerkat_contracts::ContractVersion::CURRENT,
+            status: meerkat_contracts::RuntimeHostHealthStatus::Ok,
+            checks: BTreeMap::new(),
         }
     }
 
@@ -3075,8 +3369,213 @@ mod tests {
         .expect("parse")
         .expect("section is present");
         let grant = table.get(&[42u8; 32]).expect("filed");
-        assert_eq!(grant.verbs().len(), ControlVerb::all().len());
+        assert_eq!(grant.verbs().len(), ControlVerb::member_plane().len());
         assert_eq!(grant.members(), &ControlMemberScope::All);
+    }
+
+    /// `*` must keep meaning exactly what it meant when it was written.
+    ///
+    /// Counting alone would keep passing while meaning something else, so
+    /// this asserts the SET: every member-plane verb present (the positive
+    /// control - a broken parser that granted nothing would fail here) and
+    /// every host-plane verb absent.
+    #[test]
+    fn star_verbs_never_widen_to_the_host_plane() {
+        let table = ControlGrantTable::from_toml(&format!(
+            r#"
+            [control_grants.ops-mob]
+            pubkey = "{TEST_PUBKEY_B64}"
+            verbs = ["*"]
+            "#
+        ))
+        .expect("parse")
+        .expect("section is present");
+        let grant = table.get(&[42u8; 32]).expect("filed");
+        for verb in ControlVerb::member_plane() {
+            assert!(
+                grant.verbs().contains(&verb),
+                "'*' must still grant member-plane verb {verb}"
+            );
+        }
+        for verb in ControlVerb::all() {
+            if verb.is_host_plane() {
+                assert!(
+                    !grant.verbs().contains(&verb),
+                    "'*' must not grant host-plane verb {verb}"
+                );
+            }
+        }
+    }
+
+    /// A host-plane verb is reachable only when it is named, and its
+    /// member scope is irrelevant because it names no member.
+    #[test]
+    fn host_plane_verbs_are_named_explicitly_and_ignore_member_scope() {
+        let keys = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let mut table = ControlGrantTable::new();
+        table.insert(
+            keys.pubkey_bytes(),
+            ControlGrant::new(
+                "placement-controller",
+                [ControlVerb::HostDescribe],
+                // A narrow member scope that names no real member: the
+                // host-plane grant must not depend on widening it.
+                ControlMemberScope::members(["nobody"]),
+            ),
+        );
+        let authorizer = ControlAuthorizer::with_grants(table);
+
+        let mut describe = ControlRequest::HostDescribe {
+            nonce: Some("n1".to_string()),
+            caller: None,
+        };
+        sign_control_request_as_caller(&keys, None, &mut describe);
+        let admitted = authorizer
+            .authorize(&describe)
+            .expect("named host verb is admitted");
+        assert_eq!(
+            admitted.map(|caller| caller.label),
+            Some("placement-controller".to_string())
+        );
+
+        // Negative: the same grant reaches no member-plane verb, and the
+        // un-named host verb is refused too.
+        let mut health = ControlRequest::HostHealth {
+            nonce: Some("n2".to_string()),
+            caller: None,
+        };
+        sign_control_request_as_caller(&keys, None, &mut health);
+        assert!(matches!(
+            authorizer.authorize(&health),
+            Err(ControlAuthzDenial::VerbNotGranted {
+                verb: ControlVerb::HostHealth,
+                ..
+            })
+        ));
+
+        let mut inject = ControlRequest::Inject {
+            remote_member: "nobody".to_string(),
+            content: serde_json::json!({"text": "hi"}),
+            nonce: Some("n3".to_string()),
+            caller: None,
+        };
+        sign_control_request_as_caller(&keys, None, &mut inject);
+        assert!(matches!(
+            authorizer.authorize(&inject),
+            Err(ControlAuthzDenial::VerbNotGranted { .. })
+        ));
+    }
+
+    /// A tampered host projection must fail signature verification.
+    ///
+    /// The positive control is in the same test: the untampered response
+    /// verifies. Without it, a `verify_control_response` that returned
+    /// `Ok(())` for every Host response (the fail-open shape, reached by
+    /// forgetting the signing-payload arm) would still look green on a
+    /// negative-only assertion.
+    #[test]
+    fn signed_host_facts_do_not_verify_after_tampering() {
+        let keys = crate::auth::peer_keys::GatewayPeerKeys::ephemeral();
+        let request = ControlRequest::HostDescribe {
+            nonce: Some("probe-1".to_string()),
+            caller: None,
+        };
+        let request_bytes = serde_json::to_vec(&request).expect("encode request");
+
+        let mut response = ControlResponse::Host {
+            facts: echo_host_facts(),
+            sig_b64: None,
+        };
+        sign_control_response(&keys, &request_bytes, &mut response);
+        assert!(
+            verify_control_response(&keys.pubkey_bytes(), &request_bytes, &response).is_ok(),
+            "positive control: the untampered signed response must verify"
+        );
+
+        let ControlResponse::Host { sig_b64, .. } = &response else {
+            panic!("expected a Host response");
+        };
+        let signature = sig_b64.clone();
+
+        let mut tampered_facts = echo_host_facts();
+        tampered_facts
+            .placement_labels
+            .insert("zone".to_string(), "attacker".to_string());
+        let tampered = ControlResponse::Host {
+            facts: tampered_facts,
+            sig_b64: signature.clone(),
+        };
+        assert!(
+            verify_control_response(&keys.pubkey_bytes(), &request_bytes, &tampered).is_err(),
+            "a tampered placement label must invalidate the host signature"
+        );
+
+        let unsigned = ControlResponse::Host {
+            facts: echo_host_facts(),
+            sig_b64: None,
+        };
+        assert!(
+            verify_control_response(&keys.pubkey_bytes(), &request_bytes, &unsigned).is_err(),
+            "an unsigned host response must never verify"
+        );
+
+        // A signature minted for the describe request must not carry over
+        // to a health response for the same request bytes.
+        let crossed = ControlResponse::HostHealth {
+            health: echo_host_health(),
+            sig_b64: signature,
+        };
+        assert!(
+            verify_control_response(&keys.pubkey_bytes(), &request_bytes, &crossed).is_err(),
+            "a facts signature must not verify as a health signature"
+        );
+    }
+
+    /// A gateway that installs no provider must refuse the host plane
+    /// typed rather than answering an empty projection.
+    ///
+    /// This calls the exact functions the dispatch arms call. The
+    /// positive control is the `Some` half: without it, a
+    /// `host_describe_response` that refused unconditionally would look
+    /// identical from the `None` assertion alone.
+    #[test]
+    fn host_plane_is_refused_without_a_facts_provider() {
+        let refused = host_describe_response(None);
+        match &refused {
+            ControlResponse::Err { code, .. } => {
+                assert_eq!(code, super::super::remote_host::HOST_PLANE_UNAVAILABLE_CODE);
+            }
+            other => panic!("expected a typed refusal, got {other:?}"),
+        }
+        match host_health_response(None) {
+            ControlResponse::Err { code, .. } => {
+                assert_eq!(code, super::super::remote_host::HOST_PLANE_UNAVAILABLE_CODE);
+            }
+            other => panic!("expected a typed refusal, got {other:?}"),
+        }
+
+        let provider =
+            super::super::remote_host::StaticHostFacts::new(echo_host_facts(), echo_host_health());
+        assert!(matches!(
+            host_describe_response(Some(&provider)),
+            ControlResponse::Host { .. }
+        ));
+        assert!(matches!(
+            host_health_response(Some(&provider)),
+            ControlResponse::HostHealth { .. }
+        ));
+    }
+
+    /// "Unavailable" must never be classified as an authorization
+    /// refusal: the remedies are opposite (install a provider vs. widen a
+    /// grant), and a caller that conflated them would retry forever.
+    #[test]
+    fn host_plane_unavailable_is_not_an_authorization_denial() {
+        assert!(!ControlAuthzDenial::is_denial_code(
+            super::super::remote_host::HOST_PLANE_UNAVAILABLE_CODE
+        ));
+        // POSITIVE CONTROL: the classifier does recognise a real denial.
+        assert!(ControlAuthzDenial::is_denial_code("caller_not_granted"));
     }
 
     #[test]
