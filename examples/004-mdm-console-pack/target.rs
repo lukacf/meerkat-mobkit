@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use meerkat::{AgentFactory, FactoryAgentBuilder, PersistenceBundle, PersistentSessionService};
+use meerkat::{
+    AgentFactory, FactoryAgentBuilder, LiveSessionActorWitness, PersistenceBundle,
+    PersistentSessionService,
+};
 use meerkat_core::lifecycle::RunId;
 use meerkat_core::lifecycle::core_executor::{
     CoreApplyOutput, CoreExecutor, CoreExecutorBoundaryHandle, CoreExecutorError,
@@ -71,6 +74,16 @@ struct TargetCoreExecutor {
     runtime_adapter: Arc<MeerkatMachine>,
     mob_state: Arc<MobMcpState>,
     session_id: SessionId,
+    // meerkat 0.8.22: exact terminal publication is bound to ONE
+    // service-minted actor incarnation, never re-resolved from the logical
+    // SessionId, so a late callback cannot terminalize a replacement actor's
+    // inputs. Held non-optionally: this target has a single construction
+    // site, captures the witness once and holds it for process lifetime over
+    // one session that never sees actor replacement (the process then parks
+    // on `pending()`), so the witness cannot go stale. An `Option` would only
+    // buy a `publication_handle() -> None` arm that silently strips the
+    // runtime's authority to terminalize queued/staged peer inputs.
+    publication_actor_witness: LiveSessionActorWitness,
 }
 
 struct TargetCorePostStopCleanupHandle {
@@ -128,12 +141,14 @@ impl TargetCoreExecutor {
         runtime_adapter: Arc<MeerkatMachine>,
         mob_state: Arc<MobMcpState>,
         session_id: SessionId,
+        publication_actor_witness: LiveSessionActorWitness,
     ) -> Self {
         Self {
             service,
             runtime_adapter,
             mob_state,
             session_id,
+            publication_actor_witness,
         }
     }
 }
@@ -182,17 +197,34 @@ impl CoreExecutorBoundaryHandle for TargetCoreBoundaryHandle {
 
 struct TargetCoreInterruptHandle {
     service: Arc<PersistentSessionService<FactoryAgentBuilder>>,
+    runtime_adapter: Arc<MeerkatMachine>,
     session_id: SessionId,
 }
 
 #[async_trait::async_trait]
 impl CoreExecutorInterruptHandle for TargetCoreInterruptHandle {
-    async fn hard_cancel_current_run(&self, _reason: String) -> Result<(), CoreExecutorError> {
+    // meerkat 0.8.22 replaced `hard_cancel_current_run` with this run-exact
+    // form. The rename is NOT the whole port: the old body interrupted the
+    // ambient current run, and the 0.8.22 contract forbids widening a stale
+    // request to the successor run. So the run id has to reach the service,
+    // through `interrupt_run_with_machine_authority`, which compares it at
+    // the same actor-local boundary that publishes the interrupt. `false`
+    // means the run already became non-current, which is why `NotRunning`
+    // maps to `Ok(false)` and not to `Ok(())`.
+    async fn hard_cancel_run_if_current(
+        &self,
+        expected_run_id: &RunId,
+        _reason: String,
+    ) -> Result<bool, CoreExecutorError> {
         self.service
-            .interrupt(&self.session_id)
+            .interrupt_run_with_machine_authority(
+                &self.session_id,
+                expected_run_id,
+                self.runtime_adapter.session_control_authority(),
+            )
             .await
             .or_else(|error| match error {
-                SessionError::NotRunning { .. } => Ok(()),
+                SessionError::NotRunning { .. } => Ok(false),
                 error => Err(error),
             })
             .map_err(|error| CoreExecutorError::control_failed_runtime(error.to_string()))
@@ -212,14 +244,17 @@ impl CoreExecutor for TargetCoreExecutor {
     fn interrupt_handle(&self) -> Option<Arc<dyn CoreExecutorInterruptHandle>> {
         Some(Arc::new(TargetCoreInterruptHandle {
             service: Arc::clone(&self.service),
+            runtime_adapter: Arc::clone(&self.runtime_adapter),
             session_id: self.session_id.clone(),
         }))
     }
 
     fn publication_handle(&self) -> Option<Arc<dyn CoreExecutorPublicationHandle>> {
+        // meerkat 0.8.22: the handle is minted against the exact actor
+        // incarnation, not the logical SessionId.
         Some(meerkat::surface::persistent_runtime_publication_handle(
             Arc::clone(&self.service),
-            self.session_id.clone(),
+            self.publication_actor_witness.clone(),
         ))
     }
 
@@ -334,6 +369,30 @@ impl CoreExecutor for TargetCoreExecutor {
             .map_err(CoreExecutorError::apply_failed_from_session_error)
     }
 
+    // This hook's trait default is `Err("executor cannot acknowledge a
+    // store-owned session boundary")`, not a no-op, and the runtime calls it
+    // unconditionally at the end of every committed turn
+    // (`runtime_loop::publish_committed_session_boundary` only short-circuits
+    // when the prepared boundary or the store authority is absent, and
+    // `apply_runtime_turn` always seals a bound session). A store-backed
+    // executor that omits it therefore compiles and then fails its first
+    // committed turn. Body mirrors the canonical persistent runtime executor:
+    // the machine already owns this session's turn-finalization boundary when
+    // it calls us, which is why this takes the `_under_runtime_turn_boundary`
+    // form rather than reacquiring the gate.
+    async fn acknowledge_committed_session_boundary(
+        &mut self,
+        authority: &meerkat_core::CommittedSessionBoundaryAuthority,
+    ) -> Result<(), CoreExecutorError> {
+        self.service
+            .acknowledge_committed_runtime_session_boundary_under_runtime_turn_boundary(
+                &self.session_id,
+                authority,
+            )
+            .await
+            .map_err(CoreExecutorError::apply_failed_from_session_error)
+    }
+
     async fn publish_interaction_terminals(
         &mut self,
         events: &[meerkat_core::AgentEvent],
@@ -341,8 +400,15 @@ impl CoreExecutor for TargetCoreExecutor {
         Vec<meerkat_core::lifecycle::core_executor::CoreInteractionTerminalPublicationReceipt>,
         CoreExecutorError,
     > {
+        // meerkat 0.8.22 removed the SessionId-keyed batch verb. Publication
+        // now runs only through the service-minted actor witness, so a
+        // terminal batch that arrives after this actor was replaced cannot
+        // land on the replacement.
         self.service
-            .publish_interaction_terminals_exact_batch(&self.session_id, events)
+            .publish_interaction_terminals_exact_batch_for_actor(
+                &self.publication_actor_witness,
+                events,
+            )
             .await
             .map_err(CoreExecutorError::apply_failed_from_session_error)
     }
@@ -587,11 +653,29 @@ async fn setup_session(
         .await
         .map_err(|error| anyhow::anyhow!("create session: {error}"))?;
     let session_id = result.session_id;
+    // meerkat 0.8.22: capture the exact actor incarnation this create just
+    // registered. `create_session` publishes the witness at the actor-registry
+    // linearization point, before the deferred initial turn returns, so it is
+    // observable here. An absent witness means no live actor owns this
+    // session; that is a failed setup for this caller (on the resume arm
+    // `create_or_resume_session` logs it and starts a fresh session), never a
+    // reason to fall back to publishing through a re-resolved SessionId -
+    // that fallback is exactly what 0.8.22 removed.
+    let publication_actor_witness = surface
+        .service
+        .live_session_actor_witness(&session_id)
+        .await
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "created session {session_id} has no exact live actor publication authority"
+            )
+        })?;
     let executor = Box::new(TargetCoreExecutor::new(
         surface.service.clone(),
         surface.runtime_adapter.clone(),
         surface.mob_state.clone(),
         session_id.clone(),
+        publication_actor_witness,
     ));
     // meerkat 0.7: ensure_session_with_executor returns a Result.
     surface

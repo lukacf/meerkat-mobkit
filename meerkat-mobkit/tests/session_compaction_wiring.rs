@@ -38,6 +38,11 @@ use meerkat_core::{AgentEvent, StopReason, Usage};
 use meerkat_mob::{MobDefinition, SpawnMemberSpec};
 use meerkat_mobkit::{MemberTurnOptions, UnifiedRuntime};
 
+/// The one definition of the normalized-provider-accounting contract every
+/// MobKit LLM double must satisfy under meerkat 0.8.22. See the module docs.
+#[path = "support/llm_usage.rs"]
+mod llm_usage;
+
 /// A catalogued million-token model, so the inherited (model-aware) trigger
 /// is the production one: `context_window * 4 / 5`.
 const FIXTURE_MODEL: &str = "gpt-5.5";
@@ -63,6 +68,23 @@ const DRAIN_QUIET_PERIOD: Duration = Duration::from_millis(500);
 /// prefers, so driving it directly exercises the real trigger without a
 /// multi-megabyte fixture transcript. `TestClient` declares `Provider::Other`,
 /// which the agent factory accepts against any catalogued model.
+///
+/// 0.8.22: `UsageUpdate` now carries a `TurnUsage`, and the agent checks its
+/// accounting identity against the ADAPTER's provider/model, not the raw
+/// client's - which differ here, since `TestClient` declares `Provider::Other`
+/// while the adapter is bound to the canonical identity the catalog resolves
+/// for [`FIXTURE_MODEL`]. Declaring `Provider::Other` in the accounting would
+/// fail every turn with `normalized_provider_accounting_identity_mismatch`, so
+/// the shared helper resolves the accounting provider from the MODEL through
+/// the same catalog authority `AgentFactory` used, taking the client's own
+/// declaration only as the uncatalogued fallback.
+///
+/// Note also that `TestClient::new` (unlike `TestClient::default`) leaves
+/// `synthesize_usage` OFF, so nothing backfills a missing `UsageUpdate` here:
+/// the event below is the only accounting this fixture will ever report.
+/// `host_declared` is the honest convention for it - an embedded test client
+/// asserting its own inclusive input total, which is exactly what the trigger
+/// reads back as `last_input_tokens`.
 fn usage_reporting_client(input_tokens: u64) -> Arc<TestClient> {
     Arc::new(TestClient::new(vec![
         LlmEvent::TextDelta {
@@ -70,11 +92,15 @@ fn usage_reporting_client(input_tokens: u64) -> Arc<TestClient> {
             meta: None,
         },
         LlmEvent::UsageUpdate {
-            usage: Usage {
-                input_tokens,
-                output_tokens: 1,
-                ..Default::default()
-            },
+            usage: llm_usage::turn_usage(
+                FIXTURE_MODEL,
+                meerkat_core::Provider::Other,
+                Usage {
+                    input_tokens,
+                    output_tokens: 1,
+                    ..Default::default()
+                },
+            ),
         },
         LlmEvent::Done {
             outcome: LlmDoneOutcome::Success {

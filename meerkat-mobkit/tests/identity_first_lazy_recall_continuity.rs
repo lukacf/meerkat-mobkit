@@ -50,7 +50,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
+use meerkat_client::{LlmError, LlmEvent, LlmRequest};
 use meerkat_core::types::StopReason;
 use meerkat_mob::{MobDefinition, ProfileName};
 use meerkat_mobkit::identity_first::contracts::{AgentCustomizer, RosterProvider};
@@ -62,6 +62,11 @@ use meerkat_mobkit::identity_first::{
 use meerkat_mobkit::storage_layout::MobKitStorageLayout;
 use meerkat_mobkit::{IdentityBootstrapMode, UnifiedRuntimeBuilder};
 use tokio::time::sleep;
+
+/// The one definition of the normalized-provider-accounting contract every
+/// MobKit LLM double must satisfy under meerkat 0.8.22. See the module docs.
+#[path = "support/llm_usage.rs"]
+mod llm_usage;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -203,6 +208,30 @@ impl AgentCustomizer for MarkerPromptCustomizer {
     }
 }
 
+/// The raw token counts one [`CaptureClient`] turn reports.
+///
+/// meerkat 0.8.22 made a turn that reports NO usage fatal, and silently so at
+/// compile time: the adapter seeds its local usage with `Usage::default()`
+/// (no accounting) and `commit_calling_llm_response` then runs
+/// `TurnUsage::try_from_usage` on whatever the stream left there, failing the
+/// turn with `normalized_provider_accounting_unavailable`. Under 0.8.21 that
+/// cost nothing here - emission was guarded on `usage_input_tokens > 0`,
+/// which is never raised above its zero default in this file, and the
+/// tool-call branch emitted no usage at all, so in practice NO turn here
+/// reported usage. A type-only port would therefore have compiled and then
+/// failed EVERY turn, surfacing as a provider error nowhere near anything
+/// that mentions usage. Hence every completing turn now reports, whatever the
+/// count. Declaring zero input tokens preserves the 0.8.21 value and stays
+/// inert for compaction, which documents "no compaction when
+/// `last_input_tokens` is zero".
+fn capture_usage(input_tokens: u64) -> meerkat_core::types::Usage {
+    meerkat_core::types::Usage {
+        input_tokens,
+        output_tokens: 1,
+        ..Default::default()
+    }
+}
+
 /// Records the serialized LLM request each turn and answers "ok" so turns
 /// complete without a real provider.
 ///
@@ -220,9 +249,12 @@ struct CaptureClient {
     gate: Arc<tokio::sync::Semaphore>,
     /// Provider-reported input tokens. `last_input_tokens` (the compaction
     /// trigger, `compact.rs`: "compaction triggers when `last_input_tokens >=
-    /// auto_compact_threshold`") comes from exactly this, so declaring it here
-    /// makes compaction fire deterministically instead of depending on
-    /// transcript size.
+    /// auto_compact_threshold`") comes from exactly this, so raising it would
+    /// make compaction fire deterministically instead of depending on
+    /// transcript size. No test in this file raises it: it stays at zero, which
+    /// is the "never compact" arm of that same rule. The turn still REPORTS
+    /// that zero - see [`capture_usage`] for why reporting nothing is no
+    /// longer an option.
     usage_input_tokens: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -284,6 +316,35 @@ impl meerkat_client::LlmClient for CaptureClient {
         let tool_step = hang && self.tool_step.swap(false, Ordering::SeqCst);
         let gate = self.gate.clone();
         let usage_input_tokens = self.usage_input_tokens.load(Ordering::SeqCst);
+        // meerkat 0.8.22 rejects a turn whose stream carried no normalized
+        // provider accounting, so the terminal `Done` never travels alone -
+        // and that includes the tool-call turn, whose only outcome is a tool
+        // call. Both pairs are built out here, against `request`, so the
+        // stream body never borrows it.
+        //
+        // `Provider::OpenAI` is passed as the CLIENT's own declaration, not as
+        // the answer: the helper resolves the accounting provider from the
+        // MODEL through the same catalog authority `AgentFactory` used, and
+        // falls back to the declaration only for an uncatalogued model. That
+        // distinction is load-bearing here, because `provider()` below never
+        // reaches the factory at all - MobKit wraps the mob-wide default
+        // client in `ProviderAgnosticLlmClient`, which reports
+        // `Provider::Other` precisely so one stub can serve members across
+        // providers. A hardcoded `OpenAI` would bind fine and then fail every
+        // turn with `normalized_provider_accounting_identity_mismatch` the day
+        // a profile in this file moves to a `claude-*` model.
+        let [tool_usage, tool_done] = llm_usage::usage_then_done_with(
+            request,
+            meerkat::Provider::OpenAI,
+            capture_usage(usage_input_tokens),
+            StopReason::ToolUse,
+        );
+        let [turn_usage, turn_done] = llm_usage::usage_then_done_with(
+            request,
+            meerkat::Provider::OpenAI,
+            capture_usage(usage_input_tokens),
+            StopReason::EndTurn,
+        );
         Box::pin(async_stream::stream! {
             if tool_step {
                 yield Ok(LlmEvent::ToolCallComplete {
@@ -292,31 +353,22 @@ impl meerkat_client::LlmClient for CaptureClient {
                     args: serde_json::json!({}),
                     meta: None,
                 });
-                yield Ok(LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success { stop_reason: StopReason::ToolUse },
-                });
+                yield Ok(tool_usage);
+                yield Ok(tool_done);
                 return;
             }
             if hang {
                 // Mid-turn stall: the request is already recorded (so the
                 // barrier can see the turn started) and the turn never reaches
-                // its boundary save.
+                // its boundary save. Nothing at all is emitted while stalled -
+                // usage included - because a stalled turn has no boundary to
+                // account for; `release` then lets it finish through the tail
+                // below like any other turn.
                 let _permit = gate.acquire().await;
             }
-            if usage_input_tokens > 0 {
-                yield Ok(LlmEvent::UsageUpdate {
-                    usage: meerkat_core::types::Usage {
-                        input_tokens: usage_input_tokens,
-                        output_tokens: 1,
-                        cache_creation_tokens: None,
-                        cache_read_tokens: None,
-                    },
-                });
-            }
             yield Ok(LlmEvent::TextDelta { delta: "ok".to_string(), meta: None });
-            yield Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success { stop_reason: StopReason::EndTurn },
-            });
+            yield Ok(turn_usage);
+            yield Ok(turn_done);
         })
     }
     fn provider(&self) -> meerkat::Provider {
