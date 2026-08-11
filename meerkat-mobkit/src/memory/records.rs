@@ -343,7 +343,7 @@ pub struct MemoryRecord {
     pub scope: MemoryScope,
     pub kind: MemoryKind,
     pub title: String,
-    /// Written FOR the Selector; this line is the retrieval contract.
+    /// Written for retrieval ranking; this line is the retrieval contract.
     #[serde(default)]
     pub description: String,
     pub body: String,
@@ -424,7 +424,7 @@ pub fn content_hash(title: &str, body: &str) -> String {
 }
 
 /// Deterministic field caps (§7.1). Description may be empty (the Recorder
-/// that writes selector-facing descriptions lands in P1).
+/// that writes retrieval-facing descriptions lands in P1).
 pub fn validate_record_fields(title: &str, description: &str, body: &str) -> Result<(), String> {
     if title.trim().is_empty() {
         return Err("title must not be empty".to_string());

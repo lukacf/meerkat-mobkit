@@ -178,9 +178,6 @@ struct GatewayAgentMemoryOptions {
     /// default; enablement is the application's call (mechanism from
     /// MobKit, policy from the app).
     steward: meerkat_mobkit::memory::steward::StewardConfig,
-    /// §8.6 hygienist block from `agent_memory.hygienist`. Disabled by
-    /// default (§15 ships it last; flipping is a calibration decision).
-    hygienist: meerkat_mobkit::memory::hygienist::HygienistConfig,
 }
 
 /// Which bundled store backs agent memory. SQLite is the default now that
@@ -218,6 +215,32 @@ enum AgentMemoryStoreMigration {
     MarkdownIsImportOnly,
 }
 
+/// Typed invalid-params refusal for public gateway activation of a parked
+/// capability. Keeping this separate from generic parse strings prevents a
+/// future composition rewrite from accidentally turning a compatibility key
+/// back into an executable feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParkedGatewayCapability {
+    Hygienist,
+}
+
+impl ParkedGatewayCapability {
+    const fn code(self) -> i64 {
+        -32602
+    }
+
+    fn message(self) -> String {
+        match self {
+            Self::Hygienist => "runtime_options.agent_memory.hygienist is PARKED and cannot be \
+                 enabled through the public gateway: remove the key, set it to false, or use \
+                 {enabled:false} while migrating existing configuration. The internal engine is \
+                 retained for future validation, but this release has no supported provider \
+                 proof for transcript curation."
+                .to_string(),
+        }
+    }
+}
+
 impl AgentMemoryStoreMigration {
     const fn code(self) -> i64 {
         STORAGE_RESOLUTION_CODE
@@ -240,10 +263,10 @@ impl AgentMemoryStoreMigration {
 }
 
 /// §7.2: `operator_scope = "provisional"` composes operator-scope recall
-/// only when an `OperatorResolver` is installed; the shipped gateway
-/// installs none, so a provisional deployment without one runs steward
-/// proposal-routing while recall composition is INERT. True exactly when
-/// the startup warning about that half-activation must fire.
+/// only when an `OperatorResolver` is installed. The shipped SDK gateway
+/// installs the console-principal resolver when provisional scope is enabled;
+/// this predicate remains a fail-loud guard for any composition path that
+/// omits it.
 fn operator_scope_recall_inert(
     agent_memory: Option<&GatewayAgentMemoryOptions>,
     resolver_installed: bool,
@@ -2074,108 +2097,163 @@ actions = ["agent.view"]
     }
 
     #[test]
-    fn gateway_runtime_options_agent_memory_hygienist_parse_matrix() {
+    fn gateway_distiller_max_output_tokens_reaches_effective_memory_profile() {
         let tmp = tempfile::tempdir().expect("tempdir");
-
-        // Defaults: disabled, 2 runs/day, no model override.
-        let params = json!({ "runtime_options": { "agent_memory": true } });
-        let options =
-            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("defaults parse");
-        let hygienist = options.agent_memory.expect("agent memory").hygienist;
-        assert!(!hygienist.enabled);
-        assert_eq!(hygienist.runs_per_day, 2);
-        assert_eq!(hygienist.model, None);
-
-        // Full object form.
-        let params = json!({
-            "runtime_options": {
-                "agent_memory": {
-                    "hygienist": {
-                        "enabled": true,
-                        "runs_per_day": 4,
-                        "model": "claude-sonnet-4-6"
-                    }
-                }
-            }
-        });
-        let hygienist = parse_gateway_runtime_options(&params, Some(tmp.path()))
-            .expect("object form parses")
+        let parse = |distiller| {
+            parse_gateway_runtime_options(
+                &json!({
+                    "runtime_options": { "agent_memory": { "distiller": distiller } }
+                }),
+                Some(tmp.path()),
+            )
+            .expect("gateway host JSON parses")
             .agent_memory
             .expect("agent memory")
-            .hygienist;
-        assert!(hygienist.enabled);
-        assert_eq!(hygienist.runs_per_day, 4);
-        assert_eq!(hygienist.model.as_deref(), Some("claude-sonnet-4-6"));
+            .distiller
+        };
 
-        // Bare true / bare object are opt-ins.
-        let params = json!({
-            "runtime_options": { "agent_memory": { "hygienist": true } }
-        });
-        assert!(
-            parse_gateway_runtime_options(&params, Some(tmp.path()))
-                .expect("bool form parses")
-                .agent_memory
-                .expect("agent memory")
-                .hygienist
-                .enabled
-        );
-        let params = json!({
-            "runtime_options": { "agent_memory": { "hygienist": { "runs_per_day": 1 } } }
-        });
-        assert!(
-            parse_gateway_runtime_options(&params, Some(tmp.path()))
-                .expect("object without enabled parses")
-                .agent_memory
-                .expect("agent memory")
-                .hygienist
-                .enabled
+        let default_config = parse(json!(true));
+        let default_profile =
+            meerkat_mobkit::memory_wiring::effective_distiller_profile(&default_config)
+                .expect("memory wiring resolves default profile");
+        assert_eq!(
+            default_profile.params.max_output_tokens,
+            meerkat_mobkit::memory::distiller::DistillerProfile::embedded_default()
+                .params
+                .max_output_tokens
         );
 
-        // Fail-loud matrix.
-        for (params, needle) in [
-            (
-                json!({ "runtime_options": { "agent_memory": { "hygienist": { "cadence": "*/6h" } } } }),
-                "unsupported runtime_options.agent_memory.hygienist fields",
-            ),
-            (
-                json!({ "runtime_options": { "agent_memory": { "hygienist": "on" } } }),
-                "must be a boolean or object",
-            ),
-            (
-                json!({ "runtime_options": { "agent_memory": { "hygienist": { "runs_per_day": 0 } } } }),
-                "runs_per_day must be between 1 and 24",
-            ),
-            (
-                json!({ "runtime_options": { "agent_memory": { "hygienist": { "runs_per_day": 48 } } } }),
-                "runs_per_day must be between 1 and 24",
-            ),
-            (
-                json!({ "runtime_options": { "agent_memory": { "hygienist": { "model": "" } } } }),
-                "model must be a non-empty string",
-            ),
-            (
-                json!({ "runtime_options": { "agent_memory": { "hygienist": { "enabled": "yes" } } } }),
-                "enabled must be a boolean",
-            ),
-        ] {
-            let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
-                Ok(_) => panic!("expected fail-loud parse for {params}"),
-                Err(err) => err,
-            };
-            assert!(err.contains(needle), "{err}");
-        }
+        let override_config = parse(json!({ "enabled": true, "max_output_tokens": 32_768 }));
+        let override_profile =
+            meerkat_mobkit::memory_wiring::effective_distiller_profile(&override_config)
+                .expect("memory wiring applies host override");
+        assert_eq!(override_profile.params.max_output_tokens, 32_768);
 
-        // The §8.6 quarantine hard-block reads sqlite-store machinery.
-        let params = json!({
-            "runtime_options": {
-                "agent_memory": { "store": "markdown", "hygienist": { "enabled": true } }
-            }
-        });
-        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
-            Ok(_) => panic!("markdown + hygienist should fail loudly"),
+        let zero_result = parse_gateway_runtime_options(
+            &json!({
+                "runtime_options": {
+                    "agent_memory": { "distiller": { "max_output_tokens": 0 } }
+                }
+            }),
+            Some(tmp.path()),
+        );
+        let err = match zero_result {
+            Ok(_) => panic!("zero output budget must fail at the host boundary"),
             Err(err) => err,
         };
-        assert!(err.contains("hygienist requires store='sqlite'"), "{err}");
+        assert!(err.contains("must be a positive integer"), "{err}");
+    }
+
+    #[test]
+    fn gateway_steward_max_output_tokens_reaches_effective_memory_profile() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let parse = |steward| {
+            parse_gateway_runtime_options(
+                &json!({
+                    "runtime_options": { "agent_memory": { "steward": steward } }
+                }),
+                Some(tmp.path()),
+            )
+            .expect("gateway host JSON parses")
+            .agent_memory
+            .expect("agent memory")
+            .steward
+        };
+
+        let default_config = parse(json!(true));
+        let default_profile =
+            meerkat_mobkit::memory_wiring::effective_steward_profile(&default_config)
+                .expect("memory wiring resolves default profile");
+        assert_eq!(
+            default_profile.params.max_output_tokens,
+            meerkat_mobkit::memory::steward::StewardProfile::embedded_default()
+                .params
+                .max_output_tokens
+        );
+
+        let override_config = parse(json!({ "enabled": true, "max_output_tokens": 65_536 }));
+        let override_profile =
+            meerkat_mobkit::memory_wiring::effective_steward_profile(&override_config)
+                .expect("memory wiring applies host override");
+        assert_eq!(override_profile.params.max_output_tokens, 65_536);
+
+        let zero_result = parse_gateway_runtime_options(
+            &json!({
+                "runtime_options": {
+                    "agent_memory": { "steward": { "max_output_tokens": 0 } }
+                }
+            }),
+            Some(tmp.path()),
+        );
+        let err = match zero_result {
+            Ok(_) => panic!("zero output budget must fail at the host boundary"),
+            Err(err) => err,
+        };
+        assert!(err.contains("must be a positive integer"), "{err}");
+    }
+
+    #[test]
+    fn gateway_hygienist_max_output_tokens_cannot_reach_memory_wiring() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // The retained internal engine still has a bounded default, but the
+        // public host has no Hygienist entry in MemoryEnginesConfig.
+        assert!(
+            meerkat_mobkit::memory::hygienist::HygienistProfile::embedded_default()
+                .params
+                .max_output_tokens
+                > 0
+        );
+
+        // Omission is the supported posture.
+        let params = json!({ "runtime_options": { "agent_memory": true } });
+        parse_gateway_runtime_options(&params, Some(tmp.path())).expect("omission parses");
+
+        // Disabled legacy forms remain accepted, including dormant tuning
+        // fields that no longer reach a gateway engine.
+        for value in [
+            json!(false),
+            json!({"enabled": false}),
+            json!({
+                "enabled": false,
+                "runs_per_day": 4,
+                "model": "legacy-model",
+                "max_output_tokens": 8192
+            }),
+        ] {
+            let params = json!({
+                "runtime_options": { "agent_memory": { "hygienist": value } }
+            });
+            parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .expect("disabled compatibility form parses");
+        }
+
+        // Every activation-shaped value reaches the same typed refusal. This
+        // matrix is mutation-sensitive: changing true to false makes it green.
+        for value in [
+            json!(true),
+            json!({}),
+            json!({"enabled": true}),
+            json!({"enabled": true, "max_output_tokens": 32_768}),
+            json!({"enabled": true, "max_output_tokens": 0}),
+            json!({"runs_per_day": 1}),
+            json!("on"),
+        ] {
+            let params = json!({
+                "runtime_options": { "agent_memory": { "hygienist": value } }
+            });
+            let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+                Ok(_) => panic!("parked Hygienist activation must be refused for {params}"),
+                Err(err) => err,
+            };
+            assert!(err.contains("hygienist is PARKED"), "{err}");
+            assert!(err.contains("cannot be enabled"), "{err}");
+        }
+
+        let refusal = parse_gateway_hygienist_compatibility(&json!(true))
+            .expect_err("true is a parked activation request");
+        assert_eq!(refusal, ParkedGatewayCapability::Hygienist);
+        assert_eq!(refusal.code(), -32602);
     }
 
     #[test]
@@ -3700,7 +3778,6 @@ fn parse_gateway_agent_memory_config(
             store: GatewayAgentMemoryStoreKind::default(),
             distiller: meerkat_mobkit::memory::distiller::DistillerConfig::default(),
             steward: meerkat_mobkit::memory::steward::StewardConfig::default(),
-            hygienist: meerkat_mobkit::memory::hygienist::HygienistConfig::default(),
         }));
     }
 
@@ -3959,11 +4036,14 @@ fn parse_gateway_agent_memory_config(
         None => meerkat_mobkit::memory::steward::StewardConfig::default(),
         Some(value) => parse_gateway_steward_config(value)?,
     };
-    // §8.6 hygienist block: fail-loud parse; enabled defaults false.
-    let hygienist = match object.get("hygienist") {
-        None => meerkat_mobkit::memory::hygienist::HygienistConfig::default(),
-        Some(value) => parse_gateway_hygienist_config(value)?,
-    };
+    // §8.6 Hygienist is parked. Keep only the disabled compatibility forms;
+    // any activation intent is a typed invalid-params refusal.
+    if let Some(value) = object.get("hygienist") {
+        parse_gateway_hygienist_compatibility(value).map_err(|error| {
+            debug_assert_eq!(error.code(), -32602);
+            error.message()
+        })?;
+    }
     // The write gate and taint tracker are store-seam machinery; only the
     // sqlite store has the seam. Accepting these knobs with the markdown
     // store would silently enforce nothing — fail loud instead.
@@ -3985,11 +4065,6 @@ fn parse_gateway_agent_memory_config(
     // pending-harvest/promotion tables are all sqlite-store machinery.
     if store == GatewayAgentMemoryStoreKind::Markdown && steward.enabled {
         return Err("runtime_options.agent_memory.steward requires store='sqlite'".to_string());
-    }
-    // And for the hygienist: the §8.6 quarantine hard-block reads the
-    // sqlite store's quarantine queue and evidence refs.
-    if store == GatewayAgentMemoryStoreKind::Markdown && hygienist.enabled {
-        return Err("runtime_options.agent_memory.hygienist requires store='sqlite'".to_string());
     }
     // Operator scope composes through manifests and steward routing — both
     // sqlite-store machinery.
@@ -4037,7 +4112,6 @@ fn parse_gateway_agent_memory_config(
         store,
         distiller,
         steward,
-        hygienist,
     }))
 }
 
@@ -4254,80 +4328,23 @@ fn parse_gateway_steward_config(
     Ok(config)
 }
 
-/// Fail-loud parse of `runtime_options.agent_memory.hygienist` (§8.6):
-/// `{enabled, runs_per_day, model}`; unknown fields and wrong types are
-/// errors, never silently ignored.
-fn parse_gateway_hygienist_config(
-    value: &Value,
-) -> Result<meerkat_mobkit::memory::hygienist::HygienistConfig, String> {
-    let mut config = meerkat_mobkit::memory::hygienist::HygienistConfig::default();
-    if let Some(enabled) = value.as_bool() {
-        config.enabled = enabled;
-        return Ok(config);
+/// Compatibility parser for a parked public surface. Missing is handled by
+/// the caller; `false` and `{enabled:false}` remain accepted so upgrades do
+/// not brick deployments that already stated the disabled posture. Every
+/// activation-shaped value returns the typed parked-capability verdict.
+fn parse_gateway_hygienist_compatibility(value: &Value) -> Result<(), ParkedGatewayCapability> {
+    if value.as_bool() == Some(false) {
+        return Ok(());
     }
-    let object = value.as_object().ok_or_else(|| {
-        "runtime_options.agent_memory.hygienist must be a boolean or object".to_string()
-    })?;
-    let supported = ["enabled", "runs_per_day", "model", "max_output_tokens"];
-    let unsupported = object
-        .keys()
-        .filter(|key| !supported.contains(&key.as_str()))
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    if !unsupported.is_empty() {
-        return Err(format!(
-            "unsupported runtime_options.agent_memory.hygienist fields: {}",
-            unsupported.join(", ")
-        ));
+    if value
+        .as_object()
+        .and_then(|object| object.get("enabled"))
+        .and_then(Value::as_bool)
+        == Some(false)
+    {
+        return Ok(());
     }
-    if let Some(enabled) = object.get("enabled") {
-        config.enabled = enabled.as_bool().ok_or_else(|| {
-            "runtime_options.agent_memory.hygienist.enabled must be a boolean".to_string()
-        })?;
-    } else {
-        // An object block without `enabled` is an explicit opt-in.
-        config.enabled = true;
-    }
-    if let Some(value) = object.get("runs_per_day") {
-        let runs = value.as_u64().ok_or_else(|| {
-            "runtime_options.agent_memory.hygienist.runs_per_day must be a positive integer"
-                .to_string()
-        })?;
-        if runs == 0 || runs > 24 {
-            return Err(
-                "runtime_options.agent_memory.hygienist.runs_per_day must be between 1 and 24"
-                    .to_string(),
-            );
-        }
-        config.runs_per_day = runs as u32;
-    }
-    if let Some(value) = object.get("model") {
-        let model = value
-            .as_str()
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
-            .ok_or_else(|| {
-                "runtime_options.agent_memory.hygienist.model must be a non-empty string"
-                    .to_string()
-            })?;
-        config.model = Some(model.to_string());
-    }
-    // See the steward parser: this ceiling is exposed because a hard-wired one
-    // failed invisibly in the field. Upper bound is the profile method's job.
-    if let Some(value) = object.get("max_output_tokens") {
-        let max = value.as_u64().ok_or_else(|| {
-            "runtime_options.agent_memory.hygienist.max_output_tokens must be a positive integer"
-                .to_string()
-        })?;
-        if max == 0 || max > u64::from(u32::MAX) {
-            return Err(
-                "runtime_options.agent_memory.hygienist.max_output_tokens must be a positive integer"
-                    .to_string(),
-            );
-        }
-        config.max_output_tokens = Some(max as u32);
-    }
-    Ok(config)
+    Err(ParkedGatewayCapability::Hygienist)
 }
 
 /// Environment variable carrying the one request the no-argument mode
@@ -7544,7 +7561,6 @@ external_addressable = true
         mob_spec,
         _temp_dir,
         schedule_host_inputs,
-        transcript_edit_service,
         workgraph_service,
         live_inputs,
         gateway_detached_jobs,
@@ -7839,12 +7855,6 @@ external_addressable = true
                 tools.firing_host_binding,
             )
         });
-        // §8.6 Hygienist apply seam: the CONCRETE service implements
-        // meerkat's transcript-edit extension; the erased MobSessionService
-        // does not carry it, so the typed handle is kept here.
-        let transcript_edit_service: Option<
-            Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
-        > = Some(Arc::clone(&concrete_service) as _);
         // Live (realtime) transport inputs: the concrete service +
         // machine + factory, captured only on opt-in
         // (`runtime_options.live`). Ephemeral mode cannot serve live —
@@ -7962,7 +7972,6 @@ external_addressable = true
             spec,
             None,
             schedule_host_inputs,
-            transcript_edit_service,
             workgraph_service,
             live_inputs,
             detached_jobs,
@@ -8104,9 +8113,6 @@ external_addressable = true
             session_store: None,
             detached_jobs: None,
         };
-        let mut transcript_edit_service: Option<
-            Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
-        > = None;
         // Heal seam (2026-07-29 incident): captured from the CONCRETE
         // persistent service below; the erased MobSessionService does not
         // carry the heal API.
@@ -8161,7 +8167,6 @@ external_addressable = true
                     Arc::clone(&runtime_store),
                     blob_store.clone(),
                 ));
-                transcript_edit_service = Some(Arc::clone(&concrete) as _);
                 committed_boundary_recoverer = Some(Arc::clone(&concrete) as _);
                 concrete
             } else {
@@ -8262,15 +8267,7 @@ external_addressable = true
             .with_slots(slots),
         );
         // Ephemeral sessions have no persistent service; firing is persistent-only.
-        (
-            spec,
-            temp_dir,
-            None,
-            transcript_edit_service,
-            workgraph_service,
-            None,
-            None,
-        )
+        (spec, temp_dir, None, workgraph_service, None, None)
     };
 
     // Wire callback/after_create — notify Python/TS SDK after each session creation.
@@ -8501,9 +8498,6 @@ external_addressable = true
         let mut agent_memory_distiller: Option<
             Arc<meerkat_mobkit::memory::distiller::DistillerEngine>,
         > = None;
-        let mut agent_memory_hygienist: Option<
-            Arc<meerkat_mobkit::memory::hygienist::HygienistEngine>,
-        > = None;
         let agent_memory_provider: Option<Arc<dyn meerkat_mobkit::AgentMemoryProvider>> =
             if let Some(agent_memory) = gateway_options.agent_memory.as_ref() {
                 // Concrete store construction is the only per-kind decision
@@ -8579,10 +8573,11 @@ external_addressable = true
                         };
                     // Converged assembly (memory_wiring): provider + §10.1
                     // firewall + Distiller + Steward, with the gateway's
-                    // late-binding bridges passed as seams. The Hygienist
-                    // and the gateway-only extras (outbound taint
-                    // declarer, panel registration, compaction reset,
-                    // observer spawn, dream scheduling) follow below.
+                    // late-binding bridges passed as seams. Gateway-only
+                    // extras (outbound taint declarer, panel registration,
+                    // compaction reset, observer spawn, dream scheduling)
+                    // follow below. Hygienist activation is parked and has
+                    // no composition seam here.
                     let memory_events = runtime.memory_event_sink();
                     let engines = meerkat_mobkit::memory_wiring::MemoryEnginesConfig {
                         distiller: agent_memory.distiller.clone(),
@@ -8613,7 +8608,6 @@ external_addressable = true
                         Err(e) => fail_init(&request_id, -32602, e),
                     };
                     let panel = stack.panel.clone();
-                    let steward_store = stack.steward_store.clone();
                     let tracker = stack.taint;
                     let mut sinks = stack.sinks;
                     agent_memory_distiller = stack.distiller;
@@ -8676,107 +8670,6 @@ external_addressable = true
                     if let Some(panel) = panel {
                         runtime.set_memory_panel_store(panel);
                     }
-                    // §8.6 Hygienist: audited transcript curation at
-                    // compaction boundaries and on demand, applied
-                    // through meerkat's typed transcript-revision
-                    // extension on the concrete session service.
-                    //
-                    // PARKED for this release: the engine, its config parse
-                    // and every fail-loud guard below stay exactly as they
-                    // were (this is a park, not a deletion - `enabled`
-                    // already defaults false), but the stage is off the
-                    // promoted surface and is not covered by the release's
-                    // support posture. Enabling it is opt-in and says so.
-                    if agent_memory.hygienist.enabled {
-                        use meerkat_mobkit::memory::hygienist as memory_hygienist;
-                        tracing::warn!(
-                            "agent_memory.hygienist is PARKED for this release: it edits durable \
-                             transcripts through the revision seam and is not part of the \
-                             promoted, supported surface. It runs because you asked for it; \
-                             treat it as experimental."
-                        );
-                        let Some(steward_spans) = steward_store.clone() else {
-                            fail_init(
-                                &request_id,
-                                -32602,
-                                "agent memory hygienist requires a provider with the \
-                                     steward surface (StewardStore)"
-                                    .to_string(),
-                            );
-                        };
-                        let Some(edit_service) = transcript_edit_service.clone() else {
-                            fail_init(
-                                &request_id,
-                                -32602,
-                                "agent memory hygienist requires persistent sessions \
-                                     (runtime_options.persistent_state or an identity session \
-                                     store): the transcript-revision seam only exists on the \
-                                     persistent session service"
-                                    .to_string(),
-                            );
-                        };
-                        let mut profile = memory_hygienist::HygienistProfile::embedded_default();
-                        if let Some(model) = agent_memory.hygienist.model.as_deref() {
-                            profile = profile.with_model_override(model).unwrap_or_else(|e| {
-                                fail_init(
-                                    &request_id,
-                                    -32602,
-                                    format!("agent memory hygienist: {e}"),
-                                );
-                            });
-                        }
-                        let Some(state) = persistent_state.clone() else {
-                            fail_init(
-                                &request_id,
-                                -32602,
-                                "agent memory hygienist requires persistent_state".to_string(),
-                            );
-                        };
-                        let handle = memory_hygienist::FactoryHygienistHandle::new(
-                            state,
-                            meerkat::Config::default(),
-                            agent_memory.config.realm.clone(),
-                            &profile,
-                        );
-                        let model = profile.model.clone();
-                        let gate: Option<Arc<dyn memory_hygienist::DistillationGate>> =
-                            agent_memory_distiller.clone().map(|engine| {
-                                engine as Arc<dyn memory_hygienist::DistillationGate>
-                            });
-                        let engine = Arc::new(memory_hygienist::HygienistEngine::new(
-                            profile,
-                            agent_memory.hygienist.clone(),
-                            Arc::new(handle),
-                            Arc::new(memory_hygienist::SessionServiceRevisionSeam::new(
-                                edit_service,
-                            )),
-                            Arc::new(memory_hygienist::StoreSpanReferenceSource::new(
-                                steward_spans,
-                                agent_memory.config.realm.clone(),
-                            )),
-                            gate,
-                            agent_memory.config.realm.clone(),
-                        ));
-                        engine.set_event_sink(memory_events.clone());
-                        // §8.6 trigger sequencing: behind the distiller's
-                        // compaction harvest when one exists; directly off
-                        // the compaction event otherwise. Never both —
-                        // that would race the ordering this preserves.
-                        match agent_memory_distiller.as_ref() {
-                            Some(distiller) => distiller.set_compaction_follow_up(
-                                memory_hygienist::distiller_follow_up(engine.clone()),
-                            ),
-                            None => sinks.push(Arc::new(memory_hygienist::HygienistTriggers::new(
-                                engine.clone(),
-                            ))),
-                        }
-                        agent_memory_hygienist = Some(engine);
-                        tracing::info!(
-                            model = %model,
-                            runs_per_day = agent_memory.hygienist.runs_per_day,
-                            "agent memory hygienist installed"
-                        );
-                    }
                     // §9.1 as-built: ALWAYS-ON compaction reset for the
                     // coordinator's session budgets — deliberately NOT
                     // gated on distiller.enabled (gate finding: budgeted
@@ -8807,14 +8700,11 @@ external_addressable = true
                     // de-weld): no firewall, no engines, no panel — and any
                     // engine explicitly configured against it refuses
                     // loudly instead of silently not existing.
-                    if agent_memory.distiller.enabled
-                        || agent_memory.steward.enabled
-                        || agent_memory.hygienist.enabled
-                    {
+                    if agent_memory.distiller.enabled || agent_memory.steward.enabled {
                         fail_init(
                             &request_id,
                             -32602,
-                            "agent memory distiller/steward/hygienist require a provider \
+                            "agent memory distiller/steward require a provider \
                              with judgment-plane capabilities (the bundled sqlite store)"
                                 .to_string(),
                         );
@@ -8910,9 +8800,6 @@ external_addressable = true
             }
             if let Some(steward) = agent_memory_steward.clone() {
                 injector = injector.with_steward(steward);
-            }
-            if let Some(hygienist) = agent_memory_hygienist.clone() {
-                injector = injector.with_hygienist(hygienist);
             }
             injector = injector.with_operator_resolver(agent_memory_operator_resolver.clone());
             injector = injector.with_mob_resolver(agent_memory_mob_resolver.clone());

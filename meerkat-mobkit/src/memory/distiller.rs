@@ -69,7 +69,7 @@ use crate::identity_first::agent_memory::{
     AgentMemoryError, AgentMemoryProvider, MEMORY_TOOL_NAME, compact_whitespace,
     truncate_utf8_boundary,
 };
-use crate::memory::factory_handle::FactorySelectorHandle;
+use crate::memory::factory_handle::FactoryModelClientHandle;
 use crate::memory::guards::{BackgroundBudget, BackgroundBudgetConfig};
 use crate::memory::records::{
     EvidenceRef, ManifestTier, MemoryAuthor, MemoryKind, MemoryScope, NewMemoryRecord, RecordMeta,
@@ -883,7 +883,7 @@ pub trait DistillerClientHandle: Send + Sync {
 /// Thin wrapper over the Selector's factory handle: one client-acquisition
 /// path for every judgment stage (§8.1 dogma rule 7).
 pub struct FactoryDistillerHandle {
-    inner: FactorySelectorHandle,
+    inner: FactoryModelClientHandle,
 }
 
 impl FactoryDistillerHandle {
@@ -894,7 +894,7 @@ impl FactoryDistillerHandle {
         profile: &DistillerProfile,
     ) -> Self {
         Self {
-            inner: FactorySelectorHandle::for_model(
+            inner: FactoryModelClientHandle::for_model(
                 store_path,
                 config,
                 realm,
@@ -908,15 +908,15 @@ impl FactoryDistillerHandle {
 #[async_trait]
 impl DistillerClientHandle for FactoryDistillerHandle {
     async fn client(&self) -> Result<Arc<dyn LlmClient>, DistillerError> {
-        use crate::memory::factory_handle::{SelectorError, SelectorHandle};
+        use crate::memory::factory_handle::{ModelClientError, ModelClientHandle};
         self.inner.client().await.map_err(|err| match err {
-            SelectorError::Auth(msg) => DistillerError::Auth(msg),
+            ModelClientError::Auth(msg) => DistillerError::Auth(msg),
             other => DistillerError::Client(other.to_string()),
         })
     }
 
     fn invalidate(&self) {
-        use crate::memory::factory_handle::SelectorHandle;
+        use crate::memory::factory_handle::ModelClientHandle;
         self.inner.invalidate();
     }
 }

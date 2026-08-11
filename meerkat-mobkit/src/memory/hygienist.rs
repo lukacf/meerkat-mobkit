@@ -45,7 +45,7 @@ use crate::identity_first::agent_memory::{compact_whitespace, truncate_utf8_boun
 use crate::memory::capabilities::StewardStore;
 use crate::memory::distiller::{CompactionFollowUp, DistillOutcome, DistillerEngine};
 use crate::memory::events::{MemoryEventSink, MemoryTimelineEvent};
-use crate::memory::factory_handle::FactorySelectorHandle;
+use crate::memory::factory_handle::FactoryModelClientHandle;
 use crate::memory::guards::{BackgroundBudget, BackgroundBudgetConfig};
 use crate::memory::records::{ManifestTier, MemoryScope, RecordStatus};
 use crate::memory::taint::MemberAgentEventSink;
@@ -384,7 +384,7 @@ pub trait HygienistClientHandle: Send + Sync {
 /// The production handle: meerkat's factory seam with auth-lease refresh,
 /// shared implementation with the Selector/Distiller.
 pub struct FactoryHygienistHandle {
-    inner: FactorySelectorHandle,
+    inner: FactoryModelClientHandle,
 }
 
 impl FactoryHygienistHandle {
@@ -395,7 +395,7 @@ impl FactoryHygienistHandle {
         profile: &HygienistProfile,
     ) -> Self {
         Self {
-            inner: FactorySelectorHandle::for_model(
+            inner: FactoryModelClientHandle::for_model(
                 store_path,
                 config,
                 realm,
@@ -409,15 +409,15 @@ impl FactoryHygienistHandle {
 #[async_trait]
 impl HygienistClientHandle for FactoryHygienistHandle {
     async fn client(&self) -> Result<Arc<dyn LlmClient>, HygienistError> {
-        use crate::memory::factory_handle::{SelectorError, SelectorHandle};
+        use crate::memory::factory_handle::{ModelClientError, ModelClientHandle};
         self.inner.client().await.map_err(|err| match err {
-            SelectorError::Auth(msg) => HygienistError::Auth(msg),
+            ModelClientError::Auth(msg) => HygienistError::Auth(msg),
             other => HygienistError::Client(other.to_string()),
         })
     }
 
     fn invalidate(&self) {
-        use crate::memory::factory_handle::SelectorHandle;
+        use crate::memory::factory_handle::ModelClientHandle;
         self.inner.invalidate();
     }
 }

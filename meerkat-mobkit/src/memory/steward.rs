@@ -80,7 +80,7 @@ use crate::memory::capabilities::{
 use crate::memory::coordinator::DEFAULT_INSTRUCTION_HEADER;
 use crate::memory::distiller::TranscriptSource;
 use crate::memory::events::{MemoryEventSink, MemoryTimelineEvent};
-use crate::memory::factory_handle::FactorySelectorHandle;
+use crate::memory::factory_handle::FactoryModelClientHandle;
 use crate::memory::guards::{BackgroundBudget, BackgroundBudgetConfig};
 use crate::memory::records::{
     EvidenceRef, ManifestTier, MemoryAuthor, MemoryKind, MemoryRecord, MemoryScope,
@@ -575,7 +575,7 @@ pub trait StewardClientHandle: Send + Sync {
 /// Thin wrapper over the Selector's factory handle: one client-acquisition
 /// path for every judgment stage (§8.1 dogma rule 7).
 pub struct FactoryStewardHandle {
-    inner: FactorySelectorHandle,
+    inner: FactoryModelClientHandle,
 }
 
 impl FactoryStewardHandle {
@@ -586,7 +586,7 @@ impl FactoryStewardHandle {
         profile: &StewardProfile,
     ) -> Self {
         Self {
-            inner: FactorySelectorHandle::for_model(
+            inner: FactoryModelClientHandle::for_model(
                 store_path,
                 config,
                 realm,
@@ -600,15 +600,15 @@ impl FactoryStewardHandle {
 #[async_trait]
 impl StewardClientHandle for FactoryStewardHandle {
     async fn client(&self) -> Result<Arc<dyn LlmClient>, StewardError> {
-        use crate::memory::factory_handle::{SelectorError, SelectorHandle};
+        use crate::memory::factory_handle::{ModelClientError, ModelClientHandle};
         self.inner.client().await.map_err(|err| match err {
-            SelectorError::Auth(msg) => StewardError::Auth(msg),
+            ModelClientError::Auth(msg) => StewardError::Auth(msg),
             other => StewardError::Client(other.to_string()),
         })
     }
 
     fn invalidate(&self) {
-        use crate::memory::factory_handle::SelectorHandle;
+        use crate::memory::factory_handle::ModelClientHandle;
         self.inner.invalidate();
     }
 }

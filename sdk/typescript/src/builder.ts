@@ -397,12 +397,9 @@ export class MobKitBuilder {
       /**
        * RETIRED, and narrowed to the one value that still means anything.
        * The §8.3 LLM recall-selector stage was removed unactivated, so recall
-       * is the deterministic lexical path on every turn. The KEY stays in the
-       * whitelist and stays forwarded, because the gateway still accepts it
-       * (dropping it here would raise on a config the gateway boots fine);
-       * what is gone is `"default"` and `profile:<path>`, which the gateway
-       * now takes and silently discards with only a server-side warning. A
-       * compile error beats a knob that looks wired and is not.
+       * is the deterministic lexical path on every turn. The gateway accepts
+       * absent or `"off"` for migration compatibility and refuses every
+       * activation-shaped value at init.
        */
       selector?: "off";
       operatorScope?: "off" | "provisional";
@@ -422,10 +419,16 @@ export class MobKitBuilder {
         /** Output-token ceiling for the dream call. Unset keeps the profile default. */
         maxOutputTokens?: number;
       };
-      hygienist?: boolean | {
-        enabled?: boolean;
+      /**
+       * PARKED. Only disabled compatibility forms are accepted. The internal
+       * Rust engine remains available for validation, but the public gateway
+       * has no supported activation seam or provider proof in this release.
+       */
+      hygienist?: false | {
+        enabled: false;
         runsPerDay?: number;
         model?: string;
+        maxOutputTokens?: number;
       };
     } = true,
   ): this {
@@ -486,7 +489,14 @@ export class MobKitBuilder {
       }
       wire.content_trust = contentTrust;
     }
-    if (config.selector !== undefined) wire.selector = config.selector;
+    if (config.selector !== undefined) {
+      if (config.selector !== "off") {
+        throw new Error(
+          "agentMemory selector is RETIRED; remove it or set selector to 'off'",
+        );
+      }
+      wire.selector = config.selector;
+    }
     if (config.operatorScope !== undefined) {
       wire.operator_scope = config.operatorScope;
     }
@@ -546,6 +556,15 @@ export class MobKitBuilder {
       }
     }
     if (config.hygienist !== undefined) {
+      if (
+        config.hygienist !== false &&
+        (typeof config.hygienist !== "object" ||
+          config.hygienist.enabled !== false)
+      ) {
+        throw new Error(
+          "agentMemory hygienist is PARKED and cannot be enabled; remove it, use false, or use { enabled: false }",
+        );
+      }
       if (typeof config.hygienist === "boolean") {
         wire.hygienist = config.hygienist;
       } else {
@@ -563,6 +582,9 @@ export class MobKitBuilder {
         }
         if (config.hygienist.model !== undefined) {
           hygienist.model = config.hygienist.model;
+        }
+        if (config.hygienist.maxOutputTokens !== undefined) {
+          hygienist.max_output_tokens = config.hygienist.maxOutputTokens;
         }
         wire.hygienist = hygienist;
       }

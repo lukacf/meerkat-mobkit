@@ -257,11 +257,13 @@ class MobKitBuilder:
 
         ``selector`` is RETIRED. The LLM recall-selector stage was removed
         unactivated, so recall is the deterministic lexical path on every turn.
-        The key is still accepted and still forwarded (the gateway boots fine
-        on it, so raising here would be stricter than the server), but only
-        ``"off"`` still means anything: ``"default"`` and ``"profile:<path>"``
-        are taken and discarded, with the deprecation warning going to the
-        GATEWAY log, not to this caller. A later release rejects the key.
+        The gateway accepts only absence or ``"off"`` for migration
+        compatibility and refuses every activation-shaped value.
+
+        ``hygienist`` is PARKED. Only ``False`` or a mapping with
+        ``enabled=False`` is accepted for migration compatibility. The
+        internal Rust engine remains available for validation, but the public
+        SDK/gateway path has no supported activation or provider proof.
         """
         if kwargs:
             if config is not True:
@@ -366,6 +368,10 @@ class MobKitBuilder:
         elif "contentTrust" in config:
             wire["content_trust"] = config["contentTrust"]
         if "selector" in config:
+            if config["selector"] != "off":
+                raise ValueError(
+                    "agent_memory selector is RETIRED; remove it or set selector='off'"
+                )
             wire["selector"] = config["selector"]
         if "operator_scope" in config:
             wire["operator_scope"] = config["operator_scope"]
@@ -469,6 +475,13 @@ class MobKitBuilder:
                 wire["steward"] = steward
         hygienist = config.get("hygienist")
         if hygienist is not None:
+            if hygienist is not False and not (
+                isinstance(hygienist, dict) and hygienist.get("enabled") is False
+            ):
+                raise ValueError(
+                    "agent_memory hygienist is PARKED and cannot be enabled; "
+                    "remove it, use False, or use {'enabled': False}"
+                )
             if isinstance(hygienist, dict):
                 unknown = sorted(
                     set(hygienist)

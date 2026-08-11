@@ -62,10 +62,11 @@ deliberately refused and the ones shipped as documented partials.
 - **Item 26** - public-surface cleanup for deleted and parked capabilities.
 - **Item 20** - Hygienist is PARKED, not deleted, pending real fork plus
   bounded projection proven on OpenAI and Anthropic.
-- Memory output budgets (`max_output_tokens` on Steward/Distiller/Hygienist)
-  are reachable from the Python and TypeScript SDKs and from the gateway
-  allowlists. Without the allowlist half the knob is unreachable from the only
-  surface a downstream configures.
+- Memory output budgets (`max_output_tokens` on Steward and Distiller) are
+  reachable from the Python and TypeScript SDKs and from the gateway
+  allowlists. Hygienist is intentionally excluded from that public surface:
+  absent/false/disabled config remains migration-compatible, while any
+  activation-shaped value is refused with invalid params.
 
 ### Fixed
 - **SIGTERM is handled by both gateway binaries.** They waited on

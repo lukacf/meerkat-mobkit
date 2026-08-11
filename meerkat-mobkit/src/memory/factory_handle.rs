@@ -1,19 +1,19 @@
 //! Host-side model-client acquisition for the off-turn memory stages, plus
 //! the record-fetch/provenance vocabulary the recall coordinator renders.
 //!
-//! This module is the surviving half of the retired §8.3 LLM Selector: the
-//! selector's judgment stage (profile, prompt bundle, structured selection
-//! call, process-wide install, full-store sweep escalation) is gone, but the
-//! seams it introduced are load-bearing for stages that DID ship.
+//! This module owns shared model-client acquisition for off-turn memory
+//! stages, plus the record-fetch/provenance vocabulary used by deterministic
+//! recall. The retired §8.3 LLM Selector introduced these seams, but no live
+//! type here is selector-specific.
 //!
 //! Two clusters live here, both re-homed verbatim from `memory::selector`:
 //!
-//! 1. Client acquisition (§8.1 invocation seam). [`FactorySelectorHandle`]
+//! 1. Client acquisition (§8.1 invocation seam). [`FactoryModelClientHandle`]
 //!    wraps meerkat's `AgentFactory::build_llm_client_for_identity`, and the
 //!    Distiller (§8.4), Steward (§8.5) and Hygienist (§8.6) all obtain their
 //!    clients through this one factory path rather than growing parallel ones
-//!    (§8.1 dogma rule 7). [`SelectorHandle`] is the trait they hold it by and
-//!    [`SelectorError`] is the classified failure they map into their own
+//!    (§8.1 dogma rule 7). [`ModelClientHandle`] is the trait they hold it by
+//!    and [`ModelClientError`] is the classified failure they map into their own
 //!    error types.
 //!
 //! 2. Record bodies with provenance. [`AnnotatedRecord`] and
@@ -23,11 +23,6 @@
 //!    `provenance: None`. [`SelectedRecordFetch`] is the store-side capability
 //!    that can supply the labelled form.
 //!
-//! The names keep their `Selector` prefix on purpose: they are the published
-//! trait/impl names three engine crates and the provider capability accessor
-//! already spell, and renaming them would be a wire-visible churn with no
-//! behavioural content.
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -47,29 +42,23 @@ use crate::memory::records::{MemoryScope, RecordMeta, TrustTier};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-pub enum SelectorError {
-    /// Calibration profile failed to load or validate (fail-loud).
-    Profile(String),
+pub enum ModelClientError {
     /// Client construction / auth resolution failed.
     Auth(String),
     /// The provider call itself failed.
     Client(String),
-    /// The model's output never became valid structured JSON.
-    Parse(String),
 }
 
-impl std::fmt::Display for SelectorError {
+impl std::fmt::Display for ModelClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Profile(msg) => write!(f, "selector profile error: {msg}"),
-            Self::Auth(msg) => write!(f, "selector auth error: {msg}"),
-            Self::Client(msg) => write!(f, "selector client error: {msg}"),
-            Self::Parse(msg) => write!(f, "selector parse error: {msg}"),
+            Self::Auth(msg) => write!(f, "model client auth error: {msg}"),
+            Self::Client(msg) => write!(f, "model client error: {msg}"),
         }
     }
 }
 
-impl std::error::Error for SelectorError {}
+impl std::error::Error for ModelClientError {}
 
 // ---------------------------------------------------------------------------
 // Client acquisition (§8.1 invocation seam)
@@ -78,8 +67,8 @@ impl std::error::Error for SelectorError {}
 /// How a stage obtains (and re-obtains) its model client. The real
 /// implementation wraps meerkat's factory seam; tests supply a mock.
 #[async_trait]
-pub trait SelectorHandle: Send + Sync {
-    async fn client(&self) -> Result<Arc<dyn LlmClient>, SelectorError>;
+pub trait ModelClientHandle: Send + Sync {
+    async fn client(&self) -> Result<Arc<dyn LlmClient>, ModelClientError>;
     /// Drop any cached client so the next `client()` re-resolves auth.
     fn invalidate(&self);
 }
@@ -87,9 +76,9 @@ pub trait SelectorHandle: Send + Sync {
 /// Real handle over `AgentFactory::build_llm_client_for_identity`
 /// (meerkat 0.7.9 `factory.rs`): realm auth binding + model catalog
 /// resolution, the same seam session model hot-swap uses. Clients are
-/// cached per `(realm, model)`; [`SelectorHandle::invalidate`] clears the
+/// cached per `(realm, model)`; [`ModelClientHandle::invalidate`] clears the
 /// cache so an auth failure re-enters resolution.
-pub struct FactorySelectorHandle {
+pub struct FactoryModelClientHandle {
     factory: meerkat::AgentFactory,
     config: meerkat::Config,
     realm: String,
@@ -97,7 +86,7 @@ pub struct FactorySelectorHandle {
     cache: Mutex<HashMap<(String, String), Arc<dyn LlmClient>>>,
 }
 
-impl FactorySelectorHandle {
+impl FactoryModelClientHandle {
     /// The factory seam keyed by raw model/provider - the Distiller (§8.4),
     /// Steward (§8.5) and Hygienist (§8.6) obtain their clients through this
     /// exact path rather than growing a parallel one (§8.1 dogma rule 7).
@@ -131,8 +120,8 @@ impl FactorySelectorHandle {
 }
 
 #[async_trait]
-impl SelectorHandle for FactorySelectorHandle {
-    async fn client(&self) -> Result<Arc<dyn LlmClient>, SelectorError> {
+impl ModelClientHandle for FactoryModelClientHandle {
+    async fn client(&self) -> Result<Arc<dyn LlmClient>, ModelClientError> {
         let key = (self.realm.clone(), self.identity.model.clone());
         if let Some(client) = self
             .cache
@@ -148,9 +137,9 @@ impl SelectorHandle for FactorySelectorHandle {
             .await
             .map_err(|err| match err {
                 FactoryError::ProviderAuth(_) | FactoryError::ConnectionTarget(_) => {
-                    SelectorError::Auth(err.to_string())
+                    ModelClientError::Auth(err.to_string())
                 }
-                other => SelectorError::Client(other.to_string()),
+                other => ModelClientError::Client(other.to_string()),
             })?;
         self.cache
             .lock()

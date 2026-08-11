@@ -215,13 +215,15 @@ class TestBuilderChain:
             "content_trust": {"trusted_tools": ["safe_calc"]},
         }
 
-    def test_agent_memory_selector_serializes_to_gateway_wire_key(self):
-        b = MobKit.builder().agent_memory(selector="profile:/etc/mobkit/selector.toml")
+    def test_agent_memory_selector_keeps_only_off_compatibility(self):
+        b = MobKit.builder().agent_memory(selector="off")
         params = MobKitRuntime(b._config)._build_init_params()
 
         assert params["runtime_options"]["agent_memory"] == {
-            "selector": "profile:/etc/mobkit/selector.toml",
+            "selector": "off",
         }
+        with pytest.raises(ValueError, match="selector is RETIRED"):
+            MobKit.builder().agent_memory(selector="profile:/tmp/selector.toml")
 
     def test_agent_memory_distiller_serializes_to_gateway_wire_keys(self):
         b = MobKit.builder().agent_memory(
@@ -306,33 +308,42 @@ class TestBuilderChain:
         params = MobKitRuntime(b._config)._build_init_params()
         assert params["runtime_options"]["agent_memory"] == {"operator_scope": "off"}
 
-    def test_agent_memory_hygienist_serializes_to_gateway_wire_keys(self):
+    def test_agent_memory_hygienist_keeps_only_disabled_compatibility(self):
         b = MobKit.builder().agent_memory(
             hygienist={
-                "enabled": True,
+                "enabled": False,
                 "runs_per_day": 3,
-                "model": "claude-haiku-4-5",
+                "model": "legacy-model",
+                "max_output_tokens": 8192,
             },
         )
         params = MobKitRuntime(b._config)._build_init_params()
         assert params["runtime_options"]["agent_memory"] == {
             "hygienist": {
-                "enabled": True,
+                "enabled": False,
                 "runs_per_day": 3,
-                "model": "claude-haiku-4-5",
+                "model": "legacy-model",
+                "max_output_tokens": 8192,
             },
         }
 
-    def test_agent_memory_hygienist_accepts_camel_case_and_bool(self):
-        b = MobKit.builder().agent_memory(hygienist={"runsPerDay": 2})
+    def test_agent_memory_hygienist_accepts_disabled_camel_case_and_bool(self):
+        b = MobKit.builder().agent_memory(
+            hygienist={"enabled": False, "runsPerDay": 2}
+        )
         params = MobKitRuntime(b._config)._build_init_params()
         assert params["runtime_options"]["agent_memory"] == {
-            "hygienist": {"runs_per_day": 2},
+            "hygienist": {"enabled": False, "runs_per_day": 2},
         }
 
-        b = MobKit.builder().agent_memory(hygienist=True)
+        b = MobKit.builder().agent_memory(hygienist=False)
         params = MobKitRuntime(b._config)._build_init_params()
-        assert params["runtime_options"]["agent_memory"] == {"hygienist": True}
+        assert params["runtime_options"]["agent_memory"] == {"hygienist": False}
+
+        with pytest.raises(ValueError, match="hygienist is PARKED"):
+            MobKit.builder().agent_memory(hygienist=True)
+        with pytest.raises(ValueError, match="hygienist is PARKED"):
+            MobKit.builder().agent_memory(hygienist={})
 
     def test_agent_memory_unknown_option_raises_instead_of_silently_dropping(self):
         with pytest.raises(ValueError, match="per_turn_injecton"):
@@ -346,7 +357,9 @@ class TestBuilderChain:
         with pytest.raises(ValueError, match="steward.*cadance"):
             MobKit.builder().agent_memory(steward={"cadance": "*/6h"})
         with pytest.raises(ValueError, match="hygienist.*runs_per_dya"):
-            MobKit.builder().agent_memory(hygienist={"runs_per_dya": 2})
+            MobKit.builder().agent_memory(
+                hygienist={"enabled": False, "runs_per_dya": 2}
+            )
 
     def test_external_authoritative_path_requires_all_three_parts(self):
         class Store:

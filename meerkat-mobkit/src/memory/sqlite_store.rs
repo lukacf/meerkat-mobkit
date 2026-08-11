@@ -5,7 +5,7 @@
 //! `<persistent_state>/memory/`, which belongs to meerkat's session semantic
 //! memory). WAL journaling, busy-timeout, plain B-tree lookups only: the
 //! bright-line ratchet (§12) forbids retrieval-index machinery here, and
-//! recall quality is the LLM Selector's job, not the store's.
+//! recall quality is the deterministic retrieval path's job, not the store's.
 //!
 //! Every write path — including `remember`/`forget` and the markdown import
 //! — flows through the staged-batch validator and a single-transaction

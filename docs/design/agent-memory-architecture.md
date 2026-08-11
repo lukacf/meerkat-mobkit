@@ -238,9 +238,8 @@ operates on them:
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│ JUDGMENT PLANE (all LLM, all calibrated, all off-turn except       │
-│ the Selector):                                                     │
-│   Recorder · Selector · Distiller · Steward/Dreamer · Hygienist    │
+│ JUDGMENT PLANE (calibrated LLM stages, off-turn):                  │
+│   Recorder · Distiller · Steward/Dreamer · Hygienist (parked)      │
 └──────┬────────────────────────┬───────────────────────┬────────────┘
        │ writes (staged)        │ reads                 │ revises (audited)
 ┌──────▼──────────┐    ┌────────▼─────────┐    ┌────────▼───────────┐
@@ -257,7 +256,8 @@ operates on them:
 The **recall coordinator** (§9) is the one new runtime component: a deterministic
 shell that owns scope composition, candidate gathering, latency/byte budgets,
 provenance-chain dedup, echo-safe delivery, inbound envelope defanging, and the
-injection ledger — with the LLM Selector as its single judgment stage. It has a
+injection ledger. Recall ranking is deterministic and has no LLM judgment stage.
+It has a
 *fixed* topology (bundled store now; hub candidates later per the roadmap), not a
 pluggable provider fan-out with score blending; `AgentMemoryProvider` remains the
 only storage extension seam.
@@ -281,7 +281,7 @@ MemoryRecord {
     kind: MemoryKind,                // Preference | Fact | Gotcha | Procedure
                                      //   | Relationship | OpenLoop | Reference
     title: String,                   // ≤200B
-    description: String,             // ≤400B — written FOR the Selector; this line
+    description: String,             // <=400B - written for retrieval ranking; this line
                                      //   is the retrieval contract
     body: String,                    // ≤64KiB; why/how-to-apply for behavioral kinds
     provenance: MemoryProvenance {
@@ -382,11 +382,12 @@ that the steward commits (§8.5). Realm scope is application/SDK-only.
 > says PROVISIONAL on purpose (§16 Q1 stays open; the enum leaves room for a
 > final keying). Recall composition activates on config **and** an
 > `OperatorResolver` (a trait seam so the §16 Q1 keying stays swappable).
-> **No shipped host installs a resolver**: the stock gateway pins it to
-> `None` and logs a loud startup warning when `provisional` is configured
-> without one — recall composition is INERT there because the intended
-> console-auth-principal keying needs session-to-principal plumbing that
-> has not landed (a library embedder can install a resolver today). Steward routing activates on the config knob alone, because
+> The shipped SDK gateway installs `ConsolePrincipalOperatorResolver` when
+> `provisional` is configured and shares it with the authenticated console
+> send path. Composition therefore adds operator scope only after a real
+> console principal has addressed the identity. Library embedders can install
+> another resolver; a resolver-less composition remains inert and warns
+> loudly. Steward routing activates on the config knob alone, because
 > operator-scope *proposals carry their own operator key*. The un-hold
 > ships as specified for proposals: pre-activation, an accept verdict on an
 > operator-scope proposal is deterministically downgraded to a hold, and
@@ -777,7 +778,7 @@ semantically pristine.
 Phase-wise this ships last (§15); it is the highest-risk stage and depends on
 calibration infrastructure being real first.
 
-> **P4 as-built (Hygienist).** The apply seam is real: meerkat 0.7.9's
+> **P4 internal engine (Hygienist, parked).** The apply seam is real: meerkat 0.7.9's
 > `PersistentSessionService` implements `SessionServiceTranscriptEditExt`,
 > and the gateway threads the concrete typed handle to the Hygienist
 > (`memory/hygienist.rs`; the erased mob-layer session service does not
@@ -801,6 +802,9 @@ calibration infrastructure being real first.
 > Known gap (upstream-asks.md, ask 4 refinement): no service-level
 > head-revision read exists, so rewrites send `expected_parent_revision:
 > None` and §7.1 revision pinning stays `None` at capture time.
+> The public SDK and gateway do not activate this engine in the current
+> release. Only absent/disabled compatibility config is accepted, and no
+> OpenAI or Anthropic provider-proof claim is made.
 
 ---
 
@@ -809,8 +813,9 @@ calibration infrastructure being real first.
 The coordinator is deterministic runtime composition — the concerns that need a
 named owner: scope composition, candidate gathering, latency and byte budgets,
 provenance-chain dedup, echo-safe delivery choice, inbound defanging, and ledger
-writes. It is not a provider-fanout framework; its topology is fixed and its only
-judgment stage is the Selector.
+writes. It is not a provider-fanout framework; its topology is fixed and recall
+ranking is the deterministic lexical provider path. The retired LLM Selector is
+not part of composition.
 
 ### 9.1 What enters context, where — echo-safe by construction
 
@@ -818,7 +823,7 @@ judgment stage is the Selector.
 |---|---|---|---|---|
 | Build-time (`customize_build` → `additional_instructions`) | Behavioral protocol + composed **index** (budget ~8 KB) + selected bodies for orientation | materialize / resume / respawn / reset | system prompt (`Message::System`) | **yes** (excluded from indexing — verified) |
 | On-demand | `memory` tool (records), `memory_search` (session), each advertised in the index | agent-initiated | tool results | **yes** (excluded — verified) |
-| Per-turn ambient bodies | Selector-chosen record bodies, provenance-labeled, staleness-phrased | non-Steer sends | **off by default** until an echo-safe delivery path exists (upstream ask 1 — see coupling note below); opt-in `budgeted` mode meanwhile | no (that's why it defaults off) |
+| Per-turn ambient bodies | Lexically recalled record bodies, provenance-labeled, staleness-phrased | non-Steer sends | **off by default** until an echo-safe delivery path exists (upstream ask 1 - see coupling note below); opt-in `budgeted` mode meanwhile | no (that's why it defaults off) |
 
 This is the P0 posture change that actually fixes D1 rather than bounding it:
 every *default* surface is a message class meerkat already excludes from

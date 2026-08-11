@@ -455,7 +455,7 @@ pub trait AgentMemoryProvider: Send + Sync {
         None
     }
 
-    /// §8.3 Selector body fetch for selector-chosen record ids.
+    /// Provenance-aware body fetch for deterministically recalled record ids.
     fn as_selected_record_fetch(
         &self,
     ) -> Option<Arc<dyn crate::memory::factory_handle::SelectedRecordFetch>> {

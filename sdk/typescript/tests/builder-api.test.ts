@@ -91,13 +91,17 @@ describe("MobKitBuilder.agentMemory()", () => {
     });
   });
 
-  it("serializes the selector switch to the gateway wire key", () => {
+  it("keeps only the retired selector off compatibility form", () => {
     const builder = MobKit.builder();
-    builder.agentMemory({ selector: "profile:/etc/mobkit/selector.toml" });
+    builder.agentMemory({ selector: "off" });
 
     assert.deepEqual(builder._config.agentMemoryConfig, {
-      selector: "profile:/etc/mobkit/selector.toml",
+      selector: "off",
     });
+    assert.throws(
+      () => builder.agentMemory({ selector: "profile:/tmp/selector.toml" } as never),
+      /selector is RETIRED/,
+    );
   });
 
   it("serializes the distiller block to gateway wire keys", () => {
@@ -164,27 +168,38 @@ describe("MobKitBuilder.agentMemory()", () => {
     });
   });
 
-  it("serializes the hygienist block to gateway wire keys", () => {
+  it("keeps only disabled hygienist compatibility forms", () => {
     const builder = MobKit.builder();
     builder.agentMemory({
       hygienist: {
-        enabled: true,
+        enabled: false,
         runsPerDay: 3,
-        model: "claude-haiku-4-5",
+        model: "legacy-model",
+        maxOutputTokens: 8192,
       },
     });
 
     assert.deepEqual(builder._config.agentMemoryConfig, {
       hygienist: {
-        enabled: true,
+        enabled: false,
         runs_per_day: 3,
-        model: "claude-haiku-4-5",
+        model: "legacy-model",
+        max_output_tokens: 8192,
       },
     });
 
     const boolBuilder = MobKit.builder();
-    boolBuilder.agentMemory({ hygienist: true });
-    assert.deepEqual(boolBuilder._config.agentMemoryConfig, { hygienist: true });
+    boolBuilder.agentMemory({ hygienist: false });
+    assert.deepEqual(boolBuilder._config.agentMemoryConfig, { hygienist: false });
+
+    assert.throws(
+      () => MobKit.builder().agentMemory({ hygienist: true } as never),
+      /hygienist is PARKED and cannot be enabled/,
+    );
+    assert.throws(
+      () => MobKit.builder().agentMemory({ hygienist: {} } as never),
+      /hygienist is PARKED and cannot be enabled/,
+    );
   });
 
   it("rejects unknown options at runtime instead of silently dropping them", () => {
@@ -210,7 +225,9 @@ describe("MobKitBuilder.agentMemory()", () => {
     );
     assert.throws(
       () =>
-        MobKit.builder().agentMemory({ hygienist: { runsPerDya: 2 } } as never),
+        MobKit.builder().agentMemory({
+          hygienist: { enabled: false, runsPerDya: 2 },
+        } as never),
       /agentMemory hygienist got unsupported option\(s\): runsPerDya/,
     );
     assert.throws(

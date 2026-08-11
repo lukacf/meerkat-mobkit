@@ -41,8 +41,8 @@ pub use distiller::{
 };
 pub use events::{MemoryEventSink, MemoryTimelineEvent};
 pub use factory_handle::{
-    AnnotatedRecord, FactorySelectorHandle, RecordProvenance, SelectedRecordFetch, SelectorError,
-    SelectorHandle,
+    AnnotatedRecord, FactoryModelClientHandle, ModelClientError, ModelClientHandle,
+    RecordProvenance, SelectedRecordFetch,
 };
 pub use guards::{BackgroundBudget, BackgroundBudgetConfig, BudgetDenied, BudgetPermit};
 pub use hygienist::{
