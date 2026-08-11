@@ -2781,7 +2781,7 @@ actions = ["agent.view"]
         let mob_quiesce_window = Duration::from_secs(10);
         let scheduler_overhead = Duration::from_secs(10);
         assert_eq!(
-            GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT,
+            meerkat_mobkit::gateway_composition::GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT,
             PROVIDER_CALLBACK_TIMEOUT
                 + PROVIDER_CALLBACK_TIMEOUT
                 + GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT
@@ -2790,8 +2790,8 @@ actions = ["agent.view"]
             "runtime budget must exactly cover both provider callbacks, event drain, mob quiesce, and scheduler overhead"
         );
         let gateway_phase_budget = GATEWAY_RPC_DRAIN_TIMEOUT
-            + GATEWAY_HTTP_DRAIN_TIMEOUT
-            + GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT
+            + meerkat_mobkit::gateway_composition::GATEWAY_HTTP_DRAIN_TIMEOUT
+            + meerkat_mobkit::gateway_composition::GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT
             + GATEWAY_STDOUT_DRAIN_TIMEOUT;
         assert_eq!(gateway_phase_budget, Duration::from_secs(325));
         assert_eq!(
@@ -4370,9 +4370,7 @@ const GATEWAY_SHUTDOWN_METHOD: &str = "mobkit/shutdown";
 // quiesce window, and 10 seconds of scheduler overhead.
 const PROVIDER_CALLBACK_TIMEOUT: Duration = Duration::from_secs(130);
 const GATEWAY_RPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
-const GATEWAY_HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
-const GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(310);
 const GATEWAY_STDOUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 // The bounded gateway phases total at most 325 seconds (5 + 5 + 310 + 5).
@@ -8226,14 +8224,20 @@ external_addressable = true
     } else {
         Arc::new(InMemoryMetadataStore::new())
     };
-    let mut runtime = Box::pin(UnifiedRuntime::bootstrap_with_options(
-        mob_spec,
-        module_config,
-        Vec::new(),
-        timeout,
-        gateway_options.runtime_options.clone(),
-        persistent_metadata,
-    ))
+    let bootstrap_plan =
+        meerkat_mobkit::gateway_composition::GatewayRuntimeBootstrapPlan::stdio_rpc(
+            mob_spec,
+            module_config,
+            Vec::new(),
+            timeout,
+            gateway_options.runtime_options.clone(),
+            persistent_metadata,
+        );
+    let mut composition = meerkat_mobkit::gateway_composition::GatewayComposition::prepare(
+        meerkat_mobkit::gateway_composition::GatewayCompatibilityProfile::StdioRpc,
+        bootstrap_plan,
+    )
+    .bootstrap()
     .await
     .unwrap_or_else(|e| {
         let error_response = json!({
@@ -8251,6 +8255,7 @@ external_addressable = true
         let _ = stdout.flush();
         std::process::exit(1);
     });
+    let runtime = composition.runtime_mut();
 
     if persistent_state.is_some() {
         let console_log_path = match storage_layout.console_db() {
@@ -8796,7 +8801,7 @@ external_addressable = true
         // the two, and folding them into one helper would have silently
         // reordered a durable-store boot sequence.
         let mob_state = meerkat_mobkit::gateway_composition::adopt_schedule_mob_targets(
-            &runtime,
+            runtime,
             &schedule_service,
             &mob_target_registry,
         )
@@ -8854,7 +8859,7 @@ external_addressable = true
         // see was a divergence.
         let (schedule_host, watchdog) =
             meerkat_mobkit::gateway_composition::spawn_gateway_schedule_host(
-                &runtime,
+                runtime,
                 mob_state,
                 meerkat_mobkit::gateway_composition::GatewayScheduleHostInputs {
                     schedule_service,
@@ -8931,7 +8936,8 @@ external_addressable = true
         None => None,
     };
 
-    let runtime = Arc::new(runtime);
+    let composition = composition.activate();
+    let runtime = Arc::clone(composition.runtime());
     if let Some(detached_jobs) = gateway_detached_jobs.as_ref() {
         match detached_jobs.health_projection().await {
             Ok(projection) => runtime.set_job_health_projection(Some(projection)),
@@ -8964,14 +8970,13 @@ external_addressable = true
     let event_drain_task = runtime.clone().spawn_event_drain_task();
 
     // 6. Bind HTTP server on ephemeral port
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    let http_binding = meerkat_mobkit::gateway_composition::GatewayHttpBinding::bind_loopback()
         .await
         .expect("bind ephemeral port");
-    let port = listener.local_addr().expect("local addr").port();
-    let http_base_url = format!("http://127.0.0.1:{port}");
+    let port = http_binding.port();
+    let http_base_url = http_binding.http_base_url();
 
     // 7. Start HTTP with graceful shutdown
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let mut decision_state = gateway_options
         .decisions
         .clone()
@@ -9011,16 +9016,7 @@ external_addressable = true
         } else {
             (app, None)
         };
-    let mut serve_task = tokio::spawn({
-        let mut shutdown_rx = shutdown_rx.clone();
-        async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(async move {
-                    shutdown_rx.changed().await.ok();
-                })
-                .await
-        }
-    });
+    let http_server = http_binding.serve(app);
 
     // 8. Send init response via stdout channel
     let loaded_modules = runtime.loaded_modules().await;
@@ -9178,39 +9174,20 @@ external_addressable = true
     if gateway_shutdown.is_none() {
         stdin_reader.abort();
     }
-    let _ = shutdown_tx.send(true);
-    if tokio::time::timeout(GATEWAY_HTTP_DRAIN_TIMEOUT, &mut serve_task)
-        .await
-        .is_err()
-    {
-        serve_task.abort();
-        let _ = serve_task.await;
-    }
-    event_drain_task.abort();
-    let runtime_shutdown =
-        tokio::time::timeout(GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT, runtime.shutdown()).await;
-    match runtime_shutdown.as_ref() {
-        Err(_) => {
-            tracing::warn!(
-                timeout_ms = GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT.as_millis(),
-                "gateway runtime shutdown exceeded its bounded horizon"
-            );
-        }
-        Ok(report) if !report.cleanup_completed() => {
-            tracing::warn!(
-                drain_timed_out = report.drain.timed_out,
-                mob_stop = ?report.mob_stop,
-                identity_authority_release = ?report.identity_authority_release,
-                orphan_processes = report.module_shutdown.orphan_processes,
-                "gateway runtime shutdown completed without cleanup attestation"
-            );
-        }
-        Ok(_) => {}
-    }
+    let shutdown = composition
+        .shutdown(
+            http_server,
+            || async move {
+                event_drain_task.abort();
+                let _ = event_drain_task.await;
+            },
+            || async {},
+        )
+        .await;
+    let runtime_shutdown = shutdown.runtime;
     bridge.close().await;
     if let Some(request) = gateway_shutdown {
-        let response =
-            gateway_shutdown_response(request.response_id, runtime_shutdown.as_ref().ok());
+        let response = gateway_shutdown_response(request.response_id, runtime_shutdown.as_ref());
         if let Ok(line) = serde_json::to_string(&response) {
             let _ = stdout_tx.send(line).await;
         }

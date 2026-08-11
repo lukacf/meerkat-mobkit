@@ -18,7 +18,7 @@ use meerkat_mobkit::{
     ConsoleUiConfig, ConventionalPaths, GatewayPeerKeys, MOBKIT_CONTRACT_VERSION,
     MobBootstrapOptions, MobBootstrapSpec, MobKitStorageLayout, ObjectStoreBlobStore,
     ReleaseMetadata, RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
-    UnifiedRuntime, load_console_ui_config_from_path_for_realm,
+    load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::mob_definition_may_use_image_generation,
 };
 use meerkat_store::SqliteSessionStore;
@@ -1358,20 +1358,27 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         default_llm_client: None,
     });
 
-    let mut runtime = Box::pin(UnifiedRuntime::bootstrap(
-        mob_spec,
-        meerkat_mobkit::MobKitConfig {
-            modules: Vec::new(),
-            discovery: meerkat_mobkit::DiscoverySpec {
-                namespace: format!("tux.{}", short_hash(&key)),
+    let bootstrap_plan =
+        meerkat_mobkit::gateway_composition::GatewayRuntimeBootstrapPlan::console_http(
+            mob_spec,
+            meerkat_mobkit::MobKitConfig {
                 modules: Vec::new(),
+                discovery: meerkat_mobkit::DiscoverySpec {
+                    namespace: format!("tux.{}", short_hash(&key)),
+                    modules: Vec::new(),
+                },
+                pre_spawn: Vec::new(),
             },
-            pre_spawn: Vec::new(),
-        },
-        Duration::from_secs(30),
-    ))
+            Duration::from_secs(30),
+        );
+    let mut composition = meerkat_mobkit::gateway_composition::GatewayComposition::prepare(
+        meerkat_mobkit::gateway_composition::GatewayCompatibilityProfile::ConsoleHttp,
+        bootstrap_plan,
+    )
+    .bootstrap()
     .await
     .context("failed to bootstrap local runtime")?;
+    let runtime = composition.runtime_mut();
 
     // Load contacts.toml if present. This enables mobkit/cross_mob/directory
     // (lookup of known mob addresses) without requiring peer mob handles.
@@ -1539,7 +1546,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
     )) = schedule_host_inputs
     {
         let mob_state = meerkat_mobkit::gateway_composition::adopt_schedule_mob_targets(
-            &runtime,
+            runtime,
             &schedule_service,
             &mob_target_registry,
         )
@@ -1552,7 +1559,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         // than a hard-coded argument nobody could see was a divergence.
         let (schedule_host, watchdog) =
             meerkat_mobkit::gateway_composition::spawn_gateway_schedule_host(
-                &runtime,
+                runtime,
                 mob_state,
                 meerkat_mobkit::gateway_composition::GatewayScheduleHostInputs {
                     schedule_service,
@@ -1571,13 +1578,12 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         (None, None)
     };
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    let composition = composition.activate();
+    let runtime = composition.runtime();
+    let http_binding = meerkat_mobkit::gateway_composition::GatewayHttpBinding::bind_loopback()
         .await
         .context("failed to bind gateway listener")?;
-    let http_base_url = format!(
-        "http://127.0.0.1:{}",
-        listener.local_addr().context("missing local addr")?.port()
-    );
+    let http_base_url = http_binding.http_base_url();
 
     let control_listen_address = runtime.control_listener_advertised_address();
     registry.entries.retain(|entry| entry.key != key);
@@ -1601,6 +1607,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
 
     let decisions = runtime_decision_state(&runtime_id, console_ui, console_read_only);
     let app = runtime.build_reference_app_router(decisions);
+    let mut http_server = http_binding.serve(app);
 
     // `mobkit_gateway` serves the console/admin API over HTTP. It is NOT the
     // SDK's stdin JSON-RPC gateway — that is the separate `rpc_gateway` binary.
@@ -1647,16 +1654,35 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         // on ctrl_c alone meant the graceful path never ran on an ordinary
         // deploy. See `meerkat_mobkit::shutdown_signal` for why that became
         // load-bearing at 0.8.22 (unreleased schedule executor lease).
-        result = axum::serve(listener, app)
-            .with_graceful_shutdown(meerkat_mobkit::shutdown_signal::shutdown_signal()) => {
-            result.context("gateway HTTP server failed")?;
+        result = http_server.wait() => {
+            match result {
+                meerkat_mobkit::gateway_composition::GatewayHttpDrainOutcome::Completed(result) => {
+                    result.context("gateway HTTP server failed")?;
+                }
+                meerkat_mobkit::gateway_composition::GatewayHttpDrainOutcome::TimedOut => {
+                    return Err(anyhow!("gateway HTTP server wait timed out"));
+                }
+                meerkat_mobkit::gateway_composition::GatewayHttpDrainOutcome::JoinFailed(error) => {
+                    return Err(anyhow!("gateway HTTP server task failed: {error}"));
+                }
+            }
         }
         () = stdin_guard => {}
+        () = meerkat_mobkit::shutdown_signal::shutdown_signal() => {}
     }
 
-    let mut registry = load_registry(&registry_file);
-    registry.entries.retain(|entry| entry.key != key);
-    save_registry(&registry_file, &registry)?;
+    let shutdown = composition
+        .shutdown(
+            http_server,
+            || async {},
+            || async {
+                let mut registry = load_registry(&registry_file);
+                registry.entries.retain(|entry| entry.key != key);
+                save_registry(&registry_file, &registry)
+            },
+        )
+        .await;
+    shutdown.cleanup?;
     Ok(())
 }
 

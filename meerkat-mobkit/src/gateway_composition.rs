@@ -9,12 +9,20 @@
 //!
 //! This module owns the COMPOSITION ROOT itself: the process-level boot
 //! scaffolding a gateway binary performs, in order, around the runtime it
-//! builds. Two bands live here today:
+//! builds. Five bands live here:
 //!
 //! 1. The boot preamble - things done before any runtime exists (tokio
 //!    runtime, tracing subscriber, argv parsing).
-//! 2. Post-bootstrap surface attachment that both binaries perform with
+//! 2. Explicit compatibility-profile declarations. The two binaries retain
+//!    their existing wire/config shapes, but those differences can no longer
+//!    be mistaken for independent composition authority.
+//! 3. A type-state runtime root - prepare, bootstrap, profile enrichment,
+//!    activate - which is the only gateway path into `UnifiedRuntime`.
+//! 4. Post-bootstrap surface attachment that both binaries perform with
 //!    identical observable behaviour (the schedule firing host).
+//! 5. Loopback HTTP admission and ordered cooperative shutdown. HTTP stops
+//!    first, profile-owned drains quiesce second, runtime authority cleanup
+//!    completes third, and registry/process cleanup is last.
 //!
 //! The rule for adding to this module: a seam belongs here when BOTH
 //! binaries must do it and the observable behaviour (log strings, ordering,
@@ -22,7 +30,7 @@
 //! `gateway_wiring`; if a seam here starts opening stores, it has forked the
 //! charter and should move.
 //!
-//! # Surveyed divergence still outstanding (item 10 remainder)
+//! # Compatibility differences intentionally retained
 //!
 //! This is the structural history the item asks for. Every claim below was
 //! read off the source in this tree, and is cited BY SYMBOL, never by line
@@ -30,8 +38,10 @@
 //! decays into a survey that sends its reader to the wrong place while still
 //! looking authoritative.
 //!
-//! The two roots are `run` in `src/bin/mobkit_gateway.rs` (~570 lines) and
-//! `run_persistent_inner` in `src/bin/rpc_gateway.rs` (~2,390 lines).
+//! The former roots are `run` in `src/bin/mobkit_gateway.rs` and
+//! `run_persistent_inner` in `src/bin/rpc_gateway.rs`. They now translate
+//! their compatibility inputs into [`GatewayRuntimeBootstrapPlan`] and use
+//! [`GatewayComposition`] for runtime and lifecycle ownership.
 //!
 //! - **Init params.** `mobkit_gateway` deserializes a typed `InitParams`
 //!   struct straight off the TOP LEVEL of `params` (`parse_init_request`).
@@ -46,12 +56,10 @@
 //!   `parse_gateway_runtime_options` refuses them ("unsupported
 //!   runtime_options fields"). Largest single remaining piece.
 //!
-//! - **Bootstrap entry point.** `mobkit_gateway` calls
-//!   `UnifiedRuntime::bootstrap`, which keeps the in-memory metadata store.
-//!   `rpc_gateway` calls `bootstrap_with_options` and passes a
-//!   `SqliteMetadataStore` whenever `persistent_state` is set. So the
-//!   console metadata cursor is durable on one binary and declared-ephemeral
-//!   on the other, for the same on-disk state directory.
+//! - **Bootstrap inputs.** The console profile keeps empty events, default
+//!   runtime options and in-memory metadata. The stdio profile keeps its
+//!   configured options and persistent metadata. Both flow through the same
+//!   exact low-level bootstrap call.
 //!
 //! - **Console log store.** `rpc_gateway` installs `SqliteConsoleLogStore`
 //!   for persistent launches (`set_console_log_store`). `mobkit_gateway`
@@ -90,7 +98,7 @@
 //!   [`spawn_gateway_schedule_host`] below makes explicit rather than
 //!   implicit: it is now a named field, not a hard-coded argument.
 //!
-//! - **Callback plane.** `rpc_gateway` owns `StdioCallbackBridge`,
+//! - **Callback plane.** The stdio compatibility adapter owns `StdioCallbackBridge`,
 //!   `DetachedCallbackJobRuntime`, `CallbackToolDispatcher` and
 //!   `StdioCallbackAgentBuilder` - ~2,600 lines from the first of those to
 //!   the start of `run_persistent`. `mobkit_gateway` has no callback plane;
@@ -103,11 +111,9 @@
 //!   `launch_state: "resumed"` without booting a runtime at all.
 //!   `rpc_gateway` has no such concept.
 //!
-//! Called by BOTH binaries with matching semantics, recorded so the next
-//! reader does not re-survey them. This is the set that was CHECKED, not a
-//! closed census, and several of these are called twice per binary (once in
-//! the persistent branch and once in the ephemeral one), so do not read a
-//! single call site as the whole story: `set_contact_directory`,
+//! Profile-specific enrichment remains explicit between bootstrap and
+//! activation. This is the checked seam list, not a closed census:
+//! `set_contact_directory`,
 //! `set_access_controller`, `set_gateway_peer_keys`,
 //! `start_control_listener`, `with_session_write_epochs`,
 //! `with_session_runtime_adapter`, `with_workgraph_service`,
@@ -120,7 +126,9 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
+use axum::Router;
 use meerkat::surface::ScheduleHostHandle;
 use meerkat::{
     PersistentSessionService, ScheduleRunnableHost, ScheduleService, SessionAgentBuilder,
@@ -129,11 +137,380 @@ use meerkat::{
 use meerkat_mob_mcp::MobMcpState;
 use meerkat_runtime::MeerkatMachine;
 
+use crate::mob_handle_runtime::MobBootstrapSpec;
 use crate::runtime::cross_mob_control::ControlListenAddr;
+use crate::runtime::{InMemoryMetadataStore, PersistentMetadataStore, RuntimeOptions};
 use crate::schedule_wiring::{
     ScheduleClaimWatchdogConfig, ScheduleFiringHostBinding, ScheduleMobTargetRegistry,
 };
-use crate::unified_runtime::UnifiedRuntime;
+use crate::types::{EventEnvelope, MobKitConfig, UnifiedEvent};
+use crate::unified_runtime::{
+    UnifiedRuntime, UnifiedRuntimeBootstrapError, UnifiedRuntimeShutdownReport,
+};
+
+// ---------------------------------------------------------------------------
+// Compatibility profiles
+// ---------------------------------------------------------------------------
+
+/// The two shipped binaries are compatibility profiles over one composition
+/// root, not independent runtime assemblers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GatewayCompatibilityProfile {
+    /// `mobkit_gateway`: console/admin HTTP, top-level init params, registry
+    /// resume and maintenance verbs.
+    ConsoleHttp,
+    /// `rpc_gateway --persistent`: SDK stdin JSON-RPC, callbacks and the
+    /// private bounded shutdown handshake.
+    StdioRpc,
+}
+
+/// Wire-visible differences which must remain explicit while the runtime
+/// composition and lifecycle are shared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GatewayCompatibilityContract {
+    pub top_level_permissive_init: bool,
+    pub registry_resume: bool,
+    pub post_init_stdin_rpc: bool,
+    pub callback_plane: bool,
+    pub single_shot: bool,
+    pub maintenance_verbs: bool,
+}
+
+impl GatewayCompatibilityProfile {
+    pub const fn contract(self) -> GatewayCompatibilityContract {
+        match self {
+            Self::ConsoleHttp => GatewayCompatibilityContract {
+                top_level_permissive_init: true,
+                registry_resume: true,
+                post_init_stdin_rpc: false,
+                callback_plane: false,
+                single_shot: false,
+                maintenance_verbs: true,
+            },
+            Self::StdioRpc => GatewayCompatibilityContract {
+                top_level_permissive_init: false,
+                registry_resume: false,
+                post_init_stdin_rpc: true,
+                callback_plane: true,
+                single_shot: true,
+                maintenance_verbs: false,
+            },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Typed runtime composition stages
+// ---------------------------------------------------------------------------
+
+/// Exact low-level inputs to `UnifiedRuntime::bootstrap_with_options`.
+///
+/// The console profile uses [`Self::console_http`], which reproduces
+/// `UnifiedRuntime::bootstrap` exactly. The stdio profile supplies its
+/// existing events, options and metadata authority. Keeping both behind this
+/// one call prevents a third bootstrap path without changing either wire
+/// schema.
+pub struct GatewayRuntimeBootstrapPlan {
+    mob_spec: MobBootstrapSpec,
+    module_config: MobKitConfig,
+    module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
+    timeout: Duration,
+    runtime_options: RuntimeOptions,
+    persistent_metadata: Arc<dyn PersistentMetadataStore>,
+}
+
+impl GatewayRuntimeBootstrapPlan {
+    pub fn console_http(
+        mob_spec: MobBootstrapSpec,
+        module_config: MobKitConfig,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            mob_spec,
+            module_config,
+            module_agent_events: Vec::new(),
+            timeout,
+            runtime_options: RuntimeOptions::default(),
+            persistent_metadata: Arc::new(InMemoryMetadataStore::new()),
+        }
+    }
+
+    pub fn stdio_rpc(
+        mob_spec: MobBootstrapSpec,
+        module_config: MobKitConfig,
+        module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
+        timeout: Duration,
+        runtime_options: RuntimeOptions,
+        persistent_metadata: Arc<dyn PersistentMetadataStore>,
+    ) -> Self {
+        Self {
+            mob_spec,
+            module_config,
+            module_agent_events,
+            timeout,
+            runtime_options,
+            persistent_metadata,
+        }
+    }
+}
+
+pub struct PreparedGateway {
+    plan: GatewayRuntimeBootstrapPlan,
+}
+
+pub struct BootstrappedGateway {
+    runtime: UnifiedRuntime,
+}
+
+pub struct ActiveGateway {
+    runtime: Arc<UnifiedRuntime>,
+}
+
+/// Type-state composition root. Profile-specific config parsing and optional
+/// seams happen around this root, but runtime bootstrap and process lifecycle
+/// have one owner.
+pub struct GatewayComposition<State> {
+    profile: GatewayCompatibilityProfile,
+    state: State,
+}
+
+impl GatewayComposition<PreparedGateway> {
+    pub fn prepare(
+        profile: GatewayCompatibilityProfile,
+        plan: GatewayRuntimeBootstrapPlan,
+    ) -> Self {
+        Self {
+            profile,
+            state: PreparedGateway { plan },
+        }
+    }
+
+    pub async fn bootstrap(
+        self,
+    ) -> Result<GatewayComposition<BootstrappedGateway>, UnifiedRuntimeBootstrapError> {
+        let plan = self.state.plan;
+        let runtime = UnifiedRuntime::bootstrap_with_options(
+            plan.mob_spec,
+            plan.module_config,
+            plan.module_agent_events,
+            plan.timeout,
+            plan.runtime_options,
+            plan.persistent_metadata,
+        )
+        .await?;
+        Ok(GatewayComposition {
+            profile: self.profile,
+            state: BootstrappedGateway { runtime },
+        })
+    }
+}
+
+impl GatewayComposition<BootstrappedGateway> {
+    pub fn runtime(&self) -> &UnifiedRuntime {
+        &self.state.runtime
+    }
+
+    pub fn runtime_mut(&mut self) -> &mut UnifiedRuntime {
+        &mut self.state.runtime
+    }
+
+    pub fn activate(self) -> GatewayComposition<ActiveGateway> {
+        GatewayComposition {
+            profile: self.profile,
+            state: ActiveGateway {
+                runtime: Arc::new(self.state.runtime),
+            },
+        }
+    }
+}
+
+impl GatewayComposition<ActiveGateway> {
+    pub fn profile(&self) -> GatewayCompatibilityProfile {
+        self.profile
+    }
+
+    pub fn runtime(&self) -> &Arc<UnifiedRuntime> {
+        &self.state.runtime
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared HTTP admission and ordered shutdown
+// ---------------------------------------------------------------------------
+
+pub const GATEWAY_HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+pub const GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(310);
+
+pub struct GatewayHttpBinding {
+    listener: tokio::net::TcpListener,
+    port: u16,
+}
+
+impl GatewayHttpBinding {
+    pub async fn bind_loopback() -> std::io::Result<Self> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        Ok(Self { listener, port })
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn http_base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    pub fn serve(self, app: Router) -> GatewayHttpServer {
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(async move {
+            axum::serve(self.listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.changed().await;
+                })
+                .await
+        });
+        GatewayHttpServer {
+            shutdown_tx,
+            task: Some(task),
+        }
+    }
+}
+
+pub struct GatewayHttpServer {
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    task: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+}
+
+#[derive(Debug)]
+pub enum GatewayHttpDrainOutcome {
+    Completed(std::io::Result<()>),
+    TimedOut,
+    JoinFailed(String),
+}
+
+impl GatewayHttpServer {
+    /// Wait for an unexpected server exit. Cancellation-safe: when used in a
+    /// `select!` and another branch wins, the owned task remains available to
+    /// the ordered shutdown path.
+    pub async fn wait(&mut self) -> GatewayHttpDrainOutcome {
+        let Some(task) = self.task.as_mut() else {
+            return GatewayHttpDrainOutcome::Completed(Ok(()));
+        };
+        let outcome = match task.await {
+            Ok(result) => GatewayHttpDrainOutcome::Completed(result),
+            Err(error) => GatewayHttpDrainOutcome::JoinFailed(error.to_string()),
+        };
+        self.task = None;
+        outcome
+    }
+}
+
+pub struct GatewayShutdownOutcome<Cleanup> {
+    pub http: GatewayHttpDrainOutcome,
+    pub runtime: Option<UnifiedRuntimeShutdownReport>,
+    pub cleanup: Cleanup,
+}
+
+async fn ordered_shutdown_tail<
+    BeforeRuntime,
+    BeforeFuture,
+    RuntimeFuture,
+    RuntimeOutput,
+    Cleanup,
+    CleanupFuture,
+    CleanupOutput,
+>(
+    before_runtime: BeforeRuntime,
+    runtime_shutdown: RuntimeFuture,
+    cleanup: Cleanup,
+) -> (RuntimeOutput, CleanupOutput)
+where
+    BeforeRuntime: FnOnce() -> BeforeFuture,
+    BeforeFuture: std::future::Future<Output = ()>,
+    RuntimeFuture: std::future::Future<Output = RuntimeOutput>,
+    Cleanup: FnOnce() -> CleanupFuture,
+    CleanupFuture: std::future::Future<Output = CleanupOutput>,
+{
+    before_runtime().await;
+    let runtime = runtime_shutdown.await;
+    let cleanup = cleanup().await;
+    (runtime, cleanup)
+}
+
+impl GatewayComposition<ActiveGateway> {
+    /// One authoritative shutdown order for both gateway profiles:
+    ///
+    /// 1. stop HTTP admission and bound its outer-handler drain;
+    /// 2. run the profile's pre-runtime hook (for example event-drain task
+    ///    cancellation);
+    /// 3. cooperatively await the runtime's authority cleanup within the
+    ///    established SDK horizon;
+    /// 4. only then run profile cleanup (for example registry removal).
+    pub async fn shutdown<BeforeRuntime, BeforeFuture, Cleanup, CleanupFuture, CleanupOutput>(
+        &self,
+        mut server: GatewayHttpServer,
+        before_runtime: BeforeRuntime,
+        cleanup: Cleanup,
+    ) -> GatewayShutdownOutcome<CleanupOutput>
+    where
+        BeforeRuntime: FnOnce() -> BeforeFuture,
+        BeforeFuture: std::future::Future<Output = ()>,
+        Cleanup: FnOnce() -> CleanupFuture,
+        CleanupFuture: std::future::Future<Output = CleanupOutput>,
+    {
+        let _ = server.shutdown_tx.send(true);
+        let http = if let Some(mut task) = server.task.take() {
+            match tokio::time::timeout(GATEWAY_HTTP_DRAIN_TIMEOUT, &mut task).await {
+                Ok(Ok(result)) => GatewayHttpDrainOutcome::Completed(result),
+                Ok(Err(error)) => GatewayHttpDrainOutcome::JoinFailed(error.to_string()),
+                Err(_) => {
+                    task.abort();
+                    let _ = task.await;
+                    GatewayHttpDrainOutcome::TimedOut
+                }
+            }
+        } else {
+            GatewayHttpDrainOutcome::Completed(Ok(()))
+        };
+
+        let runtime_shutdown = async {
+            match tokio::time::timeout(
+                GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT,
+                self.state.runtime.shutdown(),
+            )
+            .await
+            {
+                Ok(report) => {
+                    if !report.cleanup_completed() {
+                        tracing::warn!(
+                            drain_timed_out = report.drain.timed_out,
+                            mob_stop = ?report.mob_stop,
+                            identity_authority_release = ?report.identity_authority_release,
+                            orphan_processes = report.module_shutdown.orphan_processes,
+                            "gateway runtime shutdown completed without cleanup attestation"
+                        );
+                    }
+                    Some(report)
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        timeout_ms = GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT.as_millis(),
+                        "gateway runtime shutdown exceeded its bounded horizon"
+                    );
+                    None
+                }
+            }
+        };
+        let (runtime, cleanup) =
+            ordered_shutdown_tail(before_runtime, runtime_shutdown, cleanup).await;
+        GatewayShutdownOutcome {
+            http,
+            runtime,
+            cleanup,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Boot preamble
@@ -436,6 +813,73 @@ pub async fn spawn_gateway_schedule_host<B: SessionAgentBuilder + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compatibility_profiles_pin_the_two_existing_command_surfaces() {
+        assert_eq!(
+            GatewayCompatibilityProfile::ConsoleHttp.contract(),
+            GatewayCompatibilityContract {
+                top_level_permissive_init: true,
+                registry_resume: true,
+                post_init_stdin_rpc: false,
+                callback_plane: false,
+                single_shot: false,
+                maintenance_verbs: true,
+            }
+        );
+        assert_eq!(
+            GatewayCompatibilityProfile::StdioRpc.contract(),
+            GatewayCompatibilityContract {
+                top_level_permissive_init: false,
+                registry_resume: false,
+                post_init_stdin_rpc: true,
+                callback_plane: true,
+                single_shot: true,
+                maintenance_verbs: false,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_tail_orders_profile_quiesce_runtime_cleanup_then_registry_cleanup() {
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let before_observed = Arc::clone(&observed);
+        let runtime_observed = Arc::clone(&observed);
+        let cleanup_observed = Arc::clone(&observed);
+
+        let (runtime, cleanup) = ordered_shutdown_tail(
+            move || async move {
+                before_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("profile_quiesce");
+            },
+            async move {
+                runtime_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("runtime_shutdown");
+                "runtime_report"
+            },
+            move || async move {
+                cleanup_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("registry_cleanup");
+                "cleanup_report"
+            },
+        )
+        .await;
+
+        assert_eq!(runtime, "runtime_report");
+        assert_eq!(cleanup, "cleanup_report");
+        assert_eq!(
+            *observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ["profile_quiesce", "runtime_shutdown", "registry_cleanup"]
+        );
+    }
 
     /// Golden envelope for the shared filter builder: the exact strings the
     /// two binaries carried as their own constants before this module
