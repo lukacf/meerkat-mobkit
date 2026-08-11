@@ -29,14 +29,14 @@ use super::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
 };
 use super::types::{
-    AgentAddressability, AgentBuildContext, AgentIdentity, AgentRuntimeId, AgentRuntimeServices,
-    CheckpointVersion, CompletionCursor, CompletionProgress, ContinuityGeneration,
-    ContinuityHealth, ContinuityRecord, ContinuityStoreError, ContinuityUnrecoverable,
-    DispatchAdmission, DispatchInput, DurabilityPolicy, DurableAgentSpec, FencingToken,
-    HostRejectedBuildPark, IdentityBootstrapEntry, IdentityBootstrapMode, IdentityBootstrapState,
-    IdentityBootstrapStatus, IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo,
-    ManagedPeerEdge, NotAddressable, RosterContext, SendAdmission, SessionSnapshot,
-    TopologyContext,
+    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeId,
+    AgentRuntimeServices, CheckpointVersion, CompletionCursor, CompletionProgress,
+    ContinuityFailure, ContinuityFailureKind, ContinuityGeneration, ContinuityHealth,
+    ContinuityRecord, ContinuityStoreError, ContinuityUnrecoverable, DispatchAdmission,
+    DispatchInput, DurabilityPolicy, DurableAgentSpec, FencingToken, HostRejectedBuildPark,
+    IdentityBootstrapEntry, IdentityBootstrapMode, IdentityBootstrapState, IdentityBootstrapStatus,
+    IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable,
+    RosterContext, SendAdmission, SessionSnapshot, TopologyContext,
 };
 use crate::memory::records::{
     ManifestTier, MemoryId, MemoryKind, MemoryScope, NewMemoryRecord, RecordMeta, UsageEvent,
@@ -292,6 +292,11 @@ pub enum IdentityRuntimeError {
         identity: AgentIdentity,
         reason: String,
     },
+    /// A concrete member resume reached a typed terminal refusal. The
+    /// continuity record is preserved and the failure remains attributable to
+    /// this identity when an eager fleet restore converts it into a visible
+    /// `RestoreOutcome::Broken`.
+    EmbodimentRejected(Box<ContinuityFailure>),
     /// Generic I/O or internal error.
     Internal(String),
 }
@@ -399,6 +404,11 @@ impl std::fmt::Display for IdentityRuntimeError {
                 f,
                 "identity {identity} is parked: the host deterministically rejected its build \
                  ({reason}); a roster/policy (spec) change clears the park"
+            ),
+            Self::EmbodimentRejected(failure) => write!(
+                f,
+                "identity {} embodiment was rejected: {}",
+                failure.identity, failure.detail
             ),
             Self::Internal(msg) => write!(f, "internal: {msg}"),
         }
@@ -1387,6 +1397,23 @@ struct DispatchOutcome {
     session_id: Option<SessionId>,
 }
 
+/// Exact result of the one concrete embodiment door shared by eager restore,
+/// lazy foreground materialization, and background warming.
+pub(crate) struct EmbodimentOutcome {
+    pub(crate) record: ContinuityRecord,
+    pub(crate) resumed: bool,
+    pub(crate) snapshot: SessionSnapshot,
+    pub(crate) draft: AgentBuildDraft,
+}
+
+/// Eager-only inputs to the shared embodiment transaction. Lazy foreground
+/// and background callers use the registered entry's spec and customizer.
+#[derive(Default)]
+pub(crate) struct EmbodimentOverrides<'a> {
+    pub(crate) spec: Option<&'a DurableAgentSpec>,
+    pub(crate) customizer: Option<&'a dyn AgentCustomizer>,
+}
+
 #[derive(Clone)]
 struct ResetRosterSource {
     provider: Arc<dyn RosterProvider>,
@@ -1752,21 +1779,20 @@ impl IdentityRuntime {
     /// would hang `wait_identity_bootstrap_terminal` until its timeout
     /// instead of returning a truthful failure snapshot.
     ///
-    /// What must NOT happen is attributing the pass cause to each identity
-    /// as if it were that identity's own. `restore_flow` fails the entire
-    /// pass on ONE member's error, so a 17-member eager roster reported 17
-    /// identities Broken with one member's `bridge create_session:` detail
-    /// copied verbatim onto the other 16 - a cause that belongs to a
-    /// different agent (HomeCore activation-33 shape). The stamped entries
-    /// now say exactly what is known: the pass died before this identity's
-    /// own outcome was recorded. A cause the identity actually produced
+    /// What must NOT happen is attributing the pass cause to each identity as
+    /// if it were that identity's own. Before embodiment became per identity,
+    /// one member's `bridge create_session:` failure was copied onto 16 peers
+    /// (HomeCore activation-33 shape). Member failures now bypass this method,
+    /// while a genuine pass failure stamps only what is known: the pass died
+    /// before this identity's own outcome was recorded. A cause the identity actually produced
     /// during the pass (`mark_bootstrap_from_lifecycle`,
     /// `mark_bootstrap_materialization_finished`) is authoritative and is
     /// never overwritten. That equivalence between "the entry already has a
     /// cause" and "this pass produced it" is not free: it holds because
     /// `begin_identity_bootstrap_pending` resets per-entry causes when the
     /// pass opens, which is the only reason this `is_none()` guard cannot
-    /// resurrect a previous pass's cause. The pass cause still rides
+    /// resurrect a previous pass's cause. Member embodiment failures no longer
+    /// enter this path; they park only their own identity. The pass cause still rides
     /// `snapshot.error`, which the type documents as the pass-level slot and
     /// which every reader (RPC status, `wait_identity_bootstrap`, the Python
     /// SDK model) already parses.
@@ -3790,7 +3816,7 @@ impl IdentityRuntime {
     where
         F: Future<Output = ()>,
     {
-        // `materialize_inner` binds this attempt to the generation stored on
+        // `embody_identity` binds this attempt to the generation stored on
         // the IdentityEntry after it acquires the lifecycle lock. Sampling the
         // global generation here is insufficient: a newer reconcile can
         // publish G+1 and win that lock before this future reaches the entry,
@@ -3798,14 +3824,16 @@ impl IdentityRuntime {
         let mut bootstrap_generation = None;
         let mut shutdown = self.foreground_cancel.subscribe();
         let result = self
-            .materialize_inner(
+            .embody_identity(
                 identity,
                 expected_alias,
                 Some(&mut shutdown),
                 None,
                 &mut bootstrap_generation,
+                EmbodimentOverrides::default(),
             )
-            .await;
+            .await
+            .map(|outcome| outcome.record);
         after_inner.await;
         if matches!(
             &result,
@@ -3817,7 +3845,7 @@ impl IdentityRuntime {
             return result;
         }
         // Alias validation happens under the lifecycle lock before
-        // `materialize_inner` marks bootstrap work as started. A stale alias
+        // `embody_identity` marks bootstrap work as started. A stale alias
         // therefore must leave the replacement generation's exact readiness
         // state untouched.
         if matches!(&result, Err(IdentityRuntimeError::StaleRuntimeAlias { .. })) {
@@ -4173,14 +4201,16 @@ impl IdentityRuntime {
     ) -> Option<Result<ContinuityRecord, IdentityRuntimeError>> {
         let mut bound_generation = None;
         let result = self
-            .materialize_inner(
+            .embody_identity(
                 identity,
                 None,
                 Some(cancellation),
                 Some(generation),
                 &mut bound_generation,
+                EmbodimentOverrides::default(),
             )
-            .await;
+            .await
+            .map(|outcome| outcome.record);
         if matches!(
             &result,
             Err(IdentityRuntimeError::Internal(message)) if message == BACKGROUND_WARM_CANCELLED
@@ -4204,14 +4234,15 @@ impl IdentityRuntime {
         Some(result)
     }
 
-    async fn materialize_inner(
+    pub(crate) async fn embody_identity(
         &self,
         identity: &AgentIdentity,
         expected_alias: Option<&str>,
         mut cancellation: Option<&mut watch::Receiver<bool>>,
         expected_bootstrap_generation: Option<u64>,
         bound_bootstrap_generation: &mut Option<u64>,
-    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        overrides: EmbodimentOverrides<'_>,
+    ) -> Result<EmbodimentOutcome, IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
         let bootstrap_generation = {
@@ -4246,18 +4277,39 @@ impl IdentityRuntime {
             let entry = entries
                 .get(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-            if entry.state == IdentityLifecycleState::Active {
-                let continuity = entry.continuity.clone().ok_or_else(|| {
-                    IdentityRuntimeError::Internal(format!(
-                        "active identity {identity} has no continuity record"
-                    ))
-                })?;
-                drop(entries);
-                self.clear_materialization_backoff(identity).await;
-                return Ok(continuity);
-            }
-            (entry.spec.clone(), entry.continuity.clone(), entry.state)
+            (
+                overrides
+                    .spec
+                    .cloned()
+                    .unwrap_or_else(|| entry.spec.clone()),
+                entry.continuity.clone(),
+                entry.state,
+            )
         };
+        if state == IdentityLifecycleState::Active {
+            // Converged eager restore still validates the time-sensitive
+            // external lease. This is part of the shared embodiment door, not
+            // a second restore implementation: healthy authority is reused,
+            // due authority is renewed, and lost authority parks this member.
+            let record = self.reuse_active_restore_state(&spec).await?;
+            self.clear_materialization_backoff(identity).await;
+            return Ok(EmbodimentOutcome {
+                record,
+                resumed: true,
+                snapshot: SessionSnapshot { data: Vec::new() },
+                draft: AgentBuildDraft {
+                    model: None,
+                    system_prompt: None,
+                    additional_instructions: spec.additional_instructions.clone(),
+                    labels: spec.labels.clone(),
+                    app_context: spec.context.clone(),
+                    external_tools: Vec::new(),
+                    local_external_tools: Default::default(),
+                    provider_params: None,
+                    compaction_curator: Default::default(),
+                },
+            });
+        }
         // Host-rejected-build park: the app-side gate answered this exact
         // spec with a deterministic rejection. Fail fast typed — every
         // attempt would otherwise burn a full member build plus a callback
@@ -4361,7 +4413,7 @@ impl IdentityRuntime {
             managed_edges,
             runtime_services: self.runtime_services(),
         };
-        let mut draft = super::types::AgentBuildDraft {
+        let mut draft = AgentBuildDraft {
             model: None,
             system_prompt: None,
             additional_instructions: spec.additional_instructions.clone(),
@@ -4372,7 +4424,8 @@ impl IdentityRuntime {
             provider_params: None,
             compaction_curator: Default::default(),
         };
-        if let Some(customizer) = self.customizer.read().await.clone() {
+        let installed_customizer = self.customizer.read().await.clone();
+        if let Some(customizer) = overrides.customizer.or(installed_customizer.as_deref()) {
             let customize = customizer.customize_build(&build_context, &spec, &mut draft);
             tokio::pin!(customize);
             let customize_result = if let Some(cancellation) = cancellation.as_mut() {
@@ -4405,6 +4458,8 @@ impl IdentityRuntime {
         }
 
         let mut abandoned_session_registrations: Vec<SessionId> = Vec::new();
+        let mut resumed = false;
+        let mut resume_snapshot = None;
         let mut record = if let Some(mut record) = continuity {
             let snapshot = if self
                 .bridge
@@ -4432,6 +4487,7 @@ impl IdentityRuntime {
             } else {
                 None
             };
+            resume_snapshot = snapshot;
 
             if let Some(bridge) = self.bridge.as_ref() {
                 if let Err(err) = bridge
@@ -4463,7 +4519,8 @@ impl IdentityRuntime {
                     )));
                 }
                 let registered_session_id = record.session_id.clone();
-                let snapshot = snapshot.unwrap_or(SessionSnapshot { data: Vec::new() });
+                let empty_snapshot = SessionSnapshot { data: Vec::new() };
+                let snapshot = resume_snapshot.as_ref().unwrap_or(&empty_snapshot);
                 let outcome = bridge
                     .resume_session(
                         identity,
@@ -4471,7 +4528,7 @@ impl IdentityRuntime {
                         &spec,
                         &draft,
                         &record.session_id,
-                        &snapshot,
+                        snapshot,
                     )
                     .await;
                 let outcome = match outcome {
@@ -4559,9 +4616,28 @@ impl IdentityRuntime {
                                 .map(|e| format!("; lease cleanup failed: {e}"))
                                 .unwrap_or_default(),
                         );
-                        return Err(IdentityRuntimeError::Internal(detail));
+                        let kind = if matches!(
+                            err,
+                            BridgeError::ResumeRejected {
+                                kind: ResumeRejectionKind::ArchivedNotRevivable,
+                                ..
+                            }
+                        ) {
+                            ContinuityFailureKind::CheckpointUnrecoverable
+                        } else {
+                            ContinuityFailureKind::ResumeRejected
+                        };
+                        return Err(IdentityRuntimeError::EmbodimentRejected(Box::new(
+                            ContinuityFailure {
+                                identity: identity.clone(),
+                                kind,
+                                record: Some(record.clone()),
+                                detail,
+                            },
+                        )));
                     }
                 };
+                resumed = outcome.fallback_reason().is_none();
                 if let Some(reason) = outcome.fallback_reason().cloned() {
                     tracing::warn!(
                         %identity,
@@ -4598,6 +4674,8 @@ impl IdentityRuntime {
                     abandoned_session_registrations.push(registered_session_id);
                 }
                 record.session_id = effective_session_id;
+            } else {
+                resumed = resume_snapshot.is_some();
             }
             record
         } else {
@@ -4925,7 +5003,60 @@ impl IdentityRuntime {
         )
         .await;
         self.clear_materialization_backoff(identity).await;
-        Ok(record)
+        Ok(EmbodimentOutcome {
+            record,
+            resumed,
+            snapshot: resume_snapshot.unwrap_or(SessionSnapshot { data: Vec::new() }),
+            draft,
+        })
+    }
+
+    /// Project one member-attributable embodiment failure into the durable
+    /// identity runtime without turning it into a fleet-level bootstrap
+    /// failure. The returned payload is the exact typed outcome installed by
+    /// eager restore. Pass-level roster, topology, and batch-store failures do
+    /// not enter this door.
+    pub(crate) async fn park_embodiment_failure(
+        &self,
+        identity: &AgentIdentity,
+        error: &IdentityRuntimeError,
+    ) -> ContinuityFailure {
+        let explicit_failure = match error {
+            IdentityRuntimeError::EmbodimentRejected(failure) => Some((**failure).clone()),
+            _ => None,
+        };
+        let (record, transitioned) = {
+            let mut entries = self.entries.write().await;
+            let record = entries
+                .get(identity)
+                .and_then(|entry| entry.continuity.clone());
+            let mut transitioned = false;
+            if let Some(entry) = entries.get_mut(identity) {
+                transitioned = entry.state != IdentityLifecycleState::Broken;
+                entry.state = IdentityLifecycleState::Broken;
+            }
+            (record, transitioned)
+        };
+        if transitioned {
+            self.emit_event(
+                identity,
+                IdentityEvent::StateChanged {
+                    identity: identity.clone(),
+                    new_state: IdentityLifecycleState::Broken,
+                },
+            )
+            .await;
+        }
+
+        explicit_failure.unwrap_or_else(|| ContinuityFailure {
+            identity: identity.clone(),
+            kind: match error {
+                IdentityRuntimeError::Store(_) => ContinuityFailureKind::StoreUnavailable,
+                _ => ContinuityFailureKind::EmbodimentFailed,
+            },
+            record,
+            detail: error.to_string(),
+        })
     }
 
     async fn best_effort_materialize_identity(
@@ -5205,6 +5336,20 @@ impl IdentityRuntime {
             }
         }
         Ok(true)
+    }
+
+    /// Prepare an existing Broken entry for metadata replacement while the
+    /// caller owns its lifecycle lock. The concrete member is disposed before
+    /// the exact retained provider grant is moved through the pending-release
+    /// ledger. A failure leaves the entry Broken and the authority visible for
+    /// retry or shutdown.
+    pub(crate) async fn prepare_broken_identity_for_registration(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<(), IdentityRuntimeError> {
+        self.cleanup_broken_lower_plane_locked(identity).await?;
+        self.release_broken_lease_locked(identity).await?;
+        Ok(())
     }
 
     /// Dispose the concrete member and its session-store authority retained by
@@ -13167,10 +13312,10 @@ mod bootstrap_failure_attribution_tests {
         }))
     }
 
-    /// `restore_flow` fails the WHOLE pass on one member's error, and an
-    /// eager pass seeds every roster identity `Warming`, so the pass-failure
-    /// stamp used to copy one member's cause onto every other member. This
-    /// pins the three things that must simultaneously hold afterwards:
+    /// Before embodiment became per identity, `restore_flow` failed the whole
+    /// pass on one member's error and copied that cause onto every peer. The
+    /// pass-failure mechanism remains for fleet-level roster, topology, and
+    /// batch-store failures. This pins the three things that must hold there:
     /// terminality (or the wait barrier hangs), the pass cause in the
     /// pass-level slot, and no borrowed cause on a bystander.
     #[test]

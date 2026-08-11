@@ -23,7 +23,8 @@ use meerkat_mobkit::identity_first::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, TopologyProvider,
 };
 use meerkat_mobkit::identity_first::orchestrator::{
-    ReconcileAction, RestoreOutcome, compute_reconcile_actions, lazy_register_flow, restore_flow,
+    ReconcileAction, RestoreFlowResult, RestoreOutcome, compute_reconcile_actions,
+    lazy_register_flow, restore_flow,
 };
 use meerkat_mobkit::identity_first::runtime::IdentityEvent;
 use meerkat_mobkit::identity_first::{
@@ -48,6 +49,16 @@ use meerkat_mobkit::{ErrorEvent, ErrorHook, StewardStore, TaintableStore};
 
 fn make_identity(name: &str) -> AgentIdentity {
     AgentIdentity::parse(name).unwrap()
+}
+
+fn broken_restore_outcome<'a>(
+    result: &'a RestoreFlowResult,
+    identity: &AgentIdentity,
+) -> &'a ContinuityFailure {
+    match result.outcomes.get(identity) {
+        Some(RestoreOutcome::Broken(failure)) => failure,
+        other => panic!("expected typed Broken outcome for {identity}, got {other:#?}"),
+    }
 }
 
 fn make_spec(name: &str) -> DurableAgentSpec {
@@ -120,9 +131,9 @@ fn make_runtime_named(
 }
 
 /// Fail-closed single-embodiment guard: a second runtime instance restoring
-/// an identity whose durable lease another live instance holds must be
-/// refused with the typed AlreadyEmbodied error NAMING the holder — not a
-/// generic missing-lease error. (Policy point: multi-bind relaxes this arm.)
+/// an identity whose durable lease another live instance holds must park that
+/// member as a typed visible outcome naming the holder, without making the
+/// fleet restore itself fail.
 #[tokio::test]
 async fn identity_first_runtime_second_embodiment_is_refused_loudly() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
@@ -135,13 +146,24 @@ async fn identity_first_runtime_second_embodiment_is_refused_loudly() {
         .await
         .expect("instance A embodies the identity");
 
-    match restore_flow(&runtime_b, &roster, None, None).await {
-        Err(IdentityRuntimeError::AlreadyEmbodied { identity, holder }) => {
-            assert_eq!(identity.as_str(), "triage:main");
-            assert_eq!(holder, "instance-a", "the guard must name the holder");
-        }
-        other => panic!("expected AlreadyEmbodied, got {other:?}"),
-    }
+    let result = restore_flow(&runtime_b, &roster, None, None)
+        .await
+        .expect("one held member must not fail the fleet restore");
+    let failure = broken_restore_outcome(&result, &make_identity("triage:main"));
+    assert_eq!(failure.kind, ContinuityFailureKind::EmbodimentFailed);
+    assert!(
+        failure.detail.contains("instance-a"),
+        "the guard must name the holder: {}",
+        failure.detail
+    );
+    assert_eq!(
+        runtime_b
+            .status(&make_identity("triage:main"))
+            .await
+            .unwrap()
+            .state,
+        IdentityLifecycleState::Broken
+    );
 }
 
 fn make_runtime_with_store(
@@ -281,6 +303,42 @@ impl LeaseProvider for MissingLeaseProvider {
 
     async fn release_leases(&self, _grants: &[LeaseGrant]) -> Result<(), LeaseError> {
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct FailingRenewLeaseProvider {
+    inner: LocalLeaseProvider,
+}
+
+#[async_trait]
+impl LeaseProvider for FailingRenewLeaseProvider {
+    async fn acquire_leases(
+        &self,
+        identities: &[AgentIdentity],
+        runtime_instance: &str,
+    ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError> {
+        let mut acquired = self
+            .inner
+            .acquire_leases(identities, runtime_instance)
+            .await?;
+        for result in acquired.values_mut() {
+            if let LeaseAcquireResult::Acquired(grant) = result {
+                grant.ttl = Duration::ZERO;
+            }
+        }
+        Ok(acquired)
+    }
+
+    async fn renew_leases(
+        &self,
+        _grants: &[LeaseGrant],
+    ) -> Result<BTreeMap<AgentIdentity, LeaseRenewResult>, LeaseError> {
+        Err(LeaseError::Io("synthetic active renew failure".to_string()))
+    }
+
+    async fn release_leases(&self, grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+        self.inner.release_leases(grants).await
     }
 }
 
@@ -1297,6 +1355,7 @@ struct CountingBridge {
     fail_register_after_calls: AtomicUsize,
     fail_unregister: AtomicBool,
     fail_current_wires: AtomicBool,
+    fail_wire: AtomicBool,
     fail_retire: AtomicBool,
     force_resume_fallback: AtomicBool,
     reject_resume_times: AtomicUsize,
@@ -1392,6 +1451,10 @@ impl CountingBridge {
 
     fn fail_current_wires(&self) {
         self.fail_current_wires.store(true, Ordering::SeqCst);
+    }
+
+    fn fail_wire(&self) {
+        self.fail_wire.store(true, Ordering::SeqCst);
     }
 
     fn fail_retire(&self) {
@@ -1560,6 +1623,9 @@ impl SessionBridge for CountingBridge {
 
     async fn wire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {
         self.wire_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_wire.load(Ordering::SeqCst) {
+            return Err(BridgeError::Mob("wire failed".to_string()));
+        }
         self.wires
             .lock()
             .await
@@ -5117,6 +5183,47 @@ async fn identity_first_runtime_lazy_register_warns_on_topology_reconcile_failur
 }
 
 #[tokio::test]
+async fn identity_first_runtime_restore_flow_keeps_topology_failure_pass_fatal() {
+    struct StaticTopology;
+
+    #[async_trait]
+    impl TopologyProvider for StaticTopology {
+        async fn compute_edges(
+            &self,
+            _target_identities: &[AgentIdentity],
+            _context: &TopologyContext,
+        ) -> Result<Vec<ManagedPeerEdge>, TopologyError> {
+            Ok(vec![
+                ManagedPeerEdge::new(
+                    make_identity("review:singleton"),
+                    make_identity("initiative:alpha"),
+                )
+                .unwrap(),
+            ])
+        }
+    }
+
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    bridge.fail_wire();
+    let runtime = make_runtime_with_bridge(store, lease, bridge);
+    let error = restore_flow(
+        &runtime,
+        &[make_spec("review:singleton"), make_spec("initiative:alpha")],
+        Some(&StaticTopology),
+        None,
+    )
+    .await
+    .expect_err("topology projection is a fleet-level pass failure");
+
+    assert!(
+        error.to_string().contains("wire failed"),
+        "exact topology cause must remain visible: {error}"
+    );
+}
+
+#[tokio::test]
 async fn identity_first_runtime_steer_send_does_not_wait_for_reachable_peer_materialization() {
     struct StaticTopology(Vec<(&'static str, &'static str)>);
 
@@ -5694,7 +5801,7 @@ async fn identity_first_runtime_restore_flow_fresh_boot() {
 }
 
 #[tokio::test]
-async fn identity_first_runtime_restore_flow_rejects_lease_conflicts_before_bridge_work() {
+async fn identity_first_runtime_restore_flow_parks_lease_conflict_before_bridge_work() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
     let lease_prov = Arc::new(LocalLeaseProvider::new());
     let bridge = Arc::new(CountingBridge::default());
@@ -5706,23 +5813,29 @@ async fn identity_first_runtime_restore_flow_rejects_lease_conflicts_before_brid
         .await
         .unwrap();
 
-    let err = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
+    let result = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
         .await
-        .expect_err("restore flow must reject lease conflict");
+        .expect("a member lease conflict must not fail the fleet pass");
+    let failure = broken_restore_outcome(&result, &id);
+    assert_eq!(failure.kind, ContinuityFailureKind::EmbodimentFailed);
     assert!(
-        err.to_string().contains("already embodied"),
-        "the single-embodiment guard must name the conflict: {err}"
+        failure.detail.contains("already embodied"),
+        "the single-embodiment guard must name the conflict: {}",
+        failure.detail
     );
     assert_eq!(
         bridge.create_calls.load(Ordering::SeqCst),
         0,
         "restore flow must not create live members without the durable lease"
     );
-    assert!(!runtime.contains(&id).await);
+    assert_eq!(
+        runtime.status(&id).await.unwrap().state,
+        IdentityLifecycleState::Broken
+    );
 }
 
 #[tokio::test]
-async fn identity_first_runtime_restore_flow_releases_partial_leases_on_conflict() {
+async fn identity_first_runtime_restore_flow_continues_past_one_lease_conflict() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
     let lease_prov = Arc::new(LocalLeaseProvider::new());
     let bridge = Arc::new(CountingBridge::default());
@@ -5735,54 +5848,61 @@ async fn identity_first_runtime_restore_flow_releases_partial_leases_on_conflict
         .await
         .unwrap();
 
-    let err = restore_flow(
+    let result = restore_flow(
         &runtime,
         &[make_spec("triage:free"), make_spec("triage:held")],
         None,
         None,
     )
     .await
-    .expect_err("restore flow must reject mixed lease acquisition");
+    .expect("one held identity must not abort its free peer");
+    let failure = broken_restore_outcome(&result, &held_id);
     assert!(
-        err.to_string().contains("already embodied"),
-        "the single-embodiment guard must name the conflict: {err}"
+        failure.detail.contains("already embodied"),
+        "the single-embodiment guard must name the conflict: {}",
+        failure.detail
     );
     assert_eq!(
         bridge.create_calls.load(Ordering::SeqCst),
-        0,
-        "restore flow must not create live members after a mixed lease failure"
+        1,
+        "the free peer must still create exactly once"
     );
-    let retry = lease_prov
-        .acquire_leases(std::slice::from_ref(&free_id), "other-runtime")
-        .await
-        .unwrap();
-    assert!(
-        matches!(retry.get(&free_id), Some(LeaseAcquireResult::Acquired(_))),
-        "partial free identity lease must be released after restore-flow failure: {retry:#?}"
+    assert!(matches!(
+        result.outcomes.get(&free_id),
+        Some(RestoreOutcome::Created { .. })
+    ));
+    assert_eq!(
+        runtime.status(&free_id).await.unwrap().state,
+        IdentityLifecycleState::Active
     );
 }
 
 #[tokio::test]
-async fn identity_first_runtime_restore_flow_rejects_missing_lease_results_before_bridge_work() {
+async fn identity_first_runtime_restore_flow_parks_missing_lease_result_before_bridge_work() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
     let lease_prov = Arc::new(MissingLeaseProvider);
     let bridge = Arc::new(CountingBridge::default());
     let runtime = make_runtime_with_bridge(store, lease_prov, bridge.clone());
 
     let id = make_identity("triage:main");
-    let err = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
+    let result = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
         .await
-        .expect_err("restore flow must reject missing lease results");
+        .expect("a missing per-member grant must not fail the fleet pass");
+    let failure = broken_restore_outcome(&result, &id);
     assert!(
-        err.to_string().contains("no active lease"),
-        "unexpected error: {err}"
+        failure.detail.contains("no active lease"),
+        "unexpected error: {}",
+        failure.detail
     );
     assert_eq!(
         bridge.create_calls.load(Ordering::SeqCst),
         0,
         "restore flow must not create live members without an explicit durable lease grant"
     );
-    assert!(!runtime.contains(&id).await);
+    assert_eq!(
+        runtime.status(&id).await.unwrap().state,
+        IdentityLifecycleState::Broken
+    );
 }
 
 #[tokio::test]
@@ -5826,14 +5946,17 @@ async fn identity_first_runtime_restore_flow_fresh_boot_register_failure_removes
     let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge);
 
     let id = make_identity("triage:main");
-    let err = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
+    let result = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
         .await
-        .expect_err("provisional bridge register should fail");
+        .expect("a failed member must be returned as a typed outcome");
+    let failure = broken_restore_outcome(&result, &id);
 
     assert!(
-        err.to_string()
+        failure
+            .detail
             .contains("bridge register_session_runtime_state"),
-        "unexpected error: {err}"
+        "unexpected error: {}",
+        failure.detail
     );
     let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
     assert_eq!(
@@ -5851,13 +5974,15 @@ async fn identity_first_runtime_restore_flow_fresh_boot_create_failure_removes_t
     let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
 
     let id = make_identity("triage:main");
-    let err = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
+    let result = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
         .await
-        .expect_err("bridge create should fail");
+        .expect("a failed member must be returned as a typed outcome");
+    let failure = broken_restore_outcome(&result, &id);
 
     assert!(
-        err.to_string().contains("bridge create_session"),
-        "unexpected error: {err}"
+        failure.detail.contains("bridge create_session"),
+        "unexpected error: {}",
+        failure.detail
     );
     assert_eq!(bridge.unregister_calls.load(Ordering::SeqCst), 1);
     assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 1);
@@ -5882,14 +6007,17 @@ async fn identity_first_runtime_restore_flow_fresh_boot_actual_register_failure_
     let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
 
     let id = make_identity("triage:main");
-    let err = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
+    let result = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
         .await
-        .expect_err("actual bridge register should fail");
+        .expect("a failed member must be returned as a typed outcome");
+    let failure = broken_restore_outcome(&result, &id);
 
     assert!(
-        err.to_string()
+        failure
+            .detail
             .contains("bridge register actual session runtime state"),
-        "unexpected error: {err}"
+        "unexpected error: {}",
+        failure.detail
     );
     assert_eq!(
         bridge.unregister_calls.load(Ordering::SeqCst),
@@ -5914,14 +6042,17 @@ async fn identity_first_runtime_restore_flow_fresh_boot_same_session_register_fa
     let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
 
     let id = make_identity("triage:main");
-    let err = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
+    let result = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
         .await
-        .expect_err("same-session actual bridge register should fail");
+        .expect("a failed member must be returned as a typed outcome");
+    let failure = broken_restore_outcome(&result, &id);
 
     assert!(
-        err.to_string()
+        failure
+            .detail
             .contains("bridge register actual session runtime state"),
-        "unexpected error: {err}"
+        "unexpected error: {}",
+        failure.detail
     );
     assert_eq!(
         bridge.unregister_calls.load(Ordering::SeqCst),
@@ -5950,14 +6081,17 @@ async fn identity_first_runtime_restore_flow_fresh_boot_unregister_failure_remov
     let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
 
     let id = make_identity("triage:main");
-    let err = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
+    let result = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
         .await
-        .expect_err("abandoned provisional unregister should fail");
+        .expect("a failed member must be returned as a typed outcome");
+    let failure = broken_restore_outcome(&result, &id);
 
     assert!(
-        err.to_string()
+        failure
+            .detail
             .contains("bridge unregister abandoned session runtime state"),
-        "unexpected error: {err}"
+        "unexpected error: {}",
+        failure.detail
     );
     assert_eq!(bridge.unregister_calls.load(Ordering::SeqCst), 2);
     assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 1);
@@ -5981,14 +6115,17 @@ async fn identity_first_runtime_restore_flow_fresh_boot_upsert_failure_cleans_br
     store.fail_next_upsert_after_successes(1);
 
     let id = make_identity("triage:main");
-    let err = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
+    let result = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
         .await
-        .expect_err("final restore create upsert should fail");
+        .expect("a failed member must be returned as a typed outcome");
+    let failure = broken_restore_outcome(&result, &id);
 
     assert!(
-        err.to_string()
-            .contains("continuity upsert after restore create"),
-        "unexpected error: {err}"
+        failure
+            .detail
+            .contains("continuity upsert after materialize"),
+        "unexpected error: {}",
+        failure.detail
     );
     assert_eq!(
         bridge.unregister_calls.load(Ordering::SeqCst),
@@ -7076,13 +7213,16 @@ async fn identity_first_runtime_restore_flow_resume_abandoned_unregister_failure
         .await
         .unwrap();
 
-    let err = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
+    let result = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
         .await
-        .expect_err("abandoned resume-session unregister failure must fail");
+        .expect("a failed member must be returned as a typed outcome");
+    let failure = broken_restore_outcome(&result, &id);
     assert!(
-        err.to_string()
+        failure
+            .detail
             .contains("bridge unregister abandoned session runtime state"),
-        "unexpected error: {err}"
+        "unexpected error: {}",
+        failure.detail
     );
     assert_eq!(
         bridge.unregister_calls.load(Ordering::SeqCst),
@@ -7090,7 +7230,10 @@ async fn identity_first_runtime_restore_flow_resume_abandoned_unregister_failure
         "failed abandoned-session cleanup must unregister both old and actual sessions"
     );
     assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 1);
-    assert!(!runtime.contains(&id).await);
+    assert_eq!(
+        runtime.status(&id).await.unwrap().state,
+        IdentityLifecycleState::Broken
+    );
     let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
     let ContinuityResolveState::Ready { record: restored } = resolved.get(&id).unwrap() else {
         panic!("expected previous ready record after rollback");
@@ -7132,13 +7275,17 @@ async fn identity_first_runtime_restore_flow_resume_fence_upsert_failure_avoids_
         .unwrap();
     store.fail_upsert();
 
-    let err = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
+    let result = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
         .await
-        .expect_err("restore resume fence upsert should fail");
+        .expect("a failed member must be returned as a typed outcome");
+    let failure = broken_restore_outcome(&result, &id);
 
     assert!(
-        err.to_string().contains("continuity store"),
-        "unexpected error: {err}"
+        failure
+            .detail
+            .contains("continuity upsert before materialize"),
+        "unexpected error: {}",
+        failure.detail
     );
     assert_eq!(
         bridge.register_calls.load(Ordering::SeqCst),
@@ -7189,14 +7336,17 @@ async fn identity_first_runtime_restore_flow_resume_register_failure_rolls_back_
         .await
         .unwrap();
 
-    let err = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
+    let result = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
         .await
-        .expect_err("restore resume final bridge register should fail");
+        .expect("a failed member must be returned as a typed outcome");
+    let failure = broken_restore_outcome(&result, &id);
 
     assert!(
-        err.to_string()
-            .contains("bridge register_session_runtime_state"),
-        "unexpected error: {err}"
+        failure
+            .detail
+            .contains("bridge register actual session runtime state"),
+        "unexpected error: {}",
+        failure.detail
     );
     assert_eq!(
         bridge.unregister_calls.load(Ordering::SeqCst),
@@ -7252,14 +7402,17 @@ async fn identity_first_runtime_restore_flow_resume_same_session_register_failur
         .await
         .unwrap();
 
-    let err = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
+    let result = restore_flow(&runtime, &[make_spec("triage:main")], None, None)
         .await
-        .expect_err("restore resume final bridge register should fail");
+        .expect("a failed member must be returned as a typed outcome");
+    let failure = broken_restore_outcome(&result, &id);
 
     assert!(
-        err.to_string()
-            .contains("bridge register_session_runtime_state"),
-        "unexpected error: {err}"
+        failure
+            .detail
+            .contains("bridge register actual session runtime state"),
+        "unexpected error: {}",
+        failure.detail
     );
     assert_eq!(
         bridge.unregister_calls.load(Ordering::SeqCst),
@@ -7324,18 +7477,26 @@ async fn identity_first_runtime_restore_flow_customizer_receives_peers() {
 }
 
 #[tokio::test]
-async fn identity_first_runtime_restore_flow_releases_leases_on_customizer_failure() {
-    struct FailingCustomizer;
+async fn identity_first_runtime_restore_flow_parks_one_failed_member_and_continues() {
+    struct SelectiveCustomizer {
+        rejected: AgentIdentity,
+    }
 
     #[async_trait]
-    impl AgentCustomizer for FailingCustomizer {
+    impl AgentCustomizer for SelectiveCustomizer {
         async fn customize_build(
             &self,
-            _context: &AgentBuildContext,
+            context: &AgentBuildContext,
             _spec: &DurableAgentSpec,
             _draft: &mut AgentBuildDraft,
         ) -> Result<(), CustomizerError> {
-            Err(CustomizerError::BuildFailed("boom".to_string()))
+            if context.identity == self.rejected {
+                Err(CustomizerError::BuildFailed(
+                    "host policy rejected review:culprit".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -7350,26 +7511,58 @@ async fn identity_first_runtime_restore_flow_releases_leases_on_customizer_failu
         bridge: None,
         default_timeout: None,
     });
-    let identity = make_identity("review:singleton");
+    let culprit = make_identity("review:culprit");
+    let survivor = make_identity("review:survivor");
     let result = restore_flow(
         &runtime,
-        &[make_spec("review:singleton")],
+        &[make_spec(culprit.as_str()), make_spec(survivor.as_str())],
         None,
-        Some(&FailingCustomizer),
+        Some(&SelectiveCustomizer {
+            rejected: culprit.clone(),
+        }),
     )
-    .await;
-    assert!(result.is_err());
+    .await
+    .expect("one member failure must not abort the fleet restore");
+
+    let Some(RestoreOutcome::Broken(failure)) = result.outcomes.get(&culprit) else {
+        panic!(
+            "culprit must be a typed Broken outcome: {:#?}",
+            result.outcomes
+        );
+    };
+    assert_eq!(failure.identity, culprit);
+    assert_eq!(failure.kind, ContinuityFailureKind::EmbodimentFailed);
+    assert_eq!(failure.record, None);
+    assert!(
+        failure
+            .detail
+            .contains("host policy rejected review:culprit"),
+        "the exact member cause must stay visible: {}",
+        failure.detail
+    );
+    assert!(matches!(
+        result.outcomes.get(&survivor),
+        Some(RestoreOutcome::Created { .. })
+    ));
+    assert_eq!(
+        runtime.status(&culprit).await.unwrap().state,
+        IdentityLifecycleState::Broken
+    );
+    assert_eq!(
+        runtime.status(&survivor).await.unwrap().state,
+        IdentityLifecycleState::Active
+    );
 
     let acquired = lease
         .acquire_leases(
-            std::slice::from_ref(&identity),
+            std::slice::from_ref(&culprit),
             "restore-customizer-failure-other-runtime",
         )
         .await
         .unwrap();
     assert!(
         matches!(
-            acquired.get(&identity),
+            acquired.get(&culprit),
             Some(LeaseAcquireResult::Acquired(_))
         ),
         "customizer failure must release the acquired lease: {acquired:?}"
@@ -7398,19 +7591,25 @@ async fn identity_first_runtime_reconcile_retries_unpublished_exact_grant_before
     let identity = make_identity("review:unpublished-pending-release");
     let spec = make_spec(identity.as_str());
 
-    let first_error = restore_flow(
+    let first = restore_flow(
         &runtime,
         std::slice::from_ref(&spec),
         None,
         Some(&FailingCustomizer),
     )
     .await
-    .expect_err("customization and its first cleanup release must fail");
-    assert!(first_error.to_string().contains("boom"));
-    assert!(first_error.to_string().contains("lease cleanup failed"));
-    assert!(
-        !runtime.contains(&identity).await,
-        "failure before lifecycle publication intentionally has no entry"
+    .expect("a member failure must stay inside the restore result");
+    let Some(RestoreOutcome::Broken(first_failure)) = first.outcomes.get(&identity) else {
+        panic!(
+            "failed member must be visible as Broken: {:#?}",
+            first.outcomes
+        );
+    };
+    assert!(first_failure.detail.contains("boom"));
+    assert!(first_failure.detail.contains("lease cleanup failed"));
+    assert_eq!(
+        runtime.status(&identity).await.unwrap().state,
+        IdentityLifecycleState::Broken
     );
     let held = lease
         .held_grant(&identity)
@@ -7578,6 +7777,151 @@ async fn identity_first_runtime_restore_flow_reuses_exact_active_lease_without_c
 }
 
 #[tokio::test]
+async fn identity_first_runtime_restore_flow_preserves_active_authority_over_store_broken() {
+    let store = Arc::new(TransientBrokenContinuityStore::new_broken());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let runtime = make_runtime_with_store(store, lease.clone());
+    let identity = make_identity("review:active-store-broken");
+    let record = make_record(identity.as_str(), 0, 0);
+    let acquired = lease
+        .acquire_leases(std::slice::from_ref(&identity), "test-runtime")
+        .await
+        .unwrap()
+        .remove(&identity)
+        .unwrap();
+    let LeaseAcquireResult::Acquired(grant) = acquired else {
+        panic!("initial active lease should be acquired");
+    };
+    runtime
+        .register(
+            make_spec(identity.as_str()),
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(grant.clone()),
+        )
+        .await;
+
+    let result = restore_flow(
+        &runtime,
+        std::slice::from_ref(&make_spec(identity.as_str())),
+        None,
+        None,
+    )
+    .await
+    .expect("store projection must not revoke exact active authority");
+    assert!(matches!(
+        result.outcomes.get(&identity),
+        Some(RestoreOutcome::Resumed { .. })
+    ));
+
+    let status = runtime.status(&identity).await.unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Active);
+    assert_eq!(
+        status.lease.unwrap().fencing_token,
+        grant.fencing_token,
+        "metadata registration must not overwrite the live entry"
+    );
+    let held = lease
+        .acquire_leases(std::slice::from_ref(&identity), "other-runtime")
+        .await
+        .unwrap();
+    assert!(matches!(
+        held.get(&identity),
+        Some(LeaseAcquireResult::AlreadyHeld { .. })
+    ));
+}
+
+#[tokio::test]
+async fn identity_first_runtime_restore_flow_renew_error_retains_exact_authority() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(FailingRenewLeaseProvider::default());
+    let runtime = make_runtime_with_store(store.clone(), lease.clone());
+    let identity = make_identity("review:active-renew-error");
+    let record = make_record(identity.as_str(), 0, 0);
+    let acquired = lease
+        .acquire_leases(std::slice::from_ref(&identity), "test-runtime")
+        .await
+        .unwrap()
+        .remove(&identity)
+        .unwrap();
+    let LeaseAcquireResult::Acquired(grant) = acquired else {
+        panic!("initial active lease should be acquired");
+    };
+    store
+        .upsert_continuity_record(&record, grant.fencing_token)
+        .await
+        .unwrap();
+    let mut original = make_spec(identity.as_str());
+    original
+        .labels
+        .insert("revision".to_string(), "old".to_string());
+    runtime
+        .register(
+            original,
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(grant.clone()),
+        )
+        .await;
+
+    let mut desired = make_spec(identity.as_str());
+    desired
+        .labels
+        .insert("revision".to_string(), "new".to_string());
+    let result = restore_flow(&runtime, &[desired], None, None)
+        .await
+        .expect("active renew failure must remain member-attributable");
+    let failure = broken_restore_outcome(&result, &identity);
+    assert_eq!(failure.kind, ContinuityFailureKind::EmbodimentFailed);
+    assert!(
+        failure.detail.contains("synthetic active renew failure"),
+        "exact renew cause must remain visible: {}",
+        failure.detail
+    );
+
+    let status = runtime.status(&identity).await.unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Broken);
+    assert_eq!(
+        status.lease.unwrap().fencing_token,
+        grant.fencing_token,
+        "a rolled-back renew error must retain the exact still-held grant"
+    );
+    assert_eq!(
+        status.labels.get("revision").map(String::as_str),
+        Some("old"),
+        "failed authority preflight must not publish the desired spec"
+    );
+
+    let retried = restore_flow(
+        &runtime,
+        std::slice::from_ref(&make_spec(identity.as_str())),
+        None,
+        None,
+    )
+    .await
+    .expect("direct retry must release retained authority before replacement");
+    assert!(matches!(
+        retried.outcomes.get(&identity),
+        Some(RestoreOutcome::Created { .. })
+    ));
+    let retried_status = runtime.status(&identity).await.unwrap();
+    assert_eq!(retried_status.state, IdentityLifecycleState::Active);
+    assert_ne!(
+        retried_status.lease.unwrap().fencing_token,
+        grant.fencing_token,
+        "retry must publish a fresh exact grant after releasing the retained one"
+    );
+    let held = lease
+        .acquire_leases(std::slice::from_ref(&identity), "other-runtime")
+        .await
+        .unwrap();
+    assert!(matches!(
+        held.get(&identity),
+        Some(LeaseAcquireResult::AlreadyHeld { .. })
+    ));
+}
+
+#[tokio::test]
 async fn identity_first_runtime_restore_flow_renews_expired_active_lease_before_reuse() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
     let lease = Arc::new(ControlledLeaseProvider::new(
@@ -7670,13 +8014,16 @@ async fn identity_first_runtime_restore_flow_lost_active_lease_breaks_before_spe
     desired
         .labels
         .insert("revision".to_string(), "new".to_string());
-    let error = restore_flow(&runtime, &[desired], None, None)
+    let result = restore_flow(&runtime, &[desired], None, None)
         .await
-        .expect_err("lost authority must fail active reconcile");
-    assert!(matches!(
-        error,
-        IdentityRuntimeError::LeaseLost(ref lost) if lost == &identity
-    ));
+        .expect("lost member authority must not fail the fleet pass");
+    let failure = broken_restore_outcome(&result, &identity);
+    assert_eq!(failure.kind, ContinuityFailureKind::EmbodimentFailed);
+    assert!(
+        failure.detail.contains("lease lost"),
+        "lost authority must remain exact and visible: {}",
+        failure.detail
+    );
 
     let status = runtime.status(&identity).await.unwrap();
     assert_eq!(status.state, IdentityLifecycleState::Broken);

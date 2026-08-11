@@ -428,6 +428,11 @@ pub enum ContinuityFailureKind {
     /// a transcript-continuity rejection). The identity → session binding is
     /// intact; the identity is degraded until a reconcile retry succeeds.
     ResumeRejected,
+    /// This identity's concrete embodiment transaction failed after the
+    /// fleet-level roster, topology, and continuity gates succeeded. The
+    /// failure is scoped to one member: eager restore parks that identity as
+    /// Broken and continues materializing the rest of the roster.
+    EmbodimentFailed,
     /// A terminal typed verdict stands against this identity: the heal
     /// authority proved the durable session head unrecoverable (proof inputs
     /// absent), or the resume precondition is provably terminal (the typed

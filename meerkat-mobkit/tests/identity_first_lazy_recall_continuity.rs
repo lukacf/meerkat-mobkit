@@ -13,7 +13,7 @@
 //! `orchestrator::lazy_register_flow`, which registers every identity as
 //! Dormant with its `ContinuityRecord` attached and materializes NOTHING.
 //! Materialization is deferred to the first `send`/`dispatch`, which gates on
-//! `Dormant | Uninitialized` and calls `materialize_inner`.
+//! `Dormant | Uninitialized` and calls the shared `embody_identity` door.
 //!
 //! The field report: boot A takes a turn and the post-turn document lands in
 //! the store with correctly-ordered messages; after a kill -9 and boot B every
@@ -189,7 +189,7 @@ impl RosterProvider for OneMemberRoster {
 /// Installs a marker system prompt at build time.
 ///
 /// On the lazy arm the customizer is not passed to `lazy_register_flow` at
-/// all; `materialize_inner` reads it from runtime state (installed by the
+/// all; `embody_identity` reads it from runtime state (installed by the
 /// builder via `set_agent_customizer`) when the first send materializes the
 /// member. A lazily materialized agent losing its host prompt would be a
 /// second, independent defect, so both boots assert the marker.

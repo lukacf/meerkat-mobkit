@@ -9,14 +9,12 @@ use std::time::{Duration, Instant};
 
 use futures::{StreamExt, stream};
 
-use super::bridge::{BridgeError, ResumeRejectionKind, archived_not_revivable_park_reason};
 use super::contracts::{AgentCustomizer, TopologyProvider};
-use super::runtime::{IdentityRuntime, IdentityRuntimeError};
+use super::runtime::{EmbodimentOverrides, IdentityRuntime, IdentityRuntimeError};
 use super::types::{
-    AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeId, CheckpointVersion,
-    ContinuityFailure, ContinuityFailureKind, ContinuityGeneration, ContinuityRecord,
-    ContinuityResolveState, DurableAgentSpec, IdentityLifecycleState, LeaseAcquireResult,
-    LeaseGrant, ManagedPeerEdge, SessionSnapshot, TopologyContext,
+    AgentBuildDraft, AgentIdentity, ContinuityFailure, ContinuityFailureKind, ContinuityRecord,
+    ContinuityResolveState, DurableAgentSpec, IdentityLifecycleState, ManagedPeerEdge,
+    SessionSnapshot, TopologyContext,
 };
 
 pub(crate) const IDENTITY_RESTORE_CONCURRENCY: usize = 4;
@@ -100,14 +98,6 @@ fn trace_identity_restore_completed(identity: &AgentIdentity, started_at: Instan
 // Restore flow result
 // ---------------------------------------------------------------------------
 
-fn durable_spec_uses_external_binding(spec: &DurableAgentSpec) -> bool {
-    matches!(spec.backend, Some(meerkat_mob::MobBackendKind::External))
-        || matches!(
-            spec.binding.as_ref(),
-            Some(meerkat_contracts::WireRuntimeBinding::External { .. })
-        )
-}
-
 /// Result of the restore flow for a single identity.
 #[derive(Debug, Clone)]
 pub enum RestoreOutcome {
@@ -136,7 +126,8 @@ pub enum RestoreOutcome {
         snapshot: SessionSnapshot,
         draft: AgentBuildDraft,
     },
-    /// Broken continuity — failed loudly per REQ-13.
+    /// Broken continuity or a member-scoped embodiment failure, surfaced with
+    /// its exact typed cause while unrelated members continue restoring.
     Broken(ContinuityFailure),
 }
 
@@ -219,50 +210,6 @@ pub fn compute_reconcile_actions(
     actions
 }
 
-async fn delete_tentative_continuity_record(
-    runtime: &IdentityRuntime,
-    identity: &AgentIdentity,
-    grant: Option<&LeaseGrant>,
-    persisted: bool,
-) -> Option<String> {
-    if !persisted {
-        return None;
-    }
-    let grant = grant?;
-    runtime
-        .continuity_store()
-        .delete_continuity_record(identity, grant.fencing_token)
-        .await
-        .err()
-        .map(|err| err.to_string())
-}
-
-async fn release_unactivated_restore_grants(
-    runtime: &IdentityRuntime,
-    grants: &BTreeMap<AgentIdentity, LeaseGrant>,
-    activated_identities: &BTreeSet<AgentIdentity>,
-) -> Option<String> {
-    let unactivated = grants
-        .iter()
-        .filter(|(identity, _)| !activated_identities.contains(*identity))
-        .map(|(_, grant)| grant.clone())
-        .collect::<Vec<_>>();
-    if unactivated.is_empty() {
-        return None;
-    }
-    match runtime.release_or_park_untracked_leases(&unactivated).await {
-        Ok(()) => None,
-        Err(error) => Some(error.to_string()),
-    }
-}
-
-fn append_cleanup_error(message: String, cleanup_error: Option<String>) -> String {
-    match cleanup_error {
-        Some(cleanup_error) => format!("{message}; lease cleanup failed: {cleanup_error}"),
-        None => message,
-    }
-}
-
 type RosterAuthorityGuards = (
     tokio::sync::OwnedMutexGuard<()>,
     tokio::sync::OwnedMutexGuard<()>,
@@ -330,15 +277,12 @@ async fn acquire_roster_authority_guards(
 /// Execute the full restore flow per REQ-12 sequencing.
 ///
 /// Steps:
-/// 1. Roster → identities
-/// 2. Resolve continuity for all identities
-/// 3. Acquire leases
-/// 4. Compute topology (target activation set)
-/// 5. Build context for each identity
-/// 6. Run customizer
-/// 7. Resume injection (for Ready)
-/// 8. Lower to CreateSessionRequest (conceptual)
-/// 9. Resume, 10. Create, 11. Fail per resolve state
+/// 1. Validate the roster and compute topology.
+/// 2. Resolve continuity for the complete roster and publish metadata.
+/// 3. For each non-Broken identity, independently acquire its lease, build,
+///    and create or resume through [`IdentityRuntime::embody_identity`].
+/// 4. Park a member-attributable failure as a typed Broken outcome and keep
+///    restoring the remaining identities.
 ///
 /// When `bridge` is `Some`, Uninitialized identities call `bridge.create_session()`
 /// and Ready identities call `bridge.resume_session()` to actually spawn/resume
@@ -370,132 +314,20 @@ pub async fn restore_flow(
     topology_provider: Option<&dyn TopologyProvider>,
     customizer: Option<&dyn AgentCustomizer>,
 ) -> Result<RestoreFlowResult, IdentityRuntimeError> {
-    // INV-06: validate roster uniqueness before any work
-    IdentityRuntime::validate_roster_uniqueness(roster)?;
+    // Fleet-level declaration and continuity resolution remain fail-closed:
+    // without a valid unique roster, topology, or complete batch-store answer
+    // there is no truthful set of identities to materialize. The lazy
+    // registration phase publishes that validated metadata without creating a
+    // member or taking an embodiment lease.
+    let registered = register_roster_metadata(runtime, roster, topology_provider, false).await?;
+    let managed_edges = registered.managed_edges;
+    let registered_outcomes = registered.outcomes;
 
-    let identities: Vec<AgentIdentity> = roster.iter().map(|s| s.identity.clone()).collect();
-
-    // Topology is declaration-only and does not require an embodiment lease.
-    let topology_context = TopologyContext {
-        roster: roster.to_vec(),
-    };
-    let managed_edges = if let Some(tp) = topology_provider {
-        tp.compute_edges(&identities, &topology_context)
-            .await
-            .map_err(|error| IdentityRuntimeError::Internal(format!("topology: {error}")))?
-    } else {
-        Vec::new()
-    };
-
-    // Hold every lifecycle reservation before the fleet-wide read and lease
-    // gate. This preserves the historical all-or-nothing ownership contract
-    // without reopening the stale-generation race: each guard moves into the
-    // corresponding concurrent restore future and remains held through that
-    // member's explicit commit/rollback boundary.
-    let mut authority_guards = acquire_roster_authority_guards(runtime, &identities).await?;
-    runtime.release_parked_unactivated_leases().await?;
-    let resolved = runtime
-        .continuity_store()
-        .resolve_many(&identities)
-        .await
-        .map_err(IdentityRuntimeError::Store)?;
-    for identity in &identities {
-        if !resolved.contains_key(identity) {
-            return Err(IdentityRuntimeError::Internal(format!(
-                "resolve_many did not return state for {identity}"
-            )));
-        }
-    }
-    // A live Active entry already owns exact provider authority. Reconcile is
-    // metadata convergence for that member, not a second embodiment attempt;
-    // reacquiring here either rotates the token needlessly or deadlocks strict
-    // providers that correctly report the existing holder as AlreadyHeld.
-    let mut already_active_identities = BTreeSet::new();
-    for identity in &identities {
-        if runtime.is_active(identity).await {
-            already_active_identities.insert(identity.clone());
-        }
-    }
-    let identities_to_acquire = identities
-        .iter()
-        .filter(|identity| !already_active_identities.contains(*identity))
-        .cloned()
-        .collect::<Vec<_>>();
-    let lease_results = if identities_to_acquire.is_empty() {
-        BTreeMap::new()
-    } else {
-        runtime
-            .lease_provider()
-            .acquire_leases(&identities_to_acquire, runtime.runtime_instance_id())
-            .await
-            .map_err(IdentityRuntimeError::Lease)?
-    };
-    let mut restore_grants = BTreeMap::new();
-    let mut ownership_error = None;
-    for identity in &identities_to_acquire {
-        match lease_results.get(identity) {
-            Some(LeaseAcquireResult::Acquired(grant)) => {
-                restore_grants.insert(identity.clone(), grant.clone());
-            }
-            Some(LeaseAcquireResult::AlreadyHeld { holder, .. }) => {
-                tracing::error!(
-                    %identity,
-                    holder = %holder,
-                    "single-embodiment guard: restore refused — identity is already \
-                     embodied by another live runtime instance"
-                );
-                ownership_error.get_or_insert_with(|| IdentityRuntimeError::AlreadyEmbodied {
-                    identity: identity.clone(),
-                    holder: holder.clone(),
-                });
-            }
-            None => {
-                ownership_error
-                    .get_or_insert_with(|| IdentityRuntimeError::NoActiveLease(identity.clone()));
-            }
-        }
-    }
-    if let Some(error) = ownership_error {
-        let cleanup_error =
-            release_unactivated_restore_grants(runtime, &restore_grants, &BTreeSet::new()).await;
-        return match cleanup_error {
-            Some(cleanup_error) => Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                error.to_string(),
-                Some(cleanup_error),
-            ))),
-            None => Err(error),
-        };
-    }
-
-    let mut restore_work = Vec::with_capacity(roster.len());
-    for (index, spec) in roster.iter().cloned().enumerate() {
-        let identity = &spec.identity;
-        let persisted_resolve_state = resolved.get(identity).cloned().ok_or_else(|| {
-            IdentityRuntimeError::Internal(format!(
-                "validated resolve state disappeared for {identity}"
-            ))
-        })?;
-        let grant = if already_active_identities.contains(identity) {
-            None
-        } else {
-            Some(restore_grants.remove(identity).ok_or_else(|| {
-                IdentityRuntimeError::Internal(format!(
-                    "validated restore grant disappeared for {identity}"
-                ))
-            })?)
-        };
-        let guards = authority_guards.remove(identity).ok_or_else(|| {
-            IdentityRuntimeError::Internal(format!(
-                "validated authority reservation disappeared for {identity}"
-            ))
-        })?;
-        restore_work.push((index, spec, persisted_resolve_state, grant, guards));
-    }
-
-    // Steps 5-11: per-identity processing. Session restoration is dominated by
-    // independent history loading and agent construction, so keep a small
-    // bounded set in flight instead of making large durable rosters pay the
-    // full sum of every member's resume latency.
+    // Concrete embodiment is deliberately per identity. Eager restore, lazy
+    // foreground materialization, and background warming now use the same
+    // lifecycle-locked transaction in IdentityRuntime::embody_identity. A
+    // member-attributable failure parks only that identity as a typed Broken
+    // outcome; it can never abort an unrelated member's boot.
     let restore_concurrency = identity_restore_concurrency();
     tracing::info!(
         member_count = roster.len(),
@@ -503,1037 +335,106 @@ pub async fn restore_flow(
         "starting identity restore"
     );
     let restore_started_at = Instant::now();
-    let restore_results = stream::iter(restore_work)
-        .map(|(index, spec, persisted_resolve_state, grant, authority_guards)| {
-            let identities = identities.clone();
-            let managed_edges = managed_edges.clone();
-            let already_active_identities = already_active_identities.clone();
+    let mut restored = stream::iter(roster.iter().cloned().enumerate())
+        .map(|(index, spec)| {
+            let initial = registered_outcomes.get(&spec.identity).cloned();
             async move {
-                let _authority_guards = authority_guards;
+                let identity = spec.identity.clone();
                 let member_started_at = Instant::now();
-                let mut activated_identities = BTreeSet::new();
-                let mut outcomes = BTreeMap::new();
-                let spec = &spec;
-                let identity = &spec.identity;
-        let grants = grant
-            .map(|grant| BTreeMap::from([(identity.clone(), grant)]))
-            .unwrap_or_default();
 
-        // If this identity is already registered and in Active state
-        // (from a previous restore_flow call), skip bridge operations — the
-        // mob member already exists. Identities in Retiring/Suspended state
-        // need re-activation through the bridge.
-        let already_active = already_active_identities.contains(identity);
-        if already_active {
-            let record = runtime.reuse_active_restore_state(spec).await?;
-            // Converged pass: the member already exists, so the checkpoint
-            // payload is inert metadata here. No bridge call runs, the outcome
-            // classification below does not key on snapshot presence, and no
-            // production consumer reads the payload - loading it made every
-            // converged reconcile pay one full session-blob read per member.
-            let snapshot = SessionSnapshot { data: Vec::new() };
-            let draft = AgentBuildDraft {
-                model: None,
-                system_prompt: None,
-                additional_instructions: spec.additional_instructions.clone(),
-                labels: spec.labels.clone(),
-                app_context: spec.context.clone(),
-                external_tools: Vec::new(),
-                local_external_tools: Default::default(),
-                provider_params: None,
-                compaction_curator: Default::default(),
-            };
-            outcomes.insert(
-                identity.clone(),
-                RestoreOutcome::Resumed {
-                    record,
-                    snapshot,
-                    draft,
-                },
-            );
-            trace_identity_restore_completed(identity, member_started_at);
-            return Ok((index, outcomes));
-        }
-
-        let resolve_state = if !already_active && durable_spec_uses_external_binding(spec) {
-            ContinuityResolveState::Uninitialized
-        } else {
-            persisted_resolve_state
-        };
-
-        // Step 5: build context
-        let build_context = AgentBuildContext {
-            identity: identity.clone(),
-            active_peers: identities.clone(),
-            managed_edges: managed_edges.clone(),
-            runtime_services: runtime.runtime_services(),
-        };
-
-        // Step 6: customize
-        let mut draft = AgentBuildDraft {
-            model: None,
-            system_prompt: None,
-            additional_instructions: spec.additional_instructions.clone(),
-            labels: spec.labels.clone(),
-            app_context: spec.context.clone(),
-            external_tools: Vec::new(),
-            local_external_tools: Default::default(),
-            provider_params: None,
-            compaction_curator: Default::default(),
-        };
-
-        if let Some(cust) = customizer
-            && let Err(e) = cust.customize_build(&build_context, spec, &mut draft).await
-        {
-            let cleanup_error =
-                release_unactivated_restore_grants(runtime, &grants, &activated_identities).await;
-            return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                format!("customizer: {e}"),
-                cleanup_error,
-            )));
-        }
-
-        match resolve_state {
-            // Step 10: Uninitialized → fresh-create
-            ContinuityResolveState::Uninitialized => {
-                let new_runtime_id = match AgentRuntimeId::parse(&format!("rt:{identity}:0")) {
-                    Ok(runtime_id) => runtime_id,
-                    Err(e) => {
-                        let cleanup_error = release_unactivated_restore_grants(
-                            runtime,
-                            &grants,
-                            &activated_identities,
-                        )
-                        .await;
-                        return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                            format!("failed to mint runtime id: {e}"),
-                            cleanup_error,
-                        )));
+                let outcome = match initial {
+                    Some(RestoreOutcome::Broken(failure)) => {
+                        RestoreOutcome::Broken(failure)
                     }
-                };
-                let new_session_id = meerkat_core::types::SessionId::new();
-                let mut record = ContinuityRecord {
-                    identity: identity.clone(),
-                    agent_runtime_id: new_runtime_id,
-                    session_id: new_session_id,
-                    generation: ContinuityGeneration::new(0),
-                    checkpoint_version: CheckpointVersion::new(0),
-                };
-                let initial_session_id = record.session_id.clone();
-                let mut initial_record_persisted = false;
-
-                // Persist the initial record before spawning through a
-                // continuity-backed session store. PersistentSessionService
-                // saves during member creation, and the store enforces CAS
-                // against the continuity record.
-                if let Some(grant) = grants.get(identity) {
-                    if let Err(err) = runtime
-                        .continuity_store()
-                        .upsert_continuity_record(&record, grant.fencing_token)
-                        .await
-                    {
-                        let cleanup_error = release_unactivated_restore_grants(
-                            runtime,
-                            &grants,
-                            &activated_identities,
-                        )
-                        .await;
-                        return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                            format!("continuity upsert before restore create: {err}"),
-                            cleanup_error,
-                        )));
-                    }
-                    initial_record_persisted = true;
-                }
-
-                // Bridge: create the real mob member when available.
-                // Skip if the identity is already active (mob member exists).
-                if !already_active && let Some(bridge) = runtime.bridge() {
-                    if let Some(grant) = grants.get(identity)
-                        && let Err(err) = bridge
-                            .register_session_runtime_state(
-                                &record.session_id,
-                                identity,
-                                record.generation,
-                                record.checkpoint_version,
-                                grant.fencing_token,
-                            )
-                            .await
-                    {
-                        let delete_error = delete_tentative_continuity_record(
-                            runtime,
-                            identity,
-                            Some(grant),
-                            initial_record_persisted,
-                        )
-                        .await;
-                        let lease_cleanup_error = release_unactivated_restore_grants(
-                            runtime,
-                            &grants,
-                            &activated_identities,
-                        )
-                        .await;
-                        return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                            format!(
-                                "bridge register_session_runtime_state: {err}{}",
-                                delete_error
-                                    .as_ref()
-                                    .map(|e| format!("; tentative continuity cleanup failed: {e}"))
-                                    .unwrap_or_default(),
-                            ),
-                            lease_cleanup_error,
-                        )));
-                    }
-                    let session_id = match bridge
-                        .create_session(
-                            identity,
-                            &record.agent_runtime_id,
-                            spec,
-                            &draft,
-                            &record.session_id,
-                        )
-                        .await
-                    {
-                        Ok(session_id) => session_id,
-                        Err(err) => {
-                            let unregister_error = bridge
-                                .unregister_session_runtime_state(&initial_session_id)
-                                .await
-                                .err();
-                            let cleanup_error =
-                                bridge.retire_member(&record.agent_runtime_id).await.err();
-                            let delete_error = delete_tentative_continuity_record(
-                                runtime,
-                                identity,
-                                grants.get(identity),
-                                initial_record_persisted,
-                            )
-                            .await;
-                            let lease_cleanup_error = release_unactivated_restore_grants(
-                                runtime,
-                                &grants,
-                                &activated_identities,
-                            )
-                            .await;
-                            return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                                format!(
-                                    "bridge create_session: {err}{}{}{}",
-                                    unregister_error
-                                        .as_ref()
-                                        .map(|e| format!("; unregister session failed: {e}"))
-                                        .unwrap_or_default(),
-                                    cleanup_error
-                                        .as_ref()
-                                        .map(|e| format!("; cleanup retire failed: {e}"))
-                                        .unwrap_or_default(),
-                                    delete_error
-                                        .as_ref()
-                                        .map(|e| format!(
-                                            "; tentative continuity cleanup failed: {e}"
-                                        ))
-                                        .unwrap_or_default(),
-                                ),
-                                lease_cleanup_error,
-                            )));
-                        }
-                    };
-                    // Update the record with the actual session ID from the mob
-                    record.session_id = session_id;
-                }
-                if let Some(grant) = grants.get(identity)
-                    && (!initial_record_persisted || record.session_id != initial_session_id)
-                    && let Err(err) = runtime
-                        .continuity_store()
-                        .upsert_continuity_record(&record, grant.fencing_token)
-                        .await
-                {
-                    let unregister_error = if let Some(bridge) = runtime.bridge() {
-                        let mut sessions = vec![initial_session_id.clone()];
-                        if record.session_id != initial_session_id {
-                            sessions.push(record.session_id.clone());
-                        }
-                        let mut errors = Vec::new();
-                        for session_id in sessions {
-                            if let Err(err) =
-                                bridge.unregister_session_runtime_state(&session_id).await
-                            {
-                                errors.push(format!("{session_id}: {err}"));
-                            }
-                        }
-                        if errors.is_empty() {
-                            None
-                        } else {
-                            Some(errors.join("; "))
-                        }
-                    } else {
-                        None
-                    };
-                    let cleanup_error = if let Some(bridge) = runtime.bridge() {
-                        bridge.retire_member(&record.agent_runtime_id).await.err()
-                    } else {
-                        None
-                    };
-                    let delete_error = delete_tentative_continuity_record(
-                        runtime,
-                        identity,
-                        Some(grant),
-                        initial_record_persisted,
-                    )
-                    .await;
-                    let lease_cleanup_error =
-                        release_unactivated_restore_grants(runtime, &grants, &activated_identities)
-                            .await;
-                    return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                        format!(
-                            "continuity upsert after restore create: {err}{}{}{}",
-                            unregister_error
-                                .as_ref()
-                                .map(|e| format!("; unregister session failed: {e}"))
-                                .unwrap_or_default(),
-                            cleanup_error
-                                .as_ref()
-                                .map(|e| format!("; cleanup retire failed: {e}"))
-                                .unwrap_or_default(),
-                            delete_error
-                                .as_ref()
-                                .map(|e| format!("; tentative continuity cleanup failed: {e}"))
-                                .unwrap_or_default(),
-                        ),
-                        lease_cleanup_error,
-                    )));
-                }
-                if let Some(grant) = grants.get(identity)
-                    && let Some(bridge) = runtime.bridge()
-                {
-                    let effective_checkpoint_version = match bridge
-                        .register_session_runtime_state(
-                            &record.session_id,
-                            identity,
-                            record.generation,
-                            record.checkpoint_version,
-                            grant.fencing_token,
-                        )
-                        .await
-                    {
-                        Ok(version) => version,
-                        Err(err) => {
-                            let provisional_unregister_error = bridge
-                                .unregister_session_runtime_state(&initial_session_id)
-                                .await
-                                .err();
-                            let actual_unregister_error = if record.session_id == initial_session_id
-                            {
-                                None
-                            } else {
-                                bridge
-                                    .unregister_session_runtime_state(&record.session_id)
-                                    .await
-                                    .err()
-                            };
-                            let cleanup_error =
-                                bridge.retire_member(&record.agent_runtime_id).await.err();
-                            let delete_error = delete_tentative_continuity_record(
-                                runtime,
-                                identity,
-                                Some(grant),
-                                initial_record_persisted,
-                            )
-                            .await;
-                            let lease_cleanup_error = release_unactivated_restore_grants(
-                                runtime,
-                                &grants,
-                                &activated_identities,
-                            )
-                            .await;
-                            return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                                format!(
-                                    "bridge register actual session runtime state: {err}{}{}{}{}",
-                                    provisional_unregister_error
-                                        .as_ref()
-                                        .map(|e| format!("; unregister session failed: {e}"))
-                                        .unwrap_or_default(),
-                                    actual_unregister_error
-                                        .as_ref()
-                                        .map(|e| format!("; actual session unregister failed: {e}"))
-                                        .unwrap_or_default(),
-                                    cleanup_error
-                                        .as_ref()
-                                        .map(|e| format!("; cleanup retire failed: {e}"))
-                                        .unwrap_or_default(),
-                                    delete_error
-                                        .as_ref()
-                                        .map(|e| format!(
-                                            "; tentative continuity cleanup failed: {e}"
-                                        ))
-                                        .unwrap_or_default(),
-                                ),
-                                lease_cleanup_error,
-                            )));
-                        }
-                    };
-                    record.checkpoint_version = effective_checkpoint_version;
-                    if record.session_id != initial_session_id
-                        && let Err(err) = bridge
-                            .unregister_session_runtime_state(&initial_session_id)
-                            .await
-                    {
-                        let actual_unregister_error = bridge
-                            .unregister_session_runtime_state(&record.session_id)
-                            .await
-                            .err();
-                        let cleanup_error =
-                            bridge.retire_member(&record.agent_runtime_id).await.err();
-                        let delete_error = delete_tentative_continuity_record(
-                            runtime,
-                            identity,
-                            Some(grant),
-                            initial_record_persisted,
-                        )
-                        .await;
-                        let lease_cleanup_error = release_unactivated_restore_grants(
-                            runtime,
-                            &grants,
-                            &activated_identities,
-                        )
-                        .await;
-                        return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                            format!(
-                                "bridge unregister abandoned session runtime state: {err}{}{}{}",
-                                actual_unregister_error
-                                    .as_ref()
-                                    .map(|e| format!("; actual session: {e}"))
-                                    .unwrap_or_default(),
-                                cleanup_error
-                                    .as_ref()
-                                    .map(|e| format!("; cleanup retire failed: {e}"))
-                                    .unwrap_or_default(),
-                                delete_error
-                                    .as_ref()
-                                    .map(|e| format!("; tentative continuity cleanup failed: {e}"))
-                                    .unwrap_or_default(),
-                            ),
-                            lease_cleanup_error,
-                        )));
-                    }
-                }
-
-                // Register in runtime
-                runtime
-                    .register(
-                        spec.clone(),
-                        IdentityLifecycleState::Active,
-                        Some(record.clone()),
-                        grants.get(identity).cloned(),
-                    )
-                    .await;
-                activated_identities.insert(identity.clone());
-
-                outcomes.insert(identity.clone(), RestoreOutcome::Created { record, draft });
-            }
-
-            // Step 9: Ready → resume from snapshot
-            ContinuityResolveState::Ready { record } => {
-                let mut record = record.clone();
-                let previous_record = record.clone();
-                // Step 7: read the continuity payload only when something will
-                // consume it. A live bridge that declares session-id-based
-                // resume never inspects the argument AND supplies the
-                // authoritative resume verdict below, so the whole-blob read
-                // is pure cost (the console add-member / reconcile Class 2
-                // stall). Without a bridge there is no explicit opt-out and no
-                // verdict, so the payload must be read: `snapshot.is_some()`
-                // is then the only signal that classifies the outcome.
-                //
-                // `already_active` is unreachable here (it returns above), so
-                // the surviving rule is bridge requirement alone.
-                let bridge_requires_snapshot = runtime
-                    .bridge()
-                    .map(|bridge| bridge.requires_resume_snapshot());
-                let snapshot = if bridge_requires_snapshot.unwrap_or(true) {
-                    match runtime
-                        .continuity_store()
-                        .load_session_snapshot(&record.session_id)
-                        .await
-                    {
-                        Ok(snapshot) => snapshot,
-                        Err(err) => {
-                            let cleanup_error = release_unactivated_restore_grants(
-                                runtime,
-                                &grants,
-                                &activated_identities,
-                            )
-                            .await;
-                            return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                                format!("load session snapshot before restore resume: {err}"),
-                                cleanup_error,
-                            )));
-                        }
-                    }
-                } else {
-                    None
-                };
-                let mut abandoned_session_registration = None;
-                // The bridge's authoritative resume verdict, when a bridge ran:
-                // `Some(true)` = the persisted session was resumed, `Some(false)`
-                // = the bridge fresh-spawned (typed fallback). Reporting keys on
-                // THIS, not on snapshot presence — reconcile must never report
-                // `resumed` for a fresh-spawned member (the HomeCore lie).
-                let mut bridge_resumed: Option<bool> = None;
-
-                // Bridge: resume or create the real mob member when available.
-                // Skip if the identity is already active (mob member exists).
-                if !already_active && let Some(bridge) = runtime.bridge() {
-                    if let Some(grant) = grants.get(identity) {
-                        if let Err(err) = runtime
-                            .continuity_store()
-                            .upsert_continuity_record(&record, grant.fencing_token)
-                            .await
-                        {
-                            let cleanup_error = release_unactivated_restore_grants(
-                                runtime,
-                                &grants,
-                                &activated_identities,
-                            )
-                            .await;
-                            return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                                format!("continuity upsert before restore resume: {err}"),
-                                cleanup_error,
-                            )));
-                        }
-                        if let Err(e) = bridge
-                            .register_session_runtime_state(
-                                &record.session_id,
-                                identity,
-                                record.generation,
-                                record.checkpoint_version,
-                                grant.fencing_token,
+                    Some(
+                        RestoreOutcome::Dormant { .. }
+                        | RestoreOutcome::Created { .. }
+                        | RestoreOutcome::Resumed { .. },
+                    ) => {
+                        let mut bound_bootstrap_generation = None;
+                        match runtime
+                            .embody_identity(
+                                &identity,
+                                None,
+                                None,
+                                None,
+                                &mut bound_bootstrap_generation,
+                                EmbodimentOverrides {
+                                    spec: Some(&spec),
+                                    customizer,
+                                },
                             )
                             .await
                         {
-                            let unregister_error = bridge
-                                .unregister_session_runtime_state(&record.session_id)
-                                .await
-                                .err();
-                            let cleanup_error = release_unactivated_restore_grants(
-                                runtime,
-                                &grants,
-                                &activated_identities,
-                            )
-                            .await;
-                            return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                                format!(
-                                    "bridge register_session_runtime_state: {e}{}",
-                                    unregister_error
-                                        .as_ref()
-                                        .map(|e| format!("; unregister session failed: {e}"))
-                                        .unwrap_or_default(),
-                                ),
-                                cleanup_error,
-                            )));
-                        }
-                    }
-                    let registered_session_id = record.session_id.clone();
-                    // When no checkpoint snapshot exists the session data still
-                    // lives in the mob's session store; resume passes an empty
-                    // snapshot and the bridge loads the persisted session by id.
-                    let resume_snapshot = snapshot
-                        .clone()
-                        .unwrap_or(SessionSnapshot { data: Vec::new() });
-                    let resumed_session_id = match bridge
-                        .resume_session(
-                            identity,
-                            &record.agent_runtime_id,
-                            spec,
-                            &draft,
-                            &record.session_id,
-                            &resume_snapshot,
-                        )
-                        .await
-                    {
-                        Ok(outcome) => {
-                            bridge_resumed = Some(outcome.fallback_reason().is_none());
-                            outcome.session_id().clone()
-                        }
-                        Err(err) => {
-                            // A rejected resume must not fail the whole restore
-                            // flow, and must NEVER abandon the durable session —
-                            // the transcript is the only copy. Keep the
-                            // identity → session binding intact, surface the
-                            // identity as Broken with the error attached, and
-                            // let the next reconcile retry the resume. Cleanup
-                            // is bookkeeping only: unregister the session
-                            // runtime state registered above (retried next
-                            // reconcile); do NOT retire the member (meerkat
-                            // keeps Broken-in-roster restore diagnostics) and
-                            // do NOT touch the continuity record.
-                            tracing::error!(
-                                %identity,
-                                session_id = %registered_session_id,
-                                error = %err,
-                                "restore resume rejected; marking identity Broken and preserving \
-                                 the durable session for reconcile retry"
-                            );
-                            if let Err(unregister_err) = bridge
-                                .unregister_session_runtime_state(&registered_session_id)
-                                .await
-                            {
+                            Ok(embodiment) if embodiment.resumed => RestoreOutcome::Resumed {
+                                record: embodiment.record,
+                                snapshot: embodiment.snapshot,
+                                draft: embodiment.draft,
+                            },
+                            Ok(embodiment) => RestoreOutcome::Created {
+                                record: embodiment.record,
+                                draft: embodiment.draft,
+                            },
+                            Err(error) => {
+                                let failure = runtime
+                                    .park_embodiment_failure(&identity, &error)
+                                    .await;
                                 tracing::warn!(
                                     %identity,
-                                    error = %unregister_err,
-                                    "failed to unregister session runtime state after rejected resume"
+                                    kind = ?failure.kind,
+                                    detail = %failure.detail,
+                                    "identity embodiment failed; parked Broken while fleet restore continues"
                                 );
-                            }
-                            runtime
-                                .register(
-                                    spec.clone(),
-                                    IdentityLifecycleState::Broken,
-                                    Some(record.clone()),
-                                    None,
-                                )
-                                .await;
-                            // Repair honesty (OB3 rehearsal): the typed
-                            // ArchivedNotRevivable refusal is a stable,
-                            // deterministic wall. Record the terminal verdict
-                            // on this FIRST restore refusal - the repair
-                            // supervisor then parks instead of heal-looping -
-                            // and surface the outcome under the terminal kind
-                            // rather than the reconcile-retried one.
-                            let failure_kind = if let BridgeError::ResumeRejected {
-                                kind: ResumeRejectionKind::ArchivedNotRevivable,
-                                detail,
-                            } = &err
-                            {
-                                if !runtime
-                                    .mark_continuity_unrecoverable(
-                                        identity,
-                                        archived_not_revivable_park_reason(
-                                            &registered_session_id,
-                                            detail,
-                                        ),
-                                    )
-                                    .await
-                                {
-                                    tracing::debug!(
-                                        %identity,
-                                        "identity left Broken before the \
-                                         archived-not-revivable park could be recorded"
-                                    );
-                                }
-                                ContinuityFailureKind::CheckpointUnrecoverable
-                            } else {
-                                ContinuityFailureKind::ResumeRejected
-                            };
-                            outcomes.insert(
-                                identity.clone(),
-                                RestoreOutcome::Broken(ContinuityFailure {
-                                    identity: identity.clone(),
-                                    kind: failure_kind,
-                                    record: Some(record.clone()),
-                                    detail: err.to_string(),
-                                }),
-                            );
-                            // Not added to activated_identities: release this
-                            // identity's lease grant before completing its
-                            // independently scheduled restore task.
-                            if let Some(cleanup_error) = release_unactivated_restore_grants(
-                                runtime,
-                                &grants,
-                                &activated_identities,
-                            )
-                            .await
-                            {
-                                return Err(IdentityRuntimeError::Internal(format!(
-                                    "restore cleanup failed: {cleanup_error}"
-                                )));
-                            }
-                            trace_identity_restore_completed(identity, member_started_at);
-                            return Ok((index, outcomes));
-                        }
-                    };
-                    record.session_id = resumed_session_id;
-                    if record.session_id != registered_session_id {
-                        abandoned_session_registration = Some(registered_session_id);
-                    }
-                }
-                if grants.contains_key(identity) {
-                    let resolved = match runtime
-                        .continuity_store()
-                        .resolve_many(std::slice::from_ref(identity))
-                        .await
-                    {
-                        Ok(resolved) => resolved,
-                        Err(err) => {
-                            let (unregister_error, member_cleanup_error) =
-                                if let Some(bridge) = runtime.bridge() {
-                                    let mut sessions = Vec::new();
-                                    if let Some(session_id) =
-                                        abandoned_session_registration.as_ref()
-                                    {
-                                        sessions.push(session_id.clone());
-                                    }
-                                    if !sessions
-                                        .iter()
-                                        .any(|session_id| session_id == &record.session_id)
-                                    {
-                                        sessions.push(record.session_id.clone());
-                                    }
-                                    let mut unregister_errors = Vec::new();
-                                    for session_id in sessions {
-                                        if let Err(error) = bridge
-                                            .unregister_session_runtime_state(&session_id)
-                                            .await
-                                        {
-                                            unregister_errors.push(format!(
-                                                "{session_id}: {error}"
-                                            ));
-                                        }
-                                    }
-                                    (
-                                        (!unregister_errors.is_empty())
-                                            .then(|| unregister_errors.join("; ")),
-                                        bridge.retire_member(&record.agent_runtime_id).await.err(),
-                                    )
-                                } else {
-                                    (None, None)
-                                };
-                            let lease_cleanup_error = release_unactivated_restore_grants(
-                                runtime,
-                                &grants,
-                                &activated_identities,
-                            )
-                            .await;
-                            return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                                format!(
-                                    "resolve continuity before restore resume upsert: {err}{}{}",
-                                    unregister_error
-                                        .as_ref()
-                                        .map(|error| format!(
-                                            "; unregister session failed: {error}"
-                                        ))
-                                        .unwrap_or_default(),
-                                    member_cleanup_error
-                                        .as_ref()
-                                        .map(|error| format!(
-                                            "; cleanup retire failed: {error}"
-                                        ))
-                                        .unwrap_or_default(),
-                                ),
-                                lease_cleanup_error,
-                            )));
-                        }
-                    };
-                    if let Some(ContinuityResolveState::Ready {
-                        record: current_record,
-                    }) = resolved.get(identity)
-                        && current_record.session_id == record.session_id
-                        && current_record.generation == record.generation
-                        && current_record.checkpoint_version > record.checkpoint_version
-                    {
-                        record.checkpoint_version = current_record.checkpoint_version;
-                    }
-                }
-                if let Some(grant) = grants.get(identity)
-                    && let Err(err) = runtime
-                        .continuity_store()
-                        .upsert_continuity_record(&record, grant.fencing_token)
-                        .await
-                {
-                    let unregister_error = if let Some(bridge) = runtime.bridge() {
-                        let mut sessions = Vec::new();
-                        if let Some(session_id) = abandoned_session_registration.as_ref() {
-                            sessions.push(session_id.clone());
-                        }
-                        if !sessions
-                            .iter()
-                            .any(|session_id| session_id == &record.session_id)
-                        {
-                            sessions.push(record.session_id.clone());
-                        }
-                        let mut errors = Vec::new();
-                        for session_id in sessions {
-                            if let Err(err) =
-                                bridge.unregister_session_runtime_state(&session_id).await
-                            {
-                                errors.push(format!("{session_id}: {err}"));
+                                RestoreOutcome::Broken(failure)
                             }
                         }
-                        if errors.is_empty() {
-                            None
-                        } else {
-                            Some(errors.join("; "))
-                        }
-                    } else {
-                        None
-                    };
-                    let cleanup_error = if let Some(bridge) = runtime.bridge() {
-                        bridge.retire_member(&record.agent_runtime_id).await.err()
-                    } else {
-                        None
-                    };
-                    let lease_cleanup_error =
-                        release_unactivated_restore_grants(runtime, &grants, &activated_identities)
-                            .await;
-                    return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                        format!(
-                            "continuity upsert after restore resume: {err}{}{}",
-                            unregister_error
-                                .as_ref()
-                                .map(|e| format!("; unregister session failed: {e}"))
-                                .unwrap_or_default(),
-                            cleanup_error
-                                .as_ref()
-                                .map(|e| format!("; cleanup retire failed: {e}"))
-                                .unwrap_or_default(),
-                        ),
-                        lease_cleanup_error,
-                    )));
-                }
-                if let Some(bridge) = runtime.bridge()
-                    && let Some(grant) = grants.get(identity)
-                {
-                    let effective_checkpoint_version = match bridge
-                        .register_session_runtime_state(
-                            &record.session_id,
-                            identity,
-                            record.generation,
-                            record.checkpoint_version,
-                            grant.fencing_token,
-                        )
-                        .await
-                    {
-                        Ok(version) => version,
-                        Err(err) => {
-                            let abandoned_unregister_error =
-                                if let Some(session_id) = abandoned_session_registration.as_ref() {
-                                    bridge
-                                        .unregister_session_runtime_state(session_id)
-                                        .await
-                                        .err()
-                                } else {
-                                    None
-                                };
-                            let actual_unregister_error = if abandoned_session_registration.as_ref()
-                                == Some(&record.session_id)
-                            {
-                                None
-                            } else {
-                                bridge
-                                    .unregister_session_runtime_state(&record.session_id)
-                                    .await
-                                    .err()
-                            };
-                            let cleanup_error =
-                                bridge.retire_member(&record.agent_runtime_id).await.err();
-                            let rollback_error = runtime
-                                .continuity_store()
-                                .upsert_continuity_record(&previous_record, grant.fencing_token)
-                                .await
-                                .err();
-                            let lease_cleanup_error = release_unactivated_restore_grants(
-                                runtime,
-                                &grants,
-                                &activated_identities,
-                            )
-                            .await;
-                            return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                                format!(
-                                    "bridge register_session_runtime_state: {err}{}{}{}{}",
-                                    abandoned_unregister_error
-                                        .as_ref()
-                                        .map(|e| format!("; unregister session failed: {e}"))
-                                        .unwrap_or_default(),
-                                    actual_unregister_error
-                                        .as_ref()
-                                        .map(|e| format!("; actual session unregister failed: {e}"))
-                                        .unwrap_or_default(),
-                                    cleanup_error
-                                        .as_ref()
-                                        .map(|e| format!("; cleanup retire failed: {e}"))
-                                        .unwrap_or_default(),
-                                    rollback_error
-                                        .as_ref()
-                                        .map(|e| format!("; continuity rollback failed: {e}"))
-                                        .unwrap_or_default(),
-                                ),
-                                lease_cleanup_error,
-                            )));
-                        }
-                    };
-                    record.checkpoint_version = effective_checkpoint_version;
-                    if let Some(session_id) = abandoned_session_registration.as_ref()
-                        && let Err(err) = bridge.unregister_session_runtime_state(session_id).await
-                    {
-                        let actual_unregister_error = bridge
-                            .unregister_session_runtime_state(&record.session_id)
-                            .await
-                            .err();
-                        let cleanup_error =
-                            bridge.retire_member(&record.agent_runtime_id).await.err();
-                        let rollback_error = runtime
-                            .continuity_store()
-                            .upsert_continuity_record(&previous_record, grant.fencing_token)
-                            .await
-                            .err();
-                        let lease_cleanup_error = release_unactivated_restore_grants(
-                            runtime,
-                            &grants,
-                            &activated_identities,
-                        )
-                        .await;
-                        return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                            format!(
-                                "bridge unregister abandoned session runtime state: {err}{}{}{}",
-                                actual_unregister_error
-                                    .as_ref()
-                                    .map(|e| format!("; actual session: {e}"))
-                                    .unwrap_or_default(),
-                                cleanup_error
-                                    .as_ref()
-                                    .map(|e| format!("; cleanup retire failed: {e}"))
-                                    .unwrap_or_default(),
-                                rollback_error
-                                    .as_ref()
-                                    .map(|e| format!("; continuity rollback failed: {e}"))
-                                    .unwrap_or_default(),
-                            ),
-                            lease_cleanup_error,
-                        )));
                     }
-                }
-
-                // Register in runtime
-                runtime
-                    .register(
-                        spec.clone(),
-                        IdentityLifecycleState::Active,
-                        Some(record.clone()),
-                        grants.get(identity).cloned(),
-                    )
-                    .await;
-                activated_identities.insert(identity.clone());
-
-                // Outcome honesty: when a bridge ran, ITS verdict decides. A
-                // typed fresh-spawn fallback reports `Created` — never
-                // `Resumed` — regardless of snapshot presence; a successful
-                // bridge resume reports `Resumed` even without a checkpoint
-                // snapshot (the persisted mob session carried the history).
-                // Without a bridge (metadata-only restore) the checkpoint
-                // snapshot remains the only signal, as before.
-                //
-                // Load-elision safety: `bridge_resumed` is `None` here IFF
-                // `runtime.bridge()` is `None`. A grant is absent only for
-                // already-active identities, and those returned above, so a
-                // configured bridge always ran and always set the verdict
-                // (its Err path returns Broken before reaching this point).
-                // That is exactly the case in which the read above is NOT
-                // elided, so skipping the payload for a session-id-based
-                // bridge can never flip a resumed member to `Created`.
-                let resumed = match bridge_resumed {
-                    Some(resumed) => resumed,
-                    None => snapshot.is_some(),
+                    None => {
+                        // lazy_register_flow proves one result for every roster
+                        // identity. Treat a violated internal correspondence as
+                        // this member's visible failure rather than borrowing
+                        // the cause for the rest of the fleet.
+                        let error = IdentityRuntimeError::Internal(format!(
+                            "validated registration outcome disappeared for {identity}"
+                        ));
+                        let failure = runtime
+                            .park_embodiment_failure(&identity, &error)
+                            .await;
+                        RestoreOutcome::Broken(failure)
+                    }
                 };
-                if resumed {
-                    outcomes.insert(
-                        identity.clone(),
-                        RestoreOutcome::Resumed {
-                            record: record.clone(),
-                            snapshot: snapshot.unwrap_or(SessionSnapshot { data: Vec::new() }),
-                            draft,
-                        },
-                    );
-                } else {
-                    outcomes.insert(
-                        identity.clone(),
-                        RestoreOutcome::Created {
-                            record: record.clone(),
-                            draft,
-                        },
-                    );
-                }
-            }
 
-            // Step 11: Broken → fail loudly (REQ-13)
-            ContinuityResolveState::Broken { failure } => {
-                // Keep a lifecycle projection even though no member was
-                // materialized. The continuity repair supervisor discovers
-                // Broken entries through the runtime roster; omitting this
-                // entry made a transient eager-store failure terminal until a
-                // manual reconcile or process restart.
-                //
-                // The typed reason must reach the operator's default log
-                // level: a Broken registration with the ContinuityFailure
-                // carried only in the roster is invisible from a
-                // warn-baseline gateway (HomeCore activation-33: 17 Broken,
-                // zero log lines, certification refused with no cause on
-                // record).
-                tracing::warn!(
-                    %identity,
-                    kind = ?failure.kind,
-                    detail = %failure.detail,
-                    "continuity resolve returned Broken; registering the identity Broken \
-                     (no member materialized)"
-                );
-                runtime
-                    .register(
-                        spec.clone(),
-                        IdentityLifecycleState::Broken,
-                        failure.record.clone(),
-                        None,
-                    )
-                    .await;
-                outcomes.insert(identity.clone(), RestoreOutcome::Broken(failure));
-            }
-        }
-                if let Some(cleanup_error) =
-                    release_unactivated_restore_grants(runtime, &grants, &activated_identities)
-                        .await
-                {
-                    return Err(IdentityRuntimeError::Internal(format!(
-                        "restore cleanup failed: {cleanup_error}"
-                    )));
-                }
-
-                trace_identity_restore_completed(identity, member_started_at);
-                Ok((index, outcomes))
+                trace_identity_restore_completed(&identity, member_started_at);
+                (index, identity, outcome)
             }
         })
         .buffer_unordered(restore_concurrency)
-        .collect::<Vec<Result<(usize, BTreeMap<AgentIdentity, RestoreOutcome>), _>>>()
+        .collect::<Vec<_>>()
         .await;
+    restored.sort_by_key(|(index, _, _)| *index);
 
-    let mut ordered_results = Vec::with_capacity(restore_results.len());
-    for result in restore_results {
-        ordered_results.push(result?);
-    }
-    ordered_results.sort_by_key(|(index, _)| *index);
-
-    let mut outcomes = BTreeMap::new();
-    for (_, member_outcomes) in ordered_results {
-        outcomes.extend(member_outcomes);
-    }
+    let outcomes = restored
+        .into_iter()
+        .map(|(_, identity, outcome)| (identity, outcome))
+        .collect();
     tracing::info!(
         member_count = roster.len(),
         elapsed_ms = restore_started_at.elapsed().as_millis(),
         "identity restore completed"
     );
 
-    // Persist the provider declaration on eager restore too. Lazy bootstrap
-    // already did this; without parity, later generation repair/materialize
-    // read an empty desired set and could not reapply overlay topology.
+    // Topology is a fleet-level projection over the successfully embodied
+    // set. Member failures have already become typed outcomes, but an invalid
+    // fleet projection remains a pass failure rather than being attributed to
+    // any one identity.
     runtime.set_desired_peer_edges(managed_edges.clone()).await;
-    if let Err(err) = runtime.reconcile_managed_peer_edges(&managed_edges).await {
-        tracing::warn!(
-            error = %err,
-            "identity restore flow completed with topology reconcile warning"
-        );
-    }
+    runtime.reconcile_managed_peer_edges(&managed_edges).await?;
 
     Ok(RestoreFlowResult {
         outcomes,
         managed_edges,
     })
 }
-
 /// Register the roster/topology metadata without materializing members.
 ///
 /// This is the identity-first lazy bootstrap path: it validates the roster,
@@ -1544,6 +445,20 @@ pub async fn lazy_register_flow(
     runtime: &IdentityRuntime,
     roster: &[DurableAgentSpec],
     topology_provider: Option<&dyn TopologyProvider>,
+) -> Result<RestoreFlowResult, IdentityRuntimeError> {
+    register_roster_metadata(runtime, roster, topology_provider, true).await
+}
+
+/// Validate and publish roster metadata without opening a concrete embodiment
+/// transaction. Eager restore defers an Active member's spec mutation until
+/// the shared embodiment door has revalidated its external lease; a genuinely
+/// lazy reconcile has no embodiment transaction and publishes the metadata in
+/// this phase.
+async fn register_roster_metadata(
+    runtime: &IdentityRuntime,
+    roster: &[DurableAgentSpec],
+    topology_provider: Option<&dyn TopologyProvider>,
+    update_active_specs: bool,
 ) -> Result<RestoreFlowResult, IdentityRuntimeError> {
     IdentityRuntime::validate_roster_uniqueness(roster)?;
 
@@ -1597,18 +512,39 @@ pub async fn lazy_register_flow(
                 "validated lazy resolve state disappeared for {identity}"
             ))
         })?;
-        let currently_active = runtime
+        let current_state = runtime
             .status(identity)
             .await
-            .is_ok_and(|status| status.state == IdentityLifecycleState::Active);
-        // Terminal heal verdict (2026-07-29 incident): while it stands, lazy
-        // reconcile must not soften this identity's Broken projection to
-        // Dormant — that cosmetic "heal" is what materialization re-Breaks.
+            .ok()
+            .map(|status| status.state);
+        let currently_active = current_state == Some(IdentityLifecycleState::Active);
+        // A terminal continuity verdict owns this Broken projection. It must
+        // preserve the durable lower-plane binding for operator repair rather
+        // than entering ordinary failed-embodiment cleanup.
         let terminal_verdict = if currently_active {
             None
         } else {
             runtime.continuity_unrecoverable(identity).await
         };
+        if current_state == Some(IdentityLifecycleState::Broken)
+            && terminal_verdict.is_none()
+            && let Err(error) = runtime
+                .prepare_broken_identity_for_registration(identity)
+                .await
+        {
+            let failure = runtime.park_embodiment_failure(identity, &error).await;
+            tracing::warn!(
+                %identity,
+                kind = ?failure.kind,
+                detail = %failure.detail,
+                "Broken identity cleanup failed; retained exact authority and continued roster registration"
+            );
+            outcomes.insert(identity.clone(), RestoreOutcome::Broken(failure));
+            continue;
+        }
+        // Terminal heal verdict (2026-07-29 incident): while it stands, lazy
+        // reconcile must not soften this identity's Broken projection to
+        // Dormant - that cosmetic "heal" is what materialization re-Breaks.
         let draft = AgentBuildDraft {
             model: None,
             system_prompt: None,
@@ -1623,7 +559,9 @@ pub async fn lazy_register_flow(
         match resolve_state {
             ContinuityResolveState::Uninitialized => {
                 if currently_active {
-                    runtime.update_spec(spec.clone()).await?;
+                    if update_active_specs {
+                        runtime.update_spec(spec.clone()).await?;
+                    }
                 } else {
                     runtime
                         .register(spec.clone(), IdentityLifecycleState::Dormant, None, None)
@@ -1639,7 +577,9 @@ pub async fn lazy_register_flow(
             }
             ContinuityResolveState::Ready { record } => {
                 if currently_active {
-                    runtime.update_spec(spec.clone()).await?;
+                    if update_active_specs {
+                        runtime.update_spec(spec.clone()).await?;
+                    }
                 } else if let Some(verdict) = terminal_verdict {
                     // 2026-07-29 incident: re-registering a heal-unprovable
                     // identity as Dormant is the cosmetic "heal" that the
@@ -1677,7 +617,24 @@ pub async fn lazy_register_flow(
                 );
             }
             ContinuityResolveState::Broken { failure } => {
-                if let Some(verdict) = terminal_verdict
+                if currently_active {
+                    // A store projection cannot revoke a live embodiment's
+                    // exact local authority. Preserve the Active entry and
+                    // let the shared embodiment door validate its lease
+                    // before applying an eager desired spec. Lazy metadata
+                    // refreshes may update the spec directly because they do
+                    // not embody in this pass.
+                    if update_active_specs {
+                        runtime.update_spec(spec.clone()).await?;
+                    }
+                    outcomes.insert(
+                        identity.clone(),
+                        RestoreOutcome::Dormant {
+                            record: failure.record,
+                            draft,
+                        },
+                    );
+                } else if let Some(verdict) = terminal_verdict
                     && matches!(failure.kind, ContinuityFailureKind::SnapshotMissing)
                     && failure.record.is_some()
                 {
@@ -1698,7 +655,9 @@ pub async fn lazy_register_flow(
                     && let Some(record) = failure.record.clone()
                 {
                     if currently_active {
-                        runtime.update_spec(spec.clone()).await?;
+                        if update_active_specs {
+                            runtime.update_spec(spec.clone()).await?;
+                        }
                     } else {
                         runtime
                             .register(
@@ -1740,7 +699,9 @@ pub async fn lazy_register_flow(
         }
     }
 
-    if let Err(err) = runtime.reconcile_managed_peer_edges(&managed_edges).await {
+    if update_active_specs
+        && let Err(err) = runtime.reconcile_managed_peer_edges(&managed_edges).await
+    {
         tracing::warn!(
             error = %err,
             "identity lazy register flow completed with topology reconcile warning"
