@@ -748,7 +748,7 @@ mod tests {
 
         let service = ephemeral_workgraph_service("mob-realm");
         let wrapper = ScopePinnedWorkGraphTools::new(&service);
-        let inner = WorkGraphToolSurface::new(service.clone());
+        let inner = WorkGraphToolSurface::new(service);
 
         let wrapped = wrapper.tool_catalog_capabilities();
         let direct = inner.tool_catalog_capabilities();
