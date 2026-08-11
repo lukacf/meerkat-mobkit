@@ -878,6 +878,20 @@ impl ContinuityStore for GatedUpsertContinuityStore {
 /// which must still be served a real payload read.
 struct ResumeSnapshotStubBridge {
     requires_resume_snapshot: bool,
+    resume_snapshot: Mutex<Option<SessionSnapshot>>,
+}
+
+impl ResumeSnapshotStubBridge {
+    fn new(requires_resume_snapshot: bool) -> Self {
+        Self {
+            requires_resume_snapshot,
+            resume_snapshot: Mutex::new(None),
+        }
+    }
+
+    fn resume_snapshot(&self) -> Option<SessionSnapshot> {
+        self.resume_snapshot.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
@@ -904,8 +918,9 @@ impl SessionBridge for ResumeSnapshotStubBridge {
         _spec: &DurableAgentSpec,
         _draft: &AgentBuildDraft,
         session_id: &meerkat_core::types::SessionId,
-        _snapshot: &SessionSnapshot,
+        snapshot: &SessionSnapshot,
     ) -> Result<ResumeSessionOutcome, BridgeError> {
+        *self.resume_snapshot.lock().unwrap() = Some(snapshot.clone());
         Ok(ResumeSessionOutcome::Resumed {
             session_id: session_id.clone(),
         })
@@ -1668,8 +1683,8 @@ async fn identity_first_builder_lazy_materialize_registers_large_ready_roster_wi
 /// bridge costs ZERO snapshot reads on either path.
 ///
 /// The outcome must still classify as `Resumed` - the verdict comes from the
-/// bridge, not from snapshot presence - and its `snapshot` payload is now
-/// legitimately empty even though the store holds bytes.
+/// bridge, not from snapshot presence - while the bridge receives the empty
+/// internal argument promised by its opt-out contract.
 #[tokio::test]
 async fn identity_first_public_eager_refresh_elides_snapshot_load() {
     let specs = vec![durable_spec("agent:alpha")];
@@ -1682,15 +1697,14 @@ async fn identity_first_public_eager_refresh_elides_snapshot_load() {
     };
     let continuity_store =
         Arc::new(CountingReadyContinuityStore::new(records).with_snapshot(unread_store_payload));
+    let bridge = Arc::new(ResumeSnapshotStubBridge::new(false));
     let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
         continuity_store: continuity_store.clone(),
         lease_provider: Arc::new(StubLeaseProvider),
         runtime_instance_id: "public-eager-refresh-snapshot-test".to_string(),
         has_runtime_store: true,
         durability_policy: DurabilityPolicy::SyncWriteThrough,
-        bridge: Some(Arc::new(ResumeSnapshotStubBridge {
-            requires_resume_snapshot: false,
-        })),
+        bridge: Some(bridge.clone()),
         default_timeout: None,
     }));
     let context = IdentityFirstRuntimeContext::new(
@@ -1711,19 +1725,21 @@ async fn identity_first_public_eager_refresh_elides_snapshot_load() {
         "public refresh must not read the continuity payload for a bridge that \
          declared requires_resume_snapshot() == false"
     );
-    match &result.outcomes[&identity] {
-        RestoreOutcome::Resumed { snapshot, .. } => assert!(
-            snapshot.data.is_empty(),
-            "an elided read must surface an empty payload, not fabricated bytes"
-        ),
-        outcome => panic!("expected the bridge resume verdict to report Resumed, got {outcome:?}"),
-    }
+    assert!(
+        matches!(&result.outcomes[&identity], RestoreOutcome::Resumed { .. }),
+        "the bridge resume verdict must report Resumed"
+    );
+    assert_eq!(
+        bridge.resume_snapshot(),
+        Some(SessionSnapshot { data: Vec::new() }),
+        "an opted-out bridge must receive an empty internal snapshot argument"
+    );
 }
 
 /// The other side of the same ratchet. Eliding the payload read is keyed on
 /// the bridge's declared appetite, NOT on "nobody reads it anyway": a bridge
 /// that consumes the continuity payload must still be handed one on the
-/// public refresh path, and the outcome must carry those bytes.
+/// public refresh path.
 #[tokio::test]
 async fn identity_first_public_eager_refresh_still_loads_for_a_consuming_bridge() {
     let specs = vec![durable_spec("agent:alpha")];
@@ -1735,15 +1751,14 @@ async fn identity_first_public_eager_refresh_still_loads_for_a_consuming_bridge(
     let continuity_store = Arc::new(
         CountingReadyContinuityStore::new(records).with_snapshot(consumed_payload.clone()),
     );
+    let bridge = Arc::new(ResumeSnapshotStubBridge::new(true));
     let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
         continuity_store: continuity_store.clone(),
         lease_provider: Arc::new(StubLeaseProvider),
         runtime_instance_id: "public-eager-refresh-consuming-bridge-test".to_string(),
         has_runtime_store: true,
         durability_policy: DurabilityPolicy::SyncWriteThrough,
-        bridge: Some(Arc::new(ResumeSnapshotStubBridge {
-            requires_resume_snapshot: true,
-        })),
+        bridge: Some(bridge.clone()),
         default_timeout: None,
     }));
     let context = IdentityFirstRuntimeContext::new(
@@ -1764,10 +1779,15 @@ async fn identity_first_public_eager_refresh_still_loads_for_a_consuming_bridge(
         "a bridge that declared requires_resume_snapshot() == true must still be \
          served the continuity payload"
     );
-    match &result.outcomes[&identity] {
-        RestoreOutcome::Resumed { snapshot, .. } => assert_eq!(snapshot, &consumed_payload),
-        outcome => panic!("expected a payload-preserving resumed outcome, got {outcome:?}"),
-    }
+    assert!(
+        matches!(&result.outcomes[&identity], RestoreOutcome::Resumed { .. }),
+        "the bridge resume verdict must report Resumed"
+    );
+    assert_eq!(
+        bridge.resume_snapshot(),
+        Some(consumed_payload),
+        "the consuming bridge must receive the persisted snapshot bytes"
+    );
 }
 
 #[tokio::test]

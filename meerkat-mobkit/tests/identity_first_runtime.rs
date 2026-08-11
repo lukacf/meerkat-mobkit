@@ -6173,13 +6173,9 @@ async fn identity_first_runtime_restore_flow_resumes_ready() {
     let result = restore_flow(&runtime, &roster, None, None).await.unwrap();
 
     match result.outcomes.get(&id).unwrap() {
-        RestoreOutcome::Resumed {
-            record: r,
-            snapshot,
-            ..
-        } => {
+        RestoreOutcome::Resumed { record: r, .. } => {
             assert_eq!(r.identity, id);
-            assert_eq!(snapshot.data, b"snapshot data");
+            assert_eq!(r.session_id, record.session_id);
         }
         other => panic!("expected Resumed, got: {other:?}"),
     }

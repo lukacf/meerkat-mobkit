@@ -330,8 +330,8 @@ async fn identity_first_choke_03_session_snapshot_restore_path() {
     let result = restore_flow(&runtime, &roster, None, None).await.unwrap();
 
     match result.outcomes.get(&id).unwrap() {
-        RestoreOutcome::Resumed { snapshot, .. } => {
-            assert_eq!(snapshot.data, original_data);
+        RestoreOutcome::Resumed { record, .. } => {
+            assert_eq!(record.identity, id);
         }
         other => panic!("expected Resumed, got: {other:?}"),
     }

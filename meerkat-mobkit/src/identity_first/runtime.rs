@@ -1402,7 +1402,6 @@ struct DispatchOutcome {
 pub(crate) struct EmbodimentOutcome {
     pub(crate) record: ContinuityRecord,
     pub(crate) resumed: bool,
-    pub(crate) snapshot: SessionSnapshot,
     pub(crate) draft: AgentBuildDraft,
 }
 
@@ -4296,7 +4295,6 @@ impl IdentityRuntime {
             return Ok(EmbodimentOutcome {
                 record,
                 resumed: true,
-                snapshot: SessionSnapshot { data: Vec::new() },
                 draft: AgentBuildDraft {
                     model: None,
                     system_prompt: None,
@@ -4459,9 +4457,8 @@ impl IdentityRuntime {
 
         let mut abandoned_session_registrations: Vec<SessionId> = Vec::new();
         let mut resumed = false;
-        let mut resume_snapshot = None;
         let mut record = if let Some(mut record) = continuity {
-            let snapshot = if self
+            let resume_snapshot = if self
                 .bridge
                 .as_ref()
                 .is_none_or(|bridge| bridge.requires_resume_snapshot())
@@ -4487,7 +4484,6 @@ impl IdentityRuntime {
             } else {
                 None
             };
-            resume_snapshot = snapshot;
 
             if let Some(bridge) = self.bridge.as_ref() {
                 if let Err(err) = bridge
@@ -5006,7 +5002,6 @@ impl IdentityRuntime {
         Ok(EmbodimentOutcome {
             record,
             resumed,
-            snapshot: resume_snapshot.unwrap_or(SessionSnapshot { data: Vec::new() }),
             draft,
         })
     }

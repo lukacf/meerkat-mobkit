@@ -14,7 +14,7 @@ use super::runtime::{EmbodimentOverrides, IdentityRuntime, IdentityRuntimeError}
 use super::types::{
     AgentBuildDraft, AgentIdentity, ContinuityFailure, ContinuityFailureKind, ContinuityRecord,
     ContinuityResolveState, DurableAgentSpec, IdentityLifecycleState, ManagedPeerEdge,
-    SessionSnapshot, TopologyContext,
+    TopologyContext,
 };
 
 pub(crate) const IDENTITY_RESTORE_CONCURRENCY: usize = 4;
@@ -114,16 +114,10 @@ pub enum RestoreOutcome {
     },
     /// Resumed: the identity kept its AgentRuntimeId and SessionId.
     ///
-    /// `snapshot` is diagnostic, NOT authoritative, and is routinely empty.
-    /// Restore reads the continuity payload only when it is actually needed
-    /// (no live bridge, or a bridge that declares it consumes the payload),
-    /// so a successful resume through a session-id-based bridge reports
-    /// `Resumed` with an empty payload. No consumer may assume a populated
-    /// `Resumed.snapshot`; read the durable record - or the session store -
-    /// when payload bytes are required.
+    /// The durable record is the public resume authority. Snapshot bytes are
+    /// internal bridge input and are deliberately not copied into this result.
     Resumed {
         record: ContinuityRecord,
-        snapshot: SessionSnapshot,
         draft: AgentBuildDraft,
     },
     /// Broken continuity or a member-scoped embodiment failure, surfaced with
@@ -305,9 +299,9 @@ async fn acquire_roster_authority_guards(
 /// verdict to key on, snapshot presence is the only signal that distinguishes
 /// a resumed identity from a fresh-created one.
 ///
-/// A successful `Resumed` outcome may therefore carry an empty snapshot. No
-/// `RestoreOutcome` consumer may assume a populated `Resumed.snapshot`; read
-/// the durable record instead when payload bytes are required.
+/// Snapshot bytes remain internal to the embodiment transaction. The public
+/// `Resumed` outcome reports the durable identity/session record instead of a
+/// second, non-authoritative copy of bridge input.
 pub async fn restore_flow(
     runtime: &IdentityRuntime,
     roster: &[DurableAgentSpec],
@@ -368,7 +362,6 @@ pub async fn restore_flow(
                         {
                             Ok(embodiment) if embodiment.resumed => RestoreOutcome::Resumed {
                                 record: embodiment.record,
-                                snapshot: embodiment.snapshot,
                                 draft: embodiment.draft,
                             },
                             Ok(embodiment) => RestoreOutcome::Created {
