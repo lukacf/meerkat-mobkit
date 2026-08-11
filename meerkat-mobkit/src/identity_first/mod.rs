@@ -21,7 +21,7 @@ pub use agent_memory::{
     AgentMemoryLlmWrites, AgentMemoryOperatorScope, AgentMemoryPerTurnInjection,
     AgentMemoryProvider, AgentMemoryRecallFailurePolicy, AgentMemoryRecallRequest,
     AgentMemoryRecord, AgentMemoryRuntimeInjector, AgentMemorySelection, AuthoredWriteReceipt,
-    MEMORY_TOOL_NAME, MarkdownAgentMemoryStore, NewAgentMemory,
+    MEMORY_TOOL_NAME, NewAgentMemory,
 };
 pub use bridge::{
     BridgeAdmissionError, BridgeDelivery, BridgeError, BridgeTurnError, BridgeTurnReceipt,

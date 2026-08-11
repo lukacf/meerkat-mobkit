@@ -54,6 +54,11 @@ deliberately refused and the ones shipped as documented partials.
 - **Item 23** - the LLM selector is re-homed and then deleted, in that order:
   `AnnotatedRecord` serves the lexical recall path, so deleting first would
   have broken default recall.
+- **Item 25** - BREAKING Rust API removal: `MarkdownAgentMemoryStore` and
+  `UnifiedRuntimeBuilder::persistent_agent_memory(...)` are deleted. Markdown
+  is no longer a live agent-memory backend; its parser and file layout remain
+  crate-private solely for the one-shot SQLite import, which preserves ids,
+  tags and timestamps before renaming each source to `.md.imported`.
 - **Item 26** - public-surface cleanup for deleted and parked capabilities.
 - **Item 20** - Hygienist is PARKED, not deleted, pending real fork plus
   bounded projection proven on OpenAI and Anthropic.

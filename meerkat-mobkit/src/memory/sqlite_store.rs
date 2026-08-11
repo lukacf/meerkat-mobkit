@@ -25,8 +25,8 @@ use crate::identity_first::AgentIdentity;
 use crate::identity_first::agent_memory::{
     AgentMemoryError, AgentMemoryForgetResult, AgentMemoryProvider, AgentMemoryRecallRequest,
     AgentMemoryRecord, AuthoredWriteReceipt, NewAgentMemory, compact_whitespace,
-    decode_path_segment, encode_path_segment, new_memory_id, normalize_tags, read_markdown_records,
-    select_recall_records,
+    decode_path_segment, encode_path_segment, markdown_import_realm_dir, new_memory_id,
+    normalize_tags, read_markdown_records, select_recall_records,
 };
 use crate::memory::taint::LlmWriteGate;
 
@@ -609,7 +609,7 @@ impl SqliteAgentMemoryStore {
     }
 
     /// Same directory + percent-encoding scheme as
-    /// `MarkdownAgentMemoryStore::path_for`, one database per realm.
+    /// the retired markdown import layout, one database per realm.
     pub fn path_for_realm(&self, realm: &str) -> PathBuf {
         self.root
             .join(format!("{}.sqlite3", encode_path_segment(realm)))
@@ -664,7 +664,7 @@ impl SqliteAgentMemoryStore {
         conn: &mut Connection,
         realm: &str,
     ) -> Result<(), AgentMemoryError> {
-        let realm_dir = self.root.join(encode_path_segment(realm));
+        let realm_dir = markdown_import_realm_dir(&self.root, realm);
         if !realm_dir.is_dir() {
             return Ok(());
         }
@@ -3686,7 +3686,7 @@ fn mint_token(prefix: &str) -> String {
 )]
 mod tests {
     use super::*;
-    use crate::identity_first::agent_memory::{AgentMemorySelection, MarkdownAgentMemoryStore};
+    use crate::identity_first::agent_memory::{AgentMemorySelection, markdown_import_file_path};
     use std::error::Error;
 
     fn identity() -> Result<AgentIdentity, Box<dyn Error>> {
@@ -3700,6 +3700,46 @@ mod tests {
             realm: realm.to_string(),
             identity: identity()?.as_str().to_string(),
         })
+    }
+
+    fn write_markdown_import_fixture(
+        root: &Path,
+        realm: &str,
+        identity: &AgentIdentity,
+        records: &[AgentMemoryRecord],
+    ) -> Result<PathBuf, Box<dyn Error>> {
+        let path = markdown_import_file_path(root, realm, identity);
+        fs::create_dir_all(path.parent().ok_or("fixture parent")?)?;
+        let mut content = "# MobKit Agent Memory\n\n".to_string();
+        for record in records {
+            let metadata = serde_json::json!({
+                "memory_id": record.memory_id,
+                "tags": record.tags,
+                "created_at_ms": record.created_at_ms,
+                "updated_at_ms": record.updated_at_ms,
+            });
+            let escaped_body = record
+                .body
+                .lines()
+                .map(|line| {
+                    let trimmed = line.trim();
+                    if trimmed == "<!-- /mobkit-agent-memory -->"
+                        || trimmed.starts_with("<!-- mobkit-agent-memory ")
+                    {
+                        format!("\\{line}")
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            content.push_str(&format!(
+                "## {}\n<!-- mobkit-agent-memory {} -->\n{}\n<!-- /mobkit-agent-memory -->\n\n",
+                record.title, metadata, escaped_body
+            ));
+        }
+        fs::write(&path, content)?;
+        Ok(path)
     }
 
     /// `scope_kind` is PERSISTED SCHEMA, not runtime configuration: rows
@@ -4820,22 +4860,39 @@ mod tests {
     async fn markdown_import_preserves_ids_and_renames_file() -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let id = identity()?;
-        let markdown = MarkdownAgentMemoryStore::open(dir.path())?;
-        let first = markdown.remember(
+        let first = AgentMemoryRecord {
+            memory_id: "mem-import-first".to_string(),
+            title: "Imported fact".to_string(),
+            body: "Body one with detail.".to_string(),
+            tags: Vec::new(),
+            created_at_ms: 101,
+            updated_at_ms: 102,
+        };
+        let second = AgentMemoryRecord {
+            memory_id: "mem-import-second".to_string(),
+            title: "Second fact".to_string(),
+            body: "Body two with detail.\n<!-- /mobkit-agent-memory -->\n<!-- mobkit-agent-memory not-json -->\nTail after structural lines.".to_string(),
+            tags: vec!["travel".to_string()],
+            created_at_ms: 201,
+            updated_at_ms: 202,
+        };
+        let md_path = write_markdown_import_fixture(
+            dir.path(),
             "family",
             &id,
-            new_memory("Imported fact", "Body one with detail."),
+            &[first.clone(), second.clone()],
         )?;
-        let second = markdown.remember(
-            "family",
-            &id,
-            NewAgentMemory {
-                title: "Second fact".to_string(),
-                body: "Body two with detail.".to_string(),
-                tags: vec!["travel".to_string()],
-            },
+        let content = fs::read_to_string(&md_path)?;
+        let malformed = "## Malformed metadata\n<!-- mobkit-agent-memory {not-json} -->\n\
+                         This record must be skipped.\n<!-- /mobkit-agent-memory -->\n\n";
+        fs::write(
+            &md_path,
+            content.replacen(
+                "## Second fact\n",
+                &format!("{malformed}## Second fact\n"),
+                1,
+            ),
         )?;
-        let md_path = markdown.path_for("family", &id);
 
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         let records = store.recall(recall_all(id.clone(), "family")).await?;
@@ -4850,6 +4907,11 @@ mod tests {
             .ok_or("second record imported")?;
         assert_eq!(imported.tags, vec!["travel"]);
         assert_eq!(imported.created_at_ms, second.created_at_ms);
+        assert_eq!(imported.updated_at_ms, second.updated_at_ms);
+        assert_eq!(
+            imported.body, second.body,
+            "escaped record terminator and metadata lines must survive import"
+        );
 
         assert!(
             !md_path.exists(),
@@ -4874,6 +4936,34 @@ mod tests {
         // Reopening does not re-import (file renamed) and keeps counts.
         let reopened = SqliteAgentMemoryStore::open(dir.path())?;
         assert_eq!(reopened.recall(recall_all(id, "family")).await?.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn markdown_import_layout_contains_untrusted_segments() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let realm = "../../outside/realm";
+        assert!(
+            AgentIdentity::parse("identity:../../outside").is_err(),
+            "identity validation must reject path separators"
+        );
+        let identity = identity()?;
+
+        let realm_dir = markdown_import_realm_dir(dir.path(), realm);
+        let file_path = markdown_import_file_path(dir.path(), realm, &identity);
+
+        assert_eq!(realm_dir.parent(), Some(dir.path()));
+        assert_eq!(file_path.parent(), Some(realm_dir.as_path()));
+        assert!(realm_dir.starts_with(dir.path()));
+        assert!(file_path.starts_with(dir.path()));
+        assert_eq!(
+            realm_dir.file_name().and_then(|name| name.to_str()),
+            Some(encode_path_segment(realm).as_str())
+        );
+        assert_eq!(
+            file_path.file_name().and_then(|name| name.to_str()),
+            Some(format!("{}.md", encode_path_segment(identity.as_str())).as_str())
+        );
         Ok(())
     }
 
@@ -5031,9 +5121,16 @@ mod tests {
     async fn markdown_import_skips_bad_records_and_files_loudly() -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let id = identity()?;
-        let markdown = MarkdownAgentMemoryStore::open(dir.path())?;
-        let valid = markdown.remember("family", &id, new_memory("Valid fact", "Valid body."))?;
-        let md_path = markdown.path_for("family", &id);
+        let valid = AgentMemoryRecord {
+            memory_id: "mem-import-valid".to_string(),
+            title: "Valid fact".to_string(),
+            body: "Valid body.".to_string(),
+            tags: Vec::new(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        };
+        let md_path =
+            write_markdown_import_fixture(dir.path(), "family", &id, std::slice::from_ref(&valid))?;
 
         // Hand-edits happen (§7.3 invites them): append one record with an
         // oversized title and one carrying a secret. Both must skip loudly;

@@ -5,8 +5,8 @@
 //! and a provider refusing it must return the typed
 //! `AgentMemoryError::Unsupported` — never a silent no-op or an untyped
 //! error. The same chapter runs unchanged against the all-capable
-//! `SqliteAgentMemoryStore` and the recall/remember/forget-only
-//! `MarkdownAgentMemoryStore`.
+//! `SqliteAgentMemoryStore` and the recall/remember/forget-only reference
+//! provider.
 
 use meerkat_mobkit::identity_first::{
     AgentIdentity, AgentMemoryError, AgentMemoryRecallRequest, AgentMemorySelection, NewAgentMemory,

@@ -136,7 +136,7 @@ pub use identity_first::{
     AgentMemoryOperatorScope, AgentMemoryPerTurnInjection, AgentMemoryProvider,
     AgentMemoryRecallFailurePolicy, AgentMemoryRecallRequest, AgentMemoryRecord,
     AgentMemoryRuntimeInjector, AgentMemorySelection, AuthoredWriteReceipt, MEMORY_TOOL_NAME,
-    MarkdownAgentMemoryStore, NewAgentMemory,
+    NewAgentMemory,
 };
 pub use meerkat_mob::{MemberTurnEventSender, MemberTurnHandle, MemberTurnOptions};
 pub use memory::{

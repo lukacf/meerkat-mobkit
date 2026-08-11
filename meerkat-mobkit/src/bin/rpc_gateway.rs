@@ -180,16 +180,17 @@ struct GatewayAgentMemoryOptions {
 
 /// Which bundled store backs agent memory. SQLite is the default now that
 /// the P1 recall coordinator and injection ledger ride on it
-/// (docs/design/agent-memory-architecture.md §15); existing markdown files
-/// are auto-imported on first open.
+/// (docs/design/agent-memory-architecture.md §15); a realm's existing
+/// markdown files are auto-imported when that realm is first accessed.
 ///
 /// Markdown is still a RECOGNIZED value - it parses, it censuses, and the
 /// per-knob `requires store='sqlite'` refusals below still name it - but it
 /// is no longer a live execution backend: selecting it now fails init with
 /// [`AgentMemoryStoreMigration`]. The markdown READER stays fully intact for
-/// the deliberate one-shot import (`SqliteAgentMemoryStore::open` migrates
-/// un-imported `.md` files on first open), which is the supported path off
-/// markdown and the thing the migration error points at.
+/// the deliberate one-shot import (the SQLite store migrates a realm's
+/// un-imported `.md` files when that realm's connection is first opened),
+/// which is the supported path off markdown and the thing the migration
+/// error points at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum GatewayAgentMemoryStoreKind {
     Markdown,
@@ -225,9 +226,9 @@ impl AgentMemoryStoreMigration {
                  deployment silently loses every §7-§10 guarantee the sqlite store provides. \
                  Migration is one step and lossless: set store='sqlite' (or drop the key - \
                  sqlite is the default) against the SAME agent-memory directory. \
-                 SqliteAgentMemoryStore::open imports every un-imported .md file on first open, \
-                 preserving memory ids, tags and timestamps, and renames each source file to \
-                 .md.imported rather than deleting it."
+                 The SQLite store imports each realm's un-imported .md files when that realm's \
+                 connection is first opened, preserving memory ids, tags and timestamps, and \
+                 renames each source file to .md.imported rather than deleting it."
                 .to_string(),
         }
     }
@@ -1528,7 +1529,7 @@ actions = ["agent.view"]
             parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
         let slot = agent_memory_census_slot(&options.agent_memory.expect("agent memory options"));
         assert_eq!(slot.declaration.domain, "agent-memory");
-        assert_eq!(slot.backend, "MarkdownAgentMemoryStore");
+        assert_eq!(slot.backend, "MarkdownImportOnly");
     }
 
     /// The live markdown backend is retired, but the refusal has to be a
@@ -3300,9 +3301,9 @@ fn gateway_event_log_slot(
 }
 
 /// The agent-memory slot for the composition-time durability census.
-/// Configured `runtime_options.agent_memory` always composes a disk-backed
-/// store under the persistent state dir (both kinds), so the slot belongs
-/// inside the durable boundary the gateway reports.
+/// Configured SQLite composes a disk-backed store under the persistent state
+/// dir. Markdown remains recognized only so initialization can return its
+/// typed migration refusal; it never becomes a running storage backend.
 fn agent_memory_census_slot(
     agent_memory: &GatewayAgentMemoryOptions,
 ) -> meerkat_mobkit::storage_health::StorageSlotSummary {
@@ -3316,7 +3317,7 @@ fn agent_memory_census_slot(
         GatewayAgentMemoryStoreKind::Markdown => {
             meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
                 "agent-memory",
-                "MarkdownAgentMemoryStore",
+                "MarkdownImportOnly",
             )
         }
     }

@@ -10289,8 +10289,9 @@ mod tests {
         ContinuityGeneration, ContinuityRecord, DurabilityPolicy, DurableAgentSpec, FencingToken,
         IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig, LeaseAcquireResult,
         LeaseGrant, LocalContinuityStore, LocalLeaseProvider, ManagedPeerEdge,
-        MarkdownAgentMemoryStore, ResumeSessionOutcome, SessionBridge, SessionSnapshot,
+        ResumeSessionOutcome, SessionBridge, SessionSnapshot,
     };
+    use crate::memory::SqliteAgentMemoryStore;
     use crate::mob_handle_runtime::{MobRuntime, model_capabilities_for_role};
     use crate::rpc::{JSONRPC_VERSION, JsonRpcRequest};
     use crate::runtime::{ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember};
@@ -12261,7 +12262,7 @@ comms = true
             default_timeout: None,
         }));
         let memory_dir = tempfile::tempdir()?;
-        let memory_store = Arc::new(MarkdownAgentMemoryStore::open(memory_dir.path())?);
+        let memory_store = Arc::new(SqliteAgentMemoryStore::open(memory_dir.path())?);
         identity_runtime
             .set_agent_memory(Some(AgentMemoryRuntimeInjector::new(
                 memory_store,
@@ -12375,7 +12376,7 @@ comms = true
             )
             .await;
         let memory_dir = tempfile::tempdir()?;
-        let memory_store = Arc::new(MarkdownAgentMemoryStore::open(memory_dir.path())?);
+        let memory_store = Arc::new(SqliteAgentMemoryStore::open(memory_dir.path())?);
         identity_runtime
             .set_agent_memory(Some(AgentMemoryRuntimeInjector::new(
                 memory_store,

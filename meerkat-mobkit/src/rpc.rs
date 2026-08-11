@@ -5731,13 +5731,15 @@ mod tests {
     };
     use crate::identity_first::contracts::{ContinuityStore, LeaseProvider, RosterProvider};
     use crate::identity_first::{
-        AgentAddressability, AgentBuildDraft, AgentIdentity, AgentRuntimeId, BridgeError,
+        AgentAddressability, AgentBuildDraft, AgentIdentity, AgentMemoryProvider,
+        AgentMemoryRecallRequest, AgentMemorySelection, AgentRuntimeId, BridgeError,
         CheckpointVersion, ContinuityGeneration, ContinuityRecord, DurabilityPolicy,
         DurableAgentSpec, FencingToken, IdentityLifecycleState, IdentityRuntime,
         IdentityRuntimeConfig, LeaseAcquireResult, LeaseGrant, LocalContinuityStore,
-        LocalLeaseProvider, MarkdownAgentMemoryStore, ResumeSessionOutcome, RosterContext,
-        RosterError, SessionBridge, SessionSnapshot,
+        LocalLeaseProvider, ResumeSessionOutcome, RosterContext, RosterError, SessionBridge,
+        SessionSnapshot,
     };
+    use crate::memory::SqliteAgentMemoryStore;
     use crate::{
         DiscoverySpec, IdentityFirstContext, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
         UnifiedRuntime,
@@ -6938,7 +6940,7 @@ shell = true
             bridge: None,
             default_timeout: None,
         });
-        let store = Arc::new(MarkdownAgentMemoryStore::open(
+        let store = Arc::new(SqliteAgentMemoryStore::open(
             temp_dir.path().join("agent-memory"),
         )?);
         let provider: Arc<dyn crate::identity_first::AgentMemoryProvider> = store.clone();
@@ -7013,8 +7015,8 @@ shell = true
                 .is_some_and(|methods| methods.contains(&json!("mobkit/agent_memory/forget"))),
             "{capabilities:#?}"
         );
-        // The markdown store implements none of the v2 surface; the
-        // supports_* gates must keep update/manifest off the wire.
+        // The basic SQLite compatibility surface implements none of the v2
+        // operations; the supports_* gates keep update/manifest off the wire.
         assert!(
             capabilities["result"]["methods"]
                 .as_array()
@@ -7063,7 +7065,16 @@ shell = true
         );
         assert_eq!(response["result"]["tags"], json!(["calendar", "family"]));
 
-        let records = store.read_records("family", &memory_identity)?;
+        let records = store
+            .recall(AgentMemoryRecallRequest {
+                identity: memory_identity.clone(),
+                realm: "family".to_string(),
+                query_text: None,
+                query_terms: Vec::new(),
+                selection: AgentMemorySelection::Always,
+                max_entries: 64,
+            })
+            .await?;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].title, "School pickup");
         assert_eq!(records[0].tags, vec!["calendar", "family"]);
@@ -7126,7 +7137,19 @@ shell = true
         assert!(forget_response["error"].is_null(), "{forget_response:#?}");
         assert_eq!(forget_response["result"]["memory_id"], json!(memory_id));
         assert_eq!(forget_response["result"]["deleted"], json!(true));
-        assert!(store.read_records("family", &memory_identity)?.is_empty());
+        assert!(
+            store
+                .recall(AgentMemoryRecallRequest {
+                    identity: memory_identity.clone(),
+                    realm: "family".to_string(),
+                    query_text: None,
+                    query_terms: Vec::new(),
+                    selection: AgentMemorySelection::Always,
+                    max_entries: 64,
+                })
+                .await?
+                .is_empty()
+        );
 
         let recall_after_forget_response: Value = serde_json::from_str(
             &handle_unified_rpc_json(

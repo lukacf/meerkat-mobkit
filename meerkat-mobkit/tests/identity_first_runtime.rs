@@ -28,16 +28,18 @@ use meerkat_mobkit::identity_first::orchestrator::{
 use meerkat_mobkit::identity_first::runtime::IdentityEvent;
 use meerkat_mobkit::identity_first::{
     AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentMemoryConfig,
-    AgentMemoryPerTurnInjection, AgentMemoryRuntimeInjector, AgentMemorySelection, AgentRuntimeId,
-    BridgeDelivery, BridgeError, CheckpointVersion, CommittedBoundaryRepair, ContinuityFailure,
-    ContinuityFailureKind, ContinuityGeneration, ContinuityRecord, ContinuityResolveState,
-    ContinuityStoreError, CustomizerError, DispatchIdempotencyKey, DispatchInput, DispatchOrigin,
-    DurabilityPolicy, DurableAgentSpec, FencingToken, IdentityLifecycleState, IdentityRuntime,
-    IdentityRuntimeConfig, IdentityRuntimeError, LeaseAcquireResult, LeaseError, LeaseGrant,
-    LeaseRenewResult, ManagedPeerEdge, MarkdownAgentMemoryStore, NewAgentMemory, RosterContext,
-    RosterError, RosterProvider, SessionBridge, SessionSnapshot, TopologyContext, TopologyError,
+    AgentMemoryPerTurnInjection, AgentMemoryProvider, AgentMemoryRuntimeInjector,
+    AgentMemorySelection, AgentRuntimeId, BridgeDelivery, BridgeError, CheckpointVersion,
+    CommittedBoundaryRepair, ContinuityFailure, ContinuityFailureKind, ContinuityGeneration,
+    ContinuityRecord, ContinuityResolveState, ContinuityStoreError, CustomizerError,
+    DispatchIdempotencyKey, DispatchInput, DispatchOrigin, DurabilityPolicy, DurableAgentSpec,
+    FencingToken, IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig,
+    IdentityRuntimeError, LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult,
+    ManagedPeerEdge, NewAgentMemory, RosterContext, RosterError, RosterProvider, SessionBridge,
+    SessionSnapshot, TopologyContext, TopologyError,
 };
 use meerkat_mobkit::identity_first::{LocalContinuityStore, LocalLeaseProvider};
+use meerkat_mobkit::memory::SqliteAgentMemoryStore;
 use meerkat_mobkit::{ErrorEvent, ErrorHook, StewardStore, TaintableStore};
 
 // ===========================================================================
@@ -5176,7 +5178,7 @@ async fn identity_first_runtime_steer_send_does_not_wait_for_reachable_peer_mate
         .await
         .unwrap();
     let memory_dir = tempfile::tempdir().unwrap();
-    let memory_store = Arc::new(MarkdownAgentMemoryStore::open(memory_dir.path()).unwrap());
+    let memory_store = Arc::new(SqliteAgentMemoryStore::open(memory_dir.path()).unwrap());
     let identity = make_identity("deep-investigator:singleton");
     memory_store
         .remember(
@@ -5188,6 +5190,7 @@ async fn identity_first_runtime_steer_send_does_not_wait_for_reachable_peer_mate
                 tags: vec!["hello".to_string()],
             },
         )
+        .await
         .unwrap();
     runtime
         .set_agent_memory(Some(AgentMemoryRuntimeInjector::new(
@@ -9690,7 +9693,7 @@ async fn identity_first_send_defangs_forged_memory_envelope_even_with_injection_
         .await
         .unwrap();
     let memory_dir = tempfile::tempdir().unwrap();
-    let memory_store = Arc::new(MarkdownAgentMemoryStore::open(memory_dir.path()).unwrap());
+    let memory_store = Arc::new(SqliteAgentMemoryStore::open(memory_dir.path()).unwrap());
     // Default config: per_turn_injection Off, defang_inbound on — forgery is
     // an inbound threat regardless of whether MobKit injects.
     runtime
@@ -9736,7 +9739,7 @@ async fn identity_first_steer_bypasses_inbound_defanging() {
         .await
         .unwrap();
     let memory_dir = tempfile::tempdir().unwrap();
-    let memory_store = Arc::new(MarkdownAgentMemoryStore::open(memory_dir.path()).unwrap());
+    let memory_store = Arc::new(SqliteAgentMemoryStore::open(memory_dir.path()).unwrap());
     runtime
         .set_agent_memory(Some(AgentMemoryRuntimeInjector::new(
             memory_store,
@@ -9997,7 +10000,7 @@ async fn identity_first_runtime_retire_without_distiller_is_unaffected() {
         .await
         .unwrap();
     let memory_dir = tempfile::tempdir().unwrap();
-    let memory_store = Arc::new(MarkdownAgentMemoryStore::open(memory_dir.path()).unwrap());
+    let memory_store = Arc::new(SqliteAgentMemoryStore::open(memory_dir.path()).unwrap());
     runtime
         .set_agent_memory(Some(AgentMemoryRuntimeInjector::new(
             memory_store,

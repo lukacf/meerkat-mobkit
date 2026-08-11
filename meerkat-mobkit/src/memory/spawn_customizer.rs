@@ -233,6 +233,18 @@ mod tests {
     use meerkat_mob::ProfileName;
     use meerkat_mob::ids::AgentIdentity as MobIdentity;
 
+    struct RecallOnlyProvider;
+
+    #[async_trait::async_trait]
+    impl AgentMemoryProvider for RecallOnlyProvider {
+        async fn recall(
+            &self,
+            _request: crate::identity_first::AgentMemoryRecallRequest,
+        ) -> Result<Vec<crate::identity_first::AgentMemoryRecord>, AgentMemoryError> {
+            Ok(Vec::new())
+        }
+    }
+
     fn sqlite_store(dir: &std::path::Path) -> Arc<SqliteAgentMemoryStore> {
         Arc::new(SqliteAgentMemoryStore::open(dir).expect("open sqlite store"))
     }
@@ -393,13 +405,9 @@ mod tests {
             .expect("apply succeeds");
         assert!(spec.external_tools.is_none(), "recorder_tool=false");
 
-        // Markdown store: no authored-write support, so injection-only.
-        let md_dir = tempfile::tempdir().expect("temp dir");
-        let markdown = Arc::new(
-            crate::identity_first::MarkdownAgentMemoryStore::open(md_dir.path())
-                .expect("markdown store"),
-        );
-        let customizer = MemorySpawnCustomizer::new(markdown, AgentMemoryConfig::default());
+        // A custom recall-only provider has no authored-write support.
+        let customizer =
+            MemorySpawnCustomizer::new(Arc::new(RecallOnlyProvider), AgentMemoryConfig::default());
         let mut spec = spec_for("agent:mem");
         customizer
             .apply(&MobId::from("test-mob"), None, &mut spec)

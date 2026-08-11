@@ -698,28 +698,6 @@ async fn builder_full_memory_stack_installs_engines_and_panel() {
 
 #[tokio::test]
 async fn gate_still_rejects_invalid_memory_combinations() {
-    // agent_memory() and persistent_agent_memory() are mutually exclusive.
-    let memory_dir = tempfile::tempdir().expect("memory dir");
-    let store = SqliteAgentMemoryStore::open(memory_dir.path()).expect("sqlite store");
-    let err = build_err(
-        UnifiedRuntime::builder()
-            .definition(test_definition())
-            .persistent_state(memory_dir.path().join("state"))
-            .agent_memory(Arc::new(store), AgentMemoryConfig::default())
-            .persistent_agent_memory(AgentMemoryConfig::default()),
-    )
-    .await;
-    assert!(err.contains("mutually exclusive"), "{err}");
-
-    // persistent_agent_memory() still requires persistent_state().
-    let err = build_err(
-        UnifiedRuntime::builder()
-            .definition(test_definition())
-            .persistent_agent_memory(AgentMemoryConfig::default()),
-    )
-    .await;
-    assert!(err.contains("requires persistent_state"), "{err}");
-
     // Identity-first inputs (a custom AgentCustomizer) still require the
     // roster even when memory is configured.
     struct NoopCustomizer;
@@ -744,52 +722,4 @@ async fn gate_still_rejects_invalid_memory_combinations() {
     )
     .await;
     assert!(err.contains("roster_provider"), "{err}");
-}
-
-// ---------------------------------------------------------------------------
-// persistent_agent_memory (markdown store) still behaves: classic build is
-// injection-only — no recorder tool (read-only provider), no panel store.
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread")]
-async fn classic_persistent_agent_memory_markdown_is_injection_only() {
-    let state_dir = tempfile::tempdir().expect("state dir");
-    let client = CaptureClient::default();
-    let runtime = Box::pin(
-        UnifiedRuntime::builder()
-            .definition(test_definition())
-            .persistent_state(state_dir.path().join("state"))
-            .persistent_agent_memory(AgentMemoryConfig::default())
-            .default_llm_client(Arc::new(client.clone()))
-            .build(),
-    )
-    .await
-    .expect("classic markdown memory must build without a roster");
-
-    assert!(runtime.identity_runtime().is_none());
-    assert!(
-        runtime.memory_panel_store().is_none(),
-        "markdown provider has no panel store"
-    );
-
-    runtime
-        .spawn_many(vec![SpawnMemberSpec::from_wire(
-            "worker".to_string(),
-            "helper".to_string(),
-            None,
-            None,
-            None,
-        )])
-        .await
-        .expect("spawn member");
-    meerkat_mobkit::send_message_on_mob(&runtime.mob_handle(), "helper", "hello".to_string())
-        .await
-        .expect("send message");
-    let captured = client.wait_for_request(1).await;
-    assert!(
-        !captured[0].tool_names.iter().any(|name| name == "memory"),
-        "read-only markdown provider must not register the recorder tool: {:?}",
-        captured[0].tool_names
-    );
-    runtime.mob_handle().stop().await.expect("stop");
 }

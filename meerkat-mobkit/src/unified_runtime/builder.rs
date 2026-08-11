@@ -15,8 +15,7 @@ use crate::identity_first::{
     AgentCustomizer, AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryProvider,
     AgentMemoryRuntimeInjector, AgentRuntimeServices, ContinuitySessionStoreAdapter,
     DurabilityPolicy, IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig,
-    LocalContinuityStore, LocalLeaseProvider, MarkdownAgentMemoryStore, RosterContext,
-    RosterProvider, TopologyProvider,
+    LocalContinuityStore, LocalLeaseProvider, RosterContext, RosterProvider, TopologyProvider,
 };
 use crate::mob_handle_runtime::{
     CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, SessionHook,
@@ -87,7 +86,6 @@ pub struct UnifiedRuntimeBuilder {
     agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>>,
     agent_memory_config: Option<AgentMemoryConfig>,
     agent_memory_profile_policy: BTreeMap<meerkat_mob::ProfileName, bool>,
-    agent_memory_from_persistent_state: bool,
     agent_memory_engines: Option<crate::memory_wiring::MemoryEnginesConfig>,
     identity_bootstrap_mode: IdentityBootstrapMode,
     identity_bootstrap_mode_configured: bool,
@@ -344,14 +342,6 @@ impl UnifiedRuntimeBuilder {
         config: AgentMemoryConfig,
     ) -> Self {
         self.agent_memory_provider = Some(provider);
-        self.agent_memory_config = Some(config);
-        self
-    }
-
-    /// Enable identity-first agent memory using the bundled markdown store
-    /// under `persistent_state()/agent-memory`.
-    pub fn persistent_agent_memory(mut self, config: AgentMemoryConfig) -> Self {
-        self.agent_memory_from_persistent_state = true;
         self.agent_memory_config = Some(config);
         self
     }
@@ -839,18 +829,6 @@ impl UnifiedRuntimeBuilder {
             || has_agent_customizer
             || has_identity_runtime_instance_id
             || self.identity_bootstrap_mode_configured;
-        if self.agent_memory_provider.is_some() && self.agent_memory_from_persistent_state {
-            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                "agent_memory() and persistent_agent_memory() are mutually exclusive".to_string(),
-            ));
-        }
-
-        if self.agent_memory_from_persistent_state && !has_persistent_state {
-            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                "persistent_agent_memory() requires persistent_state()".to_string(),
-            ));
-        }
-
         // REQ-23, lifted (M4): an external continuity/lease pair may coexist
         // with persistent_state() — the external substrate stays the
         // identity and session authority while the state directory supplies
@@ -985,25 +963,6 @@ impl UnifiedRuntimeBuilder {
             .persistent_state_path
             .as_ref()
             .map(|path| MobKitStorageLayout::with_injected_roots(path.clone(), None));
-        let persistent_agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>> =
-            if self.agent_memory_from_persistent_state {
-                let Some(layout) = storage_layout.as_ref() else {
-                    return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                        "persistent_agent_memory() requires persistent_state()".to_string(),
-                    ));
-                };
-                let memory_path = layout.agent_memory_root()?.path;
-                Some(Arc::new(
-                    MarkdownAgentMemoryStore::open(&memory_path).map_err(|e| {
-                        UnifiedRuntimeBuilderError::Io(format!(
-                            "failed to open agent memory store at {}: {e}",
-                            memory_path.display()
-                        ))
-                    })?,
-                ))
-            } else {
-                None
-            };
         // Full-stack path: the stack provider exists pre-runtime so it can
         // serve as the provider (recorder + recall) from the first spawn;
         // the firewall + engines attach post-construction, when the memory
@@ -1042,8 +1001,7 @@ impl UnifiedRuntimeBuilder {
         let agent_memory_provider = self
             .agent_memory_provider
             .clone()
-            .or_else(|| stack_provider.clone())
-            .or(persistent_agent_memory_provider);
+            .or_else(|| stack_provider.clone());
         let agent_memory_injector = agent_memory_provider.as_ref().map(|provider| {
             AgentMemoryRuntimeInjector::new(
                 provider.clone(),
@@ -1704,7 +1662,6 @@ impl UnifiedRuntimeBuilder {
             });
         }
         if self.agent_memory_provider.is_none()
-            && !self.agent_memory_from_persistent_state
             && (self.agent_memory_config.is_some() || self.agent_memory_engines.is_some())
             && let Some(memory) = set.agent_memory_provider
         {
