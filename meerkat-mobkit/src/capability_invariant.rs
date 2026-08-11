@@ -1,140 +1,113 @@
-//! Declared-versus-resolved capability invariant.
+//! Declared-versus-resolved member tool capability invariant.
 //!
-//! A mob profile DECLARES tool categories under `[profiles.<name>.tools]`.
-//! meerkat-mob maps each declaration onto a typed
-//! `meerkat_core::ToolCategoryOverride` (`build_agent_config`, meerkat 0.8.22
-//! `meerkat-mob/src/build.rs:250-259`) and `AgentFactory::build_agent`
-//! RESOLVES it against the dispatcher slots the composing host actually
-//! filled. Most categories fail closed when the declaration cannot be
-//! served, which is loud by construction:
+//! The declared side is the complete set of typed
+//! [`meerkat_core::ToolCategoryOverride`] values on the member's resolved
+//! [`meerkat_core::service::SessionBuildOptions`]. That boundary is after
+//! inline or realm-profile resolution and before the factory consumes the
+//! overrides. MCP source selectors and named Rust bundles are intentionally
+//! outside this closed set: they are composition inputs, not typed category
+//! overrides, and this invariant never invents declaration intent for them.
 //!
-//! - `workgraph`: enabled without a grant or dispatcher returns
-//!   `BuildAgentError::Config` (`meerkat/src/factory.rs:5391-5395`,
-//!   `:5419-5425`), and mobkit always attaches a workgraph service (the
-//!   ephemeral in-memory fallback included), so the declaration resolves.
-//! - `memory`: an enabled declaration that cannot open its store returns
-//!   `BuildAgentError::CapabilityUnavailable` (`factory.rs:6087-6096`). The
-//!   one silent arm - `effective_memory_for_realm` dropping memory for a
-//!   `RecoveryBackendKind::Memory` realm (`factory.rs:1011-1017`) - is
-//!   unreachable from the mob path: `AgentBuildConfig.backend` is `None` on
-//!   every meerkat-mob construction site and `RecoveryBackendKind` appears
-//!   nowhere in meerkat-mob or mobkit.
-//! - `comms`: `tools.comms = false` is rejected at
-//!   `build_agent_config` (`meerkat-mob/src/build.rs:170-173`).
-//! - `builtins` / `shell`: the profile declaration is authoritative
-//!   (`ToolCategoryOverride::Enable` ignores the factory default) and
-//!   `compose_builtin_tools` composes whatever is enabled.
-//! - `image_generation`: mobkit ORs the definition scan into the capability
-//!   flags before composing, so the machine slot is filled whenever any
-//!   profile declares it (`mob_handle_runtime.rs:6052`, `:6334`, `:6700`).
-//!
-//! `schedule` is the exception, and the reason this module exists. The
-//! meerkat factory composes the scheduler surface only when the slot is
-//! filled:
-//!
-//! ```text
-//! if effective_schedule && let Some(schedule_dispatcher) = build_config.schedule_tools.take()
-//! ```
-//!
-//! (`meerkat/src/factory.rs:5342`). When `schedule_tools` is empty the
-//! declaration evaporates with nothing but a `tracing::debug!` line, so a
-//! profile that says `tools.schedule = true` builds happily with no
-//! `meerkat_schedule_*` tools and no operator-visible signal. In mobkit the
-//! slot is filled only by `attach_schedule_tools_with_store`, which runs only
-//! when a schedule store was injected (`mob_handle_runtime.rs:6500`,
-//! `:6799`).
-//!
-//! The remaining `ToolConfig` entries are named here so the exclusion list is
-//! CLOSED, not merely long. `ToolConfig` has eleven fields
-//! (`meerkat-mob/src/profile.rs:16-61`): `schedule` is the subject above, the
-//! bullets above account for six more (`workgraph`, `memory`, `comms`,
-//! `builtins`, `shell`, `image_generation`), and these four are the rest.
-//!
-//! - `mob`: the factory arm has exactly the same
-//!   `if effective && let Some(..) = slot.take()` shape as `schedule`
-//!   (`meerkat/src/factory.rs:5482`), but mobkit fills the slot
-//!   unconditionally: `install_agent_mob_tools` ends in a bare
-//!   `*slot.write() = Some(factory)` and runs on every constructor arm
-//!   (`mob_handle_runtime.rs:1449-1451`, called at `:5816`, `:6156`, `:6595`,
-//!   `:6891`). Declared and resolved cannot diverge here.
-//! - `rust_bundles`: a name with no registered bundle is a hard
-//!   `MobError::Internal` at compose time
-//!   (`meerkat-mob/src/runtime/tools.rs:437-443`), so it fails closed.
-//! - `mcp` / `mcp_servers`: `tools.mcp` genuinely IS silent - it is a free
-//!   allowlist of host MCP source ids and "mismatched names simply produce no
-//!   tools at compose time. No mob-level validation."
-//!   (`meerkat-mob/src/validate.rs:192-195`). It is excluded anyway because
-//!   the RESOLVED side is not observable at this seam:
-//!   `UnifiedRuntimeBuilder` exposes no MCP or external-tools input at all,
-//!   and the mob-wide provider is reachable only through
-//!   `MobBootstrapSpec::with_default_external_tools_provider`. Comparing here
-//!   could only guess.
-//!
-//! # Scope
-//!
-//! This comparison is **warning-only**. Parking a member whose declared
-//! capability is absent needs a typed park/hold alternative that does not
-//! exist in this release, so nothing here refuses a build.
-//!
-//! Only inline profiles can be compared: a `ProfileBinding::RealmRef`
-//! resolves inside meerkat-mob at spawn time, so its declarations are
-//! unknowable here. Skipped realm-refs are COUNTED and reported, which is
-//! also the positive control that the walk ran at all.
-//!
-//! # Who reaches this
-//!
-//! `UnifiedRuntimeBuilder`'s definition path, and nothing else. Both
-//! first-party gateway binaries compose a `MobBootstrapSpec` by hand and
-//! enter through `UnifiedRuntime::bootstrap*`, which never calls
-//! `resolve_mob_spec`; `bin/rpc_gateway.rs:8368` says so in-tree. The
-//! audience is therefore library embedders (and this crate's tests) that
-//! build from a `MobDefinition`. The gateways' own version of the same
-//! condition - a schedule store that fails to open, leaving the slot empty -
-//! is already an explicitly declared degraded storage slot rather than a
-//! silent drop, so they are exposed to the condition but not to the silence.
+//! The resolved side is read from the exact live session's tool-scope catalog
+//! after `create_session` returns. A non-exact dispatcher chain is not evidence
+//! of absence and therefore produces [`CapabilityInvariantDecision::Unverifiable`],
+//! never a match or a gap.
 
-use meerkat_mob::MobDefinition;
+use std::collections::BTreeSet;
 
-/// A profile-declared tool category this invariant can compare.
-///
-/// Deliberately narrow: a category belongs here only when a declaration can
-/// go missing at resolve time WITHOUT a typed error. Every other category
-/// already fails closed (see the module docs).
+use meerkat_core::ToolCategoryOverride;
+use meerkat_core::service::SessionBuildOptions;
+
+/// The closed set of factory-owned tool categories a profile may declare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[non_exhaustive]
 pub enum DeclaredToolCategory {
-    /// `[profiles.<name>.tools] schedule = true`.
+    Builtins,
+    Shell,
+    Comms,
+    Memory,
     Schedule,
+    WorkGraph,
+    Mob,
+    ImageGeneration,
+    WebSearch,
 }
 
 impl DeclaredToolCategory {
-    /// Stable wire/log token for this category.
+    pub const ALL: [Self; 9] = [
+        Self::Builtins,
+        Self::Shell,
+        Self::Comms,
+        Self::Memory,
+        Self::Schedule,
+        Self::WorkGraph,
+        Self::Mob,
+        Self::ImageGeneration,
+        Self::WebSearch,
+    ];
+
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Builtins => "builtins",
+            Self::Shell => "shell",
+            Self::Comms => "comms",
+            Self::Memory => "memory",
             Self::Schedule => "schedule",
+            Self::WorkGraph => "workgraph",
+            Self::Mob => "mob",
+            Self::ImageGeneration => "image_generation",
+            Self::WebSearch => "web_search",
         }
     }
 
-    /// Why an unresolved declaration in this category is silent.
+    /// Whether an exact live catalog contains this category's canonical
+    /// first-party surface. This classifies catalog truth; it does not inspect
+    /// configuration or infer capability from a requested flag.
     #[must_use]
-    pub const fn detail(self) -> &'static str {
+    pub fn is_present_in(self, names: &BTreeSet<String>) -> bool {
+        let contains = |name: &str| names.contains(name);
         match self {
-            Self::Schedule => {
-                "the agent factory's schedule dispatcher slot is empty, so meerkat composes no \
-                 meerkat_schedule_* surface and the declaration is silently inert"
-            }
-        }
-    }
-
-    /// The operator-actionable fix.
-    #[must_use]
-    pub const fn remediation(self) -> &'static str {
-        match self {
-            Self::Schedule => {
-                "inject UnifiedRuntimeBuilder::schedule_store(..) (or a storage_provider() whose \
-                 realm set supplies one), or set tools.schedule = false on the profile"
-            }
+            Self::Builtins => names.iter().any(|name| {
+                matches!(
+                    name.as_str(),
+                    "task_create"
+                        | "task_get"
+                        | "task_list"
+                        | "task_update"
+                        | "apply_patch"
+                        | "datetime"
+                        | "view_image"
+                        | "browse_skills"
+                        | "load_skill"
+                ) || name.starts_with("blob_")
+            }),
+            Self::Shell => names.iter().any(|name| {
+                name == "shell"
+                    || name == "monitor_start"
+                    || name.starts_with("shell_job")
+                    || name == "shell_jobs"
+            }),
+            Self::Comms => contains("send_message") || contains("peers"),
+            Self::Memory => contains("memory_search"),
+            Self::Schedule => names
+                .iter()
+                .any(|name| name.starts_with("meerkat_schedule_")),
+            Self::WorkGraph => names.iter().any(|name| name.starts_with("workgraph_")),
+            Self::Mob => names.iter().any(|name| {
+                matches!(
+                    name.as_str(),
+                    "spawn_member"
+                        | "spawn_many_members"
+                        | "retire_member"
+                        | "wire_members"
+                        | "unwire_members"
+                        | "list_members"
+                        | "member_status"
+                        | "force_cancel_member"
+                ) || name.starts_with("mob_")
+            }),
+            Self::ImageGeneration => contains("generate_image"),
+            Self::WebSearch => contains("web_search"),
         }
     }
 }
@@ -145,257 +118,427 @@ impl std::fmt::Display for DeclaredToolCategory {
     }
 }
 
-/// The tool surface the composing host actually resolved.
-///
-/// Each field answers "did the composition fill the slot this category needs",
-/// NOT "did some profile ask for it". The two are compared in
-/// [`compare_declared_capabilities`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct ResolvedToolSurface {
-    /// Whether the agent factory's schedule dispatcher slot gets filled.
-    pub schedule_tools: bool,
-}
-
-impl ResolvedToolSurface {
-    /// Record whether schedule tools resolve on this composition.
-    #[must_use]
-    pub fn with_schedule_tools(mut self, resolved: bool) -> Self {
-        self.schedule_tools = resolved;
-        self
-    }
-}
-
-/// One profile declaration the composed runtime surface cannot serve.
-///
-/// The category carries its own explanation and remediation, so the gap holds
-/// only what is not derivable from it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeclaredCapabilityGap {
-    /// The declaring profile name, as spelled in the definition.
-    pub profile: String,
-    /// The category declared but not resolvable.
-    pub category: DeclaredToolCategory,
-}
-
-/// Outcome of one declared-versus-resolved comparison.
-///
-/// `inline_profiles_compared` and `realm_ref_profiles_skipped` are not
-/// decoration: an all-zero report means the definition had no profiles at
-/// all, which is a different fact from "no gaps found".
+/// Complete explicit category intent captured before the factory consumes it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CapabilityInvariantReport {
-    /// Declarations the resolved surface cannot serve, in definition order.
-    pub gaps: Vec<DeclaredCapabilityGap>,
-    /// Inline profiles whose declarations were actually compared.
-    pub inline_profiles_compared: usize,
-    /// `ProfileBinding::RealmRef` profiles skipped as unresolvable here.
-    pub realm_ref_profiles_skipped: usize,
-}
+pub struct DeclaredToolCategories(BTreeSet<DeclaredToolCategory>);
 
-impl CapabilityInvariantReport {
-    /// Whether every compared declaration resolves.
+impl DeclaredToolCategories {
     #[must_use]
-    pub fn is_clean(&self) -> bool {
-        self.gaps.is_empty()
+    pub fn from_build_options(build: &SessionBuildOptions) -> Self {
+        let declared = [
+            (DeclaredToolCategory::Builtins, build.override_builtins),
+            (DeclaredToolCategory::Shell, build.override_shell),
+            (DeclaredToolCategory::Comms, build.override_comms),
+            (DeclaredToolCategory::Memory, build.override_memory),
+            (DeclaredToolCategory::Schedule, build.override_schedule),
+            (DeclaredToolCategory::WorkGraph, build.override_workgraph),
+            (DeclaredToolCategory::Mob, build.override_mob),
+            (
+                DeclaredToolCategory::ImageGeneration,
+                build.override_image_generation,
+            ),
+            (DeclaredToolCategory::WebSearch, build.override_web_search),
+        ]
+        .into_iter()
+        .filter_map(|(category, intent)| {
+            matches!(intent, ToolCategoryOverride::Enable).then_some(category)
+        })
+        .collect();
+        Self(declared)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = DeclaredToolCategory> + '_ {
+        self.0.iter().copied()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
-/// Compare every inline profile's declared tool categories against the
-/// resolved runtime surface.
-///
-/// Pure: no I/O, no logging, no refusal. [`warn_declared_capability_gaps`]
-/// renders the result; a future member-parking policy consumes
-/// [`CapabilityInvariantReport::gaps`] directly.
-///
-/// Iteration order follows `MobDefinition::profiles`, a `BTreeMap`, so the
-/// gap list is deterministic.
-#[must_use]
-pub fn compare_declared_capabilities(
-    definition: &MobDefinition,
-    resolved: ResolvedToolSurface,
-) -> CapabilityInvariantReport {
-    let mut report = CapabilityInvariantReport::default();
-    for (name, binding) in &definition.profiles {
-        let Some(profile) = binding.as_inline() else {
-            // A realm-ref resolves inside meerkat-mob at spawn time; its
-            // declarations are not readable here, and guessing them would
-            // manufacture false warnings on a working fleet.
-            report.realm_ref_profiles_skipped += 1;
-            continue;
+/// Per-member declaration and catalog-completeness witness captured from the
+/// fully resolved build request before the factory consumes its dispatchers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberCapabilityInvariantContext {
+    pub mob_id: String,
+    pub role: String,
+    pub member: String,
+    pub declared: DeclaredToolCategories,
+    pub catalog_exactness: CapabilityCatalogExactness,
+}
+
+/// Exactness provenance captured from the actual dispatcher participants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityCatalogExactness {
+    Exact,
+    NonExactActualDispatcher,
+}
+
+impl MemberCapabilityInvariantContext {
+    /// Capture only mob-member builds. Ordinary standalone sessions do not
+    /// claim a profile declaration and are outside this invariant.
+    #[must_use]
+    pub fn from_build_options(build: &SessionBuildOptions) -> Option<Self> {
+        let binding = build.mob_member_binding.as_ref()?;
+        // Every optional dispatcher here is an ACTUAL participant supplied to
+        // the factory. First-party dispatchers composed later by the factory
+        // (builtins, comms, memory, schedule/workgraph wrappers, mob,
+        // image-generation, web-search, declarative MCP) all report exact
+        // catalogs. One non-exact supplied participant makes the final dynamic
+        // composite non-exact, and absence must then stay Unverifiable.
+        let catalog_exactness = if [
+            build.external_tools.as_ref(),
+            build.schedule_tools.as_ref(),
+            build.workgraph_tools.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .all(|dispatcher| dispatcher.tool_catalog_capabilities().exact_catalog)
+        {
+            CapabilityCatalogExactness::Exact
+        } else {
+            CapabilityCatalogExactness::NonExactActualDispatcher
         };
-        report.inline_profiles_compared += 1;
-        if profile.tools.schedule && !resolved.schedule_tools {
-            report.gaps.push(DeclaredCapabilityGap {
-                profile: name.as_str().to_string(),
-                category: DeclaredToolCategory::Schedule,
-            });
+        Some(Self {
+            mob_id: binding.mob_id.clone(),
+            role: binding.role.clone(),
+            member: binding.member.clone(),
+            declared: DeclaredToolCategories::from_build_options(build),
+            catalog_exactness,
+        })
+    }
+}
+
+/// Why a live post-materialization comparison has no authoritative answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityInvariantUnverifiable {
+    /// At least one actual dispatcher participating in the final chain says
+    /// its catalog is not exact. Absence cannot be interpreted as a gap.
+    NonExactCatalog,
+    /// The live session service exposes no tool-scope snapshot.
+    CatalogUnavailable,
+    /// The authoritative catalog read failed.
+    CatalogReadFailed(String),
+}
+
+/// Authoritative post-materialization observation before policy or category
+/// comparison is applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityInvariantObservation {
+    ExactCatalog {
+        declared: DeclaredToolCategories,
+        names: BTreeSet<String>,
+    },
+    Unverifiable {
+        declared: DeclaredToolCategories,
+        cause: CapabilityInvariantUnverifiable,
+    },
+}
+
+/// Typed result of one post-materialization invariant evaluation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityInvariantDecision {
+    Match {
+        declared: DeclaredToolCategories,
+    },
+    Gap {
+        declared: DeclaredToolCategories,
+        missing: Vec<DeclaredToolCategory>,
+    },
+    Unverifiable {
+        declared: DeclaredToolCategories,
+        cause: CapabilityInvariantUnverifiable,
+    },
+}
+
+/// Release-phase enforcement policy. The decision remains typed so moving to
+/// park-later is a policy transition, not a log-message convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityInvariantPolicy {
+    WarnOnly,
+    ParkOnMismatch,
+}
+
+/// Formal action authorized by a typed decision and rollout policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityInvariantTransition {
+    Continue(CapabilityInvariantDecision),
+    WarnAndContinue(CapabilityInvariantDecision),
+    ParkRequired(CapabilityInvariantDecision),
+}
+
+#[must_use]
+pub fn transition_for(
+    policy: CapabilityInvariantPolicy,
+    decision: CapabilityInvariantDecision,
+) -> CapabilityInvariantTransition {
+    match (&policy, &decision) {
+        (_, CapabilityInvariantDecision::Match { .. }) => {
+            CapabilityInvariantTransition::Continue(decision)
+        }
+        (CapabilityInvariantPolicy::WarnOnly, _) => {
+            CapabilityInvariantTransition::WarnAndContinue(decision)
+        }
+        (CapabilityInvariantPolicy::ParkOnMismatch, _) => {
+            CapabilityInvariantTransition::ParkRequired(decision)
         }
     }
-    report
 }
 
-/// Emit the operator-visible form of a comparison.
-///
-/// One `WARN` per gap (each names the profile, the category, why it is
-/// silent, and the fix) plus one summary line that is emitted
-/// UNCONDITIONALLY. The unconditional summary is deliberate: without it, "no
-/// warnings" is indistinguishable from "the invariant never ran".
-///
-/// The summary rides at `WARN` when there are gaps and `INFO` when there are
-/// none, so the counts - including the realm-ref profiles this comparison
-/// could not read - travel with the warnings at whatever level a host that
-/// filters mobkit to `warn` is already showing. A host that shows
-/// `meerkat_mobkit=info` (the level both first-party gateway binaries pick by
-/// default, `bin/mobkit_gateway.rs:54` and `bin/rpc_gateway.rs:26`, though
-/// neither reaches this function - see the module docs) also sees the
-/// clean-run summary. The message text is identical at both levels; only the
-/// level differs, which is why the macro call is written twice (the level is
-/// part of the macro name).
-pub fn warn_declared_capability_gaps(mob_id: &str, report: &CapabilityInvariantReport) {
-    for gap in &report.gaps {
-        tracing::warn!(
-            mob_id = %mob_id,
-            profile = %gap.profile,
-            category = %gap.category.as_str(),
-            detail = %gap.category.detail(),
-            remediation = %gap.category.remediation(),
-            "profile declares a tool category the composed runtime surface cannot serve"
-        );
+/// Compare the complete declared category set with one exact live catalog.
+#[must_use]
+pub fn compare_exact_catalog(
+    declared: DeclaredToolCategories,
+    names: impl IntoIterator<Item = String>,
+) -> CapabilityInvariantDecision {
+    decide(CapabilityInvariantObservation::ExactCatalog {
+        declared,
+        names: names.into_iter().collect(),
+    })
+}
+
+/// Reduce one typed observation to its comparison decision.
+#[must_use]
+pub fn decide(observation: CapabilityInvariantObservation) -> CapabilityInvariantDecision {
+    match observation {
+        CapabilityInvariantObservation::ExactCatalog { declared, names } => {
+            let missing = declared
+                .iter()
+                .filter(|category| !category.is_present_in(&names))
+                .collect::<Vec<_>>();
+            if missing.is_empty() {
+                CapabilityInvariantDecision::Match { declared }
+            } else {
+                CapabilityInvariantDecision::Gap { declared, missing }
+            }
+        }
+        CapabilityInvariantObservation::Unverifiable { declared, cause } => {
+            CapabilityInvariantDecision::Unverifiable { declared, cause }
+        }
     }
-    if report.is_clean() {
-        tracing::info!(
-            mob_id = %mob_id,
-            inline_profiles_compared = report.inline_profiles_compared,
-            realm_ref_profiles_skipped = report.realm_ref_profiles_skipped,
-            gaps = report.gaps.len(),
-            "declared-versus-resolved capability invariant evaluated"
-        );
-    } else {
-        tracing::warn!(
-            mob_id = %mob_id,
-            inline_profiles_compared = report.inline_profiles_compared,
-            realm_ref_profiles_skipped = report.realm_ref_profiles_skipped,
-            gaps = report.gaps.len(),
-            "declared-versus-resolved capability invariant evaluated"
-        );
+}
+
+/// Emit the warn-first policy projection of a typed transition.
+pub fn emit_transition(
+    mob_id: &str,
+    role: &str,
+    member: &str,
+    session_id: &str,
+    transition: &CapabilityInvariantTransition,
+) {
+    match transition {
+        CapabilityInvariantTransition::Continue(CapabilityInvariantDecision::Match {
+            declared,
+        }) => {
+            tracing::info!(
+                mob_id,
+                role,
+                member,
+                session_id,
+                declared_categories = declared.iter().count(),
+                "post-materialization declared-versus-resolved capability invariant matched"
+            );
+        }
+        CapabilityInvariantTransition::WarnAndContinue(decision)
+        | CapabilityInvariantTransition::ParkRequired(decision) => {
+            tracing::warn!(
+                mob_id,
+                role,
+                member,
+                session_id,
+                decision = ?decision,
+                "post-materialization declared-versus-resolved capability invariant requires operator attention"
+            );
+        }
+        CapabilityInvariantTransition::Continue(decision) => {
+            debug_assert!(false, "only Match may authorize Continue: {decision:?}");
+        }
     }
 }
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+
     use super::*;
 
-    fn definition_with_schedule_declarations() -> MobDefinition {
-        MobDefinition::from_toml(
-            r#"
-[mob]
-id = "capability-invariant-test"
-
-[profiles.planner]
-model = "gpt-5.5"
-runtime_mode = "autonomous_host"
-
-[profiles.planner.tools]
-comms = true
-schedule = true
-
-[profiles.worker]
-model = "gpt-5.5"
-runtime_mode = "autonomous_host"
-
-[profiles.worker.tools]
-comms = true
-"#,
-        )
-        .expect("definition parses")
+    struct CatalogDispatcher {
+        exact: bool,
     }
 
-    /// The gate observes a TRANSITION, not a total: the same definition
-    /// yields exactly one gap when the slot is empty and zero when it is
-    /// filled. Either assertion alone could pass vacuously.
+    #[async_trait]
+    impl meerkat_core::AgentToolDispatcher for CatalogDispatcher {
+        fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+            Vec::new().into()
+        }
+
+        fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+            meerkat_core::ToolCatalogCapabilities {
+                exact_catalog: self.exact,
+                may_require_catalog_control_plane: false,
+            }
+        }
+
+        async fn dispatch(
+            &self,
+            call: meerkat_core::types::ToolCallView<'_>,
+        ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+            Err(meerkat_core::ToolError::not_found(call.name))
+        }
+    }
+
+    fn member_build() -> SessionBuildOptions {
+        SessionBuildOptions {
+            mob_member_binding: Some(meerkat_core::MobMemberBinding {
+                mob_id: "test-mob".to_string(),
+                role: "worker".to_string(),
+                member: "worker-1".to_string(),
+            }),
+            ..build_with_all_categories()
+        }
+    }
+
+    fn build_with_all_categories() -> SessionBuildOptions {
+        SessionBuildOptions {
+            override_builtins: ToolCategoryOverride::Enable,
+            override_shell: ToolCategoryOverride::Enable,
+            override_comms: ToolCategoryOverride::Enable,
+            override_memory: ToolCategoryOverride::Enable,
+            override_schedule: ToolCategoryOverride::Enable,
+            override_workgraph: ToolCategoryOverride::Enable,
+            override_mob: ToolCategoryOverride::Enable,
+            override_image_generation: ToolCategoryOverride::Enable,
+            override_web_search: ToolCategoryOverride::Enable,
+            ..Default::default()
+        }
+    }
+
+    fn full_catalog() -> Vec<String> {
+        [
+            "task_create",
+            "shell",
+            "send_message",
+            "memory_search",
+            "meerkat_schedule_list",
+            "workgraph_get",
+            "spawn_member",
+            "generate_image",
+            "web_search",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    }
+
     #[test]
-    fn schedule_declaration_gaps_only_when_the_slot_is_unfilled() {
-        let definition = definition_with_schedule_declarations();
-
-        let unresolved = compare_declared_capabilities(&definition, ResolvedToolSurface::default());
+    fn captures_the_complete_nine_category_declaration_set() {
+        let declared = DeclaredToolCategories::from_build_options(&build_with_all_categories());
         assert_eq!(
-            unresolved.gaps,
-            vec![DeclaredCapabilityGap {
-                profile: "planner".to_string(),
-                category: DeclaredToolCategory::Schedule,
-            }],
-            "only the declaring profile may be reported"
+            declared.iter().collect::<Vec<_>>(),
+            DeclaredToolCategory::ALL
         );
-        assert_eq!(unresolved.inline_profiles_compared, 2);
-        assert_eq!(unresolved.realm_ref_profiles_skipped, 0);
-        assert!(!unresolved.is_clean());
+    }
 
-        let resolved = compare_declared_capabilities(
-            &definition,
-            ResolvedToolSurface::default().with_schedule_tools(true),
+    #[test]
+    fn exact_catalog_is_an_actual_dispatcher_witness_not_config_inference() {
+        let exact = MemberCapabilityInvariantContext::from_build_options(&member_build())
+            .expect("member context");
+        assert_eq!(exact.catalog_exactness, CapabilityCatalogExactness::Exact);
+
+        for slot in ["external", "schedule", "workgraph"] {
+            let mut build = member_build();
+            let dispatcher = Arc::new(CatalogDispatcher { exact: false });
+            match slot {
+                "external" => build.external_tools = Some(dispatcher),
+                "schedule" => build.schedule_tools = Some(dispatcher),
+                "workgraph" => build.workgraph_tools = Some(dispatcher),
+                _ => unreachable!(),
+            }
+            let context = MemberCapabilityInvariantContext::from_build_options(&build)
+                .expect("member context");
+            assert!(
+                context.catalog_exactness == CapabilityCatalogExactness::NonExactActualDispatcher,
+                "a non-exact {slot} dispatcher must make absence unverifiable"
+            );
+        }
+    }
+
+    #[test]
+    fn every_category_is_mutation_sensitive() {
+        let declared = DeclaredToolCategories::from_build_options(&build_with_all_categories());
+        let full = full_catalog();
+        assert!(matches!(
+            compare_exact_catalog(declared.clone(), full.clone()),
+            CapabilityInvariantDecision::Match { .. }
+        ));
+
+        for (index, category) in DeclaredToolCategory::ALL.into_iter().enumerate() {
+            let mut mutated = full.clone();
+            mutated.remove(index);
+            assert_eq!(
+                compare_exact_catalog(declared.clone(), mutated),
+                CapabilityInvariantDecision::Gap {
+                    declared: declared.clone(),
+                    missing: vec![category],
+                },
+                "removing the canonical {category} marker must create exactly that gap"
+            );
+        }
+    }
+
+    #[test]
+    fn warn_first_and_park_later_are_typed_policy_transitions() {
+        let declared = DeclaredToolCategories::from_build_options(&build_with_all_categories());
+        let gap = CapabilityInvariantDecision::Gap {
+            declared,
+            missing: vec![DeclaredToolCategory::Schedule],
+        };
+        assert!(matches!(
+            transition_for(CapabilityInvariantPolicy::WarnOnly, gap.clone()),
+            CapabilityInvariantTransition::WarnAndContinue(decision) if decision == gap
+        ));
+        assert!(matches!(
+            transition_for(CapabilityInvariantPolicy::ParkOnMismatch, gap.clone()),
+            CapabilityInvariantTransition::ParkRequired(decision) if decision == gap
+        ));
+
+        let unverifiable = decide(CapabilityInvariantObservation::Unverifiable {
+            declared: DeclaredToolCategories::default(),
+            cause: CapabilityInvariantUnverifiable::NonExactCatalog,
+        });
+        assert!(matches!(
+            transition_for(CapabilityInvariantPolicy::WarnOnly, unverifiable.clone()),
+            CapabilityInvariantTransition::WarnAndContinue(decision) if decision == unverifiable
+        ));
+        assert!(matches!(
+            transition_for(
+                CapabilityInvariantPolicy::ParkOnMismatch,
+                unverifiable.clone()
+            ),
+            CapabilityInvariantTransition::ParkRequired(decision) if decision == unverifiable
+        ));
+    }
+
+    #[test]
+    fn inherit_and_disable_are_not_declarations() {
+        let mut build = build_with_all_categories();
+        build.override_shell = ToolCategoryOverride::Disable;
+        build.override_memory = ToolCategoryOverride::Inherit;
+        let declared = DeclaredToolCategories::from_build_options(&build);
+        assert!(
+            !declared
+                .iter()
+                .any(|category| category == DeclaredToolCategory::Shell)
         );
         assert!(
-            resolved.is_clean(),
-            "a filled schedule slot must clear the gap, got: {:?}",
-            resolved.gaps
+            !declared
+                .iter()
+                .any(|category| category == DeclaredToolCategory::Memory)
         );
-        assert_eq!(
-            resolved.inline_profiles_compared, 2,
-            "the clean report must prove the walk still ran"
-        );
-    }
-
-    /// Realm-refs are counted, never guessed. The inline count in the same
-    /// report is the positive control that the walk reached the inline
-    /// profiles too.
-    #[test]
-    fn realm_ref_profiles_are_skipped_and_counted() {
-        let mut definition = definition_with_schedule_declarations();
-        definition.profiles.insert(
-            meerkat_mob::ProfileName::from("remote"),
-            meerkat_mob::ProfileBinding::RealmRef {
-                realm_profile: "stored-profile".to_string(),
-            },
-        );
-
-        let report = compare_declared_capabilities(&definition, ResolvedToolSurface::default());
-        assert_eq!(report.realm_ref_profiles_skipped, 1);
-        assert_eq!(report.inline_profiles_compared, 2);
-        assert_eq!(
-            report.gaps.len(),
-            1,
-            "the realm-ref must add no gap of its own"
-        );
-        assert!(
-            report.gaps.iter().all(|gap| gap.profile != "remote"),
-            "an unresolved realm-ref must never be reported as a gap"
-        );
-    }
-
-    /// A definition with no profiles produces an all-zero report, which is a
-    /// distinct fact from "compared some profiles and found nothing".
-    #[test]
-    fn empty_definition_reports_nothing_compared() {
-        let definition = MobDefinition::from_toml("[mob]\nid = \"capability-invariant-empty\"\n")
-            .expect("definition parses");
-        let report = compare_declared_capabilities(&definition, ResolvedToolSurface::default());
-        assert_eq!(report, CapabilityInvariantReport::default());
-        assert!(report.is_clean());
-    }
-
-    /// The category's own strings are what the warning renders; keep them
-    /// non-empty and self-describing.
-    #[test]
-    fn schedule_category_carries_detail_and_remediation() {
-        let category = DeclaredToolCategory::Schedule;
-        assert_eq!(category.as_str(), "schedule");
-        assert_eq!(category.to_string(), "schedule");
-        assert!(category.detail().contains("schedule"));
-        assert!(
-            category.remediation().contains("schedule_store"),
-            "the remediation must name the builder seam that fills the slot"
-        );
+        assert_eq!(declared.iter().count(), 7);
     }
 }

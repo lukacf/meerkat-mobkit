@@ -627,7 +627,14 @@ impl PreBuildMobSessionService {
     async fn prepare_create_request(
         &self,
         mut req: CreateSessionRequest,
-    ) -> Result<(CreateSessionRequest, SessionCreatedContext), SessionError> {
+    ) -> Result<
+        (
+            CreateSessionRequest,
+            SessionCreatedContext,
+            Option<crate::capability_invariant::MemberCapabilityInvariantContext>,
+        ),
+        SessionError,
+    > {
         (self.hook)(&mut req).await?;
         let resume_id = req
             .build
@@ -647,19 +654,77 @@ impl PreBuildMobSessionService {
             crate::memory::dispatch_taint::attach_member_taint_decorator(&mut req, slot);
         }
 
+        // Capture the complete resolved profile declaration while the typed
+        // build options and actual supplied dispatchers still exist. The
+        // factory consumes both during materialization. Inline and realm
+        // profiles have already converged onto this same request boundary.
+        let capability_invariant = req.build.as_ref().and_then(
+            crate::capability_invariant::MemberCapabilityInvariantContext::from_build_options,
+        );
+
         let context = SessionCreatedContext {
             model: req.model.clone(),
             labels: req.labels.clone().unwrap_or_default(),
             system_prompt: req.system_prompt.as_set_prompt().map(ToString::to_string),
         };
-        Ok((req, context))
+        Ok((req, context, capability_invariant))
     }
 
     async fn complete_create(
         &self,
         result: meerkat_core::types::RunResult,
         context: SessionCreatedContext,
+        capability_context: Option<crate::capability_invariant::MemberCapabilityInvariantContext>,
     ) -> meerkat_core::types::RunResult {
+        if let Some(capability_context) = capability_context {
+            use crate::capability_invariant::{
+                CapabilityCatalogExactness, CapabilityInvariantObservation,
+                CapabilityInvariantUnverifiable,
+            };
+
+            let observation = match capability_context.catalog_exactness {
+                CapabilityCatalogExactness::Exact => {
+                    match self.inner.tool_scope_snapshot(&result.session_id).await {
+                        Ok(Some(scope)) => CapabilityInvariantObservation::ExactCatalog {
+                            declared: capability_context.declared.clone(),
+                            names: scope
+                                .known_base_names
+                                .into_iter()
+                                .map(meerkat_core::types::ToolName::into_string)
+                                .collect(),
+                        },
+                        Ok(None) => CapabilityInvariantObservation::Unverifiable {
+                            declared: capability_context.declared.clone(),
+                            cause: CapabilityInvariantUnverifiable::CatalogUnavailable,
+                        },
+                        Err(error) => CapabilityInvariantObservation::Unverifiable {
+                            declared: capability_context.declared.clone(),
+                            cause: CapabilityInvariantUnverifiable::CatalogReadFailed(
+                                error.to_string(),
+                            ),
+                        },
+                    }
+                }
+                CapabilityCatalogExactness::NonExactActualDispatcher => {
+                    CapabilityInvariantObservation::Unverifiable {
+                        declared: capability_context.declared.clone(),
+                        cause: CapabilityInvariantUnverifiable::NonExactCatalog,
+                    }
+                }
+            };
+            let decision = crate::capability_invariant::decide(observation);
+            let transition = crate::capability_invariant::transition_for(
+                crate::capability_invariant::CapabilityInvariantPolicy::WarnOnly,
+                decision,
+            );
+            crate::capability_invariant::emit_transition(
+                &capability_context.mob_id,
+                &capability_context.role,
+                &capability_context.member,
+                &result.session_id.to_string(),
+                &transition,
+            );
+        }
         if let Some(ref after_hook) = self.after_create_hook {
             after_hook(result.session_id.clone(), context).await;
         }
@@ -4146,9 +4211,12 @@ macro_rules! delegate_mob_session_service {
                 &self,
                 req: CreateSessionRequest,
             ) -> Result<meerkat_core::types::RunResult, SessionError> {
-                let (req, context) = self.prepare_create_request(req).await?;
+                let (req, context, capability_context) =
+                    self.prepare_create_request(req).await?;
                 let result = self.inner.create_session(req).await?;
-                Ok(self.complete_create(result, context).await)
+                Ok(self
+                    .complete_create(result, context, capability_context)
+                    .await)
             }
             async fn start_turn(
                 &self,
@@ -4452,12 +4520,15 @@ macro_rules! delegate_mob_session_service {
                 &self,
                 req: meerkat_core::service::CreateSessionRequest,
             ) -> Result<meerkat_core::RunResult, SessionError> {
-                let (req, context) = self.prepare_create_request(req).await?;
+                let (req, context, capability_context) =
+                    self.prepare_create_request(req).await?;
                 let result = self
                     .inner
                     .create_session_under_runtime_turn_boundary(req)
                     .await?;
-                Ok(self.complete_create(result, context).await)
+                Ok(self
+                    .complete_create(result, context, capability_context)
+                    .await)
             }
             // meerkat 0.8.22: exact-actor creation now carries the
             // owner-issued resume preparation receipt so persistent
@@ -4469,7 +4540,8 @@ macro_rules! delegate_mob_session_service {
                 resume_preparation: Option<meerkat_mob::SessionResumePreparationReceipt>,
                 actor_witness_slot: &meerkat_session::LiveSessionActorWitnessSlot,
             ) -> Result<meerkat_core::RunResult, SessionError> {
-                let (req, context) = self.prepare_create_request(req).await?;
+                let (req, context, capability_context) =
+                    self.prepare_create_request(req).await?;
                 let result = self
                     .inner
                     .create_session_with_actor_witness_under_runtime_turn_boundary(
@@ -4478,14 +4550,17 @@ macro_rules! delegate_mob_session_service {
                         actor_witness_slot,
                     )
                     .await?;
-                Ok(self.complete_create(result, context).await)
+                Ok(self
+                    .complete_create(result, context, capability_context)
+                    .await)
             }
             async fn create_session_with_machine_archived_resume_authority_under_runtime_turn_boundary(
                 &self,
                 req: meerkat_core::service::CreateSessionRequest,
                 authorization: meerkat_runtime::ArchivedSessionActorMaterializationAuthorization,
             ) -> Result<meerkat_core::RunResult, SessionError> {
-                let (req, context) = self.prepare_create_request(req).await?;
+                let (req, context, capability_context) =
+                    self.prepare_create_request(req).await?;
                 let result = self
                     .inner
                     .create_session_with_machine_archived_resume_authority_under_runtime_turn_boundary(
@@ -4493,7 +4568,9 @@ macro_rules! delegate_mob_session_service {
                         authorization,
                     )
                     .await?;
-                Ok(self.complete_create(result, context).await)
+                Ok(self
+                    .complete_create(result, context, capability_context)
+                    .await)
             }
             // meerkat 0.8.22: same receipt threading as above, but the
             // machine-authorized archived route requires it unconditionally
@@ -4505,7 +4582,8 @@ macro_rules! delegate_mob_session_service {
                 resume_preparation: meerkat_mob::SessionResumePreparationReceipt,
                 actor_witness_slot: &meerkat_session::LiveSessionActorWitnessSlot,
             ) -> Result<meerkat_core::RunResult, SessionError> {
-                let (req, context) = self.prepare_create_request(req).await?;
+                let (req, context, capability_context) =
+                    self.prepare_create_request(req).await?;
                 let result = self
                     .inner
                     .create_session_with_machine_archived_resume_authority_and_actor_witness_under_runtime_turn_boundary(
@@ -4515,7 +4593,9 @@ macro_rules! delegate_mob_session_service {
                         actor_witness_slot,
                     )
                     .await?;
-                Ok(self.complete_create(result, context).await)
+                Ok(self
+                    .complete_create(result, context, capability_context)
+                    .await)
             }
             fn supports_persistent_sessions(&self) -> bool {
                 self.inner.supports_persistent_sessions()
@@ -4665,12 +4745,15 @@ macro_rules! delegate_mob_session_service {
                 req: meerkat_core::service::CreateSessionRequest,
                 authorization: meerkat_runtime::ArchivedSessionActorMaterializationAuthorization,
             ) -> Result<meerkat_core::RunResult, SessionError> {
-                let (req, context) = self.prepare_create_request(req).await?;
+                let (req, context, capability_context) =
+                    self.prepare_create_request(req).await?;
                 let result = self
                     .inner
                     .create_session_with_machine_archived_resume_authority(req, authorization)
                     .await?;
-                Ok(self.complete_create(result, context).await)
+                Ok(self
+                    .complete_create(result, context, capability_context)
+                    .await)
             }
             async fn subscribe_session_events(
                 &self,
@@ -8976,10 +9059,7 @@ shell = true
             "the production actor route presents an ID-only resume stub"
         );
 
-        let probe = Arc::new(AbsorberInnerProbe {
-            session: persisted,
-            loads: std::sync::atomic::AtomicU64::new(0),
-        });
+        let probe = Arc::new(AbsorberInnerProbe::new(persisted));
         let wrapped = PreBuildMobSessionService {
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
@@ -8990,7 +9070,7 @@ shell = true
             archived_terminal_authority: None,
         };
 
-        let (prepared, _) = wrapped
+        let (prepared, _, _) = wrapped
             .prepare_create_request(req)
             .await
             .expect("prepare authoritative persisted resume");
@@ -9028,10 +9108,10 @@ shell = true
             session_with_visibility_state(session_id.clone(), embedded_legacy),
         );
 
-        let probe = Arc::new(AbsorberInnerProbe {
-            session: session_with_visibility_state(session_id, persisted_current),
-            loads: std::sync::atomic::AtomicU64::new(0),
-        });
+        let probe = Arc::new(AbsorberInnerProbe::new(session_with_visibility_state(
+            session_id,
+            persisted_current,
+        )));
         let wrapped = PreBuildMobSessionService {
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
@@ -9042,7 +9122,7 @@ shell = true
             archived_terminal_authority: None,
         };
 
-        let (prepared, _) = wrapped
+        let (prepared, _, _) = wrapped
             .prepare_create_request(req)
             .await
             .expect("prepare authoritative non-legacy resume");
@@ -9073,10 +9153,10 @@ shell = true
         req.build.as_mut().expect("build options").resume_session =
             Some(meerkat_core::Session::with_id(session_id.clone()));
 
-        let probe = Arc::new(AbsorberInnerProbe {
-            session: session_with_visibility_state(session_id, persisted_current),
-            loads: std::sync::atomic::AtomicU64::new(0),
-        });
+        let probe = Arc::new(AbsorberInnerProbe::new(session_with_visibility_state(
+            session_id,
+            persisted_current,
+        )));
         let wrapped = PreBuildMobSessionService {
             inner: probe.clone(),
             hook: no_op_pre_build_hook(),
@@ -9087,7 +9167,7 @@ shell = true
             archived_terminal_authority: None,
         };
 
-        let (prepared, _) = wrapped
+        let (prepared, _, _) = wrapped
             .prepare_create_request(req)
             .await
             .expect("prepare already-healed resume");
@@ -9881,6 +9961,27 @@ realm_profile = "worker-v2"
     struct AbsorberInnerProbe {
         session: meerkat_core::session::Session,
         loads: std::sync::atomic::AtomicU64,
+        catalog_reads: std::sync::atomic::AtomicU64,
+        catalog_names: Vec<meerkat_core::types::ToolName>,
+    }
+
+    impl AbsorberInnerProbe {
+        fn new(session: meerkat_core::session::Session) -> Self {
+            Self {
+                session,
+                loads: std::sync::atomic::AtomicU64::new(0),
+                catalog_reads: std::sync::atomic::AtomicU64::new(0),
+                catalog_names: Vec::new(),
+            }
+        }
+
+        fn with_catalog(mut self, names: impl IntoIterator<Item = &'static str>) -> Self {
+            self.catalog_names = names
+                .into_iter()
+                .map(meerkat_core::types::ToolName::from)
+                .collect();
+            self
+        }
     }
 
     #[async_trait]
@@ -9889,7 +9990,18 @@ realm_profile = "worker-v2"
             &self,
             _req: CreateSessionRequest,
         ) -> Result<meerkat_core::types::RunResult, SessionError> {
-            Err(SessionError::Unsupported("create_session".to_string()))
+            Ok(meerkat_core::types::RunResult {
+                text: String::new(),
+                session_id: self.session.id().clone(),
+                usage: meerkat_core::types::Usage::default(),
+                turns: 0,
+                tool_calls: 0,
+                terminal_cause_kind: None,
+                structured_output: None,
+                extraction_error: None,
+                schema_warnings: None,
+                skill_diagnostics: None,
+            })
         }
 
         async fn start_turn(
@@ -10046,6 +10158,112 @@ realm_profile = "worker-v2"
                 Ok(None)
             }
         }
+
+        async fn tool_scope_snapshot(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<Option<meerkat_core::ToolScopeSnapshot>, SessionError> {
+            self.catalog_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(meerkat_core::ToolScopeSnapshot {
+                known_base_names: self.catalog_names.clone(),
+                visible_names: self.catalog_names.clone(),
+                capability_base_filter: meerkat_core::ToolFilter::All,
+                base_filter: meerkat_core::ToolFilter::All,
+                active_external_filter: meerkat_core::ToolFilter::All,
+                active_turn_allow: None,
+                active_turn_deny: Vec::new(),
+                active_revision: meerkat_core::ToolScopeRevision(0),
+                staged_external_filter: meerkat_core::ToolFilter::All,
+                staged_revision: meerkat_core::ToolScopeRevision(0),
+            }))
+        }
+    }
+
+    fn invariant_member_request(
+        session_id: Option<meerkat_core::types::SessionId>,
+        role: &str,
+    ) -> CreateSessionRequest {
+        let mut req = shell_visibility_request(None, None);
+        let build = req.build.as_mut().expect("build options");
+        build.mob_member_binding = Some(meerkat_core::MobMemberBinding {
+            mob_id: "capability-choke".to_string(),
+            role: role.to_string(),
+            member: format!("{role}-1"),
+        });
+        build.override_builtins = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_shell = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_comms = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_memory = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_schedule = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_workgraph = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_mob = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_image_generation = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_web_search = meerkat_core::ToolCategoryOverride::Enable;
+        build.resume_session = session_id.map(meerkat_core::Session::with_id);
+        req
+    }
+
+    /// `MobBootstrapSpec::new` is the common library, builder, and gateway
+    /// composition choke. Inline and realm profiles both arrive here only
+    /// after Meerkat has resolved them to the same typed `SessionBuildOptions`.
+    /// Every call, including repeated resume materializations, must read the
+    /// newly materialized session's actual catalog exactly once.
+    #[tokio::test]
+    async fn bootstrap_choke_observes_inline_realm_fresh_and_every_resume() {
+        let session = meerkat_core::Session::with_id(meerkat_core::types::SessionId::new());
+        let session_id = session.id().clone();
+        let probe = Arc::new(AbsorberInnerProbe::new(session).with_catalog([
+            "task_create",
+            "shell",
+            "send_message",
+            "memory_search",
+            "meerkat_schedule_list",
+            "workgraph_get",
+            "spawn_member",
+            "generate_image",
+            "web_search",
+        ]));
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "capability-choke"
+
+[profiles.inline-worker]
+model = "gpt-5.5"
+
+[profiles.inline-worker.tools]
+comms = true
+"#,
+        )
+        .expect("definition parses");
+        let spec = MobBootstrapSpec::new(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            probe.clone(),
+        );
+
+        for (role, resume) in [
+            ("inline-worker", None),
+            ("inline-worker", Some(session_id.clone())),
+            ("realm-worker", None),
+            ("realm-worker", Some(session_id.clone())),
+        ] {
+            meerkat_core::service::SessionService::create_session(
+                spec.session_service.as_ref(),
+                invariant_member_request(resume, role),
+            )
+            .await
+            .expect("materialize through bootstrap choke");
+        }
+
+        assert_eq!(
+            probe
+                .catalog_reads
+                .load(std::sync::atomic::Ordering::SeqCst),
+            4,
+            "fresh and resumed materializations for both resolved profile provenances must each evaluate the live exact catalog"
+        );
     }
 
     /// The idle-cadence structural gate at the mobkit seam: repeated
@@ -10058,10 +10276,7 @@ realm_profile = "worker-v2"
         let session =
             meerkat_core::session::Session::with_id(meerkat_core::types::SessionId::new());
         let session_id = session.id().clone();
-        let probe = Arc::new(AbsorberInnerProbe {
-            session,
-            loads: std::sync::atomic::AtomicU64::new(0),
-        });
+        let probe = Arc::new(AbsorberInnerProbe::new(session));
         let epochs = Arc::new(SessionSnapshotWriteEpochs::default());
         let wrapped = PreBuildMobSessionService {
             inner: probe.clone(),
