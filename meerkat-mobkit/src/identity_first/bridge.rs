@@ -582,14 +582,24 @@ struct InternalBridgeWork<'a> {
 /// legitimately runs far longer than an admission budget, so bounding it here
 /// would convert normal work into a spurious `ActorAdmissionTimeout`. The
 /// caller's own timeout governs how long it is willing to wait for a turn.
+/// Which lane a submission runs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeSubmitMode {
+    /// Return as soon as the work is admitted. The historical behaviour.
+    AdmissionOnly,
+    /// Admit through the completion-bearing verb and hand the caller the turn
+    /// handle to await.
+    CompletionBearing,
+}
+
 async fn submit_internal_bridge_work(
     handle: &MobHandle,
     member_id: &MobAgentIdentity,
     work: InternalBridgeWork<'_>,
     handling_mode: HandlingMode,
     deadline: &ActorAdmissionDeadline,
-    await_commit: bool,
-) -> Result<(), BridgeError> {
+    mode: BridgeSubmitMode,
+) -> Result<Option<meerkat_mob::WorkTurnHandle>, BridgeError> {
     let entry = deadline
         .bound(
             "deliver.get_member",
@@ -605,7 +615,7 @@ async fn submit_internal_bridge_work(
         work.injected_context,
         work.interaction_id,
     );
-    if await_commit {
+    if matches!(mode, BridgeSubmitMode::CompletionBearing) {
         let turn = match work.delivery_identity {
             Some(delivery_identity) => deadline
                 .bound(
@@ -636,12 +646,11 @@ async fn submit_internal_bridge_work(
                 .await?
                 .map_err(|err| BridgeError::Mob(err.to_string()))?,
         };
-        // Outside the admission budget on purpose - see the fn docs.
-        return turn
-            .wait()
-            .await
-            .map(|_| ())
-            .map_err(|err| BridgeError::Mob(err.to_string()));
+        // Hand the handle back UNAWAITED. The caller awaits it only after the
+        // admission-retry decision is settled, so a turn that ran and then
+        // failed can never be mistaken for a delivery that never landed and
+        // resubmitted - which would run the member's turn twice.
+        return Ok(Some(turn));
     }
     match work.delivery_identity {
         Some(delivery_identity) => deadline
@@ -657,7 +666,7 @@ async fn submit_internal_bridge_work(
                 ),
             )
             .await?
-            .map(|_| ())
+            .map(|_| None)
             .map_err(|err| BridgeError::Mob(err.to_string())),
         None => deadline
             .bound(
@@ -672,7 +681,7 @@ async fn submit_internal_bridge_work(
                 ),
             )
             .await?
-            .map(|_| ())
+            .map(|_| None)
             .map_err(|err| BridgeError::Mob(err.to_string())),
     }
 }
@@ -3053,7 +3062,7 @@ impl SessionBridge for MobSessionBridge {
         runtime_id: &AgentRuntimeId,
         delivery: BridgeDelivery,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        self.deliver_admitted_inner(runtime_id, delivery, false)
+        self.deliver_admitted_inner(runtime_id, delivery, BridgeSubmitMode::AdmissionOnly)
             .await
     }
 
@@ -3072,7 +3081,7 @@ impl SessionBridge for MobSessionBridge {
         delivery.system_prompt = system_prompt.map(ToString::to_string);
         delivery.injected_context = injected_context.to_vec();
         delivery.interaction_id = interaction_id.map(ToString::to_string);
-        self.deliver_admitted_inner(runtime_id, delivery, true)
+        self.deliver_admitted_inner(runtime_id, delivery, BridgeSubmitMode::CompletionBearing)
             .await
     }
 
@@ -3321,7 +3330,7 @@ impl MobSessionBridge {
         &self,
         runtime_id: &AgentRuntimeId,
         delivery: BridgeDelivery,
-        await_commit: bool,
+        mode: BridgeSubmitMode,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let content = &delivery.content;
         let handling_mode = delivery.handling_mode;
@@ -3377,6 +3386,7 @@ impl MobSessionBridge {
             }
         }
 
+        let mut pending_turn: Option<meerkat_mob::WorkTurnHandle> = None;
         match submit_internal_bridge_work(
             &self.handle,
             &mid,
@@ -3389,11 +3399,11 @@ impl MobSessionBridge {
             },
             handling_mode,
             &deadline,
-            await_commit,
+            mode,
         )
         .await
         {
-            Ok(()) => {}
+            Ok(turn) => pending_turn = turn,
             // A blocked actor is not stale runtime state: keep the typed
             // timeout instead of routing it into member repair (which cannot
             // unblock an actor) or laundering it into `Mob(String)` below.
@@ -3426,9 +3436,12 @@ impl MobSessionBridge {
                     },
                     handling_mode,
                     &deadline,
-                    await_commit,
+                    mode,
                 )
-                .await?;
+                .await?
+                .inspect(|_| ())
+                .map(|turn| pending_turn = Some(turn))
+                .unwrap_or(());
             }
             Err(err) => return Err(BridgeError::Mob(err.to_string())),
         }
