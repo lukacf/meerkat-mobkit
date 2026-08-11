@@ -411,6 +411,38 @@ impl meerkat_core::AgentToolDispatcher for ScopePinnedWorkGraphTools {
         self.inner.tools()
     }
 
+    /// Forward the inner surface's catalog declarations verbatim.
+    ///
+    /// This wrapper pins dispatch ARGUMENTS and guards reassign admission; it
+    /// deliberately does not narrow the surface, and `tools()` above already
+    /// forwards unchanged. Leaving these two on the trait defaults silently
+    /// downgraded the composed dispatcher to `exact_catalog: false` with an
+    /// EMPTY catalog, which is not a conservative choice - it is a different
+    /// surface than the one being wrapped.
+    ///
+    /// Both flags are load-bearing, not decorative. `AgentBuilder` only fills
+    /// `deferred_tool_names` when `exact_catalog` holds AND
+    /// (`may_require_catalog_control_plane` or a Control-plane entry exists)
+    /// AND the catalog mode is `Deferred`. The inner surface declares both and
+    /// mints `session_deferred` entries with WorkGraph provenance for
+    /// `workgraph_attention_reassign` and `workgraph_policy_escalate`. Dropping
+    /// them left the deferred set empty while an attention overlay still
+    /// supplied a WorkGraph-provenance authority, so staging the overlay was
+    /// rejected and the member's bound turn died before reaching the LLM - a
+    /// member that goes silent for exactly as long as a binding is active.
+    ///
+    /// The dispatch-side surfaces are deliberately NOT forwarded: the default
+    /// `dispatch_resolved_with_context` routes Fast-mode calls back through
+    /// THIS type's `dispatch_with_context`, so pinning and admission still
+    /// apply. Forwarding it to the inner would bypass both.
+    fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+        self.inner.tool_catalog_capabilities()
+    }
+
+    fn tool_catalog(&self) -> Arc<[meerkat_core::ToolCatalogEntry]> {
+        self.inner.tool_catalog()
+    }
+
     async fn dispatch(
         &self,
         call: meerkat_core::types::ToolCallView<'_>,
@@ -691,6 +723,87 @@ mod tests {
         assert!(
             !dir.path().join(WORKGRAPH_STORE_FILE).exists(),
             "injection must not open mobkit's conventional store file"
+        );
+    }
+
+    /// Finding A regression (2026-08-11): the wrapper must declare the SAME
+    /// catalog surface as the surface it wraps.
+    ///
+    /// `ScopePinnedWorkGraphTools` pins dispatch arguments and guards reassign
+    /// admission; it does not narrow the surface. When it implemented only
+    /// `tools`/`dispatch`/`dispatch_with_context`, these two fell back to the
+    /// trait defaults (`exact_catalog: false`, empty catalog) - not a
+    /// conservative choice but a DIFFERENT surface than the inner one. That
+    /// left `deferred_tool_names` empty while an attention overlay still
+    /// supplied a WorkGraph-provenance authority, so staging the overlay was
+    /// rejected and a bound member turn died before reaching the LLM.
+    ///
+    /// Asserts parity rather than literals, so a future inner-only change
+    /// cannot silently reopen the gap. The one literal is `exact_catalog`,
+    /// because a pure parity test would also pass if BOTH sides regressed to
+    /// the default.
+    #[tokio::test]
+    async fn wrapper_declares_the_same_catalog_surface_as_the_inner() {
+        use meerkat_core::AgentToolDispatcher;
+
+        let service = ephemeral_workgraph_service("mob-realm");
+        let wrapper = ScopePinnedWorkGraphTools::new(&service);
+        let inner = WorkGraphToolSurface::new(service.clone());
+
+        let wrapped = wrapper.tool_catalog_capabilities();
+        let direct = inner.tool_catalog_capabilities();
+        assert_eq!(
+            wrapped.exact_catalog, direct.exact_catalog,
+            "wrapper must report the inner surface's exact_catalog"
+        );
+        assert_eq!(
+            wrapped.may_require_catalog_control_plane, direct.may_require_catalog_control_plane,
+            "wrapper must report the inner surface's control-plane requirement"
+        );
+        assert!(
+            wrapped.exact_catalog,
+            "both sides regressed to the default: an exact catalog is what makes \
+             the deferred set reachable at all"
+        );
+
+        // `ToolCatalogEntry` is not `PartialEq`, so compare an explicit
+        // projection (name, plane, deferred eligibility, provenance) rather
+        // than only counting entries.
+        fn summarize(entries: &[meerkat_core::ToolCatalogEntry]) -> Vec<String> {
+            entries
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{}|{:?}|{:?}|{:?}",
+                        entry.tool.name,
+                        entry.plane,
+                        entry.deferred_eligibility,
+                        entry.tool.provenance
+                    )
+                })
+                .collect()
+        }
+
+        let wrapped_catalog = wrapper.tool_catalog();
+        let direct_catalog = inner.tool_catalog();
+        assert_eq!(
+            summarize(&wrapped_catalog),
+            summarize(&direct_catalog),
+            "wrapper must forward the inner catalog entries and their provenance verbatim"
+        );
+        assert!(
+            !wrapped_catalog.is_empty(),
+            "an empty catalog is the exact shape of the original defect"
+        );
+        assert!(
+            wrapped_catalog
+                .iter()
+                .any(|entry| entry.tool.name.as_str() == "workgraph_policy_escalate"),
+            "the tool at the centre of Finding A must appear in the forwarded catalog: {:?}",
+            wrapped_catalog
+                .iter()
+                .map(|entry| entry.tool.name.as_str())
+                .collect::<Vec<_>>()
         );
     }
 
