@@ -1,5 +1,6 @@
 //! MobKit core — orchestration engine for the Meerkat multi-agent runtime.
 
+pub(crate) mod identity_control_target;
 pub mod identity_first;
 
 pub mod access;

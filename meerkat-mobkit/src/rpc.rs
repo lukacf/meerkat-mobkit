@@ -4725,21 +4725,21 @@ fn build_models_catalog_result() -> Value {
 }
 
 #[derive(Debug, Clone)]
-struct RpcLiveIdentityAlias {
-    identity: crate::identity_first::AgentIdentity,
-    runtime_member_id: String,
-    member: meerkat_mob::runtime::MobMemberListEntry,
-    session_id: Option<String>,
+pub(crate) struct RpcLiveIdentityAlias {
+    pub(crate) identity: crate::identity_first::AgentIdentity,
+    pub(crate) runtime_member_id: String,
+    pub(crate) member: meerkat_mob::runtime::MobMemberListEntry,
+    pub(crate) session_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-struct RpcIdentityControlTarget {
-    identity: crate::identity_first::AgentIdentity,
-    live: Option<RpcLiveIdentityAlias>,
+pub(crate) struct RpcIdentityControlTarget {
+    pub(crate) identity: crate::identity_first::AgentIdentity,
+    pub(crate) live: Option<RpcLiveIdentityAlias>,
     /// True when resolution observed this identity in the durable runtime.
     /// Live-only fallback must never be used after a later `UnknownIdentity`
     /// in this case: that transition means a concurrent delete won the race.
-    was_registered: bool,
+    pub(crate) was_registered: bool,
 }
 
 /// Whether an `UnknownIdentity` observed after target resolution may use the
@@ -4761,150 +4761,6 @@ fn rpc_live_only_fallback_allowed(
         })
 }
 
-fn rpc_member_durable_identity(member: &meerkat_mob::runtime::MobMemberListEntry) -> String {
-    crate::member_comms_id::durable_identity_label(&member.labels)
-        .map(str::to_owned)
-        // Fallback surfaces the public alias, not the comms-safe roster id
-        // (meerkat 0.7 MemberCommsName).
-        .unwrap_or_else(|| {
-            crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()).into_owned()
-        })
-}
-
-async fn resolve_rpc_live_identity_alias(
-    runtime: &UnifiedRuntime,
-    requested_identity: &str,
-) -> Result<Option<RpcLiveIdentityAlias>, String> {
-    let matches = resolve_rpc_live_identity_alias_candidates(runtime, requested_identity).await?;
-    if matches.len() > 1 {
-        return Err(format!(
-            "ambiguous live identity alias {requested_identity}: candidates [{}]",
-            matches
-                .iter()
-                .map(|entry| entry.runtime_member_id.clone())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    Ok(matches.into_iter().next())
-}
-
-async fn resolve_rpc_live_runtime_member_alias(
-    runtime: &UnifiedRuntime,
-    runtime_member_id: &str,
-) -> Result<Option<RpcLiveIdentityAlias>, String> {
-    let requested_member_id = crate::member_comms_id::mob_member_id(runtime_member_id);
-    let handle = runtime.mob_handle();
-    let Some(member) = handle
-        .list_members_including_retiring()
-        .await
-        .into_iter()
-        .find(|entry| entry.agent_identity == requested_member_id)
-    else {
-        return Ok(None);
-    };
-    if !rpc_live_identity_alias_member_visible(&member) {
-        return Ok(None);
-    }
-    let durable_identity = rpc_member_durable_identity(&member);
-    let identity = crate::identity_first::AgentIdentity::parse(&durable_identity)
-        .map_err(|err| format!("invalid projected identity {durable_identity}: {err}"))?;
-    let session_id = handle
-        .resolve_bridge_session_id_observation(&member.agent_identity)
-        .await
-        .map(|session_id| session_id.to_string());
-    Ok(Some(RpcLiveIdentityAlias {
-        identity,
-        runtime_member_id: crate::member_comms_id::runtime_alias_str(
-            member.agent_identity.as_str(),
-        )
-        .into_owned(),
-        member,
-        session_id,
-    }))
-}
-
-async fn rpc_runtime_member_alias_exists_hidden(
-    runtime: &UnifiedRuntime,
-    runtime_member_id: &str,
-) -> bool {
-    let requested_member_id = crate::member_comms_id::mob_member_id(runtime_member_id);
-    runtime
-        .mob_handle()
-        .list_members_including_retiring()
-        .await
-        .into_iter()
-        .find(|entry| entry.agent_identity == requested_member_id)
-        .is_some_and(|member| !rpc_live_identity_alias_member_visible(&member))
-}
-
-async fn rpc_live_identity_alias_exists_hidden(
-    runtime: &UnifiedRuntime,
-    requested_identity: &str,
-) -> bool {
-    let requested_member_id = crate::member_comms_id::mob_member_id(requested_identity);
-    runtime
-        .mob_handle()
-        .list_members_including_retiring()
-        .await
-        .into_iter()
-        .any(|member| {
-            (member.agent_identity == requested_member_id
-                || crate::member_comms_id::durable_identity_label(&member.labels)
-                    .is_some_and(|identity| identity == requested_identity))
-                && !rpc_live_identity_alias_member_visible(&member)
-        })
-}
-
-async fn resolve_rpc_live_identity_alias_candidates(
-    runtime: &UnifiedRuntime,
-    requested_identity: &str,
-) -> Result<Vec<RpcLiveIdentityAlias>, String> {
-    let requested_member_id = crate::member_comms_id::mob_member_id(requested_identity);
-    let handle = runtime.mob_handle();
-    let members = handle.list_members_including_retiring().await;
-    let exact_matches = members
-        .iter()
-        .filter(|entry| entry.agent_identity == requested_member_id)
-        .cloned()
-        .collect::<Vec<_>>();
-    let label_matches = members
-        .iter()
-        .filter(|entry| {
-            crate::member_comms_id::durable_identity_label(&entry.labels)
-                .is_some_and(|identity| identity == requested_identity)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut matches = exact_matches;
-    matches.extend(label_matches);
-    let mut seen_member_ids = BTreeSet::new();
-    matches.retain(|entry| seen_member_ids.insert(entry.agent_identity.to_string()));
-    let mut aliases = Vec::with_capacity(matches.len());
-    for member in matches {
-        if !rpc_live_identity_alias_member_visible(&member) {
-            continue;
-        }
-        let durable_identity = rpc_member_durable_identity(&member);
-        let identity = crate::identity_first::AgentIdentity::parse(&durable_identity)
-            .map_err(|err| format!("invalid projected identity {durable_identity}: {err}"))?;
-        let session_id = handle
-            .resolve_bridge_session_id_observation(&member.agent_identity)
-            .await
-            .map(|session_id| session_id.to_string());
-        aliases.push(RpcLiveIdentityAlias {
-            identity,
-            runtime_member_id: crate::member_comms_id::runtime_alias_str(
-                member.agent_identity.as_str(),
-            )
-            .into_owned(),
-            member,
-            session_id,
-        });
-    }
-    Ok(aliases)
-}
-
 fn rpc_live_identity_alias_member_visible(
     member: &meerkat_mob::runtime::MobMemberListEntry,
 ) -> bool {
@@ -4923,223 +4779,79 @@ fn rpc_live_identity_alias_visible(
         && !is_implicit_delegate_member(projected_role, labels)
 }
 
+impl TryFrom<crate::identity_control_target::LiveIdentityMember> for RpcLiveIdentityAlias {
+    type Error = String;
+
+    fn try_from(
+        live: crate::identity_control_target::LiveIdentityMember,
+    ) -> Result<Self, Self::Error> {
+        let identity = crate::identity_first::AgentIdentity::parse(&live.identity)
+            .map_err(|error| format!("invalid projected identity {}: {error}", live.identity))?;
+        Ok(Self {
+            identity,
+            runtime_member_id: live.runtime_member_id,
+            member: live.member,
+            session_id: live.session_id,
+        })
+    }
+}
+
 async fn resolve_rpc_identity_control_target(
     runtime: &UnifiedRuntime,
     identity_rt: &crate::identity_first::IdentityRuntime,
     requested_identity: &str,
 ) -> Result<RpcIdentityControlTarget, String> {
-    let requested_identity = crate::member_comms_id::runtime_alias_str(requested_identity);
-    let requested_identity = requested_identity.as_ref();
-    if crate::member_comms_id::is_reserved_generated_alias(requested_identity) {
-        for status in identity_rt.statuses().await {
-            if status
-                .agent_runtime_id
-                .as_ref()
-                .is_some_and(|runtime_id| runtime_id.as_str() == requested_identity)
-            {
-                let identity = status.identity;
-                let registered_live =
-                    resolve_rpc_live_runtime_member_alias(runtime, requested_identity).await?;
-                if let Some(registered) = registered_live {
-                    return Ok(RpcIdentityControlTarget {
-                        identity,
-                        live: Some(registered),
-                        was_registered: true,
-                    });
-                }
-                if rpc_runtime_member_alias_exists_hidden(runtime, requested_identity).await {
-                    return Err(format!("identity hidden by policy: {requested_identity}"));
-                }
-                let durable_live_candidates =
-                    resolve_rpc_live_identity_alias_candidates(runtime, identity.as_str()).await?;
-                let durable_live = if durable_live_candidates.len() > 1 {
-                    return Err(format!(
-                        "ambiguous live identity alias {}: candidates [{}]",
-                        identity.as_str(),
-                        durable_live_candidates
-                            .iter()
-                            .map(|alias| alias.runtime_member_id.clone())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                } else {
-                    durable_live_candidates.into_iter().next()
-                };
-                return Ok(RpcIdentityControlTarget {
-                    identity,
-                    live: durable_live,
-                    was_registered: true,
-                });
-            }
+    resolve_rpc_identity_control_target_with_handle(
+        &runtime.mob_handle(),
+        identity_rt,
+        requested_identity,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_rpc_identity_control_target_with_handle(
+    handle: &meerkat_mob::MobHandle,
+    identity_rt: &crate::identity_first::IdentityRuntime,
+    requested_identity: &str,
+) -> Result<RpcIdentityControlTarget, String> {
+    use crate::identity_control_target::IdentityControlResolution;
+
+    let resolution = crate::identity_control_target::resolve_identity_control_target(
+        handle,
+        Some(identity_rt),
+        requested_identity,
+        |live| rpc_live_identity_alias_member_visible(&live.member),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    match resolution {
+        IdentityControlResolution::Resolved(target) => {
+            let target = *target;
+            Ok(RpcIdentityControlTarget {
+                identity: target.identity,
+                live: target
+                    .live
+                    .map(RpcLiveIdentityAlias::try_from)
+                    .transpose()?,
+                was_registered: target.was_registered,
+            })
         }
-        let live = resolve_rpc_live_identity_alias(runtime, requested_identity).await?;
-        if let Some(live_alias) = live {
-            if let Ok(status) = identity_rt.status(&live_alias.identity).await
-                && !rpc_live_alias_matches_status_runtime(Some(&live_alias), &status)
-            {
-                return Ok(RpcIdentityControlTarget {
-                    identity: live_alias.identity.clone(),
-                    live: Some(live_alias),
-                    was_registered: true,
-                });
+        IdentityControlResolution::Unresolved {
+            requested_identity,
+            parsed_identity,
+            generated_runtime_alias,
+        } => {
+            if generated_runtime_alias {
+                return Err(format!("runtime identity not found: {requested_identity}"));
             }
-            let live_identity_candidates =
-                resolve_rpc_live_identity_alias_candidates(runtime, live_alias.identity.as_str())
-                    .await?;
-            if live_identity_candidates.len() > 1 {
-                return Err(format!(
-                    "ambiguous live identity alias {}: candidates [{}]",
-                    live_alias.identity.as_str(),
-                    live_identity_candidates
-                        .iter()
-                        .map(|alias| alias.runtime_member_id.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-            }
-            return Ok(RpcIdentityControlTarget {
-                identity: live_alias.identity.clone(),
-                live: Some(live_alias),
+            Ok(RpcIdentityControlTarget {
+                identity: parsed_identity?,
+                live: None,
                 was_registered: false,
-            });
-        }
-        if rpc_runtime_member_alias_exists_hidden(runtime, requested_identity).await {
-            return Err(format!("identity hidden by policy: {requested_identity}"));
-        }
-        return Err(format!("runtime identity not found: {requested_identity}"));
-    }
-    if let Ok(identity) = crate::identity_first::AgentIdentity::parse(requested_identity) {
-        match identity_rt.status(&identity).await {
-            Ok(status) => {
-                let registered_live = match status.agent_runtime_id.as_ref() {
-                    Some(runtime_id) => {
-                        resolve_rpc_live_runtime_member_alias(runtime, runtime_id.as_str()).await?
-                    }
-                    None => None,
-                };
-                if let Some(registered) = registered_live {
-                    return Ok(RpcIdentityControlTarget {
-                        identity,
-                        live: Some(registered),
-                        was_registered: true,
-                    });
-                }
-                if let Some(runtime_id) = status.agent_runtime_id.as_ref()
-                    && rpc_runtime_member_alias_exists_hidden(runtime, runtime_id.as_str()).await
-                {
-                    return Err(format!("identity hidden by policy: {requested_identity}"));
-                }
-                let requested_live_candidates =
-                    resolve_rpc_live_identity_alias_candidates(runtime, requested_identity).await?;
-                let requested_live = if requested_live_candidates.len() > 1 {
-                    return Err(format!(
-                        "ambiguous live identity alias {requested_identity}: candidates [{}]",
-                        requested_live_candidates
-                            .iter()
-                            .map(|alias| alias.runtime_member_id.clone())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                } else {
-                    requested_live_candidates.into_iter().next()
-                };
-                return Ok(RpcIdentityControlTarget {
-                    identity,
-                    live: requested_live,
-                    was_registered: true,
-                });
-            }
-            Err(crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {}
-            Err(err) => return Err(err.to_string()),
+            })
         }
     }
-    for status in identity_rt.statuses().await {
-        if status
-            .agent_runtime_id
-            .as_ref()
-            .is_some_and(|runtime_id| runtime_id.as_str() == requested_identity)
-        {
-            let identity = status.identity;
-            let registered_live =
-                resolve_rpc_live_runtime_member_alias(runtime, requested_identity).await?;
-            let durable_live_candidates =
-                resolve_rpc_live_identity_alias_candidates(runtime, identity.as_str()).await?;
-            let durable_live = if durable_live_candidates.len() > 1 {
-                return Err(format!(
-                    "ambiguous live identity alias {}: candidates [{}]",
-                    identity.as_str(),
-                    durable_live_candidates
-                        .iter()
-                        .map(|alias| alias.runtime_member_id.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-            } else {
-                durable_live_candidates.into_iter().next()
-            };
-            let live = match (registered_live, durable_live) {
-                (Some(registered), Some(durable))
-                    if registered.runtime_member_id == durable.runtime_member_id =>
-                {
-                    Some(registered)
-                }
-                (Some(registered), None) => Some(registered),
-                (Some(_registered), Some(durable)) => Some(durable),
-                (None, durable) => durable,
-            };
-            return Ok(RpcIdentityControlTarget {
-                identity,
-                live,
-                was_registered: true,
-            });
-        }
-    }
-    let live = resolve_rpc_live_identity_alias(runtime, requested_identity).await?;
-    if let Some(live_alias) = live {
-        if let Some(bound_status) = identity_rt.statuses().await.into_iter().find(|status| {
-            status
-                .agent_runtime_id
-                .as_ref()
-                .is_some_and(|runtime_id| runtime_id.as_str() == live_alias.runtime_member_id)
-        }) && bound_status.identity != live_alias.identity
-        {
-            return Err(format!(
-                "stale live identity alias: live console alias {} resolves to {}, but identity runtime binding belongs to {}",
-                live_alias.identity.as_str(),
-                live_alias.runtime_member_id,
-                bound_status.identity.as_str(),
-            ));
-        }
-        let live_identity_candidates =
-            resolve_rpc_live_identity_alias_candidates(runtime, live_alias.identity.as_str())
-                .await?;
-        if live_identity_candidates.len() > 1 {
-            return Err(format!(
-                "ambiguous live identity alias {}: candidates [{}]",
-                live_alias.identity.as_str(),
-                live_identity_candidates
-                    .iter()
-                    .map(|alias| alias.runtime_member_id.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        return Ok(RpcIdentityControlTarget {
-            identity: live_alias.identity.clone(),
-            live: Some(live_alias),
-            was_registered: false,
-        });
-    }
-    if rpc_live_identity_alias_exists_hidden(runtime, requested_identity).await {
-        return Err(format!("identity hidden by policy: {requested_identity}"));
-    }
-    let identity = crate::identity_first::AgentIdentity::parse(requested_identity)
-        .map_err(|err| err.to_string())?;
-    Ok(RpcIdentityControlTarget {
-        identity,
-        live: None,
-        was_registered: false,
-    })
 }
 
 fn rpc_reset_requires_session_bridge_response(response_id: Value) -> JsonRpcResponse {
