@@ -99,12 +99,6 @@ struct CaptureClient {
     requests: Arc<std::sync::Mutex<Vec<String>>>,
 }
 impl CaptureClient {
-    fn count(&self) -> usize {
-        self.requests.lock().unwrap().len()
-    }
-    fn last(&self) -> Option<String> {
-        self.requests.lock().unwrap().last().cloned()
-    }
     /// Snapshot of every captured request, in arrival order.
     ///
     /// A turn can produce more than one request, and unrelated turns interleave,
@@ -261,17 +255,6 @@ async fn boot(
         default_timeout: None,
     });
     (unified, identity_rt)
-}
-
-async fn wait_for_request(capture: &CaptureClient, secs: u64, what: &str) {
-    let deadline = Instant::now() + Duration::from_secs(secs);
-    while capture.count() < 1 {
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for {what} to reach the LLM"
-        );
-        sleep(Duration::from_millis(100)).await;
-    }
 }
 
 /// Deliver one turn and await THAT turn's own terminal interaction event.
@@ -445,7 +428,9 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
             )
             .await
             .expect("send turn 1");
-        wait_for_request(&capture, 20, "turn 1").await;
+        // Readiness by CONTENT: wait for turn 1's own request, identified by the
+        // token it carries, not by a count that any request would satisfy.
+        select_request_containing(&capture, 20, &[("TOKEN", TOKEN)]).await;
         // Let turn 1's assistant response commit before the shutdown flush.
         sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
@@ -491,9 +476,12 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
             )
             .await
             .expect("send turn 2");
-        wait_for_request(&capture, 30, "the post-edit turn").await;
-
-        let last_request = capture.last().expect("a post-edit request was captured");
+        let last_request = select_request_containing(
+            &capture,
+            30,
+            &[("post-edit model", "\"model\":\"claude-opus-4-8\"")],
+        )
+        .await;
         assert!(
             last_request.contains("\"model\":\"claude-opus-4-8\""),
             "the resumed turn must run on the DECLARED model (the edit was inert): {last_request}"
@@ -644,7 +632,9 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
             )
             .await
             .expect("send turn 1");
-        wait_for_request(&capture, 20, "turn 1").await;
+        // Readiness by CONTENT: wait for turn 1's own request, identified by the
+        // token it carries, not by a count that any request would satisfy.
+        select_request_containing(&capture, 20, &[("TOKEN", TOKEN)]).await;
         sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
@@ -721,8 +711,7 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
             )
             .await
             .expect("send post-refusal turn");
-        wait_for_request(&capture, 30, "the post-refusal turn").await;
-        let last_request = capture.last().expect("a post-refusal request was captured");
+        let last_request = select_request_containing(&capture, 30, &[("TOKEN", TOKEN)]).await;
         assert!(
             last_request.contains("\"model\":\"gpt-5.5\""),
             "the resumed turn must run on the durable pair: {last_request}"
@@ -874,7 +863,9 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
             )
             .await
             .expect("send turn 1");
-        wait_for_request(&capture, 20, "turn 1").await;
+        // Readiness by CONTENT: wait for turn 1's own request, identified by the
+        // token it carries, not by a count that any request would satisfy.
+        select_request_containing(&capture, 20, &[("TOKEN", TOKEN)]).await;
         sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
@@ -921,8 +912,7 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
             )
             .await
             .expect("send post-edit turn");
-        wait_for_request(&capture, 30, "the post-edit turn").await;
-        let last_request = capture.last().expect("a post-edit request was captured");
+        let last_request = select_request_containing(&capture, 30, &[("TOKEN", TOKEN)]).await;
         assert!(
             last_request.contains(ROLE_BASE),
             "the durable authored prompt must survive resume byte-for-byte: {last_request}"
@@ -989,7 +979,7 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
             )
             .await
             .expect("send neutral-boot turn");
-        wait_for_request(&capture, 30, "the neutral-boot turn").await;
+        select_request_containing(&capture, 30, &[("neutral ping", "neutral ping")]).await;
         sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
@@ -1141,7 +1131,9 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             )
             .await
             .expect("send turn 1");
-        wait_for_request(&capture, 20, "turn 1").await;
+        // Readiness by CONTENT: wait for turn 1's own request, identified by the
+        // token it carries, not by a count that any request would satisfy.
+        select_request_containing(&capture, 20, &[("TOKEN", TOKEN)]).await;
         sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
@@ -1315,8 +1307,12 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             )
             .await
             .expect("send the neutral turn");
-        wait_for_request(&capture, 30, "the neutral turn").await;
-        let last_request = capture.last().expect("the neutral turn was captured");
+        let last_request = select_request_containing(
+            &capture,
+            30,
+            &[("neutral turn text", "What token did I give you earlier?")],
+        )
+        .await;
         assert!(
             last_request.contains(AUTHORED_PROMPT),
             "the authored System row must replay byte-for-byte into the resumed turn's \
