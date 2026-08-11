@@ -49,10 +49,7 @@ use meerkat_mobkit::{
     STORAGE_RESOLUTION_CODE, ScheduleDefinition, SqliteConsoleLogStore, SqliteMetadataStore,
     TrustedOidcRuntimeConfig, UnifiedRuntime, UnifiedRuntimeShutdownReport, handle_mobkit_rpc_json,
     load_console_ui_config_from_path_for_realm,
-    mob_handle_runtime::{
-        ensure_shell_tooling_build_substrate, mob_definition_may_use_image_generation,
-        mob_definition_may_use_shell,
-    },
+    mob_handle_runtime::{mob_definition_may_use_image_generation, mob_definition_may_use_shell},
     start_mobkit_runtime,
 };
 use sha2::{Digest, Sha256};
@@ -6733,7 +6730,7 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
         event_tx: mpsc::Sender<AgentEvent>,
     ) -> Result<Self::Agent, SessionError> {
         if !self.has_session_builder {
-            let mut normalized_req = CreateSessionRequest {
+            let normalized_req = CreateSessionRequest {
                 model: req.model.clone(),
                 prompt: req.prompt.clone(),
                 system_prompt: req.system_prompt.clone(),
@@ -6745,7 +6742,6 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                 deferred_prompt_policy: req.deferred_prompt_policy,
                 injected_context: req.injected_context.clone(),
             };
-            ensure_shell_tooling_build_substrate(&mut normalized_req);
             return self.inner.build_agent(&normalized_req, event_tx).await;
         }
 
@@ -6953,7 +6949,6 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                         }
                     }
                 }
-                ensure_shell_tooling_build_substrate(&mut modified_req);
                 self.inner.build_agent(&modified_req, event_tx).await
             }
             Err(err) => {

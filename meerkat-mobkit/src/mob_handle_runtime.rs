@@ -629,7 +629,17 @@ impl PreBuildMobSessionService {
         mut req: CreateSessionRequest,
     ) -> Result<(CreateSessionRequest, SessionCreatedContext), SessionError> {
         (self.hook)(&mut req).await?;
-        ensure_shell_tooling_build_substrate(&mut req);
+        let resume_id = req
+            .build
+            .as_ref()
+            .filter(|build| build.initial_tool_filter.is_none())
+            .and_then(|build| build.resume_session.as_ref())
+            .map(|session| session.id().clone());
+        let persisted_resume = match resume_id {
+            Some(session_id) => self.load_persisted_session_absorbed(&session_id).await?,
+            None => None,
+        };
+        heal_legacy_shell_tool_visibility(&mut req, persisted_resume.as_ref());
         sanitize_create_session_request_llm_override(&mut req);
         // After the user hook (composes over any decorator it set) and after
         // sanitize (which only touches the raw llm_client_override).
@@ -1503,44 +1513,86 @@ fn sanitize_create_session_request_llm_override(req: &mut CreateSessionRequest) 
     ));
 }
 
-const SHELL_BUILTIN_TOOL_NAMES: [&str; 4] = [
+#[cfg(test)]
+const NATIVE_SHELL_TOOL_NAMES: [&str; 4] = [
     "shell",
     "shell_job_status",
     "shell_jobs",
     "shell_job_cancel",
 ];
-const COMMS_TOOL_NAMES: [&str; 4] = ["peers", "send_message", "send_request", "send_response"];
+const LEGACY_SHELL_AND_COMMS_TOOL_NAMES: [&str; 8] = [
+    "shell",
+    "shell_job_status",
+    "shell_jobs",
+    "shell_job_cancel",
+    "peers",
+    "send_message",
+    "send_request",
+    "send_response",
+];
 
-fn shell_and_comms_tool_filter() -> meerkat_core::ToolFilter {
-    meerkat_core::ToolFilter::Allow(
-        SHELL_BUILTIN_TOOL_NAMES
-            .iter()
-            .chain(COMMS_TOOL_NAMES.iter())
-            .map(|name| (*name).to_string())
-            .collect(),
-    )
+fn is_legacy_shell_and_comms_allow_filter(filter: &meerkat_core::ToolFilter) -> bool {
+    let meerkat_core::ToolFilter::Allow(names) = filter else {
+        return false;
+    };
+    let actual = names
+        .iter()
+        .map(meerkat_core::ToolName::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected = LEGACY_SHELL_AND_COMMS_TOOL_NAMES
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    actual == expected
 }
 
-/// Shell is implemented by Meerkat's native builtin dispatcher, but MobKit
-/// profiles treat `tools.shell` as independent from general `tools.builtins`.
-/// When a profile asks for shell-only access, force the parent builtin
-/// substrate on and install a session-local allow filter so broad builtins
-/// remain hidden while shell and comms stay available.
-pub fn ensure_shell_tooling_build_substrate(req: &mut CreateSessionRequest) {
+/// Lift the exact legacy synthetic Allow-8 filter on resume.
+///
+/// Meerkat 0.8.22 composes shell as an independent native category, so MobKit
+/// must no longer enable the broad builtin category and hide the resulting
+/// surface behind a global allow-list. Existing sessions can still carry that
+/// old filter durably. Match only the byte-era fingerprint established from
+/// the HomeCore production specimen:
+///
+/// - active filter set-equals the four shell plus four comms tools;
+/// - staged filter set-equals the same set, or is `All` because the field was
+///   absent in the legacy serialized form;
+/// - this build has no explicit caller-supplied initial filter.
+///
+/// The repair is expressed through `initial_tool_filter = All`. Meerkat's
+/// generated visibility authority then applies and persists the transition,
+/// including witness cleanup. MobKit never rewrites the visibility document,
+/// so capability and inherited base filters remain untouched and owned by the
+/// upstream state machine.
+fn heal_legacy_shell_tool_visibility(
+    req: &mut CreateSessionRequest,
+    persisted_resume: Option<&meerkat_core::Session>,
+) {
     let Some(build) = req.build.as_mut() else {
         return;
     };
-    if matches!(
-        build.override_shell,
-        meerkat_core::ToolCategoryOverride::Enable
-    ) && matches!(
-        build.override_builtins,
-        meerkat_core::ToolCategoryOverride::Disable
-    ) {
-        build.override_builtins = meerkat_core::ToolCategoryOverride::Enable;
-        if build.initial_tool_filter.is_none() {
-            build.initial_tool_filter = Some(shell_and_comms_tool_filter());
-        }
+    if build.initial_tool_filter.is_some() {
+        return;
+    }
+    let Some(resume_session) = build.resume_session.as_ref() else {
+        return;
+    };
+    let Some(persisted_resume) = persisted_resume else {
+        return;
+    };
+    if resume_session.id() != persisted_resume.id() {
+        return;
+    }
+    let Ok(Some(state)) = persisted_resume.try_tool_visibility_state() else {
+        return;
+    };
+    if !is_legacy_shell_and_comms_allow_filter(&state.active_filter) {
+        return;
+    }
+    let staged_matches = is_legacy_shell_and_comms_allow_filter(&state.staged_filter)
+        || matches!(state.staged_filter, meerkat_core::ToolFilter::All);
+    if staged_matches {
+        build.initial_tool_filter = Some(meerkat_core::ToolFilter::All);
     }
 }
 
@@ -4952,7 +5004,6 @@ impl AfterCreateMobSessionService {
         mut req: CreateSessionRequest,
     ) -> (CreateSessionRequest, SessionCreatedContext) {
         sanitize_create_session_request_llm_override(&mut req);
-        ensure_shell_tooling_build_substrate(&mut req);
         let context = SessionCreatedContext {
             model: req.model.clone(),
             labels: req.labels.clone().unwrap_or_default(),
@@ -7909,6 +7960,24 @@ mod tests {
         }
     }
 
+    struct NamedDispatcher {
+        tools: Arc<[Arc<meerkat_core::types::ToolDef>]>,
+    }
+
+    #[async_trait::async_trait]
+    impl meerkat_core::AgentToolDispatcher for NamedDispatcher {
+        fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+            Arc::clone(&self.tools)
+        }
+
+        async fn dispatch(
+            &self,
+            call: meerkat_core::types::ToolCallView<'_>,
+        ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+            Err(meerkat_core::ToolError::not_found(call.name))
+        }
+    }
+
     fn wrapper_with_overrides(
         overrides: ImplicitDelegateRetirementOverrides,
     ) -> AutoWireParentMobToolDispatcher {
@@ -8535,9 +8604,15 @@ shell = true
         );
     }
 
-    #[test]
-    fn shell_tooling_forces_builtin_substrate_without_exposing_broad_builtins() {
-        let mut req = CreateSessionRequest {
+    fn shell_visibility_request(
+        state: Option<meerkat_core::SessionToolVisibilityState>,
+        initial_tool_filter: Option<meerkat_core::ToolFilter>,
+    ) -> CreateSessionRequest {
+        let resume_session = state.map(|state| {
+            session_with_visibility_state(meerkat_core::types::SessionId::new(), state)
+        });
+
+        CreateSessionRequest {
             model: "gpt-5.5".to_string(),
             prompt: meerkat_core::ContentInput::Text("test".to_string()),
             system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
@@ -8547,14 +8622,97 @@ shell = true
             build: Some(meerkat_core::service::SessionBuildOptions {
                 override_builtins: meerkat_core::ToolCategoryOverride::Disable,
                 override_shell: meerkat_core::ToolCategoryOverride::Enable,
+                initial_tool_filter,
+                resume_session,
                 ..Default::default()
             }),
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
             injected_context: Vec::new(),
-        };
+        }
+    }
 
-        ensure_shell_tooling_build_substrate(&mut req);
+    fn session_with_visibility_state(
+        session_id: meerkat_core::types::SessionId,
+        state: meerkat_core::SessionToolVisibilityState,
+    ) -> meerkat_core::Session {
+        let mut value = serde_json::to_value(meerkat_core::Session::with_id(session_id))
+            .expect("serialize session");
+        value
+            .as_object_mut()
+            .expect("session document")
+            .entry("metadata")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .expect("session metadata")
+            .insert(
+                meerkat_core::SESSION_TOOL_VISIBILITY_STATE_KEY.to_string(),
+                serde_json::to_value(state).expect("serialize visibility state"),
+            );
+        serde_json::from_value(value).expect("deserialize resumed session")
+    }
+
+    fn homecore_security_visibility_fixture(
+        snapshot: &str,
+    ) -> (
+        meerkat_core::types::SessionId,
+        serde_json::Value,
+        meerkat_core::SessionToolVisibilityState,
+    ) {
+        use base64::Engine as _;
+
+        const BUNDLE: &[u8] = include_bytes!(
+            "../tests/fixtures/homecore_security_idempotency/security-head-evolution.json"
+        );
+        let bundle: serde_json::Value = serde_json::from_slice(BUNDLE).expect("fixture bundle");
+        let table = &bundle[snapshot]["continuity_session_heads"];
+        let columns = table["columns"].as_array().expect("fixture columns");
+        let head_index = columns
+            .iter()
+            .position(|column| column.as_str() == Some("head_json"))
+            .expect("head_json column");
+        let encoded = table["rows"][0][head_index]["b64"]
+            .as_str()
+            .expect("head_json base64");
+        let head_bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("decode head_json");
+        let head: serde_json::Value =
+            serde_json::from_slice(&head_bytes).expect("deserialize head_json");
+        let session_id =
+            meerkat_core::types::SessionId::parse(head["id"].as_str().expect("fixture session id"))
+                .expect("parse fixture session id");
+        let raw_visibility =
+            head["metadata"][meerkat_core::SESSION_TOOL_VISIBILITY_STATE_KEY].clone();
+        let visibility = serde_json::from_value(raw_visibility.clone())
+            .expect("deserialize fixture visibility state");
+        (session_id, raw_visibility, visibility)
+    }
+
+    fn legacy_shell_allow_filter(order_reversed: bool) -> meerkat_core::ToolFilter {
+        let mut names = LEGACY_SHELL_AND_COMMS_TOOL_NAMES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        if order_reversed {
+            names.reverse();
+        }
+        meerkat_core::ToolFilter::Allow(names.into_iter().collect())
+    }
+
+    fn heal_embedded_visibility_fixture(req: &mut CreateSessionRequest) {
+        let persisted = req
+            .build
+            .as_ref()
+            .and_then(|build| build.resume_session.clone());
+        heal_legacy_shell_tool_visibility(req, persisted.as_ref());
+    }
+
+    #[test]
+    fn fresh_shell_tooling_keeps_native_category_independent_of_builtins() {
+        let mut req = shell_visibility_request(None, None);
+
+        heal_embedded_visibility_fixture(&mut req);
 
         let build = req.build.expect("build options");
         assert_eq!(
@@ -8563,56 +8721,382 @@ shell = true
         );
         assert_eq!(
             build.override_builtins,
-            meerkat_core::ToolCategoryOverride::Enable,
-            "shell-only profiles must still enable Meerkat's builtin substrate"
+            meerkat_core::ToolCategoryOverride::Disable,
+            "native shell tooling must not enable broad builtins"
         );
-        let allow = match build.initial_tool_filter.expect("shell visibility filter") {
-            meerkat_core::ToolFilter::Allow(allow) => allow,
-            other => panic!("expected shell/comms allow filter, got {other:?}"),
-        };
-        for tool in SHELL_BUILTIN_TOOL_NAMES
+        assert_eq!(build.initial_tool_filter, None);
+    }
+
+    #[test]
+    fn shell_and_builtins_enabled_request_is_unchanged() {
+        let mut req = shell_visibility_request(None, None);
+        req.build.as_mut().expect("build options").override_builtins =
+            meerkat_core::ToolCategoryOverride::Enable;
+
+        heal_embedded_visibility_fixture(&mut req);
+
+        let build = req.build.expect("build options");
+        assert_eq!(
+            build.override_shell,
+            meerkat_core::ToolCategoryOverride::Enable
+        );
+        assert_eq!(
+            build.override_builtins,
+            meerkat_core::ToolCategoryOverride::Enable
+        );
+        assert_eq!(build.initial_tool_filter, None);
+    }
+
+    #[tokio::test]
+    async fn native_shell_resolved_catalog_preserves_mixed_external_surfaces() {
+        let external_names = [
+            "mcp__homecore__probe",
+            "list_members",
+            "memory_search",
+            "meerkat_schedule_list",
+            "generate_image",
+        ];
+        let tools = external_names
             .iter()
-            .chain(COMMS_TOOL_NAMES.iter())
-        {
-            assert!(allow.contains(tool), "missing expected tool {tool}");
-        }
+            .map(|name| {
+                Arc::new(meerkat_core::types::ToolDef::new(
+                    *name,
+                    "mixed-surface fixture",
+                    serde_json::json!({"type": "object"}),
+                ))
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let factory = meerkat::AgentFactory::new(temp.path());
+        let mut builder = meerkat::FactoryAgentBuilder::new(factory, meerkat::Config::default());
+        builder.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+        let service = meerkat_session::EphemeralSessionService::new(builder, 4);
+        let mut req = shell_visibility_request(None, None);
+        req.build.as_mut().expect("build options").external_tools =
+            Some(Arc::new(NamedDispatcher { tools }));
+
+        let result = meerkat_core::service::SessionService::create_session(&service, req)
+            .await
+            .expect("create deferred shell-only session");
+        let snapshot = service
+            .tool_scope_snapshot(&result.session_id)
+            .await
+            .expect("read tool scope")
+            .expect("live tool scope");
+        let visible = snapshot
+            .visible_names
+            .into_iter()
+            .map(meerkat_core::types::ToolName::into_string)
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = NATIVE_SHELL_TOOL_NAMES
+            .iter()
+            .copied()
+            .chain(external_names)
+            .map(String::from)
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(
+            visible, expected,
+            "native shell must add exactly four shell tools without filtering MCP, mob, memory, schedule, or image surfaces"
+        );
         for broad_builtin in ["task_list", "task_create", "apply_patch", "browse_skills"] {
-            assert!(
-                !allow.contains(broad_builtin),
-                "shell-only filter must not expose broad builtin {broad_builtin}",
-            );
+            assert!(!visible.contains(broad_builtin), "unexpected broad builtin");
         }
     }
 
     #[test]
-    fn non_shell_profiles_keep_builtin_override_unchanged() {
-        let mut req = CreateSessionRequest {
-            model: "gpt-5.5".to_string(),
-            prompt: meerkat_core::ContentInput::Text("test".to_string()),
-            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
-            max_tokens: None,
-            event_tx: None,
-            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
-            build: Some(meerkat_core::service::SessionBuildOptions {
-                override_builtins: meerkat_core::ToolCategoryOverride::Disable,
-                override_shell: meerkat_core::ToolCategoryOverride::Disable,
-                ..Default::default()
-            }),
-            labels: None,
-            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
-            injected_context: Vec::new(),
+    fn legacy_shell_visibility_heal_matches_set_order_and_preserves_base_filters() {
+        let original_state = meerkat_core::SessionToolVisibilityState {
+            capability_base_filter: meerkat_core::ToolFilter::Deny(
+                ["view_image".to_string()].into_iter().collect(),
+            ),
+            inherited_base_filter: meerkat_core::ToolFilter::Deny(
+                ["operator_only".to_string()].into_iter().collect(),
+            ),
+            active_filter: legacy_shell_allow_filter(false),
+            staged_filter: legacy_shell_allow_filter(true),
+            active_revision: 7,
+            staged_revision: 8,
+            ..Default::default()
         };
+        let mut req = shell_visibility_request(Some(original_state.clone()), None);
 
-        ensure_shell_tooling_build_substrate(&mut req);
+        heal_embedded_visibility_fixture(&mut req);
 
-        let build = req.build.expect("build options");
+        let build = req.build.as_ref().expect("build options");
         assert_eq!(
-            build.override_builtins,
-            meerkat_core::ToolCategoryOverride::Disable
+            build.initial_tool_filter,
+            Some(meerkat_core::ToolFilter::All)
         );
         assert_eq!(
-            build.override_shell,
-            meerkat_core::ToolCategoryOverride::Disable
+            build
+                .resume_session
+                .as_ref()
+                .expect("resumed session")
+                .try_tool_visibility_state()
+                .expect("parse visibility state"),
+            Some(original_state),
+            "MobKit must not rewrite capability, inherited, witness, or revision state"
+        );
+
+        heal_embedded_visibility_fixture(&mut req);
+        assert_eq!(
+            req.build.expect("build options").initial_tool_filter,
+            Some(meerkat_core::ToolFilter::All),
+            "the repair must be idempotent"
+        );
+    }
+
+    #[test]
+    fn legacy_shell_visibility_heal_accepts_omitted_staged_filter_default() {
+        let state = meerkat_core::SessionToolVisibilityState {
+            active_filter: legacy_shell_allow_filter(false),
+            staged_filter: meerkat_core::ToolFilter::All,
+            ..Default::default()
+        };
+        let mut req = shell_visibility_request(Some(state), None);
+
+        heal_embedded_visibility_fixture(&mut req);
+
+        assert_eq!(
+            req.build.expect("build options").initial_tool_filter,
+            Some(meerkat_core::ToolFilter::All)
+        );
+    }
+
+    #[test]
+    fn legacy_shell_visibility_heal_respects_explicit_current_filter() {
+        let state = meerkat_core::SessionToolVisibilityState {
+            active_filter: legacy_shell_allow_filter(false),
+            staged_filter: legacy_shell_allow_filter(false),
+            ..Default::default()
+        };
+        let explicit = meerkat_core::ToolFilter::Deny(
+            ["deliberately_hidden".to_string()].into_iter().collect(),
+        );
+        let mut req = shell_visibility_request(Some(state), Some(explicit.clone()));
+
+        heal_embedded_visibility_fixture(&mut req);
+
+        assert_eq!(
+            req.build.expect("build options").initial_tool_filter,
+            Some(explicit)
+        );
+    }
+
+    #[test]
+    fn legacy_shell_visibility_heal_ignores_nonmatching_durable_filters() {
+        let legacy_superset = LEGACY_SHELL_AND_COMMS_TOOL_NAMES
+            .iter()
+            .map(|name| (*name).to_string())
+            .chain(std::iter::once("memory_search".to_string()))
+            .collect();
+        for state in [
+            meerkat_core::SessionToolVisibilityState {
+                active_filter: meerkat_core::ToolFilter::Allow(
+                    ["shell".to_string()].into_iter().collect(),
+                ),
+                staged_filter: legacy_shell_allow_filter(false),
+                ..Default::default()
+            },
+            meerkat_core::SessionToolVisibilityState {
+                active_filter: meerkat_core::ToolFilter::Allow(legacy_superset),
+                staged_filter: legacy_shell_allow_filter(false),
+                ..Default::default()
+            },
+            meerkat_core::SessionToolVisibilityState {
+                active_filter: meerkat_core::ToolFilter::Allow(
+                    [
+                        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+                    ]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                ),
+                staged_filter: legacy_shell_allow_filter(false),
+                ..Default::default()
+            },
+            meerkat_core::SessionToolVisibilityState {
+                active_filter: legacy_shell_allow_filter(false),
+                staged_filter: meerkat_core::ToolFilter::Deny(
+                    ["task_create".to_string()].into_iter().collect(),
+                ),
+                ..Default::default()
+            },
+            meerkat_core::SessionToolVisibilityState::default(),
+            meerkat_core::SessionToolVisibilityState {
+                capability_base_filter: meerkat_core::ToolFilter::Deny(
+                    ["view_image".to_string()].into_iter().collect(),
+                ),
+                ..Default::default()
+            },
+        ] {
+            let mut req = shell_visibility_request(Some(state), None);
+            heal_embedded_visibility_fixture(&mut req);
+            assert_eq!(req.build.expect("build options").initial_tool_filter, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn pre_build_heal_reads_persisted_visibility_behind_id_only_resume_stub() {
+        let (session_id, raw_visibility, state) =
+            homecore_security_visibility_fixture("post_boot1_fresh");
+        let active_order = raw_visibility["active_filter"]["Allow"]
+            .as_array()
+            .expect("active Allow array");
+        let staged_order = raw_visibility["staged_filter"]["Allow"]
+            .as_array()
+            .expect("staged Allow array");
+        assert_ne!(
+            active_order, staged_order,
+            "the real HomeCore specimen must retain differently ordered Allow arrays"
+        );
+        assert_eq!(
+            raw_visibility["filter_witnesses"]
+                .as_object()
+                .expect("fixture witnesses")
+                .len(),
+            LEGACY_SHELL_AND_COMMS_TOOL_NAMES.len(),
+            "the real specimen must retain all legacy provenance witnesses"
+        );
+
+        let persisted = session_with_visibility_state(session_id.clone(), state.clone());
+        let mut req = shell_visibility_request(None, None);
+        req.build.as_mut().expect("build options").resume_session =
+            Some(meerkat_core::Session::with_id(session_id));
+        assert_eq!(
+            req.build
+                .as_ref()
+                .and_then(|build| build.resume_session.as_ref())
+                .expect("ID-only resume stub")
+                .try_tool_visibility_state()
+                .expect("parse stub visibility"),
+            None,
+            "the production actor route presents an ID-only resume stub"
+        );
+
+        let probe = Arc::new(AbsorberInnerProbe {
+            session: persisted,
+            loads: std::sync::atomic::AtomicU64::new(0),
+        });
+        let wrapped = PreBuildMobSessionService {
+            inner: probe.clone(),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        };
+
+        let (prepared, _) = wrapped
+            .prepare_create_request(req)
+            .await
+            .expect("prepare authoritative persisted resume");
+
+        assert_eq!(
+            probe.loads.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the heal must read the authoritative persisted head exactly once"
+        );
+        assert_eq!(
+            prepared.build.expect("build options").initial_tool_filter,
+            Some(meerkat_core::ToolFilter::All)
+        );
+        assert_eq!(
+            probe
+                .session
+                .try_tool_visibility_state()
+                .expect("parse persisted visibility"),
+            Some(state),
+            "MobKit must not mutate the persisted visibility document directly"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_build_heal_rejects_embedded_visibility_spoof() {
+        let session_id = meerkat_core::types::SessionId::new();
+        let embedded_legacy = meerkat_core::SessionToolVisibilityState {
+            active_filter: legacy_shell_allow_filter(false),
+            staged_filter: legacy_shell_allow_filter(true),
+            ..Default::default()
+        };
+        let persisted_current = meerkat_core::SessionToolVisibilityState::default();
+        let mut req = shell_visibility_request(None, None);
+        req.build.as_mut().expect("build options").resume_session = Some(
+            session_with_visibility_state(session_id.clone(), embedded_legacy),
+        );
+
+        let probe = Arc::new(AbsorberInnerProbe {
+            session: session_with_visibility_state(session_id, persisted_current),
+            loads: std::sync::atomic::AtomicU64::new(0),
+        });
+        let wrapped = PreBuildMobSessionService {
+            inner: probe.clone(),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        };
+
+        let (prepared, _) = wrapped
+            .prepare_create_request(req)
+            .await
+            .expect("prepare authoritative non-legacy resume");
+
+        assert_eq!(
+            probe.loads.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the embedded session document must never replace the authoritative persisted read"
+        );
+        assert_eq!(
+            prepared.build.expect("build options").initial_tool_filter,
+            None,
+            "request-carried legacy metadata must not trigger repair when durable authority disagrees"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_build_heal_is_noop_after_durable_transition() {
+        let session_id = meerkat_core::types::SessionId::new();
+        let persisted_current = meerkat_core::SessionToolVisibilityState {
+            active_filter: meerkat_core::ToolFilter::All,
+            staged_filter: meerkat_core::ToolFilter::All,
+            active_revision: 2,
+            staged_revision: 2,
+            ..Default::default()
+        };
+        let mut req = shell_visibility_request(None, None);
+        req.build.as_mut().expect("build options").resume_session =
+            Some(meerkat_core::Session::with_id(session_id.clone()));
+
+        let probe = Arc::new(AbsorberInnerProbe {
+            session: session_with_visibility_state(session_id, persisted_current),
+            loads: std::sync::atomic::AtomicU64::new(0),
+        });
+        let wrapped = PreBuildMobSessionService {
+            inner: probe.clone(),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        };
+
+        let (prepared, _) = wrapped
+            .prepare_create_request(req)
+            .await
+            .expect("prepare already-healed resume");
+
+        assert_eq!(probe.loads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            prepared.build.expect("build options").initial_tool_filter,
+            None,
+            "a second resume must not restage a transition after durable authority reached All"
         );
     }
 
