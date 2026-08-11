@@ -262,8 +262,17 @@ fn normalize_attention_status_param(object: &mut Map<String, Value>) -> Result<(
 /// — the default only (meerkat 0.8.22, meerkat/src/surface.rs,
 /// `resolve_workgraph_attention_projection_for_session`) — so a goal or
 /// binding filed anywhere else is silently inert: it never reaches its
-/// member. Reject rather than accept-and-strand. Item-level methods keep
-/// namespace passthrough (items don't ride the overlay).
+/// member. Reject rather than accept-and-strand.
+///
+/// ITEM-LEVEL PASSTHROUGH IS GONE AS OF 0.8.22 and this comment used to say
+/// otherwise. One `WorkGraphService` owns ONE IMMUTABLE namespace grant -
+/// upstream states it directly: "a namespace grant authorizes exactly one
+/// immutable namespace" (meerkat-workgraph/src/service.rs). MobKit installs a
+/// single service scoped to the canonical mob realm + default namespace, so an
+/// item filed into a sidecar namespace is refused by the grant, typed and
+/// fail-closed, rather than passed through. That refusal is CORRECT: a sidecar
+/// namespace needs its own service, grant and surface, not a wildcard on this
+/// one. Never widen the grant to restore the old passthrough.
 fn reject_non_default_namespace(
     service: &WorkGraphService,
     object: &Map<String, Value>,

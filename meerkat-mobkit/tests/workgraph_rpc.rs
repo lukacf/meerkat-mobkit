@@ -1409,15 +1409,21 @@ async fn non_default_namespace_is_rejected_on_goal_and_attention_methods() {
     .await;
     assert!(response["error"].is_null(), "{response:#?}");
 
-    // Item-level methods keep namespace passthrough.
+    // Item-level methods NO LONGER pass a namespace through. Since 0.8.22 one
+    // service owns one immutable grant, so a sidecar namespace is refused
+    // fail-closed rather than stranded in a scope no operator surface reads.
+    // A sidecar needs its own service/grant/surface.
     let response = rpc(
         &runtime,
         "mobkit/workgraph/create",
         json!({ "title": "namespaced item", "namespace": "sidecar" }),
     )
     .await;
-    assert!(response["error"].is_null(), "{response:#?}");
-    assert_eq!(result(&response)["item"]["namespace"], json!("sidecar"));
+    assert_eq!(
+        response["error"]["code"],
+        json!(-32602),
+        "a non-default namespace must be refused typed, not stranded: {response:#?}"
+    );
     runtime.mob_handle().stop().await.expect("stop");
 }
 
