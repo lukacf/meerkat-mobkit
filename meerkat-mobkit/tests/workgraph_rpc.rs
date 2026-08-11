@@ -227,7 +227,10 @@ async fn item_lifecycle_end_to_end() {
     let item_id = item["id"].as_str().expect("item id").to_string();
     assert_eq!(item["title"], json!("ship the release"));
     assert_eq!(item["status"], json!("open"));
-    assert_eq!(item["realm_id"], json!("workgraph-rpc-mob"));
+    // CANONICAL mob realm (`mob.<mob_id>`) since the item-6 fix; the mob id
+    // itself is unprefixed. Pinned as a literal because the spelling decides
+    // where rows physically live - see workgraph_wiring::scoped_workgraph_service.
+    assert_eq!(item["realm_id"], json!("mob.workgraph-rpc-mob"));
     let revision = item["revision"].as_u64().expect("revision");
 
     // get
