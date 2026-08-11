@@ -8,7 +8,8 @@ MobKit's module system manages the lifecycle, routing, and communication for ope
 
 ## Module call routing
 
-When the runtime needs to invoke a module -- for a delivery send, schedule evaluation, or gating decision -- it routes the call through `route_module_call`:
+When the runtime needs to invoke a module - for example, for a delivery send
+or memory conflict lookup - it routes the call through `route_module_call`:
 
 ```rust
 let response = route_module_call(&runtime_handle, ModuleRouteRequest {
@@ -26,7 +27,7 @@ The routing layer:
 
 ## MCP boundary
 
-Core modules (router, delivery, scheduling, gating, memory) communicate over MCP tool calls. The MCP boundary:
+Core module-backed operations (router, delivery, and memory) communicate over MCP tool calls. The MCP boundary:
 
 - Serializes the tool name and arguments to JSON
 - Sends the request to the module's MCP server
@@ -66,10 +67,10 @@ Non-MCP modules communicate over a JSON-line protocol on stdout/stderr:
     The first line of stdout must be a JSON capabilities declaration:
 
     ```json
-    {"contract_version": "0.4.0"}
+    {"contract_version": "0.5.0"}
     ```
 
-    The runtime validates the contract version matches `MOBKIT_CONTRACT_VERSION` (`"0.4.0"`).
+    The runtime validates the contract version matches `MOBKIT_CONTRACT_VERSION` (`"0.5.0"`).
   </Step>
   <Step title="Request/Response">
     Subsequent communication uses JSON-RPC over the JSON-line protocol. Each line is a complete JSON object.
@@ -78,19 +79,8 @@ Non-MCP modules communicate over a JSON-line protocol on stdout/stderr:
 
 ### RPC routing
 
-Subprocess modules receive JSON-RPC requests routed by method name:
-
-```rust
-let response = route_module_call_rpc_subprocess(
-    &module_process,
-    &JsonRpcRequest {
-        jsonrpc: "2.0".to_string(),
-        id: Some(json!(1)),
-        method: "scheduling.evaluate".to_string(),
-        params: json!({ "schedules": [...] }),
-    },
-)?;
-```
+Subprocess modules receive JSON-RPC requests routed by method name. Durable
+scheduling does not use this module path; it is owned by `ScheduleService`.
 
 ## Supervisor
 

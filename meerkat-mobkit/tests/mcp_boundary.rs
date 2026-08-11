@@ -26,7 +26,7 @@ use meerkat_mobkit::runtime::{
 use meerkat_mobkit::{
     DiscoverySpec, GatingEvaluateRequest, GatingOutcome, GatingRiskTier, McpBoundaryError,
     MobKitConfig, ModuleConfig, ModuleRouteError, ModuleRouteRequest, RestartPolicy,
-    RuntimeBoundaryError, ScheduleDefinition, UnifiedEvent, start_mobkit_runtime,
+    RuntimeBoundaryError, start_mobkit_runtime,
 };
 use serde_json::json;
 use tempfile::tempdir;
@@ -401,7 +401,7 @@ fn phase_c_typed_errors_surface_for_unloaded_and_failed_mcp_modules() {
 
 #[test]
 #[ignore]
-fn phase_c_req_c005_and_c007_memory_conflict_read_and_scheduling_injection_use_mcp() {
+fn phase_c_req_c005_memory_conflict_read_uses_mcp() {
     let fixture_binary = fixture_binary_path();
     let temp = tempdir().expect("tempdir");
     let memory_log = temp.path().join("phase-c-memory.log");
@@ -455,70 +455,6 @@ fn phase_c_req_c005_and_c007_memory_conflict_read_and_scheduling_injection_use_m
             .any(|line| line.contains("memory:call:memory.conflict_read")),
         "memory MCP conflict-read tool should be called"
     );
-
-    let scheduling_log = temp.path().join("phase-c-scheduling.log");
-    let mut scheduling_runtime = start_mobkit_runtime(
-        MobKitConfig {
-            modules: vec![fixture_module("scheduling", &fixture_binary)],
-            discovery: DiscoverySpec {
-                namespace: "phase-c".to_string(),
-                modules: vec!["scheduling".to_string()],
-            },
-            pre_spawn: vec![meerkat_mobkit::PreSpawnData {
-                module_id: "scheduling".to_string(),
-                env: mcp_env(
-                    &scheduling_log,
-                    &[
-                        ("MOBKIT_PHASE_C_SCHEDULING_MEMBER", "mob-runtime"),
-                        ("MOBKIT_PHASE_C_SCHEDULING_MESSAGE_PREFIX", "tick"),
-                    ],
-                ),
-            }],
-        },
-        vec![],
-        Duration::from_secs(2),
-    )
-    .expect("scheduling runtime should start");
-
-    let dispatch = scheduling_runtime
-        .dispatch_schedule_tick(
-            &[ScheduleDefinition {
-                schedule_id: "deploy-minute".to_string(),
-                interval: "*/1m".to_string(),
-                timezone: "UTC".to_string(),
-                enabled: true,
-                jitter_ms: 0,
-                catch_up: false,
-            }],
-            60_000,
-        )
-        .expect("dispatch should succeed");
-    let injected_event_present = scheduling_runtime.merged_events().iter().any(|event| {
-        matches!(
-            &event.event,
-            UnifiedEvent::Module(module_event)
-                if module_event.module == "runtime"
-                    && module_event.event_type == "injection.dispatch"
-        )
-    });
-    scheduling_runtime.shutdown();
-
-    assert_eq!(dispatch.dispatched.len(), 1);
-    let injection = dispatch.dispatched[0]
-        .runtime_injection
-        .as_ref()
-        .expect("runtime injection should be populated");
-    assert_eq!(injection.member_id, "mob-runtime");
-    assert_eq!(injection.message, "tick:deploy-minute");
-    assert!(dispatch.dispatched[0].runtime_injection_error.is_none());
-    assert!(injected_event_present);
-    let scheduling_lines = log_lines(&scheduling_log);
-    assert!(
-        scheduling_lines
-            .iter()
-            .any(|line| line.contains("scheduling:call:scheduling.dispatch")),
-        "scheduling MCP dispatch tool should be called"
-    );
 }
 
 #[test]
@@ -530,7 +466,6 @@ fn phase_c_req_c002_core_flows_require_mcp_for_loaded_core_modules() {
                 legacy_ready_module("router"),
                 legacy_ready_module("delivery"),
                 legacy_ready_module("memory"),
-                legacy_ready_module("scheduling"),
             ],
             discovery: DiscoverySpec {
                 namespace: "phase-c".to_string(),
@@ -538,7 +473,6 @@ fn phase_c_req_c002_core_flows_require_mcp_for_loaded_core_modules() {
                     "router".to_string(),
                     "delivery".to_string(),
                     "memory".to_string(),
-                    "scheduling".to_string(),
                 ],
             },
             pre_spawn: vec![],
@@ -567,27 +501,6 @@ fn phase_c_req_c002_core_flows_require_mcp_for_loaded_core_modules() {
         entity: Some("router".to_string()),
         topic: Some("deploy".to_string()),
     });
-    let schedule_dispatch = runtime
-        .dispatch_schedule_tick(
-            &[ScheduleDefinition {
-                schedule_id: "phase-c-legacy".to_string(),
-                interval: "*/1m".to_string(),
-                timezone: "UTC".to_string(),
-                enabled: true,
-                jitter_ms: 0,
-                catch_up: false,
-            }],
-            60_000,
-        )
-        .expect("schedule dispatch should still return report");
-    let runtime_injection_failed_event = runtime.merged_events().iter().any(|event| {
-        matches!(
-            &event.event,
-            UnifiedEvent::Module(module_event)
-                if module_event.module == "runtime"
-                    && module_event.event_type == "runtime.injection.failed"
-        )
-    });
     let memory_audit = runtime.gating_audit_entries(8);
     runtime.shutdown();
 
@@ -612,20 +525,6 @@ fn phase_c_req_c002_core_flows_require_mcp_for_loaded_core_modules() {
             .any(|entry| entry.event_type == "memory_conflict_lookup_failed"),
         "expected memory_conflict_lookup_failed audit entry"
     );
-
-    assert_eq!(schedule_dispatch.dispatched.len(), 1);
-    let runtime_injection_error = schedule_dispatch.dispatched[0]
-        .runtime_injection_error
-        .as_deref()
-        .expect("runtime injection error should be surfaced");
-    assert!(
-        runtime_injection_error.contains("McpRequired"),
-        "expected MCP-required scheduling error, got {runtime_injection_error}"
-    );
-    assert!(
-        runtime_injection_failed_event,
-        "expected runtime.injection.failed event"
-    );
 }
 
 #[test]
@@ -637,7 +536,6 @@ fn phase_c_req_c002_generic_route_call_requires_mcp_for_loaded_core_modules() {
                 legacy_ready_module("router"),
                 legacy_ready_module("delivery"),
                 legacy_ready_module("memory"),
-                legacy_ready_module("scheduling"),
             ],
             discovery: DiscoverySpec {
                 namespace: "phase-c".to_string(),
@@ -645,7 +543,6 @@ fn phase_c_req_c002_generic_route_call_requires_mcp_for_loaded_core_modules() {
                     "router".to_string(),
                     "delivery".to_string(),
                     "memory".to_string(),
-                    "scheduling".to_string(),
                 ],
             },
             pre_spawn: vec![],
@@ -659,7 +556,6 @@ fn phase_c_req_c002_generic_route_call_requires_mcp_for_loaded_core_modules() {
         ("router", "router.echo"),
         ("delivery", "delivery.echo"),
         ("memory", "memory.echo"),
-        ("scheduling", "scheduling.echo"),
     ] {
         let observed = meerkat_mobkit::route_module_call(
             &runtime,
@@ -795,75 +691,6 @@ fn phase_c_req_c005_memory_mcp_failure_falls_back_to_safe_draft() {
             .iter()
             .any(|entry| entry.event_type == "memory_conflict_lookup_failed"),
         "expected memory_conflict_lookup_failed audit event"
-    );
-}
-
-#[test]
-#[ignore]
-fn phase_c_req_c007_scheduling_mcp_failure_surfaces_runtime_injection_error() {
-    let fixture_binary = fixture_binary_path();
-    let temp = tempdir().expect("tempdir");
-    let log_path = temp.path().join("phase-c-scheduling-failure.log");
-
-    let mut runtime = start_mobkit_runtime(
-        MobKitConfig {
-            modules: vec![fixture_module("scheduling", &fixture_binary)],
-            discovery: DiscoverySpec {
-                namespace: "phase-c".to_string(),
-                modules: vec!["scheduling".to_string()],
-            },
-            pre_spawn: vec![meerkat_mobkit::PreSpawnData {
-                module_id: "scheduling".to_string(),
-                env: mcp_env(
-                    &log_path,
-                    &[("MOBKIT_PHASE_C_FAIL_TOOL", "scheduling.dispatch")],
-                ),
-            }],
-        },
-        vec![],
-        Duration::from_secs(2),
-    )
-    .expect("scheduling runtime should start");
-
-    let dispatch = runtime
-        .dispatch_schedule_tick(
-            &[ScheduleDefinition {
-                schedule_id: "phase-c-scheduling-failure".to_string(),
-                interval: "*/1m".to_string(),
-                timezone: "UTC".to_string(),
-                enabled: true,
-                jitter_ms: 0,
-                catch_up: false,
-            }],
-            60_000,
-        )
-        .expect("dispatch should still produce report");
-    let failure_event_present = runtime.merged_events().iter().any(|event| {
-        matches!(
-            &event.event,
-            UnifiedEvent::Module(module_event)
-                if module_event.module == "runtime"
-                    && module_event.event_type == "runtime.injection.failed"
-        )
-    });
-    runtime.shutdown();
-
-    assert_eq!(dispatch.dispatched.len(), 1);
-    let runtime_injection_error = dispatch.dispatched[0]
-        .runtime_injection_error
-        .as_deref()
-        .expect("runtime injection error should be surfaced");
-    assert!(
-        runtime_injection_error.contains("ToolCallFailed"),
-        "expected MCP tool-call failure, got {runtime_injection_error}"
-    );
-    assert!(
-        runtime_injection_error.contains("scheduling.dispatch"),
-        "expected scheduling.dispatch tool name in error, got {runtime_injection_error}"
-    );
-    assert!(
-        failure_event_present,
-        "expected runtime.injection.failed event"
     );
 }
 

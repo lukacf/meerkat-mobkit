@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Breaking: removed `MobKitBuilder.scheduling(...)`, static schedule-file
+  discovery, and `MobHandle.schedulingEvaluate` / `schedulingDispatch`.
+  Create durable schedules through Meerkat schedule tools or
+  `ScheduleService`.
+
 ### Gateway stderr passthrough
 
 - Gateway stderr (tracing lines, panic hooks, storage-migration progress) is

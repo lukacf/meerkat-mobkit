@@ -34,9 +34,6 @@ const DELIVERY_ADAPTER_ENV: &str = "MOBKIT_PHASE_C_DELIVERY_ADAPTER";
 const DELIVERY_FORCE_FAIL_ENV: &str = "MOBKIT_PHASE_C_DELIVERY_FORCE_FAIL";
 const MEMORY_CONFLICT_KEY_ENV: &str = "MOBKIT_PHASE_C_MEMORY_CONFLICT_KEY";
 const MEMORY_CONFLICT_REASON_ENV: &str = "MOBKIT_PHASE_C_MEMORY_CONFLICT_REASON";
-const SCHEDULING_MEMBER_ENV: &str = "MOBKIT_PHASE_C_SCHEDULING_MEMBER";
-const SCHEDULING_MESSAGE_PREFIX_ENV: &str = "MOBKIT_PHASE_C_SCHEDULING_MESSAGE_PREFIX";
-const SCHEDULING_DISABLE_INJECTION_ENV: &str = "MOBKIT_PHASE_C_SCHEDULING_DISABLE_INJECTION";
 const HANG_ON_ENV: &str = "MOBKIT_PHASE_C_HANG_ON";
 const HANG_ON_FILE_ENV: &str = "MOBKIT_PHASE_C_HANG_ON_FILE";
 const DELAY_ON_ENV: &str = "MOBKIT_PHASE_C_DELAY_ON";
@@ -275,29 +272,6 @@ fn handle_tool_call(module: &str, id: Value, request: &Value) -> Value {
                 })
             }
         }
-        ("scheduling", "scheduling.dispatch") => {
-            let disable_injection =
-                env::var(SCHEDULING_DISABLE_INJECTION_ENV).ok().as_deref() == Some("1");
-            if disable_injection {
-                json!({})
-            } else {
-                let member_id =
-                    env::var(SCHEDULING_MEMBER_ENV).unwrap_or_else(|_| "runtime".to_string());
-                let prefix = env::var(SCHEDULING_MESSAGE_PREFIX_ENV)
-                    .unwrap_or_else(|_| "dispatch".to_string());
-                let schedule_id = args
-                    .get("schedule_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let message = format!("{prefix}:{schedule_id}");
-                json!({
-                    "runtime_injection": {
-                        "member_id": member_id,
-                        "message": message,
-                    }
-                })
-            }
-        }
         _ => {
             return json!({
                 "jsonrpc": "2.0",
@@ -327,7 +301,6 @@ fn tool_descriptors(module: &str) -> Vec<(&'static str, &'static str)> {
         "router" => vec![("routing.resolve", "Resolve routing overrides")],
         "delivery" => vec![("delivery.send", "Dispatch delivery metadata")],
         "memory" => vec![("memory.conflict_read", "Read memory conflict signals")],
-        "scheduling" => vec![("scheduling.dispatch", "Return runtime dispatch injections")],
         _ => Vec::new(),
     }
 }

@@ -543,16 +543,14 @@ impl Default for StewardConfig {
 }
 
 impl StewardConfig {
-    /// Validate a cadence expression against the scheduling subsystem's
-    /// interval-marker grammar; returns the tick interval.
+    /// Validate an interval-marker cadence and return its tick interval.
     pub fn parse_cadence(cadence: &str) -> Result<Duration, StewardError> {
-        crate::runtime::scheduling::parse_interval_marker_ms(cadence)
+        parse_interval_marker_ms(cadence)
             .map(Duration::from_millis)
             .ok_or_else(|| {
                 StewardError::Config(format!(
                     "cadence '{cadence}' is not an interval marker (expected `*/N{{s|m|h|d}}`, \
-                     e.g. '*/6h'; cron cadences require the scheduling subsystem and are not \
-                     yet supported for the steward)"
+                     e.g. '*/6h'; cron cadences are not supported for the steward)"
                 ))
             })
     }
@@ -560,6 +558,27 @@ impl StewardConfig {
     pub fn cadence_interval(&self) -> Result<Duration, StewardError> {
         Self::parse_cadence(&self.cadence)
     }
+}
+
+fn parse_interval_marker_ms(interval: &str) -> Option<u64> {
+    let marker = interval.trim().to_ascii_lowercase();
+    let marker = marker.strip_prefix("*/")?;
+    if marker.len() < 2 {
+        return None;
+    }
+    let (count_part, unit_part) = marker.split_at(marker.len() - 1);
+    let count = count_part.parse::<u64>().ok()?;
+    if count == 0 {
+        return None;
+    }
+    let unit_ms = match unit_part {
+        "s" => 1_000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        _ => return None,
+    };
+    count.checked_mul(unit_ms)
 }
 
 // ---------------------------------------------------------------------------

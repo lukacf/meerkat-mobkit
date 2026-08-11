@@ -18,9 +18,8 @@ use crate::runtime::{
     LocalJsonMemoryStoreError, MemoryIndexError, MemoryIndexRequest, MemoryQueryRequest,
     MobkitRuntimeHandle, ModuleRouteError, ModuleRouteRequest, ROUTING_RETRY_MAX_CAP,
     RoutingResolveError, RoutingResolveRequest, RuntimeDecisionState, RuntimeRoute,
-    RuntimeRouteMutationError, ScheduleDefinition, ScheduleValidationError, SessionPersistenceRow,
-    SubscribeError, SubscribeRequest, SubscribeScope, handle_console_rest_json_route,
-    route_module_call, validate_schedules,
+    RuntimeRouteMutationError, SessionPersistenceRow, SubscribeError, SubscribeRequest,
+    SubscribeScope, handle_console_rest_json_route, route_module_call,
 };
 use crate::unified_runtime::{EventQuery, UnifiedRuntime};
 
@@ -30,7 +29,6 @@ pub(crate) mod memory_methods;
 pub(crate) mod mob_methods;
 pub(crate) mod params;
 mod routing_delivery_methods;
-mod scheduling_methods;
 mod session_store_methods;
 pub(crate) mod storage_methods;
 mod subscribe_methods;
@@ -54,7 +52,6 @@ use routing_delivery_methods::{
     parse_routing_resolve_params, parse_routing_route_add_params,
     parse_routing_route_delete_params, parse_routing_routes_list_params,
 };
-use scheduling_methods::{format_schedule_validation_error, parse_scheduling_params};
 use session_store_methods::{
     BigQuerySessionStoreRpcError, format_bigquery_store_error, parse_bigquery_session_store_params,
     run_bigquery_session_store_request,
@@ -62,8 +59,7 @@ use session_store_methods::{
 use subscribe_methods::{SubscribeParamsError, parse_subscribe_request};
 
 pub const JSONRPC_VERSION: &str = "2.0";
-pub const MOBKIT_CONTRACT_VERSION: &str = "0.4.0";
-pub const MAX_SCHEDULES_PER_REQUEST: usize = 256;
+pub const MOBKIT_CONTRACT_VERSION: &str = "0.5.0";
 pub(crate) const MOBPACK_AUTHORING_METHODS: &[&str] = &[
     "mobkit/mobpacks/schema",
     "mobkit/mobpacks/catalogs",
@@ -552,8 +548,6 @@ pub fn handle_mobkit_rpc_json(
                 "mobkit/capabilities",
                 "mobkit/reconcile",
                 "mobkit/spawn_member",
-                "mobkit/scheduling/evaluate",
-                "mobkit/scheduling/dispatch",
                 "mobkit/routing/resolve",
                 "mobkit/routing/routes/list",
                 "mobkit/routing/routes/add",
@@ -738,72 +732,6 @@ pub fn handle_mobkit_rpc_json(
                 }
             }
         }
-        "mobkit/scheduling/evaluate" => match parse_scheduling_params(&request.params) {
-            Ok((schedules, tick_ms)) => match runtime.evaluate_schedule_tick(&schedules, tick_ms) {
-                Ok(evaluation) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: Some(serde_json::to_value(evaluation).unwrap_or(Value::Null)),
-                    error: None,
-                },
-                Err(err) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: format!(
-                            "Invalid params: {}",
-                            format_schedule_validation_error(err)
-                        ),
-                        data: None,
-                    }),
-                },
-            },
-            Err(message) => JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id,
-                result: None,
-                error: Some(JsonRpcError {
-                    code: -32602,
-                    message: format!("Invalid params: {message}"),
-                    data: None,
-                }),
-            },
-        },
-        "mobkit/scheduling/dispatch" => match parse_scheduling_params(&request.params) {
-            Ok((schedules, tick_ms)) => match runtime.dispatch_schedule_tick(&schedules, tick_ms) {
-                Ok(dispatch) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: Some(serde_json::to_value(dispatch).unwrap_or(Value::Null)),
-                    error: None,
-                },
-                Err(err) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: format!(
-                            "Invalid params: {}",
-                            format_schedule_validation_error(err)
-                        ),
-                        data: None,
-                    }),
-                },
-            },
-            Err(message) => JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id,
-                result: None,
-                error: Some(JsonRpcError {
-                    code: -32602,
-                    message: format!("Invalid params: {message}"),
-                    data: None,
-                }),
-            },
-        },
         "mobkit/routing/resolve" => {
             match parse_routing_resolve_params(&request.params).and_then(|resolve_request| {
                 runtime
@@ -1691,8 +1619,6 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/capabilities",
                 "mobkit/reconcile",
                 "mobkit/spawn_member",
-                "mobkit/scheduling/evaluate",
-                "mobkit/scheduling/dispatch",
                 "mobkit/routing/resolve",
                 "mobkit/routing/routes/list",
                 "mobkit/routing/routes/add",
@@ -2133,73 +2059,6 @@ async fn handle_unified_rpc_json_inner(
                 }
             }
         }
-        "mobkit/scheduling/evaluate" => match parse_scheduling_params(&request.params) {
-            Ok((schedules, tick_ms)) => {
-                match runtime.evaluate_schedule_tick(&schedules, tick_ms).await {
-                    Ok(evaluation) => JsonRpcResponse {
-                        jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id,
-                        result: Some(serde_json::to_value(evaluation).unwrap_or(Value::Null)),
-                        error: None,
-                    },
-                    Err(err) => JsonRpcResponse {
-                        jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id,
-                        result: None,
-                        error: Some(JsonRpcError {
-                            code: -32602,
-                            message: format!(
-                                "Invalid params: {}",
-                                format_schedule_validation_error(err)
-                            ),
-                            data: None,
-                        }),
-                    },
-                }
-            }
-            Err(message) => JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id,
-                result: None,
-                error: Some(JsonRpcError {
-                    code: -32602,
-                    message: format!("Invalid params: {message}"),
-                    data: None,
-                }),
-            },
-        },
-        "mobkit/scheduling/dispatch" => match parse_scheduling_params(&request.params) {
-            Ok((schedules, tick_ms)) => {
-                match runtime.dispatch_schedule_tick(&schedules, tick_ms).await {
-                    Ok(dispatch) => JsonRpcResponse {
-                        jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id,
-                        result: Some(serde_json::to_value(dispatch).unwrap_or(Value::Null)),
-                        error: None,
-                    },
-                    Err(err) => JsonRpcResponse {
-                        jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id,
-                        result: None,
-                        error: Some(JsonRpcError {
-                            code: -32602,
-                            message: format!("Invalid params: {err}"),
-                            data: None,
-                        }),
-                    },
-                }
-            }
-            Err(message) => JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id,
-                result: None,
-                error: Some(JsonRpcError {
-                    code: -32602,
-                    message: format!("Invalid params: {message}"),
-                    data: None,
-                }),
-            },
-        },
         "mobkit/routing/resolve" => {
             let resolve_result = match parse_routing_resolve_params(&request.params) {
                 Ok(resolve_request) => runtime

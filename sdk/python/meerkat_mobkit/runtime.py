@@ -562,8 +562,6 @@ class MobKitRuntime:
             runtime_options["workgraph"] = self._config.workgraph_enabled
         if self._config.routing_config_path:
             runtime_options["routing_config_path"] = self._config.routing_config_path
-        if self._config.scheduling_files:
-            runtime_options["scheduling_files"] = self._config.scheduling_files
         if self._config.host_runnables:
             runtime_options["host_runnables"] = list(self._config.host_runnables)
         if self._config.memory_config:
@@ -1255,28 +1253,6 @@ class MobHandle:
             params["agent_id"] = agent_id
         raw = await self._runtime._rpc("mobkit/events/subscribe", params)
         return SubscribeResult.from_dict(raw)
-
-    async def scheduling_evaluate(
-        self,
-        schedules: list[dict[str, Any]],
-        tick_ms: int,
-    ) -> Any:
-        """Evaluate configured schedules at ``tick_ms``."""
-        return await self._runtime._rpc(
-            "mobkit/scheduling/evaluate",
-            {"schedules": schedules, "tick_ms": tick_ms},
-        )
-
-    async def scheduling_dispatch(
-        self,
-        schedules: list[dict[str, Any]],
-        tick_ms: int,
-    ) -> Any:
-        """Dispatch due schedules at ``tick_ms``."""
-        return await self._runtime._rpc(
-            "mobkit/scheduling/dispatch",
-            {"schedules": schedules, "tick_ms": tick_ms},
-        )
 
     async def resolve_routing(self, recipient: str, **kwargs: Any) -> RoutingResolution:
         """Resolve a routing target for the given recipient."""

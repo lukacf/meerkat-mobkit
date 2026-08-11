@@ -371,7 +371,7 @@ function startMockConsoleServer(port, options = {}) {
       if (method === "GET" && url === "/console/experience") {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
-          contract_version: "0.4.0",
+          contract_version: "0.5.0",
           runtime_capabilities: {
             can_send_messages: true,
             can_retire_members: true,

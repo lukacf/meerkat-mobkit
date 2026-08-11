@@ -390,7 +390,7 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
         ])
     );
 
-    assert_eq!(console_json["contract_version"], json!("0.4.0"));
+    assert_eq!(console_json["contract_version"], json!("0.5.0"));
     assert_eq!(
         console_json["runtime_capabilities"],
         json!({

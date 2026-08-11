@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- **Item 14 phase B** - removed the second scheduling authority as one breaking
+  contract change. The stateless `mobkit/scheduling/evaluate` and
+  `mobkit/scheduling/dispatch` methods now return `-32601`,
+  `runtime_options.scheduling_files` is rejected, and the Rust/Python/
+  TypeScript static-evaluation surfaces are gone. `MOBKIT_CONTRACT_VERSION`
+  is now `0.5.0`. Durable Meerkat `ScheduleService` storage, schedule tools,
+  firing hosts, targets, `host_runnables`, and `callback/schedule_fire` remain
+  the single scheduling path.
+
 ## [0.8.16] - 2026-08-11
 
 Paired release on meerkat v0.8.22. Delivers the owner-ratified 26-item

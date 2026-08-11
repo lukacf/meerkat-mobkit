@@ -187,7 +187,7 @@ describe("storage census model", () => {
 
   it("rides StatusResult when present", () => {
     const status = parseStatusResult({
-      contract_version: "0.4.0",
+      contract_version: "0.5.0",
       running: true,
       loaded_modules: [],
       storage: CENSUS_WIRE,
@@ -201,7 +201,7 @@ describe("storage census model", () => {
 
   it("is absent from StatusResult when the wire has none", () => {
     const status = parseStatusResult({
-      contract_version: "0.4.0",
+      contract_version: "0.5.0",
       running: true,
       loaded_modules: [],
     });
@@ -210,7 +210,7 @@ describe("storage census model", () => {
 
   it("rides CapabilitiesResult when present", () => {
     const capabilities = parseCapabilitiesResult({
-      contract_version: "0.4.0",
+      contract_version: "0.5.0",
       methods: ["mobkit/status"],
       loaded_modules: [],
       storage: CENSUS_WIRE,

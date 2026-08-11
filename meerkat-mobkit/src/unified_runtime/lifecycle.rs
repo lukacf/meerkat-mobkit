@@ -6,16 +6,11 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use meerkat_mob::SpawnMemberSpec;
-use serde_json::json;
-use tokio::runtime::RuntimeFlavor;
 use tokio::sync::mpsc::error::TryRecvError;
 
-use crate::mob_handle_runtime::{MobRuntimeError, send_message_on_mob};
-use crate::runtime::{
-    MobkitRuntimeHandle, RuntimeDecisionState, ScheduleDefinition, ScheduleDispatchReport,
-    ScheduleValidationError,
-};
-use crate::types::{EventEnvelope, ModuleEvent, UnifiedEvent};
+use crate::mob_handle_runtime::MobRuntimeError;
+use crate::runtime::RuntimeDecisionState;
+use crate::types::{EventEnvelope, UnifiedEvent};
 
 use super::types::{
     IdentityAuthorityReleaseOutcome, RediscoverReport, ShutdownDrainReport, UnifiedRuntimeError,
@@ -475,162 +470,6 @@ impl UnifiedRuntime {
     ) -> Option<Result<EventEnvelope<UnifiedEvent>, TryRecvError>> {
         Some(match ingress {
             MobEventIngress::Forwarder(forwarder) => forwarder.event_rx.try_recv(),
-        })
-    }
-
-    pub async fn dispatch_schedule_tick(
-        &self,
-        schedules: &[ScheduleDefinition],
-        tick_ms: u64,
-    ) -> Result<ScheduleDispatchReport, UnifiedRuntimeError> {
-        if self.shutting_down.load(Ordering::SeqCst) {
-            return Err(UnifiedRuntimeError::RuntimeShuttingDown);
-        }
-        let mut dispatch_report = self
-            .dispatch_schedule_tick_blocking(schedules, tick_ms)
-            .await?;
-
-        for dispatch in &mut dispatch_report.dispatched {
-            let Some(runtime_injection) = dispatch.runtime_injection.clone() else {
-                continue;
-            };
-
-            let member_alias =
-                crate::member_comms_id::runtime_alias_str(runtime_injection.member_id.as_str())
-                    .into_owned();
-            let injection_result = if let Some(identity_runtime) = self.identity_runtime() {
-                if let Some(identity) = identity_runtime
-                    .identity_for_member_mutation(&member_alias)
-                    .await
-                {
-                    let input = crate::identity_first::DispatchInput::with_origin(
-                        runtime_injection.message.clone(),
-                        crate::identity_first::DispatchOrigin::Scheduler,
-                    );
-                    identity_runtime
-                        .dispatch_member_alias_with_session_tracked(
-                            &identity,
-                            &member_alias,
-                            &input,
-                        )
-                        .await
-                        .map_err(|error| error.to_string())
-                        .and_then(|session_id| {
-                            session_id.map(|value| value.to_string()).ok_or_else(|| {
-                                "identity schedule dispatch returned no bridge session".to_string()
-                            })
-                        })
-                } else if crate::member_comms_id::is_reserved_generated_alias(&member_alias) {
-                    Err(format!(
-                        "generated member alias is not owned by the identity runtime: {member_alias}"
-                    ))
-                } else {
-                    send_message_on_mob(
-                        &self.mob_handle(),
-                        &member_alias,
-                        runtime_injection.message.clone(),
-                    )
-                    .await
-                    .map_err(|error| error.to_string())
-                }
-            } else if crate::member_comms_id::is_reserved_generated_alias(&member_alias) {
-                Err(format!(
-                    "generated member alias requires identity runtime authority: {member_alias}"
-                ))
-            } else {
-                send_message_on_mob(
-                    &self.mob_handle(),
-                    &member_alias,
-                    runtime_injection.message.clone(),
-                )
-                .await
-                .map_err(|error| error.to_string())
-            };
-
-            match injection_result {
-                Ok(session_id) => {
-                    self.module_runtime
-                        .lock()
-                        .await
-                        .append_normalized_event(EventEnvelope {
-                            event_id: format!("{}-executed", runtime_injection.injection_event_id),
-                            source: "module".to_string(),
-                            timestamp_ms: dispatch.tick_ms,
-                            event: UnifiedEvent::Module(ModuleEvent {
-                                module: "runtime".to_string(),
-                                event_type: "runtime.injection.executed".to_string(),
-                                payload: json!({
-                                    "schedule_id": dispatch.schedule_id.clone(),
-                                    "claim_key": dispatch.claim_key.clone(),
-                                    "member_id": runtime_injection.member_id,
-                                    "message": runtime_injection.message,
-                                    "session_id": session_id,
-                                }),
-                            }),
-                        })?;
-                }
-                Err(error) => {
-                    dispatch.runtime_injection_error =
-                        Some(format!("mob injection failed: {error}"));
-                    self.module_runtime
-                        .lock()
-                        .await
-                        .append_normalized_event(EventEnvelope {
-                            event_id: format!("{}-failed", runtime_injection.injection_event_id),
-                            source: "module".to_string(),
-                            timestamp_ms: dispatch.tick_ms,
-                            event: UnifiedEvent::Module(ModuleEvent {
-                                module: "runtime".to_string(),
-                                event_type: "runtime.injection.failed".to_string(),
-                                payload: json!({
-                                    "schedule_id": dispatch.schedule_id.clone(),
-                                    "claim_key": dispatch.claim_key.clone(),
-                                    "member_id": runtime_injection.member_id,
-                                    "message": runtime_injection.message,
-                                    "error_kind": "mob_runtime",
-                                    "error": format!("mob injection failed: {error}"),
-                                }),
-                            }),
-                        })?;
-                }
-            }
-        }
-
-        self.drain_mob_agent_events().await?;
-        Ok(dispatch_report)
-    }
-
-    async fn dispatch_schedule_tick_blocking(
-        &self,
-        schedules: &[ScheduleDefinition],
-        tick_ms: u64,
-    ) -> Result<ScheduleDispatchReport, UnifiedRuntimeError> {
-        let mut rt = self.module_runtime.lock().await;
-
-        let dispatch_result = if tokio::runtime::Handle::try_current()
-            .is_ok_and(|handle| handle.runtime_flavor() == RuntimeFlavor::MultiThread)
-        {
-            tokio::task::block_in_place(|| {
-                Self::dispatch_schedule_tick_in_joined_thread(&mut rt, schedules, tick_ms)
-            })
-        } else {
-            Self::dispatch_schedule_tick_in_joined_thread(&mut rt, schedules, tick_ms)
-        };
-
-        dispatch_result
-            .map_err(|_| UnifiedRuntimeError::ScheduleDispatchThreadPanicked)?
-            .map_err(UnifiedRuntimeError::ScheduleValidation)
-    }
-
-    fn dispatch_schedule_tick_in_joined_thread(
-        module_runtime: &mut MobkitRuntimeHandle,
-        schedules: &[ScheduleDefinition],
-        tick_ms: u64,
-    ) -> std::thread::Result<Result<ScheduleDispatchReport, ScheduleValidationError>> {
-        std::thread::scope(|scope| {
-            scope
-                .spawn(move || module_runtime.dispatch_schedule_tick(schedules, tick_ms))
-                .join()
         })
     }
 }

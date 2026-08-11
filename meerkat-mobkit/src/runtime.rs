@@ -1,4 +1,4 @@
-//! Runtime subsystem types — routing, delivery, gating, memory, scheduling, and session persistence.
+//! Runtime subsystem types - routing, delivery, gating, memory, and session persistence.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -12,7 +12,6 @@ use std::sync::mpsc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{Datelike, Offset, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -50,7 +49,6 @@ mod module_boundary;
 pub mod remote_host;
 mod routing;
 mod rpc;
-pub(crate) mod scheduling;
 mod session_store;
 mod supervisor;
 
@@ -77,7 +75,6 @@ pub use rpc::{
     route_module_call_rpc_json, route_module_call_rpc_subprocess,
     run_rpc_capabilities_boundary_once,
 };
-pub use scheduling::evaluate_schedules_at_tick;
 pub use session_store::{
     BigQueryGcConfig, BigQuerySessionStoreAdapter, BigQuerySessionStoreError, GcErrorCallback,
     JsonFileSessionStore, JsonFileSessionStoreError, JsonStoreLockRecord, SessionPersistenceRow,
@@ -86,8 +83,6 @@ pub use session_store::{
     session_store_contracts,
 };
 pub use supervisor::{run_discovered_module_once, run_module_boundary_once};
-
-pub(crate) use scheduling::validate_schedules;
 
 use event_transport::{insert_event_sorted, merge_unified_events};
 use supervisor::supervise_module_start;
@@ -595,71 +590,6 @@ pub struct RuntimeShutdownReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScheduleDefinition {
-    pub schedule_id: String,
-    pub interval: String,
-    pub timezone: String,
-    pub enabled: bool,
-    #[serde(default)]
-    pub jitter_ms: u64,
-    #[serde(default)]
-    pub catch_up: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScheduleTrigger {
-    pub schedule_id: String,
-    pub interval: String,
-    pub timezone: String,
-    pub due_tick_ms: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScheduleEvaluation {
-    pub tick_ms: u64,
-    pub due_triggers: Vec<ScheduleTrigger>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SchedulingSupervisorSignal {
-    pub module_id: String,
-    pub latest_state: ModuleHealthState,
-    pub latest_attempt: u32,
-    pub restart_observed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScheduleDispatch {
-    pub claim_key: String,
-    pub schedule_id: String,
-    pub interval: String,
-    pub timezone: String,
-    pub due_tick_ms: u64,
-    pub tick_ms: u64,
-    pub event_id: String,
-    pub supervisor_signal: Option<SchedulingSupervisorSignal>,
-    #[serde(default)]
-    pub runtime_injection: Option<ScheduleRuntimeInjection>,
-    #[serde(default)]
-    pub runtime_injection_error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScheduleRuntimeInjection {
-    pub member_id: String,
-    pub message: String,
-    pub injection_event_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScheduleDispatchReport {
-    pub tick_ms: u64,
-    pub due_count: usize,
-    pub dispatched: Vec<ScheduleDispatch>,
-    pub skipped_claims: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutingResolveRequest {
     pub recipient: String,
     #[serde(default)]
@@ -1090,10 +1020,6 @@ pub struct MobkitRuntimeHandle {
     pub lifecycle_events: Vec<LifecycleEvent>,
     pub supervisor_report: SupervisorReport,
     pub merged_events: Vec<EventEnvelope<UnifiedEvent>>,
-    scheduling_claims: BTreeSet<String>,
-    scheduling_claim_ticks: BTreeMap<u64, Vec<String>>,
-    scheduling_last_due_ticks: BTreeMap<String, u64>,
-    scheduling_dispatch_sequence: u64,
     routing_sequence: u64,
     routing_resolutions: BTreeMap<String, RoutingResolution>,
     routing_resolution_order: Vec<String>,
@@ -1150,58 +1076,6 @@ impl MobkitRuntimeHandle {
         seq
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ScheduleValidationError {
-    EmptyScheduleId,
-    DuplicateScheduleId(String),
-    InvalidTickMs(u64),
-    InvalidInterval {
-        schedule_id: String,
-        interval: String,
-    },
-    InvalidTimezone {
-        schedule_id: String,
-        timezone: String,
-    },
-    /// The total cron lookback work for this request exceeded
-    /// `CRON_LOOKBACK_BUDGET_PER_REQUEST`. Surfaced (rather than silently
-    /// stalling) when a request packs enough sparse crons to blow past the
-    /// per-request iteration ceiling — a soft-DoS guard.
-    LookbackBudgetExceeded {
-        schedule_id: String,
-    },
-}
-
-impl std::fmt::Display for ScheduleValidationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EmptyScheduleId => write!(f, "empty schedule id"),
-            Self::DuplicateScheduleId(id) => write!(f, "duplicate schedule id: {id}"),
-            Self::InvalidTickMs(ms) => write!(f, "invalid tick ms: {ms}"),
-            Self::InvalidInterval {
-                schedule_id,
-                interval,
-            } => {
-                write!(f, "invalid interval for schedule {schedule_id}: {interval}")
-            }
-            Self::InvalidTimezone {
-                schedule_id,
-                timezone,
-            } => {
-                write!(f, "invalid timezone for schedule {schedule_id}: {timezone}")
-            }
-            Self::LookbackBudgetExceeded { schedule_id } => {
-                write!(
-                    f,
-                    "cron lookback budget exceeded while resolving schedule {schedule_id}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for ScheduleValidationError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleRouteRequest {
@@ -1484,9 +1358,6 @@ const SSE_KEEP_ALIVE_INTERVAL_MS: u64 = 15_000;
 const SSE_KEEP_ALIVE_EVENT_NAME: &str = "keep-alive";
 const SSE_KEEP_ALIVE_COMMENT_FRAME: &str = ": keep-alive\n\n";
 const SUBSCRIBE_REPLAY_EVENT_CAP: usize = 3;
-const SCHEDULING_CLAIM_RETENTION_WINDOW_MS: u64 = 86_400_000;
-const SCHEDULING_CLAIMS_MAX_RETAINED: usize = 4_096;
-const SCHEDULING_LAST_DUE_MAX_RETAINED: usize = 4_096;
 const DELIVERY_HISTORY_LIMIT_DEFAULT: usize = 20;
 const DELIVERY_HISTORY_LIMIT_MAX: usize = 200;
 const ROUTING_RESOLUTION_LIMIT_MAX: usize = 512;
@@ -1519,18 +1390,6 @@ const MEMORY_SUPPORTED_STORES: [&str; 5] = [
     "top_of_mind",
 ];
 const MEMORY_LEDGER_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(2);
-// Multi-year bounded lookback so sparse valid cron schedules (for example leap-day)
-// are not silently skipped when polling cadence is coarse.
-const CRON_LOOKBACK_MINUTES: u64 = 5_270_400;
-// Per-request ceiling on TOTAL cron lookback iterations across all schedules in
-// one evaluate/dispatch call. Each schedule may still walk back the full
-// `CRON_LOOKBACK_MINUTES` (≈10y) for a legitimately-sparse cron such as
-// `0 0 29 2 *` (Feb 29, ≈1.5M iterations), but a request packed with many such
-// crons cannot multiply that cost without bound. The ceiling allows several
-// worst-case sparse crons per request (well above any real schedule set) while
-// capping the adversarial `MAX_SCHEDULES_PER_REQUEST * ~1.5M` (~380M) blow-up
-// that would otherwise stall the tokio worker and starve the module mutex.
-const CRON_LOOKBACK_BUDGET_PER_REQUEST: u64 = CRON_LOOKBACK_MINUTES.saturating_mul(8);
 const CONSOLE_EXPERIENCE_ROUTE: &str = "/console/experience";
 const CONSOLE_MODULES_ROUTE: &str = "/console/modules";
 const EVENTS_SUBSCRIBE_METHOD: &str = "mobkit/events/subscribe";

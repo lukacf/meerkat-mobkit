@@ -9,8 +9,7 @@ use crate::runtime::{
     LifecycleEvent, MemoryIndexError, MemoryIndexRequest, MemoryIndexResult, MemoryQueryRequest,
     MemoryQueryResult, MemoryStoreInfo, ModuleHealthTransition, RoutingResolution,
     RoutingResolveError, RoutingResolveRequest, RuntimeMutationError, RuntimeRoute,
-    RuntimeRouteMutationError, ScheduleDefinition, ScheduleEvaluation, ScheduleValidationError,
-    SubscribeRequest, SubscribeResponse,
+    RuntimeRouteMutationError, SubscribeRequest, SubscribeResponse,
 };
 use crate::types::{EventEnvelope, UnifiedEvent};
 use crate::{ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse, route_module_call};
@@ -72,17 +71,6 @@ impl UnifiedRuntime {
     ) -> Result<DeliveryRecord, DeliverySendError> {
         let mut rt = self.module_runtime.lock().await;
         run_blocking(|| rt.send_delivery(request))
-    }
-
-    pub async fn evaluate_schedule_tick(
-        &self,
-        schedules: &[ScheduleDefinition],
-        tick_ms: u64,
-    ) -> Result<ScheduleEvaluation, ScheduleValidationError> {
-        self.module_runtime
-            .lock()
-            .await
-            .evaluate_schedule_tick(schedules, tick_ms)
     }
 
     pub async fn list_runtime_routes(&self) -> Vec<RuntimeRoute> {

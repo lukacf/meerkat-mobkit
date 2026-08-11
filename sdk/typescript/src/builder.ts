@@ -119,7 +119,6 @@ export interface MobKitBuilderConfig {
   memberCommsAddress: string | null;
   gatingConfigPath: string | null;
   routingConfigPath: string | null;
-  schedulingFiles: string[];
   workgraphEnabled: boolean | string | null;
   memoryConfig: unknown;
   agentMemoryConfig: unknown;
@@ -158,7 +157,6 @@ function defaultConfig(): MobKitBuilderConfig {
     memberCommsAddress: null,
     gatingConfigPath: null,
     routingConfigPath: null,
-    schedulingFiles: [],
     workgraphEnabled: null,
     memoryConfig: null,
     agentMemoryConfig: null,
@@ -335,11 +333,6 @@ export class MobKitBuilder {
 
   routing(configPath: string): this {
     this._config.routingConfigPath = configPath;
-    return this;
-  }
-
-  scheduling(...scheduleFiles: string[]): this {
-    this._config.schedulingFiles = scheduleFiles;
     return this;
   }
 
@@ -758,16 +751,6 @@ export class MobKitBuilder {
       }
     }
 
-    if (this._config.schedulingFiles.length === 0) {
-      const files: string[] = [];
-      const defaultFile = "config/defaults/schedules.toml";
-      if (existsSync(defaultFile)) files.push(defaultFile);
-      const overrideFile = "deployment/schedules.toml";
-      if (existsSync(overrideFile)) files.push(overrideFile);
-      if (files.length > 0) {
-        this._config.schedulingFiles = files;
-      }
-    }
   }
 }
 

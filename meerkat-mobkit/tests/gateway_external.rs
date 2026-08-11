@@ -54,9 +54,9 @@ fn trusted_oidc() -> TrustedOidcRuntimeConfig {
 fn trusted_toml_for_sdk_console_probe() -> String {
     r#"
 [[modules]]
-id = "scheduling"
-command = "scheduler-bin"
-args = ["--poll-ms", "250"]
+id = "delivery"
+command = "delivery-bin"
+args = ["--sink", "memory"]
 restart_policy = "on_failure"
 
 [[modules]]
@@ -606,7 +606,7 @@ echo "JWKS_MISMATCH_RC:${MISMATCH_RC}"
 #[test]
 #[ignore = "external roadmap preflight check (phase 0b)"]
 fn p0b_t6_module_family_process_preflight() {
-    let module_families = ["scheduling", "routing", "delivery", "gating", "memory"];
+    let module_families = ["routing", "delivery", "gating", "memory"];
     let (config, _temp_guard) = module_family_process_config(&module_families);
 
     for module_id in module_families {
@@ -649,7 +649,7 @@ fn p0b_t6_module_family_process_preflight() {
             Duration::from_secs(1),
         );
         match module_id {
-            "scheduling" | "delivery" | "memory" => {
+            "delivery" | "memory" => {
                 let err = result.expect_err("module should require MCP in runtime routing");
                 let err_text = format!("{err:?}");
                 assert!(
@@ -677,7 +677,7 @@ fn p0b_t6_module_family_process_preflight() {
 #[test]
 #[ignore = "external roadmap preflight check (phase 0b)"]
 fn p0b_t7_sdk_console_toolchain_and_payload_preflight() {
-    let config = module_probe_config(&["scheduling", "routing"]);
+    let config = module_probe_config(&["delivery", "routing"]);
     let mut runtime = start_mobkit_runtime(config, vec![], Duration::from_secs(1))
         .expect("runtime should start for sdk probe");
 

@@ -48,8 +48,8 @@ use meerkat_mobkit::{
     MemoryBackendConfig, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig,
     ObjectStoreBlobStore, PersistedEvent, PersistentMetadataStore, PreSpawnData, ReleaseMetadata,
     RestartPolicy, RuntimeDecisionState, RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute,
-    STORAGE_RESOLUTION_CODE, ScheduleDefinition, SqliteConsoleLogStore, SqliteMetadataStore,
-    TrustedOidcRuntimeConfig, UnifiedRuntime, UnifiedRuntimeShutdownReport, handle_mobkit_rpc_json,
+    STORAGE_RESOLUTION_CODE, SqliteConsoleLogStore, SqliteMetadataStore, TrustedOidcRuntimeConfig,
+    UnifiedRuntime, UnifiedRuntimeShutdownReport, handle_mobkit_rpc_json,
     load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::{mob_definition_may_use_image_generation, mob_definition_may_use_shell},
     start_mobkit_runtime,
@@ -86,7 +86,6 @@ struct GatewayRuntimeOptions {
     identity_bootstrap_mode: Option<meerkat_mobkit::IdentityBootstrapMode>,
     max_sessions: usize,
     routing_routes: Vec<RuntimeRoute>,
-    schedules: Vec<ScheduleDefinition>,
     gating: GatewayGatingConfig,
     event_log: Option<EventLogConfig>,
     decisions: Option<RuntimeDecisionState>,
@@ -284,7 +283,6 @@ impl Default for GatewayRuntimeOptions {
             identity_bootstrap_mode: None,
             max_sessions: 16,
             routing_routes: Vec::new(),
-            schedules: Vec::new(),
             gating: GatewayGatingConfig::default(),
             event_log: None,
             decisions: None,
@@ -2960,7 +2958,6 @@ fn parse_gateway_runtime_options(
         "memory_config",
         "identity_bootstrap_mode",
         "routing_config_path",
-        "scheduling_files",
         "gating_config_path",
         "auth_config",
         "access_config_path",
@@ -3013,33 +3010,6 @@ fn parse_gateway_runtime_options(
         .and_then(Value::as_str)
     {
         parsed.routing_routes = parse_gateway_routing_config_path(path)?;
-    }
-    // DEPRECATED (phase A: accept-and-ignore). The static TOML scheduling
-    // oracle - gateway-loaded `[[schedules]]` silently injected into
-    // `mobkit/scheduling/{evaluate,dispatch}` params - is superseded by the
-    // durable schedule store and its host-runnable targets, which survive
-    // restarts, claim occurrences and report firing.
-    //
-    // The key is still ACCEPTED and still fully VALIDATED. It cannot become
-    // a hard reject yet: both SDKs auto-populate `scheduling_files` from a
-    // disk convention with no opt-in, and `runtime_options` rejects unknown
-    // keys fail-loud, so a one-release cut would brick init for every
-    // deployment that merely has those files on disk. Validation is
-    // deliberately NOT loosened either - a malformed schedules file is still
-    // a loud init refusal, exactly as before, so accept-and-ignore never
-    // becomes swallow-and-hope. Phase B (reject) ships a release later.
-    if let Some(files) = runtime_options.get("scheduling_files") {
-        let ignored = parse_gateway_scheduling_files(files)?;
-        if !ignored.is_empty() {
-            tracing::warn!(
-                schedules = ignored.len(),
-                "runtime_options.scheduling_files is DEPRECATED and its schedules are now \
-                 IGNORED: the gateway no longer answers mobkit/scheduling/evaluate|dispatch from \
-                 a static TOML oracle. Callers must pass `schedules` explicitly, or move to the \
-                 durable schedule store (which is what actually fires). The key still parses and \
-                 still validates; a later release rejects it outright."
-            );
-        }
     }
     if let Some(path) = runtime_options
         .get("gating_config_path")
@@ -3312,31 +3282,6 @@ fn parse_gateway_routing_config_path(path: &str) -> Result<Vec<RuntimeRoute>, St
         .map_err(|err| format!("runtime_options.routing_config_path routes are invalid: {err}"))
 }
 
-fn parse_gateway_scheduling_files(files: &Value) -> Result<Vec<ScheduleDefinition>, String> {
-    let files = files
-        .as_array()
-        .ok_or_else(|| "runtime_options.scheduling_files must be an array".to_string())?;
-    let mut schedules = Vec::new();
-    for file in files {
-        let path = file.as_str().ok_or_else(|| {
-            "runtime_options.scheduling_files entries must be strings".to_string()
-        })?;
-        let value = read_gateway_config_file(path, "scheduling_files")?;
-        let schedules_value = value
-            .get("schedules")
-            .cloned()
-            .unwrap_or_else(|| value.clone());
-        let mut parsed: Vec<ScheduleDefinition> =
-            serde_json::from_value(schedules_value).map_err(|err| {
-                format!("runtime_options.scheduling_files schedule definitions are invalid: {err}")
-            })?;
-        schedules.append(&mut parsed);
-    }
-    meerkat_mobkit::evaluate_schedules_at_tick(&schedules, 0)
-        .map_err(|err| format!("runtime_options.scheduling_files are invalid: {err:?}"))?;
-    Ok(schedules)
-}
-
 fn parse_gateway_gating_config_path(path: &str) -> Result<GatewayGatingConfig, String> {
     let value = read_gateway_config_file(path, "gating_config_path")?;
     let actions = value
@@ -3582,13 +3527,8 @@ fn parse_gateway_auth_config(value: &Value) -> Result<RuntimeDecisionState, Stri
     })
 }
 
-/// Warn once per process, not once per request: a deprecated method on a
-/// busy gateway would otherwise drown the log it is trying to be seen in.
-static MODULE_PLANE_SCHEDULING_DEPRECATION: std::sync::Once = std::sync::Once::new();
-
 fn apply_gateway_runtime_config_to_request(
     request_line: &str,
-    schedules: &[ScheduleDefinition],
     gating: &GatewayGatingConfig,
 ) -> String {
     let Ok(mut request) = serde_json::from_str::<Value>(request_line) else {
@@ -3596,41 +3536,6 @@ fn apply_gateway_runtime_config_to_request(
     };
     let method = request.get("method").and_then(Value::as_str).unwrap_or("");
     match method {
-        // DEPRECATED (phase A: accept-and-ignore). The module-plane
-        // scheduling vocabulary is a stateless "given these definitions and
-        // this tick, what is due" oracle: it never claims an occurrence,
-        // never records a firing, and forgets everything between calls, so
-        // it cannot be the thing a deployment actually schedules on. The
-        // durable schedule store is.
-        //
-        // The methods still answer - they are NOT rejected here, and an
-        // explicit `schedules` param evaluates exactly as before. What is
-        // gone is the gateway-side ORACLE: `schedules` is never injected
-        // from static TOML any more (`schedules` is now always empty), so a
-        // caller that relied on the gateway to supply them gets a loud
-        // `Invalid params: schedules must be an array` instead of a silently
-        // stale answer. Phase B (reject) ships a release later.
-        "mobkit/scheduling/evaluate" | "mobkit/scheduling/dispatch" => {
-            MODULE_PLANE_SCHEDULING_DEPRECATION.call_once(|| {
-                tracing::warn!(
-                    method,
-                    "mobkit/scheduling/* is DEPRECATED: it is a stateless per-tick oracle with no \
-                     claim, no durability and no firing record. Move to the durable schedule \
-                     store (schedule tools / host-runnable targets). Gateway-side injection of \
-                     static `schedules` is already gone; a later release rejects these methods."
-                );
-            });
-            let params = request.get_mut("params").and_then(Value::as_object_mut);
-            if let Some(params) = params
-                && !params.contains_key("schedules")
-                && !schedules.is_empty()
-            {
-                params.insert(
-                    "schedules".to_string(),
-                    serde_json::to_value(schedules).unwrap_or(Value::Null),
-                );
-            }
-        }
         "mobkit/gating/evaluate" => {
             let params = request.get_mut("params").and_then(Value::as_object_mut);
             if let Some(params) = params
@@ -9206,11 +9111,8 @@ external_addressable = true
                 gateway_shutdown = Some(request);
                 break;
             }
-            let request_line = apply_gateway_runtime_config_to_request(
-                &request_line,
-                &gateway_options.schedules,
-                &gateway_options.gating,
-            );
+            let request_line =
+                apply_gateway_runtime_config_to_request(&request_line, &gateway_options.gating);
             let runtime = runtime.clone();
             let stdout_tx = stdout_tx.clone();
             let identity_ctx = identity_ctx.clone();

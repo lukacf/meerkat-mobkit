@@ -17,8 +17,8 @@
 //! upstream ask 7), so the dream fires as a durable, misfire-aware occurrence
 //! through the same host instead of a bare in-process interval loop.
 //!
-//! This is distinct from the static cron oracle (`MobKitBuilder::scheduling`),
-//! which drives module-dispatch ticks, not per-agent schedule tools.
+//! This is MobKit's only scheduling authority. It owns durable definitions,
+//! occurrence claims, firing records, and target delivery.
 
 use std::future::Future;
 use std::path::Path;

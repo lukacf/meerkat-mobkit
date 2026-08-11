@@ -197,7 +197,7 @@ async function main() {
     activity_feed?: { filter_presets?: Array<{ id?: string }> };
   }>(`${baseUrl}/console/experience`);
 
-  assert.equal(experience.contract_version, "0.4.0");
+  assert.equal(experience.contract_version, "0.5.0");
   assert.ok(Array.isArray(experience.identity_status?.rows));
   assert.ok(Array.isArray(experience.activity_feed?.filter_presets));
   assert.ok(experience.activity_feed!.filter_presets!.some((preset) => preset.id === "watched-only"));
@@ -235,7 +235,7 @@ async function main() {
     "ts-smoke:console-send",
   );
   // query_timeline replay frames carry `kind` (canonical frame schema,
-  // contract 0.4.0); `event` names are the SSE envelope's. Walk the
+  // contract 0.5.0); `event` names are the SSE envelope's. Walk the
   // paginated replay (next_cursor) — a reasoning-heavy turn emits more
   // frames than one page — and poll briefly for the durable tail.
   let replayHasTerminal = false;
@@ -264,7 +264,7 @@ async function main() {
   }
   assert.ok(replayHasTerminal, "query_timeline should replay aggregate frames after the accepted cursor");
 
-  // Replay checkpoints are aggregate CURSORS (`console:N`) under the 0.4.0
+  // Replay checkpoints are aggregate CURSORS (`console:N`) under the 0.5.0
   // replay contract — frame ids 409. The all-events SSE surface is the
   // aggregate `/console/timeline/stream`.
   const checkpointCursor = canonicalTurn.accepted.cursor;

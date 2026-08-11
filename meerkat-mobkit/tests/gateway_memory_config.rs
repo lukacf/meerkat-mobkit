@@ -440,105 +440,50 @@ rate_limit_per_minute = 10
     assert_eq!(routes["result"]["routes"][0]["sink"], json!("email"));
 }
 
-/// Phase A of the static-scheduling deprecation: `scheduling_files` is
-/// ACCEPTED (init must not brick - both SDKs auto-populate it from a disk
-/// convention with no opt-in, and unknown runtime_options keys are a
-/// fail-loud init refusal) and IGNORED (the gateway no longer answers
-/// `mobkit/scheduling/*` from a static TOML oracle).
+/// Phase B rejects the removed static scheduling config at the init boundary.
 #[test]
-fn gateway_runtime_options_scheduling_files_are_accepted_and_ignored() {
+fn gateway_runtime_options_scheduling_files_are_rejected() {
     let state_dir = tempfile::tempdir().expect("state dir");
-    let schedule_path = write_config(
-        state_dir.path(),
-        "schedules.toml",
-        r#"
-[[schedules]]
-schedule_id = "every-minute"
-interval = "* * * * *"
-timezone = "UTC"
-enabled = true
-"#,
-    );
-    let mut gateway = GatewayProcess::start();
-
-    // Accepted: a deployment that merely has the file on disk still boots.
-    let init = gateway.init_with_runtime_options(
-        &state_dir,
-        json!({
-            "scheduling_files": [schedule_path]
-        }),
-    );
-    assert!(init["result"]["contract_version"].is_string());
-
-    // Ignored: nothing is injected any more, so a request that relied on the
-    // gateway to supply `schedules` now fails loudly instead of quietly
-    // answering from stale static config.
-    let evaluated = gateway.rpc(json!({
-        "jsonrpc": "2.0",
-        "id": "schedule",
-        "method": "mobkit/scheduling/evaluate",
-        "params": {
-            "tick_ms": 0
-        }
-    }));
-    assert!(
-        evaluated["result"].is_null(),
-        "the static scheduling oracle must be gone: {evaluated}"
-    );
-    assert_eq!(evaluated["error"]["code"], json!(-32602), "{evaluated}");
-
-    // The method itself is not rejected in phase A: an explicit `schedules`
-    // param still evaluates exactly as before. Only the ORACLE is gone.
-    let explicit = gateway.rpc(json!({
-        "jsonrpc": "2.0",
-        "id": "schedule-explicit",
-        "method": "mobkit/scheduling/evaluate",
-        "params": {
-            "tick_ms": 0,
-            "schedules": [{
-                "schedule_id": "every-minute",
-                "interval": "* * * * *",
-                "timezone": "UTC",
-                "enabled": true
-            }]
-        }
-    }));
-    assert_eq!(
-        explicit["result"]["due_triggers"][0]["schedule_id"],
-        json!("every-minute"),
-        "{explicit}"
-    );
-}
-
-/// A malformed scheduling file is STILL a loud init refusal: accept-and-
-/// ignore must not become swallow-and-hope, or phase B would land on
-/// deployments whose config never validated.
-#[test]
-fn gateway_runtime_options_scheduling_files_still_validate() {
-    let state_dir = tempfile::tempdir().expect("state dir");
-    let schedule_path = write_config(
-        state_dir.path(),
-        "broken-schedules.toml",
-        r#"
-[[schedules]]
-schedule_id = "every-minute"
-interval = "not-a-cron-expression"
-timezone = "UTC"
-enabled = true
-"#,
-    );
     let mut gateway = GatewayProcess::start();
 
     let init = gateway.init_with_runtime_options(
         &state_dir,
         json!({
-            "scheduling_files": [schedule_path]
+            "scheduling_files": ["config/defaults/schedules.toml"]
         }),
     );
     assert!(
         init["result"].is_null(),
-        "an invalid scheduling file must still refuse init: {init}"
+        "removed config must refuse init: {init}"
     );
+    assert_eq!(init["error"]["code"], json!(-32602), "{init}");
+    assert!(
+        init["error"]["message"].as_str().is_some_and(
+            |message| message.contains("unsupported runtime_options fields: scheduling_files")
+        ),
+        "{init}"
+    );
+}
+
+/// Removed module-plane scheduling methods use the ordinary JSON-RPC
+/// method-not-found contract. Durable schedule tools remain separate.
+#[test]
+fn gateway_static_scheduling_methods_are_not_found() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let mut gateway = GatewayProcess::start();
+    let init = gateway.init_with_runtime_options(&state_dir, json!({}));
+    assert_eq!(init["result"]["contract_version"], json!("0.5.0"), "{init}");
+
+    for method in ["mobkit/scheduling/evaluate", "mobkit/scheduling/dispatch"] {
+        let response = gateway.rpc(json!({
+            "jsonrpc": "2.0",
+            "id": method,
+            "method": method,
+            "params": {}
+        }));
+        assert!(response["result"].is_null(), "{response}");
+        assert_eq!(response["error"]["code"], json!(-32601), "{response}");
+    }
 }
 
 #[test]

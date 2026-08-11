@@ -26,7 +26,6 @@ class MobKitBuilderConfig:
     access_config_path: str | None = None
     workgraph_enabled: bool | str | None = None
     routing_config_path: str | None = None
-    scheduling_files: list[str] = field(default_factory=list)
     host_runnables: list[str] = field(default_factory=list)
     memory_config: Any | None = None
     agent_memory_config: Any | None = None
@@ -56,7 +55,6 @@ class MobKitBuilder:
             .mob("config/mob.toml")
             .session_service(builder, store)
             .discovery(discover_fn)
-            .scheduling("schedules/a.toml", "schedules/b.toml")
             .build()
         )
     """
@@ -207,11 +205,6 @@ class MobKitBuilder:
 
     def routing(self, config_path: str) -> MobKitBuilder:
         self._config.routing_config_path = config_path
-        return self
-
-    def scheduling(self, *schedule_files: str) -> MobKitBuilder:
-        """Set schedule config files (accepts multiple positional args)."""
-        self._config.scheduling_files = list(schedule_files)
         return self
 
     def host_runnables(self, names: Sequence[str]) -> MobKitBuilder:
@@ -662,9 +655,7 @@ class MobKitBuilder:
         Convention (relative to cwd):
         - config/gating.toml → gating config
         - config/access.toml → ABAC access control config
-        - config/defaults/schedules.toml → default schedules
         - deployment/routing.toml → routing config
-        - deployment/schedules.toml → deployment schedule overrides
 
         Only checks when the corresponding builder method was NOT called.
         Explicit paths always win. Files that don't exist are skipped.
@@ -683,17 +674,6 @@ class MobKitBuilder:
             candidate = Path("deployment/routing.toml")
             if candidate.is_file():
                 self._config.routing_config_path = str(candidate)
-
-        if not self._config.scheduling_files:
-            files: list[str] = []
-            default = Path("config/defaults/schedules.toml")
-            if default.is_file():
-                files.append(str(default))
-            override = Path("deployment/schedules.toml")
-            if override.is_file():
-                files.append(str(override))
-            if files:
-                self._config.scheduling_files = files
 
 
 class MobKit:

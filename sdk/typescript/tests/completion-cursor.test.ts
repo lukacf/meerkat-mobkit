@@ -44,7 +44,6 @@ async function makeRuntime(script: {
     consoleFetchTimeoutMs: null,
     gatingConfigPath: null,
     routingConfigPath: null,
-    schedulingFiles: [],
     memoryConfig: null,
     authConfig: null,
     implicitDelegateIdleRetireSecs: undefined,

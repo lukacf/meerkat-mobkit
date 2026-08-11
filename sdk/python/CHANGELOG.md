@@ -4,6 +4,11 @@ All notable changes to the Python SDK are documented here.
 
 ## Unreleased
 
+- Breaking: removed `MobKitBuilder.scheduling(...)`, static schedule-file
+  discovery, and `MobHandle.scheduling_evaluate` / `scheduling_dispatch`.
+  Create durable schedules through Meerkat schedule tools or
+  `ScheduleService`; `host_runnables` and `callback/schedule_fire` remain.
+
 - Gateway stderr is now INHERITED by default, so tracing lines, panic hooks,
   and storage-migration progress reach the host process's stderr. The old
   default sent it to `/dev/null`, which cost one production fleet a week of

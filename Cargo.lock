@@ -2325,7 +2325,6 @@ dependencies = [
  "base64",
  "bytes",
  "chrono",
- "chrono-tz",
  "cpu-time",
  "ed25519-dalek",
  "flate2",

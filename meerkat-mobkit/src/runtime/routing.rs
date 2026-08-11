@@ -15,7 +15,7 @@ fn require_non_empty(value: &str) -> Option<String> {
     }
 }
 
-const MCP_REQUIRED_CORE_MODULES: [&str; 4] = ["router", "delivery", "memory", "scheduling"];
+const MCP_REQUIRED_CORE_MODULES: [&str; 3] = ["router", "delivery", "memory"];
 pub const WILDCARD_ROUTE: &str = "*";
 
 fn core_module_requires_mcp(module_id: &str) -> bool {
