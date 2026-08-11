@@ -25,13 +25,18 @@ use meerkat_mobkit::UnifiedRuntimeBuilder;
 use meerkat_mobkit::identity_first::contracts::{AgentCustomizer, TopologyProvider};
 use meerkat_mobkit::identity_first::orchestrator::{RestoreOutcome, restore_flow};
 use meerkat_mobkit::identity_first::{
-    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, ContinuityStore,
-    CustomizerError, DurabilityPolicy, DurableAgentSpec, IdentityRuntime, IdentityRuntimeConfig,
-    LocalContinuityStore, LocalLeaseProvider, ManagedPeerEdge, SessionBridge, TopologyContext,
-    TopologyError,
+    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeId,
+    ContinuityStore, CustomizerError, DurabilityPolicy, DurableAgentSpec, IdentityRuntime,
+    IdentityRuntimeConfig, LocalContinuityStore, LocalLeaseProvider, ManagedPeerEdge,
+    SessionBridge, TopologyContext, TopologyError,
 };
 use meerkat_mobkit::mob_handle_runtime::SessionCreatedContext;
 use tokio::time::sleep;
+
+/// The one definition of the normalized-provider-accounting contract every
+/// MobKit LLM double must satisfy under meerkat 0.8.22.
+#[path = "support/llm_usage.rs"]
+mod llm_usage;
 
 fn id(name: &str) -> AgentIdentity {
     AgentIdentity::parse(name).unwrap()
@@ -188,11 +193,18 @@ impl meerkat_client::LlmClient for CaptureClient {
             .lock()
             .unwrap()
             .push(serde_json::to_string(request).unwrap_or_default());
+        // meerkat 0.8.22 fails a turn closed when its stream carried no
+        // normalized provider accounting. A double that hand-rolls `Done`
+        // still COMPILES, then fails every turn it drives with
+        // `IncompleteResponse` - which surfaces as a member that retries
+        // forever rather than as anything resembling a usage error. This file
+        // was missed when the other doubles adopted the helper.
+        let [usage, done] =
+            llm_usage::usage_then_done(request, meerkat::Provider::OpenAI, StopReason::EndTurn);
         Box::pin(async_stream::stream! {
             yield Ok(LlmEvent::TextDelta { delta: "ok".to_string(), meta: None });
-            yield Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success { stop_reason: StopReason::EndTurn },
-            });
+            yield Ok(usage);
+            yield Ok(done);
         })
     }
     fn provider(&self) -> meerkat::Provider {
@@ -262,21 +274,124 @@ async fn wait_for_request(capture: &CaptureClient, secs: u64, what: &str) {
     }
 }
 
-/// Wait for a request that arrives *after* `before`.
+/// Deliver one turn and await THAT turn's own terminal interaction event.
 ///
-/// [`wait_for_request`] tests an ABSOLUTE count (`< 1`), so on any turn after
-/// the first it returns immediately without waiting for the turn under test,
-/// and a following `capture.last()` reads the PREVIOUS turn's request. That
-/// makes the subsequent assertion describe the wrong turn entirely.
-async fn wait_for_new_request(capture: &CaptureClient, before: usize, secs: u64, what: &str) {
-    let deadline = Instant::now() + Duration::from_secs(secs);
-    while capture.count() <= before {
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for {what} to reach the LLM \
-             (still {before} request(s), none newer)"
-        );
-        sleep(Duration::from_millis(100)).await;
+/// Counting captured requests cannot express "the turn under test finished".
+/// An unrelated replay lands first and satisfies any count, so a count-based
+/// wait returns while the turn under test is still in flight - which is how
+/// assertions here ended up describing a different turn than the one they
+/// named, and how a real replay defect stayed hidden behind a wrong-turn
+/// assertion for a whole release.
+///
+/// Formal interaction state is authoritative instead:
+/// - subscribe BEFORE delivering, because a stream opened afterwards can never
+///   observe a terminal event that has already passed;
+/// - mint a unique `interaction_id` and pass it through the bridge;
+/// - return only on `InteractionComplete` for THAT EXACT id;
+/// - fail immediately and typed on `InteractionFailed` for it, rather than
+///   burning the whole timeout on a turn that has already lost;
+/// - treat the wall clock purely as a deadlock fuse, and dump what WAS observed
+///   when it blows, because "nothing arrived" is the least useful failure text
+///   available.
+async fn deliver_awaiting_interaction(
+    unified: &meerkat_mobkit::UnifiedRuntime,
+    bridge: &Arc<dyn SessionBridge>,
+    runtime_id: &AgentRuntimeId,
+    content: &str,
+    system_prompt: Option<&str>,
+    label: &str,
+    secs: u64,
+) -> meerkat_core::types::SessionId {
+    use futures::StreamExt;
+
+    // `uuid` is compiled with the v5 feature only, so derive a stable unique id
+    // from the caller's label rather than reaching for v4.
+    let interaction = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, label.as_bytes()).to_string();
+
+    // Subscribe by the ROSTER id, which `member_id_for_spawn_spec`
+    // (src/identity_first/bridge.rs) derives from the RUNTIME ID for any spec
+    // without an external binding - not from the durable identity. Subscribing
+    // as `mob_member_id("carol")` fails `mob member not found`, because the
+    // durable identity is not what the roster is keyed by.
+    let mut events = unified
+        .mob_handle()
+        .subscribe_agent_events(&meerkat_mobkit::member_comms_id::mob_member_id(
+            runtime_id.as_str(),
+        ))
+        .await
+        .unwrap_or_else(|err| {
+            panic!(
+                "subscribe to roster member for runtime id {} before delivering {label}: {err}",
+                runtime_id.as_str()
+            )
+        });
+
+    let session = bridge
+        .deliver_with_mode_context_and_system_prompt(
+            runtime_id,
+            &meerkat_core::ContentInput::Text(content.to_string()),
+            system_prompt,
+            &[],
+            HandlingMode::Queue,
+            Some(interaction.as_str()),
+        )
+        .await
+        .unwrap_or_else(|err| panic!("deliver {label}: {err}"));
+
+    // The terminal event for a BRIDGE DELIVERY is RunCompleted/RunFailed for
+    // the delivered session, not InteractionComplete. `InteractionComplete`
+    // belongs to comms-originated interactions (it is emitted from
+    // meerkat-comms' runtime), and a bridge-delivered turn never emits one -
+    // measured: a completing authored turn produced RunStarted, TurnStarted,
+    // TextDelta, TextComplete, TurnCompleted, RunCompleted and no interaction
+    // event at all. Correlating on an event that never fires is a deadlock
+    // dressed as rigour, so correlate on the session the delivery returned and
+    // accept an interaction event too if some path does emit one.
+    let mut observed: Vec<String> = Vec::new();
+    let fuse = tokio::time::sleep(Duration::from_secs(secs));
+    tokio::pin!(fuse);
+    loop {
+        tokio::select! {
+            _ = &mut fuse => panic!(
+                "deadlock fuse: no terminal interaction event for {label} (id {interaction}) \
+                 within {secs}s; observed instead: {observed:?}"
+            ),
+            item = events.next() => match item {
+                Some(envelope) => match envelope.payload {
+                    meerkat_core::AgentEvent::RunCompleted { ref session_id, .. }
+                        if *session_id == session =>
+                    {
+                        return session;
+                    }
+                    meerkat_core::AgentEvent::RunFailed { ref session_id, ref error_report, .. }
+                        if *session_id == session =>
+                    {
+                        panic!("{label} failed typed before completing: {error_report:?}");
+                    }
+                    meerkat_core::AgentEvent::InteractionComplete { ref interaction_id, .. }
+                        if interaction_id.to_string() == interaction =>
+                    {
+                        return session;
+                    }
+                    meerkat_core::AgentEvent::InteractionFailed { ref interaction_id, ref reason }
+                        if interaction_id.to_string() == interaction =>
+                    {
+                        panic!("{label} failed typed before completing: {reason:?}");
+                    }
+                    ref other => {
+                        let rendered = format!("{other:?}");
+                        // Keep failure payloads intact: a truncated RunFailed
+                        // hides the only field that explains the loop.
+                        let keep = if rendered.starts_with("RunFailed") { 600 } else { 60 };
+                        observed.push(rendered.chars().take(keep).collect());
+                    }
+                },
+                None => panic!(
+                    "agent event stream ended before {label} reached a terminal interaction; \
+                     observed: {observed:?}"
+                ),
+            },
+        }
     }
 }
 
@@ -1083,23 +1198,20 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             .session_bridge()
             .expect("session_bridge should exist")
             .clone();
-        let before_authored = capture.count();
-        let delivered = bridge
-            .deliver_with_mode_context_and_system_prompt(
-                &runtime_id,
-                &meerkat_core::ContentInput::Text(TURN_2_TEXT.to_string()),
-                Some(AUTHORED_PROMPT),
-                &[],
-                HandlingMode::Queue,
-                None,
-            )
-            .await
-            .expect("deliver the authored-System turn");
+        let delivered = deliver_awaiting_interaction(
+            &unified,
+            &bridge,
+            &runtime_id,
+            TURN_2_TEXT,
+            Some(AUTHORED_PROMPT),
+            "authored-system-turn",
+            30,
+        )
+        .await;
         assert_eq!(
             delivered, original_session_id,
             "the authored turn must land on the same durable session"
         );
-        wait_for_new_request(&capture, before_authored, 30, "the authored turn").await;
         // Identify the authored turn by CONTENT - it is the request carrying
         // both the authored System prompt and this turn's user text - and then
         // assert the transcript on THAT SAME request. Selecting by position
