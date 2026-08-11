@@ -54,7 +54,21 @@
 //! `WorkGraphStore` is not stamping sequences. Such rows are counted into
 //! [`WorkGraphFactPage::events_without_seq`] as a defect signal and never
 //! emitted.
+//!
+//! # Subscription activation window
+//!
+//! Registering an SSE subscriber wakes the idle tail, while the SSE stream
+//! independently sends `workgraph.resync_required` with `initial_sync`. The
+//! tail then discovers the current durable frontier before it starts live
+//! polling. A mutation committed after `initial_sync` is delivered but before
+//! that frontier read completes can therefore be included in the starting
+//! cursor and produce no fact wake. This loss is intentional and is the same
+//! class of loss as broadcast lag: the stream is never a completeness feed.
+//! Consumers whose correctness depends on freshness must schedule durable
+//! WorkGraph pulls themselves; `initial_sync` and later facts only accelerate
+//! those reads.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use meerkat::{
@@ -62,7 +76,10 @@ use meerkat::{
     WorkGraphStoreKind, WorkItemId, WorkNamespace,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use serde_json::json;
+use tokio::sync::{Notify, broadcast};
+
+use crate::types::{ModuleEvent, UnifiedEvent};
 
 /// Per-poll page size used when a caller does not choose one.
 pub const DEFAULT_FACT_POLL_LIMIT: usize = 256;
@@ -78,7 +95,17 @@ pub const MAX_FACT_POLL_LIMIT: usize = 1000;
 pub const DEFAULT_FACT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Broadcast capacity for in-process fact subscribers.
-const WORKGRAPH_FACTS_CHANNEL_CAP: usize = 512;
+pub const WORKGRAPH_FACTS_CHANNEL_CAP: usize = 512;
+
+/// Module identity used on the existing [`UnifiedEvent::Module`] surface.
+pub const WORKGRAPH_EVENT_MODULE: &str = "mobkit.workgraph";
+
+/// A lossy transactional fact wake. Its payload is a
+/// [`WorkGraphFactEnvelope`], not authoritative item state.
+pub const WORKGRAPH_FACT_EVENT_TYPE: &str = "workgraph.fact";
+
+/// The subscriber must re-read durable WorkGraph state before acting.
+pub const WORKGRAPH_RESYNC_REQUIRED_EVENT_TYPE: &str = "workgraph.resync_required";
 
 /// One transactional WorkGraph fact, addressed by the ledger sequence that
 /// observed it.
@@ -216,9 +243,9 @@ pub async fn poll_workgraph_facts(
 /// the public page omits, which is harmless: it is only ever used as a "skip
 /// everything before now" starting cursor.
 ///
-/// Cost is store-class dependent - see
-/// `frontier_reseed_is_bounded`, which is what the tail consults before
-/// calling this on a repeating tick.
+/// Cost is store-class dependent. The runtime tail calls this only after a
+/// subscriber arrives, and only for the built-in stores that override the
+/// default implementation.
 pub async fn latest_workgraph_fact_seq(
     service: &WorkGraphService,
 ) -> Result<Option<i64>, WorkGraphError> {
@@ -234,59 +261,90 @@ pub async fn latest_workgraph_fact_seq(
         .await
 }
 
-/// Whether [`latest_workgraph_fact_seq`] is a bounded read against this
-/// service's store, and may therefore be issued on a repeating tick.
+/// Convert a fact wake into the existing unified module-event shape.
 ///
-/// `WorkGraphStore::latest_event_seq` has a DEFAULT body that calls
-/// `list_events` with `limit: None` - it MATERIALIZES the entire retained
-/// event history just to take a max. Only stores that override it avoid that:
-/// SQLite answers with `SELECT MAX(seq)`, the memory store scans its events
-/// under a read guard without cloning them, and the disabled store fails
-/// immediately with `UnsupportedBackend`. A `Custom` store is assumed NOT to
-/// override it, so re-seeding a custom store's cursor every idle tick would
-/// replace a bounded 256-row page with a full-history materialization - the
-/// exact inverse of the cost property
-/// `WorkGraphFactTailOptions::idle_when_unsubscribed` claims to buy. Custom
-/// stores therefore keep the ordinary bounded poll while idle;
-/// `WorkGraphFactStream::publish_page` drops the page anyway when nobody is
-/// subscribed.
-fn frontier_reseed_is_bounded(service: &WorkGraphService) -> bool {
-    !matches!(service.store().kind(), WorkGraphStoreKind::Custom)
+/// The SSE route deliberately does not add an SSE `id` field and offers no
+/// replay-by-id contract. The durable `seq` inside the payload is the only
+/// cursor, and even that cursor is useful only with the authoritative pull
+/// surface.
+pub fn workgraph_fact_event(fact: &WorkGraphFactEnvelope) -> UnifiedEvent {
+    UnifiedEvent::Module(ModuleEvent {
+        module: WORKGRAPH_EVENT_MODULE.to_string(),
+        event_type: WORKGRAPH_FACT_EVENT_TYPE.to_string(),
+        payload: serde_json::to_value(fact).unwrap_or_else(|_| {
+            json!({
+                "seq": fact.seq,
+                "projection_error": true,
+            })
+        }),
+    })
 }
 
-/// In-process fan-out for projected facts.
+/// Construct the explicit resynchronization signal used at subscription and
+/// after broadcast lag. No state rides this event; clients must pull
+/// `mobkit/workgraph/get`, `/list`, `/ready`, or `/snapshot`.
+pub fn workgraph_resync_required_event(reason: &'static str, skipped: Option<u64>) -> UnifiedEvent {
+    UnifiedEvent::Module(ModuleEvent {
+        module: WORKGRAPH_EVENT_MODULE.to_string(),
+        event_type: WORKGRAPH_RESYNC_REQUIRED_EVENT_TYPE.to_string(),
+        payload: json!({
+            "reason": reason,
+            "skipped": skipped,
+            "authority": "durable_workgraph_pull",
+        }),
+    })
+}
+
+/// In-process, runtime-owned fan-out for projected WorkGraph module events.
 ///
 /// Lossy on purpose: subscribers that fall behind receive
-/// `broadcast::error::RecvError::Lagged` and MUST recover by re-reading
-/// WorkGraph, never by asking for a backfill.
+/// [`broadcast::error::RecvError::Lagged`] and MUST recover by re-reading
+/// WorkGraph. `subscribe` notifies the one runtime-owned tail so the idle
+/// state can remain entirely store-free.
 #[derive(Clone)]
-pub struct WorkGraphFactStream {
-    tx: broadcast::Sender<WorkGraphFactEnvelope>,
+pub struct WorkGraphFactHub {
+    tx: broadcast::Sender<UnifiedEvent>,
+    subscriber_arrived: Arc<Notify>,
+    tail_ready: Arc<Notify>,
 }
 
-impl Default for WorkGraphFactStream {
+impl Default for WorkGraphFactHub {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl std::fmt::Debug for WorkGraphFactStream {
+impl std::fmt::Debug for WorkGraphFactHub {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WorkGraphFactStream")
+        f.debug_struct("WorkGraphFactHub")
             .field("receiver_count", &self.tx.receiver_count())
             .finish()
     }
 }
 
-impl WorkGraphFactStream {
+impl WorkGraphFactHub {
     pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(WORKGRAPH_FACTS_CHANNEL_CAP);
-        Self { tx }
+        Self::with_capacity(WORKGRAPH_FACTS_CHANNEL_CAP)
     }
 
-    /// Subscribe to subsequently published facts. Nothing is replayed.
-    pub fn subscribe(&self) -> broadcast::Receiver<WorkGraphFactEnvelope> {
-        self.tx.subscribe()
+    /// Construct a hub with an explicit broadcast capacity. Primarily useful
+    /// for deterministic lag tests.
+    pub fn with_capacity(capacity: usize) -> Self {
+        let (tx, _) = broadcast::channel(capacity.max(1));
+        Self {
+            tx,
+            subscriber_arrived: Arc::new(Notify::new()),
+            tail_ready: Arc::new(Notify::new()),
+        }
+    }
+
+    /// Subscribe to subsequently published module events. Nothing is
+    /// replayed. The HTTP route sends `initial_sync` before reading this
+    /// receiver.
+    pub fn subscribe(&self) -> broadcast::Receiver<UnifiedEvent> {
+        let rx = self.tx.subscribe();
+        self.subscriber_arrived.notify_one();
+        rx
     }
 
     /// Live subscriber count.
@@ -294,18 +352,50 @@ impl WorkGraphFactStream {
         self.tx.receiver_count()
     }
 
+    /// Wait until at least one subscriber exists without reading WorkGraph.
+    pub async fn wait_for_subscriber(&self) {
+        while self.receiver_count() == 0 {
+            self.subscriber_arrived.notified().await;
+        }
+    }
+
+    /// Wait until the runtime tail has completed cursor discovery and its
+    /// first live poll for the current activation. This is a diagnostic/test
+    /// barrier only; it grants no synchronization or state authority.
+    #[doc(hidden)]
+    pub async fn wait_for_tail_ready(&self) {
+        self.tail_ready.notified().await;
+    }
+
+    fn mark_tail_ready(&self) {
+        self.tail_ready.notify_one();
+    }
+
+    fn publish(&self, event: UnifiedEvent) -> bool {
+        self.receiver_count() > 0 && self.tx.send(event).is_ok()
+    }
+
+    /// Publish one fact wake through the module-event contract. Zero
+    /// subscribers is the normal idle state and is not an error.
+    pub fn publish_fact(&self, fact: &WorkGraphFactEnvelope) -> bool {
+        self.publish(workgraph_fact_event(fact))
+    }
+
     /// Publish every fact in `page`, returning how many were accepted by the
-    /// channel. Zero subscribers is the normal case and is not an error.
+    /// channel.
     pub fn publish_page(&self, page: &WorkGraphFactPage) -> usize {
-        if self.tx.receiver_count() == 0 {
+        if self.receiver_count() == 0 {
             return 0;
         }
         page.facts
             .iter()
-            .filter(|envelope| self.tx.send((*envelope).clone()).is_ok())
+            .filter(|fact| self.publish_fact(fact))
             .count()
     }
 }
+
+/// Backwards-compatible name for the public in-process fact stream.
+pub type WorkGraphFactStream = WorkGraphFactHub;
 
 /// Tail behaviour for [`spawn_workgraph_fact_tail`].
 #[derive(Debug, Clone, Copy)]
@@ -314,30 +404,6 @@ pub struct WorkGraphFactTailOptions {
     pub poll_interval: Duration,
     /// Per-poll page size, clamped into `1..=`[`MAX_FACT_POLL_LIMIT`].
     pub page_limit: usize,
-    /// Start at the current ledger frontier instead of replaying the whole
-    /// retained event history on startup.
-    pub start_from_current_frontier: bool,
-    /// With no subscribers, skip the page read and re-seed the cursor from
-    /// the frontier instead.
-    ///
-    /// Two things this buys, and both matter for a router-owned tail that
-    /// outlives every client: an idle host stops paging the event table, and a
-    /// subscriber that attaches after a long idle period is not handed a
-    /// backlog of stale wakes it would have to reconcile one page at a time.
-    /// Skipping wakes while nobody is listening is correct by construction -
-    /// a fact is an accelerant, and a fresh subscriber reconciles state
-    /// through WorkGraph reads anyway.
-    ///
-    /// A subscriber that attaches between the emptiness check and the re-seed
-    /// misses that window's facts. That is NOT a bug to be fixed into a
-    /// delivery guarantee: it is the same loss `broadcast` lag already
-    /// permits, and the only safe consumer is one that reads WorkGraph.
-    ///
-    /// Honoured only where the re-seed is genuinely cheaper than the page it
-    /// replaces - see `frontier_reseed_is_bounded`. Against a `Custom`
-    /// store the tail keeps polling its bounded page while idle and simply
-    /// publishes into a channel with no receivers.
-    pub idle_when_unsubscribed: bool,
 }
 
 impl Default for WorkGraphFactTailOptions {
@@ -345,101 +411,121 @@ impl Default for WorkGraphFactTailOptions {
         Self {
             poll_interval: DEFAULT_FACT_POLL_INTERVAL,
             page_limit: DEFAULT_FACT_POLL_LIMIT,
-            start_from_current_frontier: true,
-            idle_when_unsubscribed: true,
         }
     }
 }
 
-/// Spawn the cursor tail that feeds `stream`.
+/// Spawn the cursor tail that feeds `hub`.
 ///
-/// Deliberately opt-in: no runtime starts this by default, because a fact is
-/// only worth polling for when something is actually subscribed. The returned
-/// handle runs until aborted; drop-abort is the caller's choice, so hosts that
-/// want tail lifetime tied to a scope should keep and `abort()` the handle.
+/// The unified runtime creates exactly one when WorkGraph is configured and
+/// owns the returned task through shutdown. The tail remains in a notified
+/// no-read idle state until a subscriber arrives.
 ///
 /// Every failure is logged and retried. A poll error must not take down a
 /// host: no correctness depends on the accelerant arriving.
 pub fn spawn_workgraph_fact_tail(
     service: WorkGraphService,
-    stream: WorkGraphFactStream,
+    hub: WorkGraphFactHub,
     options: WorkGraphFactTailOptions,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut after_seq = if options.start_from_current_frontier {
-            match latest_workgraph_fact_seq(&service).await {
-                Ok(seq) => seq,
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        "workgraph fact tail could not read the ledger frontier; \
-                         starting from the retained history",
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
         loop {
-            if options.idle_when_unsubscribed
-                && stream.receiver_count() == 0
-                && frontier_reseed_is_bounded(&service)
-            {
-                match latest_workgraph_fact_seq(&service).await {
-                    // Keep the cursor current so an arriving subscriber gets
-                    // new wakes, not a replay of everything it missed.
-                    Ok(Some(seq)) => after_seq = Some(seq),
-                    Ok(None) => {}
+            // The idle state is an actual state, not a periodic emptiness
+            // check: it performs zero page reads and zero frontier reads.
+            hub.wait_for_subscriber().await;
+
+            // A fresh subscriber has already been told to resynchronize. Set
+            // the live cursor at the durable frontier so historical facts are
+            // not replayed as if they were newly observed. MobKit's supported
+            // Memory and SQLite stores override `latest_event_seq` with a
+            // non-materializing read. Custom stores cannot prove that bound,
+            // so their discovery uses bounded public pages and discards them.
+            let mut after_seq = match service.store().kind() {
+                WorkGraphStoreKind::Memory | WorkGraphStoreKind::Sqlite => {
+                    match latest_workgraph_fact_seq(&service).await {
+                        Ok(seq) => seq,
+                        Err(error) => {
+                            tracing::warn!(
+                                %error,
+                                "workgraph fact tail could not discover the ledger frontier",
+                            );
+                            None
+                        }
+                    }
+                }
+                WorkGraphStoreKind::Disabled => None,
+                WorkGraphStoreKind::Custom => {
+                    let mut cursor = None;
+                    while hub.receiver_count() > 0 {
+                        match poll_workgraph_facts(&service, cursor, options.page_limit).await {
+                            Ok(page) => {
+                                cursor = page.next_after_seq;
+                                if !page.more_may_be_pending {
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    %error,
+                                    "workgraph fact tail custom-store cursor discovery failed",
+                                );
+                                break;
+                            }
+                        }
+                        // Cursor discovery is bounded to one page per
+                        // scheduled interval. It never becomes a hot
+                        // full-history scan.
+                        tokio::time::sleep(options.poll_interval).await;
+                    }
+                    cursor
+                }
+            };
+
+            // If every subscriber disappeared during discovery, return to the
+            // no-read idle state before touching the store again.
+            if hub.receiver_count() == 0 {
+                continue;
+            }
+
+            let mut first_live_poll_pending = true;
+            loop {
+                if hub.receiver_count() == 0 {
+                    break;
+                }
+                let first_live_poll = first_live_poll_pending;
+                let polled_after_seq = after_seq;
+                match poll_workgraph_facts(&service, after_seq, options.page_limit).await {
+                    Ok(page) => {
+                        if page.events_without_seq > 0 {
+                            tracing::warn!(
+                                events_without_seq = page.events_without_seq,
+                                "workgraph store returned events with no ledger sequence; \
+                                 their facts were not projected",
+                            );
+                        }
+                        hub.publish_page(&page);
+                        let cursor_advanced = page.next_after_seq != polled_after_seq;
+                        after_seq = page.next_after_seq;
+                        // Fast-drain a backlog ONLY when the cursor actually
+                        // moved. Fullness alone is never progress authority.
+                        if page.more_may_be_pending && cursor_advanced {
+                            tokio::task::yield_now().await;
+                            continue;
+                        }
+                    }
                     Err(error) => {
                         tracing::warn!(
                             %error,
-                            "workgraph fact tail could not re-seed its idle cursor",
+                            "workgraph fact poll failed; retrying after the poll interval",
                         );
                     }
+                }
+                if first_live_poll {
+                    hub.mark_tail_ready();
+                    first_live_poll_pending = false;
                 }
                 tokio::time::sleep(options.poll_interval).await;
-                continue;
             }
-            let polled_after_seq = after_seq;
-            match poll_workgraph_facts(&service, after_seq, options.page_limit).await {
-                Ok(page) => {
-                    if page.events_without_seq > 0 {
-                        tracing::warn!(
-                            events_without_seq = page.events_without_seq,
-                            "workgraph store returned events with no ledger sequence; \
-                             their facts were not projected",
-                        );
-                    }
-                    stream.publish_page(&page);
-                    let cursor_advanced = page.next_after_seq != polled_after_seq;
-                    after_seq = page.next_after_seq;
-                    // Fast-drain a backlog ONLY when the cursor actually
-                    // moved. `more_may_be_pending` is a page-fullness fact,
-                    // not a progress fact: a full page whose rows all lack a
-                    // ledger sequence leaves the cursor exactly where it was,
-                    // so draining on fullness alone would re-issue a
-                    // byte-identical read forever - an unbounded busy loop
-                    // that also re-logs the `events_without_seq` warning on
-                    // every iteration. With no progress, fall through to the
-                    // interval sleep so the defect stays a bounded,
-                    // once-per-tick signal.
-                    if page.more_may_be_pending && cursor_advanced {
-                        // Caught mid-backlog: drain without waiting out the
-                        // interval, but yield so the tail cannot starve the
-                        // runtime.
-                        tokio::task::yield_now().await;
-                        continue;
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        "workgraph fact poll failed; retrying after the poll interval",
-                    );
-                }
-            }
-            tokio::time::sleep(options.poll_interval).await;
         }
     })
 }
@@ -448,6 +534,7 @@ pub fn spawn_workgraph_fact_tail(
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use futures::FutureExt;
     use meerkat::WorkGraphEventKind;
 
     fn item_id(value: &str) -> WorkItemId {
@@ -622,6 +709,16 @@ mod tests {
         assert_eq!(stream.publish_page(&page), 0);
     }
 
+    #[test]
+    fn idle_hub_waits_for_notification_instead_of_scheduling_a_poll() {
+        let hub = WorkGraphFactHub::new();
+        assert_eq!(hub.receiver_count(), 0);
+        assert!(
+            hub.wait_for_subscriber().now_or_never().is_none(),
+            "zero-subscriber state must remain pending until subscribe notifies it",
+        );
+    }
+
     #[tokio::test]
     async fn subscribers_receive_projected_facts() {
         let stream = WorkGraphFactStream::new();
@@ -632,9 +729,17 @@ mod tests {
             64,
         );
         assert_eq!(stream.publish_page(&page), 1);
-        let envelope = rx.try_recv().expect("published fact is delivered");
-        assert_eq!(envelope.seq, 5);
-        assert_eq!(envelope.fact, ready_fact("work_a", 2));
+        let event = rx.try_recv().expect("published fact is delivered");
+        let UnifiedEvent::Module(module) = event else {
+            panic!("fact hub emitted a non-module event");
+        };
+        assert_eq!(module.module, WORKGRAPH_EVENT_MODULE);
+        assert_eq!(module.event_type, WORKGRAPH_FACT_EVENT_TYPE);
+        assert_eq!(module.payload["seq"], 5);
+        assert_eq!(
+            module.payload["fact"],
+            serde_json::to_value(ready_fact("work_a", 2)).expect("fact JSON"),
+        );
     }
 
     #[test]
@@ -646,9 +751,6 @@ mod tests {
         // raises the default above the ceiling fail to BUILD rather than
         // fail this test.
         const { assert!(DEFAULT_FACT_POLL_LIMIT <= MAX_FACT_POLL_LIMIT) };
-        assert!(options.start_from_current_frontier);
-        // A router-owned tail outlives every client; it must not page the
-        // event table forever with nobody listening.
-        assert!(options.idle_when_unsubscribed);
+        assert!(!options.poll_interval.is_zero());
     }
 }

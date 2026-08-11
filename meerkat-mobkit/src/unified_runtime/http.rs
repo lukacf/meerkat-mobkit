@@ -19,7 +19,7 @@ use crate::http_console::{
 use crate::http_flow_editor::protected_flow_editor_router_with_runtime_catalog;
 use crate::http_sse::{
     agent_events_sse_router_with_access_and_priming, mob_events_sse_router_with_access_and_priming,
-    mob_structural_events_sse_router_with_access_and_priming,
+    mob_structural_events_sse_router_with_access_and_priming, workgraph_facts_sse_router,
 };
 use crate::runtime::RuntimeDecisionState;
 use tower::limit::ConcurrencyLimitLayer;
@@ -253,6 +253,7 @@ impl UnifiedRuntime {
         let sse_decisions_a = decisions.clone();
         let sse_decisions_b = decisions.clone();
         let sse_decisions_c = decisions.clone();
+        let sse_decisions_d = decisions.clone();
         let access = self.access_controller().cloned();
         let agent_sse_visibility_policy = visibility_policy.clone();
         let mob_sse_visibility_policy = visibility_policy.clone();
@@ -364,10 +365,13 @@ impl UnifiedRuntime {
                 self.mob_runtime.handle(),
                 self.mob_events_store(),
                 Some(sse_decisions_c),
-                access,
+                access.clone(),
                 Some(self.mob_runtime.clone()),
                 structural_sse_visibility_policy,
             ))
+            .merge(self.workgraph_fact_hub().map_or_else(Router::new, |hub| {
+                workgraph_facts_sse_router(hub, Some(sse_decisions_d), access)
+            }))
             .layer(ConcurrencyLimitLayer::new(
                 DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS,
             ))

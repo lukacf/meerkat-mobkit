@@ -162,6 +162,13 @@ impl UnifiedRuntime {
 
     pub async fn shutdown(&self) -> UnifiedRuntimeShutdownReport {
         self.shutting_down.store(true, Ordering::SeqCst);
+        // The fact tail owns only a lossy wake projection, so shutdown does
+        // not drain it. Abort and join the sole runtime-owned task before
+        // taking down the authoritative WorkGraph-bearing mob runtime.
+        if let Some(task) = self.workgraph_fact_tail_task.lock().await.take() {
+            task.abort();
+            let _ = task.await;
+        }
         if let Some(observer) = self.agent_memory_observer_task.lock().await.take() {
             observer.abort_and_join().await;
         }
