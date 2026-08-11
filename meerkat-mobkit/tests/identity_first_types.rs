@@ -622,6 +622,45 @@ fn identity_first_types_agent_build_draft_roundtrip() {
     assert_eq!(draft, back);
 }
 
+#[test]
+fn identity_first_types_compaction_curator_is_strictly_host_local() {
+    struct HostCurator;
+
+    #[async_trait::async_trait]
+    impl meerkat_core::CompactionCurator for HostCurator {
+        async fn curate_summary(
+            &self,
+            _window: meerkat_core::CompactionWindow<'_>,
+        ) -> Result<meerkat_core::CuratedCompactionSummary, meerkat_core::CompactionCuratorError>
+        {
+            meerkat_core::CuratedCompactionSummary::new("host summary")
+        }
+    }
+
+    let draft = AgentBuildDraft {
+        compaction_curator: CompactionCuratorOverlay::new(std::sync::Arc::new(HostCurator)),
+        model: None,
+        system_prompt: None,
+        additional_instructions: Vec::new(),
+        labels: BTreeMap::new(),
+        app_context: None,
+        external_tools: Vec::new(),
+        local_external_tools: Default::default(),
+        provider_params: None,
+    };
+
+    let json = serde_json::to_value(&draft).expect("serialize host-local draft");
+    assert!(
+        json.get("compaction_curator").is_none(),
+        "executable host behavior must never enter the draft wire shape"
+    );
+    let decoded: AgentBuildDraft = serde_json::from_value(json).expect("deserialize draft");
+    assert!(
+        !decoded.compaction_curator.is_some(),
+        "a JSON round-trip cannot mint executable host behavior"
+    );
+}
+
 /// The gateway customizer round-trips the draft as JSON
 /// (`serde_json::to_value(&*draft)` out, `serde_json::from_value` back), so a
 /// provider-params field that does not survive that hop is silently dropped

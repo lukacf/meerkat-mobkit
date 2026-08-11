@@ -3047,6 +3047,7 @@ pub(crate) fn build_spawn_spec(
     if let Some(dispatcher) = draft.local_external_tools.dispatcher() {
         spawn_spec.external_tools = Some(dispatcher);
     }
+    spawn_spec.compaction_curator_override = draft.compaction_curator.curator();
 
     // Runs after the model block: it composes with whatever snapshot that
     // block installed instead of clobbering it.
@@ -4114,6 +4115,19 @@ mod tests {
 
     struct EmptyDispatcher;
 
+    struct TestCompactionCurator;
+
+    #[async_trait]
+    impl meerkat_core::CompactionCurator for TestCompactionCurator {
+        async fn curate_summary(
+            &self,
+            _window: meerkat_core::CompactionWindow<'_>,
+        ) -> Result<meerkat_core::CuratedCompactionSummary, meerkat_core::CompactionCuratorError>
+        {
+            meerkat_core::CuratedCompactionSummary::new("mobkit curated summary")
+        }
+    }
+
     #[async_trait]
     impl AgentToolDispatcher for EmptyDispatcher {
         fn tools(&self) -> Arc<[Arc<ToolDef>]> {
@@ -4315,6 +4329,45 @@ mod tests {
             spawn.role_name.as_str(),
             "worker",
             "SpawnMemberSpec role remains the authoritative mob profile"
+        );
+    }
+
+    #[test]
+    fn fresh_and_resume_spawn_specs_carry_the_exact_host_curator_arc() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let session_id = meerkat_core::types::SessionId::new();
+        let curator: Arc<dyn meerkat_core::CompactionCurator> = Arc::new(TestCompactionCurator);
+        let draft = AgentBuildDraft {
+            compaction_curator: crate::identity_first::CompactionCuratorOverlay::new(Arc::clone(
+                &curator,
+            )),
+            model: None,
+            system_prompt: None,
+            additional_instructions: Vec::new(),
+            labels: Default::default(),
+            app_context: None,
+            external_tools: Vec::new(),
+            local_external_tools: Default::default(),
+            provider_params: None,
+        };
+
+        let fresh =
+            build_spawn_spec(&runtime_id, &durable_spec(), &draft, None).expect("fresh spawn spec");
+        assert!(
+            fresh
+                .compaction_curator_override
+                .as_ref()
+                .is_some_and(|actual| Arc::ptr_eq(actual, &curator))
+        );
+
+        let resumed =
+            build_resume_spawn_spec(&runtime_id, &durable_spec(), &draft, None, &session_id)
+                .expect("resume spawn spec");
+        assert!(
+            resumed
+                .compaction_curator_override
+                .as_ref()
+                .is_some_and(|actual| Arc::ptr_eq(actual, &curator))
         );
     }
 

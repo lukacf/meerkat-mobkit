@@ -1114,11 +1114,8 @@ impl Eq for LocalExternalToolOverlay {}
 /// cannot cross a wire boundary, so the slot is `#[serde(default, skip)]` on
 /// [`AgentBuildDraft`] and compares by presence only.
 ///
-/// NOT YET WIRED. This is the draft half of the curator carrier: nothing in
-/// this crate reads it, because there is no carrier for it on `SpawnMemberSpec`
-/// or `SessionBuildOptions` upstream to hand it to. Landing the slot now keeps
-/// customizers and the draft contract stable for when that seam exists; until
-/// then a value set here is inert.
+/// The ordinary identity-first lowering copies this overlay into Meerkat's
+/// in-process `SpawnMemberSpec` carrier for both fresh and resumed builds.
 #[derive(Clone, Default)]
 pub struct CompactionCuratorOverlay {
     curator: Option<Arc<dyn meerkat_core::compact::CompactionCurator>>,
@@ -1197,18 +1194,17 @@ pub struct AgentBuildDraft {
     pub provider_params: Option<meerkat_core::lifecycle::run_primitive::ProviderParamsOverride>,
     /// Host-supplied compaction curator for this identity.
     ///
-    /// NOT YET WIRED - see [`CompactionCuratorOverlay`]. Nothing reads this
-    /// field: the downstream carrier (`SpawnMemberSpec` / `SessionBuildOptions`)
-    /// does not exist upstream yet. Serde-skipped like `local_external_tools`,
-    /// so no persisted draft or wire payload changes.
+    /// The ordinary identity-first fresh and resume paths lower this into the
+    /// matching in-process Meerkat build carrier. Serde-skipped like
+    /// `local_external_tools`, so no persisted draft or wire payload changes.
     ///
     /// IN-PROCESS ONLY, and that is a real limit, not a formality: the gateway
     /// customizer round-trips the whole draft through
     /// `serde_json::to_value` / `from_value` (see `provider_params` above), so
     /// a curator set on the far side of that hop is dropped, exactly like
     /// `local_external_tools`. Making this usable from a gateway or SDK
-    /// customizer needs a wire-side carrier too, not just an upstream
-    /// `SpawnMemberSpec` field.
+    /// customizer would require a different executable-host registration
+    /// contract; this field does not invent one.
     #[serde(default, skip)]
     pub compaction_curator: CompactionCuratorOverlay,
 }
