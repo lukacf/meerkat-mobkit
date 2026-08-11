@@ -6527,10 +6527,12 @@ impl MobBootstrapSpec {
                         .with_detail("caller-injected store; durability rides with the injector"),
                 )
             } else if let Some(provider) = provider_meerkat_stores.as_ref() {
-                let service = meerkat::WorkGraphService::with_scope(
+                // Canonical mob realm via the one helper - see
+                // `workgraph_wiring::scoped_workgraph_service`. A second
+                // spelling here is what made every workgraph member unbuildable.
+                let service = crate::workgraph_wiring::scoped_workgraph_service(
                     Arc::clone(&provider.workgraph_store),
                     definition.id.as_str(),
-                    meerkat::WorkNamespace::default(),
                 );
                 let slot = crate::workgraph_wiring::install_workgraph_tools(&builder, &service);
                 (Some(service), Some(slot), provider.workgraph_slot_summary())
@@ -6814,10 +6816,11 @@ impl MobBootstrapSpec {
             // M4b single-bundle: the workgraph rides the composite
             // provider's meerkat-level bundle instead of process-local
             // memory.
-            let service = meerkat::WorkGraphService::with_scope(
+            // Canonical mob realm via the one helper - see
+            // `workgraph_wiring::scoped_workgraph_service`.
+            let service = crate::workgraph_wiring::scoped_workgraph_service(
                 Arc::clone(&provider.workgraph_store),
                 definition.id.as_str(),
-                meerkat::WorkNamespace::default(),
             );
             let slot = crate::workgraph_wiring::install_workgraph_tools(&builder, &service);
             (service, slot)

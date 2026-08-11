@@ -86,8 +86,41 @@ pub fn ephemeral_workgraph_service(realm_id: &str) -> WorkGraphService {
     scoped_workgraph_service(Arc::new(MemoryWorkGraphStore::new()), realm_id)
 }
 
-fn scoped_workgraph_service(store: Arc<dyn WorkGraphStore>, realm_id: &str) -> WorkGraphService {
-    WorkGraphService::with_scope(store, realm_id, WorkNamespace::default())
+/// Scope a WorkGraph service to a mob, using meerkat's CANONICAL mob realm.
+///
+/// The parameter is a MOB ID, not a raw realm. `meerkat_core::mob_realm_id`
+/// renders it as `mob.<mob_id>`, which is the same realm meerkat derives for
+/// every member it builds for that mob (`meerkat-mob/src/build.rs`).
+///
+/// This matters because 0.8.22 validates the two against each other: a
+/// WorkGraph namespace grant whose realm differs from the member's build realm
+/// is a typed build refusal ("WorkGraph namespace grant realm '..' does not
+/// match build realm '..'"). MobKit previously scoped the workgraph with the
+/// BARE mob id while every other realm-scoped thing for the same mob used
+/// `mob.<id>`, so the two could never agree and any member declaring workgraph
+/// tools failed to build. Deriving from one helper is what keeps them equal;
+/// do not reintroduce a second spelling of "the realm for this mob".
+///
+/// If the canonical realm cannot be formed the raw id is used, which lets
+/// meerkat's own validation produce its typed error naming BOTH realms rather
+/// than this function inventing a worse one.
+pub(crate) fn scoped_workgraph_service(
+    store: Arc<dyn WorkGraphStore>,
+    mob_id: &str,
+) -> WorkGraphService {
+    let realm = match meerkat_core::mob_realm_id(mob_id) {
+        Ok(realm) => realm.as_str().to_string(),
+        Err(error) => {
+            tracing::error!(
+                mob_id,
+                %error,
+                "could not form the canonical mob realm; workgraph scope falls back to the raw \
+                 mob id and member builds declaring workgraph tools will be refused upstream"
+            );
+            mob_id.to_string()
+        }
+    };
+    WorkGraphService::with_scope(store, realm, WorkNamespace::default())
 }
 
 /// Fill `builder`'s default workgraph-tools slot with the full
@@ -110,6 +143,24 @@ pub fn install_workgraph_tools(
     let tools = ScopePinnedWorkGraphTools::new(service);
     let slot = tools.admission_slot();
     meerkat::surface::set_default_workgraph_tools(builder, Some(Arc::new(tools)));
+    // 0.8.16 item 6 / 0.8.22 port requirement. Since 0.8.22 meerkat REFUSES to
+    // build any agent whose WorkGraph tools are enabled without a host-issued
+    // namespace grant (`meerkat/src/factory.rs`, "WorkGraph tools enabled
+    // without a host-issued namespace grant"). Without this line every member
+    // that declares workgraph tools fails to build on create, and on resume
+    // degrades the identity rather than failing cleanly.
+    //
+    // The grant is taken from the SERVICE rather than reconstructed from a
+    // realm id and a namespace we happen to have nearby, so the grant and the
+    // scope the tools are pinned to cannot drift apart: `ScopePinnedWorkGraphTools`
+    // above pins every call to this same service's realm+namespace, and a
+    // grant naming a different scope would authorise something the tools can
+    // never address. One value, one source - that is the whole point of item
+    // 6's "mechanism owns scope, agents don't wander realms".
+    meerkat::surface::set_default_workgraph_namespace_grant(
+        builder,
+        Some(service.namespace_grant().clone()),
+    );
     slot
 }
 
@@ -506,12 +557,18 @@ pub fn attach_workgraph_tools_ephemeral(
 /// slot; on the provider path it is already covered by
 /// `enforce_fail_closed_durability` over the meerkat `RealmStoreSet`.
 #[must_use]
+/// `mob_id` is a MOB ID, not a raw realm. It is rendered into meerkat's
+/// canonical mob realm (`mob.<mob_id>`) by
+/// [`scoped_workgraph_service`], because 0.8.22 refuses to build any member
+/// whose WorkGraph namespace grant realm differs from its build realm, and
+/// meerkat derives that build realm as `mob.<mob_id>`. Pass the mob
+/// definition id; passing an already-prefixed realm would double the prefix.
 pub fn attach_workgraph_tools_with_store(
     builder: &FactoryAgentBuilder,
     store: Arc<dyn WorkGraphStore>,
-    realm_id: &str,
+    mob_id: &str,
 ) -> (WorkGraphService, WorkGraphAdmissionSlot) {
-    let service = scoped_workgraph_service(store, realm_id);
+    let service = scoped_workgraph_service(store, mob_id);
     let slot = install_workgraph_tools(builder, &service);
     (service, slot)
 }
@@ -547,7 +604,11 @@ mod tests {
             slot_is_filled(&builder),
             "attach must fill the default_workgraph_tools slot"
         );
-        assert_eq!(service.default_realm_id(), "wiring-realm");
+        // CANONICAL mob realm, `mob.<mob_id>`. Pinned as a literal rather
+        // than recomputed from `mob_realm_id`, which would be tautological:
+        // the spelling decides where rows physically live, so a change to it
+        // is a data migration and must fail this test loudly.
+        assert_eq!(service.default_realm_id(), "mob.wiring-realm");
         assert_eq!(service.store().kind(), WorkGraphStoreKind::Sqlite);
         assert!(
             dir.path().join(WORKGRAPH_STORE_FILE).exists(),
@@ -575,7 +636,7 @@ mod tests {
             .await
             .expect("item must survive reopen");
         assert_eq!(loaded.title, "persisted item");
-        assert_eq!(loaded.realm_id, "reopen-realm");
+        assert_eq!(loaded.realm_id, "mob.reopen-realm");
     }
 
     #[tokio::test]
@@ -597,7 +658,7 @@ mod tests {
         let (service, _slot) = attach_workgraph_tools_ephemeral(&builder, "ephemeral-realm");
 
         assert!(slot_is_filled(&builder));
-        assert_eq!(service.default_realm_id(), "ephemeral-realm");
+        assert_eq!(service.default_realm_id(), "mob.ephemeral-realm");
         assert_eq!(service.store().kind(), WorkGraphStoreKind::Memory);
         assert!(
             !dir.path().join(WORKGRAPH_STORE_FILE).exists(),
@@ -621,7 +682,7 @@ mod tests {
             attach_workgraph_tools_with_store(&builder, store, "injected-realm-slot");
 
         assert!(slot_is_filled(&builder));
-        assert_eq!(service.default_realm_id(), "injected-realm-slot");
+        assert_eq!(service.default_realm_id(), "mob.injected-realm-slot");
         assert_eq!(service.store().kind(), WorkGraphStoreKind::Sqlite);
         assert!(
             injected_path.exists(),
@@ -671,7 +732,7 @@ mod tests {
             .await
             .expect("list");
         assert_eq!(items.len(), 1, "item must land in the pinned scope");
-        assert_eq!(items[0].realm_id, "mob-realm");
+        assert_eq!(items[0].realm_id, "mob.mob-realm");
         assert_eq!(items[0].namespace.as_str(), "default");
 
         // Reads with invented scope must see the same world (self-consistent
