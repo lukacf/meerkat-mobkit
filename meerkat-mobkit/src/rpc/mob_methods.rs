@@ -3073,10 +3073,7 @@ pub(super) async fn handle_cross_mob_wire_local(
 // Mob/run labels — mobkit-side sidecar metadata
 // ---------------------------------------------------------------------------
 
-use crate::runtime::{
-    LabelRpcResult, MetadataScope, dispatch_labels_delete, dispatch_labels_get,
-    dispatch_labels_set, labels_to_json_value, parse_run_id_param,
-};
+use crate::runtime::{LabelRpcResult, dispatch_label_method, labels_to_json_value};
 
 fn label_response(response_id: Value, outcome: LabelRpcResult) -> JsonRpcResponse {
     let (result, error) = match outcome {
@@ -3102,78 +3099,25 @@ fn label_response(response_id: Value, outcome: LabelRpcResult) -> JsonRpcRespons
     }
 }
 
-fn mob_scope(runtime: &UnifiedRuntime) -> MetadataScope {
-    MetadataScope::Mob(runtime.mob_id())
-}
-
-fn run_scope_or_error(
+pub(super) async fn handle_label_method(
     runtime: &UnifiedRuntime,
-    params: &Value,
-) -> Result<MetadataScope, LabelRpcResult> {
-    parse_run_id_param(params)
-        .map(|run_id| MetadataScope::Run(runtime.mob_id(), run_id.to_string()))
-        .map_err(LabelRpcResult::InvalidParams)
-}
-
-pub(super) async fn handle_mob_labels_set(
-    runtime: &UnifiedRuntime,
+    method: &str,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
-    let outcome = dispatch_labels_set(runtime.metadata_table(), mob_scope(runtime), params).await;
-    label_response(response_id, outcome)
-}
-
-pub(super) async fn handle_mob_labels_get(
-    runtime: &UnifiedRuntime,
-    response_id: Value,
-) -> JsonRpcResponse {
-    let outcome = dispatch_labels_get(runtime.metadata_table(), mob_scope(runtime)).await;
-    label_response(response_id, outcome)
-}
-
-pub(super) async fn handle_mob_labels_delete(
-    runtime: &UnifiedRuntime,
-    response_id: Value,
-) -> JsonRpcResponse {
-    let outcome = dispatch_labels_delete(runtime.metadata_table(), mob_scope(runtime)).await;
-    label_response(response_id, outcome)
-}
-
-pub(super) async fn handle_run_labels_set(
-    runtime: &UnifiedRuntime,
-    response_id: Value,
-    params: &Value,
-) -> JsonRpcResponse {
-    let outcome = match run_scope_or_error(runtime, params) {
-        Ok(scope) => dispatch_labels_set(runtime.metadata_table(), scope, params).await,
-        Err(err) => err,
-    };
-    label_response(response_id, outcome)
-}
-
-pub(super) async fn handle_run_labels_get(
-    runtime: &UnifiedRuntime,
-    response_id: Value,
-    params: &Value,
-) -> JsonRpcResponse {
-    let outcome = match run_scope_or_error(runtime, params) {
-        Ok(scope) => dispatch_labels_get(runtime.metadata_table(), scope).await,
-        Err(err) => err,
-    };
-    label_response(response_id, outcome)
-}
-
-pub(super) async fn handle_run_labels_delete(
-    runtime: &UnifiedRuntime,
-    response_id: Value,
-    params: &Value,
-) -> JsonRpcResponse {
-    let outcome = match run_scope_or_error(runtime, params) {
-        Ok(scope) => dispatch_labels_delete(runtime.metadata_table(), scope).await,
-        Err(err) => err,
-    };
-    label_response(response_id, outcome)
+    match dispatch_label_method(runtime.metadata_table(), &runtime.mob_id(), method, params).await {
+        Some(outcome) => label_response(response_id, outcome),
+        None => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32601,
+                message: "Method not found".to_string(),
+                data: None,
+            }),
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------

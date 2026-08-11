@@ -67,9 +67,9 @@ pub use console_ingress::{
 pub use event_transport::normalize_event_line;
 pub use metadata::{
     InMemoryMetadataStore, LabelRpcResult, MetadataScope, MetadataStoreError,
-    PersistentMetadataStore, RuntimeMetadataTable, SqliteMetadataStore, dispatch_labels_delete,
-    dispatch_labels_get, dispatch_labels_set, labels_to_json_value, parse_labels_param,
-    parse_run_id_param,
+    PersistentMetadataStore, RuntimeMetadataTable, SqliteMetadataStore, dispatch_label_method,
+    dispatch_labels_delete, dispatch_labels_get, dispatch_labels_set, labels_to_json_value,
+    parse_labels_param, parse_run_id_param,
 };
 pub use routing::WILDCARD_ROUTE;
 pub use routing::route_module_call;

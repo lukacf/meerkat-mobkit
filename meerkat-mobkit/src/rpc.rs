@@ -3202,21 +3202,18 @@ async fn handle_unified_rpc_json_inner(
         "mobkit/wait_ready" => {
             mob_methods::handle_wait_ready(runtime, response_id, &request.params).await
         }
-        "mobkit/mob_labels/set" => {
-            mob_methods::handle_mob_labels_set(runtime, response_id, &request.params).await
-        }
-        "mobkit/mob_labels/get" => mob_methods::handle_mob_labels_get(runtime, response_id).await,
-        "mobkit/mob_labels/delete" => {
-            mob_methods::handle_mob_labels_delete(runtime, response_id).await
-        }
-        "mobkit/run_labels/set" => {
-            mob_methods::handle_run_labels_set(runtime, response_id, &request.params).await
-        }
-        "mobkit/run_labels/get" => {
-            mob_methods::handle_run_labels_get(runtime, response_id, &request.params).await
-        }
-        "mobkit/run_labels/delete" => {
-            mob_methods::handle_run_labels_delete(runtime, response_id, &request.params).await
+        method
+            if matches!(
+                method,
+                "mobkit/mob_labels/set"
+                    | "mobkit/mob_labels/get"
+                    | "mobkit/mob_labels/delete"
+                    | "mobkit/run_labels/set"
+                    | "mobkit/run_labels/get"
+                    | "mobkit/run_labels/delete",
+            ) =>
+        {
+            mob_methods::handle_label_method(runtime, method, response_id, &request.params).await
         }
         // ----- identity-first methods -----
         "mobkit/send" => {

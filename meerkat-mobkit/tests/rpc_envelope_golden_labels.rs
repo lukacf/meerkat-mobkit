@@ -4,24 +4,23 @@
     clippy::panic,
     clippy::uninlined_format_args
 )]
-//! Item 9.0 - pinned golden envelopes for the six label verbs, both transports.
+//! Item 9 - pinned golden envelopes for the shared six-verb labels domain.
 //!
-//! Item 9 unifies the stdio JSON-RPC dispatcher (`src/rpc.rs` ->
-//! `src/rpc/mob_methods.rs`) with the HTTP console dispatcher
-//! (`src/http_console.rs`) one domain at a time. The labels domain is the
-//! first one, and it cannot be merged safely until today's behaviour is
-//! pinned. This file is that pin.
+//! The stdio JSON-RPC dispatcher (`src/rpc.rs` -> `src/rpc/mob_methods.rs`)
+//! and HTTP console dispatcher (`src/http_console.rs`) both delegate label
+//! semantics to `runtime::dispatch_label_method`. This file pins that shared
+//! authority and the intentionally transport-specific envelopes around it.
 //!
 //! The six verbs:
 //!
-//! | method                      | stdio handler                | http arm                |
-//! |-----------------------------|------------------------------|-------------------------|
-//! | `mobkit/mob_labels/set`     | `handle_mob_labels_set`      | `dispatch_label_method` |
-//! | `mobkit/mob_labels/get`     | `handle_mob_labels_get`      | `dispatch_label_method` |
-//! | `mobkit/mob_labels/delete`  | `handle_mob_labels_delete`   | `dispatch_label_method` |
-//! | `mobkit/run_labels/set`     | `handle_run_labels_set`      | `dispatch_label_method` |
-//! | `mobkit/run_labels/get`     | `handle_run_labels_get`      | `dispatch_label_method` |
-//! | `mobkit/run_labels/delete`  | `handle_run_labels_delete`   | `dispatch_label_method` |
+//! | method                      | semantic handler                        |
+//! |-----------------------------|-----------------------------------------|
+//! | `mobkit/mob_labels/set`     | `runtime::dispatch_label_method`        |
+//! | `mobkit/mob_labels/get`     | `runtime::dispatch_label_method`        |
+//! | `mobkit/mob_labels/delete`  | `runtime::dispatch_label_method`        |
+//! | `mobkit/run_labels/set`     | `runtime::dispatch_label_method`        |
+//! | `mobkit/run_labels/get`     | `runtime::dispatch_label_method`        |
+//! | `mobkit/run_labels/delete`  | `runtime::dispatch_label_method`        |
 //!
 //! Both project the same `crate::runtime::LabelRpcResult` from the same
 //! `RuntimeMetadataTable`, so the *payloads* already agree. What does NOT
@@ -51,9 +50,8 @@
 //!    `metadata_table: None` and answers -32602; the stdio runtime always
 //!    owns a table and structurally cannot reach that branch.
 //!
-//! Every one of those is asserted below. When item 9 changes one, the
-//! corresponding test fails and the change becomes a decision instead of an
-//! accident.
+//! Every one of those is asserted below. A change to the shared handler or
+//! either transport projection therefore fails at the exact contract seam.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -64,6 +62,7 @@ use axum::http::{Request, StatusCode, header};
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_mob::{MobDefinition, MobStorage};
+use meerkat_mobkit::runtime::{LabelRpcResult, dispatch_label_method};
 use meerkat_mobkit::{
     AccessControlConfig, AccessController, AccessRule, AuthPolicy, AuthProvider, BigQueryNaming,
     ConsolePolicy, DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
@@ -619,6 +618,122 @@ async fn label_verb_success_envelopes_are_pinned_on_both_transports() {
     fixture.shutdown().await;
 }
 
+/// The transport goldens above pin wire behavior. This test pins the shared
+/// library handler underneath them directly, including mutation sensitivity:
+/// each set/delete verb may affect only its own mob/run scope. If either
+/// transport grows a private method switch again, its behavior can no longer
+/// be explained by this single six-verb authority and the transport goldens
+/// will diverge from these outcomes.
+#[tokio::test]
+async fn shared_label_domain_handler_is_the_six_verb_mutation_authority() {
+    let table = meerkat_mobkit::RuntimeMetadataTable::new();
+    let mob_id = "mob-direct";
+    let mob_scope = meerkat_mobkit::MetadataScope::Mob(mob_id.to_string());
+    let run_scope = meerkat_mobkit::MetadataScope::Run(mob_id.to_string(), RUN_ID.to_string());
+
+    assert_eq!(
+        dispatch_label_method(
+            &table,
+            mob_id,
+            "mobkit/mob_labels/set",
+            &json!({ "labels": { "scope": "mob" } }),
+        )
+        .await,
+        Some(LabelRpcResult::Accepted),
+    );
+    assert_eq!(
+        dispatch_label_method(
+            &table,
+            mob_id,
+            "mobkit/run_labels/set",
+            &json!({ "run_id": RUN_ID, "labels": { "scope": "run" } }),
+        )
+        .await,
+        Some(LabelRpcResult::Accepted),
+    );
+    assert_eq!(
+        table.get_labels(&mob_scope).await,
+        BTreeMap::from([("scope".to_string(), "mob".to_string())]),
+    );
+    assert_eq!(
+        table.get_labels(&run_scope).await,
+        BTreeMap::from([("scope".to_string(), "run".to_string())]),
+    );
+
+    assert_eq!(
+        dispatch_label_method(&table, mob_id, "mobkit/mob_labels/get", &json!({})).await,
+        Some(LabelRpcResult::Labels(BTreeMap::from([(
+            "scope".to_string(),
+            "mob".to_string(),
+        )]))),
+    );
+    assert_eq!(
+        dispatch_label_method(
+            &table,
+            mob_id,
+            "mobkit/run_labels/get",
+            &json!({ "run_id": RUN_ID }),
+        )
+        .await,
+        Some(LabelRpcResult::Labels(BTreeMap::from([(
+            "scope".to_string(),
+            "run".to_string(),
+        )]))),
+    );
+
+    assert_eq!(
+        dispatch_label_method(&table, mob_id, "mobkit/mob_labels/delete", &json!({}),).await,
+        Some(LabelRpcResult::Accepted),
+    );
+    assert!(table.get_labels(&mob_scope).await.is_empty());
+    assert_eq!(
+        table.get_labels(&run_scope).await,
+        BTreeMap::from([("scope".to_string(), "run".to_string())]),
+        "mob delete must not mutate the run scope",
+    );
+
+    assert_eq!(
+        dispatch_label_method(
+            &table,
+            mob_id,
+            "mobkit/run_labels/delete",
+            &json!({ "run_id": RUN_ID }),
+        )
+        .await,
+        Some(LabelRpcResult::Accepted),
+    );
+    assert!(table.get_labels(&run_scope).await.is_empty());
+
+    assert_eq!(
+        dispatch_label_method(&table, mob_id, "mobkit/run_labels/get", &json!({})).await,
+        Some(LabelRpcResult::InvalidParams("run_id required".to_string(),)),
+    );
+    for params in [
+        json!({ "run_id": null }),
+        json!({ "run_id": 7 }),
+        json!({ "run_id": "" }),
+    ] {
+        assert_eq!(
+            dispatch_label_method(&table, mob_id, "mobkit/run_labels/get", &params).await,
+            Some(LabelRpcResult::InvalidParams("run_id required".to_string())),
+        );
+    }
+    for params in [
+        json!({ "labels": "not-an-object" }),
+        json!({ "labels": { "invalid": 7 } }),
+    ] {
+        assert!(matches!(
+            dispatch_label_method(&table, mob_id, "mobkit/mob_labels/set", &params).await,
+            Some(LabelRpcResult::InvalidParams(_))
+        ));
+    }
+    assert_eq!(
+        dispatch_label_method(&table, mob_id, "mobkit/not_labels/get", &json!({})).await,
+        None,
+        "the domain handler must not absorb unrelated RPC methods",
+    );
+}
+
 /// One `RuntimeMetadataTable`, two transports. A write over stdio is visible
 /// over HTTP and vice versa. The merge must not introduce a second authority
 /// (nor re-derive the mob id differently: stdio uses `runtime.mob_id()`, the
@@ -844,8 +959,8 @@ async fn label_scope_and_clearing_semantics_are_pinned_on_both_transports() {
 /// Invalid params on the run-scoped verbs. Same code (-32602), same absence
 /// of a `data` key - but the *messages differ by transport*, because stdio's
 /// `label_response` prefixes `"Invalid params: "` and the console's
-/// `invalid_params` does not. Item 9 must pick one; this pins that today
-/// there are two.
+/// `invalid_params` does not. The shared domain deliberately leaves this
+/// projection policy to each transport, so this pins that there are two.
 #[tokio::test]
 async fn invalid_params_envelopes_pin_the_transport_message_prefix_divergence() {
     let fixture = label_fixture().await;
@@ -1006,17 +1121,17 @@ async fn wire_serialization_diverges_between_transports() {
         "console label keys must be lexicographic: {ordered_http}"
     );
 
-    // Notifications: stdio answers with nothing at all, the console answers
-    // with a full envelope whose id is null.
-    let notification = json!({
+    // Mutating notifications execute the shared domain operation before each
+    // transport applies its distinct response-suppression policy.
+    let stdio_notification_request = json!({
         "jsonrpc": "2.0",
-        "method": "mobkit/mob_labels/get",
-        "params": {},
+        "method": "mobkit/mob_labels/set",
+        "params": { "labels": { "notification": "stdio" } },
     })
     .to_string();
     let stdio_notification = handle_unified_rpc_json(
         &fixture.runtime,
-        &notification,
+        &stdio_notification_request,
         Duration::from_secs(5),
         None,
         None,
@@ -1026,7 +1141,18 @@ async fn wire_serialization_diverges_between_transports() {
         stdio_notification, "",
         "stdio must answer a notification with an empty string"
     );
+    assert_eq!(
+        http(&console, "mobkit/mob_labels/get", json!({})).await["result"]["labels"],
+        json!({ "notification": "stdio" }),
+        "stdio notification must mutate before its response is suppressed"
+    );
 
+    let http_notification_request = json!({
+        "jsonrpc": "2.0",
+        "method": "mobkit/mob_labels/set",
+        "params": { "labels": { "notification": "http" } },
+    })
+    .to_string();
     let response = console
         .clone()
         .oneshot(
@@ -1034,7 +1160,7 @@ async fn wire_serialization_diverges_between_transports() {
                 .method("POST")
                 .uri("/console/rpc")
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(notification))
+                .body(Body::from(http_notification_request))
                 .expect("notification request"),
         )
         .await
@@ -1057,6 +1183,11 @@ async fn wire_serialization_diverges_between_transports() {
         envelope["id"],
         Value::Null,
         "console substitutes a null id for a notification: {envelope:#?}"
+    );
+    assert_eq!(
+        stdio(&fixture.runtime, "mobkit/mob_labels/get", json!({})).await["result"]["labels"],
+        json!({ "notification": "http" }),
+        "console notification must mutate before its null-id envelope is projected"
     );
 
     fixture.shutdown().await;

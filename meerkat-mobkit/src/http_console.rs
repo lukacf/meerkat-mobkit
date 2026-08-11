@@ -69,7 +69,7 @@ use crate::runtime::{
     handle_console_rest_json_route_with_snapshot_access_memory_and_workgraph,
     resolve_authorized_console_auth_from_token,
 };
-use crate::runtime::{MetadataScope, RuntimeMetadataTable, labels_to_json_value};
+use crate::runtime::{RuntimeMetadataTable, labels_to_json_value};
 use crate::types::{EventEnvelope, UnifiedEvent};
 use crate::unified_runtime::console_events::ConsoleEventStore;
 use crate::unified_runtime::mob_events::MobEventsStore;
@@ -8477,7 +8477,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     | "mobkit/run_labels/delete",
             ) =>
         {
-            dispatch_label_method(
+            dispatch_console_label_method(
                 method,
                 metadata_table.as_deref(),
                 runtime.handle().mob_id().as_str(),
@@ -8535,11 +8535,12 @@ async fn reconcile_console_topology(
 
 /// Dispatch the six `mobkit/{mob,run}_labels/*` RPCs against a metadata table.
 ///
-/// Single entrypoint shared by every label method; the dispatch arms in
-/// `handle_console_runtime_rpc` simply delegate based on the matched method
-/// name. Mirrors the unified-runtime handlers in `rpc::mob_methods` — both
-/// transports project the same outcomes to the same wire shape.
-async fn dispatch_label_method(
+/// Console projection for the shared transport-neutral label domain.
+///
+/// Access checks and the absent-table branch remain console-owned. Scope,
+/// validation, and mutation come only from `runtime::dispatch_label_method`;
+/// this function preserves the console's historical response envelope.
+async fn dispatch_console_label_method(
     method: &str,
     metadata_table: Option<&RuntimeMetadataTable>,
     mob_id: &str,
@@ -8553,27 +8554,17 @@ async fn dispatch_label_method(
         );
     };
 
-    let scope = match method {
-        "mobkit/mob_labels/set" | "mobkit/mob_labels/get" | "mobkit/mob_labels/delete" => {
-            MetadataScope::Mob(mob_id.to_string())
-        }
-        _ => match crate::runtime::parse_run_id_param(params) {
-            Ok(run_id) => MetadataScope::Run(mob_id.to_string(), run_id.to_string()),
-            Err(message) => return invalid_params(response_id, message),
-        },
-    };
-
-    let outcome = match method {
-        "mobkit/mob_labels/set" | "mobkit/run_labels/set" => {
-            crate::runtime::dispatch_labels_set(table, scope, params).await
-        }
-        "mobkit/mob_labels/get" | "mobkit/run_labels/get" => {
-            crate::runtime::dispatch_labels_get(table, scope).await
-        }
-        "mobkit/mob_labels/delete" | "mobkit/run_labels/delete" => {
-            crate::runtime::dispatch_labels_delete(table, scope).await
-        }
-        _ => unreachable!("dispatch_label_method called with non-label method: {method}"),
+    let Some(outcome) = crate::runtime::dispatch_label_method(table, mob_id, method, params).await
+    else {
+        return response_value(
+            response_id,
+            None,
+            Some(JsonRpcError {
+                code: -32601,
+                message: "Method not found".to_string(),
+                data: None,
+            }),
+        );
     };
 
     match outcome {
