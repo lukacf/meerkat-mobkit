@@ -15,9 +15,8 @@
 //! firewall, [`StewardStore`] for the Steward, `TombstoneSource` for the
 //! Distiller, [`MemoryPanelStore`] for the console panel handle on the
 //! returned stack) and fails with a named error when a requested engine's
-//! capability is missing. A recall-only provider (e.g. the markdown store)
-//! is recall-only because it advertises none of these — not because of which
-//! arm of a match constructed it.
+//! capability is missing. An externally supplied recall-only provider is
+//! recall-only because it advertises none of these capabilities.
 //!
 //! Scope notes, deliberate for v1:
 //! - The **Hygienist** stays gateway-wired: it curates transcripts through

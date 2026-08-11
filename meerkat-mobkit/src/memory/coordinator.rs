@@ -554,10 +554,9 @@ impl RecallCoordinator {
 
     /// Assemble the build-time injection for `customize_build`: behavioral
     /// protocol + composed index (manifest-capable providers) + selected
-    /// bodies within the P0.1 ladder. Providers without manifest support
-    /// (the markdown store) get exactly the pre-coordinator customizer
-    /// output — bodies only — so markdown deployments see no behavior
-    /// change beyond the envelope nonce.
+    /// bodies within the P0.1 ladder. Providers without manifest support get
+    /// the bodies-only pre-coordinator customizer shape plus the envelope
+    /// nonce.
     pub async fn assemble_build_injection(
         &self,
         identity: &AgentIdentity,
@@ -1760,8 +1759,8 @@ mod tests {
             text.contains("School logistics before deep work."),
             "{text}"
         );
-        // The markdown-era ledger hook is a no-op default, but the coordinator
-        // still reports usage/telemetry to whatever provider is active.
+        // The ledger hook is a no-op by default, but the coordinator still
+        // reports usage/telemetry to whatever provider is active.
         assert_eq!(provider.captured_injections().len(), 1);
         Ok(())
     }
