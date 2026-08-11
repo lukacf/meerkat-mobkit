@@ -208,9 +208,14 @@ pub enum BridgeError {
     /// The completion-bearing methods default to this so that every existing
     /// [`SessionBridge`] implementor keeps compiling unchanged; only the
     /// concrete mob bridge, which can reach meerkat's `WorkTurnHandle`,
-    /// overrides them. A caller that receives this should fall back to the
-    /// ingress-only `deliver_*` methods, not treat the delivery as failed -
-    /// nothing was submitted.
+    /// overrides them.
+    ///
+    /// Returned BEFORE any submission, so a caller that sees it knows nothing
+    /// was delivered. **A caller that needs completion must fail closed here.**
+    /// Do NOT fall back to the ingress-only `deliver_*` methods: those return
+    /// at admission, so falling back would report success for a turn whose
+    /// outcome is unknown - which is precisely the false-success this seam
+    /// exists to remove.
     CompletionUnsupported(String),
 }
 
@@ -559,12 +564,31 @@ struct InternalBridgeWork<'a> {
     delivery_identity: Option<&'a meerkat_mob::MobDeliveryIdentity>,
 }
 
+/// Admit one internal bridge delivery.
+///
+/// `await_commit == false` is the ingress-only path and is unchanged: it
+/// returns as soon as the work is admitted.
+///
+/// `await_commit == true` admits through meerkat's completion-bearing
+/// `start_work_with_mode*` and then awaits `WorkTurnHandle::wait`, which
+/// resolves on the runtime's committed terminal boundary for THIS exact work
+/// item. One code path with one flag, deliberately: a separate copy would let
+/// the completion lane drift from the ingress lane on admission-budget or
+/// stale-state repair semantics, and those are the parts that are hard to get
+/// right twice.
+///
+/// Note which part the admission budget covers. `deadline` bounds the ACTOR
+/// ROUND TRIP only. The completion await is deliberately outside it - a turn
+/// legitimately runs far longer than an admission budget, so bounding it here
+/// would convert normal work into a spurious `ActorAdmissionTimeout`. The
+/// caller's own timeout governs how long it is willing to wait for a turn.
 async fn submit_internal_bridge_work(
     handle: &MobHandle,
     member_id: &MobAgentIdentity,
     work: InternalBridgeWork<'_>,
     handling_mode: HandlingMode,
     deadline: &ActorAdmissionDeadline,
+    await_commit: bool,
 ) -> Result<(), BridgeError> {
     let entry = deadline
         .bound(
@@ -581,6 +605,44 @@ async fn submit_internal_bridge_work(
         work.injected_context,
         work.interaction_id,
     );
+    if await_commit {
+        let turn = match work.delivery_identity {
+            Some(delivery_identity) => deadline
+                .bound(
+                    "deliver.start_work",
+                    member_id,
+                    handle.start_work_with_mode_and_delivery_identity(
+                        entry.agent_runtime_id.clone(),
+                        entry.fence_token,
+                        spec,
+                        handling_mode,
+                        delivery_identity.clone(),
+                    ),
+                )
+                .await?
+                .map_err(|err| BridgeError::Mob(err.to_string()))?,
+            None => deadline
+                .bound(
+                    "deliver.start_work",
+                    member_id,
+                    handle.start_work_with_mode(
+                        entry.agent_runtime_id.clone(),
+                        entry.fence_token,
+                        WorkRef::new(),
+                        spec,
+                        handling_mode,
+                    ),
+                )
+                .await?
+                .map_err(|err| BridgeError::Mob(err.to_string()))?,
+        };
+        // Outside the admission budget on purpose - see the fn docs.
+        return turn
+            .wait()
+            .await
+            .map(|_| ())
+            .map_err(|err| BridgeError::Mob(err.to_string()));
+    }
     match work.delivery_identity {
         Some(delivery_identity) => deadline
             .bound(
@@ -2991,121 +3053,27 @@ impl SessionBridge for MobSessionBridge {
         runtime_id: &AgentRuntimeId,
         delivery: BridgeDelivery,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        let content = &delivery.content;
-        let handling_mode = delivery.handling_mode;
-        let system_prompt = delivery.system_prompt.as_deref();
-        let injected_context = delivery.injected_context.as_slice();
-        let interaction_id = delivery.interaction_id.as_deref();
-        let delivery_identity = delivery.delivery_identity.as_ref();
-        let mid = self.member_id_for_runtime_id(runtime_id).await;
-        // One admission budget for the whole attempt, shared by every actor
-        // round trip below: the serialized hops must not each cost a budget.
-        let mut deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
-        // Best-effort repair material: a faulted or timed-out lookup degrades
-        // to "no pre-delivery entry" (the delivery itself will surface the
-        // fault; a blocked actor hits the same deadline again below).
-        let member_entry_before_delivery = deadline
-            .bound(
-                "deliver.get_member.pre_delivery",
-                &mid,
-                self.handle.get_member(&mid),
-            )
+        self.deliver_admitted_inner(runtime_id, delivery, false)
             .await
-            .ok()
-            .and_then(Result::ok)
-            .flatten()
-            .map(|entry| (entry.role, entry.labels));
-        if content_input_has_images(content) {
-            let member_entry = deadline
-                .bound(
-                    "deliver.get_member.image_capability",
-                    &mid,
-                    self.handle.get_member(&mid),
-                )
-                .await?
-                .map_err(|err| BridgeError::Mob(err.to_string()))?
-                .ok_or_else(|| {
-                    BridgeError::Mob("member not found while checking image capability".to_string())
-                })?;
-            let caps = deadline
-                .bound(
-                    "deliver.model_capabilities",
-                    &mid,
-                    model_capabilities_for_member(
-                        &self.handle,
-                        self.session_service.as_ref(),
-                        &member_entry.agent_identity,
-                    ),
-                )
-                .await?;
-            if !caps.image_input {
-                return Err(BridgeError::InvalidInput(
-                    "target member model cannot accept image input".to_string(),
-                ));
-            }
-        }
+    }
 
-        match submit_internal_bridge_work(
-            &self.handle,
-            &mid,
-            InternalBridgeWork {
-                content,
-                system_prompt,
-                injected_context,
-                interaction_id,
-                delivery_identity,
-            },
-            handling_mode,
-            &deadline,
-        )
-        .await
-        {
-            Ok(()) => {}
-            // A blocked actor is not stale runtime state: keep the typed
-            // timeout instead of routing it into member repair (which cannot
-            // unblock an actor) or laundering it into `Mob(String)` below.
-            Err(err @ BridgeError::ActorAdmissionTimeout { .. }) => return Err(err),
-            Err(err) if is_repairable_bridge_delivery_error(&err.to_string()) => {
-                tracing::warn!(
-                    runtime_id = %runtime_id,
-                    error = %err,
-                    "identity bridge delivery found stale runtime state; repairing member before retry"
-                );
-                Box::pin(self.repair_member_for_delivery(
-                    runtime_id,
-                    &mid,
-                    member_entry_before_delivery,
-                ))
-                .await?;
-                // Repair is a distinct multi-step recovery with its own
-                // (pre-existing, unbounded) cost; the retry is a new admission
-                // attempt and gets a fresh budget.
-                deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
-                submit_internal_bridge_work(
-                    &self.handle,
-                    &mid,
-                    InternalBridgeWork {
-                        content,
-                        system_prompt,
-                        injected_context,
-                        interaction_id,
-                        delivery_identity,
-                    },
-                    handling_mode,
-                    &deadline,
-                )
-                .await?;
-            }
-            Err(err) => return Err(BridgeError::Mob(err.to_string())),
-        }
-
-        self.resolve_runtime_session_id(
-            runtime_id,
-            &mid,
-            "member has no bridge session after deliver",
-            &deadline,
-        )
-        .await
+    /// Completion-bearing override: identical admission, plus an exact wait on
+    /// this work item's committed terminal boundary.
+    async fn deliver_awaiting_commit_with_mode_context_and_system_prompt(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        content: &meerkat_core::ContentInput,
+        system_prompt: Option<&str>,
+        injected_context: &[meerkat_core::ContentInput],
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        let mut delivery = BridgeDelivery::new(content.clone(), handling_mode);
+        delivery.system_prompt = system_prompt.map(ToString::to_string);
+        delivery.injected_context = injected_context.to_vec();
+        delivery.interaction_id = interaction_id.map(ToString::to_string);
+        self.deliver_admitted_inner(runtime_id, delivery, true)
+            .await
     }
 
     async fn checkpoint_session(
@@ -3341,6 +3309,137 @@ impl SessionBridge for MobSessionBridge {
                 .map_err(|err| BridgeError::Mob(format!("continuity unregister_session: {err}")))?;
         }
         Ok(())
+    }
+}
+
+impl MobSessionBridge {
+    /// Shared admission body for both the ingress-only and completion-bearing
+    /// deliveries. `await_commit` selects only which meerkat submit verb is
+    /// used; every other step - budget, stale-state repair and retry, session
+    /// resolution - is common by construction so the two lanes cannot drift.
+    async fn deliver_admitted_inner(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        delivery: BridgeDelivery,
+        await_commit: bool,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        let content = &delivery.content;
+        let handling_mode = delivery.handling_mode;
+        let system_prompt = delivery.system_prompt.as_deref();
+        let injected_context = delivery.injected_context.as_slice();
+        let interaction_id = delivery.interaction_id.as_deref();
+        let delivery_identity = delivery.delivery_identity.as_ref();
+        let mid = self.member_id_for_runtime_id(runtime_id).await;
+        // One admission budget for the whole attempt, shared by every actor
+        // round trip below: the serialized hops must not each cost a budget.
+        let mut deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
+        // Best-effort repair material: a faulted or timed-out lookup degrades
+        // to "no pre-delivery entry" (the delivery itself will surface the
+        // fault; a blocked actor hits the same deadline again below).
+        let member_entry_before_delivery = deadline
+            .bound(
+                "deliver.get_member.pre_delivery",
+                &mid,
+                self.handle.get_member(&mid),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+            .map(|entry| (entry.role, entry.labels));
+        if content_input_has_images(content) {
+            let member_entry = deadline
+                .bound(
+                    "deliver.get_member.image_capability",
+                    &mid,
+                    self.handle.get_member(&mid),
+                )
+                .await?
+                .map_err(|err| BridgeError::Mob(err.to_string()))?
+                .ok_or_else(|| {
+                    BridgeError::Mob("member not found while checking image capability".to_string())
+                })?;
+            let caps = deadline
+                .bound(
+                    "deliver.model_capabilities",
+                    &mid,
+                    model_capabilities_for_member(
+                        &self.handle,
+                        self.session_service.as_ref(),
+                        &member_entry.agent_identity,
+                    ),
+                )
+                .await?;
+            if !caps.image_input {
+                return Err(BridgeError::InvalidInput(
+                    "target member model cannot accept image input".to_string(),
+                ));
+            }
+        }
+
+        match submit_internal_bridge_work(
+            &self.handle,
+            &mid,
+            InternalBridgeWork {
+                content,
+                system_prompt,
+                injected_context,
+                interaction_id,
+                delivery_identity,
+            },
+            handling_mode,
+            &deadline,
+            await_commit,
+        )
+        .await
+        {
+            Ok(()) => {}
+            // A blocked actor is not stale runtime state: keep the typed
+            // timeout instead of routing it into member repair (which cannot
+            // unblock an actor) or laundering it into `Mob(String)` below.
+            Err(err @ BridgeError::ActorAdmissionTimeout { .. }) => return Err(err),
+            Err(err) if is_repairable_bridge_delivery_error(&err.to_string()) => {
+                tracing::warn!(
+                    runtime_id = %runtime_id,
+                    error = %err,
+                    "identity bridge delivery found stale runtime state; repairing member before retry"
+                );
+                Box::pin(self.repair_member_for_delivery(
+                    runtime_id,
+                    &mid,
+                    member_entry_before_delivery,
+                ))
+                .await?;
+                // Repair is a distinct multi-step recovery with its own
+                // (pre-existing, unbounded) cost; the retry is a new admission
+                // attempt and gets a fresh budget.
+                deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
+                submit_internal_bridge_work(
+                    &self.handle,
+                    &mid,
+                    InternalBridgeWork {
+                        content,
+                        system_prompt,
+                        injected_context,
+                        interaction_id,
+                        delivery_identity,
+                    },
+                    handling_mode,
+                    &deadline,
+                    await_commit,
+                )
+                .await?;
+            }
+            Err(err) => return Err(BridgeError::Mob(err.to_string())),
+        }
+
+        self.resolve_runtime_session_id(
+            runtime_id,
+            &mid,
+            "member has no bridge session after deliver",
+            &deadline,
+        )
+        .await
     }
 }
 
