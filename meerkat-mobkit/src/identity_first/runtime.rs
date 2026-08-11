@@ -22,8 +22,8 @@ use super::agent_memory::{
     AgentMemoryRuntimeInjector, NewAgentMemory,
 };
 use super::bridge::{
-    BridgeError, CommittedBoundaryRepair, ResumeRejectionKind, SessionBridge,
-    archived_not_revivable_park_reason,
+    BridgeAdmissionError, BridgeError, BridgeTurnError, CommittedBoundaryRepair,
+    ResumeRejectionKind, SessionBridge, archived_not_revivable_park_reason,
 };
 use super::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
@@ -75,6 +75,88 @@ fn interaction_id_for_delivery<'a>(
 // Error types
 // ---------------------------------------------------------------------------
 
+/// The identity embodiment a completion-bearing delivery was admitted onto.
+///
+/// Compared by value across the unlocked window. Any inequality means the
+/// identity was reset, retired or rebound while its turn ran, and the turn's
+/// result belongs to an embodiment that no longer exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CapturedIncarnation {
+    runtime_id: Option<AgentRuntimeId>,
+    generation: Option<u64>,
+    fencing_token: Option<FencingToken>,
+}
+
+/// Which bridge verb the shared send core delivers through.
+///
+/// A typed mode rather than a bool, and one shared body rather than two, for
+/// the same reason the bridge's own submit path is shaped this way: the parts
+/// that differ between the lanes are trivial, and the parts that must NOT
+/// differ - lease acquisition, alias pinning, defanging, memory injection,
+/// session reconciliation - are the ones a second copy would silently drift on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SendCommitMode {
+    /// Return once the work is admitted. The historical behaviour of `send`.
+    Ingress,
+    /// Return only after this exact turn has committed its terminal boundary.
+    /// Fails closed when completion cannot be observed.
+    AwaitCommit,
+}
+
+/// One invocation of the shared identity delivery state machine.
+///
+/// Keeping the lane-specific carriers in one value makes the common send body
+/// explicit without growing a positional parameter list that is easy to wire
+/// incorrectly when a new carrier is added.
+struct SendRequest<'a> {
+    expected_alias: Option<&'a str>,
+    content: &'a meerkat_core::ContentInput,
+    system_prompt: Option<&'a str>,
+    handling_mode: HandlingMode,
+    interaction_id: Option<&'a str>,
+    commit_mode: SendCommitMode,
+}
+
+/// Map the admission edge of a completion-bearing delivery. Post-admission
+/// outcomes are unrepresentable in this input type.
+fn admission_phase_error(
+    identity: &AgentIdentity,
+    err: BridgeAdmissionError,
+) -> IdentityRuntimeError {
+    let identity = identity.clone();
+    match err {
+        BridgeAdmissionError::CompletionUnsupported(reason) => {
+            IdentityRuntimeError::CompletionUnavailable { identity, reason }
+        }
+        BridgeAdmissionError::Mob(detail)
+        | BridgeAdmissionError::InvalidInput(detail)
+        | BridgeAdmissionError::InvariantViolation(detail) => {
+            IdentityRuntimeError::AdmissionFailed { identity, detail }
+        }
+        other @ (BridgeAdmissionError::ResumeRejected { .. }
+        | BridgeAdmissionError::ActorAdmissionTimeout { .. }) => {
+            IdentityRuntimeError::AdmissionFailed {
+                identity,
+                detail: other.to_string(),
+            }
+        }
+    }
+}
+
+/// Map the terminal edge of an admitted turn. Pre-admission outcomes are
+/// unrepresentable in this input type.
+fn turn_phase_error(identity: &AgentIdentity, err: BridgeTurnError) -> IdentityRuntimeError {
+    let identity = identity.clone();
+    match err {
+        BridgeTurnError::CompletionFailed(detail) => {
+            IdentityRuntimeError::CompletionFailed { identity, detail }
+        }
+        BridgeTurnError::PostAdmissionResolutionFailed(detail) => {
+            IdentityRuntimeError::PostAdmissionResolutionFailed { identity, detail }
+        }
+    }
+}
+
 /// Errors from identity-first runtime operations.
 #[derive(Debug)]
 pub enum IdentityRuntimeError {
@@ -82,6 +164,57 @@ pub enum IdentityRuntimeError {
     UnknownIdentity(AgentIdentity),
     /// send() rejected: target is InternalOnly.
     NotAddressable(NotAddressable),
+    /// PHASE 1 of 4. A completion-bearing send could not be honoured AT ALL.
+    ///
+    /// Nothing was submitted: either no bridge is installed, the identity has
+    /// no bound runtime id, or the bridge is ingress-only. The completion lane
+    /// fails closed here rather than degrading to the admission-only path -
+    /// degrading would report success for a turn that was never awaited.
+    ///
+    /// Safe to fall back or fail; nothing ran.
+    CompletionUnavailable {
+        identity: AgentIdentity,
+        reason: String,
+    },
+    /// PHASE 2 of 4. A completion-bearing send failed AT ADMISSION.
+    ///
+    /// The turn never started. Distinct from [`Self::CompletionFailed`] on
+    /// purpose: this names a delivery that did not land, so retry semantics are
+    /// the ordinary admission ones, not "the turn already ran".
+    AdmissionFailed {
+        identity: AgentIdentity,
+        detail: String,
+    },
+    /// PHASE 3 of 4. The work WAS admitted and its turn reached a FAILED
+    /// terminal.
+    ///
+    /// The turn RAN. Never retry - a retry would run the identity's turn a
+    /// second time.
+    CompletionFailed {
+        identity: AgentIdentity,
+        detail: String,
+    },
+    /// PHASE 4 of 4. The turn was admitted, reached a SUCCESSFUL terminal, and
+    /// only then did projecting its session id fail.
+    ///
+    /// The member did the work. Non-retryable: repairing cannot undo a turn
+    /// that already ran, and resubmitting would run it twice.
+    PostAdmissionResolutionFailed {
+        identity: AgentIdentity,
+        detail: String,
+    },
+    /// The turn was admitted and ran, and the identity was RESET, RETIRED or
+    /// REBOUND while it ran.
+    ///
+    /// Distinct from [`Self::PostAdmissionResolutionFailed`]: there the
+    /// embodiment is intact and only the projection failed; here the embodiment
+    /// the turn belonged to no longer exists. Non-retryable, and deliberately
+    /// NOT reconciled - binding the live incarnation to a dead turn's session
+    /// is worse than losing the attribution.
+    PostAdmissionSuperseded {
+        identity: AgentIdentity,
+        detail: String,
+    },
     /// Operation rejected: no active lease for this identity.
     NoActiveLease(AgentIdentity),
     /// Fail-closed single-embodiment guard: the identity's durable lease is
@@ -168,6 +301,32 @@ impl std::fmt::Display for IdentityRuntimeError {
         match self {
             Self::UnknownIdentity(id) => write!(f, "unknown identity: {id}"),
             Self::NotAddressable(err) => write!(f, "{err}"),
+            Self::CompletionUnavailable { identity, reason } => write!(
+                f,
+                "completion-bearing send to {identity} cannot be honoured: {reason}; \
+                 NOTHING was submitted"
+            ),
+            Self::AdmissionFailed { identity, detail } => write!(
+                f,
+                "completion-bearing send to {identity} failed at admission: {detail}; \
+                 the turn never started"
+            ),
+            Self::CompletionFailed { identity, detail } => write!(
+                f,
+                "completion-bearing send to {identity} was admitted and then failed: {detail}; \
+                 the turn RAN - do not retry"
+            ),
+            Self::PostAdmissionResolutionFailed { identity, detail } => write!(
+                f,
+                "completion-bearing send to {identity} COMPLETED and then its session \
+                 projection failed: {detail}; the turn RAN - do not retry"
+            ),
+            Self::PostAdmissionSuperseded { identity, detail } => write!(
+                f,
+                "completion-bearing send to {identity} COMPLETED, but the identity was \
+                 superseded while it ran: {detail}; the turn RAN against an embodiment \
+                 that no longer exists - do not retry, and its session was NOT rebound"
+            ),
             Self::NoActiveLease(id) => write!(f, "no active lease for {id}"),
             Self::AlreadyEmbodied { identity, holder } => write!(
                 f,
@@ -6293,6 +6452,102 @@ impl IdentityRuntime {
     // Delivery: send() — REQ-01, REQ-03
     // -----------------------------------------------------------------------
 
+    /// Send conversational content and return only after the runtime has
+    /// COMMITTED this exact turn's terminal boundary.
+    ///
+    /// Same body, same enforcement, same memory/defang/alias handling as
+    /// [`Self::send`]; the single difference is the bridge verb. Use this when
+    /// the caller needs PROOF the turn finished rather than proof it was
+    /// admitted.
+    ///
+    /// Why this exists rather than "send, then watch the event stream": a
+    /// session-wide `RunCompleted`/`RunFailed` cannot authorize a specific
+    /// turn, because queued turns share a `session_id`. Waiting on one means
+    /// some OTHER turn's terminal can satisfy the wait, so a test built that
+    /// way can pass while the behaviour it claims to prove is broken. A timer
+    /// is worse still: it elapses whether the turn succeeded, failed closed, or
+    /// never ran at all.
+    ///
+    /// FAILS CLOSED. If no bridge is installed, or the identity has no bound
+    /// runtime id, or the bridge is ingress-only, this returns a typed error.
+    /// It never silently degrades to the admission-only path - that would
+    /// report success for a turn whose outcome is unknown.
+    pub async fn send_awaiting_commit(
+        &self,
+        identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.send_awaiting_commit_with_mode(identity, content, HandlingMode::Queue)
+            .await
+    }
+
+    /// [`Self::send_awaiting_commit`] with an explicit turn handling mode.
+    pub async fn send_awaiting_commit_with_mode(
+        &self,
+        identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.send_awaiting_commit_with_mode_and_interaction(identity, content, handling_mode, None)
+            .await
+    }
+
+    /// [`Self::send_awaiting_commit`] carrying a host-minted interaction id, so
+    /// the completed turn can be looked up EXACTLY afterwards by the identity
+    /// the caller stamped on it - rather than by "the last request", by a
+    /// request count, or by polling content, none of which name one turn.
+    pub async fn send_awaiting_commit_with_mode_and_interaction(
+        &self,
+        identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.send_core(
+            identity,
+            SendRequest {
+                expected_alias: None,
+                content,
+                system_prompt: None,
+                handling_mode,
+                interaction_id,
+                commit_mode: SendCommitMode::AwaitCommit,
+            },
+        )
+        .await
+        .map(|(token, _)| token)
+    }
+
+    /// [`Self::send_awaiting_commit`] carrying one ordinary System message
+    /// authored for THIS exact turn (meerkat 0.8.11 `WorkSpec::system_prompt`,
+    /// appended at the turn's admitted transcript boundary).
+    ///
+    /// Per-turn content, never member or session configuration - the same
+    /// carrier the ingress authored path uses, on the lane that can prove the
+    /// turn finished.
+    pub async fn send_awaiting_commit_with_system_prompt(
+        &self,
+        identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+        system_prompt: Option<&str>,
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.send_core(
+            identity,
+            SendRequest {
+                expected_alias: None,
+                content,
+                system_prompt,
+                handling_mode,
+                interaction_id,
+                commit_mode: SendCommitMode::AwaitCommit,
+            },
+        )
+        .await
+        .map(|(token, _)| token)
+    }
+
     /// Send conversational content to an addressable identity.
     ///
     /// Enforces:
@@ -6455,6 +6710,39 @@ impl IdentityRuntime {
         handling_mode: HandlingMode,
         interaction_id: Option<&str>,
     ) -> Result<(FencingToken, CompletionCursor), IdentityRuntimeError> {
+        self.send_core(
+            identity,
+            SendRequest {
+                expected_alias,
+                content,
+                system_prompt: None,
+                handling_mode,
+                interaction_id,
+                commit_mode: SendCommitMode::Ingress,
+            },
+        )
+        .await
+    }
+
+    /// The ONE send body. Both lanes run it; the only difference is which
+    /// bridge verb the delivery step calls, which is exactly the part that must
+    /// not drift. A second copy would let the completion lane diverge from the
+    /// ingress lane on lease acquisition, alias pinning, memory injection,
+    /// defanging or session reconciliation - every one of which is load-bearing
+    /// and none of which is visible from a test.
+    async fn send_core(
+        &self,
+        identity: &AgentIdentity,
+        request: SendRequest<'_>,
+    ) -> Result<(FencingToken, CompletionCursor), IdentityRuntimeError> {
+        let SendRequest {
+            expected_alias,
+            content,
+            system_prompt,
+            handling_mode,
+            interaction_id,
+            commit_mode,
+        } = request;
         let should_materialize = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -6544,17 +6832,168 @@ impl IdentityRuntime {
             .await?;
 
         // Deliver through the session bridge when available.
+        //
+        // AwaitCommit FAILS CLOSED here and nowhere else: if there is no bridge
+        // or no runtime id, the ingress lane legitimately no-ops, but the
+        // completion lane must NOT - silently taking the ingress path would
+        // return success for a turn that was never awaited, which is the exact
+        // false-success this API exists to remove.
+        if commit_mode == SendCommitMode::AwaitCommit
+            && (self.bridge.is_none() || runtime_id.is_none())
+        {
+            return Err(IdentityRuntimeError::CompletionUnavailable {
+                identity: identity.clone(),
+                reason: if self.bridge.is_none() {
+                    "no session bridge is installed on this runtime".to_string()
+                } else {
+                    "the identity has no bound agent runtime id".to_string()
+                },
+            });
+        }
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
-            let delivered_session_id = bridge
-                .deliver_with_mode_and_context(
-                    rid,
-                    &content_to_deliver,
-                    &injected_context,
-                    handling_mode,
-                    bridge_interaction_id,
-                )
-                .await
-                .map_err(|e| IdentityRuntimeError::Internal(format!("bridge deliver: {e}")))?;
+            let delivered_session_id = match commit_mode {
+                // Validated -> Delivered. One await, all of it bounded, all of
+                // it under the lock. Unchanged.
+                SendCommitMode::Ingress => bridge
+                    .deliver_with_mode_context_and_system_prompt(
+                        rid,
+                        &content_to_deliver,
+                        system_prompt,
+                        &injected_context,
+                        handling_mode,
+                        bridge_interaction_id,
+                    )
+                    .await
+                    .map_err(|e| IdentityRuntimeError::Internal(format!("bridge deliver: {e}")))?,
+
+                // Validated -> Admitted(receipt) -> [UNLOCK] -> Terminal ->
+                // [RELOCK] -> Revalidated -> Reconciled | Superseded.
+                //
+                // The lock covers admission and bounded session resolution and
+                // NOTHING else. Awaiting an LLM turn under it would serialise
+                // same-identity sends behind a model call and block every
+                // lifecycle operation - reset, retire, alias rebind - for the
+                // turn's whole duration.
+                SendCommitMode::AwaitCommit => {
+                    // ADMITTED. Bounded; still under the lock.
+                    let receipt = bridge
+                        .begin_awaiting_commit(
+                            rid,
+                            &content_to_deliver,
+                            system_prompt,
+                            &injected_context,
+                            handling_mode,
+                            bridge_interaction_id,
+                        )
+                        .await
+                        .map_err(|err| admission_phase_error(identity, err))?;
+
+                    // CAPTURE the incarnation we admitted onto, so a reset,
+                    // retire or alias rebind during the unlocked window is
+                    // detectable rather than silently reconciled onto.
+                    let captured = self.capture_incarnation(identity).await?;
+
+                    // UNLOCK. Nothing is held from here.
+                    drop(_lifecycle_guard);
+
+                    // TERMINAL. The LLM turn. The only long step.
+                    let terminal = receipt.wait().await;
+
+                    // RELOCK.
+                    let _relock_guard = lifecycle_lock.lock().await;
+
+                    // DETECT supersede WITHOUT returning on it. What the turn
+                    // did and whether its embodiment still exists are
+                    // INDEPENDENT axes, so neither may swallow the other. A
+                    // post-lock read failure IS a supersede - the identity was
+                    // retired or deleted while the turn ran - and must never
+                    // surface as a pre-admission-shaped UnknownIdentity, which
+                    // would say nothing was delivered.
+                    let supersede: Option<String> = match self.capture_incarnation(identity).await {
+                        Err(IdentityRuntimeError::UnknownIdentity(_)) => {
+                            Some("the identity no longer exists".to_string())
+                        }
+                        Err(other) => Some(format!("the identity could not be re-read: {other}")),
+                        Ok(current) if current != captured => {
+                            Some(format!("admitted onto {captured:?}, now {current:?}"))
+                        }
+                        // Re-run the ORIGINAL expected alias through the
+                        // authoritative check rather than comparing a copy
+                        // of it. Any failure is a POST-admission supersede.
+                        Ok(_) => match expected_alias {
+                            Some(expected) => match self
+                                .ensure_expected_member_alias_current(identity, expected)
+                                .await
+                            {
+                                Ok(()) => None,
+                                Err(err) => Some(format!(
+                                    "the expected member alias {expected} is no longer \
+                                         current: {err}"
+                                )),
+                            },
+                            None => None,
+                        },
+                    };
+
+                    // REVALIDATE BEFORE RECONCILE is load-bearing rather than
+                    // defensive: `reconcile_delivered_session_locked` treats a
+                    // session mismatch as "the bridge rotated the session" and
+                    // calls `rebind_session_after_live_respawn_locked`, which
+                    // SUSPENDS the identity and RE-ACQUIRES its leases. After a
+                    // reset during the unlocked window, current belongs to the
+                    // NEW incarnation and delivered to the dead OLD turn, so
+                    // reconciling first would bind the live incarnation to a
+                    // dead turn's session - an active corruption path with a
+                    // lifecycle mutation in it.
+                    return match (terminal, supersede) {
+                        // The turn did not reach a clean success. Nothing was
+                        // superseded, so this is the ordinary phase mapping.
+                        (Err(err), None) => Err(turn_phase_error(identity, err)),
+                        // Both axes fired. Which one leads depends on what the
+                        // turn actually did, and the two phases mean opposite
+                        // things about that.
+                        (
+                            Err(BridgeTurnError::PostAdmissionResolutionFailed(detail)),
+                            Some(sup),
+                        ) => Err(IdentityRuntimeError::PostAdmissionSuperseded {
+                            identity: identity.clone(),
+                            detail: format!(
+                                "{sup}; the turn also failed to project its session: \
+                                     {detail}"
+                            ),
+                        }),
+                        // The turn RAN AND FAILED. That is what an operator
+                        // acts on, so it leads; the supersede is secondary.
+                        (Err(BridgeTurnError::CompletionFailed(detail)), Some(sup)) => {
+                            Err(IdentityRuntimeError::CompletionFailed {
+                                identity: identity.clone(),
+                                detail: format!(
+                                    "{detail}; additionally, the identity was superseded \
+                                     while the turn ran: {sup}"
+                                ),
+                            })
+                        }
+                        // The turn SUCCEEDED against an embodiment that is
+                        // gone. Do NOT reconcile: losing the attribution beats
+                        // binding the live incarnation to a dead turn's session.
+                        (Ok(_), Some(sup)) => Err(IdentityRuntimeError::PostAdmissionSuperseded {
+                            identity: identity.clone(),
+                            detail: sup,
+                        }),
+                        // RECONCILED. Same relocked guard the ingress lane
+                        // would have held throughout.
+                        (Ok(delivered), None) => {
+                            if let Some(rebound_token) = self
+                                .reconcile_delivered_session_locked(identity, delivered)
+                                .await?
+                            {
+                                token = rebound_token;
+                            }
+                            Ok((token, completion_baseline))
+                        }
+                    };
+                }
+            };
             if let Some(rebound_token) = self
                 .reconcile_delivered_session_locked(identity, delivered_session_id)
                 .await?
@@ -6564,6 +7003,40 @@ impl IdentityRuntime {
         }
 
         Ok((token, completion_baseline))
+    }
+
+    /// The exact incarnation a delivery was admitted onto.
+    ///
+    /// Captured under the lifecycle lock at admission and compared under it
+    /// again after the turn, so any reset, retire or alias rebind during the
+    /// unlocked window is DETECTED rather than silently reconciled onto.
+    ///
+    /// THREE fields, all read from authoritative state: a fresh spawn moves
+    /// `runtime_id`, a resume moves `generation`, a lease re-acquisition moves
+    /// `fencing_token`.
+    ///
+    /// The member alias is deliberately NOT captured here. Deriving it from
+    /// `agent_runtime_id` would have made it a duplicate of a field already in
+    /// this struct rather than an independent signal, so it could never have
+    /// detected the alias divergence it was there for. The alias is instead
+    /// revalidated after relock by re-running the ORIGINAL expected alias
+    /// through `ensure_expected_member_alias_current`, which is the authority.
+    async fn capture_incarnation(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<CapturedIncarnation, IdentityRuntimeError> {
+        let entries = self.entries.read().await;
+        let entry = entries
+            .get(identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        Ok(CapturedIncarnation {
+            runtime_id: entry
+                .continuity
+                .as_ref()
+                .map(|c| c.agent_runtime_id.clone()),
+            generation: entry.continuity.as_ref().map(|c| c.generation.get()),
+            fencing_token: entry.lease.as_ref().map(|lease| lease.fencing_token),
+        })
     }
 
     // -----------------------------------------------------------------------

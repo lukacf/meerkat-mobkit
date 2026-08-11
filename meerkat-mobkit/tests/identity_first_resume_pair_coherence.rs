@@ -15,23 +15,21 @@
 use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
+use meerkat_client::{LlmError, LlmEvent, LlmRequest};
 use meerkat_core::types::{HandlingMode, StopReason};
 use meerkat_mob::{MobDefinition, ProfileName};
 use meerkat_mobkit::UnifiedRuntimeBuilder;
 use meerkat_mobkit::identity_first::contracts::{AgentCustomizer, TopologyProvider};
 use meerkat_mobkit::identity_first::orchestrator::{RestoreOutcome, restore_flow};
 use meerkat_mobkit::identity_first::{
-    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeId,
-    ContinuityStore, CustomizerError, DurabilityPolicy, DurableAgentSpec, IdentityRuntime,
-    IdentityRuntimeConfig, LocalContinuityStore, LocalLeaseProvider, ManagedPeerEdge,
-    SessionBridge, TopologyContext, TopologyError,
+    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, ContinuityStore,
+    CustomizerError, DurabilityPolicy, DurableAgentSpec, IdentityRuntime, IdentityRuntimeConfig,
+    LocalContinuityStore, LocalLeaseProvider, ManagedPeerEdge, SessionBridge, TopologyContext,
+    TopologyError,
 };
 use meerkat_mobkit::mob_handle_runtime::SessionCreatedContext;
-use tokio::time::sleep;
 
 /// The one definition of the normalized-provider-accounting contract every
 /// MobKit LLM double must satisfy under meerkat 0.8.22.
@@ -122,29 +120,24 @@ impl CaptureClient {
 /// On no match this dumps a summary of every captured request - markers, message
 /// count, roles - because "which requests DID arrive" is the first question
 /// anyone asks next, and a bare "not found" throws that away.
-async fn select_request_containing(
-    capture: &CaptureClient,
-    secs: u64,
-    markers: &[(&str, &str)],
-) -> String {
-    // POLL, do not snapshot. Waiting for "one more request than before" is not
-    // the same as waiting for the request under test: the authored delivery is
-    // preceded by an unrelated 2-message replay, so a count-based wait returns
-    // while the authored request is still in flight and a snapshot taken then
-    // sees only the decoy.
-    let deadline = Instant::now() + Duration::from_secs(secs);
-    loop {
-        let all = capture.all();
-        if let Some(one) = all
-            .iter()
-            .find(|req| markers.iter().all(|(_, needle)| req.contains(needle)))
-        {
-            return one.clone();
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
-        sleep(Duration::from_millis(100)).await;
+fn select_request_containing(capture: &CaptureClient, markers: &[(&str, &str)]) -> String {
+    // SYNCHRONOUS, and deliberately so. Every delivery in this file now returns
+    // only after its OWN turn has committed, so the request under test is
+    // already captured by the time we look. There is nothing left to wait for,
+    // and the 100ms polling loop this replaces could only ever hide a bug: it
+    // turned "the request never arrived" into "the request arrived late",
+    // which are different failures with the same symptom.
+    //
+    // Content-identified, not count-identified and not last-identified: the
+    // authored delivery is preceded by an unrelated 2-message replay, so
+    // "one more request than before" and "the newest request" both name the
+    // decoy.
+    let all = capture.all();
+    if let Some(one) = all
+        .iter()
+        .find(|req| markers.iter().all(|(_, needle)| req.contains(needle)))
+    {
+        return one.clone();
     }
     let all = capture.all();
     let mut summary = String::new();
@@ -159,7 +152,7 @@ async fn select_request_containing(
             .collect();
         summary.push_str(&format!(
             "\n  [{i}] markers_present={present:?} messages={:?} roles={:?}",
-            msgs.map(|m| m.len()),
+            msgs.map(std::vec::Vec::len),
             msgs.map(|m| m
                 .iter()
                 .map(|x| x.get("role").and_then(|r| r.as_str()).unwrap_or("?"))
@@ -257,200 +250,6 @@ async fn boot(
     (unified, identity_rt)
 }
 
-/// Subscribe to a member's event stream by its ROSTER id.
-///
-/// `member_id_for_spawn_spec` (src/identity_first/bridge.rs) derives the roster
-/// id from the RUNTIME id for any spec without an external binding, so
-/// subscribing by durable identity fails `mob member not found`.
-///
-/// Subscribe BEFORE the delivery you intend to await. A stream opened after a
-/// turn has already finished can never observe its terminal.
-async fn subscribe_member_events(
-    unified: &meerkat_mobkit::UnifiedRuntime,
-    runtime_id: &AgentRuntimeId,
-) -> meerkat_core::comms::EventStream {
-    unified
-        .mob_handle()
-        .subscribe_agent_events(&meerkat_mobkit::member_comms_id::mob_member_id(
-            runtime_id.as_str(),
-        ))
-        .await
-        .unwrap_or_else(|err| {
-            panic!(
-                "subscribe to roster member for runtime id {}: {err}",
-                runtime_id.as_str()
-            )
-        })
-}
-
-/// Await the terminal run event for `session`, or fail typed / blow the fuse.
-///
-/// This replaces `sleep(500ms)`-before-shutdown. Those sleeps were waiting for
-/// the turn to COMMIT, and a timer cannot express that: it passes whether or not
-/// the work happened, so a turn that failed closed looked identical to one that
-/// succeeded. That is precisely how every turn in this file failed for a release
-/// without anyone noticing.
-async fn await_run_terminal(
-    events: &mut meerkat_core::comms::EventStream,
-    session: &meerkat_core::types::SessionId,
-    label: &str,
-    secs: u64,
-) {
-    use futures::StreamExt;
-    let mut observed: Vec<String> = Vec::new();
-    let fuse = tokio::time::sleep(Duration::from_secs(secs));
-    tokio::pin!(fuse);
-    loop {
-        tokio::select! {
-            _ = &mut fuse => panic!(
-                "deadlock fuse: no terminal run event for {label} within {secs}s; \
-                 observed instead: {observed:?}"
-            ),
-            item = events.next() => match item {
-                Some(envelope) => match envelope.payload {
-                    meerkat_core::AgentEvent::RunCompleted { ref session_id, .. }
-                        if session_id == session => return,
-                    meerkat_core::AgentEvent::RunFailed { ref session_id, ref error_report, .. }
-                        if session_id == session =>
-                    {
-                        panic!("{label} failed typed before completing: {error_report:?}");
-                    }
-                    ref other => {
-                        let rendered = format!("{other:?}");
-                        let keep = if rendered.starts_with("RunFailed") { 600 } else { 60 };
-                        observed.push(rendered.chars().take(keep).collect());
-                    }
-                },
-                None => panic!(
-                    "event stream ended before {label} reached a terminal run; \
-                     observed: {observed:?}"
-                ),
-            },
-        }
-    }
-}
-
-/// Deliver one turn and await THAT turn's own terminal interaction event.
-///
-/// Counting captured requests cannot express "the turn under test finished".
-/// An unrelated replay lands first and satisfies any count, so a count-based
-/// wait returns while the turn under test is still in flight - which is how
-/// assertions here ended up describing a different turn than the one they
-/// named, and how a real replay defect stayed hidden behind a wrong-turn
-/// assertion for a whole release.
-///
-/// Formal interaction state is authoritative instead:
-/// - subscribe BEFORE delivering, because a stream opened afterwards can never
-///   observe a terminal event that has already passed;
-/// - mint a unique `interaction_id` and pass it through the bridge;
-/// - return only on `InteractionComplete` for THAT EXACT id;
-/// - fail immediately and typed on `InteractionFailed` for it, rather than
-///   burning the whole timeout on a turn that has already lost;
-/// - treat the wall clock purely as a deadlock fuse, and dump what WAS observed
-///   when it blows, because "nothing arrived" is the least useful failure text
-///   available.
-async fn deliver_awaiting_interaction(
-    unified: &meerkat_mobkit::UnifiedRuntime,
-    bridge: &Arc<dyn SessionBridge>,
-    runtime_id: &AgentRuntimeId,
-    content: &str,
-    system_prompt: Option<&str>,
-    label: &str,
-    secs: u64,
-) -> meerkat_core::types::SessionId {
-    use futures::StreamExt;
-
-    // `uuid` is compiled with the v5 feature only, so derive a stable unique id
-    // from the caller's label rather than reaching for v4.
-    let interaction = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, label.as_bytes()).to_string();
-
-    // Subscribe by the ROSTER id, which `member_id_for_spawn_spec`
-    // (src/identity_first/bridge.rs) derives from the RUNTIME ID for any spec
-    // without an external binding - not from the durable identity. Subscribing
-    // as `mob_member_id("carol")` fails `mob member not found`, because the
-    // durable identity is not what the roster is keyed by.
-    let mut events = unified
-        .mob_handle()
-        .subscribe_agent_events(&meerkat_mobkit::member_comms_id::mob_member_id(
-            runtime_id.as_str(),
-        ))
-        .await
-        .unwrap_or_else(|err| {
-            panic!(
-                "subscribe to roster member for runtime id {} before delivering {label}: {err}",
-                runtime_id.as_str()
-            )
-        });
-
-    let session = bridge
-        .deliver_with_mode_context_and_system_prompt(
-            runtime_id,
-            &meerkat_core::ContentInput::Text(content.to_string()),
-            system_prompt,
-            &[],
-            HandlingMode::Queue,
-            Some(interaction.as_str()),
-        )
-        .await
-        .unwrap_or_else(|err| panic!("deliver {label}: {err}"));
-
-    // The terminal event for a BRIDGE DELIVERY is RunCompleted/RunFailed for
-    // the delivered session, not InteractionComplete. `InteractionComplete`
-    // belongs to comms-originated interactions (it is emitted from
-    // meerkat-comms' runtime), and a bridge-delivered turn never emits one -
-    // measured: a completing authored turn produced RunStarted, TurnStarted,
-    // TextDelta, TextComplete, TurnCompleted, RunCompleted and no interaction
-    // event at all. Correlating on an event that never fires is a deadlock
-    // dressed as rigour, so correlate on the session the delivery returned and
-    // accept an interaction event too if some path does emit one.
-    let mut observed: Vec<String> = Vec::new();
-    let fuse = tokio::time::sleep(Duration::from_secs(secs));
-    tokio::pin!(fuse);
-    loop {
-        tokio::select! {
-            _ = &mut fuse => panic!(
-                "deadlock fuse: no terminal interaction event for {label} (id {interaction}) \
-                 within {secs}s; observed instead: {observed:?}"
-            ),
-            item = events.next() => match item {
-                Some(envelope) => match envelope.payload {
-                    meerkat_core::AgentEvent::RunCompleted { ref session_id, .. }
-                        if *session_id == session =>
-                    {
-                        return session;
-                    }
-                    meerkat_core::AgentEvent::RunFailed { ref session_id, ref error_report, .. }
-                        if *session_id == session =>
-                    {
-                        panic!("{label} failed typed before completing: {error_report:?}");
-                    }
-                    meerkat_core::AgentEvent::InteractionComplete { ref interaction_id, .. }
-                        if interaction_id.to_string() == interaction =>
-                    {
-                        return session;
-                    }
-                    meerkat_core::AgentEvent::InteractionFailed { ref interaction_id, ref reason }
-                        if interaction_id.to_string() == interaction =>
-                    {
-                        panic!("{label} failed typed before completing: {reason:?}");
-                    }
-                    ref other => {
-                        let rendered = format!("{other:?}");
-                        // Keep failure payloads intact: a truncated RunFailed
-                        // hides the only field that explains the loop.
-                        let keep = if rendered.starts_with("RunFailed") { 600 } else { 60 };
-                        observed.push(rendered.chars().take(keep).collect());
-                    }
-                },
-                None => panic!(
-                    "agent event stream ended before {label} reached a terminal interaction; \
-                     observed: {observed:?}"
-                ),
-            },
-        }
-    }
-}
-
 /// THE incident shape, end to end: boot 1 creates the member on
 /// `gpt-5.5` (durable provider: openai). Boot 2's definition moves the
 /// profile to `claude-opus-4-8` with NO provider key. The resume must apply
@@ -479,7 +278,6 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
         )
         .await;
 
-        let mut seed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -491,7 +289,6 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
         match result.outcomes.get(&alice).expect("alice outcome") {
             RestoreOutcome::Created { record, .. } => {
                 original_session_id = record.session_id.clone();
-                seed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!("expected Created on first boot, got {other:?}"),
         }
@@ -500,16 +297,13 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
         // then await it. The 500ms sleep this replaces was waiting for the turn
         // to COMMIT, which a timer cannot express: it elapses whether the turn
         // succeeded, failed closed, or never ran.
-        let seed_runtime_id = seed_runtime_id.expect("boot 1 must mint a runtime id");
-        let mut seed_events = subscribe_member_events(&unified, &seed_runtime_id).await;
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &alice,
                 &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
             )
             .await
             .expect("send turn 1");
-        await_run_terminal(&mut seed_events, &original_session_id, "turn 1", 30).await;
         unified.shutdown().await;
     }
 
@@ -525,7 +319,6 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
         )
         .await;
 
-        let mut resumed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -540,7 +333,6 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
                     record.session_id, original_session_id,
                     "the cross-provider model edit must resume the SAME durable session"
                 );
-                resumed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!(
                 "a model-only definition edit must RESUME with the catalog-derived pair \
@@ -549,23 +341,17 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
         }
 
         // Subscribe BEFORE the send so this turn's terminal cannot be missed.
-        let resumed_runtime_id =
-            resumed_runtime_id.expect("the resumed boot must mint a runtime id");
-        let mut resumed_events = subscribe_member_events(&unified, &resumed_runtime_id).await;
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &alice,
                 &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
             )
             .await
             .expect("send turn 2");
-        await_run_terminal(&mut resumed_events, &original_session_id, "turn 2", 30).await;
         let last_request = select_request_containing(
             &capture,
-            30,
             &[("post-edit model", "\"model\":\"claude-opus-4-8\"")],
-        )
-        .await;
+        );
         assert!(
             last_request.contains("\"model\":\"claude-opus-4-8\""),
             "the resumed turn must run on the DECLARED model (the edit was inert): {last_request}"
@@ -694,7 +480,6 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
             "pair-divergence-rt",
         )
         .await;
-        let mut seed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -706,7 +491,6 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
         match result.outcomes.get(&bob).expect("bob outcome") {
             RestoreOutcome::Created { record, .. } => {
                 original_session_id = record.session_id.clone();
-                seed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!("expected Created on first boot, got {other:?}"),
         }
@@ -714,16 +498,13 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
         // then await it. The 500ms sleep this replaces was waiting for the turn
         // to COMMIT, which a timer cannot express: it elapses whether the turn
         // succeeded, failed closed, or never ran.
-        let seed_runtime_id = seed_runtime_id.expect("boot 1 must mint a runtime id");
-        let mut seed_events = subscribe_member_events(&unified, &seed_runtime_id).await;
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &bob,
                 &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
             )
             .await
             .expect("send turn 1");
-        await_run_terminal(&mut seed_events, &original_session_id, "turn 1", 30).await;
         unified.shutdown().await;
     }
 
@@ -771,7 +552,6 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
             "pair-divergence-rt",
         )
         .await;
-        let mut resumed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -786,7 +566,6 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
                     record.session_id, original_session_id,
                     "the refused boot must not have touched the durable session binding"
                 );
-                resumed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!(
                 "after a refused boot, a resolvable definition must resume the preserved \
@@ -795,24 +574,14 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
         }
 
         // Subscribe BEFORE the send so this turn's terminal cannot be missed.
-        let resumed_runtime_id =
-            resumed_runtime_id.expect("the resumed boot must mint a runtime id");
-        let mut resumed_events = subscribe_member_events(&unified, &resumed_runtime_id).await;
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &bob,
                 &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
             )
             .await
             .expect("send post-refusal turn");
-        await_run_terminal(
-            &mut resumed_events,
-            &original_session_id,
-            "the post-refusal turn",
-            30,
-        )
-        .await;
-        let last_request = select_request_containing(&capture, 30, &[("TOKEN", TOKEN)]).await;
+        let last_request = select_request_containing(&capture, &[("TOKEN", TOKEN)]);
         assert!(
             last_request.contains("\"model\":\"gpt-5.5\""),
             "the resumed turn must run on the durable pair: {last_request}"
@@ -942,7 +711,6 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
             "prompt-edit-rt",
         )
         .await;
-        let mut seed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -954,7 +722,6 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
         match result.outcomes.get(&alice).expect("alice outcome") {
             RestoreOutcome::Created { record, .. } => {
                 original_session_id = record.session_id.clone();
-                seed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!("expected Created on first boot, got {other:?}"),
         }
@@ -962,16 +729,13 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
         // then await it. The 500ms sleep this replaces was waiting for the turn
         // to COMMIT, which a timer cannot express: it elapses whether the turn
         // succeeded, failed closed, or never ran.
-        let seed_runtime_id = seed_runtime_id.expect("boot 1 must mint a runtime id");
-        let mut seed_events = subscribe_member_events(&unified, &seed_runtime_id).await;
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &alice,
                 &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
             )
             .await
             .expect("send turn 1");
-        await_run_terminal(&mut seed_events, &original_session_id, "turn 1", 30).await;
         unified.shutdown().await;
     }
 
@@ -993,7 +757,6 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
             "prompt-edit-rt",
         )
         .await;
-        let mut resumed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -1008,29 +771,18 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
                     record.session_id, original_session_id,
                     "an edited definition must still resume the SAME durable session"
                 );
-                resumed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!("an edited definition must resume, got {other:?}"),
         }
         // Subscribe BEFORE the send so this turn's terminal cannot be missed.
-        let resumed_runtime_id =
-            resumed_runtime_id.expect("the resumed boot must mint a runtime id");
-        let mut resumed_events = subscribe_member_events(&unified, &resumed_runtime_id).await;
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &alice,
                 &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
             )
             .await
             .expect("send post-edit turn");
-        await_run_terminal(
-            &mut resumed_events,
-            &original_session_id,
-            "the post-edit turn",
-            30,
-        )
-        .await;
-        let last_request = select_request_containing(&capture, 30, &[("TOKEN", TOKEN)]).await;
+        let last_request = select_request_containing(&capture, &[("TOKEN", TOKEN)]);
         assert!(
             last_request.contains(ROLE_BASE),
             "the durable authored prompt must survive resume byte-for-byte: {last_request}"
@@ -1082,27 +834,19 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
         )
         .await
         .expect("restore_flow (neutral boot 3)");
-        let neutral_runtime_id = match result.outcomes.get(&alice).expect("alice outcome") {
-            RestoreOutcome::Resumed { record, .. } => record.agent_runtime_id.clone(),
+        match result.outcomes.get(&alice).expect("alice outcome") {
+            RestoreOutcome::Resumed { .. } => {}
             other => panic!("a neutral boot must resume, got {other:?}"),
-        };
+        }
         // Subscribe BEFORE the send so this turn's terminal cannot be missed.
-        let mut neutral_events = subscribe_member_events(&unified, &neutral_runtime_id).await;
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &alice,
                 &meerkat_core::ContentInput::Text("neutral ping".to_string()),
             )
             .await
             .expect("send neutral-boot turn");
-        await_run_terminal(
-            &mut neutral_events,
-            &original_session_id,
-            "the neutral-boot turn",
-            30,
-        )
-        .await;
-        select_request_containing(&capture, 30, &[("neutral ping", "neutral ping")]).await;
+        select_request_containing(&capture, &[("neutral ping", "neutral ping")]);
         unified.shutdown().await;
     }
     let (systems_final, rewrites_final) =
@@ -1232,7 +976,6 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             "authored-system-rt",
         )
         .await;
-        let mut seed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -1244,7 +987,6 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
         match result.outcomes.get(&carol).expect("carol outcome") {
             RestoreOutcome::Created { record, .. } => {
                 original_session_id = record.session_id.clone();
-                seed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!("expected Created on first boot, got {other:?}"),
         }
@@ -1252,16 +994,13 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
         // then await it. The 500ms sleep this replaces was waiting for the turn
         // to COMMIT, which a timer cannot express: it elapses whether the turn
         // succeeded, failed closed, or never ran.
-        let seed_runtime_id = seed_runtime_id.expect("boot 1 must mint a runtime id");
-        let mut seed_events = subscribe_member_events(&unified, &seed_runtime_id).await;
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &carol,
                 &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
             )
             .await
             .expect("send turn 1");
-        await_run_terminal(&mut seed_events, &original_session_id, "turn 1", 30).await;
         unified.shutdown().await;
     }
 
@@ -1290,7 +1029,6 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             "authored-system-rt",
         )
         .await;
-        let mut resumed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -1299,37 +1037,42 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
         )
         .await
         .expect("restore_flow (boot 2)");
-        let runtime_id = match result.outcomes.get(&carol).expect("carol outcome") {
+        match result.outcomes.get(&carol).expect("carol outcome") {
             RestoreOutcome::Resumed { record, .. } => {
                 assert_eq!(
                     record.session_id, original_session_id,
                     "boot 2 must resume the SAME durable session"
                 );
-                record.agent_runtime_id.clone()
             }
             other => panic!("expected Resumed on boot 2, got {other:?}"),
-        };
+        }
 
-        // The IdentityRuntime send surface has no per-turn System parameter;
-        // the mobkit ingress for the 0.8.11 carrier IS the session bridge
-        // (commit 6eb69017), so the authored leg drives it directly - the
-        // same object restore_flow just resumed the member through.
-        let bridge: Arc<dyn SessionBridge> = unified
-            .session_bridge()
-            .expect("session_bridge should exist")
-            .clone();
-        let delivered = deliver_awaiting_interaction(
-            &unified,
-            &bridge,
-            &runtime_id,
-            TURN_2_TEXT,
-            Some(AUTHORED_PROMPT),
-            "authored-system-turn",
-            30,
-        )
-        .await;
+        // The authored leg now goes through the IdentityRuntime like every
+        // other delivery. It used to drive the session bridge directly, because
+        // the send surface had no per-turn System parameter; it does now, and
+        // going around the runtime meant this turn alone skipped lease
+        // validation, alias pinning and session reconciliation.
+        //
+        // Returns only after THIS turn commits, so there is no fuse, no
+        // interaction-event correlation and no sleep.
+        identity_rt
+            .send_awaiting_commit_with_system_prompt(
+                &carol,
+                &meerkat_core::ContentInput::Text(TURN_2_TEXT.to_string()),
+                Some(AUTHORED_PROMPT),
+                HandlingMode::Queue,
+                None,
+            )
+            .await
+            .expect("the authored system turn must complete");
         assert_eq!(
-            delivered, original_session_id,
+            identity_rt
+                .status(&carol)
+                .await
+                .expect("carol status")
+                .session_id
+                .expect("carol must still be bound to a session"),
+            original_session_id,
             "the authored turn must land on the same durable session"
         );
         // Identify the authored turn by CONTENT - it is the request carrying
@@ -1339,20 +1082,17 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
         // commit pair, because unrelated requests interleave.
         let authored_request = select_request_containing(
             &capture,
-            30,
             &[
                 ("AUTHORED_PROMPT", AUTHORED_PROMPT),
                 ("TURN_2_TEXT", TURN_2_TEXT),
             ],
-        )
-        .await;
+        );
         assert!(
             authored_request.contains(TOKEN),
             "the authored turn must replay the persisted transcript (token {TOKEN}): \
              {authored_request}"
         );
-        // No commit sleep: deliver_awaiting_interaction already awaited this
-        // turn's terminal run event, so the turn is committed by construction.
+        // No commit sleep: the send returned only after this turn committed.
         unified.shutdown().await;
     }
 
@@ -1412,7 +1152,6 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             "authored-system-rt",
         )
         .await;
-        let mut resumed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -1427,34 +1166,21 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
                     record.session_id, original_session_id,
                     "boot 3 must resume the SAME durable session"
                 );
-                resumed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!("expected Resumed on boot 3, got {other:?}"),
         }
         // Subscribe BEFORE the send so this turn's terminal cannot be missed.
-        let resumed_runtime_id =
-            resumed_runtime_id.expect("the resumed boot must mint a runtime id");
-        let mut resumed_events = subscribe_member_events(&unified, &resumed_runtime_id).await;
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &carol,
                 &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
             )
             .await
             .expect("send the neutral turn");
-        await_run_terminal(
-            &mut resumed_events,
-            &original_session_id,
-            "the neutral turn",
-            30,
-        )
-        .await;
         let last_request = select_request_containing(
             &capture,
-            30,
             &[("neutral turn text", "What token did I give you earlier?")],
-        )
-        .await;
+        );
         assert!(
             last_request.contains(AUTHORED_PROMPT),
             "the authored System row must replay byte-for-byte into the resumed turn's \

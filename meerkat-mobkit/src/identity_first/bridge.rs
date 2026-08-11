@@ -281,6 +281,172 @@ impl std::fmt::Display for BridgeError {
 
 impl std::error::Error for BridgeError {}
 
+/// Errors that can occur before a completion-bearing delivery has produced an
+/// admitted-turn receipt.
+///
+/// This enum deliberately cannot represent a terminal failure or a
+/// post-admission projection failure. Those states exist only in
+/// [`BridgeTurnError`], returned by [`BridgeTurnReceipt::wait`]. Keeping the
+/// two transition errors disjoint makes it impossible to report "the turn
+/// ran" from the admission edge of the state machine.
+#[derive(Debug)]
+pub enum BridgeAdmissionError {
+    /// The bridge cannot create completion-bearing receipts. Nothing was
+    /// submitted.
+    CompletionUnsupported(String),
+    /// The underlying mob operation failed before admission.
+    Mob(String),
+    /// A required field was missing or invalid before admission.
+    InvalidInput(String),
+    /// Resume was rejected before the delivery could be admitted.
+    ResumeRejected {
+        kind: ResumeRejectionKind,
+        detail: String,
+    },
+    /// The serialized actor admission round trip exceeded its budget.
+    ActorAdmissionTimeout {
+        operation: &'static str,
+        identity: MobAgentIdentity,
+        waited: Duration,
+    },
+    /// A legacy bridge path produced a post-admission error before a receipt
+    /// existed. This is an implementation invariant failure, not a terminal
+    /// outcome, and no turn may be claimed to have run from it.
+    InvariantViolation(String),
+}
+
+impl std::fmt::Display for BridgeAdmissionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CompletionUnsupported(msg) => write!(
+                f,
+                "session bridge does not support completion-bearing delivery: {msg}; \
+                 nothing was submitted"
+            ),
+            Self::Mob(msg) => write!(f, "session bridge mob error before admission: {msg}"),
+            Self::InvalidInput(msg) => {
+                write!(f, "session bridge invalid input before admission: {msg}")
+            }
+            Self::ResumeRejected { kind, detail } => write!(
+                f,
+                "session bridge resume rejected before admission ({kind:?}): {detail}; \
+                 durable session preserved, identity degraded pending retry"
+            ),
+            Self::ActorAdmissionTimeout {
+                operation,
+                identity,
+                waited,
+            } => write!(
+                f,
+                "session bridge actor call `{operation}` for member {identity} exceeded the \
+                 admission budget after {waited:?}; the mob actor command loop is not draining"
+            ),
+            Self::InvariantViolation(msg) => {
+                write!(f, "session bridge admission invariant violated: {msg}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BridgeAdmissionError {}
+
+impl From<BridgeError> for BridgeAdmissionError {
+    fn from(error: BridgeError) -> Self {
+        match error {
+            BridgeError::CompletionUnsupported(detail) => Self::CompletionUnsupported(detail),
+            BridgeError::Mob(detail) => Self::Mob(detail),
+            BridgeError::InvalidInput(detail) => Self::InvalidInput(detail),
+            BridgeError::ResumeRejected { kind, detail } => Self::ResumeRejected { kind, detail },
+            BridgeError::ActorAdmissionTimeout {
+                operation,
+                identity,
+                waited,
+            } => Self::ActorAdmissionTimeout {
+                operation,
+                identity,
+                waited,
+            },
+            BridgeError::CompletionFailed(detail) => Self::InvariantViolation(format!(
+                "completion failure escaped before an admitted-turn receipt existed: {detail}"
+            )),
+            BridgeError::PostAdmissionResolutionFailed(detail) => {
+                Self::InvariantViolation(format!(
+                    "post-admission projection failure escaped before an admitted-turn receipt \
+                     existed: {detail}"
+                ))
+            }
+        }
+    }
+}
+
+impl From<BridgeAdmissionError> for BridgeError {
+    fn from(error: BridgeAdmissionError) -> Self {
+        match error {
+            BridgeAdmissionError::CompletionUnsupported(detail) => {
+                Self::CompletionUnsupported(detail)
+            }
+            BridgeAdmissionError::Mob(detail) => Self::Mob(detail),
+            BridgeAdmissionError::InvalidInput(detail) => Self::InvalidInput(detail),
+            BridgeAdmissionError::ResumeRejected { kind, detail } => {
+                Self::ResumeRejected { kind, detail }
+            }
+            BridgeAdmissionError::ActorAdmissionTimeout {
+                operation,
+                identity,
+                waited,
+            } => Self::ActorAdmissionTimeout {
+                operation,
+                identity,
+                waited,
+            },
+            BridgeAdmissionError::InvariantViolation(detail) => Self::Mob(detail),
+        }
+    }
+}
+
+/// Errors from an exact turn receipt after admission has already occurred.
+///
+/// Admission-only states are unrepresentable here. A caller holding this error
+/// knows a turn was admitted and therefore must never repair-and-resubmit it.
+#[derive(Debug)]
+pub enum BridgeTurnError {
+    /// The admitted turn reached a failed terminal. When session resolution
+    /// also failed, its detail is retained as secondary evidence.
+    CompletionFailed(String),
+    /// The admitted turn succeeded, but resolving its session id failed.
+    PostAdmissionResolutionFailed(String),
+}
+
+impl std::fmt::Display for BridgeTurnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CompletionFailed(detail) => write!(
+                f,
+                "session bridge turn was admitted and then failed: {detail}; the turn RAN - \
+                 do not retry"
+            ),
+            Self::PostAdmissionResolutionFailed(detail) => write!(
+                f,
+                "session bridge turn was admitted and COMPLETED, then resolving its runtime \
+                 session id failed: {detail}; the turn RAN - do not retry"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BridgeTurnError {}
+
+impl From<BridgeTurnError> for BridgeError {
+    fn from(error: BridgeTurnError) -> Self {
+        match error {
+            BridgeTurnError::CompletionFailed(detail) => Self::CompletionFailed(detail),
+            BridgeTurnError::PostAdmissionResolutionFailed(detail) => {
+                Self::PostAdmissionResolutionFailed(detail)
+            }
+        }
+    }
+}
+
 /// Typed classification of a rejected resume, derived from meerkat's typed
 /// errors where available (report ask: don't bucket every resume error into
 /// one "runtime_identity_incompatible" reason).
@@ -596,80 +762,6 @@ struct InternalBridgeWork<'a> {
     delivery_identity: Option<&'a meerkat_mob::MobDeliveryIdentity>,
 }
 
-/// Resolve the session, THEN await this delivery's completion.
-///
-/// The ordering is the whole point, and it is extracted here so it can be
-/// tested directly rather than inferred from timing.
-///
-/// Session resolution runs first because it is bound to the actor admission
-/// budget, which is WALL CLOCK. Awaiting a turn before it would spend the
-/// budget on the turn and charge resolution the remainder, turning an ordinary
-/// long turn into a spurious `ActorAdmissionTimeout` on a step that never
-/// misbehaved. The completion is awaited second and unbounded, because a turn
-/// legitimately outlives an admission round trip.
-///
-/// A completion failure maps to [`BridgeError::CompletionFailed`] and never to
-/// an admission-shaped error: the turn RAN, and the delivery path must not
-/// treat it as something to repair and resubmit.
-///
-/// On the completion-bearing path there is NO early return once the work is
-/// admitted. Resolution is awaited without `?` and its outcome held until the
-/// turn reaches terminal, then the pair is mapped explicitly:
-///
-/// | resolution | terminal | result                             |
-/// |------------|----------|------------------------------------|
-/// | `Ok`       | `Ok`     | `Ok(session_id)`                   |
-/// | `Ok`       | `Err`    | [`BridgeError::CompletionFailed`]  |
-/// | `Err`      | `Err`    | `CompletionFailed`, both details   |
-/// | `Err`      | `Ok`     | [`BridgeError::PostAdmissionResolutionFailed`] |
-///
-/// The two `Err` rows are the reason the early return had to go: returning on
-/// resolution would drop an admitted, running turn AND hand the delivery path
-/// an admission-shaped error it would repair and resubmit, running the
-/// member's turn twice. Both terminal outcomes are non-retryable variants.
-async fn resolve_session_then_await_completion<Resolve, Completion, Done, Failed>(
-    resolve: Resolve,
-    completion: Option<Completion>,
-) -> Result<meerkat_core::types::SessionId, BridgeError>
-where
-    Resolve: std::future::Future<Output = Result<meerkat_core::types::SessionId, BridgeError>>,
-    Completion: std::future::Future<Output = Result<Done, Failed>>,
-    Failed: std::fmt::Display,
-{
-    let Some(completion) = completion else {
-        // Admission-only: no turn is in flight, so an early return drops
-        // nothing. Historical behaviour, unchanged.
-        return resolve.await;
-    };
-
-    // Completion-bearing. Once the work is admitted the turn is ALREADY
-    // RUNNING, so there is no early return from here: `resolve` is awaited
-    // WITHOUT `?`, and its outcome is held until the turn has reached
-    // terminal. Propagating a resolution failure early would drop the handle
-    // and abandon admitted, running work - and would surface as an
-    // admission-shaped error the delivery path could repair and resubmit,
-    // running the member's turn a second time.
-    let session_result = resolve.await;
-    let terminal_result = completion.await;
-
-    match (session_result, terminal_result) {
-        (Ok(session_id), Ok(_)) => Ok(session_id),
-        // The turn ran and failed. Resolution is irrelevant to the outcome.
-        (Ok(_), Err(err)) => Err(BridgeError::CompletionFailed(err.to_string())),
-        // Both failed: the turn's failure is the outcome and leads, but the
-        // resolution detail is carried so neither is silently lost.
-        (Err(resolve_err), Err(err)) => Err(BridgeError::CompletionFailed(format!(
-            "{err}; post-admission session resolution also failed: {resolve_err}"
-        ))),
-        // The turn SUCCEEDED and only the post-hoc session projection failed.
-        // Its own typed, non-retryable variant: retrying would rerun a turn
-        // that already did its work.
-        (Err(resolve_err), Ok(_)) => Err(BridgeError::PostAdmissionResolutionFailed(
-            resolve_err.to_string(),
-        )),
-    }
-}
-
 /// Which lane a submission runs in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BridgeSubmitMode {
@@ -960,6 +1052,106 @@ impl BridgeDelivery {
     }
 }
 
+/// An ADMITTED turn, owned by the caller and awaitable OUTSIDE any lock.
+///
+/// This type exists for one reason: the identity lifecycle lock must cover
+/// validation, admission and bounded session resolution, and NOTHING else.
+/// Awaiting an LLM turn under that lock serialises same-identity sends behind a
+/// model call and blocks every lifecycle operation - reset, retire, alias
+/// rebind - for the turn's whole duration.
+///
+/// [`Self::wait`] takes `self` BY VALUE, which prevents awaiting one twice.
+///
+/// It does NOT make dropping one impossible: a receipt can still be dropped
+/// without being awaited, abandoning a running turn. `#[must_use]` makes the
+/// common case of ignoring the return value a warning, and that is the whole of
+/// the protection - the rest is the caller's discipline.
+#[must_use = "dropping a BridgeTurnReceipt abandons an ADMITTED, RUNNING turn without ever \
+              observing its terminal"]
+pub struct BridgeTurnReceipt {
+    /// Session resolution ALREADY RAN, under the admission deadline, before the
+    /// caller was handed this receipt.
+    ///
+    /// Carried as a `Result` and deliberately NOT `?`-propagated at admission
+    /// time: returning early on a resolution failure would drop the completion
+    /// handle of a turn that is already running. The pair is mapped in
+    /// [`Self::wait`], after the turn has reached terminal.
+    session_result: Result<meerkat_core::types::SessionId, String>,
+    /// `'static` because the receipt is held across an UNLOCK, so it must not
+    /// borrow from the bridge or from any guard. `Send` because the runtime's
+    /// send future must stay `Send`.
+    completion: std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'static>>,
+}
+
+impl std::fmt::Debug for BridgeTurnReceipt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BridgeTurnReceipt")
+            .field("session_result", &self.session_result)
+            .finish_non_exhaustive()
+    }
+}
+
+impl BridgeTurnReceipt {
+    /// Build a receipt from an admitted turn.
+    ///
+    /// Generic over the completion future so out-of-crate [`SessionBridge`]
+    /// implementors can build one from whatever handle they own, without
+    /// naming a boxed type.
+    ///
+    /// Construct this the moment the work is admitted and BEFORE inspecting
+    /// `session_result`, so no code path can inspect a failure and return
+    /// without carrying the completion handle forward.
+    pub fn new<F, ResolutionError, CompletionError>(
+        session_result: Result<meerkat_core::types::SessionId, ResolutionError>,
+        completion: F,
+    ) -> Self
+    where
+        F: Future<Output = Result<(), CompletionError>> + Send + 'static,
+        ResolutionError: std::fmt::Display,
+        CompletionError: std::fmt::Display,
+    {
+        Self {
+            session_result: session_result.map_err(|error| error.to_string()),
+            completion: Box::pin(
+                async move { completion.await.map_err(|error| error.to_string()) },
+            ),
+        }
+    }
+
+    /// The session this turn was admitted onto, if resolution succeeded.
+    ///
+    /// Read-only: the field is private so no caller can inspect resolution,
+    /// decide it failed, and return without awaiting the running turn.
+    pub fn resolved_session(&self) -> Option<&meerkat_core::types::SessionId> {
+        self.session_result.as_ref().ok()
+    }
+
+    /// Await this turn's terminal, then map the (resolution, terminal) pair.
+    ///
+    /// | resolution | terminal | result                                        |
+    /// |------------|----------|-----------------------------------------------|
+    /// | `Ok`       | `Ok`     | `Ok(session_id)`                              |
+    /// | `Ok`       | `Err`    | [`BridgeTurnError::CompletionFailed`]         |
+    /// | `Err`      | `Err`    | `CompletionFailed`, carrying both details     |
+    /// | `Err`      | `Ok`     | [`BridgeTurnError::PostAdmissionResolutionFailed`]|
+    ///
+    /// There is no early return: the turn is already running, so its terminal
+    /// is always awaited before any error is produced.
+    pub async fn wait(self) -> Result<meerkat_core::types::SessionId, BridgeTurnError> {
+        let terminal_result = self.completion.await;
+        match (self.session_result, terminal_result) {
+            (Ok(session_id), Ok(())) => Ok(session_id),
+            (Ok(_), Err(err)) => Err(BridgeTurnError::CompletionFailed(err)),
+            (Err(resolve_err), Err(err)) => Err(BridgeTurnError::CompletionFailed(format!(
+                "{err}; post-admission session resolution also failed: {resolve_err}"
+            ))),
+            (Err(resolve_err), Ok(())) => {
+                Err(BridgeTurnError::PostAdmissionResolutionFailed(resolve_err))
+            }
+        }
+    }
+}
+
 /// Bridge between the identity-first control plane and the Meerkat session
 /// pipeline. Each method maps an identity-layer operation to its concrete
 /// mob-level counterpart.
@@ -1092,14 +1284,53 @@ pub trait SessionBridge: Send + Sync {
     /// signal.
     async fn deliver_awaiting_commit_with_mode_context_and_system_prompt(
         &self,
+        runtime_id: &AgentRuntimeId,
+        content: &meerkat_core::ContentInput,
+        system_prompt: Option<&str>,
+        injected_context: &[meerkat_core::ContentInput],
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        let receipt = self
+            .begin_awaiting_commit(
+                runtime_id,
+                content,
+                system_prompt,
+                injected_context,
+                handling_mode,
+                interaction_id,
+            )
+            .await
+            .map_err(BridgeError::from)?;
+        receipt.wait().await.map_err(BridgeError::from)
+    }
+
+    /// Admit a turn and hand back a [`BridgeTurnReceipt`] the caller can await
+    /// LATER - crucially, after releasing whatever lock it holds.
+    ///
+    /// This is the primitive;
+    /// [`Self::deliver_awaiting_commit_with_mode_context_and_system_prompt`] is
+    /// `begin` + `wait` composed, and exists only for callers with no lock to
+    /// release.
+    ///
+    /// Returns only after BOUNDED admission plus BOUNDED session resolution -
+    /// both inside the admission deadline, neither of them the LLM turn. The
+    /// resolution outcome rides in `session_result` rather than being
+    /// `?`-propagated, because an early return after admission drops the handle
+    /// of a turn that is already running.
+    ///
+    /// Defaults to [`BridgeAdmissionError::CompletionUnsupported`] BEFORE any
+    /// submit, so a caller that sees it knows nothing was delivered.
+    async fn begin_awaiting_commit(
+        &self,
         _runtime_id: &AgentRuntimeId,
         _content: &meerkat_core::ContentInput,
         _system_prompt: Option<&str>,
         _injected_context: &[meerkat_core::ContentInput],
         _handling_mode: HandlingMode,
         _interaction_id: Option<&str>,
-    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        Err(BridgeError::CompletionUnsupported(
+    ) -> Result<BridgeTurnReceipt, BridgeAdmissionError> {
+        Err(BridgeAdmissionError::CompletionUnsupported(
             "this bridge implements ingress-only delivery".to_string(),
         ))
     }
@@ -3169,13 +3400,22 @@ impl SessionBridge for MobSessionBridge {
         runtime_id: &AgentRuntimeId,
         delivery: BridgeDelivery,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        self.deliver_admitted_inner(runtime_id, delivery, BridgeSubmitMode::AdmissionOnly)
+        // Admission-only: no turn is in flight, so the receipt's completion is
+        // an immediate Ok and propagating the resolution result here drops
+        // nothing. Identical to the pre-receipt behaviour.
+        let receipt = self
+            .deliver_admitted_inner(runtime_id, delivery, BridgeSubmitMode::AdmissionOnly)
             .await
+            .map_err(BridgeError::from)?;
+        receipt.wait().await.map_err(BridgeError::from)
     }
 
-    /// Completion-bearing override: identical admission, plus an exact wait on
-    /// this work item's committed terminal boundary.
-    async fn deliver_awaiting_commit_with_mode_context_and_system_prompt(
+    /// Completion-bearing override: identical admission, returning the turn's
+    /// receipt UNAWAITED so the caller can release its locks first.
+    ///
+    /// The trait's `deliver_awaiting_commit_*` default composes this with
+    /// `wait()`, so there is no second admission path to drift.
+    async fn begin_awaiting_commit(
         &self,
         runtime_id: &AgentRuntimeId,
         content: &meerkat_core::ContentInput,
@@ -3183,7 +3423,7 @@ impl SessionBridge for MobSessionBridge {
         injected_context: &[meerkat_core::ContentInput],
         handling_mode: HandlingMode,
         interaction_id: Option<&str>,
-    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+    ) -> Result<BridgeTurnReceipt, BridgeAdmissionError> {
         let mut delivery = BridgeDelivery::new(content.clone(), handling_mode);
         delivery.system_prompt = system_prompt.map(ToString::to_string);
         delivery.injected_context = injected_context.to_vec();
@@ -3439,7 +3679,7 @@ impl MobSessionBridge {
         runtime_id: &AgentRuntimeId,
         delivery: BridgeDelivery,
         mode: BridgeSubmitMode,
-    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+    ) -> Result<BridgeTurnReceipt, BridgeAdmissionError> {
         let content = &delivery.content;
         let handling_mode = delivery.handling_mode;
         let system_prompt = delivery.system_prompt.as_deref();
@@ -3488,7 +3728,7 @@ impl MobSessionBridge {
                 )
                 .await?;
             if !caps.image_input {
-                return Err(BridgeError::InvalidInput(
+                return Err(BridgeAdmissionError::InvalidInput(
                     "target member model cannot accept image input".to_string(),
                 ));
             }
@@ -3517,7 +3757,7 @@ impl MobSessionBridge {
             // A blocked actor is not stale runtime state: keep the typed
             // timeout instead of routing it into member repair (which cannot
             // unblock an actor) or laundering it into `Mob(String)` below.
-            Err(err @ BridgeError::ActorAdmissionTimeout { .. }) => return Err(err),
+            Err(err @ BridgeError::ActorAdmissionTimeout { .. }) => return Err(err.into()),
             Err(err) if is_repairable_bridge_delivery_error(&err.to_string()) => {
                 tracing::warn!(
                     runtime_id = %runtime_id,
@@ -3553,23 +3793,33 @@ impl MobSessionBridge {
                 )
                 .await?
             }
-            Err(err) => return Err(BridgeError::Mob(err.to_string())),
+            Err(err) => return Err(BridgeAdmissionError::Mob(err.to_string())),
         };
 
-        // Ordering lives in resolve_session_then_await_completion so it is
-        // testable directly. The turn handle is passed UNAWAITED - the retry
-        // decision above ran purely on admission outcomes, so a turn that ran
-        // and failed can never be mistaken for a delivery that never landed.
-        resolve_session_then_await_completion(
-            self.resolve_runtime_session_id(
+        // Resolution runs under the admission deadline, and its outcome is
+        // CARRIED, not propagated. The handle is moved into the receipt without
+        // the resolution result ever being inspected here, so there is no path
+        // on which a resolution failure returns early and abandons a turn that
+        // is already running. That invariant used to depend on statement order;
+        // now it is structural.
+        let session_result = self
+            .resolve_runtime_session_id(
                 runtime_id,
                 &mid,
                 "member has no bridge session after deliver",
                 &deadline,
-            ),
-            pending_turn.map(meerkat_mob::WorkTurnHandle::wait),
-        )
-        .await
+            )
+            .await;
+
+        Ok(BridgeTurnReceipt::new(session_result, async move {
+            match pending_turn {
+                // The LLM turn. Awaited by the CALLER, after it has released
+                // whatever lock it holds - never here, never under a lock.
+                Some(turn) => turn.wait().await.map(|_| ()).map_err(|err| err.to_string()),
+                // Admission-only: nothing to wait for.
+                None => Ok::<(), String>(()),
+            }
+        }))
     }
 }
 
@@ -3601,7 +3851,7 @@ mod tests {
             polled: bool,
         }
         impl std::future::Future for GatedCompletion {
-            type Output = Result<(), std::io::Error>;
+            type Output = Result<(), BridgeError>;
             fn poll(
                 mut self: std::pin::Pin<&mut Self>,
                 _cx: &mut Context<'_>,
@@ -3643,7 +3893,13 @@ mod tests {
             polled: false,
         };
 
-        let combined = super::resolve_session_then_await_completion(resolve, Some(completion));
+        // Resolution happens in `begin`, BEFORE the receipt exists, so the
+        // ordering is now structural: a receipt cannot be constructed without a
+        // resolution outcome in hand. What still needs proving is that `wait`
+        // parks on the completion rather than returning on the carried result.
+        let resolved = futures::executor::block_on(resolve).expect("resolution");
+        let combined =
+            super::BridgeTurnReceipt::new(Ok::<_, BridgeError>(resolved), completion).wait();
         let mut combined = Box::pin(combined);
         let mut cx = Context::from_waker(Waker::noop());
 
@@ -3689,7 +3945,7 @@ mod tests {
             released: Arc<std::sync::atomic::AtomicBool>,
         }
         impl std::future::Future for CountedCompletion {
-            type Output = Result<(), std::io::Error>;
+            type Output = Result<(), BridgeError>;
             fn poll(self: std::pin::Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
                 *self.polls.lock().expect("poll counter mutex poisoned") += 1;
                 if self.released.load(std::sync::atomic::Ordering::SeqCst) {
@@ -3707,15 +3963,16 @@ mod tests {
             "the test is only meaningful if the resolution error is one the \
              delivery path WOULD repair and resubmit"
         );
-        let resolve = async move {
-            Err::<meerkat_core::types::SessionId, _>(BridgeError::Mob(resolve_detail.to_string()))
-        };
         let completion = CountedCompletion {
             polls: Arc::clone(&polls),
             released: Arc::clone(&released),
         };
 
-        let combined = super::resolve_session_then_await_completion(resolve, Some(completion));
+        let combined = super::BridgeTurnReceipt::new(
+            Err(BridgeError::Mob(resolve_detail.to_string())),
+            completion,
+        )
+        .wait();
         let mut combined = Box::pin(combined);
         let mut cx = Context::from_waker(Waker::noop());
 
@@ -3732,7 +3989,7 @@ mod tests {
 
         released.store(true, std::sync::atomic::Ordering::SeqCst);
         match combined.as_mut().poll(&mut cx) {
-            Poll::Ready(Err(BridgeError::PostAdmissionResolutionFailed(detail))) => {
+            Poll::Ready(Err(BridgeTurnError::PostAdmissionResolutionFailed(detail))) => {
                 assert!(
                     detail.contains("missing bridge session snapshot"),
                     "the resolution detail must survive verbatim: {detail}"
@@ -3741,7 +3998,7 @@ mod tests {
                 // produced after admission and is never handed to the delivery
                 // path's substring classifier. Assert the variant is not one of
                 // the admission-shaped ones it acts on.
-                let rendered = BridgeError::PostAdmissionResolutionFailed(detail).to_string();
+                let rendered = BridgeTurnError::PostAdmissionResolutionFailed(detail).to_string();
                 assert!(
                     rendered.contains("do not retry"),
                     "the rendering must tell an operator this is terminal: {rendered}"
@@ -3759,17 +4016,14 @@ mod tests {
     /// resolution detail is carried rather than silently dropped.
     #[tokio::test]
     async fn both_failing_leads_with_the_turn_and_still_carries_the_resolution_detail() {
-        let failed = super::resolve_session_then_await_completion(
-            async {
-                Err::<meerkat_core::types::SessionId, _>(BridgeError::Mob(
-                    "resolution detail marker".to_string(),
-                ))
-            },
-            Some(async { Err::<(), _>(std::io::Error::other("turn failure marker")) }),
+        let failed = super::BridgeTurnReceipt::new(
+            Err(BridgeError::Mob("resolution detail marker".to_string())),
+            async { Err::<(), _>(BridgeError::Mob("turn failure marker".to_string())) },
         )
+        .wait()
         .await;
         match failed {
-            Err(BridgeError::CompletionFailed(detail)) => {
+            Err(BridgeTurnError::CompletionFailed(detail)) => {
                 assert!(
                     detail.contains("turn failure marker"),
                     "the turn's own failure must lead: {detail}"
@@ -3791,17 +4045,15 @@ mod tests {
     #[tokio::test]
     async fn a_completion_failure_is_typed_and_never_admission_shaped() {
         let session = meerkat_core::types::SessionId::new();
-        let failed = super::resolve_session_then_await_completion(
-            async { Ok::<_, BridgeError>(session) },
-            Some(async {
-                Err::<(), _>(std::io::Error::other(
-                    "missing bridge session snapshot - completion sentinel",
-                ))
-            }),
-        )
+        let failed = super::BridgeTurnReceipt::new(Ok::<_, BridgeError>(session), async {
+            Err::<(), _>(BridgeError::Mob(
+                "missing bridge session snapshot - completion sentinel".to_string(),
+            ))
+        })
+        .wait()
         .await;
         match failed {
-            Err(BridgeError::CompletionFailed(detail)) => assert!(
+            Err(BridgeTurnError::CompletionFailed(detail)) => assert!(
                 detail.contains("missing bridge session snapshot"),
                 "the detail must survive so operators can see what failed: {detail}"
             ),
