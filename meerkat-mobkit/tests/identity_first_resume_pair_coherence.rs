@@ -100,6 +100,78 @@ impl CaptureClient {
     fn last(&self) -> Option<String> {
         self.requests.lock().unwrap().last().cloned()
     }
+    /// Snapshot of every captured request, in arrival order.
+    ///
+    /// A turn can produce more than one request, and unrelated turns interleave,
+    /// so `last()` is not a reliable way to name "the turn under test" - see
+    /// [`select_request_containing`].
+    fn all(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+/// Select the single captured request carrying ALL of `markers`.
+///
+/// Assertions about a specific turn must run against a request identified by
+/// its CONTENT, never by position. `capture.last()` was doing the latter, and
+/// on the authored turn it returned whichever request happened to arrive last:
+/// the authored one on some runs and an unrelated 2-message replay on others.
+/// The visible symptom was a failure that moved between two assertions on the
+/// same commit pair, which reads as flakiness in the product rather than in
+/// the selector.
+///
+/// On no match this dumps a summary of every captured request - markers, message
+/// count, roles - because "which requests DID arrive" is the first question
+/// anyone asks next, and a bare "not found" throws that away.
+async fn select_request_containing(
+    capture: &CaptureClient,
+    secs: u64,
+    markers: &[(&str, &str)],
+) -> String {
+    // POLL, do not snapshot. Waiting for "one more request than before" is not
+    // the same as waiting for the request under test: the authored delivery is
+    // preceded by an unrelated 2-message replay, so a count-based wait returns
+    // while the authored request is still in flight and a snapshot taken then
+    // sees only the decoy.
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let all = capture.all();
+        if let Some(one) = all
+            .iter()
+            .find(|req| markers.iter().all(|(_, needle)| req.contains(needle)))
+        {
+            return one.clone();
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    let all = capture.all();
+    let mut summary = String::new();
+    for (i, req) in all.iter().enumerate() {
+        let parsed: serde_json::Value =
+            serde_json::from_str(req).unwrap_or(serde_json::Value::Null);
+        let msgs = parsed.get("messages").and_then(|m| m.as_array());
+        let present: Vec<&str> = markers
+            .iter()
+            .filter(|(_, needle)| req.contains(needle))
+            .map(|(label, _)| *label)
+            .collect();
+        summary.push_str(&format!(
+            "\n  [{i}] markers_present={present:?} messages={:?} roles={:?}",
+            msgs.map(|m| m.len()),
+            msgs.map(|m| m
+                .iter()
+                .map(|x| x.get("role").and_then(|r| r.as_str()).unwrap_or("?"))
+                .collect::<Vec<_>>())
+        ));
+    }
+    panic!(
+        "no captured request carries all of {:?}; {} request(s) captured:{summary}",
+        markers.iter().map(|(label, _)| *label).collect::<Vec<_>>(),
+        all.len()
+    );
 }
 impl meerkat_client::LlmClient for CaptureClient {
     fn project_replay_messages(
@@ -1028,15 +1100,24 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             "the authored turn must land on the same durable session"
         );
         wait_for_new_request(&capture, before_authored, 30, "the authored turn").await;
-        let last_request = capture.last().expect("the authored turn was captured");
+        // Identify the authored turn by CONTENT - it is the request carrying
+        // both the authored System prompt and this turn's user text - and then
+        // assert the transcript on THAT SAME request. Selecting by position
+        // (`capture.last()`) made the failure move between assertions on one
+        // commit pair, because unrelated requests interleave.
+        let authored_request = select_request_containing(
+            &capture,
+            30,
+            &[
+                ("AUTHORED_PROMPT", AUTHORED_PROMPT),
+                ("TURN_2_TEXT", TURN_2_TEXT),
+            ],
+        )
+        .await;
         assert!(
-            last_request.contains(AUTHORED_PROMPT),
-            "the authored System message must reach the very turn it was authored for: \
-             {last_request}"
-        );
-        assert!(
-            last_request.contains(TOKEN),
-            "the authored turn must replay the persisted transcript (token {TOKEN})"
+            authored_request.contains(TOKEN),
+            "the authored turn must replay the persisted transcript (token {TOKEN}): \
+             {authored_request}"
         );
         sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
