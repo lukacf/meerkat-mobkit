@@ -190,6 +190,24 @@ async fn wait_for_request(capture: &CaptureClient, secs: u64, what: &str) {
     }
 }
 
+/// Wait for a request that arrives *after* `before`.
+///
+/// [`wait_for_request`] tests an ABSOLUTE count (`< 1`), so on any turn after
+/// the first it returns immediately without waiting for the turn under test,
+/// and a following `capture.last()` reads the PREVIOUS turn's request. That
+/// makes the subsequent assertion describe the wrong turn entirely.
+async fn wait_for_new_request(capture: &CaptureClient, before: usize, secs: u64, what: &str) {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    while capture.count() <= before {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what} to reach the LLM \
+             (still {before} request(s), none newer)"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// THE incident shape, end to end: boot 1 creates the member on
 /// `gpt-5.5` (durable provider: openai). Boot 2's definition moves the
 /// profile to `claude-opus-4-8` with NO provider key. The resume must apply
@@ -993,6 +1011,7 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             .session_bridge()
             .expect("session_bridge should exist")
             .clone();
+        let before_authored = capture.count();
         let delivered = bridge
             .deliver_with_mode_context_and_system_prompt(
                 &runtime_id,
@@ -1008,7 +1027,7 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             delivered, original_session_id,
             "the authored turn must land on the same durable session"
         );
-        wait_for_request(&capture, 30, "the authored turn").await;
+        wait_for_new_request(&capture, before_authored, 30, "the authored turn").await;
         let last_request = capture.last().expect("the authored turn was captured");
         assert!(
             last_request.contains(AUTHORED_PROMPT),
