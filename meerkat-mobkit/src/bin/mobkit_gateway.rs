@@ -10,7 +10,9 @@ use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionServic
 use meerkat_mob::ids::AgentIdentity;
 use meerkat_mob::{MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 use meerkat_mobkit::contact_directory::ContactDirectory;
-use meerkat_mobkit::runtime::cross_mob_control::ControlListenAddr;
+use meerkat_mobkit::runtime::cross_mob_control::{
+    ControlAuthorizer, ControlGrantTable, ControlListenAddr,
+};
 use meerkat_mobkit::{
     AuthPolicy, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore, ConsolePolicy,
     ConsoleUiConfig, ConventionalPaths, GatewayPeerKeys, MOBKIT_CONTRACT_VERSION,
@@ -1375,11 +1377,22 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
     // (lookup of known mob addresses) without requiring peer mob handles.
     // High-level wire/unwire/send still need peer handles and are gated
     // separately by has_peer_mob_handles().
+    let mut control_grants = ControlGrantTable::new();
     if let Some(ref contacts_path) = paths.contacts_toml {
         let contacts_text = fs::read_to_string(contacts_path)
             .with_context(|| format!("failed to read {}", contacts_path.display()))?;
         let directory = ContactDirectory::from_toml(&contacts_text)
             .with_context(|| format!("failed to parse {}", contacts_path.display()))?;
+        if let Some(configured) =
+            ControlGrantTable::from_toml(&contacts_text).with_context(|| {
+                format!(
+                    "failed to parse control grants in {}",
+                    contacts_path.display()
+                )
+            })?
+        {
+            control_grants = configured;
+        }
         runtime.set_contact_directory(directory);
     }
 
@@ -1502,8 +1515,12 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
     // its startup log reflects the final authority posture (the handler
     // re-reads the identity slot per request either way).
     if let Some(addr) = control_listen.as_ref() {
+        let authorizer = Arc::new(ControlAuthorizer::with_grants_for_audience(
+            control_grants,
+            runtime.mob_id(),
+        ));
         let advertised = runtime
-            .start_control_listener(addr)
+            .start_control_listener_with_authorizer(addr, authorizer)
             .await
             .map_err(|error| anyhow!("--control-listen {addr}: {error}"))?;
         tracing::info!(%advertised, "cross-mob control listener bound");

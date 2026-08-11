@@ -37,7 +37,9 @@ use std::time::Duration;
 
 use base64::Engine;
 use meerkat_mobkit::contact_directory::ContactDirectory;
-use meerkat_mobkit::runtime::cross_mob_control::ControlListenAddr;
+use meerkat_mobkit::runtime::cross_mob_control::{
+    ControlAuthorizer, ControlGrantTable, ControlListenAddr,
+};
 use meerkat_mobkit::unified_runtime::EventLogError;
 use meerkat_mobkit::{
     AuthPolicy, AuthProvider, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore,
@@ -103,6 +105,9 @@ struct GatewayRuntimeOptions {
     /// launch config through init params, and cross-process tests must
     /// write a peer's bound address into the directory at spawn time.
     contacts: Option<ContactDirectory>,
+    /// Scoped caller grants for the cross-mob control listener. The empty
+    /// default is deny-all, never an implicit open listener.
+    control_grants: ControlGrantTable,
     agent_memory: Option<GatewayAgentMemoryOptions>,
     /// WorkGraph service construction switch (default on). `false` disables
     /// the store, member tools, overlays, and the mobkit/workgraph/* RPCs.
@@ -268,6 +273,7 @@ impl Default for GatewayRuntimeOptions {
             demo_llm: false,
             member_comms_address: None,
             contacts: None,
+            control_grants: ControlGrantTable::new(),
             agent_memory: None,
             workgraph: GatewayWorkgraphOption::Enabled,
             live: GatewayLiveOption::Disabled,
@@ -622,6 +628,55 @@ mod tests {
             };
             assert!(err.contains(needle), "{err} should mention '{needle}'");
         }
+    }
+
+    #[test]
+    fn gateway_runtime_options_control_grants_are_closed_and_scoped() {
+        let defaulted = parse_gateway_runtime_options(&json!({ "runtime_options": {} }), None)
+            .expect("runtime options");
+        assert!(
+            defaulted.control_grants.is_empty(),
+            "an omitted grant declaration must be deny-all"
+        );
+
+        let caller = meerkat_mobkit::GatewayPeerKeys::ephemeral();
+        let params = json!({
+            "runtime_options": {
+                "control_grants_toml": format!(
+                    "[control_grants.desktop]\npubkey = \"{}\"\nverbs = [\"lookup_member\", \"inject\"]\nmembers = [\"worker-1\"]\n",
+                    caller.pubkey_b64()
+                )
+            }
+        });
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+        let grant = options
+            .control_grants
+            .get(&caller.pubkey_bytes())
+            .expect("desktop grant");
+        assert!(
+            grant
+                .verbs()
+                .contains(&meerkat_mobkit::runtime::cross_mob_control::ControlVerb::LookupMember)
+        );
+        assert!(
+            grant
+                .verbs()
+                .contains(&meerkat_mobkit::runtime::cross_mob_control::ControlVerb::Inject)
+        );
+        assert_eq!(
+            grant.members(),
+            &meerkat_mobkit::runtime::cross_mob_control::ControlMemberScope::members(["worker-1"])
+        );
+
+        let missing_section = json!({
+            "runtime_options": {
+                "control_grants_toml": "[mobs]\nremote = \"inproc\"\n"
+            }
+        });
+        let error = parse_gateway_runtime_options(&missing_section, None)
+            .err()
+            .expect("an explicit grant document without the section must fail");
+        assert!(error.contains("must contain a [control_grants] section"));
     }
 
     /// The runtime_options allowlist stays closed: unknown keys are a hard
@@ -2838,6 +2893,7 @@ fn parse_gateway_runtime_options(
         "demo_llm",
         "member_comms_address",
         "contacts_toml",
+        "control_grants_toml",
         "max_sessions",
         "event_log",
         "agent_memory",
@@ -3070,6 +3126,17 @@ fn parse_gateway_runtime_options(
             ContactDirectory::from_toml(text)
                 .map_err(|error| format!("runtime_options.contacts_toml is invalid: {error}"))?,
         );
+    }
+    if let Some(value) = runtime_options.get("control_grants_toml") {
+        let text = value.as_str().ok_or_else(|| {
+            "runtime_options.control_grants_toml must be a TOML string".to_string()
+        })?;
+        parsed.control_grants = ControlGrantTable::from_toml(text)
+            .map_err(|error| format!("runtime_options.control_grants_toml is invalid: {error}"))?
+            .ok_or_else(|| {
+                "runtime_options.control_grants_toml must contain a [control_grants] section"
+                    .to_string()
+            })?;
     }
     if let Some(value) = runtime_options.get("max_sessions") {
         let max_sessions = value
@@ -9049,17 +9116,26 @@ external_addressable = true
     };
     runtime.set_gateway_peer_keys(gateway_peer_keys);
     let control_listen_address = match control_listen.as_ref() {
-        Some(addr) => match runtime.start_control_listener(addr).await {
-            Ok(advertised) => {
-                tracing::info!(%advertised, "cross-mob control listener bound");
-                Some(advertised)
+        Some(addr) => {
+            let authorizer = Arc::new(ControlAuthorizer::with_grants_for_audience(
+                std::mem::take(&mut gateway_options.control_grants),
+                runtime.mob_id(),
+            ));
+            match runtime
+                .start_control_listener_with_authorizer(addr, authorizer)
+                .await
+            {
+                Ok(advertised) => {
+                    tracing::info!(%advertised, "cross-mob control listener bound");
+                    Some(advertised)
+                }
+                Err(error) => fail_init(
+                    &request_id,
+                    -32603,
+                    format!("--control-listen {addr}: {error}"),
+                ),
             }
-            Err(error) => fail_init(
-                &request_id,
-                -32603,
-                format!("--control-listen {addr}: {error}"),
-            ),
-        },
+        }
         None => None,
     };
 

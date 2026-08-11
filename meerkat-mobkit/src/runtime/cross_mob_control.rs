@@ -46,12 +46,11 @@
 //!   grant is refused before dispatch with a typed
 //!   [`ControlAuthzDenial`].
 //!
-//! Caller authorization is INERT until a grant table is installed:
-//! [`ControlAuthorizer::open`] (the default a plain
-//! `UnifiedRuntime::start_control_listener` uses) authorizes nothing, so
-//! deployments that have not configured grants behave exactly as before.
-//! Callers stamp their signature unconditionally, which is why the field
-//! is additive per variant rather than a wrapper frame - see
+//! [`ControlAuthorizer::open`] remains available only for an explicit
+//! compatibility choice. Configured runtime listeners default to an empty
+//! grant table and therefore refuse every request until an operator installs a
+//! scoped grant. Callers stamp their signature unconditionally, which is why
+//! the field is additive per variant rather than a wrapper frame - see
 //! [`ControlCaller`].
 
 use std::collections::{BTreeMap, BTreeSet};

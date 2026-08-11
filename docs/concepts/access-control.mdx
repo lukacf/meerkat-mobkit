@@ -224,7 +224,7 @@ A caller entry accepts only `pubkey`, `verbs`, and `members`; any other key is a
 Refusals come back with a stable code: `unauthenticated_caller`, `invalid_caller_credential`, `invalid_caller_signature`, `caller_not_granted`, `verb_not_granted`, `member_not_granted`, `audience_mismatch`. On the calling side they surface as a distinct error from an ordinary rejection, because the remedy is different: nothing about the request is malformed and retrying will not help until the peer operator widens the grant.
 
 <Warning>
-**A control listener without grants authorizes nothing.** `start_control_listener` (and today's `--control-listen`) serve every peer that can reach the endpoint, on every verb, against every member - which is why the listener should stay on a trusted network until grants are configured. Installing a table is what turns the channel from "reachable means permitted" into "granted means permitted". An **empty** table is not the same as no table: an empty table refuses everyone.
+**A control listener without grants authorizes nothing.** `start_control_listener`, the Rust builder's `control_listen`, and the gateway `--control-listen` path bind with an empty table and refuse every request until scoped grants are installed. An **empty** table is not the same as an explicitly open authorizer: empty refuses everyone, while `ControlAuthorizer::open()` is a lower-level compatibility choice an embedder must name deliberately.
 </Warning>
 
 Embedders mount a table directly:
@@ -250,7 +250,7 @@ let advertised = runtime
 Use `ControlAuthorizer::with_grants_for_audience(table, "my-mob-id")` when one caller holds grants on several of your gateways and a captured request must not be replayable across them; the mob id is the one peers use for this gateway in their contact directories.
 
 <Note>
-The gateway config key that populates this table from `runtime_options` lands with the gateway plumbing; until then, grants are configured by embedders through `start_control_listener_with_authorizer`. `ControlAuthorizer::from_toml` already accepts the `[control_grants]` section shown above and returns an open authorizer when the section is absent, so a config that never mentions grants keeps its current behaviour.
+The SDK-driven `rpc_gateway` accepts the same TOML under `runtime_options.control_grants_toml`; the conventional `mobkit_gateway` reads `[control_grants]` beside `[mobs]` in `config/contacts.toml`. The Rust builder accepts a `ControlGrantTable` through `control_grants`. Every configured-listener path binds the table to the runtime's mob id as the signed audience. `ControlAuthorizer::from_toml` still distinguishes an absent section from an empty section for embedders that explicitly choose compatibility behavior.
 </Note>
 
 Three limits worth stating plainly:

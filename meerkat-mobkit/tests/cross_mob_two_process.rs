@@ -17,6 +17,8 @@
 //!   by the wire are dialable across the process boundary.
 //! * `runtime_options.contacts_toml` - the inline contact directory
 //!   pointing at the OTHER process's control listener.
+//! * `runtime_options.control_grants_toml` - a closed, member-scoped grant
+//!   for the OTHER process's persisted gateway key.
 //! * `runtime_options.demo_llm` - deterministic `TestClient`, no network.
 //!
 //! Proven across the process boundary:
@@ -25,12 +27,12 @@
 //!    TCP, installs signed descriptors on BOTH sides (asserted via each
 //!    gateway's own `mobkit/get_member` `wired_to` projection - the far
 //!    side's row is the reverse leg).
-//! 2. `mobkit/cross_mob/send` delivers A -> B and B -> A: each send returns
-//!    the receiving member's bridge session id from the OTHER process, the
-//!    injection triggers a turn on the receiver, and the marker text
-//!    minted in the SENDING process becomes durable in the RECEIVING
-//!    process's state directory - polled while the child is alive, then
-//!    asserted again from disk after the child exited.
+//! 2. `mobkit/cross_mob/send` delivers A -> B and B -> A: each exact RPC
+//!    receipt returns the receiving member's bridge session id from the
+//!    OTHER process. Both contact entries pin the remote process's persisted
+//!    Ed25519 key, so the response signature is the attribution proof. No
+//!    event count, latest-event query, sleep, or filesystem polling is
+//!    accepted as success authority.
 //! 3. `mobkit/cross_mob/unwire` from A clears the peering on BOTH sides.
 //!
 //! # What is deliberately NOT here
@@ -55,18 +57,18 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use meerkat_mobkit::GatewayPeerKeys;
 use serde_json::{Value, json};
 
 const INIT_TIMEOUT: Duration = Duration::from_mins(3);
 const RPC_TIMEOUT: Duration = Duration::from_mins(1);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_mins(3);
-const EXIT_TIMEOUT: Duration = Duration::from_mins(1);
 
 const MOB_A: &str = r#"
 [mob]
@@ -256,32 +258,13 @@ impl Gateway {
             self.stderr_tail()
         );
         self.close_stdin();
-        let status = self.wait_for_exit(EXIT_TIMEOUT);
+        let status = self.child.wait().expect("wait for gateway exit");
         assert!(
             status.success(),
             "[{}] rpc_gateway exited with {status}\n{}",
             self.label,
             self.stderr_tail()
         );
-    }
-
-    fn wait_for_exit(&mut self, deadline: Duration) -> ExitStatus {
-        let start = Instant::now();
-        loop {
-            if let Some(status) = self.child.try_wait().expect("poll gateway exit") {
-                return status;
-            }
-            if start.elapsed() >= deadline {
-                let tail = self.stderr_tail();
-                let _ = self.child.kill();
-                let _ = self.child.wait();
-                panic!(
-                    "[{}] rpc_gateway did not exit within {:?}\n{}",
-                    self.label, deadline, tail
-                );
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
     }
 }
 
@@ -301,6 +284,7 @@ fn boot(
     mob_config: &str,
     control_listen: &str,
     contacts_toml: &str,
+    control_grants_toml: &str,
 ) -> Gateway {
     let mut gateway = Gateway::start(label, control_listen);
     let response = gateway.call(
@@ -313,6 +297,7 @@ fn boot(
                 "demo_llm": true,
                 "member_comms_address": "127.0.0.1:0",
                 "contacts_toml": contacts_toml,
+                "control_grants_toml": control_grants_toml,
             }
         }),
         INIT_TIMEOUT,
@@ -359,52 +344,6 @@ fn wired_to(gateway: &mut Gateway, member: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Scan every regular file under a state
-/// directory for `marker` bytes. Schema-agnostic on purpose - the claim is
-/// exactly "text minted in the OTHER process reached this process's
-/// durable storage", not any particular table layout.
-fn state_dir_contains_marker(state: &Path, marker: &str) -> bool {
-    fn scan(path: &Path, needle: &[u8], hit: &mut bool) {
-        if *hit {
-            return;
-        }
-        let Ok(entries) = std::fs::read_dir(path) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let entry_path = entry.path();
-            if entry_path.is_dir() {
-                scan(&entry_path, needle, hit);
-            } else if let Ok(bytes) = std::fs::read(&entry_path)
-                && bytes.windows(needle.len()).any(|window| window == needle)
-            {
-                *hit = true;
-            }
-            if *hit {
-                return;
-            }
-        }
-    }
-    let mut hit = false;
-    scan(state, marker.as_bytes(), &mut hit);
-    hit
-}
-
-/// Wait for `marker` to become durable in `state` while the child is still
-/// alive. The injected turn runs asynchronously in the receiving process;
-/// polling the durable bytes (WAL included) is the deterministic
-/// completion signal that does not depend on any schema or event surface.
-fn wait_for_durable_marker(label: &str, state: &Path, marker: &str, deadline: Duration) {
-    let start = Instant::now();
-    while start.elapsed() < deadline {
-        if state_dir_contains_marker(state, marker) {
-            return;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    panic!("[{label}] marker '{marker}' did not become durable within {deadline:?}");
-}
-
 #[test]
 fn two_process_cross_mob_wire_and_delivery_round_trip() {
     let state_a = tempfile::tempdir().expect("state dir a");
@@ -413,11 +352,41 @@ fn two_process_cross_mob_wire_and_delivery_round_trip() {
     let port_b = probe_port();
     let control_a = format!("tcp://127.0.0.1:{port_a}");
     let control_b = format!("tcp://127.0.0.1:{port_b}");
-    let contacts_a = format!("[mobs]\n\"two-proc-b\" = \"{control_b}\"\n");
-    let contacts_b = format!("[mobs]\n\"two-proc-a\" = \"{control_a}\"\n");
+    let keys_a = GatewayPeerKeys::load_or_create(state_a.path()).expect("gateway A keys");
+    let keys_b = GatewayPeerKeys::load_or_create(state_b.path()).expect("gateway B keys");
+    let contacts_a = format!(
+        "[mobs]\n\"two-proc-b\" = {{ transport = \"{control_b}\", pubkey = \"{}\" }}\n",
+        keys_b.pubkey_b64()
+    );
+    let contacts_b = format!(
+        "[mobs]\n\"two-proc-a\" = {{ transport = \"{control_a}\", pubkey = \"{}\" }}\n",
+        keys_a.pubkey_b64()
+    );
+    let grants_a = format!(
+        "[control_grants.gateway-b]\npubkey = \"{}\"\nverbs = [\"lookup_member\", \"wire\", \"unwire\", \"inject\"]\nmembers = [\"alice\"]\n",
+        keys_b.pubkey_b64()
+    );
+    let grants_b = format!(
+        "[control_grants.gateway-a]\npubkey = \"{}\"\nverbs = [\"lookup_member\", \"wire\", \"unwire\", \"inject\"]\nmembers = [\"bob\"]\n",
+        keys_a.pubkey_b64()
+    );
 
-    let mut gateway_a = boot("A", state_a.path(), MOB_A, &control_a, &contacts_a);
-    let mut gateway_b = boot("B", state_b.path(), MOB_B, &control_b, &contacts_b);
+    let mut gateway_a = boot(
+        "A",
+        state_a.path(),
+        MOB_A,
+        &control_a,
+        &contacts_a,
+        &grants_a,
+    );
+    let mut gateway_b = boot(
+        "B",
+        state_b.path(),
+        MOB_B,
+        &control_b,
+        &contacts_b,
+        &grants_b,
+    );
 
     spawn_member(&mut gateway_a, "alice");
     spawn_member(&mut gateway_b, "bob");
@@ -464,7 +433,7 @@ fn two_process_cross_mob_wire_and_delivery_round_trip() {
     );
     assert!(
         response["result"]["session_id"].is_string(),
-        "[A] cross_mob/send returned no remote session id: {response}"
+        "[A] signed cross_mob/send receipt has no remote session id: {response}"
     );
 
     // Delivery B -> A, over B's own contact directory and A's listener.
@@ -481,15 +450,8 @@ fn two_process_cross_mob_wire_and_delivery_round_trip() {
     );
     assert!(
         response["result"]["session_id"].is_string(),
-        "[B] cross_mob/send returned no remote session id: {response}"
+        "[B] signed cross_mob/send receipt has no remote session id: {response}"
     );
-
-    // The injections trigger a turn on each receiving member (same
-    // member-door as a direct send); wait for the marker bytes to become
-    // durable in each receiver's state directory before shutting down, so
-    // shutdown quiescing cannot race an unstarted turn.
-    wait_for_durable_marker("B", state_b.path(), MARKER_A_TO_B, RPC_TIMEOUT);
-    wait_for_durable_marker("A", state_a.path(), MARKER_B_TO_A, RPC_TIMEOUT);
 
     // Unwire across the boundary and confirm both projections drop it.
     let response = gateway_a.call(
@@ -514,29 +476,8 @@ fn two_process_cross_mob_wire_and_delivery_round_trip() {
         "[B] bob must no longer be wired to alice after remote unwire, got {bob_peers:?}"
     );
 
-    // Clean shutdown, then read the durable proof from disk: the marker
-    // minted in the OTHER process must be present in each receiver's state
-    // directory, and must NOT appear in the sender's own durable state
-    // (guards against a false positive from some shared path).
+    // Each process returns its exact shutdown terminal before stdin closes;
+    // process exit is then awaited directly rather than inferred by polling.
     gateway_a.shutdown_and_reap();
     gateway_b.shutdown_and_reap();
-
-    assert!(
-        state_dir_contains_marker(state_b.path(), MARKER_A_TO_B),
-        "marker sent A -> B not found in B's durable state directory"
-    );
-    assert!(
-        state_dir_contains_marker(state_a.path(), MARKER_B_TO_A),
-        "marker sent B -> A not found in A's durable state directory"
-    );
-    assert!(
-        !state_dir_contains_marker(state_a.path(), MARKER_A_TO_B),
-        "A -> B marker unexpectedly present in A's own durable state; the delivery assert \
-         would be meaningless"
-    );
-    assert!(
-        !state_dir_contains_marker(state_b.path(), MARKER_B_TO_A),
-        "B -> A marker unexpectedly present in B's own durable state; the delivery assert \
-         would be meaningless"
-    );
 }

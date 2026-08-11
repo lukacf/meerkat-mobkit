@@ -120,6 +120,7 @@ pub struct UnifiedRuntimeBuilder {
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
     contact_directory: Option<ContactDirectory>,
     control_listen: Option<String>,
+    control_grants: Option<crate::runtime::cross_mob_control::ControlGrantTable>,
     persistent_metadata: Option<Arc<dyn PersistentMetadataStore>>,
     access_controller: Option<crate::access::AccessController>,
     topology_control_policy: crate::topology_control::TopologyControlPolicy,
@@ -705,6 +706,20 @@ impl UnifiedRuntimeBuilder {
     /// [`UnifiedRuntime::control_listener_advertised_address`].
     pub fn control_listen(mut self, addr: impl Into<String>) -> Self {
         self.control_listen = Some(addr.into());
+        self
+    }
+
+    /// Authorize callers of the configured cross-mob control listener.
+    ///
+    /// Grants are bound to this runtime's mob id when the listener starts,
+    /// so a signed request captured from one gateway cannot be replayed at
+    /// another. Omitting this method is fail-closed: a configured listener
+    /// still binds, but its empty grant table refuses every request.
+    pub fn control_grants(
+        mut self,
+        grants: crate::runtime::cross_mob_control::ControlGrantTable,
+    ) -> Self {
+        self.control_grants = Some(grants);
         self
     }
 
@@ -1452,12 +1467,22 @@ impl UnifiedRuntimeBuilder {
         // steps: the fully assembled runtime owns the serve task, so a bind
         // failure follows the same cooperative shutdown path as the other
         // late bootstrap errors above.
-        if let Some(addr) = control_listen.as_ref()
-            && let Err(error) = runtime.start_control_listener(addr).await
-        {
-            let build_error = UnifiedRuntimeBuilderError::Io(format!("control_listen(): {error}"));
-            runtime.shutdown().await;
-            return Err(build_error);
+        if let Some(addr) = control_listen.as_ref() {
+            let authorizer = std::sync::Arc::new(
+                crate::runtime::cross_mob_control::ControlAuthorizer::with_grants_for_audience(
+                    self.control_grants.take().unwrap_or_default(),
+                    runtime.mob_id(),
+                ),
+            );
+            if let Err(error) = runtime
+                .start_control_listener_with_authorizer(addr, authorizer)
+                .await
+            {
+                let build_error =
+                    UnifiedRuntimeBuilderError::Io(format!("control_listen(): {error}"));
+                runtime.shutdown().await;
+                return Err(build_error);
+            }
         }
 
         // Start event log ingestion if configured

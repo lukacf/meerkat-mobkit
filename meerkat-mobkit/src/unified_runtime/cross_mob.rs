@@ -1412,24 +1412,25 @@ impl UnifiedRuntime {
     /// `rt:*` aliases fail closed until the authority is attached and are
     /// admitted afterwards.
     ///
-    /// This form performs NO caller authorization: any peer that can reach
-    /// the bound endpoint may drive every control verb against every
-    /// member. Deployments that expose the listener beyond a trusted
-    /// network should use [`Self::start_control_listener_with_authorizer`]
-    /// with a populated grant table.
+    /// This convenience form is fail-closed: it binds with an empty grant
+    /// table, so every request is refused. Use
+    /// [`Self::start_control_listener_with_authorizer`] with a populated
+    /// table to admit scoped callers. An intentionally open listener must
+    /// name [`ControlAuthorizer::open`](crate::runtime::cross_mob_control::ControlAuthorizer::open)
+    /// explicitly at that lower-level seam.
     pub async fn start_control_listener(
         &self,
         addr: &crate::runtime::cross_mob_control::ControlListenAddr,
     ) -> Result<String, CrossMobError> {
-        tracing::warn!(
-            %addr,
-            "cross-mob control listener starting without a caller grant table: every peer that \
-             can reach this endpoint may wire, unwire, inject, and look up any member; install \
-             grants via start_control_listener_with_authorizer"
-        );
+        tracing::warn!(%addr, "cross-mob control listener has no caller grants; refusing every request");
         self.start_control_listener_with_authorizer(
             addr,
-            std::sync::Arc::new(crate::runtime::cross_mob_control::ControlAuthorizer::open()),
+            std::sync::Arc::new(
+                crate::runtime::cross_mob_control::ControlAuthorizer::with_grants_for_audience(
+                    crate::runtime::cross_mob_control::ControlGrantTable::new(),
+                    self.mob_id(),
+                ),
+            ),
         )
         .await
     }
