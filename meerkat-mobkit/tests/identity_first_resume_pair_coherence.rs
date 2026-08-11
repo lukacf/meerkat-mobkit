@@ -257,6 +257,79 @@ async fn boot(
     (unified, identity_rt)
 }
 
+/// Subscribe to a member's event stream by its ROSTER id.
+///
+/// `member_id_for_spawn_spec` (src/identity_first/bridge.rs) derives the roster
+/// id from the RUNTIME id for any spec without an external binding, so
+/// subscribing by durable identity fails `mob member not found`.
+///
+/// Subscribe BEFORE the delivery you intend to await. A stream opened after a
+/// turn has already finished can never observe its terminal.
+async fn subscribe_member_events(
+    unified: &meerkat_mobkit::UnifiedRuntime,
+    runtime_id: &AgentRuntimeId,
+) -> meerkat_core::comms::EventStream {
+    unified
+        .mob_handle()
+        .subscribe_agent_events(&meerkat_mobkit::member_comms_id::mob_member_id(
+            runtime_id.as_str(),
+        ))
+        .await
+        .unwrap_or_else(|err| {
+            panic!(
+                "subscribe to roster member for runtime id {}: {err}",
+                runtime_id.as_str()
+            )
+        })
+}
+
+/// Await the terminal run event for `session`, or fail typed / blow the fuse.
+///
+/// This replaces `sleep(500ms)`-before-shutdown. Those sleeps were waiting for
+/// the turn to COMMIT, and a timer cannot express that: it passes whether or not
+/// the work happened, so a turn that failed closed looked identical to one that
+/// succeeded. That is precisely how every turn in this file failed for a release
+/// without anyone noticing.
+async fn await_run_terminal(
+    events: &mut meerkat_core::comms::EventStream,
+    session: &meerkat_core::types::SessionId,
+    label: &str,
+    secs: u64,
+) {
+    use futures::StreamExt;
+    let mut observed: Vec<String> = Vec::new();
+    let fuse = tokio::time::sleep(Duration::from_secs(secs));
+    tokio::pin!(fuse);
+    loop {
+        tokio::select! {
+            _ = &mut fuse => panic!(
+                "deadlock fuse: no terminal run event for {label} within {secs}s; \
+                 observed instead: {observed:?}"
+            ),
+            item = events.next() => match item {
+                Some(envelope) => match envelope.payload {
+                    meerkat_core::AgentEvent::RunCompleted { ref session_id, .. }
+                        if session_id == session => return,
+                    meerkat_core::AgentEvent::RunFailed { ref session_id, ref error_report, .. }
+                        if session_id == session =>
+                    {
+                        panic!("{label} failed typed before completing: {error_report:?}");
+                    }
+                    ref other => {
+                        let rendered = format!("{other:?}");
+                        let keep = if rendered.starts_with("RunFailed") { 600 } else { 60 };
+                        observed.push(rendered.chars().take(keep).collect());
+                    }
+                },
+                None => panic!(
+                    "event stream ended before {label} reached a terminal run; \
+                     observed: {observed:?}"
+                ),
+            },
+        }
+    }
+}
+
 /// Deliver one turn and await THAT turn's own terminal interaction event.
 ///
 /// Counting captured requests cannot express "the turn under test finished".
@@ -406,6 +479,7 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
         )
         .await;
 
+        let mut seed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -417,10 +491,17 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
         match result.outcomes.get(&alice).expect("alice outcome") {
             RestoreOutcome::Created { record, .. } => {
                 original_session_id = record.session_id.clone();
+                seed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!("expected Created on first boot, got {other:?}"),
         }
 
+        // Subscribe BEFORE the send so the turn's terminal cannot be missed,
+        // then await it. The 500ms sleep this replaces was waiting for the turn
+        // to COMMIT, which a timer cannot express: it elapses whether the turn
+        // succeeded, failed closed, or never ran.
+        let seed_runtime_id = seed_runtime_id.expect("boot 1 must mint a runtime id");
+        let mut seed_events = subscribe_member_events(&unified, &seed_runtime_id).await;
         identity_rt
             .send(
                 &alice,
@@ -428,11 +509,7 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
             )
             .await
             .expect("send turn 1");
-        // Readiness by CONTENT: wait for turn 1's own request, identified by the
-        // token it carries, not by a count that any request would satisfy.
-        select_request_containing(&capture, 20, &[("TOKEN", TOKEN)]).await;
-        // Let turn 1's assistant response commit before the shutdown flush.
-        sleep(Duration::from_millis(500)).await;
+        await_run_terminal(&mut seed_events, &original_session_id, "turn 1", 30).await;
         unified.shutdown().await;
     }
 
@@ -448,6 +525,7 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
         )
         .await;
 
+        let mut resumed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -462,6 +540,7 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
                     record.session_id, original_session_id,
                     "the cross-provider model edit must resume the SAME durable session"
                 );
+                resumed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!(
                 "a model-only definition edit must RESUME with the catalog-derived pair \
@@ -469,6 +548,10 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
             ),
         }
 
+        // Subscribe BEFORE the send so this turn's terminal cannot be missed.
+        let resumed_runtime_id =
+            resumed_runtime_id.expect("the resumed boot must mint a runtime id");
+        let mut resumed_events = subscribe_member_events(&unified, &resumed_runtime_id).await;
         identity_rt
             .send(
                 &alice,
@@ -476,6 +559,7 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
             )
             .await
             .expect("send turn 2");
+        await_run_terminal(&mut resumed_events, &original_session_id, "turn 2", 30).await;
         let last_request = select_request_containing(
             &capture,
             30,
@@ -492,7 +576,6 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
         );
 
         // Let turn 2 persist the effective identity before reading it back.
-        sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
 
@@ -611,6 +694,7 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
             "pair-divergence-rt",
         )
         .await;
+        let mut seed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -622,9 +706,16 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
         match result.outcomes.get(&bob).expect("bob outcome") {
             RestoreOutcome::Created { record, .. } => {
                 original_session_id = record.session_id.clone();
+                seed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!("expected Created on first boot, got {other:?}"),
         }
+        // Subscribe BEFORE the send so the turn's terminal cannot be missed,
+        // then await it. The 500ms sleep this replaces was waiting for the turn
+        // to COMMIT, which a timer cannot express: it elapses whether the turn
+        // succeeded, failed closed, or never ran.
+        let seed_runtime_id = seed_runtime_id.expect("boot 1 must mint a runtime id");
+        let mut seed_events = subscribe_member_events(&unified, &seed_runtime_id).await;
         identity_rt
             .send(
                 &bob,
@@ -632,10 +723,7 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
             )
             .await
             .expect("send turn 1");
-        // Readiness by CONTENT: wait for turn 1's own request, identified by the
-        // token it carries, not by a count that any request would satisfy.
-        select_request_containing(&capture, 20, &[("TOKEN", TOKEN)]).await;
-        sleep(Duration::from_millis(500)).await;
+        await_run_terminal(&mut seed_events, &original_session_id, "turn 1", 30).await;
         unified.shutdown().await;
     }
 
@@ -683,6 +771,7 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
             "pair-divergence-rt",
         )
         .await;
+        let mut resumed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -697,6 +786,7 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
                     record.session_id, original_session_id,
                     "the refused boot must not have touched the durable session binding"
                 );
+                resumed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!(
                 "after a refused boot, a resolvable definition must resume the preserved \
@@ -704,6 +794,10 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
             ),
         }
 
+        // Subscribe BEFORE the send so this turn's terminal cannot be missed.
+        let resumed_runtime_id =
+            resumed_runtime_id.expect("the resumed boot must mint a runtime id");
+        let mut resumed_events = subscribe_member_events(&unified, &resumed_runtime_id).await;
         identity_rt
             .send(
                 &bob,
@@ -711,6 +805,13 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
             )
             .await
             .expect("send post-refusal turn");
+        await_run_terminal(
+            &mut resumed_events,
+            &original_session_id,
+            "the post-refusal turn",
+            30,
+        )
+        .await;
         let last_request = select_request_containing(&capture, 30, &[("TOKEN", TOKEN)]).await;
         assert!(
             last_request.contains("\"model\":\"gpt-5.5\""),
@@ -721,7 +822,6 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
             "the resumed turn must replay the preserved transcript (token {TOKEN})"
         );
 
-        sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
 
@@ -842,6 +942,7 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
             "prompt-edit-rt",
         )
         .await;
+        let mut seed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -853,9 +954,16 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
         match result.outcomes.get(&alice).expect("alice outcome") {
             RestoreOutcome::Created { record, .. } => {
                 original_session_id = record.session_id.clone();
+                seed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!("expected Created on first boot, got {other:?}"),
         }
+        // Subscribe BEFORE the send so the turn's terminal cannot be missed,
+        // then await it. The 500ms sleep this replaces was waiting for the turn
+        // to COMMIT, which a timer cannot express: it elapses whether the turn
+        // succeeded, failed closed, or never ran.
+        let seed_runtime_id = seed_runtime_id.expect("boot 1 must mint a runtime id");
+        let mut seed_events = subscribe_member_events(&unified, &seed_runtime_id).await;
         identity_rt
             .send(
                 &alice,
@@ -863,10 +971,7 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
             )
             .await
             .expect("send turn 1");
-        // Readiness by CONTENT: wait for turn 1's own request, identified by the
-        // token it carries, not by a count that any request would satisfy.
-        select_request_containing(&capture, 20, &[("TOKEN", TOKEN)]).await;
-        sleep(Duration::from_millis(500)).await;
+        await_run_terminal(&mut seed_events, &original_session_id, "turn 1", 30).await;
         unified.shutdown().await;
     }
 
@@ -888,6 +993,7 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
             "prompt-edit-rt",
         )
         .await;
+        let mut resumed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -902,9 +1008,14 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
                     record.session_id, original_session_id,
                     "an edited definition must still resume the SAME durable session"
                 );
+                resumed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!("an edited definition must resume, got {other:?}"),
         }
+        // Subscribe BEFORE the send so this turn's terminal cannot be missed.
+        let resumed_runtime_id =
+            resumed_runtime_id.expect("the resumed boot must mint a runtime id");
+        let mut resumed_events = subscribe_member_events(&unified, &resumed_runtime_id).await;
         identity_rt
             .send(
                 &alice,
@@ -912,6 +1023,13 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
             )
             .await
             .expect("send post-edit turn");
+        await_run_terminal(
+            &mut resumed_events,
+            &original_session_id,
+            "the post-edit turn",
+            30,
+        )
+        .await;
         let last_request = select_request_containing(&capture, 30, &[("TOKEN", TOKEN)]).await;
         assert!(
             last_request.contains(ROLE_BASE),
@@ -926,7 +1044,6 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
             last_request.contains(TOKEN),
             "the resumed turn must replay the persisted transcript (token {TOKEN})"
         );
-        sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
 
@@ -965,13 +1082,12 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
         )
         .await
         .expect("restore_flow (neutral boot 3)");
-        assert!(
-            matches!(
-                result.outcomes.get(&alice).expect("alice outcome"),
-                RestoreOutcome::Resumed { .. }
-            ),
-            "a neutral boot must resume"
-        );
+        let neutral_runtime_id = match result.outcomes.get(&alice).expect("alice outcome") {
+            RestoreOutcome::Resumed { record, .. } => record.agent_runtime_id.clone(),
+            other => panic!("a neutral boot must resume, got {other:?}"),
+        };
+        // Subscribe BEFORE the send so this turn's terminal cannot be missed.
+        let mut neutral_events = subscribe_member_events(&unified, &neutral_runtime_id).await;
         identity_rt
             .send(
                 &alice,
@@ -979,8 +1095,14 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
             )
             .await
             .expect("send neutral-boot turn");
+        await_run_terminal(
+            &mut neutral_events,
+            &original_session_id,
+            "the neutral-boot turn",
+            30,
+        )
+        .await;
         select_request_containing(&capture, 30, &[("neutral ping", "neutral ping")]).await;
-        sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
     let (systems_final, rewrites_final) =
@@ -1110,6 +1232,7 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             "authored-system-rt",
         )
         .await;
+        let mut seed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -1121,9 +1244,16 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
         match result.outcomes.get(&carol).expect("carol outcome") {
             RestoreOutcome::Created { record, .. } => {
                 original_session_id = record.session_id.clone();
+                seed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!("expected Created on first boot, got {other:?}"),
         }
+        // Subscribe BEFORE the send so the turn's terminal cannot be missed,
+        // then await it. The 500ms sleep this replaces was waiting for the turn
+        // to COMMIT, which a timer cannot express: it elapses whether the turn
+        // succeeded, failed closed, or never ran.
+        let seed_runtime_id = seed_runtime_id.expect("boot 1 must mint a runtime id");
+        let mut seed_events = subscribe_member_events(&unified, &seed_runtime_id).await;
         identity_rt
             .send(
                 &carol,
@@ -1131,10 +1261,7 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             )
             .await
             .expect("send turn 1");
-        // Readiness by CONTENT: wait for turn 1's own request, identified by the
-        // token it carries, not by a count that any request would satisfy.
-        select_request_containing(&capture, 20, &[("TOKEN", TOKEN)]).await;
-        sleep(Duration::from_millis(500)).await;
+        await_run_terminal(&mut seed_events, &original_session_id, "turn 1", 30).await;
         unified.shutdown().await;
     }
 
@@ -1163,6 +1290,7 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             "authored-system-rt",
         )
         .await;
+        let mut resumed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -1223,7 +1351,8 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             "the authored turn must replay the persisted transcript (token {TOKEN}): \
              {authored_request}"
         );
-        sleep(Duration::from_millis(500)).await;
+        // No commit sleep: deliver_awaiting_interaction already awaited this
+        // turn's terminal run event, so the turn is committed by construction.
         unified.shutdown().await;
     }
 
@@ -1283,6 +1412,7 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             "authored-system-rt",
         )
         .await;
+        let mut resumed_runtime_id: Option<AgentRuntimeId> = None;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -1297,9 +1427,14 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
                     record.session_id, original_session_id,
                     "boot 3 must resume the SAME durable session"
                 );
+                resumed_runtime_id = Some(record.agent_runtime_id.clone());
             }
             other => panic!("expected Resumed on boot 3, got {other:?}"),
         }
+        // Subscribe BEFORE the send so this turn's terminal cannot be missed.
+        let resumed_runtime_id =
+            resumed_runtime_id.expect("the resumed boot must mint a runtime id");
+        let mut resumed_events = subscribe_member_events(&unified, &resumed_runtime_id).await;
         identity_rt
             .send(
                 &carol,
@@ -1307,6 +1442,13 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             )
             .await
             .expect("send the neutral turn");
+        await_run_terminal(
+            &mut resumed_events,
+            &original_session_id,
+            "the neutral turn",
+            30,
+        )
+        .await;
         let last_request = select_request_containing(
             &capture,
             30,
@@ -1322,7 +1464,6 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             last_request.contains(TOKEN),
             "the resumed turn must replay the persisted transcript (token {TOKEN})"
         );
-        sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
 
