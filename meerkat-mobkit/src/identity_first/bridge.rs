@@ -203,12 +203,26 @@ pub enum BridgeError {
         /// Total time this delivery attempt spent waiting on the actor.
         waited: Duration,
     },
+    /// This bridge does not implement completion-bearing delivery.
+    ///
+    /// The completion-bearing methods default to this so that every existing
+    /// [`SessionBridge`] implementor keeps compiling unchanged; only the
+    /// concrete mob bridge, which can reach meerkat's `WorkTurnHandle`,
+    /// overrides them. A caller that receives this should fall back to the
+    /// ingress-only `deliver_*` methods, not treat the delivery as failed -
+    /// nothing was submitted.
+    CompletionUnsupported(String),
 }
 
 impl std::fmt::Display for BridgeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Mob(msg) => write!(f, "session bridge mob error: {msg}"),
+            Self::CompletionUnsupported(msg) => write!(
+                f,
+                "session bridge does not support completion-bearing delivery: {msg}; \
+                 nothing was submitted"
+            ),
             Self::InvalidInput(msg) => write!(f, "session bridge invalid input: {msg}"),
             Self::ResumeRejected { kind, detail } => write!(
                 f,
@@ -879,6 +893,37 @@ pub trait SessionBridge: Send + Sync {
         delivery.injected_context = injected_context.to_vec();
         delivery.interaction_id = interaction_id.map(ToString::to_string);
         self.deliver_admitted(runtime_id, delivery).await
+    }
+
+    /// [`Self::deliver_with_mode_context_and_system_prompt`], but returning
+    /// only after the runtime has COMMITTED this turn's terminal boundary.
+    ///
+    /// The ingress-only `deliver_*` methods above are unchanged and remain the
+    /// normal path: they return as soon as the work is admitted, which is what
+    /// production callers want. This sibling exists for callers that need proof
+    /// the turn actually finished - principally tests, which otherwise infer
+    /// completion from a timer or from a session-wide event stream. Both
+    /// inferences are unsound: a timer elapses whether or not the turn ran, and
+    /// a session-wide stream cannot attribute a terminal to one specific
+    /// delivery.
+    ///
+    /// Defaults to [`BridgeError::CompletionUnsupported`] so that every
+    /// existing implementor compiles unchanged. The concrete mob bridge
+    /// overrides it using meerkat's `MobHandle::start_work_with_mode*` and
+    /// `WorkTurnHandle::wait`, which carry an exact per-work-item completion
+    /// signal.
+    async fn deliver_awaiting_commit_with_mode_context_and_system_prompt(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+        _content: &meerkat_core::ContentInput,
+        _system_prompt: Option<&str>,
+        _injected_context: &[meerkat_core::ContentInput],
+        _handling_mode: HandlingMode,
+        _interaction_id: Option<&str>,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        Err(BridgeError::CompletionUnsupported(
+            "this bridge implements ingress-only delivery".to_string(),
+        ))
     }
 
     /// Deliver content plus one ordinary System message authored for this
