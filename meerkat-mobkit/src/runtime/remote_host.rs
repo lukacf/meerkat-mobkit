@@ -76,6 +76,12 @@ use super::cross_mob_control::{
 };
 use super::cross_mob_remote::{RemoteEndpoint, RemoteMobError};
 
+/// Canonical controller-owned pairing file under a gateway's durable state
+/// root. The gateway signing key and these endpoint-identity pins must share
+/// one root so a restart cannot retain one identity while forgetting the
+/// other.
+pub const HOST_PAIRING_FILE_NAME: &str = "runtime-host-pairings.json";
+
 /// Engine name MobKit gateways report in [`HostFacts::engine`].
 pub const MOBKIT_HOST_ENGINE: &str = "meerkat-mobkit";
 
@@ -787,6 +793,11 @@ pub struct HostPairingRecord {
     /// Monotonic count of pair/rebind commits for this host key.
     #[serde(default)]
     pub pairing_generation: u64,
+    /// Control audience used when probing a grant-enforcing host. Persisted
+    /// because reconnect after process restart must reproduce the exact
+    /// authenticated request context that established the pairing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_audience: Option<String>,
     /// Last authenticated facts, cached so a controller can answer
     /// capability questions while the host is unreachable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -812,6 +823,13 @@ pub enum HostPairingError {
         endpoint: String,
         pinned_host_key_b64: String,
         presented_host_key_b64: String,
+    },
+    /// An authenticated observation for a known key arrived through a
+    /// different endpoint without an explicit re-pair operation.
+    EndpointChanged {
+        host_key_b64: String,
+        pinned_endpoint: String,
+        observed_endpoint: String,
     },
     /// No pairing exists for this host key.
     UnknownHost { host_key_b64: String },
@@ -840,6 +858,14 @@ impl std::fmt::Display for HostPairingError {
                 "endpoint {endpoint} is pinned to host key '{pinned_host_key_b64}' but \
                  '{presented_host_key_b64}' answered there; forget the pairing explicitly if \
                  the host was legitimately re-keyed"
+            ),
+            Self::EndpointChanged {
+                host_key_b64,
+                pinned_endpoint,
+                observed_endpoint,
+            } => write!(
+                f,
+                "runtime host '{host_key_b64}' is pinned to endpoint {pinned_endpoint} but an observation arrived through {observed_endpoint}; re-pair explicitly to move it"
             ),
             Self::UnknownHost { host_key_b64 } => {
                 write!(f, "no runtime host pairing for '{host_key_b64}'")
@@ -922,6 +948,7 @@ impl HostPairingStore {
                 reason: err.to_string(),
             })?;
         let mut hosts = BTreeMap::new();
+        let mut endpoints = BTreeMap::<String, String>::new();
         for (raw_key, record) in file.hosts {
             let key = canonical_host_key(&raw_key)?;
             // Two spellings of one key must not both survive: whichever
@@ -930,6 +957,16 @@ impl HostPairingStore {
             if hosts.contains_key(&key) {
                 return Err(HostPairingError::DuplicateHostKey { host_key_b64: key });
             }
+            if let Some(pinned_host_key_b64) = endpoints.get(&record.endpoint)
+                && pinned_host_key_b64 != &key
+            {
+                return Err(HostPairingError::EndpointIdentityChanged {
+                    endpoint: record.endpoint,
+                    pinned_host_key_b64: pinned_host_key_b64.clone(),
+                    presented_host_key_b64: key,
+                });
+            }
+            endpoints.insert(record.endpoint.clone(), key.clone());
             hosts.insert(key, record);
         }
         Ok(Self { path, hosts })
@@ -969,6 +1006,16 @@ impl HostPairingStore {
         verified: &VerifiedHostFacts,
         now_unix_secs: u64,
     ) -> Result<&HostPairingRecord, HostPairingError> {
+        self.pair_with_audience(verified, None, now_unix_secs)
+    }
+
+    /// Commit a pairing and its authenticated control audience.
+    pub fn pair_with_audience(
+        &mut self,
+        verified: &VerifiedHostFacts,
+        control_audience: Option<String>,
+        now_unix_secs: u64,
+    ) -> Result<&HostPairingRecord, HostPairingError> {
         let key = canonical_host_key(verified.host_key_b64())?;
         let endpoint = verified.dialed_endpoint().to_string();
         let conflict = self
@@ -988,6 +1035,7 @@ impl HostPairingStore {
             host_label: String::new(),
             paired_at_unix_secs: now_unix_secs,
             pairing_generation: 0,
+            control_audience: None,
             last_facts: None,
             last_health_status: None,
             last_seen_unix_secs: None,
@@ -995,9 +1043,38 @@ impl HostPairingStore {
         record.endpoint = endpoint;
         record.host_label = verified.facts().host_label.clone();
         record.pairing_generation = record.pairing_generation.saturating_add(1);
+        record.control_audience = control_audience;
         record.last_facts = Some(verified.facts().clone());
         record.last_seen_unix_secs = Some(now_unix_secs);
         Ok(record)
+    }
+
+    /// Refresh authenticated facts and health for an existing pairing.
+    ///
+    /// This never changes endpoint, identity, audience, or pairing generation.
+    /// Reconnect is an observation accelerator, not authority to re-pair.
+    pub fn record_authenticated_observation(
+        &mut self,
+        verified: &VerifiedHostFacts,
+        health: &RuntimeHostHealth,
+        now_unix_secs: u64,
+    ) -> Result<(), HostPairingError> {
+        let key = canonical_host_key(verified.host_key_b64())?;
+        let Some(record) = self.hosts.get_mut(&key) else {
+            return Err(HostPairingError::UnknownHost { host_key_b64: key });
+        };
+        if record.endpoint != verified.dialed_endpoint() {
+            return Err(HostPairingError::EndpointChanged {
+                host_key_b64: key,
+                pinned_endpoint: record.endpoint.clone(),
+                observed_endpoint: verified.dialed_endpoint().to_string(),
+            });
+        }
+        record.host_label = verified.facts().host_label.clone();
+        record.last_facts = Some(verified.facts().clone());
+        record.last_health_status = Some(health.status);
+        record.last_seen_unix_secs = Some(now_unix_secs);
+        Ok(())
     }
 
     /// Record an authenticated health observation against an existing
@@ -1038,14 +1115,10 @@ impl HostPairingStore {
     /// therefore be a permanent startup refusal rather than a recoverable
     /// state.
     ///
-    /// Still NOT covered: the parent directory entry is not flushed, so a
-    /// crash immediately after `rename` may lose the rename itself on
-    /// some filesystems. Read that gap exactly - it leaves whatever was
-    /// on disk before, which is a STALE pin when one existed and NO pin
-    /// at all when this was the first pairing. The first-pairing case is
-    /// a real lost pin, so a caller that must not lose one has to
-    /// re-`describe` and re-`pair` rather than assume `save` returning
-    /// `Ok` survived a power cut.
+    /// On Unix the parent directory is flushed after rename as well, so a
+    /// successful first pairing cannot be acknowledged before the new
+    /// directory entry is durable. Other targets retain atomic replacement
+    /// and file-data flush but have no portable directory-sync primitive.
     pub fn save(&self) -> Result<(), HostPairingError> {
         if let Some(parent) = self.path.parent()
             && !parent.as_os_str().is_empty()
@@ -1066,8 +1139,30 @@ impl HostPairingStore {
         std::fs::rename(&tmp, &self.path).map_err(|err| HostPairingError::Io {
             path: self.path.display().to_string(),
             reason: err.to_string(),
-        })
+        })?;
+        sync_parent_dir(&self.path)
     }
+}
+
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path) -> Result<(), HostPairingError> {
+    let parent = path.parent().filter(|path| !path.as_os_str().is_empty());
+    let Some(parent) = parent else {
+        return Ok(());
+    };
+    let directory = std::fs::File::open(parent).map_err(|err| HostPairingError::Io {
+        path: parent.display().to_string(),
+        reason: err.to_string(),
+    })?;
+    directory.sync_all().map_err(|err| HostPairingError::Io {
+        path: parent.display().to_string(),
+        reason: err.to_string(),
+    })
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_path: &Path) -> Result<(), HostPairingError> {
+    Ok(())
 }
 
 /// Write `bytes` to `path` and flush them to the device before returning.
@@ -1080,7 +1175,20 @@ fn write_and_flush(path: &Path, bytes: &[u8]) -> Result<(), HostPairingError> {
         path: path.display().to_string(),
         reason: err.to_string(),
     };
-    let mut file = std::fs::File::create(path).map_err(|err| io_error(&err))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(|err| io_error(&err))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|err| io_error(&err))?;
+    }
     file.write_all(bytes).map_err(|err| io_error(&err))?;
     file.sync_all().map_err(|err| io_error(&err))
 }
@@ -1300,12 +1408,394 @@ pub fn unix_now_secs() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
+// ---------------------------------------------------------------------
+// Production lifecycle controller
+// ---------------------------------------------------------------------
+
+/// Typed lifecycle failure. Placement refusals are deliberately errors, not
+/// `None`: once a caller selected a remote host, no layer may reinterpret an
+/// unavailable host as permission to materialize locally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteHostLifecycleError {
+    Pairing(HostPairingError),
+    Remote(RemoteHostError),
+    UnknownContact { contact: String },
+    InProcessContact { contact: String },
+    MissingPinnedIdentity { contact: String },
+    UnknownHost { host_key_b64: String },
+    NotAuthenticatedThisBoot { host_key_b64: String },
+    Unreachable { host_key_b64: String },
+    Unhealthy { host_key_b64: String },
+    PlacementCapabilityMissing { host_key_b64: String },
+}
+
+impl std::fmt::Display for RemoteHostLifecycleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pairing(error) => write!(f, "runtime-host pairing: {error}"),
+            Self::Remote(error) => write!(f, "runtime-host probe: {error}"),
+            Self::UnknownContact { contact } => {
+                write!(f, "no remote contact named '{contact}' is configured")
+            }
+            Self::InProcessContact { contact } => write!(
+                f,
+                "contact '{contact}' is in-process and cannot be paired as remote placement infrastructure"
+            ),
+            Self::MissingPinnedIdentity { contact } => write!(
+                f,
+                "contact '{contact}' has no pinned Ed25519 identity; refusing remote-host pairing"
+            ),
+            Self::UnknownHost { host_key_b64 } => {
+                write!(f, "runtime host '{host_key_b64}' is not durably paired")
+            }
+            Self::NotAuthenticatedThisBoot { host_key_b64 } => write!(
+                f,
+                "runtime host '{host_key_b64}' has not authenticated an endpoint response since this controller started"
+            ),
+            Self::Unreachable { host_key_b64 } => {
+                write!(f, "runtime host '{host_key_b64}' is unreachable")
+            }
+            Self::Unhealthy { host_key_b64 } => {
+                write!(f, "runtime host '{host_key_b64}' reports unhealthy")
+            }
+            Self::PlacementCapabilityMissing { host_key_b64 } => write!(
+                f,
+                "runtime host '{host_key_b64}' does not advertise multi-host placement"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RemoteHostLifecycleError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Pairing(error) => Some(error),
+            Self::Remote(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<HostPairingError> for RemoteHostLifecycleError {
+    fn from(value: HostPairingError) -> Self {
+        Self::Pairing(value)
+    }
+}
+
+impl From<RemoteHostError> for RemoteHostLifecycleError {
+    fn from(value: RemoteHostError) -> Self {
+        Self::Remote(value)
+    }
+}
+
+/// Exact placement carrier derived from a durably paired, freshly
+/// authenticated host key. It is a projection only: Meerkat's host binding
+/// authority still decides whether this host is bound and may materialize a
+/// member.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeHostPlacement {
+    pub host: meerkat_contracts::WireHostRef,
+    pub host_key_b64: String,
+    pub pairing_generation: u64,
+}
+
+/// Result of one due reconnect probe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeHostProbeOutcome {
+    pub host_key_b64: String,
+    pub result: Result<RuntimeHostHealthStatus, RemoteHostLifecycleError>,
+}
+
+/// Runtime-owned controller for durable host identity pins and transient
+/// reachability acceleration.
+///
+/// The pairing store is authority for endpoint identity only. Reachability is
+/// intentionally reset to `Unknown` on every construction and must be rebuilt
+/// from authenticated responses before [`Self::placement`] succeeds.
+pub struct RemoteHostLifecycle {
+    store: tokio::sync::Mutex<HostPairingStore>,
+    reconnect: tokio::sync::Mutex<BTreeMap<String, HostReconnectState>>,
+    policy: HostReconnectPolicy,
+}
+
+impl RemoteHostLifecycle {
+    pub fn load(
+        path: impl Into<PathBuf>,
+        policy: HostReconnectPolicy,
+    ) -> Result<Self, HostPairingError> {
+        let store = HostPairingStore::load(path)?;
+        let reconnect = store
+            .hosts()
+            .map(|(key, _)| (key.to_string(), HostReconnectState::new(policy)))
+            .collect();
+        Ok(Self {
+            store: tokio::sync::Mutex::new(store),
+            reconnect: tokio::sync::Mutex::new(reconnect),
+            policy,
+        })
+    }
+
+    pub async fn contains(&self, host_key_b64: &str) -> Result<bool, HostPairingError> {
+        let canonical = canonical_host_key(host_key_b64)?;
+        Ok(self.store.lock().await.get(&canonical)?.is_some())
+    }
+
+    pub async fn pair_contact(
+        &self,
+        contact: &crate::contact_directory::ContactEntry,
+        caller_keys: Option<std::sync::Arc<crate::auth::peer_keys::GatewayPeerKeys>>,
+        now_unix_secs: u64,
+    ) -> Result<RuntimeHostPlacement, RemoteHostLifecycleError> {
+        let host_key =
+            contact
+                .pubkey
+                .ok_or_else(|| RemoteHostLifecycleError::MissingPinnedIdentity {
+                    contact: contact.mob_id.clone(),
+                })?;
+        let endpoint = match &contact.transport {
+            crate::contact_directory::MobTransport::Tcp(address) => {
+                RemoteEndpoint::Tcp(address.clone())
+            }
+            crate::contact_directory::MobTransport::Uds(path) => RemoteEndpoint::Uds(path.clone()),
+            crate::contact_directory::MobTransport::Inproc => {
+                return Err(RemoteHostLifecycleError::InProcessContact {
+                    contact: contact.mob_id.clone(),
+                });
+            }
+        };
+        let mut client =
+            RemoteHostClient::new(endpoint, host_key).with_audience(contact.mob_id.clone());
+        if let Some(keys) = caller_keys {
+            client = client.with_caller_keys(keys);
+        }
+        let verified = client.describe().await?;
+        let health = client.health().await?;
+
+        // Clone-mutate-save-swap: a failed durable write cannot leave the
+        // process believing it owns a pairing that restart would forget.
+        let mut store = self.store.lock().await;
+        let mut replacement = store.clone();
+        replacement.pair_with_audience(&verified, Some(contact.mob_id.clone()), now_unix_secs)?;
+        replacement.record_health(verified.host_key_b64(), &health, now_unix_secs)?;
+        replacement.save()?;
+        *store = replacement;
+        drop(store);
+
+        self.reconnect
+            .lock()
+            .await
+            .entry(verified.host_key_b64().to_string())
+            .or_insert_with(|| HostReconnectState::new(self.policy))
+            .observe_reachable(health.status, now_unix_secs);
+        self.placement(verified.host_key_b64()).await
+    }
+
+    pub async fn refresh(
+        &self,
+        host_key_b64: &str,
+        caller_keys: Option<std::sync::Arc<crate::auth::peer_keys::GatewayPeerKeys>>,
+        now_unix_secs: u64,
+    ) -> Result<RuntimeHostHealthStatus, RemoteHostLifecycleError> {
+        let canonical = canonical_host_key(host_key_b64)?;
+        let record = self
+            .store
+            .lock()
+            .await
+            .get(&canonical)?
+            .cloned()
+            .ok_or_else(|| RemoteHostLifecycleError::UnknownHost {
+                host_key_b64: canonical.clone(),
+            })?;
+        let endpoint = endpoint_from_address(&record.endpoint).map_err(|message| {
+            RemoteHostLifecycleError::Remote(RemoteHostError::Decode {
+                endpoint: record.endpoint.clone(),
+                message,
+            })
+        })?;
+        let mut client = RemoteHostClient::from_pubkey_b64(endpoint, &canonical)?;
+        if let Some(audience) = record.control_audience.as_ref() {
+            client = client.with_audience(audience.clone());
+        }
+        if let Some(keys) = caller_keys {
+            client = client.with_caller_keys(keys);
+        }
+        let observation = async {
+            let verified = client.describe().await?;
+            let health = client.health().await?;
+            Ok::<_, RemoteHostError>((verified, health))
+        }
+        .await;
+        match observation {
+            Ok((verified, health)) => {
+                let mut store = self.store.lock().await;
+                let mut replacement = store.clone();
+                replacement.record_authenticated_observation(&verified, &health, now_unix_secs)?;
+                replacement.save()?;
+                *store = replacement;
+                drop(store);
+                self.reconnect
+                    .lock()
+                    .await
+                    .entry(canonical)
+                    .or_insert_with(|| HostReconnectState::new(self.policy))
+                    .observe_reachable(health.status, now_unix_secs);
+                Ok(health.status)
+            }
+            Err(error) => {
+                self.reconnect
+                    .lock()
+                    .await
+                    .entry(canonical)
+                    .or_insert_with(|| HostReconnectState::new(self.policy))
+                    .observe_unreachable(now_unix_secs);
+                Err(error.into())
+            }
+        }
+    }
+
+    pub async fn probe_due(
+        &self,
+        caller_keys: Option<std::sync::Arc<crate::auth::peer_keys::GatewayPeerKeys>>,
+        now_unix_secs: u64,
+    ) -> Vec<RuntimeHostProbeOutcome> {
+        let due: Vec<String> = self
+            .reconnect
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, state)| state.probe_due(now_unix_secs))
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut outcomes = Vec::with_capacity(due.len());
+        for host_key_b64 in due {
+            let result = self
+                .refresh(&host_key_b64, caller_keys.clone(), now_unix_secs)
+                .await;
+            outcomes.push(RuntimeHostProbeOutcome {
+                host_key_b64,
+                result,
+            });
+        }
+        outcomes
+    }
+
+    pub async fn placement(
+        &self,
+        host_key_b64: &str,
+    ) -> Result<RuntimeHostPlacement, RemoteHostLifecycleError> {
+        let canonical = canonical_host_key(host_key_b64)?;
+        let record = self
+            .store
+            .lock()
+            .await
+            .get(&canonical)?
+            .cloned()
+            .ok_or_else(|| RemoteHostLifecycleError::UnknownHost {
+                host_key_b64: canonical.clone(),
+            })?;
+        let reachability = self
+            .reconnect
+            .lock()
+            .await
+            .get(&canonical)
+            .map(|state| state.reachability().clone())
+            .unwrap_or(HostReachability::Unknown);
+        match reachability {
+            HostReachability::Unknown => {
+                return Err(RemoteHostLifecycleError::NotAuthenticatedThisBoot {
+                    host_key_b64: canonical,
+                });
+            }
+            HostReachability::Unreachable { .. } => {
+                return Err(RemoteHostLifecycleError::Unreachable {
+                    host_key_b64: canonical,
+                });
+            }
+            HostReachability::Reachable {
+                status: RuntimeHostHealthStatus::Unhealthy,
+                ..
+            } => {
+                return Err(RemoteHostLifecycleError::Unhealthy {
+                    host_key_b64: canonical,
+                });
+            }
+            HostReachability::Reachable { .. } => {}
+        }
+        let facts = record.last_facts.as_ref().ok_or_else(|| {
+            RemoteHostLifecycleError::NotAuthenticatedThisBoot {
+                host_key_b64: canonical.clone(),
+            }
+        })?;
+        if !facts.capabilities.features.multi_host_mobs {
+            return Err(RemoteHostLifecycleError::PlacementCapabilityMissing {
+                host_key_b64: canonical,
+            });
+        }
+        let key = crate::auth::peer_keys::decode_pubkey_b64(&canonical).map_err(|error| {
+            HostPairingError::InvalidHostKey {
+                reason: error.to_string(),
+            }
+        })?;
+        let host = meerkat_comms::PubKey::new(key).to_peer_id().to_string();
+        Ok(RuntimeHostPlacement {
+            host: meerkat_contracts::WireHostRef(host),
+            host_key_b64: canonical,
+            pairing_generation: record.pairing_generation,
+        })
+    }
+}
+
+fn endpoint_from_address(address: &str) -> Result<RemoteEndpoint, String> {
+    if let Some(value) = address.strip_prefix("tcp://") {
+        return Ok(RemoteEndpoint::Tcp(value.to_string()));
+    }
+    if let Some(value) = address.strip_prefix("uds://") {
+        return Ok(RemoteEndpoint::Uds(value.to_string()));
+    }
+    Err(format!(
+        "paired runtime-host endpoint '{address}' has no supported tcp:// or uds:// scheme"
+    ))
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::auth::peer_keys::GatewayPeerKeys;
+    use crate::runtime::cross_mob_control::{
+        BoundControlListener, ControlHandler, ControlListenAddr,
+    };
     use meerkat_contracts::ContractVersion;
+
+    struct HostOnlyHandler {
+        facts: HostFacts,
+        health: RuntimeHostHealth,
+    }
+
+    impl ControlHandler for HostOnlyHandler {
+        fn handle(
+            &self,
+            request: ControlRequest,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ControlResponse> + Send + '_>>
+        {
+            Box::pin(async move {
+                match request {
+                    ControlRequest::HostDescribe { .. } => ControlResponse::Host {
+                        facts: self.facts.clone(),
+                        sig_b64: None,
+                    },
+                    ControlRequest::HostHealth { .. } => ControlResponse::HostHealth {
+                        health: self.health.clone(),
+                        sig_b64: None,
+                    },
+                    _ => ControlResponse::Err {
+                        code: "host_only".to_string(),
+                        message: "test host serves only the read-only host plane".to_string(),
+                    },
+                }
+            })
+        }
+    }
 
     fn flags() -> RuntimeHostFeatureFlags {
         RuntimeHostFeatureFlags {
@@ -1544,6 +2034,93 @@ mod tests {
     }
 
     #[test]
+    fn pairing_restart_preserves_endpoint_identity_and_control_audience() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("hosts.json");
+        let host = GatewayPeerKeys::ephemeral();
+        let mut store = HostPairingStore::load(&path).expect("empty store");
+        store
+            .pair_with_audience(
+                &verified_for(&host, "tcp://10.0.0.7:7801"),
+                Some("worker-contact".to_string()),
+                41,
+            )
+            .expect("pair");
+        store.save().expect("save");
+
+        let reloaded = HostPairingStore::load(&path).expect("reload");
+        let record = reloaded
+            .get(&host.pubkey_b64())
+            .expect("valid key")
+            .expect("pairing survives restart");
+        assert_eq!(record.endpoint, "tcp://10.0.0.7:7801");
+        assert_eq!(record.control_audience.as_deref(), Some("worker-contact"));
+        assert_eq!(record.pairing_generation, 1);
+    }
+
+    #[test]
+    fn reconnect_observation_cannot_move_a_durable_endpoint() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let host = GatewayPeerKeys::ephemeral();
+        let mut store = HostPairingStore::load(dir.path().join("hosts.json")).expect("store");
+        store
+            .pair_with_audience(
+                &verified_for(&host, "tcp://10.0.0.7:7801"),
+                Some("worker-contact".to_string()),
+                41,
+            )
+            .expect("pair");
+        let before = store
+            .get(&host.pubkey_b64())
+            .expect("valid key")
+            .expect("record")
+            .clone();
+
+        let error = store
+            .record_authenticated_observation(
+                &verified_for(&host, "tcp://10.0.0.9:7801"),
+                &health(RuntimeHostHealthStatus::Ok),
+                99,
+            )
+            .expect_err("probe cannot re-pair");
+        assert!(matches!(error, HostPairingError::EndpointChanged { .. }));
+        assert_eq!(
+            store
+                .get(&host.pubkey_b64())
+                .expect("valid key")
+                .expect("record"),
+            &before,
+            "a refused probe must not partially mutate the pin"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pairing_file_is_replaced_with_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("hosts.json");
+        let tmp_path = dir.path().join("hosts.json.tmp");
+        std::fs::write(&tmp_path, "{}").expect("seed stale temp target");
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o644))
+            .expect("make positive-control stale temp permissive");
+        let host = GatewayPeerKeys::ephemeral();
+        let mut store = HostPairingStore::load(&path).expect("store");
+        store
+            .pair(&verified_for(&host, "tcp://10.0.0.7:7801"), 1)
+            .expect("pair");
+        store.save().expect("save");
+
+        let mode = std::fs::metadata(&path)
+            .expect("pairing metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "pairing file must be owner-only");
+    }
+
+    #[test]
     fn an_undecodable_pairing_file_is_refused_rather_than_forgotten() {
         let dir = std::env::temp_dir().join(format!("mobkit-pairing-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir");
@@ -1552,6 +2129,38 @@ mod tests {
         let err = HostPairingStore::load(&path).expect_err("corrupt store must not load empty");
         assert!(matches!(err, HostPairingError::Decode { .. }));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pairing_file_cannot_pin_two_identities_to_one_endpoint() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("hosts.json");
+        let host_a = GatewayPeerKeys::ephemeral();
+        let host_b = GatewayPeerKeys::ephemeral();
+        let mut first = HostPairingStore::load(dir.path().join("first.json")).expect("store");
+        let record_a = first
+            .pair(&verified_for(&host_a, "tcp://10.0.0.7:7801"), 1)
+            .expect("pair a")
+            .clone();
+        let mut second = HostPairingStore::load(dir.path().join("second.json")).expect("store");
+        let record_b = second
+            .pair(&verified_for(&host_b, "tcp://10.0.0.7:7801"), 1)
+            .expect("pair b in independent store")
+            .clone();
+        let hosts = BTreeMap::from([
+            (host_a.pubkey_b64(), record_a),
+            (host_b.pubkey_b64(), record_b),
+        ]);
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&HostPairingFileRef { hosts: &hosts }).expect("encode fixture"),
+        )
+        .expect("write fixture");
+
+        assert!(matches!(
+            HostPairingStore::load(&path),
+            Err(HostPairingError::EndpointIdentityChanged { .. })
+        ));
     }
 
     #[test]
@@ -1673,5 +2282,186 @@ mod tests {
     fn a_freshly_loaded_pairing_is_not_reachable() {
         let state = HostReconnectState::new(HostReconnectPolicy::default());
         assert_eq!(state.reachability(), &HostReachability::Unknown);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_restart_requires_fresh_authenticated_reconnect_before_placement() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("hosts.json");
+        let host = GatewayPeerKeys::ephemeral();
+        let mut verified = verified_for(&host, "tcp://10.0.0.7:7801");
+        verified.facts.capabilities.features.multi_host_mobs = true;
+        let mut store = HostPairingStore::load(&path).expect("store");
+        store
+            .pair_with_audience(&verified, Some("worker-contact".to_string()), 1)
+            .expect("pair");
+        store
+            .record_health(&host.pubkey_b64(), &health(RuntimeHostHealthStatus::Ok), 2)
+            .expect("health");
+        store.save().expect("save");
+
+        let lifecycle =
+            RemoteHostLifecycle::load(&path, HostReconnectPolicy::default()).expect("restart load");
+        let error = lifecycle
+            .placement(&host.pubkey_b64())
+            .await
+            .expect_err("durable cached health is not live authentication");
+        assert!(matches!(
+            error,
+            RemoteHostLifecycleError::NotAuthenticatedThisBoot { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_pairs_an_authenticated_endpoint_and_persists_it() {
+        let host = GatewayPeerKeys::ephemeral();
+        let mut facts = facts_for(&host);
+        facts.capabilities.features.multi_host_mobs = true;
+        let listener = BoundControlListener::bind(
+            &ControlListenAddr::parse("tcp://127.0.0.1:0").expect("listen address"),
+        )
+        .await
+        .expect("bind host");
+        let advertised = listener.advertised_address().to_string();
+        let dial = advertised
+            .strip_prefix("tcp://")
+            .expect("tcp address")
+            .to_string();
+        let signer = std::sync::Arc::new(std::sync::RwLock::new(Some(std::sync::Arc::new(
+            host.clone(),
+        ))));
+        let handler: std::sync::Arc<dyn ControlHandler> = std::sync::Arc::new(HostOnlyHandler {
+            facts,
+            health: health(RuntimeHostHealthStatus::Ok),
+        });
+        let server = tokio::spawn(listener.serve(handler, signer));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("hosts.json");
+        let lifecycle =
+            RemoteHostLifecycle::load(&path, HostReconnectPolicy::default()).expect("lifecycle");
+        let contact = crate::contact_directory::ContactEntry {
+            mob_id: "worker-contact".to_string(),
+            transport: crate::contact_directory::MobTransport::Tcp(dial),
+            pubkey: Some(host.pubkey_bytes()),
+            require_signed_control: None,
+        };
+        let placement = lifecycle
+            .pair_contact(&contact, None, 17)
+            .await
+            .expect("signed describe and health pair the endpoint");
+        assert_eq!(
+            placement.host.0,
+            meerkat_comms::PubKey::new(host.pubkey_bytes())
+                .to_peer_id()
+                .to_string()
+        );
+
+        let reloaded = HostPairingStore::load(&path).expect("durable reload");
+        let record = reloaded
+            .get(&host.pubkey_b64())
+            .expect("valid key")
+            .expect("pairing committed");
+        assert_eq!(record.endpoint, advertised);
+        assert_eq!(record.control_audience.as_deref(), Some("worker-contact"));
+        assert_eq!(record.last_health_status, Some(RuntimeHostHealthStatus::Ok));
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn lifecycle_placement_is_exact_and_fail_closed_by_health_and_capability() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("hosts.json");
+        let host = GatewayPeerKeys::ephemeral();
+        let mut verified = verified_for(&host, "tcp://10.0.0.7:7801");
+        verified.facts.capabilities.features.multi_host_mobs = true;
+        let mut store = HostPairingStore::load(&path).expect("store");
+        store.pair(&verified, 1).expect("pair");
+        store.save().expect("save");
+        let lifecycle =
+            RemoteHostLifecycle::load(&path, HostReconnectPolicy::default()).expect("lifecycle");
+        let canonical = host.pubkey_b64();
+
+        lifecycle
+            .reconnect
+            .lock()
+            .await
+            .get_mut(&canonical)
+            .expect("reconnect row")
+            .observe_reachable(RuntimeHostHealthStatus::Ok, 2);
+        let placement = lifecycle
+            .placement(&canonical)
+            .await
+            .expect("healthy capable host");
+        let expected = meerkat_comms::PubKey::new(host.pubkey_bytes())
+            .to_peer_id()
+            .to_string();
+        assert_eq!(placement.host.0, expected);
+        assert_eq!(placement.host_key_b64, canonical);
+        assert_eq!(placement.pairing_generation, 1);
+
+        lifecycle
+            .reconnect
+            .lock()
+            .await
+            .get_mut(&host.pubkey_b64())
+            .expect("reconnect row")
+            .observe_reachable(RuntimeHostHealthStatus::Unhealthy, 3);
+        assert!(matches!(
+            lifecycle.placement(&host.pubkey_b64()).await,
+            Err(RemoteHostLifecycleError::Unhealthy { .. })
+        ));
+
+        let mut store = lifecycle.store.lock().await;
+        store
+            .hosts
+            .get_mut(&host.pubkey_b64())
+            .expect("pairing row")
+            .last_facts
+            .as_mut()
+            .expect("cached authenticated facts")
+            .capabilities
+            .features
+            .multi_host_mobs = false;
+        drop(store);
+        lifecycle
+            .reconnect
+            .lock()
+            .await
+            .get_mut(&host.pubkey_b64())
+            .expect("reconnect row")
+            .observe_reachable(RuntimeHostHealthStatus::Ok, 4);
+        assert!(matches!(
+            lifecycle.placement(&host.pubkey_b64()).await,
+            Err(RemoteHostLifecycleError::PlacementCapabilityMissing { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_unreachable_is_a_typed_refusal_not_local_permission() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("hosts.json");
+        let host = GatewayPeerKeys::ephemeral();
+        let mut verified = verified_for(&host, "tcp://10.0.0.7:7801");
+        verified.facts.capabilities.features.multi_host_mobs = true;
+        let mut store = HostPairingStore::load(&path).expect("store");
+        store.pair(&verified, 1).expect("pair");
+        store.save().expect("save");
+        let lifecycle =
+            RemoteHostLifecycle::load(&path, HostReconnectPolicy::default()).expect("lifecycle");
+        lifecycle
+            .reconnect
+            .lock()
+            .await
+            .get_mut(&host.pubkey_b64())
+            .expect("reconnect row")
+            .observe_unreachable(2);
+
+        assert!(matches!(
+            lifecycle.placement(&host.pubkey_b64()).await,
+            Err(RemoteHostLifecycleError::Unreachable { .. })
+        ));
     }
 }

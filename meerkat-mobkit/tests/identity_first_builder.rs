@@ -1214,6 +1214,7 @@ fn durable_spec_with_profile(identity: &str, profile: &str) -> DurableAgentSpec 
         runtime_mode_override: Some(meerkat_mob::MobRuntimeMode::TurnDriven),
         backend: None,
         binding: None,
+        placement: None,
     }
 }
 

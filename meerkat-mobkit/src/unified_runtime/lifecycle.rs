@@ -171,6 +171,12 @@ impl UnifiedRuntime {
             task.abort();
             let _ = task.await;
         }
+        // Reconnect probes are observation accelerants only, but they own
+        // sockets and may be mid-authentication. Stop and join the sole task
+        // before closing the listener or quiescing member/session authority.
+        if let Some(task) = self.remote_host_reconnect_task.lock().await.take() {
+            abort_and_join_remote_host_reconnect(task).await;
+        }
         // Stop accepting cross-mob control RPC before the mob quiesces so a
         // late inbound wire/inject cannot race member teardown.
         if let Some(task) = self.cross_mob_control_task.lock().await.take() {
@@ -471,5 +477,41 @@ impl UnifiedRuntime {
         Some(match ingress {
             MobEventIngress::Forwarder(forwarder) => forwarder.event_rx.try_recv(),
         })
+    }
+}
+
+async fn abort_and_join_remote_host_reconnect(task: tokio::task::JoinHandle<()>) {
+    task.abort();
+    let _ = task.await;
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod remote_host_task_tests {
+    use super::abort_and_join_remote_host_reconnect;
+
+    struct DropNotify(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for DropNotify {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn reconnect_task_abort_is_joined_before_shutdown_continues() {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _notify = DropNotify(Some(sender));
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+
+        abort_and_join_remote_host_reconnect(task).await;
+        receiver
+            .await
+            .expect("joined task must drop all owned reconnect state");
     }
 }

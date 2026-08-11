@@ -63,6 +63,7 @@ fn spec(name: &str, addr: AgentAddressability, profile: &str) -> DurableAgentSpe
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     }
 }
 

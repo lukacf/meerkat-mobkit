@@ -463,8 +463,20 @@ pub type ControlSignerSlot = std::sync::Arc<
     std::sync::RwLock<Option<std::sync::Arc<crate::auth::peer_keys::GatewayPeerKeys>>>,
 >;
 
+/// Live read-only host-facts projection. Like [`ControlSignerSlot`], this is
+/// late-bound so a listener started before gateway identity installation can
+/// begin serving authenticated host discovery without being rebuilt.
+pub type HostFactsProviderSlot = std::sync::Arc<
+    std::sync::RwLock<Option<std::sync::Arc<dyn super::remote_host::HostFactsProvider>>>,
+>;
+
 /// A signer slot that never signs (tests, deployments without keys).
 pub fn unsigned_control_signer() -> ControlSignerSlot {
+    std::sync::Arc::new(std::sync::RwLock::new(None))
+}
+
+/// Empty late-bound host-facts slot.
+pub fn empty_host_facts_provider() -> HostFactsProviderSlot {
     std::sync::Arc::new(std::sync::RwLock::new(None))
 }
 
@@ -1697,12 +1709,12 @@ pub struct MobHandleControlHandler {
     /// transport addresses). `None` degrades LookupMember to roster facts
     /// only, which remote wire callers reject fail-closed.
     session_service: Option<std::sync::Arc<dyn meerkat_mob::MobSessionService>>,
-    /// Source of the read-only runtime-host projections. `None` - the
-    /// default for every existing construction path - answers
-    /// [`super::remote_host::HOST_PLANE_UNAVAILABLE_CODE`] to both host
-    /// verbs, so serving host facts is opt-in and no gateway starts
-    /// describing itself because it was upgraded.
-    host_facts: Option<std::sync::Arc<dyn super::remote_host::HostFactsProvider>>,
+    /// Live source of the read-only runtime-host projections. An empty slot
+    /// answers [`super::remote_host::HOST_PLANE_UNAVAILABLE_CODE`] to both host
+    /// verbs. UnifiedRuntime populates it only when a gateway signing identity
+    /// is present, so facts and endpoint identity are always served under an
+    /// authenticated host key while both bootstrap orders remain supported.
+    host_facts: HostFactsProviderSlot,
 }
 
 /// How the handler resolves the durable identity authority for generated
@@ -1741,7 +1753,7 @@ impl MobHandleControlHandler {
             handle,
             identity_authority: ControlIdentityAuthority::None,
             session_service: None,
-            host_facts: None,
+            host_facts: empty_host_facts_provider(),
         }
     }
 
@@ -1755,7 +1767,7 @@ impl MobHandleControlHandler {
             handle,
             identity_authority: ControlIdentityAuthority::Fixed(identity_runtime),
             session_service: None,
-            host_facts: None,
+            host_facts: empty_host_facts_provider(),
         }
     }
 
@@ -1772,7 +1784,7 @@ impl MobHandleControlHandler {
             handle,
             identity_authority: ControlIdentityAuthority::Shared(identity_slot),
             session_service: None,
-            host_facts: None,
+            host_facts: empty_host_facts_provider(),
         }
     }
 
@@ -1796,10 +1808,21 @@ impl MobHandleControlHandler {
     /// sends through these verbs reaches the mob at all.
     #[must_use]
     pub fn with_host_facts(
-        mut self,
+        self,
         provider: std::sync::Arc<dyn super::remote_host::HostFactsProvider>,
     ) -> Self {
-        self.host_facts = Some(provider);
+        *self
+            .host_facts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(provider);
+        self
+    }
+
+    /// Share a host-owned facts slot that may be populated after this handler
+    /// starts serving. Every host-plane request re-reads it.
+    #[must_use]
+    pub fn with_host_facts_slot(mut self, slot: HostFactsProviderSlot) -> Self {
+        self.host_facts = slot;
         self
     }
 }
@@ -1843,6 +1866,14 @@ fn host_health_response(
         },
         None => host_plane_unavailable(ControlVerb::HostHealth),
     }
+}
+
+fn current_host_facts(
+    slot: &HostFactsProviderSlot,
+) -> Option<std::sync::Arc<dyn super::remote_host::HostFactsProvider>> {
+    slot.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 impl ControlHandler for MobHandleControlHandler {
@@ -1934,11 +1965,17 @@ impl ControlHandler for MobHandleControlHandler {
                 ControlRequest::HostDescribe {
                     nonce: _,
                     caller: _,
-                } => host_describe_response(host_facts.as_deref()),
+                } => {
+                    let provider = current_host_facts(&host_facts);
+                    host_describe_response(provider.as_deref())
+                }
                 ControlRequest::HostHealth {
                     nonce: _,
                     caller: _,
-                } => host_health_response(host_facts.as_deref()),
+                } => {
+                    let provider = current_host_facts(&host_facts);
+                    host_health_response(provider.as_deref())
+                }
             }
         })
     }
@@ -2455,6 +2492,7 @@ mod tests {
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(ContinuityRecord {

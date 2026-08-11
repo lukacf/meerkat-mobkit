@@ -130,6 +130,7 @@ pub fn agent_discovery_to_durable(
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     })
 }
 

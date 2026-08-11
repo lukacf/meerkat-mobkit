@@ -67,6 +67,7 @@ fn make_spec(name: &str) -> DurableAgentSpec {
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     }
 }
 
@@ -648,6 +649,7 @@ async fn identity_first_choke_09_durable_agent_spec_gateway_round_trip() {
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     };
 
     // Serialize to JSON (simulates gateway wire)

@@ -180,6 +180,23 @@ pub struct UnifiedRuntime {
     /// before the host installs keys, and its serve task re-reads this
     /// slot per request.
     gateway_peer_keys: crate::runtime::cross_mob_control::ControlSignerSlot,
+    /// Late-bound read-only host projection paired with `gateway_peer_keys`.
+    /// The listener re-reads both slots, so listener-first and keys-first
+    /// bootstrap orders converge on the same authenticated host identity.
+    remote_host_facts: crate::runtime::cross_mob_control::HostFactsProviderSlot,
+    /// Controller-owned durable endpoint-identity pins plus transient
+    /// authenticated reachability. Installed from the same durable state root
+    /// as `gateway_peer_keys`; absent for explicitly ephemeral gateways.
+    remote_host_lifecycle:
+        std::sync::RwLock<Option<Arc<crate::runtime::remote_host::RemoteHostLifecycle>>>,
+    /// A corrupt/unreadable pairing file is retained as a typed refusal. The
+    /// runtime may continue serving local work, but remote placement cannot
+    /// silently start from an empty pin set.
+    remote_host_lifecycle_error:
+        std::sync::RwLock<Option<crate::runtime::remote_host::HostPairingError>>,
+    /// Sole reconnect task. Probes are observations only and are aborted and
+    /// joined before the control listener and mob authority shut down.
+    remote_host_reconnect_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 
     // Identity-first session bridge
     session_bridge: Option<Arc<dyn crate::identity_first::bridge::SessionBridge>>,
@@ -356,6 +373,10 @@ impl UnifiedRuntime {
             cross_mob_control_task: tokio::sync::Mutex::new(None),
             cross_mob_control_advertised: std::sync::RwLock::new(None),
             gateway_peer_keys: crate::runtime::cross_mob_control::unsigned_control_signer(),
+            remote_host_facts: crate::runtime::cross_mob_control::empty_host_facts_provider(),
+            remote_host_lifecycle: std::sync::RwLock::new(None),
+            remote_host_lifecycle_error: std::sync::RwLock::new(None),
+            remote_host_reconnect_task: tokio::sync::Mutex::new(None),
             session_bridge: None,
             identity_first_context: None,
             access_controller: None,

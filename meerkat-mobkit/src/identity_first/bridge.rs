@@ -2989,6 +2989,11 @@ pub(crate) fn build_spawn_spec(
     if let Some(binding) = spec.binding.clone() {
         spawn_spec.binding = runtime_binding_from_wire(binding);
     }
+    if let Some(placement) = spec.placement.as_ref() {
+        spawn_spec.placement = Some(meerkat_mob::machines::mob_machine::HostId::from(
+            placement.0.clone(),
+        ));
+    }
     if let Some(ref ctx) = draft.app_context {
         spawn_spec = spawn_spec.with_context(ctx.clone());
     }
@@ -4206,6 +4211,7 @@ mod tests {
             runtime_mode_override: Some(MobRuntimeMode::TurnDriven),
             backend: None,
             binding: None,
+            placement: None,
         }
     }
 
@@ -4329,6 +4335,36 @@ mod tests {
             spawn.role_name.as_str(),
             "worker",
             "SpawnMemberSpec role remains the authoritative mob profile"
+        );
+    }
+
+    #[test]
+    fn build_spawn_spec_preserves_exact_remote_placement() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let mut spec = durable_spec();
+        spec.placement = Some(meerkat_contracts::WireHostRef(
+            "12D3KooWExactRemoteHost".to_string(),
+        ));
+        let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
+            model: None,
+            system_prompt: None,
+            additional_instructions: Vec::new(),
+            labels: Default::default(),
+            app_context: None,
+            external_tools: Vec::new(),
+            local_external_tools: LocalExternalToolOverlay::default(),
+            provider_params: None,
+        };
+
+        let spawn = build_spawn_spec(&runtime_id, &spec, &draft, None).expect("spawn spec");
+        assert_eq!(
+            spawn
+                .placement
+                .as_ref()
+                .map(meerkat_mob::machines::mob_machine::HostId::as_str),
+            Some("12D3KooWExactRemoteHost"),
+            "remote placement must reach Meerkat unchanged and never become local None"
         );
     }
 

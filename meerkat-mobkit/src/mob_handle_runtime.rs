@@ -8185,6 +8185,7 @@ mod tests {
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 crate::identity_first::IdentityLifecycleState::Dormant,
                 None,

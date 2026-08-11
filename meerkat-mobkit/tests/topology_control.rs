@@ -1458,6 +1458,7 @@ async fn identity_reconcile_reports_dormant_endpoint_as_missing_and_incomplete()
             runtime_mode_override: None,
             backend: None,
             binding: None,
+            placement: None,
         }
     }
 

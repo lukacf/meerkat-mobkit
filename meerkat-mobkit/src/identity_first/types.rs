@@ -780,6 +780,10 @@ pub struct DurableAgentSpec {
     pub backend: Option<meerkat_mob::MobBackendKind>,
     #[serde(default)]
     pub binding: Option<meerkat_contracts::WireRuntimeBinding>,
+    /// Exact Meerkat host placement. Once present it must propagate unchanged
+    /// and may never degrade to local because the selected host is unavailable.
+    #[serde(default)]
+    pub placement: Option<meerkat_contracts::WireHostRef>,
 }
 
 // ---------------------------------------------------------------------------

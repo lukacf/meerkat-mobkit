@@ -5573,6 +5573,7 @@ shell = true
             runtime_mode_override: None,
             backend: None,
             binding: None,
+            placement: None,
         }
     }
 
@@ -6535,6 +6536,7 @@ shell = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 None,
@@ -6863,6 +6865,7 @@ shell = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 None,
@@ -7603,6 +7606,7 @@ shell = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -7899,6 +7903,7 @@ shell = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(ContinuityRecord {
@@ -8082,6 +8087,7 @@ shell = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -8213,6 +8219,7 @@ shell = true
                         runtime_mode_override: None,
                         backend: None,
                         binding: None,
+                        placement: None,
                     },
                     IdentityLifecycleState::Active,
                     Some(ContinuityRecord {
@@ -8434,6 +8441,7 @@ shell = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(ContinuityRecord {
@@ -8564,6 +8572,7 @@ shell = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(ContinuityRecord {
@@ -9068,6 +9077,7 @@ shell = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(ContinuityRecord {

@@ -749,6 +749,7 @@ mod tests {
             runtime_mode_override: None,
             backend: None,
             binding: None,
+            placement: None,
         };
         let mut draft = AgentBuildDraft {
             compaction_curator: Default::default(),
@@ -1227,6 +1228,7 @@ mod tests {
             runtime_mode_override: None,
             backend: None,
             binding: None,
+            placement: None,
         };
         let mut draft = AgentBuildDraft {
             compaction_curator: Default::default(),
@@ -1350,6 +1352,7 @@ mod tests {
             runtime_mode_override: None,
             backend: None,
             binding: None,
+            placement: None,
         };
 
         let mut scopes = Vec::new();
@@ -1541,6 +1544,7 @@ mod tests {
             runtime_mode_override: None,
             backend: None,
             binding: None,
+            placement: None,
         };
         let ctx = TopologyContext {
             roster: vec![roster_spec],

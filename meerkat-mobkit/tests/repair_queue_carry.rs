@@ -270,6 +270,7 @@ comms = true
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     };
     let result = restore_flow(&irt, std::slice::from_ref(&spec), None, None)
         .await

@@ -99,6 +99,7 @@ fn durable_spec(name: &str) -> DurableAgentSpec {
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     }
 }
 

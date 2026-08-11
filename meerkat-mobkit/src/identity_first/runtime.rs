@@ -10703,6 +10703,7 @@ mod reset_reprofile_tests {
             runtime_mode_override: None,
             backend: None,
             binding: None,
+            placement: None,
         }
     }
 
@@ -13122,6 +13123,7 @@ mod continuity_repair_supervisor_tests {
             runtime_mode_override: None,
             backend: None,
             binding: None,
+            placement: None,
         }
     }
 

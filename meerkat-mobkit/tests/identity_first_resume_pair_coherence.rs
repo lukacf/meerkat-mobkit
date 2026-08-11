@@ -53,6 +53,7 @@ fn spec(name: &str, profile: &str) -> DurableAgentSpec {
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     }
 }
 

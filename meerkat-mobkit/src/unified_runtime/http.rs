@@ -467,6 +467,7 @@ comms = true
             runtime_mode_override: Some(MobRuntimeMode::TurnDriven),
             backend: None,
             binding: None,
+            placement: None,
         }]));
         let scratch = tempfile::tempdir().expect("scratch dir");
         let runtime = UnifiedRuntimeBuilder::default()
