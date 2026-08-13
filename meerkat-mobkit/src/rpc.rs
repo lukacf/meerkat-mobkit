@@ -6481,6 +6481,103 @@ shell = true
         Ok(())
     }
 
+    /// A provider that honestly supports only the required v1 read surface:
+    /// every `supports_*` flag keeps its trait default of `false`. Rebuilt
+    /// negative arm for the capability gates after the positive flip above -
+    /// the gate intent (unadvertised ops stay off the wire) must be proven by
+    /// a fixture that truly lacks support, not one that hides it.
+    struct V1RecallOnlyMemoryProvider;
+
+    #[async_trait]
+    impl crate::identity_first::AgentMemoryProvider for V1RecallOnlyMemoryProvider {
+        async fn recall(
+            &self,
+            _request: crate::identity_first::AgentMemoryRecallRequest,
+        ) -> Result<
+            Vec<crate::identity_first::AgentMemoryRecord>,
+            crate::identity_first::AgentMemoryError,
+        > {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_memory_capability_gates_keep_unsupported_v2_ops_off_the_wire()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-agent-memory-gates-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+        let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "rpc-agent-memory-gates-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        });
+        let provider: Arc<dyn crate::identity_first::AgentMemoryProvider> =
+            Arc::new(V1RecallOnlyMemoryProvider);
+        let identity_ctx = IdentityFirstContext {
+            runtime: Arc::new(identity_rt),
+            roster_provider: Arc::new(EmptyRosterProvider),
+            topology_provider: None,
+            customizer: None,
+            agent_memory_provider: Some(provider),
+            mob_definition: None,
+        };
+        let capabilities: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "mobkit/capabilities",
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                Some(&identity_ctx),
+            )
+            .await,
+        )?;
+        let advertised = capabilities["result"]["methods"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        // Positive control: the provider is visible at all.
+        assert!(
+            advertised.contains(&json!("mobkit/agent_memory/recall")),
+            "{capabilities:#?}"
+        );
+        // The gate arm proper: nothing unsupported reaches the wire.
+        for gated_method in [
+            "mobkit/agent_memory/remember",
+            "mobkit/agent_memory/forget",
+            "mobkit/agent_memory/update",
+            "mobkit/agent_memory/manifest",
+        ] {
+            assert!(
+                !advertised.contains(&json!(gated_method)),
+                "{gated_method} must stay off the wire for a provider without support: {capabilities:#?}"
+            );
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn unified_rpc_agent_memory_remember_writes_identity_scoped_record()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -6585,18 +6682,24 @@ shell = true
                 .is_some_and(|methods| methods.contains(&json!("mobkit/agent_memory/forget"))),
             "{capabilities:#?}"
         );
-        // The basic SQLite compatibility surface implements none of the v2
-        // operations; the supports_* gates keep update/manifest off the wire.
+        // Flipped at the meerkat 0.8.22 / mobkit 0.8.16 pair (release-lead
+        // ruling 2026-08-13): SqliteAgentMemoryStore genuinely implements
+        // supersede and manifest, so advertising them is truth surfacing.
+        // The old binding hid that support behind a non-forwarding wrapper;
+        // this assertion pinned the hidden state, not an intended contract.
+        // The gates-keep-unsupported-ops-off-the-wire arm lives on in
+        // `agent_memory_capability_gates_keep_unsupported_v2_ops_off_the_wire`
+        // with a provider that honestly lacks the v2 surface.
         assert!(
             capabilities["result"]["methods"]
                 .as_array()
-                .is_some_and(|methods| !methods.contains(&json!("mobkit/agent_memory/update"))),
+                .is_some_and(|methods| methods.contains(&json!("mobkit/agent_memory/update"))),
             "{capabilities:#?}"
         );
         assert!(
             capabilities["result"]["methods"]
                 .as_array()
-                .is_some_and(|methods| !methods.contains(&json!("mobkit/agent_memory/manifest"))),
+                .is_some_and(|methods| methods.contains(&json!("mobkit/agent_memory/manifest"))),
             "{capabilities:#?}"
         );
 
@@ -8743,6 +8846,8 @@ shell = true
                     "source_member_id": stale_alias,
                     "agent_identity": "fork-probe",
                     "task": "prove stale source rejection",
+                    "result_label": "stale-source-probe",
+                    "max_text_bytes": 4096,
                 }),
             ),
         ] {

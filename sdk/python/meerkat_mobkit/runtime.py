@@ -2751,13 +2751,25 @@ class MobHandle:
         agent_identity: str,
         task: str,
         *,
+        result_label: str,
+        max_text_bytes: int,
         role: str | None = None,
         runtime_mode: str | None = None,
         backend: str | None = None,
     ) -> HelperResult:
-        """Spawn a short-lived helper member and return its result."""
+        """Spawn a short-lived helper member and return its bounded result.
+
+        ``result_label`` and ``max_text_bytes`` are required by meerkat
+        0.8.22's exact helper contract; the byte bound is validated
+        upstream before admission.
+        """
         from .types import HelperResult
-        params: dict[str, Any] = {"agent_identity": agent_identity, "task": task}
+        params: dict[str, Any] = {
+            "agent_identity": agent_identity,
+            "task": task,
+            "result_label": result_label,
+            "max_text_bytes": max_text_bytes,
+        }
         options: dict[str, Any] = {}
         if role is not None:
             options["role"] = role
@@ -2776,17 +2788,26 @@ class MobHandle:
         agent_identity: str,
         task: str,
         *,
+        result_label: str,
+        max_text_bytes: int,
         fork_context: dict | None = None,
         role: str | None = None,
         runtime_mode: str | None = None,
         backend: str | None = None,
     ) -> HelperResult:
-        """Fork a helper from an existing member's context."""
+        """Fork a helper from an existing member's context.
+
+        ``result_label`` and ``max_text_bytes`` are required by meerkat
+        0.8.22's exact helper contract; the byte bound is validated
+        upstream before admission.
+        """
         from .types import HelperResult
         params: dict[str, Any] = {
             "source_member_id": source_member_id,
             "agent_identity": agent_identity,
             "task": task,
+            "result_label": result_label,
+            "max_text_bytes": max_text_bytes,
         }
         if fork_context is not None:
             params["fork_context"] = fork_context

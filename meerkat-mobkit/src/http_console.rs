@@ -7958,6 +7958,19 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(opts) => opts,
                 Err(msg) => return invalid_params(response_id, msg),
             };
+            let Some(result_label) = request.params.get("result_label").and_then(Value::as_str)
+            else {
+                return invalid_params(response_id, "result_label required");
+            };
+            let result_label = result_label.to_string();
+            let Some(max_text_bytes_raw) =
+                request.params.get("max_text_bytes").and_then(Value::as_u64)
+            else {
+                return invalid_params(response_id, "max_text_bytes required");
+            };
+            let Ok(max_text_bytes) = usize::try_from(max_text_bytes_raw) else {
+                return invalid_params(response_id, "max_text_bytes exceeds platform bounds");
+            };
             let raw_reservation = match crate::member_comms_id::reserve_raw_member_target(
                 identity_runtime.as_ref(),
                 agent_identity,
@@ -7972,20 +7985,22 @@ async fn handle_console_runtime_rpc_with_visibility(
                 crate::member_comms_id::mob_member_id(raw_reservation.alias()),
                 task,
                 options,
+                result_label,
+                max_text_bytes,
             ))
             .await;
             drop(raw_reservation);
             match spawn_result {
                 Ok(result) => {
-                    // Meerkat 0.6 retires the helper before `spawn_helper`
-                    // returns, so a post-hoc `resolve_bridge_session_id`
-                    // call would come back `None`. We drop `session_id`
-                    // from the response rather than emit a misleading null.
+                    // meerkat 0.8.22's bounded helper contract returns the
+                    // exact turn carrier, so the session identity promised by
+                    // the old comment is now real and re-added.
                     response_value(
                         response_id,
                         Some(serde_json::json!({
-                            "output": result.output,
-                            "tokens_used": result.tokens_used,
+                            "output": result.helper.output,
+                            "tokens_used": result.helper.tokens_used,
+                            "session_id": result.turn.result().session_id().to_string(),
                         })),
                         None,
                     )
@@ -8035,6 +8050,19 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(opts) => opts,
                 Err(msg) => return invalid_params(response_id, msg),
             };
+            let Some(result_label) = request.params.get("result_label").and_then(Value::as_str)
+            else {
+                return invalid_params(response_id, "result_label required");
+            };
+            let result_label = result_label.to_string();
+            let Some(max_text_bytes_raw) =
+                request.params.get("max_text_bytes").and_then(Value::as_u64)
+            else {
+                return invalid_params(response_id, "max_text_bytes required");
+            };
+            let Ok(max_text_bytes) = usize::try_from(max_text_bytes_raw) else {
+                return invalid_params(response_id, "max_text_bytes exceeds platform bounds");
+            };
             let handle = runtime.handle();
             let source_member_id = crate::member_comms_id::mob_member_id(&source);
             let helper_alias = agent_identity.to_string();
@@ -8069,6 +8097,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                                 task.as_str(),
                                 fork_context,
                                 options,
+                                result_label,
+                                max_text_bytes,
                             )
                             .await
                             .map_err(|error| error.to_string());
@@ -8103,6 +8133,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                                     task.as_str(),
                                     fork_context,
                                     options,
+                                    result_label,
+                                    max_text_bytes,
                                 )
                                 .await
                                 .map_err(|error| error.to_string());
@@ -8114,14 +8146,15 @@ async fn handle_console_runtime_rpc_with_visibility(
             };
             match fork_result {
                 Ok(result) => {
-                    // See `spawn_helper`: meerkat 0.6 retires the forked
-                    // helper before returning, so session_id is omitted
-                    // rather than silently null.
+                    // See `spawn_helper`: the bounded contract's exact turn
+                    // carrier makes the session identity real, so it is
+                    // re-added per the old comment's promise.
                     response_value(
                         response_id,
                         Some(serde_json::json!({
-                            "output": result.output,
-                            "tokens_used": result.tokens_used,
+                            "output": result.helper.output,
+                            "tokens_used": result.helper.tokens_used,
+                            "session_id": result.turn.result().session_id().to_string(),
                         })),
                         None,
                     )

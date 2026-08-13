@@ -2157,6 +2157,24 @@ pub(super) async fn handle_force_cancel_member(
     }
 }
 
+/// Parse the bounded-result request fields required by meerkat 0.8.22's
+/// exact helper contract. Presence is enforced here at the wire (-32602,
+/// mirroring the meerkat-rpc contract's required fields); value validation
+/// is owned upstream by `BoundedResultSpec::new` before admission.
+fn parse_bounded_result_params(params: &Value) -> Result<(String, usize), String> {
+    let result_label = params
+        .get("result_label")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "result_label required".to_string())?;
+    let max_text_bytes = params
+        .get("max_text_bytes")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "max_text_bytes required".to_string())?;
+    let max_text_bytes = usize::try_from(max_text_bytes)
+        .map_err(|_| "max_text_bytes exceeds platform bounds".to_string())?;
+    Ok((result_label.to_string(), max_text_bytes))
+}
+
 pub(super) async fn handle_spawn_helper(
     runtime: &UnifiedRuntime,
     identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
@@ -2204,28 +2222,43 @@ pub(super) async fn handle_spawn_helper(
                     };
                 }
             };
+            let (result_label, max_text_bytes) = match parse_bounded_result_params(params) {
+                Ok(bounded) => bounded,
+                Err(msg) => {
+                    return JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: format!("Invalid params: {msg}"),
+                            data: None,
+                        }),
+                    };
+                }
+            };
             let handle = runtime.mob_handle();
             let spawn_result = Box::pin(handle.spawn_helper(
                 crate::member_comms_id::mob_member_id(raw_reservation.alias()),
                 task_str,
                 options,
+                result_label,
+                max_text_bytes,
             ))
             .await;
             drop(raw_reservation);
             match spawn_result {
                 Ok(result) => {
-                    // Note: meerkat 0.6's `spawn_helper` retires the helper
-                    // before returning, so `resolve_bridge_session_id` would
-                    // come back `None` here. We drop `session_id` from the
-                    // response rather than silently emit `null`. If meerkat
-                    // grows `HelperResult.bridge_session_id` in a future
-                    // release, we'll re-add it.
+                    // meerkat 0.8.22's bounded helper contract returns the
+                    // exact turn carrier, so the session identity promised by
+                    // the old comment is now real and re-added.
                     JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
                         result: Some(serde_json::json!({
-                            "output": result.output,
-                            "tokens_used": result.tokens_used,
+                            "output": result.helper.output,
+                            "tokens_used": result.helper.tokens_used,
+                            "session_id": result.turn.result().session_id().to_string(),
                         })),
                         error: None,
                     }
@@ -2319,6 +2352,21 @@ pub(super) async fn handle_fork_helper(
                     };
                 }
             };
+            let (result_label, max_text_bytes) = match parse_bounded_result_params(params) {
+                Ok(bounded) => bounded,
+                Err(msg) => {
+                    return JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: format!("Invalid params: {msg}"),
+                            data: None,
+                        }),
+                    };
+                }
+            };
             let handle = runtime.mob_handle();
             let source_member_id = crate::member_comms_id::mob_member_id(&source);
             let helper_alias = mid.to_string();
@@ -2357,6 +2405,8 @@ pub(super) async fn handle_fork_helper(
                                 task.as_str(),
                                 fork_context,
                                 options,
+                                result_label,
+                                max_text_bytes,
                             )
                             .await
                             .map_err(|error| error.to_string());
@@ -2388,6 +2438,8 @@ pub(super) async fn handle_fork_helper(
                                     task.as_str(),
                                     fork_context,
                                     options,
+                                    result_label,
+                                    max_text_bytes,
                                 )
                                 .await
                                 .map_err(|error| error.to_string());
@@ -2399,15 +2451,16 @@ pub(super) async fn handle_fork_helper(
             };
             match fork_result {
                 Ok(result) => {
-                    // See `handle_spawn_helper`: meerkat 0.6 retires the
-                    // forked helper before returning, so session_id is
-                    // omitted rather than silently null.
+                    // See `handle_spawn_helper`: the bounded contract's exact
+                    // turn carrier makes the session identity real, so it is
+                    // re-added per the old comment's promise.
                     JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
                         result: Some(serde_json::json!({
-                            "output": result.output,
-                            "tokens_used": result.tokens_used,
+                            "output": result.helper.output,
+                            "tokens_used": result.helper.tokens_used,
+                            "session_id": result.turn.result().session_id().to_string(),
                         })),
                         error: None,
                     }

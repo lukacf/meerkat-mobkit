@@ -897,14 +897,27 @@ async def test_force_cancel_member_rpc_name():
 @pytest.mark.asyncio
 async def test_spawn_helper_rpc_name():
     handle, calls = make_mock_mob_handle({
-        "mobkit/spawn_helper": {"output": "done", "tokens_used": 10}
+        "mobkit/spawn_helper": {
+            "output": "done",
+            "tokens_used": 10,
+            "session_id": "sess-1",
+        }
     })
-    result = await handle.spawn_helper("h1", "do stuff", role="worker")
+    result = await handle.spawn_helper(
+        "h1",
+        "do stuff",
+        result_label="helper-result",
+        max_text_bytes=65536,
+        role="worker",
+    )
     assert calls[0][0] == "mobkit/spawn_helper"
     assert calls[0][1]["agent_identity"] == "h1"
     assert calls[0][1]["task"] == "do stuff"
+    assert calls[0][1]["result_label"] == "helper-result"
+    assert calls[0][1]["max_text_bytes"] == 65536
     assert calls[0][1]["options"]["role"] == "worker"
     assert result.output == "done"
+    assert result.session_id == "sess-1"
 
 
 @pytest.mark.asyncio
@@ -916,11 +929,15 @@ async def test_fork_helper_rpc_name_and_params():
         "lead",
         "fork-1",
         "review this",
+        result_label="fork-result",
+        max_text_bytes=32768,
         fork_context={"type": "last_messages", "count": 10},
         runtime_mode="turn_driven",
     )
     assert calls[0][0] == "mobkit/fork_helper"
     assert calls[0][1]["source_member_id"] == "lead"
+    assert calls[0][1]["result_label"] == "fork-result"
+    assert calls[0][1]["max_text_bytes"] == 32768
     assert calls[0][1]["fork_context"] == {"type": "last_messages", "count": 10}
     assert calls[0][1]["options"]["runtime_mode"] == "turn_driven"
 

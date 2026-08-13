@@ -2750,6 +2750,8 @@ export class MobHandle {
   async spawnHelper(
     agentIdentity: string,
     task: string,
+    resultLabel: string,
+    maxTextBytes: number,
     options?: {
       role?: string;
       runtimeMode?: string;
@@ -2763,6 +2765,8 @@ export class MobHandle {
     const params: Record<string, unknown> = {
       agent_identity: agentIdentity,
       task,
+      result_label: resultLabel,
+      max_text_bytes: maxTextBytes,
     };
     if (Object.keys(helperOptions).length > 0) params.options = helperOptions;
     return parseHelperResult(
@@ -2774,6 +2778,8 @@ export class MobHandle {
     sourceMemberId: string,
     agentIdentity: string,
     task: string,
+    resultLabel: string,
+    maxTextBytes: number,
     options?: {
       forkContext?: Record<string, unknown>;
       role?: string;
@@ -2789,6 +2795,8 @@ export class MobHandle {
       source_member_id: sourceMemberId,
       agent_identity: agentIdentity,
       task,
+      result_label: resultLabel,
+      max_text_bytes: maxTextBytes,
     };
     if (options?.forkContext) params.fork_context = options.forkContext;
     if (Object.keys(helperOptions).length > 0) params.options = helperOptions;
