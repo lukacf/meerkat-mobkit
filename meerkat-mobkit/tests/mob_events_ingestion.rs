@@ -191,6 +191,10 @@ fn representative_mob_event_kinds_project_with_kind_label() {
     let m = project(MobEventKind::FlowCanceled {
         run_id: run_id.clone(),
         flow_id: flow_id.clone(),
+        // meerkat 0.8.22: FlowCanceled carries a typed cancellation
+        // classification; None is the pre-class shape this projection
+        // must keep accepting.
+        cause: None,
     });
     assert_eq!(m.kind, "flow_canceled");
 

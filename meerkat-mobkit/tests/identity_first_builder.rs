@@ -405,10 +405,6 @@ impl ExactTrackingLeaseProvider {
             .cloned()
             .collect()
     }
-
-    fn renew_calls(&self) -> usize {
-        self.renew_calls.load(Ordering::SeqCst)
-    }
 }
 
 impl GatedCommittedRenewLeaseProvider {
@@ -1965,41 +1961,69 @@ async fn gateway_initializer_releases_exact_active_grant_after_partial_eager_fai
         IdentityBootstrapMode::EagerMaterialize,
     ));
 
-    let error = tokio::time::timeout(
+    // meerkat 0.8.22 / mobkit 0.8.16 pair (1ff4c8ca park-as-Broken): beta's
+    // post-activation failure parks beta as typed Broken and can never abort
+    // alpha's boot. This test now guards the per-member custody contract at
+    // the park: beta's exact grant is released by the embodiment transaction
+    // while alpha's authority stays held and active.
+    tokio::time::timeout(
         Duration::from_secs(10),
         runtime.install_and_bootstrap_identity_first_context(context, &specs),
     )
     .await
-    .expect("failed identity bootstrap shutdown must not hang")
-    .expect_err("beta failure after alpha activation must fail eager bootstrap");
+    .expect("identity bootstrap must not hang")
+    .expect("beta's failure parks Broken; it must not abort alpha's boot");
+
+    let identity_runtime = runtime
+        .identity_runtime()
+        .expect("identity runtime installed");
+    let (status, timed_out) = identity_runtime
+        .wait_identity_bootstrap_terminal(Duration::from_secs(5))
+        .await;
+    assert!(!timed_out, "park-as-Broken bootstrap is terminal");
+    assert!(status.complete);
+    let alpha_entry = status.identities.get(&alpha).expect("alpha entry");
+    assert_eq!(
+        alpha_entry.state,
+        IdentityBootstrapState::Active,
+        "the sibling must stay active: {alpha_entry:?}"
+    );
+    let beta_entry = status.identities.get(&beta).expect("beta entry");
+    assert_eq!(beta_entry.state, IdentityBootstrapState::Broken);
     assert!(
-        error
-            .to_string()
+        beta_entry
+            .error
+            .as_deref()
+            .unwrap_or_default()
             .contains("injected failure after peer activation"),
-        "unexpected bootstrap error: {error}"
+        "beta must carry the injected failure verbatim: {beta_entry:?}"
     );
 
-    let released = lease_provider.released();
-    assert_eq!(
-        released.len(),
-        2,
-        "beta cleanup plus alpha shutdown release"
-    );
-    let released = released
+    let released = lease_provider
+        .released()
         .into_iter()
         .map(|grant| (grant.identity, grant.fencing_token))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(released.get(&alpha), Some(&FencingToken::new(101)));
-    assert_eq!(released.get(&beta), Some(&FencingToken::new(202)));
-    assert!(
-        lease_provider.held().is_empty(),
-        "failed gateway init must leave no exact provider authority"
-    );
     assert_eq!(
-        lease_provider.renew_calls(),
-        0,
-        "long-lived supervisors must start only after bootstrap succeeds"
+        released.get(&beta),
+        Some(&FencingToken::new(202)),
+        "the parked member's exact grant must be released at the park"
     );
+    assert!(
+        !released.contains_key(&alpha),
+        "beta's park must not release the active sibling's grant"
+    );
+    let held = lease_provider.held();
+    assert!(
+        held.iter().any(|grant| grant.identity == alpha),
+        "alpha's exact authority must remain held: {held:?}"
+    );
+    assert!(
+        !held.iter().any(|grant| grant.identity == beta),
+        "no ghost beta authority may remain: {held:?}"
+    );
+
+    runtime.shutdown().await;
 }
 
 #[tokio::test]
@@ -2047,14 +2071,23 @@ async fn identity_first_builder_eager_broken_continuity_is_terminal_without_time
 async fn identity_first_failed_builder_shutdown_retries_unpublished_lease() {
     let tmp = tempfile::tempdir().unwrap();
     let lease = Arc::new(FailOnceCleanupLeaseProvider::new());
+    // Re-anchored at the meerkat 0.8.22 / mobkit 0.8.16 pair (1ff4c8ca
+    // park-as-Broken): per-member failures no longer abort the build, so this
+    // test now guards the FLEET-level fail-closed contract - a roster that
+    // fails uniqueness validation aborts bootstrap BEFORE any exact authority
+    // is acquired, and a failed build leaves no ghost lease behind. The
+    // cleanup-RETRY contract this test used to carry lives at its true seam
+    // in identity_first_lazy_reconcile_releases_orphan_grant_before_reacquire
+    // (FailOnce release + exact release_attempts pinning).
     let result = Box::pin(
         UnifiedRuntimeBuilder::default()
             .definition(test_definition())
-            .continuity_store(Arc::new(BrokenContinuityStore))
+            .continuity_store(Arc::new(StubContinuityStore))
             .lease_provider(lease.clone())
-            .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
-                "agent:alpha",
-            )])))
+            .roster_provider(Arc::new(StubRosterProvider::new(vec![
+                durable_spec("agent:alpha"),
+                durable_spec("agent:alpha"),
+            ])))
             .scratch_dir(tmp.path().join("scratch"))
             .identity_runtime_instance_id("builder-failed-memory-task-ownership-test")
             .identity_bootstrap_mode(IdentityBootstrapMode::EagerMaterialize)
@@ -2063,19 +2096,17 @@ async fn identity_first_failed_builder_shutdown_retries_unpublished_lease() {
     )
     .await;
     let error = match result {
-        Ok(_) => panic!("the first unactivated lease cleanup must fail"),
+        Ok(_) => panic!("a duplicate-identity roster must abort bootstrap fleet-level"),
         Err(error) => error,
     };
     assert!(
-        error
-            .to_string()
-            .contains("synthetic first cleanup release failure"),
-        "unexpected build error: {error}"
+        error.to_string().contains("agent:alpha"),
+        "the fleet-level rejection must name the duplicated identity: {error}"
     );
     assert_eq!(
         lease.release_attempts(),
-        2,
-        "builder shutdown must retry the exact unpublished grant"
+        0,
+        "fleet validation fails closed before any exact authority exists to release"
     );
 
     let identity = AgentIdentity::parse("agent:alpha").unwrap();
@@ -2097,11 +2128,11 @@ async fn identity_first_failed_builder_terminates_runtime_owned_memory_superviso
     let tmp = tempfile::tempdir().unwrap();
     let state = tmp.path().join("state");
     let identity = AgentIdentity::parse("agent:alpha").unwrap();
-    let customizer = Arc::new(GatedCustomizer {
-        entered: AtomicUsize::new(0),
-        permits: Arc::new(tokio::sync::Semaphore::new(1)),
-        failing_identity: Some(identity.clone()),
-    });
+    // Re-anchored at the meerkat 0.8.22 / mobkit 0.8.16 pair (1ff4c8ca
+    // park-as-Broken): a per-member customizer failure now parks Broken and
+    // cannot fail the build, so the supervisor-teardown contract is exercised
+    // by a FLEET-level roster-uniqueness failure that still aborts bootstrap
+    // with the memory stack's runtime-owned supervisors already constructed.
     let engines = || meerkat_mobkit::memory_wiring::MemoryEnginesConfig {
         steward: meerkat_mobkit::memory::steward::StewardConfig {
             enabled: true,
@@ -2115,21 +2146,23 @@ async fn identity_first_failed_builder_terminates_runtime_owned_memory_superviso
             .definition(test_definition())
             .persistent_state(state.clone())
             .persistent_agent_memory_stack(AgentMemoryConfig::default(), engines())
-            .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
-                identity.as_str(),
-            )])))
-            .agent_customizer(customizer.clone())
+            .roster_provider(Arc::new(StubRosterProvider::new(vec![
+                durable_spec(identity.as_str()),
+                durable_spec(identity.as_str()),
+            ])))
             .identity_runtime_instance_id("builder-failed-memory-supervisor-test")
             .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
             .build(),
     )
     .await;
     let error = match failed {
-        Ok(_) => panic!("customizer failure must fail identity bootstrap"),
+        Ok(_) => panic!("a duplicate-identity roster must abort bootstrap fleet-level"),
         Err(error) => error,
     };
-    assert!(error.to_string().contains("injected warm failure"));
-    assert_eq!(customizer.entered.load(Ordering::SeqCst), 1);
+    assert!(
+        error.to_string().contains(identity.as_str()),
+        "the fleet-level rejection must name the duplicated identity: {error}"
+    );
 
     // The failed runtime must have aborted/joined its memory observer and
     // steward before returning Err, leaving the same durable stack reusable
@@ -3903,7 +3936,12 @@ async fn identity_first_external_member_restore_supplies_generated_owner_binding
     );
     let roster = Arc::new(StubRosterProvider::new(vec![spec]));
 
-    let err = match Box::pin(
+    // meerkat 0.8.22 / mobkit 0.8.16 pair (1ff4c8ca park-as-Broken): a
+    // member-attributable restore failure parks only that identity as typed
+    // Broken and can never abort the build. The invariant this test guards -
+    // the spawn passes the owner-binding gate and reaches the external-backend
+    // check - now surfaces in the Broken detail instead of the build error.
+    let runtime = Box::pin(
         UnifiedRuntimeBuilder::default()
             .definition(test_definition())
             .continuity_store(Arc::new(StubContinuityStore))
@@ -3915,11 +3953,21 @@ async fn identity_first_external_member_restore_supplies_generated_owner_binding
             .build(),
     )
     .await
-    {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("external-binding spec without [backend.external] should fail restore"),
-    };
+    .expect("external misconfiguration is a per-member Broken park, not a build failure");
 
+    let identity_runtime = runtime.identity_runtime().expect("identity runtime");
+    let (status, timed_out) = identity_runtime
+        .wait_identity_bootstrap_terminal(Duration::from_secs(5))
+        .await;
+    assert!(!timed_out, "Broken park is a terminal bootstrap outcome");
+    assert!(status.complete);
+    assert_eq!(status.counts.broken, 1);
+    let target = status
+        .identities
+        .get(&AgentIdentity::parse("agent:target").unwrap())
+        .expect("target bootstrap entry");
+    assert_eq!(target.state, IdentityBootstrapState::Broken);
+    let err = target.error.as_deref().unwrap_or_default();
     assert!(
         !err.contains("requires generated owner binding"),
         "identity-first restore must spawn external members with a generated owner context, got: {err}"
@@ -3928,6 +3976,8 @@ async fn identity_first_external_member_restore_supplies_generated_owner_binding
         err.contains("external backend is not configured"),
         "expected the spawn to pass the owner-binding gate and reach the external-backend check, got: {err}"
     );
+
+    runtime.shutdown().await;
 }
 
 // ===========================================================================

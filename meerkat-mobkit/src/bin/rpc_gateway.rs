@@ -7606,12 +7606,16 @@ external_addressable = true
         inner_builder.default_blob_store = Some(blob_store.clone());
         inner_builder.default_detached_job_store = callback_job_store.clone();
         if let Some(job_store) = callback_job_store.as_ref() {
+            // meerkat 0.8.22 (F4): the projector slot is a Clone value, not a
+            // shared Arc - per-session builds rebind its realm authority via
+            // bound_to_realm so mob members project under mob.<mob_id>, never
+            // a service-lifetime realm frozen at gateway construction.
             inner_builder.default_shell_job_delivery_projector =
-                Some(Arc::new(meerkat::JobOutboxProjector::new_for_realm(
+                Some(meerkat::JobOutboxProjector::new_for_realm(
                     Arc::clone(job_store),
                     meerkat_runtime::RuntimeDeliveryInbox::new(Arc::clone(&runtime_store)),
                     meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
-                )));
+                ));
         }
         // Attach meerkat's per-session schedule tools so SDK-hosted members whose
         // profile sets tools.schedule=true get the meerkat_schedule_* surface (the
