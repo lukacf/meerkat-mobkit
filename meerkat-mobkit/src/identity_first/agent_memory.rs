@@ -5,8 +5,8 @@
 //! memories into the build draft during identity materialization.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,7 +23,6 @@ use crate::memory::records::{
 };
 use crate::mob_handle_runtime::SessionCreatedContext;
 use async_trait::async_trait;
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_REALM: &str = "default";
@@ -32,12 +31,8 @@ const DEFAULT_RECALL_TIMEOUT_MS: u64 = 500;
 const MAX_MEMORY_ENTRIES: usize = 64;
 const MAX_RECALL_TIMEOUT_MS: u64 = 30_000;
 const MIN_CONTEXTUAL_RELEVANCE_SCORE: usize = 2;
-const MAX_MEMORY_TITLE_BYTES: usize = 200;
-const MAX_MEMORY_BODY_BYTES: usize = 64 * 1024;
 const MAX_MEMORY_TAGS: usize = 32;
 const MAX_MEMORY_TAG_BYTES: usize = 64;
-const MAX_RENDERED_RECORD_BYTES: usize = 80 * 1024;
-const MAX_MARKDOWN_MEMORY_RECORDS: usize = 512;
 const MAX_MARKDOWN_MEMORY_FILE_BYTES: usize = 8 * 1024 * 1024;
 const METADATA_PREFIX: &str = "<!-- mobkit-agent-memory ";
 const METADATA_SUFFIX: &str = " -->";
@@ -460,10 +455,10 @@ pub trait AgentMemoryProvider: Send + Sync {
         None
     }
 
-    /// §8.3 Selector body fetch for selector-chosen record ids.
+    /// Provenance-aware body fetch for deterministically recalled record ids.
     fn as_selected_record_fetch(
         &self,
-    ) -> Option<Arc<dyn crate::memory::selector::SelectedRecordFetch>> {
+    ) -> Option<Arc<dyn crate::memory::factory_handle::SelectedRecordFetch>> {
         None
     }
 
@@ -471,143 +466,6 @@ pub trait AgentMemoryProvider: Send + Sync {
     /// scope, for dedup against re-distillation).
     fn as_tombstone_source(&self) -> Option<Arc<dyn crate::memory::distiller::TombstoneSource>> {
         None
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct MarkdownAgentMemoryStore {
-    root: PathBuf,
-}
-
-impl MarkdownAgentMemoryStore {
-    pub fn open(root: impl Into<PathBuf>) -> Result<Self, AgentMemoryError> {
-        let root = root.into();
-        if root.as_os_str().is_empty() {
-            return Err(AgentMemoryError::InvalidConfig(
-                "agent memory root path must not be empty".to_string(),
-            ));
-        }
-        fs::create_dir_all(&root).map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-        Ok(Self { root })
-    }
-
-    pub fn path_for(&self, realm: &str, identity: &AgentIdentity) -> PathBuf {
-        self.root
-            .join(encode_path_segment(realm))
-            .join(format!("{}.md", encode_path_segment(identity.as_str())))
-    }
-
-    pub fn remember(
-        &self,
-        realm: &str,
-        identity: &AgentIdentity,
-        memory: NewAgentMemory,
-    ) -> Result<AgentMemoryRecord, AgentMemoryError> {
-        let title = compact_whitespace(&memory.title);
-        if title.is_empty() {
-            return Err(AgentMemoryError::InvalidRecord(
-                "title must not be empty".to_string(),
-            ));
-        }
-        if title.len() > MAX_MEMORY_TITLE_BYTES {
-            return Err(AgentMemoryError::InvalidRecord(format!(
-                "title must be at most {MAX_MEMORY_TITLE_BYTES} bytes"
-            )));
-        }
-        let body = memory.body.trim();
-        if body.is_empty() {
-            return Err(AgentMemoryError::InvalidRecord(
-                "body must not be empty".to_string(),
-            ));
-        }
-        if body.len() > MAX_MEMORY_BODY_BYTES {
-            return Err(AgentMemoryError::InvalidRecord(format!(
-                "body must be at most {MAX_MEMORY_BODY_BYTES} bytes"
-            )));
-        }
-        let tags = normalize_tags(memory.tags)?;
-        let now = now_ms();
-        let record = AgentMemoryRecord {
-            memory_id: new_memory_id(&title, body),
-            title,
-            body: body.to_string(),
-            tags,
-            created_at_ms: now,
-            updated_at_ms: now,
-        };
-        append_markdown_record(&self.path_for(realm, identity), &record)?;
-        Ok(record)
-    }
-
-    pub fn read_records(
-        &self,
-        realm: &str,
-        identity: &AgentIdentity,
-    ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
-        read_markdown_records(&self.path_for(realm, identity))
-    }
-
-    fn recall_blocking(
-        &self,
-        request: AgentMemoryRecallRequest,
-    ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
-        let records = self.read_records(&request.realm, &request.identity)?;
-        Ok(select_recall_records(records, &request))
-    }
-
-    pub fn forget(
-        &self,
-        realm: &str,
-        identity: &AgentIdentity,
-        memory_id: &str,
-    ) -> Result<AgentMemoryForgetResult, AgentMemoryError> {
-        if memory_id.trim().is_empty() {
-            return Err(AgentMemoryError::InvalidRecord(
-                "memory_id must not be empty".to_string(),
-            ));
-        }
-        forget_markdown_record(&self.path_for(realm, identity), memory_id)
-    }
-}
-
-#[async_trait]
-impl AgentMemoryProvider for MarkdownAgentMemoryStore {
-    fn supports_remember(&self) -> bool {
-        true
-    }
-
-    fn supports_forget(&self) -> bool {
-        true
-    }
-
-    async fn remember(
-        &self,
-        realm: &str,
-        identity: &AgentIdentity,
-        memory: NewAgentMemory,
-    ) -> Result<AgentMemoryRecord, AgentMemoryError> {
-        MarkdownAgentMemoryStore::remember(self, realm, identity, memory)
-    }
-
-    async fn forget(
-        &self,
-        realm: &str,
-        identity: &AgentIdentity,
-        memory_id: &str,
-    ) -> Result<AgentMemoryForgetResult, AgentMemoryError> {
-        MarkdownAgentMemoryStore::forget(self, realm, identity, memory_id)
-    }
-
-    async fn recall(
-        &self,
-        request: AgentMemoryRecallRequest,
-    ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
-        let store = self.clone();
-        tokio::task::spawn_blocking(move || store.recall_blocking(request))
-            .await
-            .map_err(|err| {
-                AgentMemoryError::Io(format!("agent memory recall task failed: {err}"))
-            })?
     }
 }
 
@@ -1631,81 +1489,10 @@ pub(crate) fn select_recall_records(
     records
 }
 
-fn append_markdown_record(path: &Path, record: &AgentMemoryRecord) -> Result<(), AgentMemoryError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .truncate(false)
-        .write(true)
-        .open(path)
-        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    file.lock_exclusive()
-        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    file.seek(SeekFrom::Start(0))
-        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    let mut content = String::new();
-    file.read_to_string(&mut content)
-        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    let mut records = parse_markdown_records(&content);
-    records.retain(|existing| existing.memory_id != record.memory_id);
-    records.push(record.clone());
-    apply_markdown_retention(&mut records)?;
-    let rendered = render_markdown_file(&records)?;
-    file.set_len(0)
-        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    file.seek(SeekFrom::Start(0))
-        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    file.write_all(rendered.as_bytes())
-        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    Ok(())
-}
-
-fn forget_markdown_record(
-    path: &Path,
-    memory_id: &str,
-) -> Result<AgentMemoryForgetResult, AgentMemoryError> {
-    let memory_id = memory_id.trim();
-    if !path.exists() {
-        return Ok(AgentMemoryForgetResult {
-            memory_id: memory_id.to_string(),
-            deleted: false,
-        });
-    }
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    file.lock_exclusive()
-        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    file.seek(SeekFrom::Start(0))
-        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    let mut content = String::new();
-    file.read_to_string(&mut content)
-        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    let mut records = parse_markdown_records(&content);
-    let original_len = records.len();
-    records.retain(|record| record.memory_id != memory_id);
-    let deleted = records.len() != original_len;
-    if deleted {
-        apply_markdown_retention(&mut records)?;
-        let rendered = render_markdown_file(&records)?;
-        file.set_len(0)
-            .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-        file.seek(SeekFrom::Start(0))
-            .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-        file.write_all(rendered.as_bytes())
-            .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    }
-    Ok(AgentMemoryForgetResult {
-        memory_id: memory_id.to_string(),
-        deleted,
-    })
-}
-
+/// Parse the retired markdown format solely for the one-shot SQLite import.
+///
+/// This function is intentionally crate-private. No live provider, writer, or
+/// public constructor may depend on the legacy format.
 pub(crate) fn read_markdown_records(
     path: &Path,
 ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
@@ -1730,26 +1517,19 @@ pub(crate) fn read_markdown_records(
     Ok(parse_markdown_records(&content))
 }
 
-fn apply_markdown_retention(records: &mut Vec<AgentMemoryRecord>) -> Result<(), AgentMemoryError> {
-    records.sort_by(|a, b| {
-        b.updated_at_ms
-            .cmp(&a.updated_at_ms)
-            .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
-            .then_with(|| b.memory_id.cmp(&a.memory_id))
-    });
-    records.truncate(MAX_MARKDOWN_MEMORY_RECORDS);
-    while !records.is_empty()
-        && render_markdown_file(records)?.len() > MAX_MARKDOWN_MEMORY_FILE_BYTES
-    {
-        records.pop();
-    }
-    records.sort_by(|a, b| {
-        a.created_at_ms
-            .cmp(&b.created_at_ms)
-            .then_with(|| a.updated_at_ms.cmp(&b.updated_at_ms))
-            .then_with(|| a.memory_id.cmp(&b.memory_id))
-    });
-    Ok(())
+/// Resolve the legacy realm directory for the one-shot SQLite importer.
+pub(crate) fn markdown_import_realm_dir(root: &Path, realm: &str) -> PathBuf {
+    root.join(encode_path_segment(realm))
+}
+
+#[cfg(test)]
+pub(crate) fn markdown_import_file_path(
+    root: &Path,
+    realm: &str,
+    identity: &AgentIdentity,
+) -> PathBuf {
+    markdown_import_realm_dir(root, realm)
+        .join(format!("{}.md", encode_path_segment(identity.as_str())))
 }
 
 fn parse_markdown_records(content: &str) -> Vec<AgentMemoryRecord> {
@@ -1798,36 +1578,6 @@ fn parse_markdown_records(content: &str) -> Vec<AgentMemoryRecord> {
         &mut current_body,
     );
     records
-}
-
-fn render_markdown_file(records: &[AgentMemoryRecord]) -> Result<String, AgentMemoryError> {
-    let mut rendered = "# MobKit Agent Memory\n\n".to_string();
-    for record in records {
-        rendered.push_str(&render_markdown_record(record)?);
-    }
-    Ok(rendered)
-}
-
-fn render_markdown_record(record: &AgentMemoryRecord) -> Result<String, AgentMemoryError> {
-    let metadata = AgentMemoryRecordMetadata {
-        memory_id: record.memory_id.clone(),
-        tags: record.tags.clone(),
-        created_at_ms: record.created_at_ms,
-        updated_at_ms: record.updated_at_ms,
-    };
-    let metadata_json =
-        serde_json::to_string(&metadata).map_err(|err| AgentMemoryError::Parse(err.to_string()))?;
-    let rendered = format!(
-        "## {}\n{METADATA_PREFIX}{metadata_json}{METADATA_SUFFIX}\n{}\n{RECORD_END}\n\n",
-        record.title,
-        escape_record_body(&record.body)
-    );
-    if rendered.len() > MAX_RENDERED_RECORD_BYTES {
-        return Err(AgentMemoryError::InvalidRecord(format!(
-            "rendered record must be at most {MAX_RENDERED_RECORD_BYTES} bytes"
-        )));
-    }
-    Ok(rendered)
 }
 
 fn parse_metadata_line(line: &str) -> Option<AgentMemoryRecordMetadata> {
@@ -2066,20 +1816,6 @@ pub(crate) fn truncate_utf8_boundary(value: &str, max_bytes: usize) -> String {
     format!("{} [truncated]", &value[..end])
 }
 
-fn escape_record_body(value: &str) -> String {
-    value
-        .lines()
-        .map(|line| {
-            if is_structural_body_line(line) {
-                format!("\\{line}")
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn unescape_record_body_line(line: &str) -> String {
     let Some(rest) = line.strip_prefix('\\') else {
         return line.to_string();
@@ -2144,13 +1880,6 @@ pub(crate) fn decode_path_segment(value: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 fn now_ns() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2207,14 +1936,9 @@ mod tests {
                 .join("\n")
         }
     }
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Barrier, Mutex};
     use std::time::Duration;
-
-    const CHILD_WRITE_TEST: &str =
-        "identity_first::agent_memory::tests::markdown_store_child_process_write";
-    const CHILD_WRITE_ROOT_ENV: &str = "MOBKIT_AGENT_MEMORY_CHILD_ROOT";
-    const CHILD_WRITE_INDEX_ENV: &str = "MOBKIT_AGENT_MEMORY_CHILD_INDEX";
 
     fn identity() -> Result<AgentIdentity, Box<dyn Error>> {
         AgentIdentity::parse("identity:luka").map_err(|err| {
@@ -2235,11 +1959,13 @@ mod tests {
             runtime_mode_override: None,
             backend: None,
             binding: None,
+            placement: None,
         })
     }
 
     fn draft() -> AgentBuildDraft {
         AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: None,
             system_prompt: None,
             additional_instructions: Vec::new(),
@@ -2252,354 +1978,52 @@ mod tests {
     }
 
     #[test]
-    fn markdown_store_round_trips_identity_scoped_memory() -> Result<(), Box<dyn Error>> {
-        let dir = tempfile::tempdir()?;
-        let store = MarkdownAgentMemoryStore::open(dir.path())?;
-        assert!(store.supports_remember());
-        assert_eq!(
-            AgentMemoryConfig::default().selection,
-            AgentMemorySelection::Contextual
-        );
+    fn contextual_recall_selection_is_backend_independent() -> Result<(), Box<dyn Error>> {
         let id = identity()?;
-        store
-            .remember(
-                "family",
-                &id,
-                NewAgentMemory {
-                    title: "Calendar\npreference".to_string(),
-                    body: "Prefer school logistics before deep work.\n\n## This is body text\nDo not split records.".to_string(),
-                    tags: vec!["calendar".to_string()],
-                },
-            )?;
-
-        let records = store.read_records("family", &id)?;
-
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].title, "Calendar preference");
-        assert!(records[0].body.contains("## This is body text"));
-        assert_eq!(records[0].tags, vec!["calendar"]);
-        assert!(
-            store
-                .path_for("family", &id)
-                .ends_with("identity%3Aluka.md")
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn markdown_store_recalls_records_before_one_megabyte_horizon()
-    -> Result<(), Box<dyn Error>> {
-        let dir = tempfile::tempdir()?;
-        let store = MarkdownAgentMemoryStore::open(dir.path())?;
-        let id = identity()?;
-        let old = store.remember(
-            "default",
-            &id,
-            NewAgentMemory {
-                title: "Ancient passport marker".to_string(),
-                body: format!(
-                    "The old passport marker is durable.\n{}",
-                    "A".repeat(60 * 1024)
-                ),
-                tags: vec!["passport".to_string()],
+        let records = vec![
+            AgentMemoryRecord {
+                memory_id: "mem-passport".to_string(),
+                title: "Passport location".to_string(),
+                body: "The passport is in the blue travel folder.".to_string(),
+                tags: vec!["travel".to_string()],
+                created_at_ms: 1,
+                updated_at_ms: 1,
             },
-        )?;
-        for idx in 0..20 {
-            store.remember(
-                "default",
-                &id,
-                NewAgentMemory {
-                    title: format!("Later filler {idx}"),
-                    body: format!("Later filler body {idx}.\n{}", "B".repeat(60 * 1024)),
-                    tags: Vec::new(),
-                },
-            )?;
-        }
-        let path = store.path_for("default", &id);
-        assert!(
-            fs::metadata(&path)?.len() > 1_048_576,
-            "test must exceed the former tail-only recall horizon"
-        );
-
-        let matches = store
-            .recall(AgentMemoryRecallRequest {
-                identity: id,
+            AgentMemoryRecord {
+                memory_id: "mem-unrelated".to_string(),
+                title: "Unrelated".to_string(),
+                body: "This contains only generic words where and the.".to_string(),
+                tags: Vec::new(),
+                created_at_ms: 2,
+                updated_at_ms: 2,
+            },
+        ];
+        let matches = select_recall_records(
+            records.clone(),
+            &AgentMemoryRecallRequest {
+                identity: id.clone(),
                 realm: "default".to_string(),
-                query_text: Some("Where is the old passport marker?".to_string()),
-                query_terms: vec!["passport".to_string()],
+                query_text: Some("I need the passport for travel".to_string()),
+                query_terms: Vec::new(),
                 selection: AgentMemorySelection::Contextual,
                 max_entries: 8,
-            })
-            .await?;
-
-        assert!(
-            matches
-                .iter()
-                .any(|record| record.memory_id == old.memory_id),
-            "old durable record should remain recallable after later writes: {matches:#?}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn markdown_store_applies_record_retention_policy() -> Result<(), Box<dyn Error>> {
-        let dir = tempfile::tempdir()?;
-        let store = MarkdownAgentMemoryStore::open(dir.path())?;
-        let id = identity()?;
-        let path = store.path_for("default", &id);
-        for idx in 0..(MAX_MARKDOWN_MEMORY_RECORDS + 8) {
-            append_markdown_record(
-                &path,
-                &AgentMemoryRecord {
-                    memory_id: format!("mem-retention-{idx:04}"),
-                    title: format!("Retained memory {idx}"),
-                    body: format!("Retained memory body {idx}"),
-                    tags: Vec::new(),
-                    created_at_ms: idx as u64,
-                    updated_at_ms: idx as u64,
-                },
-            )?;
-        }
-
-        let records = read_markdown_records(&path)?;
-        assert_eq!(records.len(), MAX_MARKDOWN_MEMORY_RECORDS);
-        assert!(
-            records.iter().all(|record| record.created_at_ms >= 8),
-            "oldest overflow records should be evicted by the explicit retention policy"
-        );
-        assert!(
-            fs::metadata(&path)?.len() <= MAX_MARKDOWN_MEMORY_FILE_BYTES as u64,
-            "memory file should remain under the byte retention cap"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn markdown_store_rejects_oversized_memory_writes() -> Result<(), Box<dyn Error>> {
-        let dir = tempfile::tempdir()?;
-        let store = MarkdownAgentMemoryStore::open(dir.path())?;
-        let id = identity()?;
-
-        let too_long_title = store.remember(
-            "default",
-            &id,
-            NewAgentMemory {
-                title: "T".repeat(MAX_MEMORY_TITLE_BYTES + 1),
-                body: "Body".to_string(),
-                tags: Vec::new(),
             },
         );
-        assert!(matches!(
-            too_long_title,
-            Err(AgentMemoryError::InvalidRecord(message))
-                if message.contains("title must be at most")
-        ));
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].title, "Passport location");
 
-        let too_long_body = store.remember(
-            "default",
-            &id,
-            NewAgentMemory {
-                title: "Title".to_string(),
-                body: "B".repeat(MAX_MEMORY_BODY_BYTES + 1),
-                tags: Vec::new(),
+        let stopword_only = select_recall_records(
+            records,
+            &AgentMemoryRecallRequest {
+                identity: id,
+                realm: "default".to_string(),
+                query_text: Some("where did I put the".to_string()),
+                query_terms: vec!["where did I put the".to_string()],
+                selection: AgentMemorySelection::Contextual,
+                max_entries: 8,
             },
         );
-        assert!(matches!(
-            too_long_body,
-            Err(AgentMemoryError::InvalidRecord(message))
-                if message.contains("body must be at most")
-        ));
-
-        let too_many_tags = store.remember(
-            "default",
-            &id,
-            NewAgentMemory {
-                title: "Title".to_string(),
-                body: "Body".to_string(),
-                tags: (0..=MAX_MEMORY_TAGS)
-                    .map(|idx| format!("tag-{idx}"))
-                    .collect(),
-            },
-        );
-        assert!(matches!(
-            too_many_tags,
-            Err(AgentMemoryError::InvalidRecord(message))
-                if message.contains("tags must contain at most")
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn markdown_store_encodes_dot_segments_inside_root() -> Result<(), Box<dyn Error>> {
-        let dir = tempfile::tempdir()?;
-        let store = MarkdownAgentMemoryStore::open(dir.path())?;
-        let id = identity()?;
-
-        let path = store.path_for("..", &id);
-
-        assert!(path.starts_with(dir.path()));
-        assert!(
-            path.components()
-                .any(|component| { component.as_os_str().to_string_lossy().as_ref() == "%2E%2E" })
-        );
-        assert!(
-            !path
-                .components()
-                .any(|component| { component.as_os_str().to_string_lossy().as_ref() == ".." })
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn markdown_store_escapes_structural_body_lines_and_skips_corrupt_records()
-    -> Result<(), Box<dyn Error>> {
-        let dir = tempfile::tempdir()?;
-        let store = MarkdownAgentMemoryStore::open(dir.path())?;
-        let id = identity()?;
-        store.remember(
-            "family",
-            &id,
-            NewAgentMemory {
-                title: "Parser safety".to_string(),
-                body: format!(
-                    "Keep this line.\n{RECORD_END}\n{METADATA_PREFIX}not metadata{METADATA_SUFFIX}\nKeep the tail."
-                ),
-                tags: vec!["safety".to_string()],
-            },
-        )?;
-
-        let path = store.path_for("family", &id);
-        let mut file = OpenOptions::new().append(true).open(&path)?;
-        writeln!(
-            file,
-            "## Corrupt\n{METADATA_PREFIX}{{not-json}}{METADATA_SUFFIX}\nThis record should be skipped.\n"
-        )?;
-        store.remember(
-            "family",
-            &id,
-            NewAgentMemory {
-                title: "Recovered".to_string(),
-                body: "Valid after corrupt record.\n## Body heading\nKeep the valid tail."
-                    .to_string(),
-                tags: vec!["recovered".to_string()],
-            },
-        )?;
-
-        let records = store.read_records("family", &id)?;
-
-        assert_eq!(records.len(), 2);
-        assert!(records[0].body.contains(RECORD_END));
-        assert!(records[0].body.contains("not metadata"));
-        assert!(records[0].body.contains("Keep the tail."));
-        assert_eq!(records[1].title, "Recovered");
-        assert!(records[1].body.contains("## Body heading"));
-        assert!(records[1].body.contains("Keep the valid tail."));
-        Ok(())
-    }
-
-    #[test]
-    fn markdown_store_forgets_record_and_compacts_file() -> Result<(), Box<dyn Error>> {
-        let dir = tempfile::tempdir()?;
-        let store = MarkdownAgentMemoryStore::open(dir.path())?;
-        assert!(store.supports_forget());
-        let id = identity()?;
-        let first = store.remember(
-            "family",
-            &id,
-            NewAgentMemory {
-                title: "First".to_string(),
-                body: "First body".to_string(),
-                tags: Vec::new(),
-            },
-        )?;
-        let second = store.remember(
-            "family",
-            &id,
-            NewAgentMemory {
-                title: "Second".to_string(),
-                body: "Second body".to_string(),
-                tags: Vec::new(),
-            },
-        )?;
-
-        let result = store.forget("family", &id, &first.memory_id)?;
-
-        assert_eq!(
-            result,
-            AgentMemoryForgetResult {
-                memory_id: first.memory_id.clone(),
-                deleted: true,
-            }
-        );
-        let records = store.read_records("family", &id)?;
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].memory_id, second.memory_id);
-        assert_eq!(records[0].title, "Second");
-        let content = fs::read_to_string(store.path_for("family", &id))?;
-        assert!(!content.contains(&first.memory_id));
-        assert!(content.contains(&second.memory_id));
-        assert_eq!(content.matches("# MobKit Agent Memory").count(), 1);
-
-        let missing = store.forget("family", &id, &first.memory_id)?;
-        assert_eq!(
-            missing,
-            AgentMemoryForgetResult {
-                memory_id: first.memory_id,
-                deleted: false,
-            }
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn markdown_store_serializes_concurrent_identity_writes() -> Result<(), Box<dyn Error>> {
-        let dir = tempfile::tempdir()?;
-        let store = Arc::new(MarkdownAgentMemoryStore::open(dir.path())?);
-        let id = identity()?;
-        let writers = 16;
-        let barrier = Arc::new(Barrier::new(writers));
-        let mut handles = Vec::new();
-
-        for idx in 0..writers {
-            let store = store.clone();
-            let id = id.clone();
-            let barrier = barrier.clone();
-            handles.push(std::thread::spawn(move || {
-                barrier.wait();
-                store
-                    .remember(
-                        "family",
-                        &id,
-                        NewAgentMemory {
-                            title: format!("Concurrent {idx}"),
-                            body: format!("Concurrent body {idx}"),
-                            tags: Vec::new(),
-                        },
-                    )
-                    .map(|_| ())
-                    .map_err(|err| err.to_string())
-            }));
-        }
-
-        for handle in handles {
-            handle
-                .join()
-                .map_err(|_| std::io::Error::other("writer panicked"))?
-                .map_err(std::io::Error::other)?;
-        }
-
-        let records = store.read_records("family", &id)?;
-
-        assert_eq!(records.len(), writers);
-        for idx in 0..writers {
-            assert!(
-                records
-                    .iter()
-                    .any(|record| record.title == format!("Concurrent {idx}")
-                        && record.body == format!("Concurrent body {idx}")),
-                "missing record {idx}: {records:#?}"
-            );
-        }
+        assert!(stopword_only.is_empty());
         Ok(())
     }
 
@@ -2611,252 +2035,6 @@ mod tests {
 
         assert_eq!(ids.len(), 1_024);
         assert!(ids.iter().all(|id| id.starts_with("mem-")));
-    }
-
-    #[test]
-    fn markdown_store_assigns_unique_ids_to_identical_concurrent_writes()
-    -> Result<(), Box<dyn Error>> {
-        let dir = tempfile::tempdir()?;
-        let store = Arc::new(MarkdownAgentMemoryStore::open(dir.path())?);
-        let id = identity()?;
-        let writers = 32;
-        let barrier = Arc::new(Barrier::new(writers));
-        let mut handles = Vec::new();
-
-        for _ in 0..writers {
-            let store = store.clone();
-            let id = id.clone();
-            let barrier = barrier.clone();
-            handles.push(std::thread::spawn(move || {
-                barrier.wait();
-                store
-                    .remember(
-                        "family",
-                        &id,
-                        NewAgentMemory {
-                            title: "Same title".to_string(),
-                            body: "Same body".to_string(),
-                            tags: Vec::new(),
-                        },
-                    )
-                    .map(|record| record.memory_id)
-                    .map_err(|err| err.to_string())
-            }));
-        }
-
-        let mut returned_ids = BTreeSet::new();
-        for handle in handles {
-            let memory_id = handle
-                .join()
-                .map_err(|_| std::io::Error::other("writer panicked"))?
-                .map_err(std::io::Error::other)?;
-            assert!(returned_ids.insert(memory_id));
-        }
-
-        let records = store.read_records("family", &id)?;
-        let persisted_ids = records
-            .iter()
-            .map(|record| record.memory_id.clone())
-            .collect::<BTreeSet<_>>();
-
-        assert_eq!(records.len(), writers);
-        assert_eq!(returned_ids.len(), writers);
-        assert_eq!(persisted_ids.len(), writers);
-        assert_eq!(persisted_ids, returned_ids);
-        Ok(())
-    }
-
-    #[test]
-    fn markdown_store_serializes_cross_process_identity_writes() -> Result<(), Box<dyn Error>> {
-        let dir = tempfile::tempdir()?;
-        let writers = 8;
-        let exe = std::env::current_exe()?;
-        let mut children = Vec::new();
-
-        for idx in 0..writers {
-            children.push(
-                std::process::Command::new(&exe)
-                    .arg("--exact")
-                    .arg(CHILD_WRITE_TEST)
-                    .arg("--ignored")
-                    .arg("--test-threads=1")
-                    .env(CHILD_WRITE_ROOT_ENV, dir.path())
-                    .env(CHILD_WRITE_INDEX_ENV, idx.to_string())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .spawn()?,
-            );
-        }
-
-        for child in children {
-            let output = child.wait_with_output()?;
-            if !output.status.success() {
-                return Err(std::io::Error::other(format!(
-                    "child writer failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
-                    output.status.code(),
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                ))
-                .into());
-            }
-        }
-
-        let store = MarkdownAgentMemoryStore::open(dir.path())?;
-        let id = identity()?;
-        let records = store.read_records("family", &id)?;
-        let content = fs::read_to_string(store.path_for("family", &id))?;
-
-        assert_eq!(records.len(), writers);
-        assert_eq!(content.matches("# MobKit Agent Memory").count(), 1);
-        for idx in 0..writers {
-            assert!(
-                records
-                    .iter()
-                    .any(|record| record.title == format!("Process {idx}")
-                        && record.body == format!("Process body {idx}")),
-                "missing process record {idx}: {records:#?}"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "helper invoked by markdown_store_serializes_cross_process_identity_writes"]
-    fn markdown_store_child_process_write() -> Result<(), Box<dyn Error>> {
-        let Ok(root) = std::env::var(CHILD_WRITE_ROOT_ENV) else {
-            return Ok(());
-        };
-        let idx = std::env::var(CHILD_WRITE_INDEX_ENV)?.parse::<usize>()?;
-        let store = MarkdownAgentMemoryStore::open(root)?;
-        let id = identity()?;
-        store.remember(
-            "family",
-            &id,
-            NewAgentMemory {
-                title: format!("Process {idx}"),
-                body: format!("Process body {idx}"),
-                tags: Vec::new(),
-            },
-        )?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn contextual_recall_filters_by_build_terms() -> Result<(), Box<dyn Error>> {
-        let dir = tempfile::tempdir()?;
-        let store = Arc::new(MarkdownAgentMemoryStore::open(dir.path())?);
-        let id = identity()?;
-        store.remember(
-            "default",
-            &id,
-            NewAgentMemory {
-                title: "School run".to_string(),
-                body: "Pick up kids before calendar planning.".to_string(),
-                tags: Vec::new(),
-            },
-        )?;
-        store.remember(
-            "default",
-            &id,
-            NewAgentMemory {
-                title: "Unrelated".to_string(),
-                body: "Rust release checklist.".to_string(),
-                tags: Vec::new(),
-            },
-        )?;
-
-        let customizer = AgentMemoryCustomizer::new(
-            store,
-            AgentMemoryConfig {
-                selection: AgentMemorySelection::Contextual,
-                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
-                ..AgentMemoryConfig::default()
-            },
-        );
-        let context = AgentBuildContext {
-            identity: id,
-            active_peers: Vec::new(),
-            managed_edges: Vec::new(),
-            runtime_services: Default::default(),
-        };
-        let mut spec = durable_spec()?;
-        spec.labels
-            .insert("task".to_string(), "calendar".to_string());
-        let mut draft = draft();
-
-        customizer
-            .customize_build(&context, &spec, &mut draft)
-            .await?;
-
-        assert_eq!(draft.additional_instructions.len(), 1);
-        assert!(draft.additional_instructions[0].contains("School run"));
-        assert!(!draft.additional_instructions[0].contains("Unrelated"));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn contextual_recall_scores_terms_and_ignores_stopwords() -> Result<(), Box<dyn Error>> {
-        let dir = tempfile::tempdir()?;
-        let store = MarkdownAgentMemoryStore::open(dir.path())?;
-        let id = identity()?;
-        store.remember(
-            "default",
-            &id,
-            NewAgentMemory {
-                title: "Passport location".to_string(),
-                body: "The passport is in the blue travel folder.".to_string(),
-                tags: vec!["travel".to_string()],
-            },
-        )?;
-        store.remember(
-            "default",
-            &id,
-            NewAgentMemory {
-                title: "Unrelated".to_string(),
-                body: "This contains only generic words where and the.".to_string(),
-                tags: Vec::new(),
-            },
-        )?;
-
-        let matches = store
-            .recall(AgentMemoryRecallRequest {
-                identity: id.clone(),
-                realm: "default".to_string(),
-                query_text: Some("where did I put the passport".to_string()),
-                query_terms: vec!["where did I put the passport".to_string()],
-                selection: AgentMemorySelection::Contextual,
-                max_entries: 8,
-            })
-            .await?;
-
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].title, "Passport location");
-
-        let query_text_only = store
-            .recall(AgentMemoryRecallRequest {
-                identity: id.clone(),
-                realm: "default".to_string(),
-                query_text: Some("I need the passport for travel".to_string()),
-                query_terms: Vec::new(),
-                selection: AgentMemorySelection::Contextual,
-                max_entries: 8,
-            })
-            .await?;
-        assert_eq!(query_text_only.len(), 1);
-        assert_eq!(query_text_only[0].title, "Passport location");
-
-        let stopword_only = store
-            .recall(AgentMemoryRecallRequest {
-                identity: id,
-                realm: "default".to_string(),
-                query_text: Some("where did I put the".to_string()),
-                query_terms: vec!["where did I put the".to_string()],
-                selection: AgentMemorySelection::Contextual,
-                max_entries: 8,
-            })
-            .await?;
-        assert!(stopword_only.is_empty());
-        Ok(())
     }
 
     struct CapturingProvider {
@@ -3169,54 +2347,6 @@ mod tests {
         let injected = injector
             .inject_for_turn(&identity()?, None, &content)
             .await?;
-
-        assert!(injected.is_empty());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn runtime_injector_timeout_can_preempt_locked_markdown_recall()
-    -> Result<(), Box<dyn Error>> {
-        let dir = tempfile::tempdir()?;
-        let store = MarkdownAgentMemoryStore::open(dir.path())?;
-        let id = identity()?;
-        store.remember(
-            "default",
-            &id,
-            NewAgentMemory {
-                title: "Locked memory".to_string(),
-                body: "This record should not block the live turn forever.".to_string(),
-                tags: vec!["locked".to_string()],
-            },
-        )?;
-        let locked = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(store.path_for("default", &id))?;
-        locked.lock_exclusive()?;
-        let injector = AgentMemoryRuntimeInjector::new(
-            Arc::new(store),
-            AgentMemoryConfig {
-                selection: AgentMemorySelection::Always,
-                recall_timeout_ms: 25,
-                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
-                ..AgentMemoryConfig::default()
-            },
-        );
-        let content = meerkat_core::ContentInput::Text("hello".to_string());
-
-        let result = tokio::time::timeout(
-            Duration::from_millis(500),
-            injector.inject_for_turn(&id, None, &content),
-        )
-        .await;
-        locked.unlock()?;
-        drop(locked);
-        let injected = match result {
-            Ok(Ok(injected)) => injected,
-            Ok(Err(err)) => return Err(err.into()),
-            Err(_) => return Err("locked markdown recall should respect timeout".into()),
-        };
 
         assert!(injected.is_empty());
         Ok(())
@@ -3551,11 +2681,10 @@ memory = false
         .await?;
         assert!(disabled.is_none());
 
-        // Providers without authored writes (markdown) never get the tool.
-        let markdown: Arc<dyn AgentMemoryProvider> =
-            Arc::new(MarkdownAgentMemoryStore::open(dir.path())?);
+        // Custom recall-only providers never get the tool.
+        let recall_only: Arc<dyn AgentMemoryProvider> = Arc::new(FailingProvider);
         assert!(
-            recorder_dispatcher(markdown, AgentMemoryConfig::default())
+            recorder_dispatcher(recall_only, AgentMemoryConfig::default())
                 .await?
                 .is_none()
         );

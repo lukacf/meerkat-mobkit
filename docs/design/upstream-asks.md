@@ -297,9 +297,9 @@ gates the compaction commit — "never lose the only copy") and compose with
 ask 3's exclusion so a curated summary is not itself re-indexed later.
 Marked **later** in §13 — valuable, not urgent.
 
-**MobKit interim behavior.** Meerkat's standard compaction stays as-is. The
-Hygienist ships as a boundary-triggered curation pass using meerkat's
-existing audited same-session transcript revisions
+**MobKit internal parked engine.** Meerkat's standard compaction stays as-is.
+The retained Hygienist engine can use meerkat's existing audited same-session
+transcript revisions
 (`session/rewrite_transcript` / `session/transcript_revision` /
 `session/restore_transcript_revision`), staged and validated like any other
 memory mutation.
@@ -308,9 +308,10 @@ memory mutation.
 meerkat 0.7.9).** The revision *apply* surface is reachable and used:
 `PersistentSessionService` implements `SessionServiceTranscriptEditExt`
 (`rewrite_session_transcript` / `restore_session_transcript_revision`) and
-MobKit threads the concrete typed handle to the Hygienist at gateway
-bootstrap (the erased `MobSessionService` does not carry the edit
-extension). One adjacent read gap remains: **no `SessionService`-level API
+MobKit's internal seam can accept the concrete typed service (the erased
+`MobSessionService` does not carry the edit extension), but the public SDK and
+gateway do not activate it in this release. One adjacent read gap remains:
+**no `SessionService`-level API
 exposes the current transcript head revision id.**
 `Session::transcript_revision()` computes it, but only on an owned
 `Session`; `read_transcript_revision` requires already knowing a revision

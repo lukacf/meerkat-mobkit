@@ -8,22 +8,6 @@ Modes:
                              resolution, unique fixture names, expected ids
                              present in their manifests. This is what
                              `make ci` gates on in harness v0.
-  --stage selector --mode mock
-                             Run a trivial deterministic mock selector
-                             (exact title-word overlap) against the selector
-                             fixtures and print a scorecard. The mock exists
-                             to exercise the scorecard plumbing; its misses
-                             never fail the run.
-  --stage selector --mode live
-                             Drive the real Selector through the
-                             `selector-eval` binary, N=3 runs per fixture
-                             with shuffled manifests; score must_select /
-                             must_not_select and shuffle stability (§11).
-                             Without resolvable provider auth the run SKIPs
-                             live scoring (selector-eval exit 3) and falls
-                             back to `selector-eval --mock`, which exercises
-                             the full prompt/parse plumbing deterministically
-                             and never gates.
   --stage distiller --mode mock
                              Run the trivial deterministic mock distiller
                              (extracts nothing — the doctrine's preferred
@@ -214,6 +198,7 @@ HYGIENIST_FIXTURES_DIR = EVALS_DIR / "fixtures" / "hygienist"
 INVARIANT_FIXTURES_DIR = EVALS_DIR / "fixtures" / "invariants"
 
 KNOWN_STAGES = ("selector", "distiller", "steward", "hygienist")
+RUNNABLE_STAGES = ("distiller", "steward", "hygienist")
 MEMORY_KINDS = (
     "Preference",
     "Fact",
@@ -1967,7 +1952,7 @@ def main():
         action="store_true",
         help="validate profiles and fixtures (default when no mode is given)",
     )
-    parser.add_argument("--stage", choices=KNOWN_STAGES, help="judgment stage to run")
+    parser.add_argument("--stage", choices=RUNNABLE_STAGES, help="judgment stage to run")
     parser.add_argument(
         "--mode", choices=("mock", "live"), help="run the stage against its fixtures"
     )

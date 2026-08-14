@@ -4,6 +4,18 @@ All notable changes to the Python SDK are documented here.
 
 ## Unreleased
 
+- Breaking (mobkit 0.8.16, tracking meerkat 0.8.22's exact helper contract):
+  `spawn_helper` and `fork_helper` now require keyword arguments
+  `result_label: str` and `max_text_bytes: int`, mirroring the required wire
+  fields; the byte bound is validated upstream before admission. The response
+  regains `session_id` (exact turn session identity), populating the existing
+  optional `HelperResult.session_id` that older releases left `None`.
+
+- Breaking: removed `MobKitBuilder.scheduling(...)`, static schedule-file
+  discovery, and `MobHandle.scheduling_evaluate` / `scheduling_dispatch`.
+  Create durable schedules through Meerkat schedule tools or
+  `ScheduleService`; `host_runnables` and `callback/schedule_fire` remain.
+
 - Gateway stderr is now INHERITED by default, so tracing lines, panic hooks,
   and storage-migration progress reach the host process's stderr. The old
   default sent it to `/dev/null`, which cost one production fleet a week of

@@ -62,7 +62,11 @@ use meerkat_client::TestClient;
 use meerkat_core::comms::{CommsCommand, PeerRoute, PeerSendability};
 use meerkat_core::types::HandlingMode;
 use meerkat_mob::{MobDefinition, SpawnMemberSpec};
-use meerkat_mobkit::contact_directory::ContactDirectory;
+use meerkat_mobkit::contact_directory::{ContactDirectory, ContactEntry, MobTransport};
+use meerkat_mobkit::runtime::cross_mob_control::{
+    ControlGrant, ControlGrantTable, ControlMemberScope, ControlVerb,
+};
+use meerkat_mobkit::runtime::cross_mob_remote::{RemoteMobError, RemoteMobProxy};
 use meerkat_mobkit::{GatewayPeerKeys, UnifiedRuntime, UnifiedRuntimeBuilder};
 
 const MOB_TOML_A: &str = r#"
@@ -98,7 +102,25 @@ fn tcp_member_comms_config() -> meerkat::Config {
     config
 }
 
-async fn build_runtime(mob_toml: &str, control_listen: &str) -> UnifiedRuntime {
+fn grants_for(caller: &GatewayPeerKeys, member: &str) -> ControlGrantTable {
+    let mut grants = ControlGrantTable::new();
+    grants.insert(
+        caller.pubkey_bytes(),
+        ControlGrant::new(
+            "peer-gateway",
+            ControlVerb::member_plane(),
+            ControlMemberScope::members([member]),
+        ),
+    );
+    grants
+}
+
+async fn build_runtime(
+    mob_toml: &str,
+    control_listen: &str,
+    keys: GatewayPeerKeys,
+    grants: ControlGrantTable,
+) -> UnifiedRuntime {
     let definition = MobDefinition::from_toml(mob_toml).expect("parse mob definition");
     let mut runtime = Box::pin(
         UnifiedRuntimeBuilder::default()
@@ -106,11 +128,12 @@ async fn build_runtime(mob_toml: &str, control_listen: &str) -> UnifiedRuntime {
             .default_llm_client(Arc::new(TestClient::default()))
             .meerkat_config(tcp_member_comms_config())
             .control_listen(control_listen)
+            .control_grants(grants)
             .build(),
     )
     .await
     .expect("build runtime");
-    runtime.set_gateway_peer_keys(GatewayPeerKeys::ephemeral());
+    runtime.set_gateway_peer_keys(keys);
     runtime
 }
 
@@ -191,9 +214,67 @@ fn assert_acked(receipt: meerkat_core::comms::SendReceipt, leg: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn configured_listener_without_grants_refuses_every_caller() {
+    let definition = MobDefinition::from_toml(MOB_TOML_B).expect("parse mob definition");
+    let server_keys = GatewayPeerKeys::ephemeral();
+    let mut runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(definition)
+            .default_llm_client(Arc::new(TestClient::default()))
+            .meerkat_config(tcp_member_comms_config())
+            .control_listen("tcp://127.0.0.1:0")
+            .build(),
+    )
+    .await
+    .expect("build deny-all listener");
+    runtime.set_gateway_peer_keys(server_keys.clone());
+
+    let address = runtime
+        .control_listener_advertised_address()
+        .expect("listener bound");
+    let entry = ContactEntry {
+        mob_id: "mob-b".to_string(),
+        transport: MobTransport::Tcp(
+            address
+                .strip_prefix("tcp://")
+                .expect("tcp listener address")
+                .to_string(),
+        ),
+        pubkey: Some(server_keys.pubkey_bytes()),
+        require_signed_control: Some(true),
+    };
+    let caller = Arc::new(GatewayPeerKeys::ephemeral());
+    let proxy = RemoteMobProxy::from_entry_with_caller(&entry, Some(caller))
+        .expect("valid contact")
+        .expect("tcp proxy");
+    let error = proxy
+        .lookup_member("bob")
+        .await
+        .expect_err("an omitted grant table must deny every caller");
+    assert!(
+        matches!(
+            error,
+            RemoteMobError::ControlRequestUnauthorized { ref code, .. }
+                if code == "caller_not_granted"
+        ),
+        "unexpected deny-all result: {error:?}"
+    );
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn tcp_control_round_trip_wires_and_delivers_both_ways() {
+    let keys_a = GatewayPeerKeys::ephemeral();
+    let keys_b = GatewayPeerKeys::ephemeral();
     // B first: its bound control address feeds A's contact directory.
-    let rt_b = build_runtime(MOB_TOML_B, "tcp://127.0.0.1:0").await;
+    let rt_b = build_runtime(
+        MOB_TOML_B,
+        "tcp://127.0.0.1:0",
+        keys_b.clone(),
+        grants_for(&keys_a, "bob"),
+    )
+    .await;
     let control_b = rt_b
         .control_listener_advertised_address()
         .expect("B bound a control listener");
@@ -202,7 +283,13 @@ async fn tcp_control_round_trip_wires_and_delivers_both_ways() {
         "bound control address must carry the real port: {control_b}"
     );
 
-    let mut rt_a = build_runtime(MOB_TOML_A, "tcp://127.0.0.1:0").await;
+    let mut rt_a = build_runtime(
+        MOB_TOML_A,
+        "tcp://127.0.0.1:0",
+        keys_a,
+        grants_for(&keys_b, "alice"),
+    )
+    .await;
     let pubkey_b = rt_b.gateway_peer_keys().expect("keys").pubkey_b64();
     let dir_a = ContactDirectory::from_toml(&format!(
         r#"
@@ -303,15 +390,29 @@ async fn tcp_control_round_trip_wires_and_delivers_both_ways() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn uds_control_round_trip_wires_both_sides() {
+    let keys_a = GatewayPeerKeys::ephemeral();
+    let keys_b = GatewayPeerKeys::ephemeral();
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("mob-b-control.sock");
-    let rt_b = build_runtime(MOB_TOML_B, &format!("uds://{}", socket.display())).await;
+    let rt_b = build_runtime(
+        MOB_TOML_B,
+        &format!("uds://{}", socket.display()),
+        keys_b.clone(),
+        grants_for(&keys_a, "bob"),
+    )
+    .await;
     let control_b = rt_b
         .control_listener_advertised_address()
         .expect("B bound a control listener");
     assert_eq!(control_b, format!("uds://{}", socket.display()));
 
-    let mut rt_a = build_runtime(MOB_TOML_A, "tcp://127.0.0.1:0").await;
+    let mut rt_a = build_runtime(
+        MOB_TOML_A,
+        "tcp://127.0.0.1:0",
+        keys_a,
+        grants_for(&keys_b, "alice"),
+    )
+    .await;
     let pubkey_b = rt_b.gateway_peer_keys().expect("keys").pubkey_b64();
     let dir_a = ContactDirectory::from_toml(&format!(
         r#"

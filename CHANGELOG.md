@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- **Item 14 phase B** - removed the second scheduling authority as one breaking
+  contract change. The stateless `mobkit/scheduling/evaluate` and
+  `mobkit/scheduling/dispatch` methods now return `-32601`,
+  `runtime_options.scheduling_files` is rejected, and the Rust/Python/
+  TypeScript static-evaluation surfaces are gone. `MOBKIT_CONTRACT_VERSION`
+  is now `0.5.0`. Durable Meerkat `ScheduleService` storage, schedule tools,
+  firing hosts, targets, `host_runnables`, and `callback/schedule_fire` remain
+  the single scheduling path.
+
+## [0.8.16] - 2026-08-11
+
+Paired release on meerkat v0.8.22. Delivers the owner-ratified 26-item
+program; every item's disposition is stated below, including the items
+deliberately refused and the ones shipped as documented partials.
+
+### Changed
+- Meerkat pins `=0.8.22`. Ported nine adaptation seams plus the normalized
+  provider-accounting contract: a stream that carries no `UsageUpdate` now
+  fails its turn closed, so every LLM double must emit accounting.
+- **Item 15** - console identity self-heal is demoted. The four
+  identity-authority mutation sites in `inspect_identity` return typed errors
+  instead of healing. A READ-ONLY console session (not merely a VIEW-scoped
+  principal) could previously reach Suspend -> acquire_leases -> fence advance
+  -> Broken; healing keeps its four write-path callers.
+- **Item 13a** - the schedule executor lease is adopted as OBSERVATION ONLY.
+  0.8.22's lease fences *claiming*, not firing-intent writes, so
+  `FiringHostGatedScheduleTools` is RETAINED. Operator text now states that
+  `Held` is a BOUNDED FACT and not proof of liveness: a host that died inside
+  its lease window still reads `Held` for up to the lease duration.
+- **Items 9, 10, 16** - dispatcher, gateway-composition and identity-resolution
+  unification are partial BY DESIGN; the ratified text forbids a big-bang
+  rewrite, so only domains that could be unified completely were, and the
+  remainder is handed forward as a survey and a delta list.
+- **Item 21** - scoped to the dead `Resumed.snapshot` field. `RestoreOutcome`
+  has four live production consumers, so the item's title overreached.
+
+### Added
+- **Item 2** - remote runtime-host lifecycle: durable pairing, endpoint
+  identity, capability discovery, health, reconnect and placement.
+- **Item 3** - real fork through `UnifiedRuntime`, wrapping meerkat's durable
+  `fork_member` and preserving running-source rejection.
+- **Item 5** - per-slot WorkGraph store injection. `workgraph_store()` on
+  `UnifiedRuntimeBuilder`, threaded through all THREE bootstrap paths;
+  wiring only the persistent paths would have left a caller who sets a store
+  without a state path silently on the memory fallback.
+- **Item 6** - host-granted WorkGraph namespaces, scoped to meerkat's
+  canonical mob realm.
+- **Item 7** - WorkGraph transition facts bridged into event and SSE surfaces
+  as lossy wake accelerants.
+- **Item 11** - embodiment and restore doors merged into one per-identity
+  park-and-continue path.
+- **Item 12** - the declared-versus-resolved capability invariant.
+- **Item 19** - thin transcript-edit exposure.
+- **Item 23** - the LLM selector is re-homed and then deleted, in that order:
+  `AnnotatedRecord` serves the lexical recall path, so deleting first would
+  have broken default recall.
+- **Item 25** - BREAKING Rust API removal: `MarkdownAgentMemoryStore` and
+  `UnifiedRuntimeBuilder::persistent_agent_memory(...)` are deleted. Markdown
+  is no longer a live agent-memory backend; its parser and file layout remain
+  crate-private solely for the one-shot SQLite import, which preserves ids,
+  tags and timestamps before renaming each source to `.md.imported`.
+- **Item 26** - public-surface cleanup for deleted and parked capabilities.
+- **Item 20** - Hygienist is PARKED, not deleted, pending real fork plus
+  bounded projection proven on OpenAI and Anthropic.
+- Memory output budgets (`max_output_tokens` on Steward and Distiller) are
+  reachable from the Python and TypeScript SDKs and from the gateway
+  allowlists. Hygienist is intentionally excluded from that public surface:
+  absent/false/disabled config remains migration-compatible, while any
+  activation-shaped value is refused with invalid params.
+
+### Fixed
+- **SIGTERM is handled by both gateway binaries.** They waited on
+  `ctrl_c()`, which is SIGINT only, so container runtimes never ran the
+  graceful path - and since 0.8.22 an ungraceful stop leaves the schedule
+  executor lease held for up to 60s, silently suppressing schedule firing.
+  The 2-minute claim watchdog is too coarse to observe it.
+- The scope-pinned WorkGraph wrapper forwards the inner catalog surface.
+  Leaving `tool_catalog_capabilities()`/`tool_catalog()` on their trait
+  defaults silently downgraded the composed dispatcher to a non-exact, empty
+  catalog - a different surface than the one being wrapped.
+- Test integrity: MobKit's LLM doubles conform to the 0.8.22 accounting
+  contract; assertions select their request by CONTENT rather than by
+  position; turn readiness is a terminal event rather than a timer. A
+  non-conformant double had been failing every turn in one file since 0.8.22
+  while three tests passed anyway, because they only asserted that a request
+  was ISSUED.
+
+### Refused, with primary-source evidence
+- **Item 22** (remove single-shot gateway mode) - REFUSED. Its gating
+  condition was "if a downstream census confirms no use", and it does not
+  clear: the TypeScript SDK publicly exports the one-shot transports and
+  clients, and they spawn this binary with no arguments.
+- **Item 24** (remove operator-scope machinery) - NO CHANGE. The premise
+  ("zero activators") is false: `rpc_gateway` installs
+  `ConsolePrincipalOperatorResolver`. `TrustTier::Operator` and re-derivation
+  metadata carry real policy meaning and are retained.
+- **Item 8** (delete `workgraph_admission`) - REFUSED pending the
+  store-owned refusal contract actually being active.
+
+### Not in this release
+- **Item 4** (bounded helper-result path) and **item 27** (shell Allow-8
+  deletion and heal) are not started.
+- **Item 17** (recall and projection routing) is externally gated on field
+  confirmation of typed recall without fallback.
+
 ## [0.8.15] - 2026-08-08
 
 Paired release on meerkat v0.8.21.

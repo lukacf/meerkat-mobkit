@@ -28,7 +28,8 @@ Memory is what makes identity real. MobKit already made the architectural bet th
 identities are durable and sessions are disposable embodiments (materialize /
 resume / respawn / reset). Today that bet is only half-kept: an identity survives
 respawn, but almost everything it learned does not. The shipped `agent_memory`
-layer preserves explicitly-remembered markdown records; everything else — the
+layer preserves explicitly-remembered records in per-realm SQLite; legacy
+Markdown records are accepted only as one-shot import input. Everything else — the
 session's accumulated judgment, the mob's collective discoveries, the operator's
 corrections — is abandoned at every rotation, and what *is* preserved is
 append-only, contradiction-blind, and re-injected wastefully.
@@ -237,9 +238,8 @@ operates on them:
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│ JUDGMENT PLANE (all LLM, all calibrated, all off-turn except       │
-│ the Selector):                                                     │
-│   Recorder · Selector · Distiller · Steward/Dreamer · Hygienist    │
+│ JUDGMENT PLANE (calibrated LLM stages, off-turn):                  │
+│   Recorder · Distiller · Steward/Dreamer · Hygienist (parked)      │
 └──────┬────────────────────────┬───────────────────────┬────────────┘
        │ writes (staged)        │ reads                 │ revises (audited)
 ┌──────▼──────────┐    ┌────────▼─────────┐    ┌────────▼───────────┐
@@ -256,7 +256,8 @@ operates on them:
 The **recall coordinator** (§9) is the one new runtime component: a deterministic
 shell that owns scope composition, candidate gathering, latency/byte budgets,
 provenance-chain dedup, echo-safe delivery, inbound envelope defanging, and the
-injection ledger — with the LLM Selector as its single judgment stage. It has a
+injection ledger. Recall ranking is deterministic and has no LLM judgment stage.
+It has a
 *fixed* topology (bundled store now; hub candidates later per the roadmap), not a
 pluggable provider fan-out with score blending; `AgentMemoryProvider` remains the
 only storage extension seam.
@@ -280,7 +281,7 @@ MemoryRecord {
     kind: MemoryKind,                // Preference | Fact | Gotcha | Procedure
                                      //   | Relationship | OpenLoop | Reference
     title: String,                   // ≤200B
-    description: String,             // ≤400B — written FOR the Selector; this line
+    description: String,             // <=400B - written for retrieval ranking; this line
                                      //   is the retrieval contract
     body: String,                    // ≤64KiB; why/how-to-apply for behavioral kinds
     provenance: MemoryProvenance {
@@ -381,11 +382,12 @@ that the steward commits (§8.5). Realm scope is application/SDK-only.
 > says PROVISIONAL on purpose (§16 Q1 stays open; the enum leaves room for a
 > final keying). Recall composition activates on config **and** an
 > `OperatorResolver` (a trait seam so the §16 Q1 keying stays swappable).
-> **No shipped host installs a resolver**: the stock gateway pins it to
-> `None` and logs a loud startup warning when `provisional` is configured
-> without one — recall composition is INERT there because the intended
-> console-auth-principal keying needs session-to-principal plumbing that
-> has not landed (a library embedder can install a resolver today). Steward routing activates on the config knob alone, because
+> The shipped SDK gateway installs `ConsolePrincipalOperatorResolver` when
+> `provisional` is configured and shares it with the authenticated console
+> send path. Composition therefore adds operator scope only after a real
+> console principal has addressed the identity. Library embedders can install
+> another resolver; a resolver-less composition remains inert and warns
+> loudly. Steward routing activates on the config knob alone, because
 > operator-scope *proposals carry their own operator key*. The un-hold
 > ships as specified for proposals: pre-activation, an accept verdict on an
 > operator-scope proposal is deterministically downgraded to a hold, and
@@ -439,16 +441,18 @@ the traits knows about selection, budgets, or dreams — that separation is what
 lets the hub provider (roadmap F1) implement the same storage surface over a
 wire.
 
-Bundled store: **SQLite per realm** at
-`<persistent_state>/agent-memory/<realm>.sqlite3` (WAL) — the directory the
-markdown store already owns. **Not** `<persistent_state>/memory/`: that directory
+Bundled store: **SQLite per realm**, the sole bundled live backend, at
+`<persistent_state>/agent-memory/<realm>.sqlite3` (WAL). Legacy Markdown files
+under the realm directory are import inputs only: when the realm is first
+accessed and its SQLite connection opens, validated records are imported once
+and each source is renamed to `.md.imported`. **Not**
+`<persistent_state>/memory/`: that directory
 belongs to meerkat's session semantic memory (`AgentFactory` receives
 `persistent_state` as its store path and `HnswMemoryStore` creates
 `memory/memory.sqlite3` inside it — a realm literally named `memory` would
-collide byte-for-byte with meerkat's own database). The bundled store replaces
-full-file-rewrite markdown as the primary store; markdown remains as lossless
-export/import (`mobkit memory export`) for inspectability and hand-editing —
-imports go through the same staged-commit validation as steward writes.
+collide byte-for-byte with meerkat's own database). There is no live Markdown
+provider and no Markdown export command; imports go through the same
+staged-commit validation as steward writes.
 Deterministic write-time guards (these are structure, not judgment): exact
 content-hash duplicate short-circuits to the existing id; per-record byte caps;
 per-scope record-count and byte floors that *warn the steward* rather than
@@ -460,8 +464,9 @@ wire-compatible; add `update` (supersede), `manifest`, `propose`, and
 (plus the read-only `mobkit/memory/panel/*` family §9.3 grew); a standalone
 `propose` RPC and the `mob_memory/*` mirrors were not built — agent-side
 proposing goes through the memory tool's `propose_to_mob` and mob-scope reads
-compose through recall/manifest, which covered the need; markdown **import**
-shipped (auto-migration on first open) but the `mobkit memory export` command
+compose through recall/manifest, which covered the need; Markdown **import**
+shipped as a one-shot migration when a realm is first accessed and that realm's
+SQLite connection opens, but the `mobkit memory export` command
 has not — records remain inspectable via the panel RPCs and sqlite tooling
 until it lands. SDK/docs drift found by the survey is re-verified
 at implementation time rather than asserted here — current state as of this
@@ -773,7 +778,7 @@ semantically pristine.
 Phase-wise this ships last (§15); it is the highest-risk stage and depends on
 calibration infrastructure being real first.
 
-> **P4 as-built (Hygienist).** The apply seam is real: meerkat 0.7.9's
+> **P4 internal engine (Hygienist, parked).** The apply seam is real: meerkat 0.7.9's
 > `PersistentSessionService` implements `SessionServiceTranscriptEditExt`,
 > and the gateway threads the concrete typed handle to the Hygienist
 > (`memory/hygienist.rs`; the erased mob-layer session service does not
@@ -797,6 +802,9 @@ calibration infrastructure being real first.
 > Known gap (upstream-asks.md, ask 4 refinement): no service-level
 > head-revision read exists, so rewrites send `expected_parent_revision:
 > None` and §7.1 revision pinning stays `None` at capture time.
+> The public SDK and gateway do not activate this engine in the current
+> release. Only absent/disabled compatibility config is accepted, and no
+> OpenAI or Anthropic provider-proof claim is made.
 
 ---
 
@@ -805,8 +813,9 @@ calibration infrastructure being real first.
 The coordinator is deterministic runtime composition — the concerns that need a
 named owner: scope composition, candidate gathering, latency and byte budgets,
 provenance-chain dedup, echo-safe delivery choice, inbound defanging, and ledger
-writes. It is not a provider-fanout framework; its topology is fixed and its only
-judgment stage is the Selector.
+writes. It is not a provider-fanout framework; its topology is fixed and recall
+ranking is the deterministic lexical provider path. The retired LLM Selector is
+not part of composition.
 
 ### 9.1 What enters context, where — echo-safe by construction
 
@@ -814,7 +823,7 @@ judgment stage is the Selector.
 |---|---|---|---|---|
 | Build-time (`customize_build` → `additional_instructions`) | Behavioral protocol + composed **index** (budget ~8 KB) + selected bodies for orientation | materialize / resume / respawn / reset | system prompt (`Message::System`) | **yes** (excluded from indexing — verified) |
 | On-demand | `memory` tool (records), `memory_search` (session), each advertised in the index | agent-initiated | tool results | **yes** (excluded — verified) |
-| Per-turn ambient bodies | Selector-chosen record bodies, provenance-labeled, staleness-phrased | non-Steer sends | **off by default** until an echo-safe delivery path exists (upstream ask 1 — see coupling note below); opt-in `budgeted` mode meanwhile | no (that's why it defaults off) |
+| Per-turn ambient bodies | Lexically recalled record bodies, provenance-labeled, staleness-phrased | non-Steer sends | **off by default** until an echo-safe delivery path exists (upstream ask 1 - see coupling note below); opt-in `budgeted` mode meanwhile | no (that's why it defaults off) |
 
 This is the P0 posture change that actually fixes D1 rather than bounding it:
 every *default* surface is a message class meerkat already excludes from
@@ -1179,8 +1188,9 @@ initiative scope; hub work is the roadmap's.
   off by default with `budgeted` opt-in (D1 fixed by construction, D2 fixed in
   the opt-in path via the budget ladder + session dedup); provider trait v2 with
   supersede + tiered manifest; SQLite store at
-  `agent-memory/<realm>.sqlite3` with markdown import (one-shot migration;
-  export has not shipped — §7.3 as-built note); content-hash write
+  `agent-memory/<realm>.sqlite3` with Markdown import (one-shot migration when
+  the realm is first accessed and its SQLite connection opens; export has not
+  shipped — §7.3 as-built note); content-hash write
   guard (D4); deprecate + honestly rename the "Elephant" ledger backend with
   config compat (D5); re-verify and fix the SDK/docs drift list (§7.3); file
   upstream asks 1–3; land the bright-line CI ratchet (§12).

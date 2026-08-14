@@ -37,6 +37,21 @@ use crate::storage_health::{
     scratch_ring_buffer_slots,
 };
 
+/// The single definition of MobKit's normalized-provider-accounting contract
+/// for LLM test doubles, shared with the integration tests that include the
+/// same file through `#[path = "support/llm_usage.rs"]`.
+///
+/// meerkat 0.8.22 fails a turn closed when its stream carried no
+/// `LlmEvent::UsageUpdate`, and `LlmEvent::Done` is still constructible on its
+/// own - so a double that omits usage compiles and then fails every turn. The
+/// helpers in that file cannot hand out a `Done` without the `UsageUpdate`
+/// that must precede it. In-crate `#[cfg(test)]` doubles live in the lib and
+/// cannot reach `tests/`, so they reach the ONE definition from here rather
+/// than growing a second copy that can drift.
+#[cfg(test)]
+#[path = "../tests/support/llm_usage.rs"]
+pub(crate) mod test_llm_usage;
+
 pub(crate) const DELEGATE_IDLE_RETIRE_SECS_LABEL: &str = "implicit_delegate_idle_retire_secs";
 pub(crate) const DELEGATE_IDLE_RETIRE_DISABLED_LABEL: &str = "disabled";
 
@@ -369,6 +384,17 @@ impl meerkat_core::AgentLlmClient for ReplaySanitizingAgentLlmClient {
     ) -> Result<meerkat_core::schema::CompiledSchema, meerkat_core::schema::SchemaError> {
         self.inner.compile_schema(output_schema)
     }
+
+    // meerkat 0.8.22 adds `target_cache_lowering_capabilities` with an
+    // `Ok(Vec::new())` default. NOT forwarded, deliberately: its contract is
+    // "capabilities only from the lowering this client would use for THIS
+    // exact request", and `stream_response` above rewrites every message
+    // through `sanitize_message_for_stateless_replay` before the inner client
+    // sees it. Forwarding the caller's unsanitized messages would author a
+    // cache proof over bytes this wrapper never puts on the wire. The empty
+    // default is the truthful "no target lowering available", which is also
+    // what `request_pressure` (same measurement class, same reason) already
+    // answers here.
 }
 
 #[async_trait]
@@ -413,6 +439,16 @@ impl LlmClient for ReplaySanitizingLlmClient {
     ) -> Result<meerkat_core::schema::CompiledSchema, meerkat_core::schema::SchemaError> {
         self.inner.compile_schema(output_schema)
     }
+
+    // meerkat 0.8.22 adds `authored_cache_breakpoints` with an `Ok(Vec::new())`
+    // default. NOT forwarded, for the same reason as
+    // `target_cache_lowering_capabilities` on the `AgentLlmClient` wrapper
+    // above: `LlmClientAdapter` builds the request from the CANONICAL messages
+    // and asks this client to claim breakpoints over it, while `stream` below
+    // rewrites that request through
+    // `sanitize_llm_request_for_stateless_replay` before it leaves. A
+    // forwarded claim would describe a lowering that never reached the
+    // provider. Empty is the truthful claim set.
 }
 
 /// Async hook called before each session is created. Receives the mutable
@@ -521,11 +557,28 @@ impl PreBuildMobSessionService {
         let meerkat_mob::ResumeSessionLoad::Revivable(mut session) = load else {
             return Ok(load);
         };
+        self.overlay_runtime_archived_terminal_in_place(&mut session)
+            .await?;
+        Ok(meerkat_mob::ResumeSessionLoad::Revivable(session))
+    }
+
+    /// Body-level form of the overlay above.
+    ///
+    /// meerkat 0.8.22 moved operational resume off this wrapper's
+    /// `load_session_for_resume`: `materialize_session_resume_verdict` now
+    /// hands back an already-authorized body produced by the inner service's
+    /// durable-tail convergence. That override therefore applies the overlay
+    /// to the verdict's body directly, which needs the projection separated
+    /// from the `ResumeSessionLoad` carrier.
+    async fn overlay_runtime_archived_terminal_in_place(
+        &self,
+        session: &mut meerkat_core::Session,
+    ) -> Result<(), SessionError> {
         if session.lifecycle_terminal().is_some() {
-            return Ok(meerkat_mob::ResumeSessionLoad::Revivable(session));
+            return Ok(());
         }
         let Some(store) = self.archived_terminal_authority.as_ref() else {
-            return Ok(meerkat_mob::ResumeSessionLoad::Revivable(session));
+            return Ok(());
         };
         let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(session.id());
         let store_error = |detail: String| {
@@ -568,15 +621,32 @@ impl PreBuildMobSessionService {
                     ))
                 })?;
         }
-        Ok(meerkat_mob::ResumeSessionLoad::Revivable(session))
+        Ok(())
     }
 
     async fn prepare_create_request(
         &self,
         mut req: CreateSessionRequest,
-    ) -> Result<(CreateSessionRequest, SessionCreatedContext), SessionError> {
+    ) -> Result<
+        (
+            CreateSessionRequest,
+            SessionCreatedContext,
+            Option<crate::capability_invariant::MemberCapabilityInvariantContext>,
+        ),
+        SessionError,
+    > {
         (self.hook)(&mut req).await?;
-        ensure_shell_tooling_build_substrate(&mut req);
+        let resume_id = req
+            .build
+            .as_ref()
+            .filter(|build| build.initial_tool_filter.is_none())
+            .and_then(|build| build.resume_session.as_ref())
+            .map(|session| session.id().clone());
+        let persisted_resume = match resume_id {
+            Some(session_id) => self.load_persisted_session_absorbed(&session_id).await?,
+            None => None,
+        };
+        heal_legacy_shell_tool_visibility(&mut req, persisted_resume.as_ref());
         sanitize_create_session_request_llm_override(&mut req);
         // After the user hook (composes over any decorator it set) and after
         // sanitize (which only touches the raw llm_client_override).
@@ -584,19 +654,77 @@ impl PreBuildMobSessionService {
             crate::memory::dispatch_taint::attach_member_taint_decorator(&mut req, slot);
         }
 
+        // Capture the complete resolved profile declaration while the typed
+        // build options and actual supplied dispatchers still exist. The
+        // factory consumes both during materialization. Inline and realm
+        // profiles have already converged onto this same request boundary.
+        let capability_invariant = req.build.as_ref().and_then(
+            crate::capability_invariant::MemberCapabilityInvariantContext::from_build_options,
+        );
+
         let context = SessionCreatedContext {
             model: req.model.clone(),
             labels: req.labels.clone().unwrap_or_default(),
             system_prompt: req.system_prompt.as_set_prompt().map(ToString::to_string),
         };
-        Ok((req, context))
+        Ok((req, context, capability_invariant))
     }
 
     async fn complete_create(
         &self,
         result: meerkat_core::types::RunResult,
         context: SessionCreatedContext,
+        capability_context: Option<crate::capability_invariant::MemberCapabilityInvariantContext>,
     ) -> meerkat_core::types::RunResult {
+        if let Some(capability_context) = capability_context {
+            use crate::capability_invariant::{
+                CapabilityCatalogExactness, CapabilityInvariantObservation,
+                CapabilityInvariantUnverifiable,
+            };
+
+            let observation = match capability_context.catalog_exactness {
+                CapabilityCatalogExactness::Exact => {
+                    match self.inner.tool_scope_snapshot(&result.session_id).await {
+                        Ok(Some(scope)) => CapabilityInvariantObservation::ExactCatalog {
+                            declared: capability_context.declared.clone(),
+                            names: scope
+                                .known_base_names
+                                .into_iter()
+                                .map(meerkat_core::types::ToolName::into_string)
+                                .collect(),
+                        },
+                        Ok(None) => CapabilityInvariantObservation::Unverifiable {
+                            declared: capability_context.declared.clone(),
+                            cause: CapabilityInvariantUnverifiable::CatalogUnavailable,
+                        },
+                        Err(error) => CapabilityInvariantObservation::Unverifiable {
+                            declared: capability_context.declared.clone(),
+                            cause: CapabilityInvariantUnverifiable::CatalogReadFailed(
+                                error.to_string(),
+                            ),
+                        },
+                    }
+                }
+                CapabilityCatalogExactness::NonExactActualDispatcher => {
+                    CapabilityInvariantObservation::Unverifiable {
+                        declared: capability_context.declared.clone(),
+                        cause: CapabilityInvariantUnverifiable::NonExactCatalog,
+                    }
+                }
+            };
+            let decision = crate::capability_invariant::decide(observation);
+            let transition = crate::capability_invariant::transition_for(
+                crate::capability_invariant::CapabilityInvariantPolicy::WarnOnly,
+                decision,
+            );
+            crate::capability_invariant::emit_transition(
+                &capability_context.mob_id,
+                &capability_context.role,
+                &capability_context.member,
+                &result.session_id.to_string(),
+                &transition,
+            );
+        }
         if let Some(ref after_hook) = self.after_create_hook {
             after_hook(result.session_id.clone(), context).await;
         }
@@ -1450,44 +1578,86 @@ fn sanitize_create_session_request_llm_override(req: &mut CreateSessionRequest) 
     ));
 }
 
-const SHELL_BUILTIN_TOOL_NAMES: [&str; 4] = [
+#[cfg(test)]
+const NATIVE_SHELL_TOOL_NAMES: [&str; 4] = [
     "shell",
     "shell_job_status",
     "shell_jobs",
     "shell_job_cancel",
 ];
-const COMMS_TOOL_NAMES: [&str; 4] = ["peers", "send_message", "send_request", "send_response"];
+const LEGACY_SHELL_AND_COMMS_TOOL_NAMES: [&str; 8] = [
+    "shell",
+    "shell_job_status",
+    "shell_jobs",
+    "shell_job_cancel",
+    "peers",
+    "send_message",
+    "send_request",
+    "send_response",
+];
 
-fn shell_and_comms_tool_filter() -> meerkat_core::ToolFilter {
-    meerkat_core::ToolFilter::Allow(
-        SHELL_BUILTIN_TOOL_NAMES
-            .iter()
-            .chain(COMMS_TOOL_NAMES.iter())
-            .map(|name| (*name).to_string())
-            .collect(),
-    )
+fn is_legacy_shell_and_comms_allow_filter(filter: &meerkat_core::ToolFilter) -> bool {
+    let meerkat_core::ToolFilter::Allow(names) = filter else {
+        return false;
+    };
+    let actual = names
+        .iter()
+        .map(meerkat_core::ToolName::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected = LEGACY_SHELL_AND_COMMS_TOOL_NAMES
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    actual == expected
 }
 
-/// Shell is implemented by Meerkat's native builtin dispatcher, but MobKit
-/// profiles treat `tools.shell` as independent from general `tools.builtins`.
-/// When a profile asks for shell-only access, force the parent builtin
-/// substrate on and install a session-local allow filter so broad builtins
-/// remain hidden while shell and comms stay available.
-pub fn ensure_shell_tooling_build_substrate(req: &mut CreateSessionRequest) {
+/// Lift the exact legacy synthetic Allow-8 filter on resume.
+///
+/// Meerkat 0.8.22 composes shell as an independent native category, so MobKit
+/// must no longer enable the broad builtin category and hide the resulting
+/// surface behind a global allow-list. Existing sessions can still carry that
+/// old filter durably. Match only the byte-era fingerprint established from
+/// the HomeCore production specimen:
+///
+/// - active filter set-equals the four shell plus four comms tools;
+/// - staged filter set-equals the same set, or is `All` because the field was
+///   absent in the legacy serialized form;
+/// - this build has no explicit caller-supplied initial filter.
+///
+/// The repair is expressed through `initial_tool_filter = All`. Meerkat's
+/// generated visibility authority then applies and persists the transition,
+/// including witness cleanup. MobKit never rewrites the visibility document,
+/// so capability and inherited base filters remain untouched and owned by the
+/// upstream state machine.
+fn heal_legacy_shell_tool_visibility(
+    req: &mut CreateSessionRequest,
+    persisted_resume: Option<&meerkat_core::Session>,
+) {
     let Some(build) = req.build.as_mut() else {
         return;
     };
-    if matches!(
-        build.override_shell,
-        meerkat_core::ToolCategoryOverride::Enable
-    ) && matches!(
-        build.override_builtins,
-        meerkat_core::ToolCategoryOverride::Disable
-    ) {
-        build.override_builtins = meerkat_core::ToolCategoryOverride::Enable;
-        if build.initial_tool_filter.is_none() {
-            build.initial_tool_filter = Some(shell_and_comms_tool_filter());
-        }
+    if build.initial_tool_filter.is_some() {
+        return;
+    }
+    let Some(resume_session) = build.resume_session.as_ref() else {
+        return;
+    };
+    let Some(persisted_resume) = persisted_resume else {
+        return;
+    };
+    if resume_session.id() != persisted_resume.id() {
+        return;
+    }
+    let Ok(Some(state)) = persisted_resume.try_tool_visibility_state() else {
+        return;
+    };
+    if !is_legacy_shell_and_comms_allow_filter(&state.active_filter) {
+        return;
+    }
+    let staged_matches = is_legacy_shell_and_comms_allow_filter(&state.staged_filter)
+        || matches!(state.staged_filter, meerkat_core::ToolFilter::All);
+    if staged_matches {
+        build.initial_tool_filter = Some(meerkat_core::ToolFilter::All);
     }
 }
 
@@ -3903,6 +4073,30 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .revoke_mob_host_binding(mob_id, expected_binding_json, receipt_json)
             .await
     }
+
+    // meerkat 0.8.22: durable semantic high-water admission for V5 direct
+    // member binds. Its trait default is `Err(Unsupported)` - unlike the other
+    // two methods this facade leaves un-overridden
+    // (`activate_head_canonical_runtime_authority`,
+    // `load_session_resume_observation`), whose defaults forward through the
+    // `session_authority_ops()` carrier this facade already points at `inner`.
+    // `MeerkatMachine` turns any error here into a fail-closed
+    // `RuntimeDriverError::Internal`, so an unforwarded default would make
+    // every direct member bind fail on this facade's authority while the
+    // backing store implements the CAS. No projection or write-epoch bump is
+    // owed: this row is not a session snapshot.
+    async fn admit_direct_member_incarnation_high_water(
+        &self,
+        member_session_id: &str,
+        candidate: &meerkat_contracts::wire::supervisor_bridge::BridgeDirectMemberIncarnation,
+    ) -> Result<
+        meerkat_contracts::wire::supervisor_bridge::BridgeDirectMemberIncarnation,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .admit_direct_member_incarnation_high_water(member_session_id, candidate)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -4017,9 +4211,12 @@ macro_rules! delegate_mob_session_service {
                 &self,
                 req: CreateSessionRequest,
             ) -> Result<meerkat_core::types::RunResult, SessionError> {
-                let (req, context) = self.prepare_create_request(req).await?;
+                let (req, context, capability_context) =
+                    self.prepare_create_request(req).await?;
                 let result = self.inner.create_session(req).await?;
-                Ok(self.complete_create(result, context).await)
+                Ok(self
+                    .complete_create(result, context, capability_context)
+                    .await)
             }
             async fn start_turn(
                 &self,
@@ -4056,6 +4253,19 @@ macro_rules! delegate_mob_session_service {
                 id: &meerkat_core::types::SessionId,
             ) -> Result<(), SessionError> {
                 self.inner.interrupt(id).await
+            }
+            // meerkat 0.8.22 adds the exact-run hard cancel to `SessionService`
+            // with an `Err(Unsupported)` default. This wrapper already forwards
+            // the exact-run cooperative sibling
+            // (`cancel_after_boundary_for_run`); without the same forward here
+            // the decorator would answer "unsupported" on its own authority and
+            // hide the inner service's real exact-run interrupt.
+            async fn interrupt_run_if_current(
+                &self,
+                id: &meerkat_core::types::SessionId,
+                expected_run_id: &meerkat_core::lifecycle::RunId,
+            ) -> Result<bool, SessionError> {
+                self.inner.interrupt_run_if_current(id, expected_run_id).await
             }
             async fn cancel_after_boundary(
                 &self,
@@ -4253,18 +4463,50 @@ macro_rules! delegate_mob_session_service {
                 let load = self.inner.load_session_for_resume(session_id).await?;
                 self.overlay_runtime_archived_terminal(load).await
             }
-            async fn prepare_session_for_resume(
+            // meerkat 0.8.22: the required `prepare_session_for_resume` hook
+            // is DELETED from the trait. Its durable-tail convergence moved
+            // inside `PersistentSessionService`'s override of
+            // `materialize_session_resume_verdict`; the trait DEFAULT of that
+            // method is the non-persistent composition (read-only
+            // observations plus a `NonPersistent` receipt, no convergence).
+            // So a wrapper that merely drops the old passthrough compiles
+            // while recreating actors from stale committed authority whenever
+            // the physical head is ahead after a power cut. This override
+            // delegates the verdict to `inner` so its persistent convergence
+            // is reached, then re-applies the archived-terminal overlay to
+            // the authorized body. Under 0.8.21 the overlay rode along for
+            // free because the provided default composed from THIS wrapper's
+            // `load_session_for_resume`; the persistent route no longer calls
+            // that method, so the projection has to be re-applied here or the
+            // 0.8.6 "archived collapses into active" host confusion returns.
+            //
+            // `materialization == Revivable` is the exact 0.8.22 analogue of
+            // the `ResumeSessionLoad::Revivable` arm the overlay used to key
+            // on: `prepare_committed_boundary_resume` picks Revivable from
+            // the same two store facts this overlay probes (catalog terminal
+            // archived, or a Retired/Destroyed lifecycle row), so an `Active`
+            // materialization from that store can never be a body the overlay
+            // would have stamped. Widening the match would be a behaviour
+            // change, not a port fix.
+            async fn materialize_session_resume_verdict(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
-            ) -> Result<(), SessionError> {
-                self.inner.prepare_session_for_resume(session_id).await
+            ) -> Result<meerkat_mob::SessionResumeVerdict, SessionError> {
+                let mut verdict = self
+                    .inner
+                    .materialize_session_resume_verdict(session_id)
+                    .await?;
+                if let meerkat_mob::SessionResumeVerdict::ResumeAuthorized {
+                    materialization: meerkat_mob::SessionResumeMaterialization::Revivable,
+                    session,
+                    ..
+                } = &mut verdict
+                {
+                    self.overlay_runtime_archived_terminal_in_place(session)
+                        .await?;
+                }
+                Ok(verdict)
             }
-            // meerkat 0.8.21: the operational resume entry is the provided
-            // `materialize_session_resume_verdict`, composed from THIS
-            // wrapper's `load_session_for_resume` (so the archived-terminal
-            // overlay still applies) plus the delegated authority
-            // observation below. Delegating the verdict itself to `inner`
-            // would silently bypass the overlay.
             async fn observe_session_resume_authority(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -4278,34 +4520,47 @@ macro_rules! delegate_mob_session_service {
                 &self,
                 req: meerkat_core::service::CreateSessionRequest,
             ) -> Result<meerkat_core::RunResult, SessionError> {
-                let (req, context) = self.prepare_create_request(req).await?;
+                let (req, context, capability_context) =
+                    self.prepare_create_request(req).await?;
                 let result = self
                     .inner
                     .create_session_under_runtime_turn_boundary(req)
                     .await?;
-                Ok(self.complete_create(result, context).await)
+                Ok(self
+                    .complete_create(result, context, capability_context)
+                    .await)
             }
+            // meerkat 0.8.22: exact-actor creation now carries the
+            // owner-issued resume preparation receipt so persistent
+            // materialization can consume the already-converged committed
+            // boundary instead of repeating recovery. Forward it untouched.
             async fn create_session_with_actor_witness_under_runtime_turn_boundary(
                 &self,
                 req: meerkat_core::service::CreateSessionRequest,
+                resume_preparation: Option<meerkat_mob::SessionResumePreparationReceipt>,
                 actor_witness_slot: &meerkat_session::LiveSessionActorWitnessSlot,
             ) -> Result<meerkat_core::RunResult, SessionError> {
-                let (req, context) = self.prepare_create_request(req).await?;
+                let (req, context, capability_context) =
+                    self.prepare_create_request(req).await?;
                 let result = self
                     .inner
                     .create_session_with_actor_witness_under_runtime_turn_boundary(
                         req,
+                        resume_preparation,
                         actor_witness_slot,
                     )
                     .await?;
-                Ok(self.complete_create(result, context).await)
+                Ok(self
+                    .complete_create(result, context, capability_context)
+                    .await)
             }
             async fn create_session_with_machine_archived_resume_authority_under_runtime_turn_boundary(
                 &self,
                 req: meerkat_core::service::CreateSessionRequest,
                 authorization: meerkat_runtime::ArchivedSessionActorMaterializationAuthorization,
             ) -> Result<meerkat_core::RunResult, SessionError> {
-                let (req, context) = self.prepare_create_request(req).await?;
+                let (req, context, capability_context) =
+                    self.prepare_create_request(req).await?;
                 let result = self
                     .inner
                     .create_session_with_machine_archived_resume_authority_under_runtime_turn_boundary(
@@ -4313,24 +4568,34 @@ macro_rules! delegate_mob_session_service {
                         authorization,
                     )
                     .await?;
-                Ok(self.complete_create(result, context).await)
+                Ok(self
+                    .complete_create(result, context, capability_context)
+                    .await)
             }
+            // meerkat 0.8.22: same receipt threading as above, but the
+            // machine-authorized archived route requires it unconditionally
+            // (persistent materialization rejects a missing receipt).
             async fn create_session_with_machine_archived_resume_authority_and_actor_witness_under_runtime_turn_boundary(
                 &self,
                 req: meerkat_core::service::CreateSessionRequest,
                 authorization: meerkat_runtime::ArchivedSessionActorMaterializationAuthorization,
+                resume_preparation: meerkat_mob::SessionResumePreparationReceipt,
                 actor_witness_slot: &meerkat_session::LiveSessionActorWitnessSlot,
             ) -> Result<meerkat_core::RunResult, SessionError> {
-                let (req, context) = self.prepare_create_request(req).await?;
+                let (req, context, capability_context) =
+                    self.prepare_create_request(req).await?;
                 let result = self
                     .inner
                     .create_session_with_machine_archived_resume_authority_and_actor_witness_under_runtime_turn_boundary(
                         req,
                         authorization,
+                        resume_preparation,
                         actor_witness_slot,
                     )
                     .await?;
-                Ok(self.complete_create(result, context).await)
+                Ok(self
+                    .complete_create(result, context, capability_context)
+                    .await)
             }
             fn supports_persistent_sessions(&self) -> bool {
                 self.inner.supports_persistent_sessions()
@@ -4361,6 +4626,25 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<(), SessionError> {
                 self.inner
                     .interrupt_with_machine_authority(session_id, authority)
+                    .await
+            }
+            // meerkat 0.8.22: new exact-run machine-authorized hard cancel,
+            // trait default `Err(Unsupported)`. The mob provisioner's
+            // `CoreExecutorInterruptHandle::hard_cancel_run_if_current` calls
+            // this on the service it was handed - i.e. THIS wrapper - and only
+            // absorbs `NotRunning`, so an unforwarded default turns every
+            // exact-run cancel into `control_failed_runtime`. Forward bare: the
+            // `..._if_live` tolerance next door is specific to the idempotent
+            // cooperative-quiescence seam, and inventing a second tolerance here
+            // would mask a genuinely refused hard cancel.
+            async fn interrupt_run_with_machine_authority(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                expected_run_id: &meerkat_core::lifecycle::RunId,
+                authority: meerkat_runtime::MachineSessionControlAuthority,
+            ) -> Result<bool, SessionError> {
+                self.inner
+                    .interrupt_run_with_machine_authority(session_id, expected_run_id, authority)
                     .await
             }
             async fn cancel_after_boundary_with_machine_authority(
@@ -4419,6 +4703,28 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
                 self.inner.load_revivable_retired_session(session_id).await
             }
+            // meerkat 0.8.22: durable transcript fork moved onto the session
+            // service with an `Err(Unsupported)` default, and the mob handle's
+            // fork-based spawn calls it on the service it holds. Same forwarding
+            // class as `load_revivable_retired_session` above: not forwarding
+            // would make this wrapper claim the inner persistent service has no
+            // fork authority.
+            async fn fork_persisted_session(
+                &self,
+                source_session_id: &meerkat_core::types::SessionId,
+                message_count: Option<usize>,
+                tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+                target: meerkat_core::DurableSessionForkTarget,
+            ) -> Result<meerkat_core::SessionForkResult, SessionError> {
+                self.inner
+                    .fork_persisted_session(
+                        source_session_id,
+                        message_count,
+                        tool_access_policy,
+                        target,
+                    )
+                    .await
+            }
             async fn load_persisted_session_metadata(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -4439,12 +4745,15 @@ macro_rules! delegate_mob_session_service {
                 req: meerkat_core::service::CreateSessionRequest,
                 authorization: meerkat_runtime::ArchivedSessionActorMaterializationAuthorization,
             ) -> Result<meerkat_core::RunResult, SessionError> {
-                let (req, context) = self.prepare_create_request(req).await?;
+                let (req, context, capability_context) =
+                    self.prepare_create_request(req).await?;
                 let result = self
                     .inner
                     .create_session_with_machine_archived_resume_authority(req, authorization)
                     .await?;
-                Ok(self.complete_create(result, context).await)
+                Ok(self
+                    .complete_create(result, context, capability_context)
+                    .await)
             }
             async fn subscribe_session_events(
                 &self,
@@ -4494,6 +4803,28 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<(), SessionError> {
                 self.inner
                     .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary(session_id)
+                    .await
+            }
+            // meerkat 0.8.22: member-session disposal moved from the boundary
+            // archive above to this deadline-aware sibling, whose trait default
+            // is `Err(Unsupported)`. The provisioner routes only `Ok(())` and
+            // `NotFound` specially, so an unforwarded default makes EVERY member
+            // retirement archive fail and wedges the roster anchor in `retiring`.
+            // Bare forward on purpose: this mirrors the non-deadline boundary
+            // variant above, which is exactly the seam disposal used at 0.8.21.
+            // The stopped-session Retire tolerance lives only on
+            // `archive_with_mob_lifecycle_authority`, and it did not cover the
+            // disposal path before either - widening it here would be a
+            // behaviour change, not a port fix.
+            async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_before(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                deadline: meerkat_core::time_compat::Instant,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_before(
+                        session_id, deadline,
+                    )
                     .await
             }
             async fn execution_snapshot(
@@ -4673,9 +5004,14 @@ macro_rules! delegate_mob_session_service {
                     )
                     .await
             }
-            async fn publish_interaction_terminals(
+            // meerkat 0.8.22: terminal publication is keyed by the exact
+            // service-minted actor incarnation, not by SessionId. Retirement
+            // drops its mutation gate before calling publication code, so a
+            // delayed predecessor callback resolved only by id could target a
+            // successor actor. Forward the witness verbatim.
+            async fn publish_interaction_terminals_for_actor(
                 &self,
-                session_id: &meerkat_core::types::SessionId,
+                actor_witness: &meerkat_session::LiveSessionActorWitness,
                 events: &[meerkat_core::event::AgentEvent],
             ) -> Result<
                 Vec<
@@ -4684,7 +5020,7 @@ macro_rules! delegate_mob_session_service {
                 SessionError,
             > {
                 self.inner
-                    .publish_interaction_terminals(session_id, events)
+                    .publish_interaction_terminals_for_actor(actor_witness, events)
                     .await
             }
             async fn discard_live_session(
@@ -4751,7 +5087,6 @@ impl AfterCreateMobSessionService {
         mut req: CreateSessionRequest,
     ) -> (CreateSessionRequest, SessionCreatedContext) {
         sanitize_create_session_request_llm_override(&mut req);
-        ensure_shell_tooling_build_substrate(&mut req);
         let context = SessionCreatedContext {
             model: req.model.clone(),
             labels: req.labels.clone().unwrap_or_default(),
@@ -4812,6 +5147,17 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
     }
     async fn interrupt(&self, id: &meerkat_core::types::SessionId) -> Result<(), SessionError> {
         self.inner.interrupt(id).await
+    }
+    // meerkat 0.8.22 exact-run hard cancel, default `Err(Unsupported)` (see the
+    // same seam in `delegate_mob_session_service!`).
+    async fn interrupt_run_if_current(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        expected_run_id: &meerkat_core::lifecycle::RunId,
+    ) -> Result<bool, SessionError> {
+        self.inner
+            .interrupt_run_if_current(id, expected_run_id)
+            .await
     }
     async fn cancel_after_boundary(
         &self,
@@ -5002,15 +5348,22 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
         self.inner.load_session_for_resume(session_id).await
     }
-    async fn prepare_session_for_resume(
+    // meerkat 0.8.22: the required `prepare_session_for_resume` hook is
+    // DELETED; durable-tail convergence now lives inside
+    // `PersistentSessionService`'s override of
+    // `materialize_session_resume_verdict`, whose trait DEFAULT converges
+    // nothing. This wrapper adds no resume-side projection of its own, so the
+    // whole verdict delegates to `inner` - dropping the old passthrough and
+    // relying on the default would compile while silently resuming from stale
+    // committed authority.
+    async fn materialize_session_resume_verdict(
         &self,
         session_id: &meerkat_core::types::SessionId,
-    ) -> Result<(), SessionError> {
-        self.inner.prepare_session_for_resume(session_id).await
+    ) -> Result<meerkat_mob::SessionResumeVerdict, SessionError> {
+        self.inner
+            .materialize_session_resume_verdict(session_id)
+            .await
     }
-    // meerkat 0.8.21: operational resume rides the provided
-    // `materialize_session_resume_verdict` default over this wrapper's own
-    // load/observe pair; only the authority observation delegates.
     async fn observe_session_resume_authority(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -5032,15 +5385,22 @@ impl MobSessionService for AfterCreateMobSessionService {
         Ok(self.complete_create(result, context).await)
     }
 
+    // meerkat 0.8.22: forward the owner-issued resume preparation receipt
+    // (see the same seam in `delegate_mob_session_service!`).
     async fn create_session_with_actor_witness_under_runtime_turn_boundary(
         &self,
         req: meerkat_core::service::CreateSessionRequest,
+        resume_preparation: Option<meerkat_mob::SessionResumePreparationReceipt>,
         actor_witness_slot: &meerkat_session::LiveSessionActorWitnessSlot,
     ) -> Result<meerkat_core::RunResult, SessionError> {
         let (req, context) = self.prepare_create_request(req);
         let result = self
             .inner
-            .create_session_with_actor_witness_under_runtime_turn_boundary(req, actor_witness_slot)
+            .create_session_with_actor_witness_under_runtime_turn_boundary(
+                req,
+                resume_preparation,
+                actor_witness_slot,
+            )
             .await?;
         Ok(self.complete_create(result, context).await)
     }
@@ -5065,6 +5425,7 @@ impl MobSessionService for AfterCreateMobSessionService {
         &self,
         req: meerkat_core::service::CreateSessionRequest,
         authorization: meerkat_runtime::ArchivedSessionActorMaterializationAuthorization,
+        resume_preparation: meerkat_mob::SessionResumePreparationReceipt,
         actor_witness_slot: &meerkat_session::LiveSessionActorWitnessSlot,
     ) -> Result<meerkat_core::RunResult, SessionError> {
         let (req, context) = self.prepare_create_request(req);
@@ -5073,6 +5434,7 @@ impl MobSessionService for AfterCreateMobSessionService {
             .create_session_with_machine_archived_resume_authority_and_actor_witness_under_runtime_turn_boundary(
                 req,
                 authorization,
+                resume_preparation,
                 actor_witness_slot,
             )
             .await?;
@@ -5107,6 +5469,19 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<(), SessionError> {
         self.inner
             .interrupt_with_machine_authority(session_id, authority)
+            .await
+    }
+    // meerkat 0.8.22 exact-run machine-authorized hard cancel, default
+    // `Err(Unsupported)` (see the same seam in
+    // `delegate_mob_session_service!`).
+    async fn interrupt_run_with_machine_authority(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        expected_run_id: &meerkat_core::lifecycle::RunId,
+        authority: meerkat_runtime::MachineSessionControlAuthority,
+    ) -> Result<bool, SessionError> {
+        self.inner
+            .interrupt_run_with_machine_authority(session_id, expected_run_id, authority)
             .await
     }
     async fn cancel_after_boundary_with_machine_authority(
@@ -5160,6 +5535,19 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
         self.inner.load_revivable_retired_session(session_id).await
     }
+    // meerkat 0.8.22 durable transcript fork, default `Err(Unsupported)` (see
+    // the same seam in `delegate_mob_session_service!`).
+    async fn fork_persisted_session(
+        &self,
+        source_session_id: &meerkat_core::types::SessionId,
+        message_count: Option<usize>,
+        tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+        target: meerkat_core::DurableSessionForkTarget,
+    ) -> Result<meerkat_core::SessionForkResult, SessionError> {
+        self.inner
+            .fork_persisted_session(source_session_id, message_count, tool_access_policy, target)
+            .await
+    }
     async fn load_persisted_session_metadata(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -5208,6 +5596,20 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<(), SessionError> {
         self.inner
             .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary(session_id)
+            .await
+    }
+    // meerkat 0.8.22 deadline-aware disposal archive, default
+    // `Err(Unsupported)` (see the same seam in
+    // `delegate_mob_session_service!`).
+    async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_before(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        deadline: meerkat_core::time_compat::Instant,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_before(
+                session_id, deadline,
+            )
             .await
     }
     async fn execution_snapshot(
@@ -5306,16 +5708,18 @@ impl MobSessionService for AfterCreateMobSessionService {
             )
             .await
     }
-    async fn publish_interaction_terminals(
+    // meerkat 0.8.22: keyed by the exact actor incarnation, not SessionId
+    // (see the same seam in `delegate_mob_session_service!`).
+    async fn publish_interaction_terminals_for_actor(
         &self,
-        session_id: &meerkat_core::types::SessionId,
+        actor_witness: &meerkat_session::LiveSessionActorWitness,
         events: &[meerkat_core::event::AgentEvent],
     ) -> Result<
         Vec<meerkat_core::lifecycle::core_executor::CoreInteractionTerminalPublicationReceipt>,
         SessionError,
     > {
         self.inner
-            .publish_interaction_terminals(session_id, events)
+            .publish_interaction_terminals_for_actor(actor_witness, events)
             .await
     }
     async fn discard_live_session(
@@ -5950,6 +6354,7 @@ impl MobBootstrapSpec {
             false,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
@@ -5990,6 +6395,7 @@ impl MobBootstrapSpec {
             false,
             false,
             None,
+            None,
             Some(Arc::new(hook)),
             CapabilityFlags::default(),
             None,
@@ -6009,6 +6415,7 @@ impl MobBootstrapSpec {
         ephemeral_blobs: bool,
         ephemeral_runtime_store: bool,
         schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
+        workgraph_store: Option<Arc<dyn meerkat::WorkGraphStore>>,
         hook: Option<PreBuildHook>,
         caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
@@ -6025,6 +6432,7 @@ impl MobBootstrapSpec {
             ephemeral_blobs,
             ephemeral_runtime_store,
             schedule_store,
+            workgraph_store,
             hook,
             caps,
             after_create_hook,
@@ -6050,6 +6458,7 @@ impl MobBootstrapSpec {
         ephemeral_blobs: bool,
         ephemeral_runtime_store: bool,
         schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
+        workgraph_store: Option<Arc<dyn meerkat::WorkGraphStore>>,
         hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
@@ -6233,11 +6642,31 @@ impl MobBootstrapSpec {
         // beside runtime.sqlite (boot-without on open failure — a
         // sanctioned, health-visible degradation).
         let (workgraph_service, workgraph_admission_slot, workgraph_slot) =
-            if let Some(provider) = provider_meerkat_stores.as_ref() {
-                let service = meerkat::WorkGraphService::with_scope(
+            if let Some(store) = workgraph_store {
+                // Per-slot injection (item 5) wins over the composite
+                // provider's bundle. The ORDER is load-bearing: this fn is
+                // `pub(crate)` and reachable WITHOUT `UnifiedRuntimeBuilder`'s
+                // conflict check, so if the provider arm ran first an
+                // explicitly injected store would be dropped silently rather
+                // than refused.
+                let (service, slot) = crate::workgraph_wiring::attach_workgraph_tools_with_store(
+                    &builder,
+                    store,
+                    definition.id.as_str(),
+                );
+                (
+                    Some(service),
+                    Some(slot),
+                    StorageSlotSummary::persistent("workgraph", "custom workgraph store")
+                        .with_detail("caller-injected store; durability rides with the injector"),
+                )
+            } else if let Some(provider) = provider_meerkat_stores.as_ref() {
+                // Canonical mob realm via the one helper - see
+                // `workgraph_wiring::scoped_workgraph_service`. A second
+                // spelling here is what made every workgraph member unbuildable.
+                let service = crate::workgraph_wiring::scoped_workgraph_service(
                     Arc::clone(&provider.workgraph_store),
                     definition.id.as_str(),
-                    meerkat::WorkNamespace::default(),
                 );
                 let slot = crate::workgraph_wiring::install_workgraph_tools(&builder, &service);
                 (Some(service), Some(slot), provider.workgraph_slot_summary())
@@ -6359,6 +6788,7 @@ impl MobBootstrapSpec {
         session_store_kind: &str,
         custom_blob_store: Option<BlobStoreInjection>,
         schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
+        workgraph_store: Option<Arc<dyn meerkat::WorkGraphStore>>,
         hook: Option<PreBuildHook>,
         caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
@@ -6373,6 +6803,7 @@ impl MobBootstrapSpec {
             session_store_kind,
             custom_blob_store,
             schedule_store,
+            workgraph_store,
             hook,
             caps,
             after_create_hook,
@@ -6395,6 +6826,7 @@ impl MobBootstrapSpec {
         session_store_kind: &str,
         custom_blob_store: Option<BlobStoreInjection>,
         schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
+        workgraph_store: Option<Arc<dyn meerkat::WorkGraphStore>>,
         hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
@@ -6506,24 +6938,32 @@ impl MobBootstrapSpec {
                  attaches schedule tools without a firing host",
             )
         });
-        let (workgraph_service, workgraph_admission_slot) =
-            if let Some(provider) = provider_meerkat_stores.as_ref() {
-                // M4b single-bundle: the workgraph rides the composite
-                // provider's meerkat-level bundle instead of process-local
-                // memory.
-                let service = meerkat::WorkGraphService::with_scope(
-                    Arc::clone(&provider.workgraph_store),
-                    definition.id.as_str(),
-                    meerkat::WorkNamespace::default(),
-                );
-                let slot = crate::workgraph_wiring::install_workgraph_tools(&builder, &service);
-                (service, slot)
-            } else {
-                crate::workgraph_wiring::attach_workgraph_tools_ephemeral(
-                    &builder,
-                    definition.id.as_str(),
-                )
-            };
+        let (workgraph_service, workgraph_admission_slot) = if let Some(store) = workgraph_store {
+            // Per-slot injection (item 5) wins over the provider bundle,
+            // for the same reachability reason as the persistent arm.
+            crate::workgraph_wiring::attach_workgraph_tools_with_store(
+                &builder,
+                store,
+                definition.id.as_str(),
+            )
+        } else if let Some(provider) = provider_meerkat_stores.as_ref() {
+            // M4b single-bundle: the workgraph rides the composite
+            // provider's meerkat-level bundle instead of process-local
+            // memory.
+            // Canonical mob realm via the one helper - see
+            // `workgraph_wiring::scoped_workgraph_service`.
+            let service = crate::workgraph_wiring::scoped_workgraph_service(
+                Arc::clone(&provider.workgraph_store),
+                definition.id.as_str(),
+            );
+            let slot = crate::workgraph_wiring::install_workgraph_tools(&builder, &service);
+            (service, slot)
+        } else {
+            crate::workgraph_wiring::attach_workgraph_tools_ephemeral(
+                &builder,
+                definition.id.as_str(),
+            )
+        };
         let session_service: Arc<dyn MobSessionService> =
             if let Some(custom_session_store) = custom_session_store {
                 let concrete_session_service =
@@ -7603,6 +8043,24 @@ mod tests {
         }
     }
 
+    struct NamedDispatcher {
+        tools: Arc<[Arc<meerkat_core::types::ToolDef>]>,
+    }
+
+    #[async_trait::async_trait]
+    impl meerkat_core::AgentToolDispatcher for NamedDispatcher {
+        fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+            Arc::clone(&self.tools)
+        }
+
+        async fn dispatch(
+            &self,
+            call: meerkat_core::types::ToolCallView<'_>,
+        ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+            Err(meerkat_core::ToolError::not_found(call.name))
+        }
+    }
+
     fn wrapper_with_overrides(
         overrides: ImplicitDelegateRetirementOverrides,
     ) -> AutoWireParentMobToolDispatcher {
@@ -7727,6 +8185,7 @@ mod tests {
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 crate::identity_first::IdentityLifecycleState::Dormant,
                 None,
@@ -8229,9 +8688,15 @@ shell = true
         );
     }
 
-    #[test]
-    fn shell_tooling_forces_builtin_substrate_without_exposing_broad_builtins() {
-        let mut req = CreateSessionRequest {
+    fn shell_visibility_request(
+        state: Option<meerkat_core::SessionToolVisibilityState>,
+        initial_tool_filter: Option<meerkat_core::ToolFilter>,
+    ) -> CreateSessionRequest {
+        let resume_session = state.map(|state| {
+            session_with_visibility_state(meerkat_core::types::SessionId::new(), state)
+        });
+
+        CreateSessionRequest {
             model: "gpt-5.5".to_string(),
             prompt: meerkat_core::ContentInput::Text("test".to_string()),
             system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
@@ -8241,14 +8706,97 @@ shell = true
             build: Some(meerkat_core::service::SessionBuildOptions {
                 override_builtins: meerkat_core::ToolCategoryOverride::Disable,
                 override_shell: meerkat_core::ToolCategoryOverride::Enable,
+                initial_tool_filter,
+                resume_session,
                 ..Default::default()
             }),
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
             injected_context: Vec::new(),
-        };
+        }
+    }
 
-        ensure_shell_tooling_build_substrate(&mut req);
+    fn session_with_visibility_state(
+        session_id: meerkat_core::types::SessionId,
+        state: meerkat_core::SessionToolVisibilityState,
+    ) -> meerkat_core::Session {
+        let mut value = serde_json::to_value(meerkat_core::Session::with_id(session_id))
+            .expect("serialize session");
+        value
+            .as_object_mut()
+            .expect("session document")
+            .entry("metadata")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .expect("session metadata")
+            .insert(
+                meerkat_core::SESSION_TOOL_VISIBILITY_STATE_KEY.to_string(),
+                serde_json::to_value(state).expect("serialize visibility state"),
+            );
+        serde_json::from_value(value).expect("deserialize resumed session")
+    }
+
+    fn homecore_security_visibility_fixture(
+        snapshot: &str,
+    ) -> (
+        meerkat_core::types::SessionId,
+        serde_json::Value,
+        meerkat_core::SessionToolVisibilityState,
+    ) {
+        use base64::Engine as _;
+
+        const BUNDLE: &[u8] = include_bytes!(
+            "../tests/fixtures/homecore_security_idempotency/security-head-evolution.json"
+        );
+        let bundle: serde_json::Value = serde_json::from_slice(BUNDLE).expect("fixture bundle");
+        let table = &bundle[snapshot]["continuity_session_heads"];
+        let columns = table["columns"].as_array().expect("fixture columns");
+        let head_index = columns
+            .iter()
+            .position(|column| column.as_str() == Some("head_json"))
+            .expect("head_json column");
+        let encoded = table["rows"][0][head_index]["b64"]
+            .as_str()
+            .expect("head_json base64");
+        let head_bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("decode head_json");
+        let head: serde_json::Value =
+            serde_json::from_slice(&head_bytes).expect("deserialize head_json");
+        let session_id =
+            meerkat_core::types::SessionId::parse(head["id"].as_str().expect("fixture session id"))
+                .expect("parse fixture session id");
+        let raw_visibility =
+            head["metadata"][meerkat_core::SESSION_TOOL_VISIBILITY_STATE_KEY].clone();
+        let visibility = serde_json::from_value(raw_visibility.clone())
+            .expect("deserialize fixture visibility state");
+        (session_id, raw_visibility, visibility)
+    }
+
+    fn legacy_shell_allow_filter(order_reversed: bool) -> meerkat_core::ToolFilter {
+        let mut names = LEGACY_SHELL_AND_COMMS_TOOL_NAMES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        if order_reversed {
+            names.reverse();
+        }
+        meerkat_core::ToolFilter::Allow(names.into_iter().collect())
+    }
+
+    fn heal_embedded_visibility_fixture(req: &mut CreateSessionRequest) {
+        let persisted = req
+            .build
+            .as_ref()
+            .and_then(|build| build.resume_session.clone());
+        heal_legacy_shell_tool_visibility(req, persisted.as_ref());
+    }
+
+    #[test]
+    fn fresh_shell_tooling_keeps_native_category_independent_of_builtins() {
+        let mut req = shell_visibility_request(None, None);
+
+        heal_embedded_visibility_fixture(&mut req);
 
         let build = req.build.expect("build options");
         assert_eq!(
@@ -8257,56 +8805,379 @@ shell = true
         );
         assert_eq!(
             build.override_builtins,
-            meerkat_core::ToolCategoryOverride::Enable,
-            "shell-only profiles must still enable Meerkat's builtin substrate"
+            meerkat_core::ToolCategoryOverride::Disable,
+            "native shell tooling must not enable broad builtins"
         );
-        let allow = match build.initial_tool_filter.expect("shell visibility filter") {
-            meerkat_core::ToolFilter::Allow(allow) => allow,
-            other => panic!("expected shell/comms allow filter, got {other:?}"),
-        };
-        for tool in SHELL_BUILTIN_TOOL_NAMES
+        assert_eq!(build.initial_tool_filter, None);
+    }
+
+    #[test]
+    fn shell_and_builtins_enabled_request_is_unchanged() {
+        let mut req = shell_visibility_request(None, None);
+        req.build.as_mut().expect("build options").override_builtins =
+            meerkat_core::ToolCategoryOverride::Enable;
+
+        heal_embedded_visibility_fixture(&mut req);
+
+        let build = req.build.expect("build options");
+        assert_eq!(
+            build.override_shell,
+            meerkat_core::ToolCategoryOverride::Enable
+        );
+        assert_eq!(
+            build.override_builtins,
+            meerkat_core::ToolCategoryOverride::Enable
+        );
+        assert_eq!(build.initial_tool_filter, None);
+    }
+
+    #[tokio::test]
+    async fn native_shell_resolved_catalog_preserves_mixed_external_surfaces() {
+        let external_names = [
+            "mcp__homecore__probe",
+            "list_members",
+            "memory_search",
+            "meerkat_schedule_list",
+            "generate_image",
+        ];
+        let tools = external_names
             .iter()
-            .chain(COMMS_TOOL_NAMES.iter())
-        {
-            assert!(allow.contains(tool), "missing expected tool {tool}");
-        }
+            .map(|name| {
+                Arc::new(meerkat_core::types::ToolDef::new(
+                    *name,
+                    "mixed-surface fixture",
+                    serde_json::json!({"type": "object"}),
+                ))
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let factory = meerkat::AgentFactory::new(temp.path());
+        let mut builder = meerkat::FactoryAgentBuilder::new(factory, meerkat::Config::default());
+        builder.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+        let service = meerkat_session::EphemeralSessionService::new(builder, 4);
+        let mut req = shell_visibility_request(None, None);
+        req.build.as_mut().expect("build options").external_tools =
+            Some(Arc::new(NamedDispatcher { tools }));
+
+        let result = meerkat_core::service::SessionService::create_session(&service, req)
+            .await
+            .expect("create deferred shell-only session");
+        let snapshot = service
+            .tool_scope_snapshot(&result.session_id)
+            .await
+            .expect("read tool scope")
+            .expect("live tool scope");
+        let visible = snapshot
+            .visible_names
+            .into_iter()
+            .map(meerkat_core::types::ToolName::into_string)
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = NATIVE_SHELL_TOOL_NAMES
+            .iter()
+            .copied()
+            .chain(external_names)
+            .map(String::from)
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(
+            visible, expected,
+            "native shell must add exactly four shell tools without filtering MCP, mob, memory, schedule, or image surfaces"
+        );
         for broad_builtin in ["task_list", "task_create", "apply_patch", "browse_skills"] {
-            assert!(
-                !allow.contains(broad_builtin),
-                "shell-only filter must not expose broad builtin {broad_builtin}",
-            );
+            assert!(!visible.contains(broad_builtin), "unexpected broad builtin");
         }
     }
 
     #[test]
-    fn non_shell_profiles_keep_builtin_override_unchanged() {
-        let mut req = CreateSessionRequest {
-            model: "gpt-5.5".to_string(),
-            prompt: meerkat_core::ContentInput::Text("test".to_string()),
-            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
-            max_tokens: None,
-            event_tx: None,
-            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
-            build: Some(meerkat_core::service::SessionBuildOptions {
-                override_builtins: meerkat_core::ToolCategoryOverride::Disable,
-                override_shell: meerkat_core::ToolCategoryOverride::Disable,
-                ..Default::default()
-            }),
-            labels: None,
-            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
-            injected_context: Vec::new(),
+    fn legacy_shell_visibility_heal_matches_set_order_and_preserves_base_filters() {
+        let original_state = meerkat_core::SessionToolVisibilityState {
+            capability_base_filter: meerkat_core::ToolFilter::Deny(
+                ["view_image".to_string()].into_iter().collect(),
+            ),
+            inherited_base_filter: meerkat_core::ToolFilter::Deny(
+                ["operator_only".to_string()].into_iter().collect(),
+            ),
+            active_filter: legacy_shell_allow_filter(false),
+            staged_filter: legacy_shell_allow_filter(true),
+            active_revision: 7,
+            staged_revision: 8,
+            ..Default::default()
         };
+        let mut req = shell_visibility_request(Some(original_state.clone()), None);
 
-        ensure_shell_tooling_build_substrate(&mut req);
+        heal_embedded_visibility_fixture(&mut req);
 
-        let build = req.build.expect("build options");
+        let build = req.build.as_ref().expect("build options");
         assert_eq!(
-            build.override_builtins,
-            meerkat_core::ToolCategoryOverride::Disable
+            build.initial_tool_filter,
+            Some(meerkat_core::ToolFilter::All)
         );
         assert_eq!(
-            build.override_shell,
-            meerkat_core::ToolCategoryOverride::Disable
+            build
+                .resume_session
+                .as_ref()
+                .expect("resumed session")
+                .try_tool_visibility_state()
+                .expect("parse visibility state"),
+            Some(original_state),
+            "MobKit must not rewrite capability, inherited, witness, or revision state"
+        );
+
+        heal_embedded_visibility_fixture(&mut req);
+        assert_eq!(
+            req.build.expect("build options").initial_tool_filter,
+            Some(meerkat_core::ToolFilter::All),
+            "the repair must be idempotent"
+        );
+    }
+
+    #[test]
+    fn legacy_shell_visibility_heal_accepts_omitted_staged_filter_default() {
+        let state = meerkat_core::SessionToolVisibilityState {
+            active_filter: legacy_shell_allow_filter(false),
+            staged_filter: meerkat_core::ToolFilter::All,
+            ..Default::default()
+        };
+        let mut req = shell_visibility_request(Some(state), None);
+
+        heal_embedded_visibility_fixture(&mut req);
+
+        assert_eq!(
+            req.build.expect("build options").initial_tool_filter,
+            Some(meerkat_core::ToolFilter::All)
+        );
+    }
+
+    #[test]
+    fn legacy_shell_visibility_heal_respects_explicit_current_filter() {
+        let state = meerkat_core::SessionToolVisibilityState {
+            active_filter: legacy_shell_allow_filter(false),
+            staged_filter: legacy_shell_allow_filter(false),
+            ..Default::default()
+        };
+        let explicit = meerkat_core::ToolFilter::Deny(
+            ["deliberately_hidden".to_string()].into_iter().collect(),
+        );
+        let mut req = shell_visibility_request(Some(state), Some(explicit.clone()));
+
+        heal_embedded_visibility_fixture(&mut req);
+
+        assert_eq!(
+            req.build.expect("build options").initial_tool_filter,
+            Some(explicit)
+        );
+    }
+
+    #[test]
+    fn legacy_shell_visibility_heal_ignores_nonmatching_durable_filters() {
+        let legacy_superset = LEGACY_SHELL_AND_COMMS_TOOL_NAMES
+            .iter()
+            .map(|name| (*name).to_string())
+            .chain(std::iter::once("memory_search".to_string()))
+            .collect();
+        for state in [
+            meerkat_core::SessionToolVisibilityState {
+                active_filter: meerkat_core::ToolFilter::Allow(
+                    ["shell".to_string()].into_iter().collect(),
+                ),
+                staged_filter: legacy_shell_allow_filter(false),
+                ..Default::default()
+            },
+            meerkat_core::SessionToolVisibilityState {
+                active_filter: meerkat_core::ToolFilter::Allow(legacy_superset),
+                staged_filter: legacy_shell_allow_filter(false),
+                ..Default::default()
+            },
+            meerkat_core::SessionToolVisibilityState {
+                active_filter: meerkat_core::ToolFilter::Allow(
+                    [
+                        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+                    ]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                ),
+                staged_filter: legacy_shell_allow_filter(false),
+                ..Default::default()
+            },
+            meerkat_core::SessionToolVisibilityState {
+                active_filter: legacy_shell_allow_filter(false),
+                staged_filter: meerkat_core::ToolFilter::Deny(
+                    ["task_create".to_string()].into_iter().collect(),
+                ),
+                ..Default::default()
+            },
+            meerkat_core::SessionToolVisibilityState::default(),
+            meerkat_core::SessionToolVisibilityState {
+                capability_base_filter: meerkat_core::ToolFilter::Deny(
+                    ["view_image".to_string()].into_iter().collect(),
+                ),
+                ..Default::default()
+            },
+        ] {
+            let mut req = shell_visibility_request(Some(state), None);
+            heal_embedded_visibility_fixture(&mut req);
+            assert_eq!(req.build.expect("build options").initial_tool_filter, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn pre_build_heal_reads_persisted_visibility_behind_id_only_resume_stub() {
+        let (session_id, raw_visibility, state) =
+            homecore_security_visibility_fixture("post_boot1_fresh");
+        let active_order = raw_visibility["active_filter"]["Allow"]
+            .as_array()
+            .expect("active Allow array");
+        let staged_order = raw_visibility["staged_filter"]["Allow"]
+            .as_array()
+            .expect("staged Allow array");
+        assert_ne!(
+            active_order, staged_order,
+            "the real HomeCore specimen must retain differently ordered Allow arrays"
+        );
+        assert_eq!(
+            raw_visibility["filter_witnesses"]
+                .as_object()
+                .expect("fixture witnesses")
+                .len(),
+            LEGACY_SHELL_AND_COMMS_TOOL_NAMES.len(),
+            "the real specimen must retain all legacy provenance witnesses"
+        );
+
+        let persisted = session_with_visibility_state(session_id.clone(), state.clone());
+        let mut req = shell_visibility_request(None, None);
+        req.build.as_mut().expect("build options").resume_session =
+            Some(meerkat_core::Session::with_id(session_id));
+        assert_eq!(
+            req.build
+                .as_ref()
+                .and_then(|build| build.resume_session.as_ref())
+                .expect("ID-only resume stub")
+                .try_tool_visibility_state()
+                .expect("parse stub visibility"),
+            None,
+            "the production actor route presents an ID-only resume stub"
+        );
+
+        let probe = Arc::new(AbsorberInnerProbe::new(persisted));
+        let wrapped = PreBuildMobSessionService {
+            inner: probe.clone(),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        };
+
+        let (prepared, _, _) = wrapped
+            .prepare_create_request(req)
+            .await
+            .expect("prepare authoritative persisted resume");
+
+        assert_eq!(
+            probe.loads.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the heal must read the authoritative persisted head exactly once"
+        );
+        assert_eq!(
+            prepared.build.expect("build options").initial_tool_filter,
+            Some(meerkat_core::ToolFilter::All)
+        );
+        assert_eq!(
+            probe
+                .session
+                .try_tool_visibility_state()
+                .expect("parse persisted visibility"),
+            Some(state),
+            "MobKit must not mutate the persisted visibility document directly"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_build_heal_rejects_embedded_visibility_spoof() {
+        let session_id = meerkat_core::types::SessionId::new();
+        let embedded_legacy = meerkat_core::SessionToolVisibilityState {
+            active_filter: legacy_shell_allow_filter(false),
+            staged_filter: legacy_shell_allow_filter(true),
+            ..Default::default()
+        };
+        let persisted_current = meerkat_core::SessionToolVisibilityState::default();
+        let mut req = shell_visibility_request(None, None);
+        req.build.as_mut().expect("build options").resume_session = Some(
+            session_with_visibility_state(session_id.clone(), embedded_legacy),
+        );
+
+        let probe = Arc::new(AbsorberInnerProbe::new(session_with_visibility_state(
+            session_id,
+            persisted_current,
+        )));
+        let wrapped = PreBuildMobSessionService {
+            inner: probe.clone(),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        };
+
+        let (prepared, _, _) = wrapped
+            .prepare_create_request(req)
+            .await
+            .expect("prepare authoritative non-legacy resume");
+
+        assert_eq!(
+            probe.loads.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the embedded session document must never replace the authoritative persisted read"
+        );
+        assert_eq!(
+            prepared.build.expect("build options").initial_tool_filter,
+            None,
+            "request-carried legacy metadata must not trigger repair when durable authority disagrees"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_build_heal_is_noop_after_durable_transition() {
+        let session_id = meerkat_core::types::SessionId::new();
+        let persisted_current = meerkat_core::SessionToolVisibilityState {
+            active_filter: meerkat_core::ToolFilter::All,
+            staged_filter: meerkat_core::ToolFilter::All,
+            active_revision: 2,
+            staged_revision: 2,
+            ..Default::default()
+        };
+        let mut req = shell_visibility_request(None, None);
+        req.build.as_mut().expect("build options").resume_session =
+            Some(meerkat_core::Session::with_id(session_id.clone()));
+
+        let probe = Arc::new(AbsorberInnerProbe::new(session_with_visibility_state(
+            session_id,
+            persisted_current,
+        )));
+        let wrapped = PreBuildMobSessionService {
+            inner: probe.clone(),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        };
+
+        let (prepared, _, _) = wrapped
+            .prepare_create_request(req)
+            .await
+            .expect("prepare already-healed resume");
+
+        assert_eq!(probe.loads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            prepared.build.expect("build options").initial_tool_filter,
+            None,
+            "a second resume must not restage a transition after durable authority reached All"
         );
     }
 
@@ -8483,14 +9354,15 @@ realm_profile = "worker-v2"
             Ok(messages.to_vec())
         }
 
-        fn stream<'a>(&'a self, _request: &'a LlmRequest) -> LlmStream<'a> {
-            Box::pin(futures::stream::iter([Ok(
-                meerkat_client::LlmEvent::Done {
-                    outcome: meerkat_client::LlmDoneOutcome::Success {
-                        stop_reason: meerkat_core::StopReason::EndTurn,
-                    },
-                },
-            )]))
+        fn stream<'a>(&'a self, request: &'a LlmRequest) -> LlmStream<'a> {
+            // meerkat 0.8.22 rejects a turn whose stream carried no normalized
+            // provider accounting, so the terminal `Done` never travels alone.
+            let [usage, done] = super::test_llm_usage::usage_then_done(
+                request,
+                meerkat_core::Provider::OpenAI,
+                meerkat_core::StopReason::EndTurn,
+            );
+            Box::pin(futures::stream::iter(vec![Ok(usage), Ok(done)]))
         }
 
         fn provider(&self) -> meerkat_core::Provider {
@@ -8583,7 +9455,17 @@ realm_profile = "worker-v2"
             Ok(meerkat_core::agent::LlmStreamResult::new(
                 Vec::new(),
                 meerkat_core::StopReason::EndTurn,
-                meerkat_core::Usage::default(),
+                // `LlmStreamResult::new` still takes a flat `Usage`, so a bare
+                // `Usage::default()` compiles and then fails the turn closed
+                // with `normalized_provider_accounting_unavailable`. At the
+                // agent-client seam the factory pins `provider()`/`model()` to
+                // the canonical identity, so they ARE the identity the commit
+                // check compares against.
+                super::test_llm_usage::agent_turn_usage(
+                    self.provider(),
+                    self.model(),
+                    meerkat_core::Usage::default(),
+                ),
             ))
         }
 
@@ -9080,6 +9962,27 @@ realm_profile = "worker-v2"
     struct AbsorberInnerProbe {
         session: meerkat_core::session::Session,
         loads: std::sync::atomic::AtomicU64,
+        catalog_reads: std::sync::atomic::AtomicU64,
+        catalog_names: Vec<meerkat_core::types::ToolName>,
+    }
+
+    impl AbsorberInnerProbe {
+        fn new(session: meerkat_core::session::Session) -> Self {
+            Self {
+                session,
+                loads: std::sync::atomic::AtomicU64::new(0),
+                catalog_reads: std::sync::atomic::AtomicU64::new(0),
+                catalog_names: Vec::new(),
+            }
+        }
+
+        fn with_catalog(mut self, names: impl IntoIterator<Item = &'static str>) -> Self {
+            self.catalog_names = names
+                .into_iter()
+                .map(meerkat_core::types::ToolName::from)
+                .collect();
+            self
+        }
     }
 
     #[async_trait]
@@ -9088,7 +9991,18 @@ realm_profile = "worker-v2"
             &self,
             _req: CreateSessionRequest,
         ) -> Result<meerkat_core::types::RunResult, SessionError> {
-            Err(SessionError::Unsupported("create_session".to_string()))
+            Ok(meerkat_core::types::RunResult {
+                text: String::new(),
+                session_id: self.session.id().clone(),
+                usage: meerkat_core::types::Usage::default(),
+                turns: 0,
+                tool_calls: 0,
+                terminal_cause_kind: None,
+                structured_output: None,
+                extraction_error: None,
+                schema_warnings: None,
+                skill_diagnostics: None,
+            })
         }
 
         async fn start_turn(
@@ -9163,19 +10077,31 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+        // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
+        // without a default, so that a PERSISTENT decorator cannot inherit a
+        // composition that converges nothing and silently resume from stale
+        // committed authority after a power cut. This probe is non-persistent, so
+        // it opts in EXPLICITLY through the public helper rather than hand-rolling
+        // the composition. The helper is fail-closed: it refuses if
+        // `supports_persistent_sessions()` is ever true here.
+        async fn materialize_session_resume_verdict(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError>
+        {
+            meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
+        }
         async fn observe_session_resume_authority(
             &self,
             _session_id: &meerkat_core::types::SessionId,
         ) -> Result<meerkat_mob::SessionResumeAuthority, SessionError> {
             // Test double: truthfully an empty authority bundle (the ephemeral
-            // arm of the meerkat 0.8.21 resume-verdict contract).
+            // arm of the meerkat 0.8.22 resume-verdict contract). meerkat
+            // 0.8.22 deleted `prepare_session_for_resume`; this double owns
+            // nothing durable to converge, so the trait's non-persistent
+            // `materialize_session_resume_verdict` default is the truthful
+            // answer and is deliberately left un-overridden here.
             Ok(meerkat_mob::SessionResumeAuthority::default())
-        }
-        async fn prepare_session_for_resume(
-            &self,
-            _session_id: &meerkat_core::types::SessionId,
-        ) -> Result<(), SessionError> {
-            Ok(())
         }
         async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
             &self,
@@ -9233,6 +10159,112 @@ realm_profile = "worker-v2"
                 Ok(None)
             }
         }
+
+        async fn tool_scope_snapshot(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<Option<meerkat_core::ToolScopeSnapshot>, SessionError> {
+            self.catalog_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(meerkat_core::ToolScopeSnapshot {
+                known_base_names: self.catalog_names.clone(),
+                visible_names: self.catalog_names.clone(),
+                capability_base_filter: meerkat_core::ToolFilter::All,
+                base_filter: meerkat_core::ToolFilter::All,
+                active_external_filter: meerkat_core::ToolFilter::All,
+                active_turn_allow: None,
+                active_turn_deny: Vec::new(),
+                active_revision: meerkat_core::ToolScopeRevision(0),
+                staged_external_filter: meerkat_core::ToolFilter::All,
+                staged_revision: meerkat_core::ToolScopeRevision(0),
+            }))
+        }
+    }
+
+    fn invariant_member_request(
+        session_id: Option<meerkat_core::types::SessionId>,
+        role: &str,
+    ) -> CreateSessionRequest {
+        let mut req = shell_visibility_request(None, None);
+        let build = req.build.as_mut().expect("build options");
+        build.mob_member_binding = Some(meerkat_core::MobMemberBinding {
+            mob_id: "capability-choke".to_string(),
+            role: role.to_string(),
+            member: format!("{role}-1"),
+        });
+        build.override_builtins = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_shell = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_comms = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_memory = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_schedule = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_workgraph = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_mob = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_image_generation = meerkat_core::ToolCategoryOverride::Enable;
+        build.override_web_search = meerkat_core::ToolCategoryOverride::Enable;
+        build.resume_session = session_id.map(meerkat_core::Session::with_id);
+        req
+    }
+
+    /// `MobBootstrapSpec::new` is the common library, builder, and gateway
+    /// composition choke. Inline and realm profiles both arrive here only
+    /// after Meerkat has resolved them to the same typed `SessionBuildOptions`.
+    /// Every call, including repeated resume materializations, must read the
+    /// newly materialized session's actual catalog exactly once.
+    #[tokio::test]
+    async fn bootstrap_choke_observes_inline_realm_fresh_and_every_resume() {
+        let session = meerkat_core::Session::with_id(meerkat_core::types::SessionId::new());
+        let session_id = session.id().clone();
+        let probe = Arc::new(AbsorberInnerProbe::new(session).with_catalog([
+            "task_create",
+            "shell",
+            "send_message",
+            "memory_search",
+            "meerkat_schedule_list",
+            "workgraph_get",
+            "spawn_member",
+            "generate_image",
+            "web_search",
+        ]));
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "capability-choke"
+
+[profiles.inline-worker]
+model = "gpt-5.5"
+
+[profiles.inline-worker.tools]
+comms = true
+"#,
+        )
+        .expect("definition parses");
+        let spec = MobBootstrapSpec::new(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            probe.clone(),
+        );
+
+        for (role, resume) in [
+            ("inline-worker", None),
+            ("inline-worker", Some(session_id.clone())),
+            ("realm-worker", None),
+            ("realm-worker", Some(session_id.clone())),
+        ] {
+            meerkat_core::service::SessionService::create_session(
+                spec.session_service.as_ref(),
+                invariant_member_request(resume, role),
+            )
+            .await
+            .expect("materialize through bootstrap choke");
+        }
+
+        assert_eq!(
+            probe
+                .catalog_reads
+                .load(std::sync::atomic::Ordering::SeqCst),
+            4,
+            "fresh and resumed materializations for both resolved profile provenances must each evaluate the live exact catalog"
+        );
     }
 
     /// The idle-cadence structural gate at the mobkit seam: repeated
@@ -9245,10 +10277,7 @@ realm_profile = "worker-v2"
         let session =
             meerkat_core::session::Session::with_id(meerkat_core::types::SessionId::new());
         let session_id = session.id().clone();
-        let probe = Arc::new(AbsorberInnerProbe {
-            session,
-            loads: std::sync::atomic::AtomicU64::new(0),
-        });
+        let probe = Arc::new(AbsorberInnerProbe::new(session));
         let epochs = Arc::new(SessionSnapshotWriteEpochs::default());
         let wrapped = PreBuildMobSessionService {
             inner: probe.clone(),
@@ -9495,19 +10524,31 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
+        // without a default, so that a PERSISTENT decorator cannot inherit a
+        // composition that converges nothing and silently resume from stale
+        // committed authority after a power cut. This probe is non-persistent, so
+        // it opts in EXPLICITLY through the public helper rather than hand-rolling
+        // the composition. The helper is fail-closed: it refuses if
+        // `supports_persistent_sessions()` is ever true here.
+        async fn materialize_session_resume_verdict(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError>
+        {
+            meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
+        }
         async fn observe_session_resume_authority(
             &self,
             _session_id: &meerkat_core::types::SessionId,
         ) -> Result<meerkat_mob::SessionResumeAuthority, SessionError> {
             // Test double: truthfully an empty authority bundle (the ephemeral
-            // arm of the meerkat 0.8.21 resume-verdict contract).
+            // arm of the meerkat 0.8.22 resume-verdict contract). meerkat
+            // 0.8.22 deleted `prepare_session_for_resume`; this double owns
+            // nothing durable to converge, so the trait's non-persistent
+            // `materialize_session_resume_verdict` default is the truthful
+            // answer and is deliberately left un-overridden here.
             Ok(meerkat_mob::SessionResumeAuthority::default())
-        }
-        async fn prepare_session_for_resume(
-            &self,
-            _session_id: &meerkat_core::types::SessionId,
-        ) -> Result<(), SessionError> {
-            Ok(())
         }
         async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
             &self,
@@ -12028,6 +13069,7 @@ realm_profile = "worker-v2"
             true,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
@@ -12044,6 +13086,69 @@ realm_profile = "worker-v2"
             meerkat_core::DurabilityResolution::DeclaredEphemeral
         );
         assert_eq!(runtime_slot.backend, "InMemoryRuntimeStore");
+    }
+
+    /// 0.8.16 item 5: a caller-injected `WorkGraphStore` suppresses the local
+    /// SQLite fallback and is reported as its own census slot.
+    ///
+    /// The load-bearing assertion is the ABSENT file, not the populated slot.
+    /// `persistent_inner_with_provider_stores` is `pub(crate)` and reachable
+    /// without `UnifiedRuntimeBuilder`'s conflict check, so the injected arm
+    /// has to be ordered ahead of the provider arm; if the order regresses,
+    /// the fallback runs and `workgraph.sqlite3` appears here.
+    #[test]
+    fn injected_workgraph_store_suppresses_the_local_sqlite_file() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let store_path = dir.path().to_path_buf();
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(store_path.join("sessions.db"))
+                .unwrap_or_else(|e| panic!("{e}")),
+        );
+        let definition = meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"test\"\n")
+            .unwrap_or_else(|e| panic!("{e}"));
+
+        let spec = MobBootstrapSpec::persistent_inner(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            store_path.clone(),
+            4,
+            session_store,
+            "SqliteSessionStore",
+            None,
+            false,
+            false,
+            None,
+            Some(Arc::new(meerkat::MemoryWorkGraphStore::new())),
+            None,
+            CapabilityFlags::default(),
+            None,
+            None,
+        )
+        .unwrap_or_else(|e| panic!("injected workgraph store must compose: {e}"));
+
+        // Positive control: persistent composition demonstrably ran in this
+        // directory, so the absent workgraph file below means "suppressed",
+        // not "nothing happened here".
+        assert!(
+            store_path
+                .join(crate::storage_layout::RUNTIME_DB_FILE_NAME)
+                .exists(),
+            "persistent composition must have run in the state dir"
+        );
+        assert!(
+            !store_path
+                .join(crate::workgraph_wiring::WORKGRAPH_STORE_FILE)
+                .exists(),
+            "an injected workgraph store must suppress the local SQLite fallback"
+        );
+
+        let summary = spec.resolved_storage.unwrap_or_else(|| panic!("summary"));
+        let workgraph_slot = summary
+            .slots
+            .iter()
+            .find(|slot| slot.declaration.domain == "workgraph")
+            .unwrap_or_else(|| panic!("workgraph slot recorded"));
+        assert_eq!(workgraph_slot.backend, "custom workgraph store");
     }
 
     /// H1: the happy persistent path reports disk-backed blobs and the
@@ -12129,6 +13234,7 @@ realm_profile = "worker-v2"
             false,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
@@ -12150,6 +13256,7 @@ realm_profile = "worker-v2"
             Some(BlobStoreInjection::Core(memory_blobs)),
             true,
             false,
+            None,
             None,
             None,
             CapabilityFlags::default(),
@@ -12190,6 +13297,7 @@ realm_profile = "worker-v2"
             false,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
@@ -12220,6 +13328,7 @@ realm_profile = "worker-v2"
             4,
             None,
             "test session store",
+            None,
             None,
             None,
             None,
@@ -12265,6 +13374,7 @@ realm_profile = "worker-v2"
             None,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
@@ -12296,6 +13406,7 @@ realm_profile = "worker-v2"
             4,
             None,
             "test session store",
+            None,
             None,
             None,
             None,
@@ -12353,11 +13464,20 @@ realm_profile = "worker-v2"
             None,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
         );
-        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+        // `TestClient::default()` DOES synthesize accounting under 0.8.22, but
+        // under `Provider::Other` - and every profile in these tests is
+        // `gpt-5.5`, whose canonical owner is `Provider::OpenAI`, so the spawn
+        // turn would fail closed with
+        // `normalized_provider_accounting_identity_mismatch`. See the rule in
+        // `tests/support/llm_usage.rs`.
+        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::for_provider(
+            meerkat_core::Provider::OpenAI,
+        )));
         let runtime = MobRuntime::bootstrap(spec)
             .await
             .unwrap_or_else(|e| panic!("{e}"));
@@ -12414,11 +13534,14 @@ realm_profile = "worker-v2"
             None,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
         );
-        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::for_provider(
+            meerkat_core::Provider::OpenAI,
+        )));
 
         let runtime = MobRuntime::bootstrap(spec)
             .await
@@ -12473,11 +13596,14 @@ realm_profile = "worker-v2"
             None,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
         );
-        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::for_provider(
+            meerkat_core::Provider::OpenAI,
+        )));
 
         let runtime = MobRuntime::bootstrap(spec)
             .await
@@ -12534,12 +13660,14 @@ realm_profile = "worker-v2"
             None,
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
         );
-        restarted_spec.options.default_llm_client =
-            Some(Arc::new(meerkat_client::TestClient::default()));
+        restarted_spec.options.default_llm_client = Some(Arc::new(
+            meerkat_client::TestClient::for_provider(meerkat_core::Provider::OpenAI),
+        ));
 
         let restarted = MobRuntime::bootstrap(restarted_spec)
             .await

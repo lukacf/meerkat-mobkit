@@ -15,14 +15,13 @@
 //! firewall, [`StewardStore`] for the Steward, `TombstoneSource` for the
 //! Distiller, [`MemoryPanelStore`] for the console panel handle on the
 //! returned stack) and fails with a named error when a requested engine's
-//! capability is missing. A recall-only provider (e.g. the markdown store)
-//! is recall-only because it advertises none of these — not because of which
-//! arm of a match constructed it.
+//! capability is missing. An externally supplied recall-only provider is
+//! recall-only because it advertises none of these capabilities.
 //!
 //! Scope notes, deliberate for v1:
-//! - The **Hygienist** stays gateway-wired: it curates transcripts through
-//!   the typed transcript-revision extension on the gateway's concrete
-//!   session service, a seam the builder does not own yet.
+//! - The **Hygienist** engine stays internal and parked. Public SDK/gateway
+//!   activation is refused until the release has bounded projection and real
+//!   provider proof; the builder does not acquire an activation seam here.
 //! - The gateway keeps its existing hand wiring (identical semantics, more
 //!   seams: fail-init surfacing, gating/conflict bridges, schedule-host dream
 //!   suppression). Converging it onto this module is tracked follow-up work.
@@ -56,6 +55,47 @@ use crate::memory::taint::{SessionTaintTracker, TaintLlmWriteGate};
 pub struct MemoryEnginesConfig {
     pub distiller: DistillerConfig,
     pub steward: StewardConfig,
+}
+
+/// Resolve the exact Distiller profile used by stack assembly.
+///
+/// This is public so gateway contract tests can prove that host JSON reaches
+/// the same profile construction path as a live engine. Runtime callers should
+/// normally use [`attach_memory_engines`] instead.
+#[doc(hidden)]
+pub fn effective_distiller_profile(config: &DistillerConfig) -> Result<DistillerProfile, String> {
+    let mut profile = DistillerProfile::embedded_default();
+    if let Some(model) = config.model.as_deref() {
+        profile = profile
+            .with_model_override(model)
+            .map_err(|e| format!("agent memory distiller: {e}"))?;
+    }
+    if let Some(max_output_tokens) = config.max_output_tokens {
+        profile = profile
+            .with_max_output_tokens(max_output_tokens)
+            .map_err(|e| format!("agent memory distiller: {e}"))?;
+    }
+    Ok(profile)
+}
+
+/// Resolve the exact Steward profile used by stack assembly.
+///
+/// Kept visible for the same gateway-to-wiring contract proof as
+/// [`effective_distiller_profile`].
+#[doc(hidden)]
+pub fn effective_steward_profile(config: &StewardConfig) -> Result<StewardProfile, String> {
+    let mut profile = StewardProfile::embedded_default();
+    if let Some(model) = config.model.as_deref() {
+        profile = profile
+            .with_model_override(model)
+            .map_err(|e| format!("agent memory steward: {e}"))?;
+    }
+    if let Some(max_output_tokens) = config.max_output_tokens {
+        profile = profile
+            .with_max_output_tokens(max_output_tokens)
+            .map_err(|e| format!("agent memory steward: {e}"))?;
+    }
+    Ok(profile)
 }
 
 /// Host-supplied seams for the stack: where the engines read transcripts,
@@ -168,12 +208,7 @@ pub fn attach_memory_engines(
             "agent memory distiller requires a provider with tombstone reads (TombstoneSource)"
                 .to_string()
         })?;
-        let mut profile = DistillerProfile::embedded_default();
-        if let Some(model) = engines.distiller.model.as_deref() {
-            profile = profile
-                .with_model_override(model)
-                .map_err(|e| format!("agent memory distiller: {e}"))?;
-        }
+        let profile = effective_distiller_profile(&engines.distiller)?;
         let handle =
             FactoryDistillerHandle::new(state, meerkat::Config::default(), &realm, &profile);
         let engine = Arc::new(DistillerEngine::new(
@@ -204,12 +239,7 @@ pub fn attach_memory_engines(
         })?;
         let state = state_for_engines("steward")?;
         let transcripts = transcripts_for_engines("steward")?;
-        let mut profile = StewardProfile::embedded_default();
-        if let Some(model) = engines.steward.model.as_deref() {
-            profile = profile
-                .with_model_override(model)
-                .map_err(|e| format!("agent memory steward: {e}"))?;
-        }
+        let profile = effective_steward_profile(&engines.steward)?;
         let transcripts_source: Arc<dyn crate::memory::distiller::TranscriptSource> =
             Arc::new(SessionStoreTranscriptSource::new(transcripts));
         // §10.2 P3 validator extension: agent_verified retiers must cite

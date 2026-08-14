@@ -180,6 +180,23 @@ pub struct UnifiedRuntime {
     /// before the host installs keys, and its serve task re-reads this
     /// slot per request.
     gateway_peer_keys: crate::runtime::cross_mob_control::ControlSignerSlot,
+    /// Late-bound read-only host projection paired with `gateway_peer_keys`.
+    /// The listener re-reads both slots, so listener-first and keys-first
+    /// bootstrap orders converge on the same authenticated host identity.
+    remote_host_facts: crate::runtime::cross_mob_control::HostFactsProviderSlot,
+    /// Controller-owned durable endpoint-identity pins plus transient
+    /// authenticated reachability. Installed from the same durable state root
+    /// as `gateway_peer_keys`; absent for explicitly ephemeral gateways.
+    remote_host_lifecycle:
+        std::sync::RwLock<Option<Arc<crate::runtime::remote_host::RemoteHostLifecycle>>>,
+    /// A corrupt/unreadable pairing file is retained as a typed refusal. The
+    /// runtime may continue serving local work, but remote placement cannot
+    /// silently start from an empty pin set.
+    remote_host_lifecycle_error:
+        std::sync::RwLock<Option<crate::runtime::remote_host::HostPairingError>>,
+    /// Sole reconnect task. Probes are observations only and are aborted and
+    /// joined before the control listener and mob authority shut down.
+    remote_host_reconnect_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 
     // Identity-first session bridge
     session_bridge: Option<Arc<dyn crate::identity_first::bridge::SessionBridge>>,
@@ -211,6 +228,13 @@ pub struct UnifiedRuntime {
     // guard-degraded. The spec (`MobBootstrapSpec::with_workgraph_service`
     // plus admission slot/sidecar) is the only blessed wiring.
     workgraph_service: Option<meerkat::WorkGraphService>,
+    /// Runtime-owned lossy wake fan-out. It exists exactly when the
+    /// authoritative WorkGraph service exists and is never an authority of
+    /// its own.
+    workgraph_fact_hub: Option<crate::workgraph_events::WorkGraphFactHub>,
+    /// Sole WorkGraph cursor tail feeding `workgraph_fact_hub`. It waits on a
+    /// subscriber notification without reading the store while idle.
+    workgraph_fact_tail_task: tokio::sync::Mutex<WorkGraphFactTailTask>,
     /// Identity-first console gateways: the mutable desired-identity roster
     /// that `mobkit/ensure_member` extends at runtime (ask K0). Set by the
     /// host beside `attach_identity_first_context`.
@@ -240,6 +264,25 @@ struct MobEventForwarder {
     event_rx: Receiver<EventEnvelope<UnifiedEvent>>,
     task: JoinHandle<()>,
     identity_stream_health_task: JoinHandle<()>,
+}
+
+struct WorkGraphFactTailTask(Option<JoinHandle<()>>);
+
+impl WorkGraphFactTailTask {
+    fn take(&mut self) -> Option<JoinHandle<()>> {
+        self.0.take()
+    }
+}
+
+impl Drop for WorkGraphFactTailTask {
+    fn drop(&mut self) {
+        // A JoinHandle detaches on drop. Failed construction paths do not get
+        // an async shutdown boundary, so abort here; graceful shutdown takes
+        // the handle first and also joins it.
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
 }
 
 impl UnifiedRuntime {
@@ -277,6 +320,18 @@ impl UnifiedRuntime {
             console_events.clone(),
         ));
         let workgraph_service = mob_runtime.workgraph_service();
+        let (workgraph_fact_hub, workgraph_fact_tail_task) =
+            if let Some(service) = workgraph_service.clone() {
+                let hub = crate::workgraph_events::WorkGraphFactHub::new();
+                let task = crate::workgraph_events::spawn_workgraph_fact_tail(
+                    service,
+                    hub.clone(),
+                    crate::workgraph_events::WorkGraphFactTailOptions::default(),
+                );
+                (Some(hub), Some(task))
+            } else {
+                (None, None)
+            };
         let definition_edge_discovery =
             edge_reconcile::DefinitionWiringEdgeDiscovery::from_definition(
                 mob_runtime.handle().definition(),
@@ -318,6 +373,10 @@ impl UnifiedRuntime {
             cross_mob_control_task: tokio::sync::Mutex::new(None),
             cross_mob_control_advertised: std::sync::RwLock::new(None),
             gateway_peer_keys: crate::runtime::cross_mob_control::unsigned_control_signer(),
+            remote_host_facts: crate::runtime::cross_mob_control::empty_host_facts_provider(),
+            remote_host_lifecycle: std::sync::RwLock::new(None),
+            remote_host_lifecycle_error: std::sync::RwLock::new(None),
+            remote_host_reconnect_task: tokio::sync::Mutex::new(None),
             session_bridge: None,
             identity_first_context: None,
             access_controller: None,
@@ -325,6 +384,10 @@ impl UnifiedRuntime {
             memory_panel_store: std::sync::RwLock::new(None),
             job_health_projection: Arc::new(std::sync::RwLock::new(None)),
             workgraph_service,
+            workgraph_fact_hub,
+            workgraph_fact_tail_task: tokio::sync::Mutex::new(WorkGraphFactTailTask(
+                workgraph_fact_tail_task,
+            )),
             console_identity_roster: std::sync::RwLock::new(None),
             console_operator_resolver: std::sync::RwLock::new(None),
             metadata_table,
@@ -894,6 +957,13 @@ impl UnifiedRuntime {
     /// or the stock spec constructors, which do all three.
     pub fn workgraph_service(&self) -> Option<meerkat::WorkGraphService> {
         self.workgraph_service.clone()
+    }
+
+    /// Clone the runtime's lossy WorkGraph fact hub when WorkGraph is
+    /// configured. Every subscriber must begin with a durable pull; the hub
+    /// has no replay or state authority.
+    pub fn workgraph_fact_hub(&self) -> Option<crate::workgraph_events::WorkGraphFactHub> {
+        self.workgraph_fact_hub.clone()
     }
 
     /// Composition-time storage durability resolution (H1/H2) carried from

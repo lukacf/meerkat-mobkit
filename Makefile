@@ -100,7 +100,6 @@ bright-line: ## Enforce the memory bright line (agent-memory-architecture.md §1
 memory-evals: ## Validate memory calibration profiles/fixtures + gate mock-lane invariants (agent-memory-architecture.md §11)
 	@echo "$(YELLOW)Checking memory calibration harness…$(NC)"
 	@scripts/memory-evals --check
-	@scripts/memory-evals --stage selector --mode mock
 	@scripts/memory-evals --stage distiller --mode mock
 	@scripts/memory-evals --stage steward --mode mock
 	@scripts/memory-evals --stage hygienist --mode mock

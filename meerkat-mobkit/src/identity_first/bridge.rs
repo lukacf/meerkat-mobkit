@@ -203,12 +203,63 @@ pub enum BridgeError {
         /// Total time this delivery attempt spent waiting on the actor.
         waited: Duration,
     },
+    /// The work WAS admitted and its turn reached a FAILED terminal.
+    ///
+    /// Distinct from [`Self::Mob`] on purpose: this names an outcome, not an
+    /// admission problem. The turn ran. Never retry on it - a retry would run
+    /// the member's turn a second time - and never confuse it with the delivery
+    /// having failed to start.
+    CompletionFailed(String),
+    /// The work WAS admitted, its turn reached a SUCCESSFUL terminal, and only
+    /// then did resolving the runtime's session id fail.
+    ///
+    /// The member did the work. Nothing about this is an admission problem, so
+    /// it must never be routed into repair-and-retry: repairing the member
+    /// cannot undo a turn that already ran, and resubmitting would run it
+    /// twice. Non-retryable by construction.
+    ///
+    /// Distinct from [`Self::CompletionFailed`] because the outcomes differ for
+    /// an operator: there, the turn failed; here, the turn succeeded and only
+    /// the post-hoc projection of its session id did not. The resolution detail
+    /// is carried verbatim and is deliberately NOT reclassified - this is a
+    /// distinct variant, and the delivery path's substring classifier only ever
+    /// sees admission errors, never this one.
+    PostAdmissionResolutionFailed(String),
+    /// This bridge does not implement completion-bearing delivery.
+    ///
+    /// The completion-bearing methods default to this so that every existing
+    /// [`SessionBridge`] implementor keeps compiling unchanged; only the
+    /// concrete mob bridge, which can reach meerkat's `WorkTurnHandle`,
+    /// overrides them.
+    ///
+    /// Returned BEFORE any submission, so a caller that sees it knows nothing
+    /// was delivered. **A caller that needs completion must fail closed here.**
+    /// Do NOT fall back to the ingress-only `deliver_*` methods: those return
+    /// at admission, so falling back would report success for a turn whose
+    /// outcome is unknown - which is precisely the false-success this seam
+    /// exists to remove.
+    CompletionUnsupported(String),
 }
 
 impl std::fmt::Display for BridgeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Mob(msg) => write!(f, "session bridge mob error: {msg}"),
+            Self::CompletionFailed(msg) => write!(
+                f,
+                "session bridge turn was admitted and then failed: {msg}; the turn RAN - \
+                 do not retry"
+            ),
+            Self::PostAdmissionResolutionFailed(msg) => write!(
+                f,
+                "session bridge turn was admitted and COMPLETED, then resolving its runtime \
+                 session id failed: {msg}; the turn RAN - do not retry"
+            ),
+            Self::CompletionUnsupported(msg) => write!(
+                f,
+                "session bridge does not support completion-bearing delivery: {msg}; \
+                 nothing was submitted"
+            ),
             Self::InvalidInput(msg) => write!(f, "session bridge invalid input: {msg}"),
             Self::ResumeRejected { kind, detail } => write!(
                 f,
@@ -229,6 +280,172 @@ impl std::fmt::Display for BridgeError {
 }
 
 impl std::error::Error for BridgeError {}
+
+/// Errors that can occur before a completion-bearing delivery has produced an
+/// admitted-turn receipt.
+///
+/// This enum deliberately cannot represent a terminal failure or a
+/// post-admission projection failure. Those states exist only in
+/// [`BridgeTurnError`], returned by [`BridgeTurnReceipt::wait`]. Keeping the
+/// two transition errors disjoint makes it impossible to report "the turn
+/// ran" from the admission edge of the state machine.
+#[derive(Debug)]
+pub enum BridgeAdmissionError {
+    /// The bridge cannot create completion-bearing receipts. Nothing was
+    /// submitted.
+    CompletionUnsupported(String),
+    /// The underlying mob operation failed before admission.
+    Mob(String),
+    /// A required field was missing or invalid before admission.
+    InvalidInput(String),
+    /// Resume was rejected before the delivery could be admitted.
+    ResumeRejected {
+        kind: ResumeRejectionKind,
+        detail: String,
+    },
+    /// The serialized actor admission round trip exceeded its budget.
+    ActorAdmissionTimeout {
+        operation: &'static str,
+        identity: MobAgentIdentity,
+        waited: Duration,
+    },
+    /// A legacy bridge path produced a post-admission error before a receipt
+    /// existed. This is an implementation invariant failure, not a terminal
+    /// outcome, and no turn may be claimed to have run from it.
+    InvariantViolation(String),
+}
+
+impl std::fmt::Display for BridgeAdmissionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CompletionUnsupported(msg) => write!(
+                f,
+                "session bridge does not support completion-bearing delivery: {msg}; \
+                 nothing was submitted"
+            ),
+            Self::Mob(msg) => write!(f, "session bridge mob error before admission: {msg}"),
+            Self::InvalidInput(msg) => {
+                write!(f, "session bridge invalid input before admission: {msg}")
+            }
+            Self::ResumeRejected { kind, detail } => write!(
+                f,
+                "session bridge resume rejected before admission ({kind:?}): {detail}; \
+                 durable session preserved, identity degraded pending retry"
+            ),
+            Self::ActorAdmissionTimeout {
+                operation,
+                identity,
+                waited,
+            } => write!(
+                f,
+                "session bridge actor call `{operation}` for member {identity} exceeded the \
+                 admission budget after {waited:?}; the mob actor command loop is not draining"
+            ),
+            Self::InvariantViolation(msg) => {
+                write!(f, "session bridge admission invariant violated: {msg}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BridgeAdmissionError {}
+
+impl From<BridgeError> for BridgeAdmissionError {
+    fn from(error: BridgeError) -> Self {
+        match error {
+            BridgeError::CompletionUnsupported(detail) => Self::CompletionUnsupported(detail),
+            BridgeError::Mob(detail) => Self::Mob(detail),
+            BridgeError::InvalidInput(detail) => Self::InvalidInput(detail),
+            BridgeError::ResumeRejected { kind, detail } => Self::ResumeRejected { kind, detail },
+            BridgeError::ActorAdmissionTimeout {
+                operation,
+                identity,
+                waited,
+            } => Self::ActorAdmissionTimeout {
+                operation,
+                identity,
+                waited,
+            },
+            BridgeError::CompletionFailed(detail) => Self::InvariantViolation(format!(
+                "completion failure escaped before an admitted-turn receipt existed: {detail}"
+            )),
+            BridgeError::PostAdmissionResolutionFailed(detail) => {
+                Self::InvariantViolation(format!(
+                    "post-admission projection failure escaped before an admitted-turn receipt \
+                     existed: {detail}"
+                ))
+            }
+        }
+    }
+}
+
+impl From<BridgeAdmissionError> for BridgeError {
+    fn from(error: BridgeAdmissionError) -> Self {
+        match error {
+            BridgeAdmissionError::CompletionUnsupported(detail) => {
+                Self::CompletionUnsupported(detail)
+            }
+            BridgeAdmissionError::Mob(detail) => Self::Mob(detail),
+            BridgeAdmissionError::InvalidInput(detail) => Self::InvalidInput(detail),
+            BridgeAdmissionError::ResumeRejected { kind, detail } => {
+                Self::ResumeRejected { kind, detail }
+            }
+            BridgeAdmissionError::ActorAdmissionTimeout {
+                operation,
+                identity,
+                waited,
+            } => Self::ActorAdmissionTimeout {
+                operation,
+                identity,
+                waited,
+            },
+            BridgeAdmissionError::InvariantViolation(detail) => Self::Mob(detail),
+        }
+    }
+}
+
+/// Errors from an exact turn receipt after admission has already occurred.
+///
+/// Admission-only states are unrepresentable here. A caller holding this error
+/// knows a turn was admitted and therefore must never repair-and-resubmit it.
+#[derive(Debug)]
+pub enum BridgeTurnError {
+    /// The admitted turn reached a failed terminal. When session resolution
+    /// also failed, its detail is retained as secondary evidence.
+    CompletionFailed(String),
+    /// The admitted turn succeeded, but resolving its session id failed.
+    PostAdmissionResolutionFailed(String),
+}
+
+impl std::fmt::Display for BridgeTurnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CompletionFailed(detail) => write!(
+                f,
+                "session bridge turn was admitted and then failed: {detail}; the turn RAN - \
+                 do not retry"
+            ),
+            Self::PostAdmissionResolutionFailed(detail) => write!(
+                f,
+                "session bridge turn was admitted and COMPLETED, then resolving its runtime \
+                 session id failed: {detail}; the turn RAN - do not retry"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BridgeTurnError {}
+
+impl From<BridgeTurnError> for BridgeError {
+    fn from(error: BridgeTurnError) -> Self {
+        match error {
+            BridgeTurnError::CompletionFailed(detail) => Self::CompletionFailed(detail),
+            BridgeTurnError::PostAdmissionResolutionFailed(detail) => {
+                Self::PostAdmissionResolutionFailed(detail)
+            }
+        }
+    }
+}
 
 /// Typed classification of a rejected resume, derived from meerkat's typed
 /// errors where available (report ask: don't bucket every resume error into
@@ -545,13 +762,43 @@ struct InternalBridgeWork<'a> {
     delivery_identity: Option<&'a meerkat_mob::MobDeliveryIdentity>,
 }
 
+/// Which lane a submission runs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeSubmitMode {
+    /// Return as soon as the work is admitted. The historical behaviour.
+    AdmissionOnly,
+    /// Admit through the completion-bearing verb and hand the caller the turn
+    /// handle to await.
+    CompletionBearing,
+}
+
+/// Admit one internal bridge delivery.
+///
+/// [`BridgeSubmitMode::AdmissionOnly`] is the ingress-only path and is
+/// unchanged: it returns as soon as the work is admitted, yielding `None`.
+///
+/// [`BridgeSubmitMode::CompletionBearing`] admits through meerkat's
+/// `start_work_with_mode*` and returns the resulting [`WorkTurnHandle`]
+/// UNAWAITED. This function never awaits a turn: the caller decides when, and
+/// does so only after the repair-and-retry decision is settled, so a turn that
+/// ran and then failed can never be mistaken for a delivery that never landed.
+///
+/// One code path with one typed mode, deliberately - a separate copy would let
+/// the completion lane drift from the ingress lane on admission-budget or
+/// stale-state repair semantics, which are exactly the parts that are hard to
+/// get right twice.
+///
+/// `deadline` bounds the ACTOR ROUND TRIP only. Completion is not awaited here
+/// at all, so nothing in this function can spend the admission budget on a
+/// turn.
 async fn submit_internal_bridge_work(
     handle: &MobHandle,
     member_id: &MobAgentIdentity,
     work: InternalBridgeWork<'_>,
     handling_mode: HandlingMode,
     deadline: &ActorAdmissionDeadline,
-) -> Result<(), BridgeError> {
+    mode: BridgeSubmitMode,
+) -> Result<Option<meerkat_mob::WorkTurnHandle>, BridgeError> {
     let entry = deadline
         .bound(
             "deliver.get_member",
@@ -567,6 +814,43 @@ async fn submit_internal_bridge_work(
         work.injected_context,
         work.interaction_id,
     );
+    if matches!(mode, BridgeSubmitMode::CompletionBearing) {
+        let turn = match work.delivery_identity {
+            Some(delivery_identity) => deadline
+                .bound(
+                    "deliver.start_work",
+                    member_id,
+                    handle.start_work_with_mode_and_delivery_identity(
+                        entry.agent_runtime_id.clone(),
+                        entry.fence_token,
+                        spec,
+                        handling_mode,
+                        delivery_identity.clone(),
+                    ),
+                )
+                .await?
+                .map_err(|err| BridgeError::Mob(err.to_string()))?,
+            None => deadline
+                .bound(
+                    "deliver.start_work",
+                    member_id,
+                    handle.start_work_with_mode(
+                        entry.agent_runtime_id.clone(),
+                        entry.fence_token,
+                        WorkRef::new(),
+                        spec,
+                        handling_mode,
+                    ),
+                )
+                .await?
+                .map_err(|err| BridgeError::Mob(err.to_string()))?,
+        };
+        // Hand the handle back UNAWAITED. The caller awaits it only after the
+        // admission-retry decision is settled, so a turn that ran and then
+        // failed can never be mistaken for a delivery that never landed and
+        // resubmitted - which would run the member's turn twice.
+        return Ok(Some(turn));
+    }
     match work.delivery_identity {
         Some(delivery_identity) => deadline
             .bound(
@@ -581,7 +865,7 @@ async fn submit_internal_bridge_work(
                 ),
             )
             .await?
-            .map(|_| ())
+            .map(|_| None)
             .map_err(|err| BridgeError::Mob(err.to_string())),
         None => deadline
             .bound(
@@ -596,7 +880,7 @@ async fn submit_internal_bridge_work(
                 ),
             )
             .await?
-            .map(|_| ())
+            .map(|_| None)
             .map_err(|err| BridgeError::Mob(err.to_string())),
     }
 }
@@ -768,6 +1052,106 @@ impl BridgeDelivery {
     }
 }
 
+/// An ADMITTED turn, owned by the caller and awaitable OUTSIDE any lock.
+///
+/// This type exists for one reason: the identity lifecycle lock must cover
+/// validation, admission and bounded session resolution, and NOTHING else.
+/// Awaiting an LLM turn under that lock serialises same-identity sends behind a
+/// model call and blocks every lifecycle operation - reset, retire, alias
+/// rebind - for the turn's whole duration.
+///
+/// [`Self::wait`] takes `self` BY VALUE, which prevents awaiting one twice.
+///
+/// It does NOT make dropping one impossible: a receipt can still be dropped
+/// without being awaited, abandoning a running turn. `#[must_use]` makes the
+/// common case of ignoring the return value a warning, and that is the whole of
+/// the protection - the rest is the caller's discipline.
+#[must_use = "dropping a BridgeTurnReceipt abandons an ADMITTED, RUNNING turn without ever \
+              observing its terminal"]
+pub struct BridgeTurnReceipt {
+    /// Session resolution ALREADY RAN, under the admission deadline, before the
+    /// caller was handed this receipt.
+    ///
+    /// Carried as a `Result` and deliberately NOT `?`-propagated at admission
+    /// time: returning early on a resolution failure would drop the completion
+    /// handle of a turn that is already running. The pair is mapped in
+    /// [`Self::wait`], after the turn has reached terminal.
+    session_result: Result<meerkat_core::types::SessionId, String>,
+    /// `'static` because the receipt is held across an UNLOCK, so it must not
+    /// borrow from the bridge or from any guard. `Send` because the runtime's
+    /// send future must stay `Send`.
+    completion: std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'static>>,
+}
+
+impl std::fmt::Debug for BridgeTurnReceipt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BridgeTurnReceipt")
+            .field("session_result", &self.session_result)
+            .finish_non_exhaustive()
+    }
+}
+
+impl BridgeTurnReceipt {
+    /// Build a receipt from an admitted turn.
+    ///
+    /// Generic over the completion future so out-of-crate [`SessionBridge`]
+    /// implementors can build one from whatever handle they own, without
+    /// naming a boxed type.
+    ///
+    /// Construct this the moment the work is admitted and BEFORE inspecting
+    /// `session_result`, so no code path can inspect a failure and return
+    /// without carrying the completion handle forward.
+    pub fn new<F, ResolutionError, CompletionError>(
+        session_result: Result<meerkat_core::types::SessionId, ResolutionError>,
+        completion: F,
+    ) -> Self
+    where
+        F: Future<Output = Result<(), CompletionError>> + Send + 'static,
+        ResolutionError: std::fmt::Display,
+        CompletionError: std::fmt::Display,
+    {
+        Self {
+            session_result: session_result.map_err(|error| error.to_string()),
+            completion: Box::pin(
+                async move { completion.await.map_err(|error| error.to_string()) },
+            ),
+        }
+    }
+
+    /// The session this turn was admitted onto, if resolution succeeded.
+    ///
+    /// Read-only: the field is private so no caller can inspect resolution,
+    /// decide it failed, and return without awaiting the running turn.
+    pub fn resolved_session(&self) -> Option<&meerkat_core::types::SessionId> {
+        self.session_result.as_ref().ok()
+    }
+
+    /// Await this turn's terminal, then map the (resolution, terminal) pair.
+    ///
+    /// | resolution | terminal | result                                        |
+    /// |------------|----------|-----------------------------------------------|
+    /// | `Ok`       | `Ok`     | `Ok(session_id)`                              |
+    /// | `Ok`       | `Err`    | [`BridgeTurnError::CompletionFailed`]         |
+    /// | `Err`      | `Err`    | `CompletionFailed`, carrying both details     |
+    /// | `Err`      | `Ok`     | [`BridgeTurnError::PostAdmissionResolutionFailed`]|
+    ///
+    /// There is no early return: the turn is already running, so its terminal
+    /// is always awaited before any error is produced.
+    pub async fn wait(self) -> Result<meerkat_core::types::SessionId, BridgeTurnError> {
+        let terminal_result = self.completion.await;
+        match (self.session_result, terminal_result) {
+            (Ok(session_id), Ok(())) => Ok(session_id),
+            (Ok(_), Err(err)) => Err(BridgeTurnError::CompletionFailed(err)),
+            (Err(resolve_err), Err(err)) => Err(BridgeTurnError::CompletionFailed(format!(
+                "{err}; post-admission session resolution also failed: {resolve_err}"
+            ))),
+            (Err(resolve_err), Ok(())) => {
+                Err(BridgeTurnError::PostAdmissionResolutionFailed(resolve_err))
+            }
+        }
+    }
+}
+
 /// Bridge between the identity-first control plane and the Meerkat session
 /// pipeline. Each method maps an identity-layer operation to its concrete
 /// mob-level counterpart.
@@ -879,6 +1263,76 @@ pub trait SessionBridge: Send + Sync {
         delivery.injected_context = injected_context.to_vec();
         delivery.interaction_id = interaction_id.map(ToString::to_string);
         self.deliver_admitted(runtime_id, delivery).await
+    }
+
+    /// [`Self::deliver_with_mode_context_and_system_prompt`], but returning
+    /// only after the runtime has COMMITTED this turn's terminal boundary.
+    ///
+    /// The ingress-only `deliver_*` methods above are unchanged and remain the
+    /// normal path: they return as soon as the work is admitted, which is what
+    /// production callers want. This sibling exists for callers that need proof
+    /// the turn actually finished - principally tests, which otherwise infer
+    /// completion from a timer or from a session-wide event stream. Both
+    /// inferences are unsound: a timer elapses whether or not the turn ran, and
+    /// a session-wide stream cannot attribute a terminal to one specific
+    /// delivery.
+    ///
+    /// Defaults to [`BridgeError::CompletionUnsupported`] so that every
+    /// existing implementor compiles unchanged. The concrete mob bridge
+    /// overrides it using meerkat's `MobHandle::start_work_with_mode*` and
+    /// `WorkTurnHandle::wait`, which carry an exact per-work-item completion
+    /// signal.
+    async fn deliver_awaiting_commit_with_mode_context_and_system_prompt(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        content: &meerkat_core::ContentInput,
+        system_prompt: Option<&str>,
+        injected_context: &[meerkat_core::ContentInput],
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        let receipt = self
+            .begin_awaiting_commit(
+                runtime_id,
+                content,
+                system_prompt,
+                injected_context,
+                handling_mode,
+                interaction_id,
+            )
+            .await
+            .map_err(BridgeError::from)?;
+        receipt.wait().await.map_err(BridgeError::from)
+    }
+
+    /// Admit a turn and hand back a [`BridgeTurnReceipt`] the caller can await
+    /// LATER - crucially, after releasing whatever lock it holds.
+    ///
+    /// This is the primitive;
+    /// [`Self::deliver_awaiting_commit_with_mode_context_and_system_prompt`] is
+    /// `begin` + `wait` composed, and exists only for callers with no lock to
+    /// release.
+    ///
+    /// Returns only after BOUNDED admission plus BOUNDED session resolution -
+    /// both inside the admission deadline, neither of them the LLM turn. The
+    /// resolution outcome rides in `session_result` rather than being
+    /// `?`-propagated, because an early return after admission drops the handle
+    /// of a turn that is already running.
+    ///
+    /// Defaults to [`BridgeAdmissionError::CompletionUnsupported`] BEFORE any
+    /// submit, so a caller that sees it knows nothing was delivered.
+    async fn begin_awaiting_commit(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+        _content: &meerkat_core::ContentInput,
+        _system_prompt: Option<&str>,
+        _injected_context: &[meerkat_core::ContentInput],
+        _handling_mode: HandlingMode,
+        _interaction_id: Option<&str>,
+    ) -> Result<BridgeTurnReceipt, BridgeAdmissionError> {
+        Err(BridgeAdmissionError::CompletionUnsupported(
+            "this bridge implements ingress-only delivery".to_string(),
+        ))
     }
 
     /// Deliver content plus one ordinary System message authored for this
@@ -2535,6 +2989,11 @@ pub(crate) fn build_spawn_spec(
     if let Some(binding) = spec.binding.clone() {
         spawn_spec.binding = runtime_binding_from_wire(binding);
     }
+    if let Some(placement) = spec.placement.as_ref() {
+        spawn_spec.placement = Some(meerkat_mob::machines::mob_machine::HostId::from(
+            placement.0.clone(),
+        ));
+    }
     if let Some(ref ctx) = draft.app_context {
         spawn_spec = spawn_spec.with_context(ctx.clone());
     }
@@ -2593,6 +3052,7 @@ pub(crate) fn build_spawn_spec(
     if let Some(dispatcher) = draft.local_external_tools.dispatcher() {
         spawn_spec.external_tools = Some(dispatcher);
     }
+    spawn_spec.compaction_curator_override = draft.compaction_curator.curator();
 
     // Runs after the model block: it composes with whatever snapshot that
     // block installed instead of clobbering it.
@@ -2946,121 +3406,36 @@ impl SessionBridge for MobSessionBridge {
         runtime_id: &AgentRuntimeId,
         delivery: BridgeDelivery,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        let content = &delivery.content;
-        let handling_mode = delivery.handling_mode;
-        let system_prompt = delivery.system_prompt.as_deref();
-        let injected_context = delivery.injected_context.as_slice();
-        let interaction_id = delivery.interaction_id.as_deref();
-        let delivery_identity = delivery.delivery_identity.as_ref();
-        let mid = self.member_id_for_runtime_id(runtime_id).await;
-        // One admission budget for the whole attempt, shared by every actor
-        // round trip below: the serialized hops must not each cost a budget.
-        let mut deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
-        // Best-effort repair material: a faulted or timed-out lookup degrades
-        // to "no pre-delivery entry" (the delivery itself will surface the
-        // fault; a blocked actor hits the same deadline again below).
-        let member_entry_before_delivery = deadline
-            .bound(
-                "deliver.get_member.pre_delivery",
-                &mid,
-                self.handle.get_member(&mid),
-            )
+        // Admission-only: no turn is in flight, so the receipt's completion is
+        // an immediate Ok and propagating the resolution result here drops
+        // nothing. Identical to the pre-receipt behaviour.
+        let receipt = self
+            .deliver_admitted_inner(runtime_id, delivery, BridgeSubmitMode::AdmissionOnly)
             .await
-            .ok()
-            .and_then(Result::ok)
-            .flatten()
-            .map(|entry| (entry.role, entry.labels));
-        if content_input_has_images(content) {
-            let member_entry = deadline
-                .bound(
-                    "deliver.get_member.image_capability",
-                    &mid,
-                    self.handle.get_member(&mid),
-                )
-                .await?
-                .map_err(|err| BridgeError::Mob(err.to_string()))?
-                .ok_or_else(|| {
-                    BridgeError::Mob("member not found while checking image capability".to_string())
-                })?;
-            let caps = deadline
-                .bound(
-                    "deliver.model_capabilities",
-                    &mid,
-                    model_capabilities_for_member(
-                        &self.handle,
-                        self.session_service.as_ref(),
-                        &member_entry.agent_identity,
-                    ),
-                )
-                .await?;
-            if !caps.image_input {
-                return Err(BridgeError::InvalidInput(
-                    "target member model cannot accept image input".to_string(),
-                ));
-            }
-        }
+            .map_err(BridgeError::from)?;
+        receipt.wait().await.map_err(BridgeError::from)
+    }
 
-        match submit_internal_bridge_work(
-            &self.handle,
-            &mid,
-            InternalBridgeWork {
-                content,
-                system_prompt,
-                injected_context,
-                interaction_id,
-                delivery_identity,
-            },
-            handling_mode,
-            &deadline,
-        )
-        .await
-        {
-            Ok(()) => {}
-            // A blocked actor is not stale runtime state: keep the typed
-            // timeout instead of routing it into member repair (which cannot
-            // unblock an actor) or laundering it into `Mob(String)` below.
-            Err(err @ BridgeError::ActorAdmissionTimeout { .. }) => return Err(err),
-            Err(err) if is_repairable_bridge_delivery_error(&err.to_string()) => {
-                tracing::warn!(
-                    runtime_id = %runtime_id,
-                    error = %err,
-                    "identity bridge delivery found stale runtime state; repairing member before retry"
-                );
-                Box::pin(self.repair_member_for_delivery(
-                    runtime_id,
-                    &mid,
-                    member_entry_before_delivery,
-                ))
-                .await?;
-                // Repair is a distinct multi-step recovery with its own
-                // (pre-existing, unbounded) cost; the retry is a new admission
-                // attempt and gets a fresh budget.
-                deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
-                submit_internal_bridge_work(
-                    &self.handle,
-                    &mid,
-                    InternalBridgeWork {
-                        content,
-                        system_prompt,
-                        injected_context,
-                        interaction_id,
-                        delivery_identity,
-                    },
-                    handling_mode,
-                    &deadline,
-                )
-                .await?;
-            }
-            Err(err) => return Err(BridgeError::Mob(err.to_string())),
-        }
-
-        self.resolve_runtime_session_id(
-            runtime_id,
-            &mid,
-            "member has no bridge session after deliver",
-            &deadline,
-        )
-        .await
+    /// Completion-bearing override: identical admission, returning the turn's
+    /// receipt UNAWAITED so the caller can release its locks first.
+    ///
+    /// The trait's `deliver_awaiting_commit_*` default composes this with
+    /// `wait()`, so there is no second admission path to drift.
+    async fn begin_awaiting_commit(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        content: &meerkat_core::ContentInput,
+        system_prompt: Option<&str>,
+        injected_context: &[meerkat_core::ContentInput],
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<BridgeTurnReceipt, BridgeAdmissionError> {
+        let mut delivery = BridgeDelivery::new(content.clone(), handling_mode);
+        delivery.system_prompt = system_prompt.map(ToString::to_string);
+        delivery.injected_context = injected_context.to_vec();
+        delivery.interaction_id = interaction_id.map(ToString::to_string);
+        self.deliver_admitted_inner(runtime_id, delivery, BridgeSubmitMode::CompletionBearing)
+            .await
     }
 
     async fn checkpoint_session(
@@ -3299,10 +3674,403 @@ impl SessionBridge for MobSessionBridge {
     }
 }
 
+impl MobSessionBridge {
+    /// Shared admission body for both the ingress-only and completion-bearing
+    /// deliveries. The [`BridgeSubmitMode`] selects only which meerkat submit
+    /// verb is used; every other step - budget, stale-state repair and retry,
+    /// session resolution - is common by construction so the two lanes cannot
+    /// drift.
+    async fn deliver_admitted_inner(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        delivery: BridgeDelivery,
+        mode: BridgeSubmitMode,
+    ) -> Result<BridgeTurnReceipt, BridgeAdmissionError> {
+        let content = &delivery.content;
+        let handling_mode = delivery.handling_mode;
+        let system_prompt = delivery.system_prompt.as_deref();
+        let injected_context = delivery.injected_context.as_slice();
+        let interaction_id = delivery.interaction_id.as_deref();
+        let delivery_identity = delivery.delivery_identity.as_ref();
+        let mid = self.member_id_for_runtime_id(runtime_id).await;
+        // One admission budget for the whole attempt, shared by every actor
+        // round trip below: the serialized hops must not each cost a budget.
+        let mut deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
+        // Best-effort repair material: a faulted or timed-out lookup degrades
+        // to "no pre-delivery entry" (the delivery itself will surface the
+        // fault; a blocked actor hits the same deadline again below).
+        let member_entry_before_delivery = deadline
+            .bound(
+                "deliver.get_member.pre_delivery",
+                &mid,
+                self.handle.get_member(&mid),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+            .map(|entry| (entry.role, entry.labels));
+        if content_input_has_images(content) {
+            let member_entry = deadline
+                .bound(
+                    "deliver.get_member.image_capability",
+                    &mid,
+                    self.handle.get_member(&mid),
+                )
+                .await?
+                .map_err(|err| BridgeError::Mob(err.to_string()))?
+                .ok_or_else(|| {
+                    BridgeError::Mob("member not found while checking image capability".to_string())
+                })?;
+            let caps = deadline
+                .bound(
+                    "deliver.model_capabilities",
+                    &mid,
+                    model_capabilities_for_member(
+                        &self.handle,
+                        self.session_service.as_ref(),
+                        &member_entry.agent_identity,
+                    ),
+                )
+                .await?;
+            if !caps.image_input {
+                return Err(BridgeAdmissionError::InvalidInput(
+                    "target member model cannot accept image input".to_string(),
+                ));
+            }
+        }
+
+        // Bound BY the match, not pre-initialised: every arm either yields the
+        // handle or returns, so there is no state in which a turn was admitted
+        // and `pending_turn` does not hold its handle.
+        let pending_turn: Option<meerkat_mob::WorkTurnHandle> = match submit_internal_bridge_work(
+            &self.handle,
+            &mid,
+            InternalBridgeWork {
+                content,
+                system_prompt,
+                injected_context,
+                interaction_id,
+                delivery_identity,
+            },
+            handling_mode,
+            &deadline,
+            mode,
+        )
+        .await
+        {
+            Ok(turn) => turn,
+            // A blocked actor is not stale runtime state: keep the typed
+            // timeout instead of routing it into member repair (which cannot
+            // unblock an actor) or laundering it into `Mob(String)` below.
+            Err(err @ BridgeError::ActorAdmissionTimeout { .. }) => return Err(err.into()),
+            Err(err) if is_repairable_bridge_delivery_error(&err.to_string()) => {
+                tracing::warn!(
+                    runtime_id = %runtime_id,
+                    error = %err,
+                    "identity bridge delivery found stale runtime state; repairing member before retry"
+                );
+                Box::pin(self.repair_member_for_delivery(
+                    runtime_id,
+                    &mid,
+                    member_entry_before_delivery,
+                ))
+                .await?;
+                // Repair is a distinct multi-step recovery with its own
+                // (pre-existing, unbounded) cost; the retry is a new admission
+                // attempt and gets a fresh budget.
+                deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
+                // The retry's handle is kept exactly like the first attempt's:
+                // dropping it here would abandon an admitted, running turn on
+                // the repair path specifically.
+                submit_internal_bridge_work(
+                    &self.handle,
+                    &mid,
+                    InternalBridgeWork {
+                        content,
+                        system_prompt,
+                        injected_context,
+                        interaction_id,
+                        delivery_identity,
+                    },
+                    handling_mode,
+                    &deadline,
+                    mode,
+                )
+                .await?
+            }
+            Err(err) => return Err(BridgeAdmissionError::Mob(err.to_string())),
+        };
+
+        // Resolution runs under the admission deadline, and its outcome is
+        // CARRIED, not propagated. The handle is moved into the receipt without
+        // the resolution result ever being inspected here, so there is no path
+        // on which a resolution failure returns early and abandons a turn that
+        // is already running. That invariant used to depend on statement order;
+        // now it is structural.
+        let session_result = self
+            .resolve_runtime_session_id(
+                runtime_id,
+                &mid,
+                "member has no bridge session after deliver",
+                &deadline,
+            )
+            .await;
+
+        Ok(BridgeTurnReceipt::new(session_result, async move {
+            match pending_turn {
+                // The LLM turn. Awaited by the CALLER, after it has released
+                // whatever lock it holds - never here, never under a lock.
+                Some(turn) => turn.wait().await.map(|_| ()).map_err(|err| err.to_string()),
+                // Admission-only: nothing to wait for.
+                None => Ok::<(), String>(()),
+            }
+        }))
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::sync::Arc;
+
+    /// The ordering property, proven by direct poll rather than by timing.
+    ///
+    /// Session resolution must COMPLETE before the completion future is polled
+    /// even once. A wall-clock version of this test was written first, and a
+    /// negative mutation proved it inert - it passed with the awaits swapped.
+    /// This one cannot: swapping them makes the completion future observe an
+    /// empty trace on its first poll and panic there.
+    #[test]
+    fn session_resolution_completes_before_the_completion_future_is_polled() {
+        use std::sync::Mutex;
+        use std::task::{Context, Poll, Waker};
+
+        let trace: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        /// Records its first poll, asserts resolution already happened, then
+        /// parks until released.
+        struct GatedCompletion {
+            trace: Arc<Mutex<Vec<&'static str>>>,
+            released: Arc<std::sync::atomic::AtomicBool>,
+            polled: bool,
+        }
+        impl std::future::Future for GatedCompletion {
+            type Output = Result<(), BridgeError>;
+            fn poll(
+                mut self: std::pin::Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Self::Output> {
+                if !self.polled {
+                    assert_eq!(
+                        self.trace.lock().expect("trace mutex poisoned").as_slice(),
+                        ["SessionResolved"],
+                        "the completion future was polled before session resolution finished - \
+                         the admission budget would be spent on the turn"
+                    );
+                    self.trace
+                        .lock()
+                        .expect("trace mutex poisoned")
+                        .push("CompletionPolled");
+                    self.polled = true;
+                }
+                if self.released.load(std::sync::atomic::Ordering::SeqCst) {
+                    Poll::Ready(Ok(()))
+                } else {
+                    Poll::Pending
+                }
+            }
+        }
+
+        let session = meerkat_core::types::SessionId::new();
+        let expected = session.clone();
+        let resolve_trace = Arc::clone(&trace);
+        let resolve = async move {
+            resolve_trace
+                .lock()
+                .expect("trace mutex poisoned")
+                .push("SessionResolved");
+            Ok::<_, BridgeError>(session)
+        };
+        let completion = GatedCompletion {
+            trace: Arc::clone(&trace),
+            released: Arc::clone(&released),
+            polled: false,
+        };
+
+        // Resolution happens in `begin`, BEFORE the receipt exists, so the
+        // ordering is now structural: a receipt cannot be constructed without a
+        // resolution outcome in hand. What still needs proving is that `wait`
+        // parks on the completion rather than returning on the carried result.
+        let resolved = futures::executor::block_on(resolve).expect("resolution");
+        let combined =
+            super::BridgeTurnReceipt::new(Ok::<_, BridgeError>(resolved), completion).wait();
+        let mut combined = Box::pin(combined);
+        let mut cx = Context::from_waker(Waker::noop());
+
+        assert!(
+            combined.as_mut().poll(&mut cx).is_pending(),
+            "must park on the completion, not return at resolution"
+        );
+        assert_eq!(
+            trace.lock().expect("trace mutex poisoned").as_slice(),
+            ["SessionResolved", "CompletionPolled"],
+            "exact ordering: resolve fully, THEN poll the completion"
+        );
+
+        released.store(true, std::sync::atomic::Ordering::SeqCst);
+        match combined.as_mut().poll(&mut cx) {
+            Poll::Ready(Ok(got)) => assert_eq!(got, expected, "must return the resolved session"),
+            other => panic!("expected the resolved session once released, got {other:?}"),
+        }
+    }
+
+    /// P1: a resolution failure AFTER admission must not drop the turn.
+    ///
+    /// Proven by direct poll, not by timing. The resolution error is
+    /// deliberately admission-shaped AND repairable by
+    /// `is_repairable_bridge_delivery_error`, which is the dangerous case: an
+    /// early return here would abandon an admitted, running turn and hand the
+    /// delivery path an error it would repair and resubmit, running the
+    /// member's turn a second time.
+    ///
+    /// Two things are asserted that an early return cannot satisfy: the
+    /// completion future is polled at all, and the combined future parks on it
+    /// rather than returning at resolution.
+    #[test]
+    fn a_post_admission_resolution_failure_still_awaits_the_turn_and_is_not_repairable() {
+        use std::sync::Mutex;
+        use std::task::{Context, Poll, Waker};
+
+        let polls: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        struct CountedCompletion {
+            polls: Arc<Mutex<usize>>,
+            released: Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl std::future::Future for CountedCompletion {
+            type Output = Result<(), BridgeError>;
+            fn poll(self: std::pin::Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+                *self.polls.lock().expect("poll counter mutex poisoned") += 1;
+                if self.released.load(std::sync::atomic::Ordering::SeqCst) {
+                    Poll::Ready(Ok(()))
+                } else {
+                    Poll::Pending
+                }
+            }
+        }
+
+        // Admission-shaped AND accepted by the repair classifier.
+        let resolve_detail = "missing bridge session snapshot for member rt-agent-alpha-0";
+        assert!(
+            is_repairable_bridge_delivery_error(resolve_detail),
+            "the test is only meaningful if the resolution error is one the \
+             delivery path WOULD repair and resubmit"
+        );
+        let completion = CountedCompletion {
+            polls: Arc::clone(&polls),
+            released: Arc::clone(&released),
+        };
+
+        let combined = super::BridgeTurnReceipt::new(
+            Err(BridgeError::Mob(resolve_detail.to_string())),
+            completion,
+        )
+        .wait();
+        let mut combined = Box::pin(combined);
+        let mut cx = Context::from_waker(Waker::noop());
+
+        assert!(
+            combined.as_mut().poll(&mut cx).is_pending(),
+            "resolution failed, but the turn is still running: the combined \
+             future must park on the completion, not return and drop it"
+        );
+        assert_eq!(
+            *polls.lock().expect("poll counter mutex poisoned"),
+            1,
+            "the completion future was never polled - the admitted turn was dropped"
+        );
+
+        released.store(true, std::sync::atomic::Ordering::SeqCst);
+        match combined.as_mut().poll(&mut cx) {
+            Poll::Ready(Err(BridgeTurnError::PostAdmissionResolutionFailed(detail))) => {
+                assert!(
+                    detail.contains("missing bridge session snapshot"),
+                    "the resolution detail must survive verbatim: {detail}"
+                );
+                // The protection is the VARIANT, not the wording: this error is
+                // produced after admission and is never handed to the delivery
+                // path's substring classifier. Assert the variant is not one of
+                // the admission-shaped ones it acts on.
+                let rendered = BridgeTurnError::PostAdmissionResolutionFailed(detail).to_string();
+                assert!(
+                    rendered.contains("do not retry"),
+                    "the rendering must tell an operator this is terminal: {rendered}"
+                );
+            }
+            other => panic!(
+                "a turn that SUCCEEDED after a failed resolution must surface as \
+                 PostAdmissionResolutionFailed - anything admission-shaped could be \
+                 repaired and resubmitted, running the turn twice. Got: {other:?}"
+            ),
+        }
+    }
+
+    /// When BOTH fail, the turn's failure is the outcome and leads, and the
+    /// resolution detail is carried rather than silently dropped.
+    #[tokio::test]
+    async fn both_failing_leads_with_the_turn_and_still_carries_the_resolution_detail() {
+        let failed = super::BridgeTurnReceipt::new(
+            Err(BridgeError::Mob("resolution detail marker".to_string())),
+            async { Err::<(), _>(BridgeError::Mob("turn failure marker".to_string())) },
+        )
+        .wait()
+        .await;
+        match failed {
+            Err(BridgeTurnError::CompletionFailed(detail)) => {
+                assert!(
+                    detail.contains("turn failure marker"),
+                    "the turn's own failure must lead: {detail}"
+                );
+                assert!(
+                    detail.contains("resolution detail marker"),
+                    "the resolution failure must not be silently dropped: {detail}"
+                );
+            }
+            other => panic!(
+                "a turn that RAN and failed is a completion failure regardless of \
+                 what resolution did. Got: {other:?}"
+            ),
+        }
+    }
+
+    /// A completion failure must be typed `CompletionFailed`, never anything
+    /// admission-shaped that the repair-and-retry classifier could act on.
+    #[tokio::test]
+    async fn a_completion_failure_is_typed_and_never_admission_shaped() {
+        let session = meerkat_core::types::SessionId::new();
+        let failed = super::BridgeTurnReceipt::new(Ok::<_, BridgeError>(session), async {
+            Err::<(), _>(BridgeError::Mob(
+                "missing bridge session snapshot - completion sentinel".to_string(),
+            ))
+        })
+        .wait()
+        .await;
+        match failed {
+            Err(BridgeTurnError::CompletionFailed(detail)) => assert!(
+                detail.contains("missing bridge session snapshot"),
+                "the detail must survive so operators can see what failed: {detail}"
+            ),
+            other => panic!(
+                "a completion failure whose text is ACCEPTED by \
+                 is_repairable_bridge_delivery_error must still surface as CompletionFailed, \
+                 or the delivery path could repair and resubmit a turn that already ran. \
+                 Got: {other:?}"
+            ),
+        }
+    }
 
     /// 8a threading pin: every optional carrier on the internal deliver
     /// surface reaches the WorkSpec unchanged - in particular the per-turn
@@ -3351,6 +4119,19 @@ mod tests {
     use crate::identity_first::{AgentAddressability, LocalExternalToolOverlay};
 
     struct EmptyDispatcher;
+
+    struct TestCompactionCurator;
+
+    #[async_trait]
+    impl meerkat_core::CompactionCurator for TestCompactionCurator {
+        async fn curate_summary(
+            &self,
+            _window: meerkat_core::CompactionWindow<'_>,
+        ) -> Result<meerkat_core::CuratedCompactionSummary, meerkat_core::CompactionCuratorError>
+        {
+            meerkat_core::CuratedCompactionSummary::new("mobkit curated summary")
+        }
+    }
 
     #[async_trait]
     impl AgentToolDispatcher for EmptyDispatcher {
@@ -3430,6 +4211,7 @@ mod tests {
             runtime_mode_override: Some(MobRuntimeMode::TurnDriven),
             backend: None,
             binding: None,
+            placement: None,
         }
     }
 
@@ -3486,6 +4268,7 @@ mod tests {
         let mut labels = std::collections::BTreeMap::new();
         labels.insert("team".to_string(), "ops".to_string());
         let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: Some("gpt-test".to_string()),
             system_prompt: Some("system override".to_string()),
             additional_instructions: vec!["stay focused".to_string()],
@@ -3555,6 +4338,75 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_spawn_spec_preserves_exact_remote_placement() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let mut spec = durable_spec();
+        spec.placement = Some(meerkat_contracts::WireHostRef(
+            "12D3KooWExactRemoteHost".to_string(),
+        ));
+        let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
+            model: None,
+            system_prompt: None,
+            additional_instructions: Vec::new(),
+            labels: Default::default(),
+            app_context: None,
+            external_tools: Vec::new(),
+            local_external_tools: LocalExternalToolOverlay::default(),
+            provider_params: None,
+        };
+
+        let spawn = build_spawn_spec(&runtime_id, &spec, &draft, None).expect("spawn spec");
+        assert_eq!(
+            spawn
+                .placement
+                .as_ref()
+                .map(meerkat_mob::machines::mob_machine::HostId::as_str),
+            Some("12D3KooWExactRemoteHost"),
+            "remote placement must reach Meerkat unchanged and never become local None"
+        );
+    }
+
+    #[test]
+    fn fresh_and_resume_spawn_specs_carry_the_exact_host_curator_arc() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let session_id = meerkat_core::types::SessionId::new();
+        let curator: Arc<dyn meerkat_core::CompactionCurator> = Arc::new(TestCompactionCurator);
+        let draft = AgentBuildDraft {
+            compaction_curator: crate::identity_first::CompactionCuratorOverlay::new(Arc::clone(
+                &curator,
+            )),
+            model: None,
+            system_prompt: None,
+            additional_instructions: Vec::new(),
+            labels: Default::default(),
+            app_context: None,
+            external_tools: Vec::new(),
+            local_external_tools: Default::default(),
+            provider_params: None,
+        };
+
+        let fresh =
+            build_spawn_spec(&runtime_id, &durable_spec(), &draft, None).expect("fresh spawn spec");
+        assert!(
+            fresh
+                .compaction_curator_override
+                .as_ref()
+                .is_some_and(|actual| Arc::ptr_eq(actual, &curator))
+        );
+
+        let resumed =
+            build_resume_spawn_spec(&runtime_id, &durable_spec(), &draft, None, &session_id)
+                .expect("resume spawn spec");
+        assert!(
+            resumed
+                .compaction_curator_override
+                .as_ref()
+                .is_some_and(|actual| Arc::ptr_eq(actual, &curator))
+        );
+    }
+
     /// A base profile that pins a provider (or self-hosted binding) keeps the
     /// legacy whole-profile snapshot: upstream `model_override` does not
     /// re-infer the provider, and the pin belongs to the original model id.
@@ -3562,6 +4414,7 @@ mod tests {
     fn build_spawn_spec_keeps_profile_snapshot_for_pinned_provider() {
         let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
         let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: Some("gpt-test".to_string()),
             system_prompt: None,
             additional_instructions: Vec::new(),
@@ -3600,6 +4453,7 @@ mod tests {
     fn build_spawn_spec_derives_pair_provider_for_catalog_model_pin() {
         let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
         let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: Some("claude-opus-4-8".to_string()),
             system_prompt: None,
             additional_instructions: Vec::new(),
@@ -3656,6 +4510,7 @@ mod tests {
 
     fn draft_with_provider_params(params: Option<ProviderParamsOverride>) -> AgentBuildDraft {
         AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: None,
             system_prompt: None,
             additional_instructions: Vec::new(),
@@ -3966,6 +4821,7 @@ mod tests {
     fn build_spawn_spec_model_override_works_without_base_profile() {
         let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
         let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: Some("gpt-test".to_string()),
             system_prompt: None,
             additional_instructions: Vec::new(),
@@ -4012,6 +4868,7 @@ mod tests {
             .expect("wire binding"),
         );
         let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: None,
             system_prompt: None,
             additional_instructions: Vec::new(),
@@ -4053,6 +4910,7 @@ mod tests {
     fn external_binding_spawn_specs_require_generated_owner_context() {
         let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
         let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: None,
             system_prompt: None,
             additional_instructions: Vec::new(),
@@ -4174,6 +5032,7 @@ mod tests {
     fn resume_spawn_spec_authors_nothing() {
         let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
         let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
             model: None,
             system_prompt: Some("explicit customizer prompt".to_string()),
             additional_instructions: Vec::new(),

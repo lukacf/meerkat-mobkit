@@ -80,12 +80,12 @@ use crate::memory::capabilities::{
 use crate::memory::coordinator::DEFAULT_INSTRUCTION_HEADER;
 use crate::memory::distiller::TranscriptSource;
 use crate::memory::events::{MemoryEventSink, MemoryTimelineEvent};
+use crate::memory::factory_handle::FactoryModelClientHandle;
 use crate::memory::guards::{BackgroundBudget, BackgroundBudgetConfig};
 use crate::memory::records::{
     EvidenceRef, ManifestTier, MemoryAuthor, MemoryKind, MemoryRecord, MemoryScope,
     NewMemoryRecord, RecordMeta, RecordStatus, TrustTier, UsageEvent,
 };
-use crate::memory::selector::FactorySelectorHandle;
 use crate::memory::staged::{StagedBatchKind, StagedMutationBatch, StagedOp};
 use crate::memory::taint::MemberAgentEventSink;
 use crate::runtime::{GatingResolutionNotice, GatingResolutionObserver};
@@ -141,7 +141,25 @@ pub const DEFAULT_CADENCE: &str = "*/6h";
 pub const DEFAULT_RUNS_PER_DAY: u32 = 4;
 pub const DEFAULT_MIN_SIGNALS: u32 = 3;
 
-const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4096;
+/// Output-token ceiling for one dream call, overridable per deployment via
+/// [`StewardConfig::max_output_tokens`].
+///
+/// Why this is 16_384 and not the 4096 it used to be: the provider spends
+/// the provider spends ONE budget on reasoning tokens AND the visible answer,
+/// so a ceiling sized for a non-reasoning model is consumed before the
+/// structured op list begins. The truncation is silent - the call returns a
+/// short or empty body, not an error - and 4096 is why a production fleet's
+/// steward committed ZERO ops across twelve consecutive runs over four days
+/// while the number was a private constant with no reachable override.
+///
+/// 16_384 is the largest value that cannot be a hard provider rejection on
+/// any text model in meerkat's catalog: asking for more than a model's own
+/// `max_output_tokens` is a 400, and the smallest cataloged text ceiling is
+/// `gpt-5.4-mini`'s 16_384 (Anthropic sits at 64_000, the GPT-5.x tier at
+/// 128_000). An unreached ceiling costs nothing, so erring high is free while
+/// erring low fails invisibly. A deployment on a model with a lower ceiling
+/// lowers this through the config field.
+const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_384;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -153,6 +171,13 @@ pub enum StewardError {
     Config(String),
     Auth(String),
     Client(String),
+    /// The model stopped because it hit the output ceiling. Carried as its
+    /// own variant because the alternative - a truncated body returned as an
+    /// ordinary success - is how a production fleet ran this stage for four
+    /// days committing zero ops while the error blamed the model's JSON.
+    Truncated {
+        max_output_tokens: u32,
+    },
     Parse(String),
     Store(String),
 }
@@ -164,6 +189,12 @@ impl std::fmt::Display for StewardError {
             Self::Config(msg) => write!(f, "steward config error: {msg}"),
             Self::Auth(msg) => write!(f, "steward auth error: {msg}"),
             Self::Client(msg) => write!(f, "steward client error: {msg}"),
+            Self::Truncated { max_output_tokens } => write!(
+                f,
+                "steward response hit the output ceiling of {max_output_tokens} tokens and was \
+                 truncated; raise it via the steward config's max_output_tokens (models spend this \
+                 same budget on thinking/reasoning tokens as well as the answer)"
+            ),
             Self::Parse(msg) => write!(f, "steward parse error: {msg}"),
             Self::Store(msg) => write!(f, "steward store error: {msg}"),
         }
@@ -275,6 +306,25 @@ impl StewardProfile {
             ))
         })?;
         self.model = model.to_string();
+        Ok(self)
+    }
+
+    /// Replace the profile's output-token ceiling (the config-block
+    /// override). Fail-loud in the same shape as [`Self::with_model_override`]:
+    /// a zero budget cannot produce an answer, so it is a typed error rather
+    /// than a run that silently commits nothing.
+    ///
+    /// Deliberately no upper bound here. The real ceiling is the model's, it
+    /// is context-dependent (Anthropic's beta output header raises it), and
+    /// the provider rejects an over-large request loudly - unlike the
+    /// under-large one this override exists to fix.
+    pub fn with_max_output_tokens(mut self, max_output_tokens: u32) -> Result<Self, StewardError> {
+        if max_output_tokens == 0 {
+            return Err(StewardError::Profile(
+                "steward max_output_tokens override must be greater than zero".to_string(),
+            ));
+        }
+        self.params.max_output_tokens = max_output_tokens;
         Ok(self)
     }
 
@@ -431,6 +481,51 @@ pub struct StewardConfig {
     /// Event gate: ≥K sessions-or-proposals accumulated since the last
     /// dream before a run is considered.
     pub min_signals: u32,
+    /// Output-token ceiling for the dream call. `None` keeps the embedded
+    /// profile's default.
+    ///
+    /// # Why this is exposed
+    ///
+    /// The provider spends this SINGLE budget on thinking/reasoning tokens
+    /// AND the visible answer, so a ceiling sized for a
+    /// non-reasoning model truncates the answer to nothing.
+    ///
+    /// The failure is not loud *here*, but the providers do report it. All
+    /// three of meerkat's clients map a budget truncation onto a terminal
+    /// `LlmEvent::Done { LlmDoneOutcome::Success { stop_reason:
+    /// StopReason::MaxTokens } }` (OpenAI from `response.incomplete` +
+    /// `incomplete_details.reason == "max_output_tokens"`, Anthropic from
+    /// `stop_reason: "max_tokens"`, Gemini from `finishReason: "MAX_TOKENS"`).
+    /// [`complete_text`] discards that stop reason, so downstream a truncated
+    /// dream is indistinguishable from a model that had little to say: the
+    /// partial body fails the strict parse, the one repair round-trip is
+    /// re-issued against the same ceiling and truncates again, and the run
+    /// ends as a `StewardError::Parse` naming the model's JSON instead of the
+    /// budget. Raising the ceiling reduces how often that happens; it does
+    /// not make it observable. See [`complete_text`] for the seam.
+    ///
+    /// A production fleet ran a steward against the old
+    /// hard-wired 4096 and committed ZERO ops across twelve consecutive runs
+    /// over four days, with no reachable way to raise it - the number was a
+    /// private constant and `StewardConfig` did not carry it. That is the
+    /// defect this field closes: not that the default was wrong, but that a
+    /// downstream could neither see it nor change it.
+    ///
+    ///
+    /// NOTE ON THE CATALOG, because it misleads: `supports_reasoning: false` does
+    /// NOT mean a model does not reason. It means the model takes no OpenAI-style
+    /// reasoning-EFFORT PARAMETER. `claude-sonnet-4-6` carries
+    /// `thinking: ThinkingSupport::AnthropicAdaptiveAndEnabled` while reporting
+    /// `supports_reasoning: false`, and it spends output budget on thinking exactly
+    /// as an OpenAI reasoning model does. **No catalogued model is immune to this
+    /// trap by virtue of that flag.** Choosing a model on it is choosing on a
+    /// parameter's presence, not on behaviour.
+    /// Sibling knobs exist on [`DistillerConfig`] and [`HygienistConfig`] for
+    /// the same reason; all three subsystems had the identical gap.
+    ///
+    /// [`DistillerConfig`]: crate::memory::distiller::DistillerConfig
+    /// [`HygienistConfig`]: crate::memory::hygienist::HygienistConfig
+    pub max_output_tokens: Option<u32>,
 }
 
 impl Default for StewardConfig {
@@ -442,21 +537,20 @@ impl Default for StewardConfig {
             per_mob: false,
             runs_per_day: DEFAULT_RUNS_PER_DAY,
             min_signals: DEFAULT_MIN_SIGNALS,
+            max_output_tokens: None,
         }
     }
 }
 
 impl StewardConfig {
-    /// Validate a cadence expression against the scheduling subsystem's
-    /// interval-marker grammar; returns the tick interval.
+    /// Validate an interval-marker cadence and return its tick interval.
     pub fn parse_cadence(cadence: &str) -> Result<Duration, StewardError> {
-        crate::runtime::scheduling::parse_interval_marker_ms(cadence)
+        parse_interval_marker_ms(cadence)
             .map(Duration::from_millis)
             .ok_or_else(|| {
                 StewardError::Config(format!(
                     "cadence '{cadence}' is not an interval marker (expected `*/N{{s|m|h|d}}`, \
-                     e.g. '*/6h'; cron cadences require the scheduling subsystem and are not \
-                     yet supported for the steward)"
+                     e.g. '*/6h'; cron cadences are not supported for the steward)"
                 ))
             })
     }
@@ -464,6 +558,27 @@ impl StewardConfig {
     pub fn cadence_interval(&self) -> Result<Duration, StewardError> {
         Self::parse_cadence(&self.cadence)
     }
+}
+
+fn parse_interval_marker_ms(interval: &str) -> Option<u64> {
+    let marker = interval.trim().to_ascii_lowercase();
+    let marker = marker.strip_prefix("*/")?;
+    if marker.len() < 2 {
+        return None;
+    }
+    let (count_part, unit_part) = marker.split_at(marker.len() - 1);
+    let count = count_part.parse::<u64>().ok()?;
+    if count == 0 {
+        return None;
+    }
+    let unit_ms = match unit_part {
+        "s" => 1_000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        _ => return None,
+    };
+    count.checked_mul(unit_ms)
 }
 
 // ---------------------------------------------------------------------------
@@ -479,7 +594,7 @@ pub trait StewardClientHandle: Send + Sync {
 /// Thin wrapper over the Selector's factory handle: one client-acquisition
 /// path for every judgment stage (§8.1 dogma rule 7).
 pub struct FactoryStewardHandle {
-    inner: FactorySelectorHandle,
+    inner: FactoryModelClientHandle,
 }
 
 impl FactoryStewardHandle {
@@ -490,7 +605,7 @@ impl FactoryStewardHandle {
         profile: &StewardProfile,
     ) -> Self {
         Self {
-            inner: FactorySelectorHandle::for_model(
+            inner: FactoryModelClientHandle::for_model(
                 store_path,
                 config,
                 realm,
@@ -504,15 +619,15 @@ impl FactoryStewardHandle {
 #[async_trait]
 impl StewardClientHandle for FactoryStewardHandle {
     async fn client(&self) -> Result<Arc<dyn LlmClient>, StewardError> {
-        use crate::memory::selector::{SelectorError, SelectorHandle};
+        use crate::memory::factory_handle::{ModelClientError, ModelClientHandle};
         self.inner.client().await.map_err(|err| match err {
-            SelectorError::Auth(msg) => StewardError::Auth(msg),
+            ModelClientError::Auth(msg) => StewardError::Auth(msg),
             other => StewardError::Client(other.to_string()),
         })
     }
 
     fn invalidate(&self) {
-        use crate::memory::selector::SelectorHandle;
+        use crate::memory::factory_handle::ModelClientHandle;
         self.inner.invalidate();
     }
 }
@@ -1715,7 +1830,7 @@ impl StewardEngine {
                 .iter()
                 .take(self.profile.params.max_manifest_records)
             {
-                text.push_str(&crate::memory::selector::render_manifest_row(meta));
+                text.push_str(&crate::memory::factory_handle::render_manifest_row(meta));
                 text.push('\n');
             }
         }
@@ -3719,6 +3834,28 @@ fn scope_for_realm(
 }
 
 /// One bounded completion against the profile's model/params.
+///
+/// `temperature` is set unconditionally on purpose. Whether the parameter
+/// reaches the wire is the provider client's decision, not ours: meerkat's
+/// OpenAI and Anthropic clients each consult the model's catalog row and drop
+/// `temperature` when `supports_temperature` is false (uncatalogued model ids
+/// resolve to false, so the conservative case is covered too). Gemini's client
+/// sends it unconditionally, and all three Gemini catalog rows are currently
+/// `supports_temperature: true`. Re-deriving that lookup here would duplicate
+/// provider-owned request shaping and could drift from it.
+///
+/// KNOWN GAP, deliberately left as-is rather than guessed at: the `Success`
+/// arm below matches `LlmDoneOutcome::Success { .. }` and throws away
+/// `stop_reason`. A run that exhausted `max_output_tokens` arrives as
+/// `Success { stop_reason: StopReason::MaxTokens }` with a partial (often
+/// empty) body, and is therefore returned to the caller as an ordinary short
+/// answer. That, not the provider, is why the four-day zero-op incident was
+/// silent: the budget signal exists on every one of meerkat's three clients
+/// and this function is where it is dropped. Surfacing it means carrying the
+/// stop reason to the parse sites - `StewardEngine::structured_call`,
+/// `distiller::extract`, and the hygienist's single call - so a truncation
+/// reports the ceiling instead of spending a repair round-trip against the
+/// same ceiling and then blaming the model's JSON.
 pub async fn complete_text(
     profile: &StewardProfile,
     client: &dyn LlmClient,
@@ -3736,7 +3873,17 @@ pub async fn complete_text(
         match event.map_err(classify_llm_error)? {
             LlmEvent::TextDelta { delta, .. } => text.push_str(&delta),
             LlmEvent::Done { outcome } => match outcome {
-                LlmDoneOutcome::Success { .. } => break,
+                LlmDoneOutcome::Success { stop_reason } => {
+                    // Do NOT discard stop_reason. A MaxTokens stop arrives with a
+                    // partial or empty body; returning it as a short answer sends a
+                    // truncation into a strict parse, which then blames the model.
+                    if matches!(stop_reason, meerkat_core::StopReason::MaxTokens) {
+                        return Err(StewardError::Truncated {
+                            max_output_tokens: profile.params.max_output_tokens,
+                        });
+                    }
+                    break;
+                }
                 LlmDoneOutcome::Error { error } => return Err(classify_llm_error(error)),
             },
             _ => {}
@@ -4379,6 +4526,19 @@ mod tests {
                 .with_model_override("not-a-model-in-any-catalog")
                 .is_err()
         );
+    }
+
+    /// The budget override is the reachable half of the §8.5 output-ceiling
+    /// fix: a zero budget is a typed error, not a dream that silently commits
+    /// nothing.
+    #[test]
+    fn max_output_tokens_override_is_fail_loud() {
+        let profile = StewardProfile::embedded_default();
+        assert!(profile.clone().with_max_output_tokens(0).is_err());
+        let raised = profile
+            .with_max_output_tokens(32_768)
+            .expect("nonzero budget accepted");
+        assert_eq!(raised.params.max_output_tokens, 32_768);
     }
 
     #[test]

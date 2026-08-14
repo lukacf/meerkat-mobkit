@@ -26,7 +26,7 @@ use axum::body::to_bytes;
 use axum::http::{Request, StatusCode, header};
 use futures::stream;
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
-use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest, TestClient};
+use meerkat_client::{LlmClient, LlmError, LlmEvent, LlmRequest, TestClient};
 use meerkat_core::SessionId;
 use meerkat_core::{Message, Provider, StopReason};
 // meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
@@ -41,6 +41,11 @@ use meerkat_mobkit::{
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
+
+/// The one definition of the normalized-provider-accounting contract every
+/// MobKit LLM double must satisfy under meerkat 0.8.22. See the module docs.
+#[path = "support/llm_usage.rs"]
+mod llm_usage;
 
 struct RuntimeFixture {
     _temp_dir: TempDir,
@@ -140,7 +145,13 @@ comms = true
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
-            default_llm_client: Some(Arc::new(TestClient::default())),
+            // `TestClient::default()` DOES synthesize accounting under 0.8.22,
+            // but under `Provider::Other` - and every profile here is
+            // `gpt-5.5`, whose canonical owner is `Provider::OpenAI`, so the
+            // turn would fail closed with
+            // `normalized_provider_accounting_identity_mismatch`. See the rule
+            // in `tests/support/llm_usage.rs`.
+            default_llm_client: Some(Arc::new(TestClient::for_provider(Provider::OpenAI))),
         });
     let module_config = MobKitConfig {
         modules: vec![],
@@ -379,7 +390,7 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
         ])
     );
 
-    assert_eq!(console_json["contract_version"], json!("0.4.0"));
+    assert_eq!(console_json["contract_version"], json!("0.5.0"));
     assert_eq!(
         console_json["runtime_capabilities"],
         json!({
@@ -560,7 +571,7 @@ comms = true
                 },
                 pre_spawn: vec![],
             })
-            .default_llm_client(Arc::new(TestClient::default()))
+            .default_llm_client(Arc::new(TestClient::for_provider(Provider::OpenAI)))
             .timeout(Duration::from_secs(2))
             .build(),
     )
@@ -677,7 +688,7 @@ comms = true
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
-            default_llm_client: Some(Arc::new(TestClient::default())),
+            default_llm_client: Some(Arc::new(TestClient::for_provider(Provider::OpenAI))),
         });
     mob_spec.binary_blob_store = Some(binary_blob_store);
     let runtime = UnifiedRuntime::bootstrap(
@@ -1112,19 +1123,23 @@ struct CommsScriptClient {
     sender_turn_calls: AtomicUsize,
 }
 
+/// meerkat 0.8.22 rejects a turn whose stream carried no normalized provider
+/// accounting, so the terminal `Done` never travels alone. Taking the request
+/// is what makes that possible here: the accounting identity is the request's
+/// model, not a literal this fixture could restate.
 fn text_only_turn(
+    request: &LlmRequest,
+    provider: Provider,
     text: &str,
 ) -> Pin<Box<dyn futures::Stream<Item = Result<LlmEvent, LlmError>> + Send + 'static>> {
+    let [usage, done] = llm_usage::usage_then_done(request, provider, StopReason::EndTurn);
     Box::pin(stream::iter(vec![
         Ok(LlmEvent::TextDelta {
             delta: text.to_string(),
             meta: None,
         }),
-        Ok(LlmEvent::Done {
-            outcome: LlmDoneOutcome::Success {
-                stop_reason: StopReason::EndTurn,
-            },
-        }),
+        Ok(usage),
+        Ok(done),
     ]))
 }
 
@@ -1137,19 +1152,20 @@ impl LlmClient for CommsScriptClient {
         &'a self,
         request: &'a LlmRequest,
     ) -> Pin<Box<dyn futures::Stream<Item = Result<LlmEvent, LlmError>> + Send + 'a>> {
+        // meerkat 0.8.22 rejects a turn whose stream carried no normalized
+        // provider accounting, so the terminal `Done` never travels alone on
+        // ANY branch below - the silent spawn turn included.
+        let provider = LlmClient::provider(self);
         if matches!(
             request.messages.last(),
             Some(Message::User(user)) if user.text_content().contains("You have been spawned as")
         ) {
-            return Box::pin(stream::iter(vec![Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success {
-                    stop_reason: StopReason::EndTurn,
-                },
-            })]));
+            let [usage, done] = llm_usage::usage_then_done(request, provider, StopReason::EndTurn);
+            return Box::pin(stream::iter(vec![Ok(usage), Ok(done)]));
         }
         let transcript = serde_json::to_string(&request.messages).unwrap_or_default();
         if !transcript.contains(&format!("You are {SENDER_MEMBER}")) {
-            return text_only_turn("Acknowledged.");
+            return text_only_turn(request, provider, "Acknowledged.");
         }
         let call = self.sender_turn_calls.fetch_add(1, Ordering::SeqCst);
         if call == 0 {
@@ -1158,6 +1174,7 @@ impl LlmClient for CommsScriptClient {
                 .get()
                 .cloned()
                 .unwrap_or_else(|| "unresolved-peer".to_string());
+            let [usage, done] = llm_usage::usage_then_done(request, provider, StopReason::ToolUse);
             Box::pin(stream::iter(vec![
                 Ok(LlmEvent::ToolCallComplete {
                     id: "outgoing-peer-message".to_string(),
@@ -1184,14 +1201,11 @@ impl LlmClient for CommsScriptClient {
                     }),
                     meta: None,
                 }),
-                Ok(LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: StopReason::ToolUse,
-                    },
-                }),
+                Ok(usage),
+                Ok(done),
             ]))
         } else {
-            text_only_turn(SENDER_REPLY_TEXT)
+            text_only_turn(request, provider, SENDER_REPLY_TEXT)
         }
     }
 

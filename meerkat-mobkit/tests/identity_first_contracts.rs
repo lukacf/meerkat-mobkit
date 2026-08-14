@@ -295,6 +295,7 @@ async fn identity_first_contracts_roster_provider_mock() {
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     };
     let provider: Arc<dyn RosterProvider> = Arc::new(MockRosterProvider {
         specs: vec![spec.clone()],
@@ -333,8 +334,10 @@ async fn identity_first_contracts_customizer_mock_modifies_draft() {
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     };
     let mut draft = AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: None,
         system_prompt: None,
         additional_instructions: vec![],
@@ -941,8 +944,10 @@ async fn identity_first_contracts_session_hook_customizer_adapter_model_mutation
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     };
     let mut draft = AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: None,
         system_prompt: None,
         additional_instructions: vec![],
@@ -1006,6 +1011,7 @@ async fn identity_first_contracts_session_hook_customizer_preserves_provider_par
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     };
     let declared = ProviderParamsOverride {
         provider_tag: Some(ProviderTag::OpenAi(OpenAiProviderTag {
@@ -1015,6 +1021,7 @@ async fn identity_first_contracts_session_hook_customizer_preserves_provider_par
         ..Default::default()
     };
     let mut draft = AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: None,
         system_prompt: None,
         additional_instructions: vec![],
@@ -1075,8 +1082,10 @@ async fn identity_first_contracts_session_hook_customizer_resume_warning() {
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     };
     let mut draft = AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: None,
         system_prompt: None,
         additional_instructions: vec![],
@@ -1134,8 +1143,10 @@ async fn identity_first_contracts_session_hook_customizer_unsupported_field_warn
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     };
     let mut draft = AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: Some("claude-sonnet-4-6".to_string()),
         system_prompt: Some("original prompt".to_string()),
         additional_instructions: vec![],

@@ -12,15 +12,13 @@ use meerkat_mobkit::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
 use meerkat_mobkit::console_aggregator::{
     ConsoleLogStore, InMemoryConsoleLogStore, SqliteConsoleLogStore,
 };
-use meerkat_mobkit::identity_first::{
-    AgentMemoryProvider, ContinuityStore, LocalContinuityStore, MarkdownAgentMemoryStore,
-};
+use meerkat_mobkit::identity_first::{AgentMemoryProvider, ContinuityStore, LocalContinuityStore};
 use meerkat_mobkit::memory::SqliteAgentMemoryStore;
 use meerkat_mobkit::unified_runtime::EventLogStore;
 use mobkit_store_conformance::{
     AgentMemoryProviderFactory, BinaryBlobStoreFactory, CompatRollbackContinuityStore,
     ConformanceFailure, ConsoleLogStoreFactory, ContinuityStoreFactory, EventLogStoreFactory,
-    ReferenceEventLogStore, chapters,
+    ReferenceEventLogStore, ReferenceInMemoryAgentMemoryStore, chapters,
 };
 
 // ---------------------------------------------------------------------------
@@ -126,16 +124,12 @@ impl AgentMemoryProviderFactory for SqliteMemoryFactory {
     }
 }
 
-struct MarkdownMemoryFactory {
-    root: PathBuf,
-}
+struct ReferenceMemoryFactory;
 
 #[async_trait]
-impl AgentMemoryProviderFactory for MarkdownMemoryFactory {
+impl AgentMemoryProviderFactory for ReferenceMemoryFactory {
     async fn open(&self) -> Result<Arc<dyn AgentMemoryProvider>, ConformanceFailure> {
-        let store = MarkdownAgentMemoryStore::open(&self.root)
-            .map_err(|error| ConformanceFailure::new("factory", "open", error.to_string()))?;
-        Ok(Arc::new(store))
+        Ok(Arc::new(ReferenceInMemoryAgentMemoryStore::new()))
     }
 }
 
@@ -356,17 +350,14 @@ async fn sqlite_agent_memory_store_passes_capability_matrix() {
         .expect("SqliteAgentMemoryStore (all-capable) must satisfy the capability matrix");
 }
 
-/// The recall-only-by-flags shape: remember/forget advertised, everything
-/// else refused with the typed Unsupported error.
+/// The basic recall/remember/forget shape remains a provider-trait contract,
+/// independent of the retired markdown backend.
 #[tokio::test]
-async fn markdown_agent_memory_store_passes_capability_matrix() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let factory = MarkdownMemoryFactory {
-        root: dir.path().to_path_buf(),
-    };
+async fn reference_agent_memory_store_passes_capability_matrix() {
+    let factory = ReferenceMemoryFactory;
     chapters::agent_memory(&factory)
         .await
-        .expect("MarkdownAgentMemoryStore must satisfy the capability matrix");
+        .expect("the reference provider must satisfy the basic capability matrix");
 }
 
 // ---------------------------------------------------------------------------

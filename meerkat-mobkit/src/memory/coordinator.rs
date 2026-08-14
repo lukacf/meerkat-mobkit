@@ -5,9 +5,12 @@
 //! byte-budget ladders, per-session dedup, echo-safe assembly for the
 //! build-time surface, inbound envelope defanging, the per-session envelope
 //! nonce, and injection-ledger writes. Its topology is fixed — the bundled
-//! provider now, hub candidates later — and its only judgment stage is the
-//! LLM Selector (P1.3); nothing here scores content beyond the wire-compat
-//! lexical recall the providers already share.
+//! provider now, hub candidates later — and it is now fully deterministic:
+//! the §8.3 LLM Selector stage (P1.3) was retired unactivated, so nothing
+//! here scores content beyond the wire-compat lexical recall the providers
+//! already share. Record bodies still flow through the annotated shape
+//! (`factory_handle::AnnotatedRecord`) so the §7.2 provenance-labelling
+//! renderer keeps its input type.
 //!
 //! `AgentMemoryRuntimeInjector` and `AgentMemoryCustomizer` (the wire-stable
 //! public surfaces in `identity_first::agent_memory`) are thin callers into
@@ -26,12 +29,9 @@ use crate::identity_first::agent_memory::{
     AgentMemoryRecord, AgentMemorySelection, compact_whitespace, escape_attr, escape_xml_text,
     normalize_config, terms_from_value, truncate_utf8_boundary,
 };
+use crate::memory::factory_handle::AnnotatedRecord;
 use crate::memory::records::{
     InjectionLogEntry, InjectionSurface, ManifestTier, MemoryScope, RecordMeta, UsageEvent,
-};
-use crate::memory::selector::{
-    AnnotatedRecord, Coverage, FULL_SWEEP_HARD_CEILING_RECORDS, FULL_SWEEP_SOFT_CEILING_RECORDS,
-    SelectorRuntime, chunk_manifest, truncate_full_manifest,
 };
 
 pub(crate) const DEFAULT_INSTRUCTION_HEADER: &str = "Agent memory";
@@ -55,11 +55,6 @@ pub(crate) const BUILD_INDEX_BUDGET_BYTES: usize = 8 * 1024;
 /// before the byte budget applies.
 const BUILD_INDEX_WORKING_SET_K: usize = 24;
 const MAX_INDEX_DESCRIPTION_BYTES: usize = 400;
-/// Total wall-clock bound on a detached full-sweep escalation (§8.3). The
-/// sweep never runs on the blocking path, but it still terminates: chunked
-/// Full-tier selection over a large store is "slower and costlier", not
-/// unbounded.
-const FULL_SWEEP_TIMEOUT_MS: u64 = 30_000;
 
 /// Reserved envelope markers (§9.1 anti-spoofing). Inbound content matching
 /// any of these is neutralized before delivery; keep this list in sync with
@@ -313,14 +308,6 @@ struct NonceState {
     nonce: String,
 }
 
-/// Per-session escalation state (§8.3): a full-store sweep runs detached
-/// and its selected ids feed the NEXT assembly, never the blocking path.
-#[derive(Default)]
-struct SweepState {
-    in_flight: bool,
-    ready: Option<Vec<String>>,
-}
-
 /// Deterministic recall coordinator (§9). Cheap to clone; per-session state
 /// is shared across clones on purpose (budgets are per session, not per
 /// clone).
@@ -336,13 +323,6 @@ pub struct RecallCoordinator {
     // Per-(identity, session) envelope nonce (§9.1). Same wholesale-clear
     // bound as session_state; a cleared nonce simply re-mints on next use.
     nonces: Arc<Mutex<HashMap<String, NonceState>>>,
-    // The LLM Selector (§8.3), when configured. None (the default when no
-    // selector is installed) keeps every path byte-identical to the
-    // pre-selector coordinator.
-    selector: Option<Arc<SelectorRuntime>>,
-    // Escalation results keyed by session key. Same wholesale-clear bound
-    // as session_state; a cleared entry just costs one re-escalation.
-    sweeps: Arc<Mutex<HashMap<String, SweepState>>>,
     // §7.2 operator scope (P4): consulted per composition when
     // `operator_scope = provisional`. None (the default) keeps the scope
     // inert regardless of config.
@@ -359,18 +339,9 @@ impl RecallCoordinator {
             config: normalize_config(config),
             session_state: Arc::new(Mutex::new(HashMap::new())),
             nonces: Arc::new(Mutex::new(HashMap::new())),
-            selector: crate::memory::selector::installed(),
-            sweeps: Arc::new(Mutex::new(HashMap::new())),
             operator_resolver: None,
             mob_resolver: None,
         }
-    }
-
-    /// Explicit selector injection for embedders and tests; the process-wide
-    /// install (`memory::selector::install`) is what `new` snapshots.
-    pub fn with_selector(mut self, selector: Option<Arc<SelectorRuntime>>) -> Self {
-        self.selector = selector;
-        self
     }
 
     /// Install the §7.2 provisional operator resolver. Effective only when
@@ -382,7 +353,7 @@ impl RecallCoordinator {
     }
 
     /// Install the §7.2 identity→mob binding resolver so mob scope joins
-    /// read composition (build index, selector manifest, full sweep). No
+    /// read composition (build index, recall, manifest reads). No
     /// resolver — or a resolver yielding no mobs — leaves composition
     /// unchanged.
     pub fn with_mob_resolver(mut self, resolver: Option<Arc<dyn MobScopeResolver>>) -> Self {
@@ -416,17 +387,12 @@ impl RecallCoordinator {
     }
 
     /// §9.1 "index-only until compaction": clear this session's cross-turn
-    /// injection accounting — the dedup set, the cumulative session byte
-    /// counter, and any cached sweep-escalation result — so post-compaction
-    /// turns may re-inject records whose bodies compacted out of context.
-    /// The per-assembly cap is untouched. Wired from the member
-    /// `CompactionCompleted` event by the hosting runtime.
+    /// injection accounting — the dedup set and the cumulative session byte
+    /// counter — so post-compaction turns may re-inject records whose bodies
+    /// compacted out of context. The per-assembly cap is untouched. Wired
+    /// from the member `CompactionCompleted` event by the hosting runtime.
     pub fn on_session_compacted(&self, session_key: &str) {
         self.session_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(session_key);
-        self.sweeps
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(session_key);
@@ -521,36 +487,24 @@ impl RecallCoordinator {
         if budget < MIN_INJECTION_BUDGET_BYTES {
             return Ok(Vec::new());
         }
-        let selected = self
-            .selector_records(
-                identity,
-                session_key,
-                &query_text,
-                skip_ids.as_ref(),
-                self.config.recall_timeout_ms,
+        // The §8.3 selector stage retired unactivated: recall is the lexical
+        // path on every turn now, wrapped into the annotated shape the §7.2
+        // renderer takes.
+        let records = annotate_plain(
+            recall_for_injection(
+                &self.provider,
+                &self.config,
+                AgentMemoryRecallRequest {
+                    identity: identity.clone(),
+                    realm: self.config.realm.clone(),
+                    query_text: (!query_text.is_empty()).then_some(query_text),
+                    query_terms,
+                    selection: self.config.selection.clone(),
+                    max_entries: self.config.max_entries,
+                },
             )
-            .await?;
-        let (records, pending_sweep) = match selected {
-            Some((records, sweep)) => (records, sweep),
-            None => (
-                annotate_plain(
-                    recall_for_injection(
-                        &self.provider,
-                        &self.config,
-                        AgentMemoryRecallRequest {
-                            identity: identity.clone(),
-                            realm: self.config.realm.clone(),
-                            query_text: (!query_text.is_empty()).then_some(query_text),
-                            query_terms,
-                            selection: self.config.selection.clone(),
-                            max_entries: self.config.max_entries,
-                        },
-                    )
-                    .await?,
-                ),
-                Vec::new(),
-            ),
-        };
+            .await?,
+        );
         if records.is_empty() {
             return Ok(Vec::new());
         }
@@ -580,20 +534,6 @@ impl RecallCoordinator {
                 .injected_ids
                 .extend(rendered.included_ids.iter().cloned());
         }
-        // §8.3: the sweep result is consumed only once injection is known
-        // to have delivered it — every offered sweep id either rendered
-        // into this injection or was already in context (dedup-suppressed).
-        // A sweep body dropped by the render budget ladder stays cached and
-        // re-offers on the next assembly.
-        if let Some(key) = session_key
-            && !pending_sweep.is_empty()
-            && pending_sweep.iter().all(|id| {
-                rendered.included_ids.contains(id)
-                    || skip_ids.as_ref().is_some_and(|skip| skip.contains(id))
-            })
-        {
-            self.consume_ready_sweep(key, &pending_sweep);
-        }
         self.record_injected(
             identity,
             session_key,
@@ -609,260 +549,38 @@ impl RecallCoordinator {
     }
 
     // -----------------------------------------------------------------------
-    // Selector path (§8.3)
-    // -----------------------------------------------------------------------
-
-    /// Selector-chosen records for one assembly plus the §8.3 ready-sweep
-    /// ids offered into it (for the caller to consume once injection
-    /// actually delivers them), or `None` when the stage
-    /// does not apply (no selector configured, provider without manifests,
-    /// empty turn text) or failed under the `skip` policy — the caller then
-    /// falls back to the lexical recall path. `Ok(Some(vec![]))` is a real
-    /// verdict: the selector judged nothing certain to be helpful, so
-    /// nothing is injected.
-    async fn selector_records(
-        &self,
-        identity: &AgentIdentity,
-        session_key: Option<&str>,
-        turn_text: &str,
-        skip_ids: Option<&HashSet<String>>,
-        budget_ms: u64,
-    ) -> Result<Option<(Vec<AnnotatedRecord>, Vec<String>)>, AgentMemoryError> {
-        let Some(runtime) = self.selector.as_ref() else {
-            return Ok(None);
-        };
-        if turn_text.is_empty() || !self.provider.supports_manifest() {
-            return Ok(None);
-        }
-        let scopes = self.scope_set(identity);
-        let suppressed = skip_ids.cloned().unwrap_or_default();
-        // Peek, never take: a §8.3 sweep result must survive failed or
-        // timed-out assemblies and is consumed only once an injection that
-        // saw it actually delivers it (the caller's job — selection+fetch
-        // succeeding is not enough, the render budget can still drop the
-        // sweep bodies) or it proves stale — all ids suppressed.
-        let ready_sweep = session_key
-            .map(|key| self.peek_ready_sweep(key))
-            .unwrap_or_default();
-        let stage = runtime.stage.clone();
-        let working_set_k = stage.profile().params.working_set_k;
-        let attempt = async {
-            let manifest = self
-                .provider
-                .manifest(&scopes, ManifestTier::WorkingSet(working_set_k))
-                .await?;
-            stage
-                .select(&manifest, turn_text, &suppressed)
-                .await
-                .map_err(|err| AgentMemoryError::Io(format!("selector failed: {err}")))
-        };
-        let selection = match tokio::time::timeout(Duration::from_millis(budget_ms), attempt).await
-        {
-            Ok(Ok(selection)) => selection,
-            Ok(Err(err)) => {
-                return match self.config.recall_failure_policy {
-                    AgentMemoryRecallFailurePolicy::Skip => {
-                        tracing::debug!(error = %err, "selector failed; falling back to lexical recall");
-                        Ok(None)
-                    }
-                    AgentMemoryRecallFailurePolicy::Fail => Err(err),
-                };
-            }
-            Err(_) => {
-                let err =
-                    AgentMemoryError::Timeout(format!("selector exceeded {budget_ms} ms budget"));
-                return match self.config.recall_failure_policy {
-                    AgentMemoryRecallFailurePolicy::Skip => {
-                        tracing::debug!(error = %err, "selector timed out; falling back to lexical recall");
-                        Ok(None)
-                    }
-                    AgentMemoryRecallFailurePolicy::Fail => Err(err),
-                };
-            }
-        };
-        // Escalation is detached: the sweep result feeds the NEXT assembly
-        // through the session sweep cache, never this blocking path.
-        if selection.coverage == Coverage::NeedDeeperSweep
-            && let Some(key) = session_key
-        {
-            self.spawn_full_sweep(key, identity, turn_text, &suppressed);
-        }
-        let mut ids = selection.selected_ids;
-        for id in &ready_sweep {
-            if !ids.contains(id) && !suppressed.contains(id) {
-                ids.push(id.clone());
-            }
-        }
-        if ids.is_empty() {
-            // Successful verdict: a peeked sweep whose ids were all
-            // suppressed is stale — consume it so it stops re-offering.
-            if let Some(key) = session_key {
-                self.consume_ready_sweep(key, &ready_sweep);
-            }
-            return Ok(Some((Vec::new(), Vec::new())));
-        }
-        let records = match runtime.fetch.fetch_records_annotated(&scopes, &ids).await {
-            Ok(records) => records,
-            Err(err) => {
-                return match self.config.recall_failure_policy {
-                    AgentMemoryRecallFailurePolicy::Skip => {
-                        tracing::debug!(error = %err, "selected-body fetch failed; falling back to lexical recall");
-                        Ok(None)
-                    }
-                    AgentMemoryRecallFailurePolicy::Fail => Err(err),
-                };
-            }
-        };
-        // Bodies render in selection order; the ladder/dedup/ledger
-        // machinery downstream is unchanged.
-        let order: HashMap<&str, usize> = ids
-            .iter()
-            .enumerate()
-            .map(|(index, id)| (id.as_str(), index))
-            .collect();
-        let mut records = records;
-        records.sort_by_key(|annotated| {
-            order
-                .get(annotated.record.memory_id.as_str())
-                .copied()
-                .unwrap_or(usize::MAX)
-        });
-        Ok(Some((records, ready_sweep)))
-    }
-
-    fn peek_ready_sweep(&self, session_key: &str) -> Vec<String> {
-        let guard = self
-            .sweeps
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard
-            .get(session_key)
-            .and_then(|state| state.ready.clone())
-            .unwrap_or_default()
-    }
-
-    /// Clear the sweep result an assembly consumed — compare-and-clear, so
-    /// a newer sweep that landed mid-assembly stays for the next one.
-    fn consume_ready_sweep(&self, session_key: &str, used: &[String]) {
-        let mut guard = self
-            .sweeps
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(state) = guard.get_mut(session_key)
-            && state.ready.as_deref() == Some(used)
-        {
-            state.ready = None;
-        }
-    }
-
-    /// Spawn the §8.3 full-store escalation for this session, unless one is
-    /// already in flight. Runs detached over `ManifestTier::Full`, chunked
-    /// per the scale posture; the result lands in the session sweep cache.
-    fn spawn_full_sweep(
-        &self,
-        session_key: &str,
-        identity: &AgentIdentity,
-        turn_text: &str,
-        suppressed: &HashSet<String>,
-    ) {
-        let Some(runtime) = self.selector.clone() else {
-            return;
-        };
-        {
-            let mut guard = self
-                .sweeps
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !guard.contains_key(session_key) && guard.len() >= MAX_TRACKED_INJECTION_SESSIONS {
-                guard.clear();
-            }
-            let state = guard.entry(session_key.to_string()).or_default();
-            if state.in_flight {
-                return;
-            }
-            state.in_flight = true;
-        }
-        let provider = self.provider.clone();
-        let scopes = self.scope_set(identity);
-        let turn_text = turn_text.to_string();
-        let suppressed = suppressed.clone();
-        let sweeps = Arc::clone(&self.sweeps);
-        let key = session_key.to_string();
-        tokio::spawn(async move {
-            let result = tokio::time::timeout(
-                Duration::from_millis(FULL_SWEEP_TIMEOUT_MS),
-                run_full_sweep(provider, runtime, scopes, turn_text, suppressed),
-            )
-            .await;
-            let mut guard = sweeps
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let state = guard.entry(key).or_default();
-            state.in_flight = false;
-            match result {
-                Ok(Ok(ids)) => state.ready = Some(ids),
-                Ok(Err(err)) => {
-                    tracing::debug!(error = %err, "agent memory full-sweep escalation failed");
-                }
-                Err(_) => {
-                    tracing::debug!("agent memory full-sweep escalation timed out");
-                }
-            }
-        });
-    }
-
-    // -----------------------------------------------------------------------
     // Build-time assembly (§9.1 echo-safe surface)
     // -----------------------------------------------------------------------
 
     /// Assemble the build-time injection for `customize_build`: behavioral
     /// protocol + composed index (manifest-capable providers) + selected
-    /// bodies within the P0.1 ladder. Providers without manifest support
-    /// (the markdown store) get exactly the pre-coordinator customizer
-    /// output — bodies only — so markdown deployments see no behavior
-    /// change beyond the envelope nonce.
+    /// bodies within the P0.1 ladder. Providers without manifest support get
+    /// the bodies-only pre-coordinator customizer shape plus the envelope
+    /// nonce.
     pub async fn assemble_build_injection(
         &self,
         identity: &AgentIdentity,
         query_text: Option<String>,
         query_terms: Vec<String>,
     ) -> Result<Option<String>, AgentMemoryError> {
-        // Build-time materialization is not turn-latency-critical, so the
-        // selector gets a more generous budget (2× recall_timeout_ms). No
-        // session exists yet, so no escalation state is kept here.
-        let selected = match query_text.as_deref() {
-            Some(text) => {
-                self.selector_records(
-                    identity,
-                    None,
-                    text,
-                    None,
-                    self.config.recall_timeout_ms.saturating_mul(2),
-                )
-                .await?
-            }
-            None => None,
-        };
-        let records = match selected {
-            // Build assemblies carry no session key, so no sweep rides
-            // along to consume.
-            Some((records, _)) => records,
-            None => annotate_plain(
-                recall_for_injection(
-                    &self.provider,
-                    &self.config,
-                    AgentMemoryRecallRequest {
-                        identity: identity.clone(),
-                        realm: self.config.realm.clone(),
-                        query_text,
-                        query_terms,
-                        selection: self.config.selection.clone(),
-                        max_entries: self.config.max_entries,
-                    },
-                )
-                .await?,
-            ),
-        };
+        // The §8.3 selector stage retired unactivated, so the build-time
+        // body set is the lexical recall path here too; the composed index
+        // below is unchanged and still carries the manifest.
+        let records = annotate_plain(
+            recall_for_injection(
+                &self.provider,
+                &self.config,
+                AgentMemoryRecallRequest {
+                    identity: identity.clone(),
+                    realm: self.config.realm.clone(),
+                    query_text,
+                    query_terms,
+                    selection: self.config.selection.clone(),
+                    max_entries: self.config.max_entries,
+                },
+            )
+            .await?,
+        );
         let index_section = if self.provider.supports_manifest() {
             self.render_scope_index(identity).await?
         } else {
@@ -1013,53 +731,6 @@ impl RecallCoordinator {
             tracing::debug!(error = %err, "agent memory usage marking skipped");
         }
     }
-}
-
-/// The detached full-sweep body (§8.3 scale posture): Full-tier manifest,
-/// chunked into ~100 KB description slices per side-model call, selections
-/// unioned in encounter order. Above the soft ceiling the chunked sweep
-/// says so loudly; at the hard ceiling the manifest truncates
-/// oldest-least-used with an event naming what was dropped (timeline-event
-/// emission proper arrives with P3b; `tracing::warn!` is the loud interim).
-async fn run_full_sweep(
-    provider: Arc<dyn AgentMemoryProvider>,
-    runtime: Arc<SelectorRuntime>,
-    scopes: Vec<MemoryScope>,
-    turn_text: String,
-    suppressed: HashSet<String>,
-) -> Result<Vec<String>, AgentMemoryError> {
-    let manifest = provider.manifest(&scopes, ManifestTier::Full).await?;
-    if manifest.len() > FULL_SWEEP_SOFT_CEILING_RECORDS {
-        tracing::warn!(
-            records = manifest.len(),
-            soft_ceiling = FULL_SWEEP_SOFT_CEILING_RECORDS,
-            "full-sweep manifest above the §8.3 soft ceiling; chunked selection is correct but slower and costlier — the supported answer at this scale is hub candidate generation"
-        );
-    }
-    let (manifest, dropped) = truncate_full_manifest(manifest, FULL_SWEEP_HARD_CEILING_RECORDS);
-    if !dropped.is_empty() {
-        tracing::warn!(
-            dropped = dropped.len(),
-            hard_ceiling = FULL_SWEEP_HARD_CEILING_RECORDS,
-            dropped_ids = ?&dropped[..dropped.len().min(32)],
-            "full-sweep manifest truncated oldest-least-used at the §8.3 hard ceiling; this scope needs steward retention pressure"
-        );
-    }
-    let mut ids = Vec::new();
-    let mut seen = HashSet::new();
-    for chunk in chunk_manifest(&manifest) {
-        let selection = runtime
-            .stage
-            .select(chunk, &turn_text, &suppressed)
-            .await
-            .map_err(|err| AgentMemoryError::Io(format!("selector full sweep failed: {err}")))?;
-        for id in selection.selected_ids {
-            if seen.insert(id.clone()) {
-                ids.push(id);
-            }
-        }
-    }
-    Ok(ids)
 }
 
 // ---------------------------------------------------------------------------
@@ -1587,11 +1258,6 @@ mod tests {
             self
         }
 
-        fn full_tier_extra(mut self, extra: Vec<RecordMeta>) -> Self {
-            self.full_tier_extra = extra;
-            self
-        }
-
         fn captured_usage(&self) -> Vec<(Vec<String>, UsageEvent)> {
             self.usage_events
                 .lock()
@@ -2093,8 +1759,8 @@ mod tests {
             text.contains("School logistics before deep work."),
             "{text}"
         );
-        // The markdown-era ledger hook is a no-op default, but the coordinator
-        // still reports usage/telemetry to whatever provider is active.
+        // The ledger hook is a no-op by default, but the coordinator still
+        // reports usage/telemetry to whatever provider is active.
         assert_eq!(provider.captured_injections().len(), 1);
         Ok(())
     }
@@ -2385,395 +2051,6 @@ mod tests {
         Ok(())
     }
 
-    // ---- selector integration (§8.3) ----
-
-    use crate::memory::selector::{
-        SelectedRecordFetch, SelectorError, SelectorHandle, SelectorProfile, SelectorRuntime,
-        SelectorStage,
-    };
-    use futures::stream;
-    use meerkat_client::types::LlmStream;
-    use meerkat_client::{LlmClient, LlmDoneOutcome, LlmEvent, LlmRequest};
-
-    /// Queue-scripted LLM: replies in order, repeating the last reply once
-    /// the queue drains (assembly polling in tests re-invokes the stage).
-    struct QueueLlm {
-        replies: StdMutex<Vec<String>>,
-    }
-
-    impl QueueLlm {
-        fn new(replies: Vec<&str>) -> Self {
-            Self {
-                replies: StdMutex::new(replies.into_iter().map(str::to_string).collect()),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl LlmClient for QueueLlm {
-        fn stream<'a>(&'a self, _request: &'a LlmRequest) -> LlmStream<'a> {
-            let reply = {
-                let mut replies = self
-                    .replies
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if replies.len() > 1 {
-                    replies.remove(0)
-                } else {
-                    replies.first().cloned().unwrap_or_default()
-                }
-            };
-            Box::pin(stream::iter(vec![
-                Ok(LlmEvent::TextDelta {
-                    delta: reply,
-                    meta: None,
-                }),
-                Ok(LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: meerkat_core::StopReason::EndTurn,
-                    },
-                }),
-            ]))
-        }
-
-        fn provider(&self) -> meerkat_core::Provider {
-            meerkat_core::Provider::Other
-        }
-
-        async fn health_check(&self) -> Result<(), meerkat_client::LlmError> {
-            Ok(())
-        }
-    }
-
-    struct StaticHandle {
-        client: Arc<dyn LlmClient>,
-    }
-
-    #[async_trait]
-    impl SelectorHandle for StaticHandle {
-        async fn client(&self) -> Result<Arc<dyn LlmClient>, SelectorError> {
-            Ok(self.client.clone())
-        }
-
-        fn invalidate(&self) {}
-    }
-
-    /// Handle that never resolves: forces the selector path to blow the
-    /// recall budget.
-    struct HangingHandle;
-
-    #[async_trait]
-    impl SelectorHandle for HangingHandle {
-        async fn client(&self) -> Result<Arc<dyn LlmClient>, SelectorError> {
-            tokio::time::sleep(Duration::from_hours(1)).await;
-            Err(SelectorError::Client("unreachable".to_string()))
-        }
-
-        fn invalidate(&self) {}
-    }
-
-    struct FakeFetch {
-        records: Vec<AgentMemoryRecord>,
-    }
-
-    #[async_trait]
-    impl SelectedRecordFetch for FakeFetch {
-        async fn fetch_records(
-            &self,
-            _scopes: &[MemoryScope],
-            ids: &[String],
-        ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
-            Ok(ids
-                .iter()
-                .filter_map(|id| {
-                    self.records
-                        .iter()
-                        .find(|record| &record.memory_id == id)
-                        .cloned()
-                })
-                .collect())
-        }
-    }
-
-    fn selector_runtime(
-        handle: Arc<dyn SelectorHandle>,
-        bodies: Vec<AgentMemoryRecord>,
-    ) -> Arc<SelectorRuntime> {
-        Arc::new(SelectorRuntime {
-            stage: Arc::new(SelectorStage::new(
-                SelectorProfile::embedded_default(),
-                handle,
-            )),
-            fetch: Arc::new(FakeFetch { records: bodies }),
-        })
-    }
-
-    fn selector_config() -> AgentMemoryConfig {
-        AgentMemoryConfig {
-            selection: AgentMemorySelection::Always,
-            per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
-            ..AgentMemoryConfig::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn selector_chosen_bodies_replace_lexical_recall() -> Result<(), Box<dyn Error>> {
-        // Lexical recall would return mem-lex; the selector chooses
-        // mem-sel-2 then mem-sel-1 and that order must win.
-        let provider = Arc::new(FakeProvider::with_manifest(
-            vec![record("mem-lex", "Lexical pick", "Lexical body.")],
-            vec![
-                meta("mem-sel-1", "First fact", "", 1),
-                meta("mem-sel-2", "Second fact", "", 2),
-            ],
-            Vec::new(),
-        ));
-        let client = Arc::new(QueueLlm::new(vec![
-            r#"{"selected_ids": ["mem-sel-2", "mem-sel-1"], "coverage": "sufficient"}"#,
-        ]));
-        let runtime = selector_runtime(
-            Arc::new(StaticHandle { client }),
-            vec![
-                record("mem-sel-1", "First fact", "Body one."),
-                record("mem-sel-2", "Second fact", "Body two."),
-            ],
-        );
-        let coordinator = RecallCoordinator::new(provider.clone(), selector_config())
-            .with_selector(Some(runtime));
-        let id = identity()?;
-        let content = meerkat_core::ContentInput::Text("hello".to_string());
-
-        let injected = coordinator
-            .inject_for_turn(&id, Some("session-a"), &content)
-            .await?;
-        let text = injected.text_content();
-
-        assert!(text.contains("Body two."), "{text}");
-        assert!(text.contains("Body one."), "{text}");
-        assert!(!text.contains("Lexical body."), "{text}");
-        assert!(
-            text.find("Body two.").unwrap() < text.find("Body one.").unwrap(),
-            "bodies must render in selection order: {text}"
-        );
-        let ledger_ids: Vec<String> = provider
-            .captured_injections()
-            .into_iter()
-            .map(|entry| entry.record_id)
-            .collect();
-        assert_eq!(ledger_ids, vec!["mem-sel-2", "mem-sel-1"]);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn selector_empty_verdict_injects_nothing() -> Result<(), Box<dyn Error>> {
-        let provider = Arc::new(FakeProvider::with_manifest(
-            vec![record("mem-lex", "Lexical pick", "Lexical body.")],
-            vec![meta("mem-1", "A fact", "", 1)],
-            Vec::new(),
-        ));
-        let client = Arc::new(QueueLlm::new(vec![
-            r#"{"selected_ids": [], "coverage": "sufficient"}"#,
-        ]));
-        let runtime = selector_runtime(Arc::new(StaticHandle { client }), Vec::new());
-        let coordinator = RecallCoordinator::new(provider.clone(), selector_config())
-            .with_selector(Some(runtime));
-        let id = identity()?;
-        let content = meerkat_core::ContentInput::Text("hello".to_string());
-
-        let injected = coordinator
-            .inject_for_turn(&id, Some("session-a"), &content)
-            .await?;
-
-        assert!(
-            injected.is_empty(),
-            "an empty selection is a verdict, not a fallback"
-        );
-        assert!(provider.captured_injections().is_empty());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn selector_timeout_falls_back_to_lexical_recall() -> Result<(), Box<dyn Error>> {
-        let provider = Arc::new(FakeProvider::with_manifest(
-            vec![record("mem-lex", "Lexical pick", "Lexical body.")],
-            vec![meta("mem-1", "A fact", "", 1)],
-            Vec::new(),
-        ));
-        let runtime = selector_runtime(Arc::new(HangingHandle), Vec::new());
-        let coordinator = RecallCoordinator::new(
-            provider.clone(),
-            AgentMemoryConfig {
-                recall_timeout_ms: 25,
-                ..selector_config()
-            },
-        )
-        .with_selector(Some(runtime));
-        let id = identity()?;
-        let content = meerkat_core::ContentInput::Text("hello".to_string());
-
-        let injected = coordinator
-            .inject_for_turn(&id, Some("session-a"), &content)
-            .await?;
-
-        assert!(
-            injected.text_content().contains("Lexical body."),
-            "skip policy must fall back to the lexical path: {}",
-            injected.text_content()
-        );
-        Ok(())
-    }
-
-    /// Routes on prompt content: manifests containing the Full-tier-only
-    /// record select it; working-set manifests come up empty and request
-    /// the deeper sweep. The deep body can therefore ONLY arrive through
-    /// the detached sweep's session cache.
-    struct RoutedLlm;
-
-    #[async_trait]
-    impl LlmClient for RoutedLlm {
-        fn stream<'a>(&'a self, request: &'a LlmRequest) -> LlmStream<'a> {
-            let prompt = request
-                .messages
-                .iter()
-                .map(|message| match message {
-                    meerkat_core::Message::User(user) => user.text_content(),
-                    _ => String::new(),
-                })
-                .collect::<String>();
-            let reply = if prompt.contains("mem-deep") {
-                r#"{"selected_ids": ["mem-deep"], "coverage": "sufficient"}"#
-            } else {
-                r#"{"selected_ids": [], "coverage": "need_deeper_sweep"}"#
-            };
-            Box::pin(stream::iter(vec![
-                Ok(LlmEvent::TextDelta {
-                    delta: reply.to_string(),
-                    meta: None,
-                }),
-                Ok(LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: meerkat_core::StopReason::EndTurn,
-                    },
-                }),
-            ]))
-        }
-
-        fn provider(&self) -> meerkat_core::Provider {
-            meerkat_core::Provider::Other
-        }
-
-        async fn health_check(&self) -> Result<(), meerkat_client::LlmError> {
-            Ok(())
-        }
-    }
-
-    #[tokio::test]
-    async fn need_deeper_sweep_feeds_next_assembly() -> Result<(), Box<dyn Error>> {
-        let provider = Arc::new(
-            FakeProvider::with_manifest(
-                Vec::new(),
-                vec![meta("mem-ws", "Working set fact", "", 1)],
-                Vec::new(),
-            )
-            .full_tier_extra(vec![meta(
-                "mem-deep",
-                "Deep fact",
-                "Only in the full tier",
-                40,
-            )]),
-        );
-        let runtime = selector_runtime(
-            Arc::new(StaticHandle {
-                client: Arc::new(RoutedLlm),
-            }),
-            vec![record("mem-deep", "Deep fact", "The deep body.")],
-        );
-        let coordinator = RecallCoordinator::new(provider.clone(), selector_config())
-            .with_selector(Some(runtime));
-        let id = identity()?;
-        let content = meerkat_core::ContentInput::Text("hello".to_string());
-
-        let first = coordinator
-            .inject_for_turn(&id, Some("session-a"), &content)
-            .await?;
-        assert!(
-            first.is_empty(),
-            "the escalating turn itself must not block on the sweep"
-        );
-
-        // The sweep is detached; poll subsequent assemblies until its
-        // result lands (bounded).
-        let mut injected_text = String::new();
-        for _ in 0..100 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            let next = coordinator
-                .inject_for_turn(&id, Some("session-a"), &content)
-                .await?;
-            let text = next.text_content();
-            if text != "hello" {
-                injected_text = text;
-                break;
-            }
-        }
-        assert!(
-            injected_text.contains("The deep body."),
-            "sweep-selected body must reach the next assembly: {injected_text}"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn build_assembly_uses_selector_when_query_present() -> Result<(), Box<dyn Error>> {
-        let provider = Arc::new(FakeProvider::with_manifest(
-            vec![record("mem-lex", "Lexical pick", "Lexical body.")],
-            vec![meta("mem-sel", "Selected fact", "", 1)],
-            Vec::new(),
-        ));
-        let client = Arc::new(QueueLlm::new(vec![
-            r#"{"selected_ids": ["mem-sel"], "coverage": "sufficient"}"#,
-        ]));
-        let runtime = selector_runtime(
-            Arc::new(StaticHandle { client }),
-            vec![record("mem-sel", "Selected fact", "Selected body.")],
-        );
-        let coordinator = RecallCoordinator::new(provider.clone(), selector_config())
-            .with_selector(Some(runtime));
-        let id = identity()?;
-
-        let text = coordinator
-            .assemble_build_injection(&id, Some("query".to_string()), vec!["query".to_string()])
-            .await?
-            .ok_or("build assembly should produce an injection")?;
-
-        assert!(text.contains("Selected body."), "{text}");
-        assert!(!text.contains("Lexical body."), "{text}");
-        assert!(
-            text.contains("Memory index"),
-            "index section unchanged: {text}"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn selector_none_keeps_lexical_path() -> Result<(), Box<dyn Error>> {
-        let provider = Arc::new(FakeProvider::with_manifest(
-            vec![record("mem-lex", "Lexical pick", "Lexical body.")],
-            vec![meta("mem-1", "A fact", "", 1)],
-            Vec::new(),
-        ));
-        let coordinator =
-            RecallCoordinator::new(provider.clone(), selector_config()).with_selector(None);
-        let id = identity()?;
-        let content = meerkat_core::ContentInput::Text("hello".to_string());
-
-        let injected = coordinator
-            .inject_for_turn(&id, Some("session-a"), &content)
-            .await?;
-
-        assert!(injected.text_content().contains("Lexical body."));
-        Ok(())
-    }
-
     #[tokio::test]
     async fn per_turn_off_never_touches_ledger() -> Result<(), Box<dyn Error>> {
         let provider = Arc::new(FakeProvider::bodies_only(vec![record(
@@ -2834,274 +2111,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn selector_reads_span_mob_scope_bodies() -> Result<(), Box<dyn Error>> {
-        // The selector can only keep ids present in the manifest, and the
-        // manifest only spans the composed scope set — so a mob-scope body
-        // reaching context pins the whole agent-facing mob read path.
-        let build = |with_mobs: bool| {
-            let provider = Arc::new(
-                FakeProvider::with_manifest(Vec::new(), Vec::new(), Vec::new())
-                    .mob_manifest(vec![meta("mem-mob", "Mob fact", "", 2)]),
-            );
-            let client = Arc::new(QueueLlm::new(vec![
-                r#"{"selected_ids": ["mem-mob"], "coverage": "sufficient"}"#,
-            ]));
-            let runtime = selector_runtime(
-                Arc::new(StaticHandle { client }),
-                vec![record("mem-mob", "Mob fact", "Mob body.")],
-            );
-            let coordinator =
-                RecallCoordinator::new(provider, selector_config()).with_selector(Some(runtime));
-            if with_mobs {
-                coordinator.with_mob_resolver(Some(Arc::new(FixedMobs(&["mob:alpha"]))))
-            } else {
-                coordinator
-            }
-        };
-        let id = identity()?;
-        let content = meerkat_core::ContentInput::Text("hello".to_string());
-
-        let injected = build(true)
-            .inject_for_turn(&id, Some("session-a"), &content)
-            .await?;
-        assert!(
-            injected.text_content().contains("Mob body."),
-            "bound-mob composition must surface mob-scope bodies: {}",
-            injected.text_content()
-        );
-
-        // Without the binding the same record is invisible: the manifest
-        // never offers it, so the selector's pick is dropped as unknown.
-        let injected = build(false)
-            .inject_for_turn(&id, Some("session-a"), &content)
-            .await?;
-        assert!(
-            injected.is_empty(),
-            "no mob binding ⇒ mob scope stays out of composition"
-        );
-        Ok(())
-    }
-
-    // ---- sweep-cache persistence across failed assemblies (§8.3) ----
-
-    fn seed_ready_sweep(coordinator: &RecallCoordinator, session_key: &str, ids: &[&str]) {
-        coordinator
-            .sweeps
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(session_key.to_string())
-            .or_default()
-            .ready = Some(ids.iter().map(std::string::ToString::to_string).collect());
-    }
-
-    fn ready_sweep_of(coordinator: &RecallCoordinator, session_key: &str) -> Option<Vec<String>> {
-        coordinator
-            .sweeps
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(session_key)
-            .and_then(|state| state.ready.clone())
-    }
-
-    #[tokio::test]
-    async fn failed_selector_attempts_preserve_sweep_results_until_consumed()
-    -> Result<(), Box<dyn Error>> {
-        let provider = Arc::new(FakeProvider::with_manifest(
-            Vec::new(),
-            vec![meta("mem-ws", "Working set fact", "", 1)],
-            Vec::new(),
-        ));
-        // First attempt: reply + repair both malformed ⇒ selector error ⇒
-        // lexical fallback. Second attempt: a clean empty selection.
-        let client = Arc::new(QueueLlm::new(vec![
-            "not json",
-            "still not json",
-            r#"{"selected_ids": [], "coverage": "sufficient"}"#,
-        ]));
-        let runtime = selector_runtime(
-            Arc::new(StaticHandle { client }),
-            vec![record("mem-deep", "Deep fact", "The deep body.")],
-        );
-        let coordinator = RecallCoordinator::new(provider.clone(), selector_config())
-            .with_selector(Some(runtime));
-        seed_ready_sweep(&coordinator, "session-a", &["mem-deep"]);
-        let id = identity()?;
-        let content = meerkat_core::ContentInput::Text("hello".to_string());
-
-        let first = coordinator
-            .inject_for_turn(&id, Some("session-a"), &content)
-            .await?;
-        assert!(
-            first.is_empty(),
-            "failed attempt falls back to (empty) lexical recall"
-        );
-        assert_eq!(
-            ready_sweep_of(&coordinator, "session-a"),
-            Some(vec!["mem-deep".to_string()]),
-            "a failed selector attempt must not destroy the sweep result"
-        );
-
-        let second = coordinator
-            .inject_for_turn(&id, Some("session-a"), &content)
-            .await?;
-        assert!(
-            second.text_content().contains("The deep body."),
-            "preserved sweep result must feed the next successful assembly: {}",
-            second.text_content()
-        );
-        assert_eq!(
-            ready_sweep_of(&coordinator, "session-a"),
-            None,
-            "a successfully consumed sweep result must not re-offer"
-        );
-        Ok(())
-    }
-
-    /// Fetch that always fails: pins the fetch-failure early return.
-    struct FailingFetch;
-
-    #[async_trait]
-    impl SelectedRecordFetch for FailingFetch {
-        async fn fetch_records(
-            &self,
-            _scopes: &[MemoryScope],
-            _ids: &[String],
-        ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
-            Err(AgentMemoryError::Io("fetch is down".to_string()))
-        }
-    }
-
-    #[tokio::test]
-    async fn fetch_failure_preserves_sweep_results() -> Result<(), Box<dyn Error>> {
-        let provider = Arc::new(FakeProvider::with_manifest(
-            Vec::new(),
-            vec![meta("mem-ws", "Working set fact", "", 1)],
-            Vec::new(),
-        ));
-        let client = Arc::new(QueueLlm::new(vec![
-            r#"{"selected_ids": ["mem-ws"], "coverage": "sufficient"}"#,
-        ]));
-        let runtime = Arc::new(SelectorRuntime {
-            stage: Arc::new(SelectorStage::new(
-                SelectorProfile::embedded_default(),
-                Arc::new(StaticHandle { client }),
-            )),
-            fetch: Arc::new(FailingFetch),
-        });
-        let coordinator =
-            RecallCoordinator::new(provider, selector_config()).with_selector(Some(runtime));
-        seed_ready_sweep(&coordinator, "session-a", &["mem-deep"]);
-        let id = identity()?;
-        let content = meerkat_core::ContentInput::Text("hello".to_string());
-
-        let injected = coordinator
-            .inject_for_turn(&id, Some("session-a"), &content)
-            .await?;
-
-        assert!(injected.is_empty(), "nothing to inject this turn");
-        assert_eq!(
-            ready_sweep_of(&coordinator, "session-a"),
-            Some(vec!["mem-deep".to_string()]),
-            "a failed body fetch must not destroy the sweep result"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn consume_ready_sweep_keeps_newer_results() {
-        let provider = Arc::new(FakeProvider::bodies_only(Vec::new()));
-        let coordinator = RecallCoordinator::new(provider, AgentMemoryConfig::default());
-        seed_ready_sweep(&coordinator, "session-a", &["newer-sweep"]);
-
-        // An assembly that consumed an OLDER snapshot must not clobber a
-        // sweep result that landed mid-assembly.
-        coordinator.consume_ready_sweep("session-a", &["older-sweep".to_string()]);
-        assert_eq!(
-            ready_sweep_of(&coordinator, "session-a"),
-            Some(vec!["newer-sweep".to_string()])
-        );
-
-        coordinator.consume_ready_sweep("session-a", &["newer-sweep".to_string()]);
-        assert_eq!(ready_sweep_of(&coordinator, "session-a"), None);
-    }
-
-    #[tokio::test]
-    async fn budget_starved_render_preserves_sweep_until_injected() -> Result<(), Box<dyn Error>> {
-        // Selection+fetch succeeding is not enough to consume a §8.3 sweep:
-        // the render budget ladder can still drop the sweep bodies. The
-        // sweep must survive such an assembly and re-offer until an
-        // injection actually delivers it.
-        let long_body = "The deep body. ".repeat(60);
-        let provider = Arc::new(FakeProvider::with_manifest(
-            Vec::new(),
-            vec![meta("mem-ws", "Working set fact", "", 1)],
-            Vec::new(),
-        ));
-        let client = Arc::new(QueueLlm::new(vec![
-            r#"{"selected_ids": [], "coverage": "sufficient"}"#,
-            r#"{"selected_ids": [], "coverage": "sufficient"}"#,
-        ]));
-        let runtime = selector_runtime(
-            Arc::new(StaticHandle { client }),
-            vec![record("mem-deep", "Deep fact", &long_body)],
-        );
-        let coordinator =
-            RecallCoordinator::new(provider, selector_config()).with_selector(Some(runtime));
-        seed_ready_sweep(&coordinator, "session-a", &["mem-deep"]);
-        // Starve the session budget down to the floor: selection still
-        // runs, but nothing fits the render ladder.
-        {
-            let mut guard = coordinator
-                .session_state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            guard
-                .entry("session-a".to_string())
-                .or_default()
-                .injected_bytes = MAX_INJECTED_SESSION_BYTES - MIN_INJECTION_BUDGET_BYTES;
-        }
-        let id = identity()?;
-        let content = meerkat_core::ContentInput::Text("hello".to_string());
-
-        let starved = coordinator
-            .inject_for_turn(&id, Some("session-a"), &content)
-            .await?;
-        assert!(starved.is_empty(), "nothing fits the starved budget");
-        assert_eq!(
-            ready_sweep_of(&coordinator, "session-a"),
-            Some(vec!["mem-deep".to_string()]),
-            "a sweep dropped by the render budget must stay cached"
-        );
-
-        // Budget restored: the re-offered sweep injects, and only then is
-        // it consumed.
-        {
-            let mut guard = coordinator
-                .session_state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            guard
-                .get_mut("session-a")
-                .expect("session state")
-                .injected_bytes = 0;
-        }
-        let injected = coordinator
-            .inject_for_turn(&id, Some("session-a"), &content)
-            .await?;
-        assert!(
-            injected.text_content().contains("The deep body."),
-            "re-offered sweep must inject once the budget allows: {}",
-            injected.text_content()
-        );
-        assert_eq!(
-            ready_sweep_of(&coordinator, "session-a"),
-            None,
-            "an injected sweep result must not re-offer"
-        );
-        Ok(())
-    }
-
     // ---- compaction reset (§9.1 "index-only until compaction") ----
 
     #[tokio::test]
@@ -3137,7 +2146,6 @@ mod tests {
             deduped.is_empty(),
             "dedup before compaction injects nothing new"
         );
-        seed_ready_sweep(&coordinator, "session-a", &["mem-sweep"]);
 
         coordinator.on_session_compacted("session-a");
 
@@ -3155,11 +2163,6 @@ mod tests {
                 "other sessions' accounting must survive"
             );
         }
-        assert_eq!(
-            ready_sweep_of(&coordinator, "session-a"),
-            None,
-            "compaction must drop the session's cached sweep result"
-        );
 
         let reinjected = coordinator
             .inject_for_turn(&id, Some("session-a"), &content)
@@ -3343,49 +2346,8 @@ mod tests {
 
     // ---- provenance labels on injected bodies (§9.1/§7.2) ----
 
+    use crate::memory::factory_handle::RecordProvenance;
     use crate::memory::records::TrustTier;
-    use crate::memory::selector::RecordProvenance;
-
-    /// Fetch returning bodies WITH scope/trust provenance, as the sqlite
-    /// store's annotated fetch does.
-    struct AnnotatedFetch {
-        records: Vec<AnnotatedRecord>,
-    }
-
-    #[async_trait]
-    impl SelectedRecordFetch for AnnotatedFetch {
-        async fn fetch_records(
-            &self,
-            _scopes: &[MemoryScope],
-            ids: &[String],
-        ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
-            Ok(ids
-                .iter()
-                .filter_map(|id| {
-                    self.records
-                        .iter()
-                        .find(|annotated| &annotated.record.memory_id == id)
-                        .map(|annotated| annotated.record.clone())
-                })
-                .collect())
-        }
-
-        async fn fetch_records_annotated(
-            &self,
-            _scopes: &[MemoryScope],
-            ids: &[String],
-        ) -> Result<Vec<AnnotatedRecord>, AgentMemoryError> {
-            Ok(ids
-                .iter()
-                .filter_map(|id| {
-                    self.records
-                        .iter()
-                        .find(|annotated| &annotated.record.memory_id == id)
-                        .cloned()
-                })
-                .collect())
-        }
-    }
 
     fn aged_record(id: &str, title: &str, body: &str, age_days: u64) -> AgentMemoryRecord {
         // One extra hour inside the day so integer division lands exactly
@@ -3401,60 +2363,50 @@ mod tests {
         }
     }
 
-    fn labeled_selector_coordinator(provider: Arc<FakeProvider>) -> RecallCoordinator {
-        let client = Arc::new(QueueLlm::new(vec![
-            r#"{"selected_ids": ["mem-realm", "mem-own"], "coverage": "sufficient"}"#,
-        ]));
-        let runtime = Arc::new(SelectorRuntime {
-            stage: Arc::new(SelectorStage::new(
-                SelectorProfile::embedded_default(),
-                Arc::new(StaticHandle { client }),
-            )),
-            fetch: Arc::new(AnnotatedFetch {
-                records: vec![
-                    AnnotatedRecord {
-                        record: aged_record("mem-realm", "Realm norm", "Realm body.", 47),
-                        provenance: Some(RecordProvenance {
-                            scope: MemoryScope::Realm {
-                                realm: "default".to_string(),
-                            },
-                            trust: TrustTier::Operator,
-                        }),
+    /// The §8.3 selector stage was the only producer of labelled
+    /// provenance, and it retired unactivated. These two tests moved down
+    /// one layer onto the renderer itself so the §7.2 labelling contract
+    /// (and its defang-coupled kill switch) keeps its coverage: any store
+    /// that supplies `SelectedRecordFetch::fetch_records_annotated`
+    /// provenance still renders through exactly this path.
+    fn labeled_records() -> Vec<AnnotatedRecord> {
+        vec![
+            AnnotatedRecord {
+                record: aged_record("mem-realm", "Realm norm", "Realm body.", 47),
+                provenance: Some(RecordProvenance {
+                    scope: MemoryScope::Realm {
+                        realm: "default".to_string(),
                     },
-                    AnnotatedRecord {
-                        record: aged_record("mem-own", "Own fact", "Own body.", 0),
-                        provenance: Some(RecordProvenance {
-                            scope: MemoryScope::Identity {
-                                realm: "default".to_string(),
-                                identity: "identity:luka".to_string(),
-                            },
-                            trust: TrustTier::AgentObserved,
-                        }),
+                    trust: TrustTier::Operator,
+                }),
+            },
+            AnnotatedRecord {
+                record: aged_record("mem-own", "Own fact", "Own body.", 0),
+                provenance: Some(RecordProvenance {
+                    scope: MemoryScope::Identity {
+                        realm: "default".to_string(),
+                        identity: "identity:luka".to_string(),
                     },
-                ],
-            }),
-        });
-        RecallCoordinator::new(provider, selector_config()).with_selector(Some(runtime))
+                    trust: TrustTier::AgentObserved,
+                }),
+            },
+        ]
     }
 
-    fn labeled_manifest_provider() -> Arc<FakeProvider> {
-        Arc::new(FakeProvider::with_manifest(
-            Vec::new(),
-            vec![meta("mem-own", "Own fact", "", 0)],
-            vec![meta("mem-realm", "Realm norm", "", 47)],
-        ))
-    }
-
-    #[tokio::test]
-    async fn injected_bodies_carry_scope_trust_and_age_labels() -> Result<(), Box<dyn Error>> {
-        let coordinator = labeled_selector_coordinator(labeled_manifest_provider());
+    #[test]
+    fn injected_bodies_carry_scope_trust_and_age_labels() -> Result<(), Box<dyn Error>> {
         let id = identity()?;
-        let content = meerkat_core::ContentInput::Text("hello".to_string());
-
-        let injected = coordinator
-            .inject_for_turn(&id, Some("session-a"), &content)
-            .await?;
-        let text = injected.text_content();
+        let rendered = render_injection_annotated(
+            &AgentMemoryConfig::default(),
+            &id,
+            "nonce-1",
+            &[],
+            &labeled_records(),
+            None,
+            MAX_INJECTED_ASSEMBLY_BYTES,
+        )
+        .ok_or("labelled records must render")?;
+        let text = rendered.text;
 
         assert!(
             text.contains(r#" scope="realm" trust="operator" age="saved 47 days ago""#),
@@ -3465,63 +2417,39 @@ mod tests {
             "{text}"
         );
         // §7.2 trust ordering ships as envelope semantics, not reordering:
-        // the header explains the labels, selection order still wins.
+        // the header explains the labels, supplied order still wins.
         assert!(
             text.contains("higher-authority background"),
             "labeled envelopes must explain trust semantics: {text}"
         );
         assert!(
-            text.find("Realm body.").unwrap() < text.find("Own body.").unwrap(),
-            "bodies must still render in selection order: {text}"
+            text.find("Realm body.").ok_or("realm body")?
+                < text.find("Own body.").ok_or("own body")?,
+            "bodies must still render in the order supplied: {text}"
         );
         Ok(())
     }
 
-    #[tokio::test]
-    async fn trust_labels_never_render_with_defanging_disabled() -> Result<(), Box<dyn Error>> {
+    #[test]
+    fn trust_labels_never_render_with_defanging_disabled() -> Result<(), Box<dyn Error>> {
         // §7.2: the trust-authority label ships only together with inbound
         // defanging — with the kill switch off, a forged label could not be
         // told from a real one.
-        let provider = Arc::new(FakeProvider::with_manifest(
-            Vec::new(),
-            vec![meta("mem-own", "Own fact", "", 0)],
-            vec![meta("mem-realm", "Realm norm", "", 47)],
-        ));
-        let client = Arc::new(QueueLlm::new(vec![
-            r#"{"selected_ids": ["mem-realm", "mem-own"], "coverage": "sufficient"}"#,
-        ]));
-        let runtime = Arc::new(SelectorRuntime {
-            stage: Arc::new(SelectorStage::new(
-                SelectorProfile::embedded_default(),
-                Arc::new(StaticHandle { client }),
-            )),
-            fetch: Arc::new(AnnotatedFetch {
-                records: vec![AnnotatedRecord {
-                    record: aged_record("mem-realm", "Realm norm", "Realm body.", 47),
-                    provenance: Some(RecordProvenance {
-                        scope: MemoryScope::Realm {
-                            realm: "default".to_string(),
-                        },
-                        trust: TrustTier::Operator,
-                    }),
-                }],
-            }),
-        });
-        let coordinator = RecallCoordinator::new(
-            provider,
-            AgentMemoryConfig {
-                defang_inbound: false,
-                ..selector_config()
-            },
-        )
-        .with_selector(Some(runtime));
         let id = identity()?;
-        let content = meerkat_core::ContentInput::Text("hello".to_string());
-
-        let injected = coordinator
-            .inject_for_turn(&id, Some("session-a"), &content)
-            .await?;
-        let text = injected.text_content();
+        let rendered = render_injection_annotated(
+            &AgentMemoryConfig {
+                defang_inbound: false,
+                ..AgentMemoryConfig::default()
+            },
+            &id,
+            "nonce-1",
+            &[],
+            &labeled_records()[..1],
+            None,
+            MAX_INJECTED_ASSEMBLY_BYTES,
+        )
+        .ok_or("records must still render unlabelled")?;
+        let text = rendered.text;
 
         assert!(text.contains("Realm body."), "{text}");
         assert!(!text.contains(" scope=\""), "{text}");
@@ -3568,10 +2496,24 @@ mod tests {
 
     #[tokio::test]
     async fn defang_round_trips_real_rendered_envelope() -> Result<(), Box<dyn Error>> {
-        // Render a REAL labeled envelope (not a hand-built fixture), embed
-        // it inbound, and require defanging to neutralize every marker the
-        // renderer emits — pinning renderer and defang list to each other.
-        let coordinator = labeled_selector_coordinator(labeled_manifest_provider());
+        // Render a REAL two-record envelope (not a hand-built fixture),
+        // embed it inbound, and require defanging to neutralize every marker
+        // the renderer emits — pinning renderer and defang list to each
+        // other. The envelope used to come from the §8.3 selector path; with
+        // that stage retired the same envelope comes from lexical recall,
+        // which is what every deployment actually renders.
+        let provider = Arc::new(FakeProvider::bodies_only(vec![
+            aged_record("mem-realm", "Realm norm", "Realm body.", 47),
+            aged_record("mem-own", "Own fact", "Own body.", 0),
+        ]));
+        let coordinator = RecallCoordinator::new(
+            provider,
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
+                ..AgentMemoryConfig::default()
+            },
+        );
         let id = identity()?;
         let content = meerkat_core::ContentInput::Text("hello".to_string());
         let rendered = coordinator

@@ -86,8 +86,41 @@ pub fn ephemeral_workgraph_service(realm_id: &str) -> WorkGraphService {
     scoped_workgraph_service(Arc::new(MemoryWorkGraphStore::new()), realm_id)
 }
 
-fn scoped_workgraph_service(store: Arc<dyn WorkGraphStore>, realm_id: &str) -> WorkGraphService {
-    WorkGraphService::with_scope(store, realm_id, WorkNamespace::default())
+/// Scope a WorkGraph service to a mob, using meerkat's CANONICAL mob realm.
+///
+/// The parameter is a MOB ID, not a raw realm. `meerkat_core::mob_realm_id`
+/// renders it as `mob.<mob_id>`, which is the same realm meerkat derives for
+/// every member it builds for that mob (`meerkat-mob/src/build.rs`).
+///
+/// This matters because 0.8.22 validates the two against each other: a
+/// WorkGraph namespace grant whose realm differs from the member's build realm
+/// is a typed build refusal ("WorkGraph namespace grant realm '..' does not
+/// match build realm '..'"). MobKit previously scoped the workgraph with the
+/// BARE mob id while every other realm-scoped thing for the same mob used
+/// `mob.<id>`, so the two could never agree and any member declaring workgraph
+/// tools failed to build. Deriving from one helper is what keeps them equal;
+/// do not reintroduce a second spelling of "the realm for this mob".
+///
+/// If the canonical realm cannot be formed the raw id is used, which lets
+/// meerkat's own validation produce its typed error naming BOTH realms rather
+/// than this function inventing a worse one.
+pub(crate) fn scoped_workgraph_service(
+    store: Arc<dyn WorkGraphStore>,
+    mob_id: &str,
+) -> WorkGraphService {
+    let realm = match meerkat_core::mob_realm_id(mob_id) {
+        Ok(realm) => realm.as_str().to_string(),
+        Err(error) => {
+            tracing::error!(
+                mob_id,
+                %error,
+                "could not form the canonical mob realm; workgraph scope falls back to the raw \
+                 mob id and member builds declaring workgraph tools will be refused upstream"
+            );
+            mob_id.to_string()
+        }
+    };
+    WorkGraphService::with_scope(store, realm, WorkNamespace::default())
 }
 
 /// Fill `builder`'s default workgraph-tools slot with the full
@@ -110,6 +143,24 @@ pub fn install_workgraph_tools(
     let tools = ScopePinnedWorkGraphTools::new(service);
     let slot = tools.admission_slot();
     meerkat::surface::set_default_workgraph_tools(builder, Some(Arc::new(tools)));
+    // 0.8.16 item 6 / 0.8.22 port requirement. Since 0.8.22 meerkat REFUSES to
+    // build any agent whose WorkGraph tools are enabled without a host-issued
+    // namespace grant (`meerkat/src/factory.rs`, "WorkGraph tools enabled
+    // without a host-issued namespace grant"). Without this line every member
+    // that declares workgraph tools fails to build on create, and on resume
+    // degrades the identity rather than failing cleanly.
+    //
+    // The grant is taken from the SERVICE rather than reconstructed from a
+    // realm id and a namespace we happen to have nearby, so the grant and the
+    // scope the tools are pinned to cannot drift apart: `ScopePinnedWorkGraphTools`
+    // above pins every call to this same service's realm+namespace, and a
+    // grant naming a different scope would authorise something the tools can
+    // never address. One value, one source - that is the whole point of item
+    // 6's "mechanism owns scope, agents don't wander realms".
+    meerkat::surface::set_default_workgraph_namespace_grant(
+        builder,
+        Some(service.namespace_grant().clone()),
+    );
     slot
 }
 
@@ -134,11 +185,16 @@ pub fn install_workgraph_tools(
 /// legitimately-delegated agents.
 ///
 /// Round-3 finding R1: `workgraph_attention_reassign` mints an Active
-/// binding on the NEW target, and upstream has no occupancy check — so a
-/// coordinate-mode member could land a second Active binding on an occupied
-/// member (bricking it with `MultipleActiveBindings`) where an ABAC-granted
-/// operator on the RPC surface is refused, and could race the RPC guards.
-/// Both dispatch paths therefore intercept the reassign: when the
+/// binding on the NEW target, so a coordinate-mode member could land a second
+/// occupying binding on an occupied member where an ABAC-granted operator on
+/// the RPC surface is refused, and could race the RPC guards. Upstream ask 25
+/// closes the exact-key Active/Active half of that in the store
+/// (`active_target_occupant_tx`), but not the paused, cross-spelling or
+/// session-identity-alias cases, and an admitted duplicate is no longer the
+/// hard `MultipleActiveBindings` failure it once was - the turn overlay
+/// arbitrates newest-binding-wins and silently starves the loser's goal (see
+/// [`crate::workgraph_admission`]'s module docs for the full subsumption
+/// split). Both dispatch paths therefore intercept the reassign: when the
 /// late-bound [`WorkGraphAdmissionSlot`] is filled (by
 /// `MobRuntime::bootstrap` — the wrapper is constructed before the mob
 /// exists), the call holds the runtime-wide admission across the forward
@@ -150,7 +206,7 @@ pub fn install_workgraph_tools(
 /// dispatch entry points — the trait `dispatch` funnels into
 /// `dispatch_with_context` with a default (witness-less) context, and a
 /// missing projection is an immediate `access_denied` for
-/// `workgraph_attention_reassign` before any store access (meerkat 0.7.23,
+/// `workgraph_attention_reassign` before any store access (meerkat 0.8.22,
 /// meerkat-workgraph/src/tool_surface.rs; `WorkGraphToolSurface::new` bakes
 /// in no projection). A witness-less reassign therefore forwards directly
 /// into that cheap upstream denial instead of queueing on the global gate +
@@ -175,7 +231,7 @@ struct ScopePinnedWorkGraphTools {
 }
 
 /// The subset of the upstream `workgraph_attention_reassign` tool schema the
-/// admission guard needs (meerkat 0.7.23, meerkat-workgraph/src/tools.rs
+/// admission guard needs (meerkat 0.8.22, meerkat-workgraph/src/tools.rs
 /// `attention_reassign_schema`: `binding_id`, `expected_revision`, `target`
 /// all required; `target` is the tagged session/owner `GoalAttentionTarget`).
 #[derive(serde::Deserialize)]
@@ -355,6 +411,38 @@ impl meerkat_core::AgentToolDispatcher for ScopePinnedWorkGraphTools {
         self.inner.tools()
     }
 
+    /// Forward the inner surface's catalog declarations verbatim.
+    ///
+    /// This wrapper pins dispatch ARGUMENTS and guards reassign admission; it
+    /// deliberately does not narrow the surface, and `tools()` above already
+    /// forwards unchanged. Leaving these two on the trait defaults silently
+    /// downgraded the composed dispatcher to `exact_catalog: false` with an
+    /// EMPTY catalog, which is not a conservative choice - it is a different
+    /// surface than the one being wrapped.
+    ///
+    /// Both flags are load-bearing, not decorative. `AgentBuilder` only fills
+    /// `deferred_tool_names` when `exact_catalog` holds AND
+    /// (`may_require_catalog_control_plane` or a Control-plane entry exists)
+    /// AND the catalog mode is `Deferred`. The inner surface declares both and
+    /// mints `session_deferred` entries with WorkGraph provenance for
+    /// `workgraph_attention_reassign` and `workgraph_policy_escalate`. Dropping
+    /// them left the deferred set empty while an attention overlay still
+    /// supplied a WorkGraph-provenance authority, so staging the overlay was
+    /// rejected and the member's bound turn died before reaching the LLM - a
+    /// member that goes silent for exactly as long as a binding is active.
+    ///
+    /// The dispatch-side surfaces are deliberately NOT forwarded: the default
+    /// `dispatch_resolved_with_context` routes Fast-mode calls back through
+    /// THIS type's `dispatch_with_context`, so pinning and admission still
+    /// apply. Forwarding it to the inner would bypass both.
+    fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+        self.inner.tool_catalog_capabilities()
+    }
+
+    fn tool_catalog(&self) -> Arc<[meerkat_core::ToolCatalogEntry]> {
+        self.inner.tool_catalog()
+    }
+
     async fn dispatch(
         &self,
         call: meerkat_core::types::ToolCallView<'_>,
@@ -434,6 +522,89 @@ pub fn attach_workgraph_tools_ephemeral(
     (service, slot)
 }
 
+/// Per-slot workgraph injection: scope a CALLER-SUPPLIED [`WorkGraphStore`] to
+/// `realm_id` and attach its tool surface to `builder`.
+///
+/// The twin of [`crate::schedule_wiring::attach_schedule_tools_with_store`],
+/// and the one seam that lets an embedder put the workgraph on its own
+/// durable backend WITHOUT implementing a whole
+/// [`MobKitStorageProvider`](crate::storage_provider::MobKitStorageProvider):
+/// the composite provider is a single realm bundle, so routing the workgraph
+/// through it drags continuity, lease authority, console, metadata, blobs,
+/// agent memory, schedule, runtime and jobs along with it.
+///
+/// Returns the tool-plane [`WorkGraphAdmissionSlot`] with the SAME obligation
+/// [`install_workgraph_tools`] carries: register it on the bootstrap spec
+/// ([`MobBootstrapSpec::with_workgraph_admission_slot`](crate::MobBootstrapSpec::with_workgraph_admission_slot))
+/// or the agent plane's `workgraph_attention_reassign` skips the
+/// duplicate-binding guard the RPC surfaces enforce.
+///
+/// # Cross-process admission: what an injected store does NOT get
+///
+/// The duplicate-binding sidecar lock is keyed on the runtime's STATE DIR
+/// ([`workgraph_admission_sidecar_path`](crate::workgraph_admission::workgraph_admission_sidecar_path)),
+/// not on the store's location, and the injected backend may live anywhere.
+/// Two runtimes sharing ONE injected store from DIFFERENT state dirs
+/// therefore take two different sidecars and serialize nothing against each
+/// other: what survives is each process's in-process gate plus the store's
+/// own transactional occupancy guard, which covers only the exact-key
+/// Active/Active case (the paused, cross-spelling and session-identity-alias
+/// residuals stay check-then-act). Nothing here refuses that topology - the
+/// provider-bundle path shares the same state-dir keying - so a caller that
+/// shares one backend across state dirs must serialize admissions itself.
+/// Co-processes on one state dir - the documented
+/// gateway-plus-library-mode shape - are unaffected.
+///
+/// # Durability posture: this is an injection, not a provider bundle
+///
+/// A caller-injected slot deliberately does NOT go through
+/// `storage_provider::open_provider_meerkat_stores`, so it takes neither
+/// `ensure_realm_manifest_pin_with_candidates` nor
+/// `enforce_fail_closed_durability`. That is the same ruling the schedule,
+/// blob, continuity, lease and console setters already carry, and it is a
+/// ruling rather than an oversight.
+///
+/// `enforce_fail_closed_durability` judges a PROVIDER-DECLARED
+/// [`meerkat_core::DurabilityDeclaration`] - a `DurabilityResolution` the
+/// provider asserts and mobkit holds it to. A bare `Arc<dyn WorkGraphStore>`
+/// asserts nothing, and mobkit cannot derive the missing assertion:
+/// `WorkGraphStore::kind()` is a BACKEND-SHAPE tag, not a durability oracle.
+/// `Custom` covers every third-party backend indistinguishably - a durable
+/// Postgres and an in-process test double both report it - and `Sqlite` says
+/// nothing about the caller-supplied path behind it (a tmpfs or temp-dir file
+/// reports `Sqlite` exactly as a durable one does). Gating on `kind()` would
+/// therefore refuse legitimate durable backends and admit non-durable ones,
+/// which is worse than not gating. So durability rides with the injector, and
+/// the storage census must label the slot caller-injected rather than assert
+/// a resolution mobkit never established. An embedder that wants the
+/// fail-closed rule applied to its workgraph has the seam for it: supply a
+/// `MobKitStorageProvider` whose `meerkat_provider()` declares the `workgraph`
+/// domain.
+///
+/// For the same reason `workgraph` must NOT be added to
+/// `storage_provider::REQUIRED_MOBKIT_DURABILITY_DOMAINS`:
+/// that constant enumerates the MOBKIT-level slots a `MobKitStorageProvider`
+/// must declare exactly once, and its completeness check would then refuse
+/// every existing provider implementation. The workgraph is a MEERKAT-level
+/// slot; on the provider path it is already covered by
+/// `enforce_fail_closed_durability` over the meerkat `RealmStoreSet`.
+#[must_use]
+/// `mob_id` is a MOB ID, not a raw realm. It is rendered into meerkat's
+/// canonical mob realm (`mob.<mob_id>`) by
+/// [`scoped_workgraph_service`], because 0.8.22 refuses to build any member
+/// whose WorkGraph namespace grant realm differs from its build realm, and
+/// meerkat derives that build realm as `mob.<mob_id>`. Pass the mob
+/// definition id; passing an already-prefixed realm would double the prefix.
+pub fn attach_workgraph_tools_with_store(
+    builder: &FactoryAgentBuilder,
+    store: Arc<dyn WorkGraphStore>,
+    mob_id: &str,
+) -> (WorkGraphService, WorkGraphAdmissionSlot) {
+    let service = scoped_workgraph_service(store, mob_id);
+    let slot = install_workgraph_tools(builder, &service);
+    (service, slot)
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -465,7 +636,11 @@ mod tests {
             slot_is_filled(&builder),
             "attach must fill the default_workgraph_tools slot"
         );
-        assert_eq!(service.default_realm_id(), "wiring-realm");
+        // CANONICAL mob realm, `mob.<mob_id>`. Pinned as a literal rather
+        // than recomputed from `mob_realm_id`, which would be tautological:
+        // the spelling decides where rows physically live, so a change to it
+        // is a data migration and must fail this test loudly.
+        assert_eq!(service.default_realm_id(), "mob.wiring-realm");
         assert_eq!(service.store().kind(), WorkGraphStoreKind::Sqlite);
         assert!(
             dir.path().join(WORKGRAPH_STORE_FILE).exists(),
@@ -493,7 +668,7 @@ mod tests {
             .await
             .expect("item must survive reopen");
         assert_eq!(loaded.title, "persisted item");
-        assert_eq!(loaded.realm_id, "reopen-realm");
+        assert_eq!(loaded.realm_id, "mob.reopen-realm");
     }
 
     #[tokio::test]
@@ -515,11 +690,120 @@ mod tests {
         let (service, _slot) = attach_workgraph_tools_ephemeral(&builder, "ephemeral-realm");
 
         assert!(slot_is_filled(&builder));
-        assert_eq!(service.default_realm_id(), "ephemeral-realm");
+        assert_eq!(service.default_realm_id(), "mob.ephemeral-realm");
         assert_eq!(service.store().kind(), WorkGraphStoreKind::Memory);
         assert!(
             !dir.path().join(WORKGRAPH_STORE_FILE).exists(),
             "ephemeral variant must not create a store file"
+        );
+    }
+
+    /// Per-slot injection: the caller's own durable store backs the surface,
+    /// at the caller's own path - mobkit neither opens nor names it, and the
+    /// conventional store file beside the runtime DB is never created.
+    #[tokio::test]
+    async fn injected_store_variant_uses_the_callers_backend() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let builder = test_builder(dir.path());
+        let injected_path = dir.path().join("elsewhere").join("caller-owned.sqlite3");
+        std::fs::create_dir_all(injected_path.parent().expect("parent")).expect("caller dir");
+        let store: Arc<dyn WorkGraphStore> =
+            Arc::new(SqliteWorkGraphStore::open(&injected_path).expect("caller store"));
+
+        let (service, _slot) =
+            attach_workgraph_tools_with_store(&builder, store, "injected-realm-slot");
+
+        assert!(slot_is_filled(&builder));
+        assert_eq!(service.default_realm_id(), "mob.injected-realm-slot");
+        assert_eq!(service.store().kind(), WorkGraphStoreKind::Sqlite);
+        assert!(
+            injected_path.exists(),
+            "the caller's own path backs the slot"
+        );
+        assert!(
+            !dir.path().join(WORKGRAPH_STORE_FILE).exists(),
+            "injection must not open mobkit's conventional store file"
+        );
+    }
+
+    /// Finding A regression (2026-08-11): the wrapper must declare the SAME
+    /// catalog surface as the surface it wraps.
+    ///
+    /// `ScopePinnedWorkGraphTools` pins dispatch arguments and guards reassign
+    /// admission; it does not narrow the surface. When it implemented only
+    /// `tools`/`dispatch`/`dispatch_with_context`, these two fell back to the
+    /// trait defaults (`exact_catalog: false`, empty catalog) - not a
+    /// conservative choice but a DIFFERENT surface than the inner one. That
+    /// left `deferred_tool_names` empty while an attention overlay still
+    /// supplied a WorkGraph-provenance authority, so staging the overlay was
+    /// rejected and a bound member turn died before reaching the LLM.
+    ///
+    /// Asserts parity rather than literals, so a future inner-only change
+    /// cannot silently reopen the gap. The one literal is `exact_catalog`,
+    /// because a pure parity test would also pass if BOTH sides regressed to
+    /// the default.
+    #[tokio::test]
+    async fn wrapper_declares_the_same_catalog_surface_as_the_inner() {
+        use meerkat_core::AgentToolDispatcher;
+
+        let service = ephemeral_workgraph_service("mob-realm");
+        let wrapper = ScopePinnedWorkGraphTools::new(&service);
+        let inner = WorkGraphToolSurface::new(service);
+
+        let wrapped = wrapper.tool_catalog_capabilities();
+        let direct = inner.tool_catalog_capabilities();
+        assert_eq!(
+            wrapped.exact_catalog, direct.exact_catalog,
+            "wrapper must report the inner surface's exact_catalog"
+        );
+        assert_eq!(
+            wrapped.may_require_catalog_control_plane, direct.may_require_catalog_control_plane,
+            "wrapper must report the inner surface's control-plane requirement"
+        );
+        assert!(
+            wrapped.exact_catalog,
+            "both sides regressed to the default: an exact catalog is what makes \
+             the deferred set reachable at all"
+        );
+
+        // `ToolCatalogEntry` is not `PartialEq`, so compare an explicit
+        // projection (name, plane, deferred eligibility, provenance) rather
+        // than only counting entries.
+        fn summarize(entries: &[meerkat_core::ToolCatalogEntry]) -> Vec<String> {
+            entries
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{}|{:?}|{:?}|{:?}",
+                        entry.tool.name,
+                        entry.plane,
+                        entry.deferred_eligibility,
+                        entry.tool.provenance
+                    )
+                })
+                .collect()
+        }
+
+        let wrapped_catalog = wrapper.tool_catalog();
+        let direct_catalog = inner.tool_catalog();
+        assert_eq!(
+            summarize(&wrapped_catalog),
+            summarize(&direct_catalog),
+            "wrapper must forward the inner catalog entries and their provenance verbatim"
+        );
+        assert!(
+            !wrapped_catalog.is_empty(),
+            "an empty catalog is the exact shape of the original defect"
+        );
+        assert!(
+            wrapped_catalog
+                .iter()
+                .any(|entry| entry.tool.name.as_str() == "workgraph_policy_escalate"),
+            "the tool at the centre of Finding A must appear in the forwarded catalog: {:?}",
+            wrapped_catalog
+                .iter()
+                .map(|entry| entry.tool.name.as_str())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -561,7 +845,7 @@ mod tests {
             .await
             .expect("list");
         assert_eq!(items.len(), 1, "item must land in the pinned scope");
-        assert_eq!(items[0].realm_id, "mob-realm");
+        assert_eq!(items[0].realm_id, "mob.mob-realm");
         assert_eq!(items[0].namespace.as_str(), "default");
 
         // Reads with invented scope must see the same world (self-consistent
@@ -620,6 +904,26 @@ mod tests {
                 },
                 mode: Default::default(),
                 completion_policy: Default::default(),
+                // meerkat 0.8.22 promoted the item-shaping fields of
+                // `CreateWorkItemRequest` onto `GoalCreateRequest`. Eight of
+                // the ten already existed on `CreateWorkItemRequest` in
+                // 0.8.21, where `create_goal` filled them from
+                // `..CreateWorkItemRequest::default()`; the two join policies
+                // are new in 0.8.22 and so had no prior value to preserve.
+                // The values below therefore reproduce the pre-port item
+                // exactly. Both join policies are inert here in any case:
+                // this fixture creates no `parent` edges, so no child can
+                // fail or cancel into this goal.
+                failed_child_join_policy: Default::default(),
+                cancelled_child_join_policy: Default::default(),
+                priority: Default::default(),
+                labels: Default::default(),
+                due_at: None,
+                not_before: None,
+                snoozed_until: None,
+                external_refs: Vec::new(),
+                evidence_refs: Vec::new(),
+                status: None,
                 delegated_authority: Default::default(),
                 projection_policy: Default::default(),
             })
@@ -777,6 +1081,21 @@ comms = true
                 },
                 mode,
                 completion_policy: Default::default(),
+                // meerkat 0.8.22 item-shaping passthrough (see the note on the
+                // other fixture above): eight of these came from
+                // `CreateWorkItemRequest::default()` in 0.8.21, the two join
+                // policies are new in 0.8.22, and both join policies are inert
+                // for a fixture that builds no `parent` edges.
+                failed_child_join_policy: Default::default(),
+                cancelled_child_join_policy: Default::default(),
+                priority: Default::default(),
+                labels: Default::default(),
+                due_at: None,
+                not_before: None,
+                snoozed_until: None,
+                external_refs: Vec::new(),
+                evidence_refs: Vec::new(),
+                status: None,
                 delegated_authority: Default::default(),
                 projection_policy: Default::default(),
             })
@@ -823,10 +1142,13 @@ comms = true
 
     /// Round-3 R1: a coordinate-mode member's `workgraph_attention_reassign`
     /// onto an occupied member must be refused with a conflict that names
-    /// the occupying binding — upstream would happily mint the second Active
-    /// binding (bricking the member with `MultipleActiveBindings`), which
-    /// the RPC surfaces already refuse to an ABAC-granted operator. A free
-    /// target must still forward and succeed.
+    /// the occupying binding, exactly as the RPC surfaces refuse it to an
+    /// ABAC-granted operator. The refusal must come from MOBKIT here: the
+    /// message asserted below is the admission's, taken before the forward,
+    /// so this test pins the tool plane's interception rather than the
+    /// upstream store guard (ask 25) that would also catch this particular
+    /// Active-vs-Active, same-target-key case. A free target must still
+    /// forward and succeed.
     #[tokio::test(flavor = "multi_thread")]
     async fn tool_plane_reassign_onto_an_occupied_target_names_the_occupant() {
         let (runtime, service, dispatcher, _dir) = bootstrapped_tool_plane().await;
@@ -1527,20 +1849,40 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for AdmissionStoreProbe {
+        // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
+        // without a default, so that a PERSISTENT decorator cannot inherit a
+        // composition that converges nothing and silently resume from stale
+        // committed authority after a power cut. This probe is non-persistent, so
+        // it opts in EXPLICITLY through the public helper rather than hand-rolling
+        // the composition. The helper is fail-closed: it refuses if
+        // `supports_persistent_sessions()` is ever true here.
+        async fn materialize_session_resume_verdict(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError>
+        {
+            meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
+        }
+        // meerkat 0.8.22 deleted `prepare_session_for_resume` from this trait.
+        // Durable-tail convergence now lives inside `PersistentSessionService`'s
+        // OVERRIDE of `materialize_session_resume_verdict`; the trait default
+        // routes to `materialize_nonpersistent_session_resume_verdict`, which
+        // only re-observes authority around `load_session_for_resume`.
+        //
+        // Inheriting that default is TRUTHFUL here, and only here, because this
+        // probe is a direct implementer with no durable tail of its own: its
+        // `delegate` is consulted for `load_persisted_session` alone, and every
+        // construction site passes an `EphemeralSessionService`. A wrapper over
+        // a persistent inner service must NOT inherit the default - it would
+        // compile while silently dropping convergence.
         async fn observe_session_resume_authority(
             &self,
             _session_id: &meerkat_core::types::SessionId,
         ) -> Result<meerkat_mob::SessionResumeAuthority, meerkat_core::service::SessionError>
         {
             // Test double: truthfully an empty authority bundle (the ephemeral
-            // arm of the meerkat 0.8.21 resume-verdict contract).
+            // arm of the meerkat 0.8.22 resume-verdict contract).
             Ok(meerkat_mob::SessionResumeAuthority::default())
-        }
-        async fn prepare_session_for_resume(
-            &self,
-            _session_id: &meerkat_core::types::SessionId,
-        ) -> Result<(), meerkat_core::service::SessionError> {
-            Ok(())
         }
         async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
             &self,
@@ -1711,20 +2053,34 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for SwitchableStore {
+        // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
+        // without a default, so that a PERSISTENT decorator cannot inherit a
+        // composition that converges nothing and silently resume from stale
+        // committed authority after a power cut. This probe is non-persistent, so
+        // it opts in EXPLICITLY through the public helper rather than hand-rolling
+        // the composition. The helper is fail-closed: it refuses if
+        // `supports_persistent_sessions()` is ever true here.
+        async fn materialize_session_resume_verdict(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::SessionResumeVerdict, meerkat_core::service::SessionError>
+        {
+            meerkat_mob::materialize_nonpersistent_session_resume_verdict(self, session_id).await
+        }
+        // Same 0.8.22 transition as `AdmissionStoreProbe` above:
+        // `prepare_session_for_resume` is gone from the trait, and inheriting
+        // the non-persistent `materialize_session_resume_verdict` default is
+        // truthful because this switch only routes `load_persisted_session`
+        // between two ephemeral-backed probes - it owns no durable tail to
+        // converge.
         async fn observe_session_resume_authority(
             &self,
             _session_id: &meerkat_core::types::SessionId,
         ) -> Result<meerkat_mob::SessionResumeAuthority, meerkat_core::service::SessionError>
         {
             // Test double: truthfully an empty authority bundle (the ephemeral
-            // arm of the meerkat 0.8.21 resume-verdict contract).
+            // arm of the meerkat 0.8.22 resume-verdict contract).
             Ok(meerkat_mob::SessionResumeAuthority::default())
-        }
-        async fn prepare_session_for_resume(
-            &self,
-            _session_id: &meerkat_core::types::SessionId,
-        ) -> Result<(), meerkat_core::service::SessionError> {
-            Ok(())
         }
         async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
             &self,
@@ -1888,13 +2244,16 @@ comms = true
         runtime.handle().stop().await.expect("stop");
     }
 
-    /// Round-6 T1 (the two-row brick): before the fix, an owner-spelled
+    /// Round-6 T1 (the two-row duplicate): before the fix, an owner-spelled
     /// member session row was stored session-spelled, and a roster-BLIND
-    /// admission then admitted an identity-form create for the same member —
-    /// two occupying rows, a bricked member. Both writes now normalize
-    /// through the shared session store, so the second conflicts. Uses the
-    /// `lowered_owner` wire alias for the first row — both owner spellings
-    /// must canonicalize.
+    /// admission then admitted an identity-form create for the same member -
+    /// two occupying rows on one member. That is exactly the cross-spelling
+    /// residual the upstream store guard does NOT catch (its two `target_key`
+    /// spellings differ), so mobkit still owns this refusal; since ask 25 the
+    /// consequence of losing it is a silently starved goal rather than the
+    /// former hard turn failure. Both writes now normalize through the shared
+    /// session store, so the second conflicts. Uses the `lowered_owner` wire
+    /// alias for the first row - both owner spellings must canonicalize.
     #[tokio::test(flavor = "multi_thread")]
     async fn owner_spelled_session_rows_cannot_reopen_the_blind_duplicate_window() {
         let (runtime_knows, service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
@@ -1927,11 +2286,11 @@ comms = true
         let error = rpc_goal_create(
             &service,
             &blind,
-            "identity-form second row of the round-6 brick",
+            "identity-form second row of the round-6 duplicate",
             serde_json::json!({ "kind": "identity", "identity": "helper" }),
         )
         .await
-        .expect_err("the identity-form create must conflict, not brick the member");
+        .expect_err("the identity-form create must conflict, not duplicate the binding");
         assert_eq!(error.code, crate::rpc::WORKGRAPH_CONFLICT_CODE, "{error:?}");
         assert!(
             error.message.contains(occupant),

@@ -69,7 +69,7 @@ use crate::runtime::{
     handle_console_rest_json_route_with_snapshot_access_memory_and_workgraph,
     resolve_authorized_console_auth_from_token,
 };
-use crate::runtime::{MetadataScope, RuntimeMetadataTable, labels_to_json_value};
+use crate::runtime::{RuntimeMetadataTable, labels_to_json_value};
 use crate::types::{EventEnvelope, UnifiedEvent};
 use crate::unified_runtime::console_events::ConsoleEventStore;
 use crate::unified_runtime::mob_events::MobEventsStore;
@@ -3874,13 +3874,7 @@ async fn lookup_member_with_session(
     Some((entry, session_id))
 }
 
-#[derive(Debug, Clone)]
-struct ConsoleRuntimeIdentityAlias {
-    identity: String,
-    runtime_member_id: String,
-    member: meerkat_mob::runtime::MobMemberListEntry,
-    session_id: Option<String>,
-}
+type ConsoleRuntimeIdentityAlias = crate::identity_control_target::LiveIdentityMember;
 
 /// Exact roster snapshot used to authorize one attributed event. Its fields
 /// are derived only after the event's runtime id and fence token match the
@@ -4108,68 +4102,6 @@ fn ambiguous_live_identity_alias_error(
     }
 }
 
-async fn lookup_member_runtime_alias_with_session(
-    handle: &MobHandle,
-    runtime_member_id: &str,
-) -> Option<ConsoleRuntimeIdentityAlias> {
-    let requested_member_id = crate::member_comms_id::mob_member_id(runtime_member_id);
-    let entries = handle.list_members_including_retiring().await;
-    let member = entries
-        .into_iter()
-        .find(|entry| entry.agent_identity == requested_member_id)?;
-    let runtime_member_id =
-        crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()).into_owned();
-    let identity = durable_identity_for_member(&member);
-    let session_id = handle
-        .resolve_bridge_session_id_observation(&member.agent_identity)
-        .await
-        .map(|s| s.to_string());
-    Some(ConsoleRuntimeIdentityAlias {
-        identity,
-        runtime_member_id,
-        member,
-        session_id,
-    })
-}
-
-async fn identity_runtime_alias(
-    identity_runtime: &crate::identity_first::IdentityRuntime,
-    requested_identity: &str,
-) -> Result<Option<(crate::identity_first::AgentIdentity, bool)>, String> {
-    let requested_identity = crate::member_comms_id::runtime_alias_str(requested_identity);
-    let requested_identity = requested_identity.as_ref();
-    if crate::member_comms_id::is_reserved_generated_alias(requested_identity) {
-        for status in identity_runtime.statuses().await {
-            if status
-                .agent_runtime_id
-                .as_ref()
-                .is_some_and(|runtime_id| runtime_id.as_str() == requested_identity)
-            {
-                return Ok(Some((status.identity, false)));
-            }
-        }
-        return Ok(None);
-    }
-    if let Ok(identity) = crate::identity_first::AgentIdentity::parse(requested_identity) {
-        match identity_runtime.status(&identity).await {
-            Ok(_) => return Ok(Some((identity, true))),
-            Err(crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {}
-            Err(err) => return Err(err.to_string()),
-        }
-    }
-
-    for status in identity_runtime.statuses().await {
-        if status
-            .agent_runtime_id
-            .as_ref()
-            .is_some_and(|runtime_id| runtime_id.as_str() == requested_identity)
-        {
-            return Ok(Some((status.identity, false)));
-        }
-    }
-    Ok(None)
-}
-
 async fn resolve_console_identity_control_target(
     handle: &MobHandle,
     identity_runtime: Option<&Arc<crate::identity_first::IdentityRuntime>>,
@@ -4183,176 +4115,55 @@ async fn resolve_console_identity_control_target(
     )>,
     JsonRpcError,
 > {
-    if let Some(identity_runtime) = identity_runtime {
-        match identity_runtime_alias(identity_runtime, requested_identity).await {
-            Ok(Some((identity, exact))) => {
-                let live = if exact {
-                    let registered_live = match identity_runtime.status(&identity).await {
-                        Ok(status) => match status.agent_runtime_id.as_ref() {
-                            Some(runtime_id) => {
-                                lookup_member_runtime_alias_with_session(
-                                    handle,
-                                    runtime_id.as_str(),
-                                )
-                                .await
-                            }
-                            None => None,
-                        },
-                        Err(_) => None,
-                    };
-                    if let Some(alias) = registered_live.as_ref()
-                        && !runtime_alias_visible_to_console(handle, visibility_policy, alias)
-                    {
-                        return Err(identity_hidden_by_policy_error(requested_identity));
-                    }
-                    if let Some(registered) = registered_live {
-                        return Ok(Some((identity, true, Some(registered))));
-                    }
-                    let requested_live_candidates =
-                        lookup_visible_member_alias_candidates_with_session(
-                            handle,
-                            visibility_policy,
-                            requested_identity,
-                        )
-                        .await;
-                    let requested_live = if requested_live_candidates.len() > 1 {
-                        return Err(ambiguous_live_identity_alias_error(
-                            requested_identity,
-                            &requested_live_candidates
-                                .iter()
-                                .map(|alias| alias.runtime_member_id.clone())
-                                .collect::<Vec<_>>(),
-                        ));
-                    } else {
-                        requested_live_candidates.into_iter().next()
-                    };
-                    match (registered_live, requested_live) {
-                        (Some(registered), Some(requested))
-                            if registered.runtime_member_id == requested.runtime_member_id =>
-                        {
-                            Some(registered)
-                        }
-                        (Some(registered), None) => Some(registered),
-                        (Some(_registered), Some(requested)) => Some(requested),
-                        (None, requested) => requested,
-                    }
-                } else {
-                    let registered_live =
-                        lookup_member_runtime_alias_with_session(handle, requested_identity).await;
-                    if let Some(alias) = registered_live.as_ref()
-                        && !runtime_alias_visible_to_console(handle, visibility_policy, alias)
-                    {
-                        return Err(identity_hidden_by_policy_error(requested_identity));
-                    }
-                    if let Some(registered) = registered_live {
-                        return Ok(Some((identity, true, Some(registered))));
-                    }
-                    let durable_live_candidates =
-                        lookup_visible_member_alias_candidates_with_session(
-                            handle,
-                            visibility_policy,
-                            identity.as_str(),
-                        )
-                        .await;
-                    let durable_live = if durable_live_candidates.len() > 1 {
-                        return Err(ambiguous_live_identity_alias_error(
-                            identity.as_str(),
-                            &durable_live_candidates
-                                .iter()
-                                .map(|alias| alias.runtime_member_id.clone())
-                                .collect::<Vec<_>>(),
-                        ));
-                    } else {
-                        durable_live_candidates.into_iter().next()
-                    };
-                    match (registered_live, durable_live) {
-                        (Some(registered), Some(durable))
-                            if registered.runtime_member_id == durable.runtime_member_id =>
-                        {
-                            Some(registered)
-                        }
-                        (Some(registered), None) => Some(registered),
-                        (Some(_registered), Some(durable)) => Some(durable),
-                        (None, durable) => durable,
-                    }
-                };
-                // The second target flag records durable ownership observed
-                // during resolution. A later UnknownIdentity therefore means
-                // a concurrent delete, not permission to fall back to the
-                // captured raw member alias.
-                return Ok(Some((identity, true, live)));
-            }
-            Ok(None) => {}
-            Err(err) => {
-                return Err(JsonRpcError {
-                    code: -32000,
-                    message: err,
-                    data: None,
-                });
-            }
-        }
-    }
-
-    let live_alias =
-        lookup_member_alias_with_session(handle, visibility_policy, requested_identity).await?;
-    let Some(alias) = live_alias else {
-        return Ok(None);
+    use crate::identity_control_target::{
+        IdentityControlResolution, IdentityControlResolutionError,
     };
-    if !runtime_alias_visible_to_console(handle, visibility_policy, &alias) {
-        return Err(identity_hidden_by_policy_error(requested_identity));
-    }
-    if let Some(identity_runtime) = identity_runtime
-        && let Some(bound_status) = identity_runtime
-            .statuses()
-            .await
-            .into_iter()
-            .find(|status| {
-                status
-                    .agent_runtime_id
-                    .as_ref()
-                    .is_some_and(|runtime_id| runtime_id.as_str() == alias.runtime_member_id)
-            })
-        && bound_status.identity.as_str() != alias.identity
-    {
-        return Err(JsonRpcError {
+
+    let resolution = crate::identity_control_target::resolve_identity_control_target(
+        handle,
+        identity_runtime.map(Arc::as_ref),
+        requested_identity,
+        |alias| runtime_alias_visible_to_console(handle, visibility_policy, alias),
+    )
+    .await
+    .map_err(|error| match error {
+        IdentityControlResolutionError::Hidden { requested_identity } => {
+            identity_hidden_by_policy_error(&requested_identity)
+        }
+        IdentityControlResolutionError::Ambiguous {
+            requested_identity,
+            candidates,
+        } => ambiguous_live_identity_alias_error(&requested_identity, &candidates),
+        IdentityControlResolutionError::StaleProjectedBinding {
+            identity,
+            runtime_member_id,
+            registered_identity,
+        } => JsonRpcError {
             code: -32000,
             message: format!(
-                "stale live identity alias: live console alias {} resolves to {}, but identity runtime binding belongs to {}",
-                alias.identity,
-                alias.runtime_member_id,
-                bound_status.identity.as_str(),
+                "stale live identity alias: live console alias {identity} resolves to {runtime_member_id}, but identity runtime binding belongs to {registered_identity}"
             ),
             data: Some(json!({
                 "kind": "stale_live_identity_alias",
-                "identity": alias.identity,
-                "runtime_member_id": alias.runtime_member_id,
-                "registered_identity": bound_status.identity.as_str(),
+                "identity": identity,
+                "runtime_member_id": runtime_member_id,
+                "registered_identity": registered_identity,
             })),
-        });
-    }
-    let identity = crate::identity_first::AgentIdentity::parse(&alias.identity).map_err(|err| {
-        JsonRpcError {
+        },
+        IdentityControlResolutionError::InvalidProjectedIdentity { detail, .. } => JsonRpcError {
             code: -32602,
-            message: format!("invalid identity: {err}"),
+            message: format!("invalid identity: {detail}"),
             data: None,
-        }
+        },
     })?;
-    let durable_live_candidates = lookup_visible_member_alias_candidates_with_session(
-        handle,
-        visibility_policy,
-        identity.as_str(),
-    )
-    .await;
-    if durable_live_candidates.len() > 1 {
-        return Err(ambiguous_live_identity_alias_error(
-            identity.as_str(),
-            &durable_live_candidates
-                .iter()
-                .map(|alias| alias.runtime_member_id.clone())
-                .collect::<Vec<_>>(),
-        ));
+
+    match resolution {
+        IdentityControlResolution::Resolved(target) => {
+            let target = *target;
+            Ok(Some((target.identity, target.was_registered, target.live)))
+        }
+        IdentityControlResolution::Unresolved { .. } => Ok(None),
     }
-    Ok(Some((identity, false, Some(alias))))
 }
 
 fn live_alias_matches_status_runtime(
@@ -7395,6 +7206,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     runtime_mode_override: runtime_mode,
                     backend,
                     binding: None,
+                    placement: None,
                 };
                 roster.upsert(spec);
                 return match crate::identity_first::restore_flow(
@@ -8146,6 +7958,19 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(opts) => opts,
                 Err(msg) => return invalid_params(response_id, msg),
             };
+            let Some(result_label) = request.params.get("result_label").and_then(Value::as_str)
+            else {
+                return invalid_params(response_id, "result_label required");
+            };
+            let result_label = result_label.to_string();
+            let Some(max_text_bytes_raw) =
+                request.params.get("max_text_bytes").and_then(Value::as_u64)
+            else {
+                return invalid_params(response_id, "max_text_bytes required");
+            };
+            let Ok(max_text_bytes) = usize::try_from(max_text_bytes_raw) else {
+                return invalid_params(response_id, "max_text_bytes exceeds platform bounds");
+            };
             let raw_reservation = match crate::member_comms_id::reserve_raw_member_target(
                 identity_runtime.as_ref(),
                 agent_identity,
@@ -8160,20 +7985,22 @@ async fn handle_console_runtime_rpc_with_visibility(
                 crate::member_comms_id::mob_member_id(raw_reservation.alias()),
                 task,
                 options,
+                result_label,
+                max_text_bytes,
             ))
             .await;
             drop(raw_reservation);
             match spawn_result {
                 Ok(result) => {
-                    // Meerkat 0.6 retires the helper before `spawn_helper`
-                    // returns, so a post-hoc `resolve_bridge_session_id`
-                    // call would come back `None`. We drop `session_id`
-                    // from the response rather than emit a misleading null.
+                    // meerkat 0.8.22's bounded helper contract returns the
+                    // exact turn carrier, so the session identity promised by
+                    // the old comment is now real and re-added.
                     response_value(
                         response_id,
                         Some(serde_json::json!({
-                            "output": result.output,
-                            "tokens_used": result.tokens_used,
+                            "output": result.helper.output,
+                            "tokens_used": result.helper.tokens_used,
+                            "session_id": result.turn.result().session_id().to_string(),
                         })),
                         None,
                     )
@@ -8223,6 +8050,19 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(opts) => opts,
                 Err(msg) => return invalid_params(response_id, msg),
             };
+            let Some(result_label) = request.params.get("result_label").and_then(Value::as_str)
+            else {
+                return invalid_params(response_id, "result_label required");
+            };
+            let result_label = result_label.to_string();
+            let Some(max_text_bytes_raw) =
+                request.params.get("max_text_bytes").and_then(Value::as_u64)
+            else {
+                return invalid_params(response_id, "max_text_bytes required");
+            };
+            let Ok(max_text_bytes) = usize::try_from(max_text_bytes_raw) else {
+                return invalid_params(response_id, "max_text_bytes exceeds platform bounds");
+            };
             let handle = runtime.handle();
             let source_member_id = crate::member_comms_id::mob_member_id(&source);
             let helper_alias = agent_identity.to_string();
@@ -8257,6 +8097,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                                 task.as_str(),
                                 fork_context,
                                 options,
+                                result_label,
+                                max_text_bytes,
                             )
                             .await
                             .map_err(|error| error.to_string());
@@ -8291,6 +8133,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                                     task.as_str(),
                                     fork_context,
                                     options,
+                                    result_label,
+                                    max_text_bytes,
                                 )
                                 .await
                                 .map_err(|error| error.to_string());
@@ -8302,14 +8146,15 @@ async fn handle_console_runtime_rpc_with_visibility(
             };
             match fork_result {
                 Ok(result) => {
-                    // See `spawn_helper`: meerkat 0.6 retires the forked
-                    // helper before returning, so session_id is omitted
-                    // rather than silently null.
+                    // See `spawn_helper`: the bounded contract's exact turn
+                    // carrier makes the session identity real, so it is
+                    // re-added per the old comment's promise.
                     response_value(
                         response_id,
                         Some(serde_json::json!({
-                            "output": result.output,
-                            "tokens_used": result.tokens_used,
+                            "output": result.helper.output,
+                            "tokens_used": result.helper.tokens_used,
+                            "session_id": result.turn.result().session_id().to_string(),
                         })),
                         None,
                     )
@@ -8477,7 +8322,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     | "mobkit/run_labels/delete",
             ) =>
         {
-            dispatch_label_method(
+            dispatch_console_label_method(
                 method,
                 metadata_table.as_deref(),
                 runtime.handle().mob_id().as_str(),
@@ -8535,11 +8380,12 @@ async fn reconcile_console_topology(
 
 /// Dispatch the six `mobkit/{mob,run}_labels/*` RPCs against a metadata table.
 ///
-/// Single entrypoint shared by every label method; the dispatch arms in
-/// `handle_console_runtime_rpc` simply delegate based on the matched method
-/// name. Mirrors the unified-runtime handlers in `rpc::mob_methods` — both
-/// transports project the same outcomes to the same wire shape.
-async fn dispatch_label_method(
+/// Console projection for the shared transport-neutral label domain.
+///
+/// Access checks and the absent-table branch remain console-owned. Scope,
+/// validation, and mutation come only from `runtime::dispatch_label_method`;
+/// this function preserves the console's historical response envelope.
+async fn dispatch_console_label_method(
     method: &str,
     metadata_table: Option<&RuntimeMetadataTable>,
     mob_id: &str,
@@ -8553,27 +8399,17 @@ async fn dispatch_label_method(
         );
     };
 
-    let scope = match method {
-        "mobkit/mob_labels/set" | "mobkit/mob_labels/get" | "mobkit/mob_labels/delete" => {
-            MetadataScope::Mob(mob_id.to_string())
-        }
-        _ => match crate::runtime::parse_run_id_param(params) {
-            Ok(run_id) => MetadataScope::Run(mob_id.to_string(), run_id.to_string()),
-            Err(message) => return invalid_params(response_id, message),
-        },
-    };
-
-    let outcome = match method {
-        "mobkit/mob_labels/set" | "mobkit/run_labels/set" => {
-            crate::runtime::dispatch_labels_set(table, scope, params).await
-        }
-        "mobkit/mob_labels/get" | "mobkit/run_labels/get" => {
-            crate::runtime::dispatch_labels_get(table, scope).await
-        }
-        "mobkit/mob_labels/delete" | "mobkit/run_labels/delete" => {
-            crate::runtime::dispatch_labels_delete(table, scope).await
-        }
-        _ => unreachable!("dispatch_label_method called with non-label method: {method}"),
+    let Some(outcome) = crate::runtime::dispatch_label_method(table, mob_id, method, params).await
+    else {
+        return response_value(
+            response_id,
+            None,
+            Some(JsonRpcError {
+                code: -32601,
+                message: "Method not found".to_string(),
+                data: None,
+            }),
+        );
     };
 
     match outcome {
@@ -10264,11 +10100,13 @@ mod tests {
         cursor_is_after, dedupe_console_members_by_identity, externalize_image_upload_placeholders,
         externalize_single_image_upload, handle_console_aggregator_rpc, handle_console_runtime_rpc,
         handle_console_runtime_rpc_with_visibility, member_id_matches_durable_identity,
-        project_console_members_from_handle, query_timeline_snapshot, timeline_query_from_http,
+        memory_panel_scope_action, project_console_members_from_handle, query_timeline_snapshot,
+        resolve_console_identity_control_target, timeline_query_from_http,
     };
     use crate::access::{
         ACTION_AGENT_MEMORY_DELETE, ACTION_AGENT_MEMORY_READ, ACTION_AGENT_MEMORY_WRITE,
-        ACTION_AGENT_SEND, ACTION_AGENT_VIEW, AccessController,
+        ACTION_AGENT_SEND, ACTION_AGENT_VIEW, ACTION_MOB_MEMORY_READ, ACTION_OPERATOR_MEMORY_READ,
+        AccessController,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
     use crate::console_aggregator::{
@@ -10287,10 +10125,13 @@ mod tests {
         ContinuityGeneration, ContinuityRecord, DurabilityPolicy, DurableAgentSpec, FencingToken,
         IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig, LeaseAcquireResult,
         LeaseGrant, LocalContinuityStore, LocalLeaseProvider, ManagedPeerEdge,
-        MarkdownAgentMemoryStore, ResumeSessionOutcome, SessionBridge, SessionSnapshot,
+        ResumeSessionOutcome, SessionBridge, SessionSnapshot,
     };
+    use crate::memory::SqliteAgentMemoryStore;
     use crate::mob_handle_runtime::{MobRuntime, model_capabilities_for_role};
-    use crate::rpc::{JSONRPC_VERSION, JsonRpcRequest};
+    use crate::rpc::{
+        JSONRPC_VERSION, JsonRpcRequest, resolve_rpc_identity_control_target_with_handle,
+    };
     use crate::runtime::{ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember};
     use crate::unified_runtime::ConsoleEventStore;
     use crate::{MobBootstrapOptions, MobBootstrapSpec};
@@ -10305,6 +10146,47 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    /// §10.3 fail-closed panel guard. Operator-scope rows are cross-mob
+    /// personal facts, so they need their OWN grant: folding the operator
+    /// arm into the unscoped `agent.memory.read` action would silently
+    /// widen console read authority rather than remove an inert branch.
+    /// Pinned per scope kind so a fold shows up as a test failure, not as a
+    /// quiet permission grant.
+    #[test]
+    fn memory_panel_read_action_is_distinct_per_scope_kind() {
+        use crate::memory::records::MemoryScope;
+
+        let identity = MemoryScope::Identity {
+            realm: "family".to_string(),
+            identity: "identity:luka".to_string(),
+        };
+        let mob = MemoryScope::Mob {
+            realm: "family".to_string(),
+            mob: "mob:home".to_string(),
+        };
+        let operator = MemoryScope::Operator {
+            realm: "family".to_string(),
+            operator: "op:luka".to_string(),
+        };
+        let realm = MemoryScope::Realm {
+            realm: "family".to_string(),
+        };
+
+        assert_eq!(
+            memory_panel_scope_action(&identity),
+            ACTION_AGENT_MEMORY_READ
+        );
+        assert_eq!(memory_panel_scope_action(&mob), ACTION_MOB_MEMORY_READ);
+        assert_eq!(
+            memory_panel_scope_action(&operator),
+            ACTION_OPERATOR_MEMORY_READ,
+            "operator rows must not ride the unscoped agent.memory.read grant"
+        );
+        // Realm rows deliberately DO ride the unscoped grant (§10.3).
+        assert_eq!(memory_panel_scope_action(&realm), ACTION_AGENT_MEMORY_READ);
+        assert_ne!(ACTION_OPERATOR_MEMORY_READ, ACTION_AGENT_MEMORY_READ);
+    }
 
     struct BlockingIdentityBridge {
         deliver_calls: Arc<AtomicUsize>,
@@ -10447,6 +10329,81 @@ comms = true
         )
         .await?;
         Ok((temp_dir, runtime))
+    }
+
+    async fn spawn_identity_control_test_member(
+        runtime: &MobRuntime,
+        runtime_member_id: &str,
+        projected_identity: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        runtime
+            .handle()
+            .spawn_spec(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    crate::member_comms_id::mob_member_id_str(runtime_member_id).into_owned(),
+                    Some("Identity control resolver fixture.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(BTreeMap::from([(
+                    "agent_identity".to_string(),
+                    projected_identity.to_string(),
+                )])),
+            )
+            .await?;
+        Ok(())
+    }
+
+    fn empty_identity_control_test_runtime(
+        runtime_instance_id: &str,
+    ) -> Result<Arc<IdentityRuntime>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: runtime_instance_id.to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        })))
+    }
+
+    async fn register_identity_control_test_binding(
+        identity_runtime: &IdentityRuntime,
+        identity: &str,
+        runtime_member_id: &str,
+        session_id: meerkat_core::types::SessionId,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let identity = AgentIdentity::parse(identity)?;
+        identity_runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from("worker"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                    placement: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(ContinuityRecord {
+                    identity,
+                    agent_runtime_id: AgentRuntimeId::parse(runtime_member_id)?,
+                    session_id,
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(0),
+                }),
+                None,
+            )
+            .await;
+        Ok(())
     }
 
     fn rpc_request(method: &str) -> JsonRpcRequest {
@@ -10713,6 +10670,196 @@ comms = true
             json!("gating decision failed")
         );
         assert!(!response.to_string().contains("secret backend DSN"));
+    }
+
+    #[tokio::test]
+    async fn identity_control_resolver_adapters_have_success_parity()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("identity-control-adapter-parity").await?;
+        let runtime_member_id = "rt:review:parity:0";
+        let durable_identity = "review:parity";
+        spawn_identity_control_test_member(&runtime, runtime_member_id, durable_identity).await?;
+        let handle = runtime.handle();
+        let session_id = handle
+            .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
+                runtime_member_id,
+            ))
+            .await
+            .expect("spawned member has a bridge session");
+        let identity_runtime =
+            empty_identity_control_test_runtime("identity-control-adapter-parity")?;
+        register_identity_control_test_binding(
+            &identity_runtime,
+            durable_identity,
+            runtime_member_id,
+            session_id,
+        )
+        .await?;
+        let visibility = AllowAllConsoleVisibilityPolicy;
+
+        for requested_identity in [durable_identity, runtime_member_id] {
+            let rpc = resolve_rpc_identity_control_target_with_handle(
+                &handle,
+                &identity_runtime,
+                requested_identity,
+            )
+            .await?;
+            let console = resolve_console_identity_control_target(
+                &handle,
+                Some(&identity_runtime),
+                &visibility,
+                requested_identity,
+            )
+            .await
+            .expect("console adapter resolves the registered identity")
+            .expect("registered identity resolves in console adapter");
+
+            assert_eq!(rpc.identity.as_str(), console.0.as_str());
+            assert_eq!(rpc.was_registered, console.1);
+            assert_eq!(
+                rpc.live
+                    .as_ref()
+                    .map(|live| live.runtime_member_id.as_str()),
+                console
+                    .2
+                    .as_ref()
+                    .map(|live| live.runtime_member_id.as_str())
+            );
+            assert_eq!(
+                rpc.live
+                    .as_ref()
+                    .and_then(|live| live.session_id.as_deref()),
+                console
+                    .2
+                    .as_ref()
+                    .and_then(|live| live.session_id.as_deref())
+            );
+        }
+
+        let _ = handle.stop().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn identity_control_resolver_adapters_preserve_ambiguity_stale_and_visibility_goldens()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_ambiguous_temp_dir, ambiguous_runtime) =
+            build_empty_console_test_runtime("identity-control-ambiguous-golden").await?;
+        for runtime_member_id in ["rt:review:golden:0", "rt:review:golden:1"] {
+            spawn_identity_control_test_member(
+                &ambiguous_runtime,
+                runtime_member_id,
+                "review:golden",
+            )
+            .await?;
+        }
+        let ambiguous_handle = ambiguous_runtime.handle();
+        let ambiguous_identity_runtime =
+            empty_identity_control_test_runtime("identity-control-ambiguous-golden")?;
+
+        let rpc_ambiguous = resolve_rpc_identity_control_target_with_handle(
+            &ambiguous_handle,
+            &ambiguous_identity_runtime,
+            "review:golden",
+        )
+        .await
+        .expect_err("stdio adapter must fail closed on a visible duplicate");
+        assert_eq!(
+            rpc_ambiguous,
+            "ambiguous live identity alias review:golden: candidates [rt:review:golden:0, rt:review:golden:1]"
+        );
+        let console_ambiguous = resolve_console_identity_control_target(
+            &ambiguous_handle,
+            Some(&ambiguous_identity_runtime),
+            &AllowAllConsoleVisibilityPolicy,
+            "review:golden",
+        )
+        .await
+        .expect_err("console adapter must fail closed on the same visible duplicate");
+        assert_eq!(console_ambiguous.code, -32602);
+        assert_eq!(
+            console_ambiguous.data,
+            Some(json!({
+                "kind": "ambiguous_live_identity_alias",
+                "identity": "review:golden",
+                "candidates": ["rt:review:golden:0", "rt:review:golden:1"],
+            }))
+        );
+
+        let visibility = HideMemberPolicy("rt:review:golden:0");
+        let visible_target = resolve_console_identity_control_target(
+            &ambiguous_handle,
+            Some(&ambiguous_identity_runtime),
+            &visibility,
+            "review:golden",
+        )
+        .await
+        .expect("console adapter applies caller visibility")
+        .expect("caller policy removes the hidden candidate before ambiguity");
+        assert_eq!(
+            visible_target
+                .2
+                .as_ref()
+                .map(|live| live.runtime_member_id.as_str()),
+            Some("rt:review:golden:1")
+        );
+        let _ = ambiguous_handle.stop().await;
+
+        let (_stale_temp_dir, stale_runtime) =
+            build_empty_console_test_runtime("identity-control-stale-golden").await?;
+        let stale_runtime_id = "rt:review:stale-golden:0";
+        spawn_identity_control_test_member(&stale_runtime, stale_runtime_id, "other:stale-golden")
+            .await?;
+        let stale_handle = stale_runtime.handle();
+        let stale_session_id = stale_handle
+            .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
+                stale_runtime_id,
+            ))
+            .await
+            .expect("spawned member has a bridge session");
+        let stale_identity_runtime =
+            empty_identity_control_test_runtime("identity-control-stale-golden")?;
+        register_identity_control_test_binding(
+            &stale_identity_runtime,
+            "review:stale-golden",
+            stale_runtime_id,
+            stale_session_id,
+        )
+        .await?;
+
+        let rpc_stale = resolve_rpc_identity_control_target_with_handle(
+            &stale_handle,
+            &stale_identity_runtime,
+            "other:stale-golden",
+        )
+        .await
+        .expect_err("stdio adapter must reject a member bound to another durable identity");
+        assert_eq!(
+            rpc_stale,
+            "stale live identity alias: live console alias other:stale-golden resolves to rt:review:stale-golden:0, but identity runtime binding belongs to review:stale-golden"
+        );
+        let console_stale = resolve_console_identity_control_target(
+            &stale_handle,
+            Some(&stale_identity_runtime),
+            &AllowAllConsoleVisibilityPolicy,
+            "other:stale-golden",
+        )
+        .await
+        .expect_err("console adapter must reject the same stale binding");
+        assert_eq!(console_stale.code, -32000);
+        assert_eq!(
+            console_stale.data,
+            Some(json!({
+                "kind": "stale_live_identity_alias",
+                "identity": "other:stale-golden",
+                "runtime_member_id": stale_runtime_id,
+                "registered_identity": "review:stale-golden",
+            }))
+        );
+
+        let _ = stale_handle.stop().await;
+        Ok(())
     }
 
     #[tokio::test]
@@ -11067,6 +11214,7 @@ comms = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -11182,6 +11330,7 @@ comms = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -11311,6 +11460,7 @@ comms = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -11422,6 +11572,7 @@ comms = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -11765,6 +11916,7 @@ comms = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -11942,6 +12094,7 @@ comms = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(ContinuityRecord {
@@ -12074,6 +12227,7 @@ comms = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -12218,7 +12372,7 @@ comms = true
             default_timeout: None,
         }));
         let memory_dir = tempfile::tempdir()?;
-        let memory_store = Arc::new(MarkdownAgentMemoryStore::open(memory_dir.path())?);
+        let memory_store = Arc::new(SqliteAgentMemoryStore::open(memory_dir.path())?);
         identity_runtime
             .set_agent_memory(Some(AgentMemoryRuntimeInjector::new(
                 memory_store,
@@ -12325,6 +12479,7 @@ comms = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 None,
@@ -12332,7 +12487,7 @@ comms = true
             )
             .await;
         let memory_dir = tempfile::tempdir()?;
-        let memory_store = Arc::new(MarkdownAgentMemoryStore::open(memory_dir.path())?);
+        let memory_store = Arc::new(SqliteAgentMemoryStore::open(memory_dir.path())?);
         identity_runtime
             .set_agent_memory(Some(AgentMemoryRuntimeInjector::new(
                 memory_store,
@@ -12953,6 +13108,7 @@ comms = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -13190,6 +13346,7 @@ comms = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(ContinuityRecord {
@@ -13295,6 +13452,7 @@ comms = true
                         runtime_mode_override: None,
                         backend: None,
                         binding: None,
+                        placement: None,
                     },
                     IdentityLifecycleState::Active,
                     Some(record),
@@ -13371,6 +13529,7 @@ comms = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record.clone()),
@@ -13542,6 +13701,7 @@ comms = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record.clone()),
@@ -13634,6 +13794,7 @@ comms = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -13715,6 +13876,7 @@ comms = true
                     runtime_mode_override: None,
                     backend: None,
                     binding: None,
+                    placement: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),

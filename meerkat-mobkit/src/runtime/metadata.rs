@@ -128,6 +128,7 @@ pub fn labels_to_json_value(labels: &BTreeMap<String, String>) -> Value {
 ///
 /// Both transports (the unified-runtime JSON-RPC and the HTTP-console JSON-RPC)
 /// project this into their own response envelope.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LabelRpcResult {
     /// `set` / `delete`: returns `{"accepted": true}`.
     Accepted,
@@ -135,6 +136,48 @@ pub enum LabelRpcResult {
     Labels(BTreeMap<String, String>),
     /// Validation error — `Invalid params: <message>`.
     InvalidParams(String),
+}
+
+/// Dispatch one mob/run label method through the transport-neutral domain.
+///
+/// HTTP and stdio deliberately keep their own access checks, notification
+/// behavior, error-message decoration, and JSON envelope serialization. This
+/// function is the single authority for the six methods' scope selection,
+/// parameter validation, and metadata mutation. `None` means `method` does
+/// not belong to the labels domain and must be handled by the caller's normal
+/// method-not-found path.
+pub async fn dispatch_label_method(
+    table: &RuntimeMetadataTable,
+    mob_id: &str,
+    method: &str,
+    params: &Value,
+) -> Option<LabelRpcResult> {
+    let scope = match method {
+        "mobkit/mob_labels/set" | "mobkit/mob_labels/get" | "mobkit/mob_labels/delete" => {
+            MetadataScope::Mob(mob_id.to_string())
+        }
+        "mobkit/run_labels/set" | "mobkit/run_labels/get" | "mobkit/run_labels/delete" => {
+            match parse_run_id_param(params) {
+                Ok(run_id) => MetadataScope::Run(mob_id.to_string(), run_id.to_string()),
+                Err(message) => return Some(LabelRpcResult::InvalidParams(message)),
+            }
+        }
+        _ => return None,
+    };
+
+    let outcome = match method {
+        "mobkit/mob_labels/set" | "mobkit/run_labels/set" => {
+            dispatch_labels_set(table, scope, params).await
+        }
+        "mobkit/mob_labels/get" | "mobkit/run_labels/get" => {
+            dispatch_labels_get(table, scope).await
+        }
+        "mobkit/mob_labels/delete" | "mobkit/run_labels/delete" => {
+            dispatch_labels_delete(table, scope).await
+        }
+        _ => return None,
+    };
+    Some(outcome)
 }
 
 /// Replace the label set for `scope`, parsing `labels` from RPC params.

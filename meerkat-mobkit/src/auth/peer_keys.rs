@@ -41,6 +41,7 @@ pub const KEY_FILE_NAME: &str = "peer_key.ed25519";
 #[derive(Clone)]
 pub struct GatewayPeerKeys {
     inner: Arc<GatewayPeerKeysInner>,
+    state_root: Option<Arc<PathBuf>>,
 }
 
 struct GatewayPeerKeysInner {
@@ -58,15 +59,32 @@ impl GatewayPeerKeys {
     pub fn load_or_create(state_dir: &Path) -> Result<Self, GatewayPeerKeyError> {
         let key_path = state_dir.join(KEY_FILE_NAME);
         if key_path.exists() {
-            return Self::load(&key_path);
+            let mut keys = Self::load(&key_path)?;
+            keys.state_root = Some(Arc::new(state_dir.to_path_buf()));
+            return Ok(keys);
         }
+        #[cfg(unix)]
+        let state_root_existed = state_dir.exists();
         fs::create_dir_all(state_dir).map_err(|source| GatewayPeerKeyError::Io {
             path: state_dir.to_path_buf(),
             source,
         })?;
+        #[cfg(unix)]
+        if !state_root_existed {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(state_dir, fs::Permissions::from_mode(0o700)).map_err(
+                |source| GatewayPeerKeyError::Io {
+                    path: state_dir.to_path_buf(),
+                    source,
+                },
+            )?;
+        }
         let keys = Self::ephemeral();
         keys.persist_to(&key_path)?;
-        Ok(keys)
+        Ok(Self {
+            inner: keys.inner,
+            state_root: Some(Arc::new(state_dir.to_path_buf())),
+        })
     }
 
     /// Mint a fresh keypair held in memory only.
@@ -81,6 +99,7 @@ impl GatewayPeerKeys {
         let public = signing.verifying_key();
         Self {
             inner: Arc::new(GatewayPeerKeysInner { signing, public }),
+            state_root: None,
         }
     }
 
@@ -101,6 +120,7 @@ impl GatewayPeerKeys {
         let public = signing.verifying_key();
         Ok(Self {
             inner: Arc::new(GatewayPeerKeysInner { signing, public }),
+            state_root: None,
         })
     }
 
@@ -163,6 +183,13 @@ impl GatewayPeerKeys {
     /// `mobkit/peer_pubkey` RPC and bootstrap-by-fetch flows.
     pub fn pubkey_b64(&self) -> String {
         BASE64.encode(self.inner.public.to_bytes())
+    }
+
+    /// Durable state root that owns this key, when it was loaded or created
+    /// through [`Self::load_or_create`]. Runtime-host pairings use the same
+    /// root so endpoint pins and the controller identity survive together.
+    pub fn state_root(&self) -> Option<&Path> {
+        self.state_root.as_deref().map(PathBuf::as_path)
     }
 }
 
@@ -273,11 +300,22 @@ mod tests {
     fn load_or_create_persists_and_round_trips() {
         let dir = tempdir().expect("tempdir");
         let first = GatewayPeerKeys::load_or_create(dir.path()).expect("create");
+        assert_eq!(
+            first.state_root(),
+            Some(dir.path()),
+            "the key must retain the exact durable root that owns its pairing state"
+        );
         let pubkey = first.pubkey_bytes();
         // Second call returns the persisted key, not a fresh one.
         let second = GatewayPeerKeys::load_or_create(dir.path()).expect("load");
         assert_eq!(second.pubkey_bytes(), pubkey, "key must persist");
+        assert_eq!(second.state_root(), Some(dir.path()));
         assert!(dir.path().join(KEY_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn ephemeral_keys_have_no_durable_state_provenance() {
+        assert_eq!(GatewayPeerKeys::ephemeral().state_root(), None);
     }
 
     #[test]
@@ -305,6 +343,22 @@ mod tests {
             mode, 0o600,
             "peer secret key file must be 0o600, got {mode:o}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn newly_created_state_root_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempdir().expect("tempdir");
+        let state_root = parent.path().join("gateway-state");
+        GatewayPeerKeys::load_or_create(&state_root).expect("create state root");
+        let mode = std::fs::metadata(&state_root)
+            .expect("state-root metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "new gateway state root must be owner-only");
     }
 
     #[test]

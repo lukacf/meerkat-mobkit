@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::mob_handle_runtime::MobRuntimeError;
 use crate::runtime::{
-    NormalizationError, RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleValidationError,
-    SubscribeError,
+    NormalizationError, RuntimeRouteMutationError, RuntimeShutdownReport, SubscribeError,
 };
 
 use super::edge_types::{DesiredPeerEdge, EdgeReconcileFailure};
@@ -147,9 +146,7 @@ impl std::error::Error for UnifiedRuntimeBuilderError {}
 pub enum UnifiedRuntimeError {
     Normalize(NormalizationError),
     Subscribe(SubscribeError),
-    ScheduleValidation(ScheduleValidationError),
     RuntimeShuttingDown,
-    ScheduleDispatchThreadPanicked,
 }
 
 impl Display for UnifiedRuntimeError {
@@ -157,21 +154,7 @@ impl Display for UnifiedRuntimeError {
         match self {
             Self::Normalize(err) => write!(f, "failed to normalize unified event: {err:?}"),
             Self::Subscribe(err) => write!(f, "failed to subscribe to unified events: {err:?}"),
-            Self::ScheduleValidation(err) => {
-                write!(f, "failed to dispatch schedule tick: {err:?}")
-            }
-            Self::RuntimeShuttingDown => {
-                write!(
-                    f,
-                    "failed to dispatch schedule tick: unified runtime is shutting down"
-                )
-            }
-            Self::ScheduleDispatchThreadPanicked => {
-                write!(
-                    f,
-                    "failed to dispatch schedule tick: dispatch thread panicked"
-                )
-            }
+            Self::RuntimeShuttingDown => write!(f, "unified runtime is shutting down"),
         }
     }
 }
@@ -187,12 +170,6 @@ impl From<NormalizationError> for UnifiedRuntimeError {
 impl From<SubscribeError> for UnifiedRuntimeError {
     fn from(value: SubscribeError) -> Self {
         Self::Subscribe(value)
-    }
-}
-
-impl From<ScheduleValidationError> for UnifiedRuntimeError {
-    fn from(value: ScheduleValidationError) -> Self {
-        Self::ScheduleValidation(value)
     }
 }
 

@@ -46,7 +46,7 @@ def main() -> int:
             "jsonrpc": "2.0",
             "id": "py-status",
             "result": {
-                "contract_version": "0.4.0",
+                "contract_version": "0.5.0",
                 "running": True,
                 "loaded_modules": ["routing"],
             },

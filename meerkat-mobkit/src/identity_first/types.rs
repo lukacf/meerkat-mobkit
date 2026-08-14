@@ -428,6 +428,11 @@ pub enum ContinuityFailureKind {
     /// a transcript-continuity rejection). The identity → session binding is
     /// intact; the identity is degraded until a reconcile retry succeeds.
     ResumeRejected,
+    /// This identity's concrete embodiment transaction failed after the
+    /// fleet-level roster, topology, and continuity gates succeeded. The
+    /// failure is scoped to one member: eager restore parks that identity as
+    /// Broken and continues materializing the rest of the roster.
+    EmbodimentFailed,
     /// A terminal typed verdict stands against this identity: the heal
     /// authority proved the durable session head unrecoverable (proof inputs
     /// absent), or the resume precondition is provably terminal (the typed
@@ -775,6 +780,10 @@ pub struct DurableAgentSpec {
     pub backend: Option<meerkat_mob::MobBackendKind>,
     #[serde(default)]
     pub binding: Option<meerkat_contracts::WireRuntimeBinding>,
+    /// Exact Meerkat host placement. Once present it must propagate unchanged
+    /// and may never degrade to local because the selected host is unavailable.
+    #[serde(default)]
+    pub placement: Option<meerkat_contracts::WireHostRef>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,6 +1115,57 @@ impl PartialEq for LocalExternalToolOverlay {
 
 impl Eq for LocalExternalToolOverlay {}
 
+/// In-process overlay carrying a host-supplied `CompactionCurator` for an
+/// identity's agent build.
+///
+/// Same shape and reasons as [`LocalExternalToolOverlay`]: a trait object is
+/// not `Debug`/`PartialEq`/`Serialize`, and a curator is host code that
+/// cannot cross a wire boundary, so the slot is `#[serde(default, skip)]` on
+/// [`AgentBuildDraft`] and compares by presence only.
+///
+/// The ordinary identity-first lowering copies this overlay into Meerkat's
+/// in-process `SpawnMemberSpec` carrier for both fresh and resumed builds.
+#[derive(Clone, Default)]
+pub struct CompactionCuratorOverlay {
+    curator: Option<Arc<dyn meerkat_core::compact::CompactionCurator>>,
+}
+
+impl CompactionCuratorOverlay {
+    pub fn new(curator: Arc<dyn meerkat_core::compact::CompactionCurator>) -> Self {
+        Self {
+            curator: Some(curator),
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self { curator: None }
+    }
+
+    pub fn curator(&self) -> Option<Arc<dyn meerkat_core::compact::CompactionCurator>> {
+        self.curator.clone()
+    }
+
+    pub fn is_some(&self) -> bool {
+        self.curator.is_some()
+    }
+}
+
+impl std::fmt::Debug for CompactionCuratorOverlay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompactionCuratorOverlay")
+            .field("curator", &self.curator.is_some())
+            .finish()
+    }
+}
+
+impl PartialEq for CompactionCuratorOverlay {
+    fn eq(&self, other: &Self) -> bool {
+        self.curator.is_some() == other.curator.is_some()
+    }
+}
+
+impl Eq for CompactionCuratorOverlay {}
+
 /// Mutable draft that `AgentCustomizer` modifies.
 ///
 /// `external_tools` remains the serializable SDK/gateway declaration surface.
@@ -1141,6 +1201,21 @@ pub struct AgentBuildDraft {
     /// wire payload written before this field existed still deserializes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_params: Option<meerkat_core::lifecycle::run_primitive::ProviderParamsOverride>,
+    /// Host-supplied compaction curator for this identity.
+    ///
+    /// The ordinary identity-first fresh and resume paths lower this into the
+    /// matching in-process Meerkat build carrier. Serde-skipped like
+    /// `local_external_tools`, so no persisted draft or wire payload changes.
+    ///
+    /// IN-PROCESS ONLY, and that is a real limit, not a formality: the gateway
+    /// customizer round-trips the whole draft through
+    /// `serde_json::to_value` / `from_value` (see `provider_params` above), so
+    /// a curator set on the far side of that hop is dropped, exactly like
+    /// `local_external_tools`. Making this usable from a gateway or SDK
+    /// customizer would require a different executable-host registration
+    /// contract; this field does not invent one.
+    #[serde(default, skip)]
+    pub compaction_curator: CompactionCuratorOverlay,
 }
 
 // ---------------------------------------------------------------------------

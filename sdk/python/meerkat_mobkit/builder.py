@@ -26,7 +26,6 @@ class MobKitBuilderConfig:
     access_config_path: str | None = None
     workgraph_enabled: bool | str | None = None
     routing_config_path: str | None = None
-    scheduling_files: list[str] = field(default_factory=list)
     host_runnables: list[str] = field(default_factory=list)
     memory_config: Any | None = None
     agent_memory_config: Any | None = None
@@ -56,7 +55,6 @@ class MobKitBuilder:
             .mob("config/mob.toml")
             .session_service(builder, store)
             .discovery(discover_fn)
-            .scheduling("schedules/a.toml", "schedules/b.toml")
             .build()
         )
     """
@@ -209,11 +207,6 @@ class MobKitBuilder:
         self._config.routing_config_path = config_path
         return self
 
-    def scheduling(self, *schedule_files: str) -> MobKitBuilder:
-        """Set schedule config files (accepts multiple positional args)."""
-        self._config.scheduling_files = list(schedule_files)
-        return self
-
     def host_runnables(self, names: Sequence[str]) -> MobKitBuilder:
         """Register named deterministic (non-LLM) schedule targets.
 
@@ -246,6 +239,24 @@ class MobKitBuilder:
         With no arguments this enables the gateway default. Keyword arguments
         use Python names and serialize to the Rust gateway's snake_case wire
         keys, for example ``agent_memory(selection="contextual", max_entries=3)``.
+
+        ``store`` accepts only ``"sqlite"`` (the default). ``store="markdown"``
+        is retired as a live store: the gateway refuses it at init (-32014) and
+        names the migration, which is one lossless step - point the default
+        sqlite store at the SAME agent-memory directory and it imports every
+        un-imported ``.md`` file on first open, preserving ids, tags and
+        timestamps and renaming each source ``.md.imported``. Tag CONTENT is
+        preserved; the store collates tags, so order is not.
+
+        ``selector`` is RETIRED. The LLM recall-selector stage was removed
+        unactivated, so recall is the deterministic lexical path on every turn.
+        The gateway accepts only absence or ``"off"`` for migration
+        compatibility and refuses every activation-shaped value.
+
+        ``hygienist`` is PARKED. Only ``False`` or a mapping with
+        ``enabled=False`` is accepted for migration compatibility. The
+        internal Rust engine remains available for validation, but the public
+        SDK/gateway path has no supported activation or provider proof.
         """
         if kwargs:
             if config is not True:
@@ -331,6 +342,10 @@ class MobKitBuilder:
             wire["defang_inbound"] = config["defang_inbound"]
         elif "defangInbound" in config:
             wire["defang_inbound"] = config["defangInbound"]
+        # Forwarded verbatim on purpose. `store="markdown"` is retired and the
+        # gateway refuses it with a typed migration verdict; re-deciding that
+        # here would be a second definition of one policy, and this SDK would
+        # be the copy that goes stale.
         if "store" in config:
             wire["store"] = config["store"]
         if "llm_writes" in config:
@@ -346,6 +361,10 @@ class MobKitBuilder:
         elif "contentTrust" in config:
             wire["content_trust"] = config["contentTrust"]
         if "selector" in config:
+            if config["selector"] != "off":
+                raise ValueError(
+                    "agent_memory selector is RETIRED; remove it or set selector='off'"
+                )
             wire["selector"] = config["selector"]
         if "operator_scope" in config:
             wire["operator_scope"] = config["operator_scope"]
@@ -362,6 +381,9 @@ class MobKitBuilder:
                         "runsPerHour",
                         "min_interactions",
                         "minInteractions",
+                        "max_output_tokens",
+                        "maxOutputTokens",
+                        "minInteractions",
                         "model",
                     }
                 )
@@ -373,6 +395,10 @@ class MobKitBuilder:
                 distiller_wire: dict[str, Any] = {}
                 if "enabled" in distiller:
                     distiller_wire["enabled"] = distiller["enabled"]
+                if "max_output_tokens" in distiller:
+                    distiller_wire["max_output_tokens"] = distiller["max_output_tokens"]
+                elif "maxOutputTokens" in distiller:
+                    distiller_wire["max_output_tokens"] = distiller["maxOutputTokens"]
                 if "runs_per_hour" in distiller:
                     distiller_wire["runs_per_hour"] = distiller["runs_per_hour"]
                 elif "runsPerHour" in distiller:
@@ -401,6 +427,8 @@ class MobKitBuilder:
                         "runsPerDay",
                         "min_signals",
                         "minSignals",
+                        "max_output_tokens",
+                        "maxOutputTokens",
                     }
                 )
                 if unknown:
@@ -423,6 +451,14 @@ class MobKitBuilder:
                     steward_wire["runs_per_day"] = steward["runs_per_day"]
                 elif "runsPerDay" in steward:
                     steward_wire["runs_per_day"] = steward["runsPerDay"]
+                # Exposed because a hard-wired ceiling left a production
+                # reasoning-model steward committing zero ops for four days
+                # with no reachable knob. A field the SDK will not forward is
+                # unreachable no matter what Rust does.
+                if "max_output_tokens" in steward:
+                    steward_wire["max_output_tokens"] = steward["max_output_tokens"]
+                elif "maxOutputTokens" in steward:
+                    steward_wire["max_output_tokens"] = steward["maxOutputTokens"]
                 if "min_signals" in steward:
                     steward_wire["min_signals"] = steward["min_signals"]
                 elif "minSignals" in steward:
@@ -432,9 +468,24 @@ class MobKitBuilder:
                 wire["steward"] = steward
         hygienist = config.get("hygienist")
         if hygienist is not None:
+            if hygienist is not False and not (
+                isinstance(hygienist, dict) and hygienist.get("enabled") is False
+            ):
+                raise ValueError(
+                    "agent_memory hygienist is PARKED and cannot be enabled; "
+                    "remove it, use False, or use {'enabled': False}"
+                )
             if isinstance(hygienist, dict):
                 unknown = sorted(
-                    set(hygienist) - {"enabled", "runs_per_day", "runsPerDay", "model"}
+                    set(hygienist)
+                    - {
+                        "enabled",
+                        "runs_per_day",
+                        "runsPerDay",
+                        "model",
+                        "max_output_tokens",
+                        "maxOutputTokens",
+                    }
                 )
                 if unknown:
                     raise ValueError(
@@ -444,6 +495,10 @@ class MobKitBuilder:
                 hygienist_wire: dict[str, Any] = {}
                 if "enabled" in hygienist:
                     hygienist_wire["enabled"] = hygienist["enabled"]
+                if "max_output_tokens" in hygienist:
+                    hygienist_wire["max_output_tokens"] = hygienist["max_output_tokens"]
+                elif "maxOutputTokens" in hygienist:
+                    hygienist_wire["max_output_tokens"] = hygienist["maxOutputTokens"]
                 if "runs_per_day" in hygienist:
                     hygienist_wire["runs_per_day"] = hygienist["runs_per_day"]
                 elif "runsPerDay" in hygienist:
@@ -600,9 +655,7 @@ class MobKitBuilder:
         Convention (relative to cwd):
         - config/gating.toml → gating config
         - config/access.toml → ABAC access control config
-        - config/defaults/schedules.toml → default schedules
         - deployment/routing.toml → routing config
-        - deployment/schedules.toml → deployment schedule overrides
 
         Only checks when the corresponding builder method was NOT called.
         Explicit paths always win. Files that don't exist are skipped.
@@ -621,17 +674,6 @@ class MobKitBuilder:
             candidate = Path("deployment/routing.toml")
             if candidate.is_file():
                 self._config.routing_config_path = str(candidate)
-
-        if not self._config.scheduling_files:
-            files: list[str] = []
-            default = Path("config/defaults/schedules.toml")
-            if default.is_file():
-                files.append(str(default))
-            override = Path("deployment/schedules.toml")
-            if override.is_file():
-                files.append(str(override))
-            if files:
-                self._config.scheduling_files = files
 
 
 class MobKit:

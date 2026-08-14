@@ -736,6 +736,7 @@ comms = true
             runtime_mode_override: None,
             backend: None,
             binding: None,
+            placement: None,
         },
     ]));
     restore_flow(&irt, &roster.snapshot(), None, None)

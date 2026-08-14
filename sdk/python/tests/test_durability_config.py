@@ -173,7 +173,7 @@ class TestStorageCensusModel:
 
     def test_status_result_carries_storage(self):
         raw = {
-            "contract_version": "0.4.0",
+            "contract_version": "0.5.0",
             "running": True,
             "loaded_modules": [],
             "storage": self.WIRE,
@@ -184,13 +184,13 @@ class TestStorageCensusModel:
 
     def test_status_result_without_storage_is_none(self):
         status = StatusResult.from_dict(
-            {"contract_version": "0.4.0", "running": True, "loaded_modules": []}
+            {"contract_version": "0.5.0", "running": True, "loaded_modules": []}
         )
         assert status.storage is None
 
     def test_capabilities_result_carries_storage(self):
         raw = {
-            "contract_version": "0.4.0",
+            "contract_version": "0.5.0",
             "methods": ["mobkit/status"],
             "loaded_modules": [],
             "storage": self.WIRE,

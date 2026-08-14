@@ -18,8 +18,6 @@ EXPECTED_CAPABILITY_METHODS = [
     "mobkit/capabilities",
     "mobkit/reconcile",
     "mobkit/spawn_member",
-    "mobkit/scheduling/evaluate",
-    "mobkit/scheduling/dispatch",
     "mobkit/routing/resolve",
     "mobkit/routing/routes/list",
     "mobkit/routing/routes/add",
@@ -36,7 +34,7 @@ EXPECTED_CAPABILITY_METHODS = [
     "mobkit/gating/decide",
     "mobkit/gating/audit",
 ]
-EXPECTED_CONTRACT_VERSION = "0.4.0"
+EXPECTED_CONTRACT_VERSION = "0.5.0"
 
 
 def _pick_free_port() -> int:

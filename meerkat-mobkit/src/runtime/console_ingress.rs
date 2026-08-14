@@ -992,46 +992,13 @@ fn build_console_experience_contract(
                 "identities": identity_status_rows,
             }
         },
-        "flows": if is_aggregate_console {
-            serde_json::json!({
-                "panel_id": "console.flows",
-                "title": "Flows",
-                "schema_version": "1",
-                "available": false,
-                "reason": "flow scheduling is not exposed by the console aggregator surface",
-            })
-        } else {
-            serde_json::json!({
-                "panel_id": "console.flows",
-                "title": "Flows",
-                "schema_version": "1",
-                "refresh": {
-                    "mode": "poll",
-                    "interval_ms": 10000,
-                },
-                "evaluate_method": "mobkit/scheduling/evaluate",
-                "dispatch_method": "mobkit/scheduling/dispatch",
-                "refresh_policy": {
-                    "mode": "pull",
-                    "poll_interval_ms": 10000,
-                },
-                "request_contract": {
-                    "schedules": "caller-supplied array of ScheduleDefinition (schedule_id, interval|cron, timezone, enabled)",
-                    "tick_ms": "evaluation timestamp in epoch milliseconds",
-                },
-                "evaluate_response_contract": {
-                    "tick_ms": "u64 - echoed evaluation tick",
-                    "due_triggers": "array of ScheduleTrigger {schedule_id, interval, timezone, due_tick_ms}",
-                },
-                "dispatch_response_contract": {
-                    "tick_ms": "u64 - echoed dispatch tick",
-                    "due_count": "usize - number of triggers that were due",
-                    "dispatched": "array of ScheduleDispatch {claim_key, schedule_id, interval, timezone, due_tick_ms, tick_ms, event_id, supervisor_signal?, runtime_injection?, runtime_injection_error?}",
-                    "skipped_claims": "array of schedule_id strings skipped due to idempotent claim",
-                },
-                "note": "Flows require caller-supplied schedule definitions; the runtime does not persist a flow registry. Clients must maintain their own schedule configs."
-            })
-        },
+        "flows": serde_json::json!({
+            "panel_id": "console.flows",
+            "title": "Flows",
+            "schema_version": "1",
+            "available": false,
+            "reason": "static flow scheduling is not exposed; use the durable schedule service and schedule tools",
+        }),
         "session_history": if has_mob {
             serde_json::json!({
                 "panel_id": "console.session_history",

@@ -720,9 +720,6 @@ export class MobKitRuntime {
     if (this._config.routingConfigPath) {
       runtimeOptions.routing_config_path = this._config.routingConfigPath;
     }
-    if (this._config.schedulingFiles.length > 0) {
-      runtimeOptions.scheduling_files = this._config.schedulingFiles;
-    }
     if (this._config.workgraphEnabled !== null) {
       runtimeOptions.workgraph = this._config.workgraphEnabled;
     }
@@ -1888,28 +1885,6 @@ export class MobHandle {
     return result;
   }
 
-  // -- Scheduling ---------------------------------------------------------
-
-  async schedulingEvaluate(
-    schedules: readonly Record<string, unknown>[],
-    tickMs: number,
-  ): Promise<unknown> {
-    return this._runtime._rpc("mobkit/scheduling/evaluate", {
-      schedules: [...schedules],
-      tick_ms: tickMs,
-    });
-  }
-
-  async schedulingDispatch(
-    schedules: readonly Record<string, unknown>[],
-    tickMs: number,
-  ): Promise<unknown> {
-    return this._runtime._rpc("mobkit/scheduling/dispatch", {
-      schedules: [...schedules],
-      tick_ms: tickMs,
-    });
-  }
-
   // -- Routing ------------------------------------------------------------
 
   async resolveRouting(
@@ -2775,6 +2750,8 @@ export class MobHandle {
   async spawnHelper(
     agentIdentity: string,
     task: string,
+    resultLabel: string,
+    maxTextBytes: number,
     options?: {
       role?: string;
       runtimeMode?: string;
@@ -2788,6 +2765,8 @@ export class MobHandle {
     const params: Record<string, unknown> = {
       agent_identity: agentIdentity,
       task,
+      result_label: resultLabel,
+      max_text_bytes: maxTextBytes,
     };
     if (Object.keys(helperOptions).length > 0) params.options = helperOptions;
     return parseHelperResult(
@@ -2799,6 +2778,8 @@ export class MobHandle {
     sourceMemberId: string,
     agentIdentity: string,
     task: string,
+    resultLabel: string,
+    maxTextBytes: number,
     options?: {
       forkContext?: Record<string, unknown>;
       role?: string;
@@ -2814,6 +2795,8 @@ export class MobHandle {
       source_member_id: sourceMemberId,
       agent_identity: agentIdentity,
       task,
+      result_label: resultLabel,
+      max_text_bytes: maxTextBytes,
     };
     if (options?.forkContext) params.fork_context = options.forkContext;
     if (Object.keys(helperOptions).length > 0) params.options = helperOptions;

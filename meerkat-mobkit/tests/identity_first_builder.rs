@@ -405,10 +405,6 @@ impl ExactTrackingLeaseProvider {
             .cloned()
             .collect()
     }
-
-    fn renew_calls(&self) -> usize {
-        self.renew_calls.load(Ordering::SeqCst)
-    }
 }
 
 impl GatedCommittedRenewLeaseProvider {
@@ -870,12 +866,34 @@ impl ContinuityStore for GatedUpsertContinuityStore {
     }
 }
 
-struct SnapshotIgnoringBridge;
+/// Stub bridge whose snapshot appetite is the parameter under test.
+///
+/// `requires_resume_snapshot: false` models the bundled `MobSessionBridge`
+/// (resume loads the durable session by id; the continuity payload is never
+/// inspected). `true` models the conservative default a custom bridge gets,
+/// which must still be served a real payload read.
+struct ResumeSnapshotStubBridge {
+    requires_resume_snapshot: bool,
+    resume_snapshot: Mutex<Option<SessionSnapshot>>,
+}
+
+impl ResumeSnapshotStubBridge {
+    fn new(requires_resume_snapshot: bool) -> Self {
+        Self {
+            requires_resume_snapshot,
+            resume_snapshot: Mutex::new(None),
+        }
+    }
+
+    fn resume_snapshot(&self) -> Option<SessionSnapshot> {
+        self.resume_snapshot.lock().unwrap().clone()
+    }
+}
 
 #[async_trait]
-impl SessionBridge for SnapshotIgnoringBridge {
+impl SessionBridge for ResumeSnapshotStubBridge {
     fn requires_resume_snapshot(&self) -> bool {
-        false
+        self.requires_resume_snapshot
     }
 
     async fn create_session(
@@ -896,8 +914,9 @@ impl SessionBridge for SnapshotIgnoringBridge {
         _spec: &DurableAgentSpec,
         _draft: &AgentBuildDraft,
         session_id: &meerkat_core::types::SessionId,
-        _snapshot: &SessionSnapshot,
+        snapshot: &SessionSnapshot,
     ) -> Result<ResumeSessionOutcome, BridgeError> {
+        *self.resume_snapshot.lock().unwrap() = Some(snapshot.clone());
         Ok(ResumeSessionOutcome::Resumed {
             session_id: session_id.clone(),
         })
@@ -1191,6 +1210,7 @@ fn durable_spec_with_profile(identity: &str, profile: &str) -> DurableAgentSpec 
         runtime_mode_override: Some(meerkat_mob::MobRuntimeMode::TurnDriven),
         backend: None,
         binding: None,
+        placement: None,
     }
 }
 
@@ -1397,90 +1417,6 @@ async fn identity_first_builder_bootstraps_and_exposes_identity_runtime() {
         status.runtime_mode,
         Some(meerkat_mob::MobRuntimeMode::TurnDriven)
     );
-}
-
-#[tokio::test]
-async fn identity_first_builder_persistent_state_accepts_roster_and_agent_memory() {
-    let tmp = tempfile::tempdir().unwrap();
-    let state_path = tmp.path().join("state");
-    let roster = Arc::new(StubRosterProvider::new(vec![durable_spec("agent:alpha")]));
-
-    let runtime = Box::pin(
-        UnifiedRuntimeBuilder::default()
-            .definition(test_definition())
-            .persistent_state(&state_path)
-            .roster_provider(roster)
-            .persistent_agent_memory(AgentMemoryConfig::default())
-            .identity_runtime_instance_id("builder-persistent-memory-test")
-            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
-            .build(),
-    )
-    .await
-    .expect("persistent_state identity-first runtime with agent memory should bootstrap");
-
-    let identity_runtime = runtime
-        .identity_runtime()
-        .expect("identity runtime should be exposed");
-    let status = identity_runtime
-        .status(&AgentIdentity::parse("agent:alpha").unwrap())
-        .await
-        .expect("identity should be active");
-
-    assert_eq!(status.profile.unwrap().as_str(), "default");
-    // M2 canonical spelling on a fresh state dir (a pre-existing legacy
-    // `identity_continuity.sqlite` would keep being used where it lies).
-    assert!(state_path.join("continuity.sqlite3").exists());
-    assert!(state_path.join("agent-memory").exists());
-
-    let identity = AgentIdentity::parse("agent:alpha").unwrap();
-    let written = runtime
-        .remember_agent_memory(
-            "default",
-            &identity,
-            NewAgentMemory {
-                title: "Passport location".to_string(),
-                body: "Passport is in the blue travel folder.".to_string(),
-                tags: vec!["travel".to_string()],
-            },
-        )
-        .await
-        .expect("runtime should expose bundled persistent memory writes");
-    assert_eq!(written.title, "Passport location");
-
-    let recalled = runtime
-        .recall_agent_memory(meerkat_mobkit::AgentMemoryRecallRequest {
-            identity: identity.clone(),
-            realm: "default".to_string(),
-            query_text: Some("where is my passport?".to_string()),
-            query_terms: vec!["passport".to_string()],
-            selection: meerkat_mobkit::AgentMemorySelection::Contextual,
-            max_entries: 8,
-        })
-        .await
-        .expect("runtime should expose bundled persistent memory reads");
-
-    assert_eq!(recalled.len(), 1);
-    assert_eq!(recalled[0].body, "Passport is in the blue travel folder.");
-
-    let forgotten = runtime
-        .forget_agent_memory("default", &identity, &written.memory_id)
-        .await
-        .expect("runtime should expose bundled persistent memory deletes");
-    assert_eq!(forgotten.memory_id, written.memory_id);
-    assert!(forgotten.deleted);
-
-    let after_forget = runtime
-        .recall_agent_memory(meerkat_mobkit::AgentMemoryRecallRequest {
-            identity,
-            realm: "default".to_string(),
-            query_text: Some("where is my passport?".to_string()),
-            query_terms: vec!["passport".to_string()],
-            selection: meerkat_mobkit::AgentMemorySelection::Contextual,
-            max_entries: 8,
-        })
-        .await
-        .expect("runtime should expose empty reads after deleting bundled persistent memory");
-    assert!(after_forget.is_empty());
 }
 
 #[tokio::test]
@@ -1735,24 +1671,91 @@ async fn identity_first_builder_lazy_materialize_registers_large_ready_roster_wi
     );
 }
 
+/// Class 2 regression guard. The public refresh API (`refresh_desired_topology`
+/// - the console add-member and reconcile path) used to force a full
+/// continuity-payload read per Ready member even when the live bridge resumes
+/// by session id and never looks at the payload: 14MB/60s to 94MB/180s per
+/// one-word turn in production. Startup and refresh now share one restore
+/// flow with one read-on-need rule, so a `requires_resume_snapshot() == false`
+/// bridge costs ZERO snapshot reads on either path.
+///
+/// The outcome must still classify as `Resumed` - the verdict comes from the
+/// bridge, not from snapshot presence - while the bridge receives the empty
+/// internal argument promised by its opt-out contract.
 #[tokio::test]
-async fn identity_first_public_eager_refresh_preserves_snapshot_loading_contract() {
+async fn identity_first_public_eager_refresh_elides_snapshot_load() {
     let specs = vec![durable_spec("agent:alpha")];
     let identity = specs[0].identity.clone();
     let records = BTreeMap::from([(identity.clone(), continuity_record("agent:alpha"))]);
-    let expected_snapshot = SessionSnapshot {
+    // Deliberately non-empty: the store HAS a payload, restore just declines
+    // to read it for a bridge that declared it does not consume it.
+    let unread_store_payload = SessionSnapshot {
         data: b"public-refresh-payload".to_vec(),
     };
-    let continuity_store = Arc::new(
-        CountingReadyContinuityStore::new(records).with_snapshot(expected_snapshot.clone()),
-    );
+    let continuity_store =
+        Arc::new(CountingReadyContinuityStore::new(records).with_snapshot(unread_store_payload));
+    let bridge = Arc::new(ResumeSnapshotStubBridge::new(false));
     let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
         continuity_store: continuity_store.clone(),
         lease_provider: Arc::new(StubLeaseProvider),
         runtime_instance_id: "public-eager-refresh-snapshot-test".to_string(),
         has_runtime_store: true,
         durability_policy: DurabilityPolicy::SyncWriteThrough,
-        bridge: Some(Arc::new(SnapshotIgnoringBridge)),
+        bridge: Some(bridge.clone()),
+        default_timeout: None,
+    }));
+    let context = IdentityFirstRuntimeContext::new(
+        identity_runtime,
+        Arc::new(StubRosterProvider::new(specs)),
+        None,
+        None,
+        None,
+    );
+
+    let result = context
+        .refresh_desired_topology()
+        .await
+        .expect("public eager refresh should succeed");
+    assert_eq!(
+        continuity_store.load_snapshot_calls(),
+        0,
+        "public refresh must not read the continuity payload for a bridge that \
+         declared requires_resume_snapshot() == false"
+    );
+    assert!(
+        matches!(&result.outcomes[&identity], RestoreOutcome::Resumed { .. }),
+        "the bridge resume verdict must report Resumed"
+    );
+    assert_eq!(
+        bridge.resume_snapshot(),
+        Some(SessionSnapshot { data: Vec::new() }),
+        "an opted-out bridge must receive an empty internal snapshot argument"
+    );
+}
+
+/// The other side of the same ratchet. Eliding the payload read is keyed on
+/// the bridge's declared appetite, NOT on "nobody reads it anyway": a bridge
+/// that consumes the continuity payload must still be handed one on the
+/// public refresh path.
+#[tokio::test]
+async fn identity_first_public_eager_refresh_still_loads_for_a_consuming_bridge() {
+    let specs = vec![durable_spec("agent:alpha")];
+    let identity = specs[0].identity.clone();
+    let records = BTreeMap::from([(identity.clone(), continuity_record("agent:alpha"))]);
+    let consumed_payload = SessionSnapshot {
+        data: b"public-refresh-payload".to_vec(),
+    };
+    let continuity_store = Arc::new(
+        CountingReadyContinuityStore::new(records).with_snapshot(consumed_payload.clone()),
+    );
+    let bridge = Arc::new(ResumeSnapshotStubBridge::new(true));
+    let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+        continuity_store: continuity_store.clone(),
+        lease_provider: Arc::new(StubLeaseProvider),
+        runtime_instance_id: "public-eager-refresh-consuming-bridge-test".to_string(),
+        has_runtime_store: true,
+        durability_policy: DurabilityPolicy::SyncWriteThrough,
+        bridge: Some(bridge.clone()),
         default_timeout: None,
     }));
     let context = IdentityFirstRuntimeContext::new(
@@ -1770,12 +1773,18 @@ async fn identity_first_public_eager_refresh_preserves_snapshot_loading_contract
     assert_eq!(
         continuity_store.load_snapshot_calls(),
         1,
-        "the existing public refresh API must still load its RestoreOutcome snapshot payload"
+        "a bridge that declared requires_resume_snapshot() == true must still be \
+         served the continuity payload"
     );
-    match &result.outcomes[&identity] {
-        RestoreOutcome::Resumed { snapshot, .. } => assert_eq!(snapshot, &expected_snapshot),
-        outcome => panic!("expected a payload-preserving resumed outcome, got {outcome:?}"),
-    }
+    assert!(
+        matches!(&result.outcomes[&identity], RestoreOutcome::Resumed { .. }),
+        "the bridge resume verdict must report Resumed"
+    );
+    assert_eq!(
+        bridge.resume_snapshot(),
+        Some(consumed_payload),
+        "the consuming bridge must receive the persisted snapshot bytes"
+    );
 }
 
 #[tokio::test]
@@ -1952,41 +1961,69 @@ async fn gateway_initializer_releases_exact_active_grant_after_partial_eager_fai
         IdentityBootstrapMode::EagerMaterialize,
     ));
 
-    let error = tokio::time::timeout(
+    // meerkat 0.8.22 / mobkit 0.8.16 pair (1ff4c8ca park-as-Broken): beta's
+    // post-activation failure parks beta as typed Broken and can never abort
+    // alpha's boot. This test now guards the per-member custody contract at
+    // the park: beta's exact grant is released by the embodiment transaction
+    // while alpha's authority stays held and active.
+    tokio::time::timeout(
         Duration::from_secs(10),
         runtime.install_and_bootstrap_identity_first_context(context, &specs),
     )
     .await
-    .expect("failed identity bootstrap shutdown must not hang")
-    .expect_err("beta failure after alpha activation must fail eager bootstrap");
+    .expect("identity bootstrap must not hang")
+    .expect("beta's failure parks Broken; it must not abort alpha's boot");
+
+    let identity_runtime = runtime
+        .identity_runtime()
+        .expect("identity runtime installed");
+    let (status, timed_out) = identity_runtime
+        .wait_identity_bootstrap_terminal(Duration::from_secs(5))
+        .await;
+    assert!(!timed_out, "park-as-Broken bootstrap is terminal");
+    assert!(status.complete);
+    let alpha_entry = status.identities.get(&alpha).expect("alpha entry");
+    assert_eq!(
+        alpha_entry.state,
+        IdentityBootstrapState::Active,
+        "the sibling must stay active: {alpha_entry:?}"
+    );
+    let beta_entry = status.identities.get(&beta).expect("beta entry");
+    assert_eq!(beta_entry.state, IdentityBootstrapState::Broken);
     assert!(
-        error
-            .to_string()
+        beta_entry
+            .error
+            .as_deref()
+            .unwrap_or_default()
             .contains("injected failure after peer activation"),
-        "unexpected bootstrap error: {error}"
+        "beta must carry the injected failure verbatim: {beta_entry:?}"
     );
 
-    let released = lease_provider.released();
-    assert_eq!(
-        released.len(),
-        2,
-        "beta cleanup plus alpha shutdown release"
-    );
-    let released = released
+    let released = lease_provider
+        .released()
         .into_iter()
         .map(|grant| (grant.identity, grant.fencing_token))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(released.get(&alpha), Some(&FencingToken::new(101)));
-    assert_eq!(released.get(&beta), Some(&FencingToken::new(202)));
-    assert!(
-        lease_provider.held().is_empty(),
-        "failed gateway init must leave no exact provider authority"
-    );
     assert_eq!(
-        lease_provider.renew_calls(),
-        0,
-        "long-lived supervisors must start only after bootstrap succeeds"
+        released.get(&beta),
+        Some(&FencingToken::new(202)),
+        "the parked member's exact grant must be released at the park"
     );
+    assert!(
+        !released.contains_key(&alpha),
+        "beta's park must not release the active sibling's grant"
+    );
+    let held = lease_provider.held();
+    assert!(
+        held.iter().any(|grant| grant.identity == alpha),
+        "alpha's exact authority must remain held: {held:?}"
+    );
+    assert!(
+        !held.iter().any(|grant| grant.identity == beta),
+        "no ghost beta authority may remain: {held:?}"
+    );
+
+    runtime.shutdown().await;
 }
 
 #[tokio::test]
@@ -2034,14 +2071,23 @@ async fn identity_first_builder_eager_broken_continuity_is_terminal_without_time
 async fn identity_first_failed_builder_shutdown_retries_unpublished_lease() {
     let tmp = tempfile::tempdir().unwrap();
     let lease = Arc::new(FailOnceCleanupLeaseProvider::new());
+    // Re-anchored at the meerkat 0.8.22 / mobkit 0.8.16 pair (1ff4c8ca
+    // park-as-Broken): per-member failures no longer abort the build, so this
+    // test now guards the FLEET-level fail-closed contract - a roster that
+    // fails uniqueness validation aborts bootstrap BEFORE any exact authority
+    // is acquired, and a failed build leaves no ghost lease behind. The
+    // cleanup-RETRY contract this test used to carry lives at its true seam
+    // in identity_first_lazy_reconcile_releases_orphan_grant_before_reacquire
+    // (FailOnce release + exact release_attempts pinning).
     let result = Box::pin(
         UnifiedRuntimeBuilder::default()
             .definition(test_definition())
-            .continuity_store(Arc::new(BrokenContinuityStore))
+            .continuity_store(Arc::new(StubContinuityStore))
             .lease_provider(lease.clone())
-            .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
-                "agent:alpha",
-            )])))
+            .roster_provider(Arc::new(StubRosterProvider::new(vec![
+                durable_spec("agent:alpha"),
+                durable_spec("agent:alpha"),
+            ])))
             .scratch_dir(tmp.path().join("scratch"))
             .identity_runtime_instance_id("builder-failed-memory-task-ownership-test")
             .identity_bootstrap_mode(IdentityBootstrapMode::EagerMaterialize)
@@ -2050,19 +2096,17 @@ async fn identity_first_failed_builder_shutdown_retries_unpublished_lease() {
     )
     .await;
     let error = match result {
-        Ok(_) => panic!("the first unactivated lease cleanup must fail"),
+        Ok(_) => panic!("a duplicate-identity roster must abort bootstrap fleet-level"),
         Err(error) => error,
     };
     assert!(
-        error
-            .to_string()
-            .contains("synthetic first cleanup release failure"),
-        "unexpected build error: {error}"
+        error.to_string().contains("agent:alpha"),
+        "the fleet-level rejection must name the duplicated identity: {error}"
     );
     assert_eq!(
         lease.release_attempts(),
-        2,
-        "builder shutdown must retry the exact unpublished grant"
+        0,
+        "fleet validation fails closed before any exact authority exists to release"
     );
 
     let identity = AgentIdentity::parse("agent:alpha").unwrap();
@@ -2084,11 +2128,11 @@ async fn identity_first_failed_builder_terminates_runtime_owned_memory_superviso
     let tmp = tempfile::tempdir().unwrap();
     let state = tmp.path().join("state");
     let identity = AgentIdentity::parse("agent:alpha").unwrap();
-    let customizer = Arc::new(GatedCustomizer {
-        entered: AtomicUsize::new(0),
-        permits: Arc::new(tokio::sync::Semaphore::new(1)),
-        failing_identity: Some(identity.clone()),
-    });
+    // Re-anchored at the meerkat 0.8.22 / mobkit 0.8.16 pair (1ff4c8ca
+    // park-as-Broken): a per-member customizer failure now parks Broken and
+    // cannot fail the build, so the supervisor-teardown contract is exercised
+    // by a FLEET-level roster-uniqueness failure that still aborts bootstrap
+    // with the memory stack's runtime-owned supervisors already constructed.
     let engines = || meerkat_mobkit::memory_wiring::MemoryEnginesConfig {
         steward: meerkat_mobkit::memory::steward::StewardConfig {
             enabled: true,
@@ -2102,21 +2146,23 @@ async fn identity_first_failed_builder_terminates_runtime_owned_memory_superviso
             .definition(test_definition())
             .persistent_state(state.clone())
             .persistent_agent_memory_stack(AgentMemoryConfig::default(), engines())
-            .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
-                identity.as_str(),
-            )])))
-            .agent_customizer(customizer.clone())
+            .roster_provider(Arc::new(StubRosterProvider::new(vec![
+                durable_spec(identity.as_str()),
+                durable_spec(identity.as_str()),
+            ])))
             .identity_runtime_instance_id("builder-failed-memory-supervisor-test")
             .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
             .build(),
     )
     .await;
     let error = match failed {
-        Ok(_) => panic!("customizer failure must fail identity bootstrap"),
+        Ok(_) => panic!("a duplicate-identity roster must abort bootstrap fleet-level"),
         Err(error) => error,
     };
-    assert!(error.to_string().contains("injected warm failure"));
-    assert_eq!(customizer.entered.load(Ordering::SeqCst), 1);
+    assert!(
+        error.to_string().contains(identity.as_str()),
+        "the fleet-level rejection must name the duplicated identity: {error}"
+    );
 
     // The failed runtime must have aborted/joined its memory observer and
     // steward before returning Err, leaving the same durable stack reusable
@@ -3890,7 +3936,12 @@ async fn identity_first_external_member_restore_supplies_generated_owner_binding
     );
     let roster = Arc::new(StubRosterProvider::new(vec![spec]));
 
-    let err = match Box::pin(
+    // meerkat 0.8.22 / mobkit 0.8.16 pair (1ff4c8ca park-as-Broken): a
+    // member-attributable restore failure parks only that identity as typed
+    // Broken and can never abort the build. The invariant this test guards -
+    // the spawn passes the owner-binding gate and reaches the external-backend
+    // check - now surfaces in the Broken detail instead of the build error.
+    let runtime = Box::pin(
         UnifiedRuntimeBuilder::default()
             .definition(test_definition())
             .continuity_store(Arc::new(StubContinuityStore))
@@ -3902,11 +3953,21 @@ async fn identity_first_external_member_restore_supplies_generated_owner_binding
             .build(),
     )
     .await
-    {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("external-binding spec without [backend.external] should fail restore"),
-    };
+    .expect("external misconfiguration is a per-member Broken park, not a build failure");
 
+    let identity_runtime = runtime.identity_runtime().expect("identity runtime");
+    let (status, timed_out) = identity_runtime
+        .wait_identity_bootstrap_terminal(Duration::from_secs(5))
+        .await;
+    assert!(!timed_out, "Broken park is a terminal bootstrap outcome");
+    assert!(status.complete);
+    assert_eq!(status.counts.broken, 1);
+    let target = status
+        .identities
+        .get(&AgentIdentity::parse("agent:target").unwrap())
+        .expect("target bootstrap entry");
+    assert_eq!(target.state, IdentityBootstrapState::Broken);
+    let err = target.error.as_deref().unwrap_or_default();
     assert!(
         !err.contains("requires generated owner binding"),
         "identity-first restore must spawn external members with a generated owner context, got: {err}"
@@ -3915,6 +3976,8 @@ async fn identity_first_external_member_restore_supplies_generated_owner_binding
         err.contains("external backend is not configured"),
         "expected the spawn to pass the owner-binding gate and reach the external-backend check, got: {err}"
     );
+
+    runtime.shutdown().await;
 }
 
 // ===========================================================================

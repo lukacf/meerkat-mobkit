@@ -28774,12 +28774,37 @@ model = "gpt-5.5"
             .expect("bundled layer-decision schema parses");
         let canonical = meerkat_mob::adaptive::layer_decision_schema()
             .expect("meerkat canonical layer_decision_schema");
+
+        // Executable remediation. This assertion used to name a MACRO and no
+        // COMMAND, which is a bad trade at 1600+ lines: the only honest way to
+        // satisfy it by hand was to transcribe a generated document, and the
+        // realistic alternative was to weaken the test. Run
+        //   MOBKIT_REGENERATE_ADAPTIVE_SCHEMA=1 cargo test -p meerkat-mobkit \
+        //       --lib bundled_layer_decision_schema
+        // to rewrite the bundled file from canonical, then re-run WITHOUT the
+        // variable to verify. It panics rather than passing after writing, so
+        // a regeneration run can never be mistaken for a green parity run -
+        // the file it just wrote is not evidence about the file it read.
+        if std::env::var_os("MOBKIT_REGENERATE_ADAPTIVE_SCHEMA").is_some() {
+            let path = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/adaptive_layer_decision.schema.json"
+            );
+            let rendered = serde_json::to_string_pretty(&canonical)
+                .expect("canonical layer-decision schema serializes");
+            std::fs::write(path, rendered + "\n").expect("write regenerated schema");
+            panic!(
+                "regenerated {path} from meerkat's canonical layer_decision_schema(); \
+                 re-run WITHOUT MOBKIT_REGENERATE_ADAPTIVE_SCHEMA to verify parity"
+            );
+        }
+
         assert_eq!(
             bundled, canonical,
             "bundled adaptive layer-decision schema has drifted from meerkat's \
-             canonical layer_decision_schema(); regenerate \
-             meerkat-mobkit/src/adaptive_layer_decision.schema.json via \
-             schemars::schema_for!(meerkat_mob::adaptive::LayerDecision)"
+             canonical layer_decision_schema(); regenerate with \
+             MOBKIT_REGENERATE_ADAPTIVE_SCHEMA=1 cargo test -p meerkat-mobkit \
+             --lib bundled_layer_decision_schema"
         );
     }
 

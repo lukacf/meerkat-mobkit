@@ -10,13 +10,15 @@ use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionServic
 use meerkat_mob::ids::AgentIdentity;
 use meerkat_mob::{MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 use meerkat_mobkit::contact_directory::ContactDirectory;
-use meerkat_mobkit::runtime::cross_mob_control::ControlListenAddr;
+use meerkat_mobkit::runtime::cross_mob_control::{
+    ControlAuthorizer, ControlGrantTable, ControlListenAddr,
+};
 use meerkat_mobkit::{
     AuthPolicy, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore, ConsolePolicy,
     ConsoleUiConfig, ConventionalPaths, GatewayPeerKeys, MOBKIT_CONTRACT_VERSION,
     MobBootstrapOptions, MobBootstrapSpec, MobKitStorageLayout, ObjectStoreBlobStore,
     ReleaseMetadata, RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
-    UnifiedRuntime, load_console_ui_config_from_path_for_realm,
+    load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::mob_definition_may_use_image_generation,
 };
 use meerkat_store::SqliteSessionStore;
@@ -47,11 +49,13 @@ type WorkGraphParts = (
     PathBuf,
 );
 
-/// Default tracing filter when `RUST_LOG` is unset: this crate's own targets
-/// at INFO, dependencies at WARN (mirrors rpc_gateway). The one-time
-/// head-canonical conversion and the storage maintenance verbs report
-/// progress at INFO from `meerkat_mobkit`; a blanket "warn" default hid them.
-const DEFAULT_TRACING_FILTER: &str = "warn,meerkat_mobkit=info,mobkit_gateway=info";
+/// This binary's own tracing target. Feeds
+/// `gateway_composition::default_tracing_filter`, which builds the same
+/// filter string this binary used to carry as its own constant: this crate's
+/// own targets at INFO, dependencies at WARN. The one-time head-canonical
+/// conversion and the storage maintenance verbs report progress at INFO from
+/// `meerkat_mobkit`; a blanket "warn" default hid them.
+const GATEWAY_TRACING_TARGET: &str = "mobkit_gateway";
 type PersistentSessionServiceParts = (
     Arc<dyn meerkat_mob::MobSessionService>,
     Arc<meerkat_runtime::MeerkatMachine>,
@@ -1020,15 +1024,9 @@ fn main() {
     // init JSON handshake and the verbs' report output.
     //
     // Default: this crate's own targets at INFO, dependencies at WARN;
-    // RUST_LOG overrides everything.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_TRACING_FILTER)),
-        )
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .init();
+    // RUST_LOG overrides everything. Shared with rpc_gateway so the two
+    // gateways cannot drift on observability posture.
+    meerkat_mobkit::gateway_composition::init_gateway_tracing(GATEWAY_TRACING_TARGET);
     if args.first().map(String::as_str) == Some("storage-migrate") {
         std::process::exit(run_storage_migrate(&args[1..]));
     }
@@ -1039,7 +1037,8 @@ fn main() {
     // control listener so remote gateways can wire/unwire/inject/lookup
     // members of this runtime. Validated here so a typo is a launch error,
     // not a silently ignored flag.
-    let control_listen = match parse_control_listen_arg(&args) {
+    let control_listen = match meerkat_mobkit::gateway_composition::parse_control_listen_arg(&args)
+    {
         Ok(value) => value,
         Err(message) => {
             eprintln!("{message}");
@@ -1050,13 +1049,10 @@ fn main() {
         version = env!("CARGO_PKG_VERSION"),
         "mobkit_gateway starting (console/HTTP gateway)"
     );
-    // Meerkat 0.7's generated machine-authority apply path needs deep worker
-    // stacks (mirrors meerkat-rpc's explicit 16 MiB tokio worker sizing).
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_stack_size(16 * 1024 * 1024)
-        .build()
-    {
+    // Deep worker stacks for the generated machine-authority apply path; the
+    // builder is shared with rpc_gateway, the failure reporting is not (this
+    // binary's parent reads a JSON-RPC handshake on stdout).
+    let runtime = match meerkat_mobkit::gateway_composition::gateway_tokio_runtime() {
         Ok(runtime) => runtime,
         Err(error) => {
             let response = init_error(Value::Null, -32603, error.to_string());
@@ -1069,21 +1065,6 @@ fn main() {
         print_json_line(&response);
         std::process::exit(1);
     }
-}
-
-/// Extract and validate the optional `--control-listen <addr>` flag.
-fn parse_control_listen_arg(args: &[String]) -> Result<Option<ControlListenAddr>, String> {
-    let Some(position) = args.iter().position(|arg| arg == "--control-listen") else {
-        return Ok(None);
-    };
-    let Some(value) = args.get(position + 1) else {
-        return Err(
-            "--control-listen requires an address (tcp://host:port or uds:///path)".to_string(),
-        );
-    };
-    ControlListenAddr::parse(value)
-        .map(Some)
-        .map_err(|error| format!("--control-listen: {error}"))
 }
 
 async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
@@ -1377,30 +1358,48 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         default_llm_client: None,
     });
 
-    let mut runtime = Box::pin(UnifiedRuntime::bootstrap(
-        mob_spec,
-        meerkat_mobkit::MobKitConfig {
-            modules: Vec::new(),
-            discovery: meerkat_mobkit::DiscoverySpec {
-                namespace: format!("tux.{}", short_hash(&key)),
+    let bootstrap_plan =
+        meerkat_mobkit::gateway_composition::GatewayRuntimeBootstrapPlan::console_http(
+            mob_spec,
+            meerkat_mobkit::MobKitConfig {
                 modules: Vec::new(),
+                discovery: meerkat_mobkit::DiscoverySpec {
+                    namespace: format!("tux.{}", short_hash(&key)),
+                    modules: Vec::new(),
+                },
+                pre_spawn: Vec::new(),
             },
-            pre_spawn: Vec::new(),
-        },
-        Duration::from_secs(30),
-    ))
+            Duration::from_secs(30),
+        );
+    let mut composition = meerkat_mobkit::gateway_composition::GatewayComposition::prepare(
+        meerkat_mobkit::gateway_composition::GatewayCompatibilityProfile::ConsoleHttp,
+        bootstrap_plan,
+    )
+    .bootstrap()
     .await
     .context("failed to bootstrap local runtime")?;
+    let runtime = composition.runtime_mut();
 
     // Load contacts.toml if present. This enables mobkit/cross_mob/directory
     // (lookup of known mob addresses) without requiring peer mob handles.
     // High-level wire/unwire/send still need peer handles and are gated
     // separately by has_peer_mob_handles().
+    let mut control_grants = ControlGrantTable::new();
     if let Some(ref contacts_path) = paths.contacts_toml {
         let contacts_text = fs::read_to_string(contacts_path)
             .with_context(|| format!("failed to read {}", contacts_path.display()))?;
         let directory = ContactDirectory::from_toml(&contacts_text)
             .with_context(|| format!("failed to parse {}", contacts_path.display()))?;
+        if let Some(configured) =
+            ControlGrantTable::from_toml(&contacts_text).with_context(|| {
+                format!(
+                    "failed to parse control grants in {}",
+                    contacts_path.display()
+                )
+            })?
+        {
+            control_grants = configured;
+        }
         runtime.set_contact_directory(directory);
     }
 
@@ -1523,8 +1522,12 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
     // its startup log reflects the final authority posture (the handler
     // re-reads the identity slot per request either way).
     if let Some(addr) = control_listen.as_ref() {
+        let authorizer = Arc::new(ControlAuthorizer::with_grants_for_audience(
+            control_grants,
+            runtime.mob_id(),
+        ));
         let advertised = runtime
-            .start_control_listener(addr)
+            .start_control_listener_with_authorizer(addr, authorizer)
             .await
             .map_err(|error| anyhow!("--control-listen {addr}: {error}"))?;
         tracing::info!(%advertised, "cross-mob control listener bound");
@@ -1542,72 +1545,45 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         adapter,
     )) = schedule_host_inputs
     {
-        let mob_state = runtime.mob_runtime().agent_mob_mcp_state();
-        mob_target_registry.set_mob_state(mob_state.clone());
-        match meerkat_mobkit::schedule_wiring::repair_resumable_session_targets_to_mob_members(
+        let mob_state = meerkat_mobkit::gateway_composition::adopt_schedule_mob_targets(
+            runtime,
             &schedule_service,
             &mob_target_registry,
         )
-        .await
-        {
-            Ok(repaired) if repaired > 0 => {
-                tracing::info!(
-                    repaired,
-                    "repaired persisted resumable-session schedules to identity mob targets"
-                );
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "failed to repair persisted resumable-session schedules to identity mob targets",
-                );
-            }
-        }
-        // Same silent-stall guard as rpc_gateway: the upstream driver
-        // discards tick errors, so stalls only become visible here.
-        let watchdog = meerkat_mobkit::schedule_wiring::spawn_schedule_claim_watchdog(
-            schedule_service.clone(),
-            schedule_store_path,
-            Default::default(),
-        );
-        let schedule_host =
-            meerkat_mobkit::schedule_wiring::spawn_schedule_host_with_identity_runtime(
-                service,
-                adapter,
-                schedule_service,
+        .await;
+        // Shared with rpc_gateway: the watchdog liveness contract log, the
+        // host spawn, the firing-intent gate bind and the boot probe were
+        // byte-identical in both binaries, every log string included. This
+        // gateway declares no host runnables (it has no memory steward and no
+        // SDK callback plane), which is now an explicit `None` FIELD rather
+        // than a hard-coded argument nobody could see was a divergence.
+        let (schedule_host, watchdog) =
+            meerkat_mobkit::gateway_composition::spawn_gateway_schedule_host(
+                runtime,
                 mob_state,
-                runtime.mob_handle(),
-                runtime.identity_runtime().cloned(),
-                None,
-                workgraph_service.clone(),
-                runtime_id.clone(),
-            );
-        if schedule_host.is_some() {
-            // The firing host now drains the store: firing-intent schedule
-            // writes (create/update/resume) are admissible from here on
-            // (Bug C stopgap — the gate refused them until this point).
-            schedule_firing_host_binding.bind();
-        } else {
-            tracing::warn!(
-                "schedule host failed to spawn over the attached schedule store: \
-                 firing-intent schedule writes (create/update/resume) stay \
-                 refused so schedules cannot be accepted durably and then \
-                 silently never fire"
-            );
-        }
+                meerkat_mobkit::gateway_composition::GatewayScheduleHostInputs {
+                    schedule_service,
+                    session_service: service,
+                    runtime_adapter: adapter,
+                    schedule_store_path,
+                    firing_host_binding: schedule_firing_host_binding,
+                    runnable_host: None,
+                    workgraph_service: workgraph_service.clone(),
+                    owner_id: runtime_id.clone(),
+                },
+            )
+            .await;
         (schedule_host, Some(watchdog))
     } else {
         (None, None)
     };
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    let composition = composition.activate();
+    let runtime = composition.runtime();
+    let http_binding = meerkat_mobkit::gateway_composition::GatewayHttpBinding::bind_loopback()
         .await
         .context("failed to bind gateway listener")?;
-    let http_base_url = format!(
-        "http://127.0.0.1:{}",
-        listener.local_addr().context("missing local addr")?.port()
-    );
+    let http_base_url = http_binding.http_base_url();
 
     let control_listen_address = runtime.control_listener_advertised_address();
     registry.entries.retain(|entry| entry.key != key);
@@ -1631,6 +1607,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
 
     let decisions = runtime_decision_state(&runtime_id, console_ui, console_read_only);
     let app = runtime.build_reference_app_router(decisions);
+    let mut http_server = http_binding.serve(app);
 
     // `mobkit_gateway` serves the console/admin API over HTTP. It is NOT the
     // SDK's stdin JSON-RPC gateway — that is the separate `rpc_gateway` binary.
@@ -1673,17 +1650,39 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
     };
 
     tokio::select! {
-        result = axum::serve(listener, app).with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        }) => {
-            result.context("gateway HTTP server failed")?;
+        // SIGINT *and* SIGTERM: a container stop sends SIGTERM, and waiting
+        // on ctrl_c alone meant the graceful path never ran on an ordinary
+        // deploy. See `meerkat_mobkit::shutdown_signal` for why that became
+        // load-bearing at 0.8.22 (unreleased schedule executor lease).
+        result = http_server.wait() => {
+            match result {
+                meerkat_mobkit::gateway_composition::GatewayHttpDrainOutcome::Completed(result) => {
+                    result.context("gateway HTTP server failed")?;
+                }
+                meerkat_mobkit::gateway_composition::GatewayHttpDrainOutcome::TimedOut => {
+                    return Err(anyhow!("gateway HTTP server wait timed out"));
+                }
+                meerkat_mobkit::gateway_composition::GatewayHttpDrainOutcome::JoinFailed(error) => {
+                    return Err(anyhow!("gateway HTTP server task failed: {error}"));
+                }
+            }
         }
         () = stdin_guard => {}
+        () = meerkat_mobkit::shutdown_signal::shutdown_signal() => {}
     }
 
-    let mut registry = load_registry(&registry_file);
-    registry.entries.retain(|entry| entry.key != key);
-    save_registry(&registry_file, &registry)?;
+    let shutdown = composition
+        .shutdown(
+            http_server,
+            || async {},
+            || async {
+                let mut registry = load_registry(&registry_file);
+                registry.entries.retain(|entry| entry.key != key);
+                save_registry(&registry_file, &registry)
+            },
+        )
+        .await;
+    shutdown.cleanup?;
     Ok(())
 }
 
@@ -1697,7 +1696,9 @@ mod tests {
     #[test]
     fn default_tracing_filter_surfaces_own_info_keeps_deps_at_warn() -> anyhow::Result<()> {
         use tracing_subscriber::layer::SubscriberExt;
-        let filter = tracing_subscriber::EnvFilter::try_new(DEFAULT_TRACING_FILTER)?;
+        let filter = tracing_subscriber::EnvFilter::try_new(
+            meerkat_mobkit::gateway_composition::default_tracing_filter(GATEWAY_TRACING_TARGET),
+        )?;
         let subscriber = tracing_subscriber::registry().with(filter);
         tracing::subscriber::with_default(subscriber, || {
             assert!(

@@ -1,11 +1,13 @@
 //! MobKit core — orchestration engine for the Meerkat multi-agent runtime.
 
+pub(crate) mod identity_control_target;
 pub mod identity_first;
 
 pub mod access;
 pub mod auth;
 pub mod baseline;
 pub mod blob_store;
+pub mod capability_invariant;
 pub mod compaction_policy;
 pub mod config_convention;
 pub mod console_aggregator;
@@ -14,6 +16,8 @@ pub mod console_contracts;
 pub(crate) mod console_spawn;
 pub mod contact_directory;
 pub mod decisions;
+pub mod fork;
+pub mod gateway_composition;
 pub mod gateway_wiring;
 pub mod governance;
 pub mod http_auth;
@@ -32,6 +36,7 @@ pub mod protocol;
 pub mod rpc;
 pub mod runtime;
 pub mod schedule_wiring;
+pub mod shutdown_signal;
 pub mod storage_doctor;
 pub mod storage_health;
 pub mod storage_layout;
@@ -42,6 +47,7 @@ pub mod topology_control;
 pub mod types;
 pub mod unified_runtime;
 pub mod workgraph_admission;
+pub mod workgraph_events;
 pub mod workgraph_wiring;
 
 pub use access::{
@@ -131,7 +137,7 @@ pub use identity_first::{
     AgentMemoryOperatorScope, AgentMemoryPerTurnInjection, AgentMemoryProvider,
     AgentMemoryRecallFailurePolicy, AgentMemoryRecallRequest, AgentMemoryRecord,
     AgentMemoryRuntimeInjector, AgentMemorySelection, AuthoredWriteReceipt, MEMORY_TOOL_NAME,
-    MarkdownAgentMemoryStore, NewAgentMemory,
+    NewAgentMemory,
 };
 pub use meerkat_mob::{MemberTurnEventSender, MemberTurnHandle, MemberTurnOptions};
 pub use memory::{
@@ -182,13 +188,10 @@ pub use runtime::{
     NormalizationError, PersistentMetadataStore, RpcRouteError, RpcRuntimeError,
     RuntimeBoundaryError, RuntimeDecisionInputs, RuntimeDecisionState, RuntimeFromConfigError,
     RuntimeMetadataTable, RuntimeMutationError, RuntimeOptions, RuntimeRoute,
-    RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleDefinition, ScheduleDispatch,
-    ScheduleDispatchReport, ScheduleEvaluation, ScheduleRuntimeInjection, ScheduleTrigger,
-    SchedulingSupervisorSignal, SessionPersistenceRow, SessionStoreContract, SessionStoreKind,
-    SqliteMetadataStore, SubscribeRequest, SubscribeResponse, SubscribeScope, SupervisorReport,
-    TrustedOidcRuntimeConfig, WILDCARD_ROUTE, build_runtime_decision_state,
-    evaluate_schedules_at_tick, handle_console_rest_json_route,
-    handle_console_rest_json_route_with_snapshot,
+    RuntimeRouteMutationError, RuntimeShutdownReport, SessionPersistenceRow, SessionStoreContract,
+    SessionStoreKind, SqliteMetadataStore, SubscribeRequest, SubscribeResponse, SubscribeScope,
+    SupervisorReport, TrustedOidcRuntimeConfig, WILDCARD_ROUTE, build_runtime_decision_state,
+    handle_console_rest_json_route, handle_console_rest_json_route_with_snapshot,
     handle_console_rest_json_route_with_snapshot_and_access, materialize_latest_session_rows,
     materialize_live_session_rows, normalize_event_line, route_module_call,
     route_module_call_rpc_json, route_module_call_rpc_subprocess, run_discovered_module_once,

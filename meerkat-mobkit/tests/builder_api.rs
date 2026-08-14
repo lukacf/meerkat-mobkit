@@ -311,6 +311,57 @@ async fn test_builder_persistent_custom_store() {
     runtime.mob_handle().stop().await.expect("stop");
 }
 
+// ---------------------------------------------------------------------------
+// 8b. Per-slot WorkGraph store injection (0.8.16 item 5)
+// ---------------------------------------------------------------------------
+/// Item 5 is "a durable WorkGraph store injectable INDEPENDENTLY of continuity,
+/// schedule, lease, console and blob". The seam
+/// (`attach_workgraph_tools_with_store`) existed before this test and was
+/// exercised directly by a unit test - but it was unreachable from
+/// `UnifiedRuntimeBuilder`, so no caller could actually use it. A unit test
+/// over the seam cannot fail on that; only a builder-level test can.
+///
+/// The assertion is deliberately NEGATIVE. "the field is populated" is a
+/// measurement of the present, not a property of the mechanism: it stays true
+/// if the value is later dropped on the floor. The absence of
+/// `workgraph.sqlite3` is positive proof that the local-SQLite fallback did
+/// NOT run, which is the thing injection has to accomplish.
+#[tokio::test]
+async fn builder_workgraph_store_injection_suppresses_the_local_sqlite_fallback() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let state_path = tmp.path().join("state");
+    std::fs::create_dir_all(&state_path).expect("create state dir");
+
+    let injected: Arc<dyn meerkat::WorkGraphStore> = Arc::new(meerkat::MemoryWorkGraphStore::new());
+
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(test_definition())
+            .persistent_state(&state_path)
+            .workgraph_store(Arc::clone(&injected))
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("persistent build with an injected workgraph store");
+
+    // Positive control for the assertion below: the builder demonstrably ran
+    // its persistent composition in this directory, so an absent
+    // workgraph.sqlite3 means "suppressed", not "nothing happened here".
+    assert!(
+        state_path.join("runtime.sqlite").exists(),
+        "persistent composition must have run in the state dir"
+    );
+    assert!(
+        !state_path.join("workgraph.sqlite3").exists(),
+        "an injected workgraph store must suppress the local SQLite fallback; \
+         the file's presence means the injected store was dropped and \
+         attach_workgraph_tools_reporting ran instead"
+    );
+
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
 #[tokio::test]
 async fn test_builder_ephemeral_custom_store_persists_sessions() {
     let custom_store: Arc<dyn meerkat::SessionStore> = Arc::new(meerkat::MemoryStore::new());

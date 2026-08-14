@@ -1,6 +1,6 @@
 ---
 title: "Access control"
-description: "Optional ABAC for the console: control which users can see which agents and what they can do with them, configurable live per user."
+description: "Optional ABAC for the console: control which users can see which agents and what they can do with them, configurable live per user. Plus scoped grants for peer gateways on the cross-mob control channel."
 icon: "lock"
 ---
 
@@ -181,3 +181,80 @@ Label- and role-based rules resolve against an attribute cache the runtime refre
 ## Relationship to authentication
 
 Access control layers on top of console authentication (`require_app_auth` + the email allowlist): authentication decides who may reach the console at all, ABAC decides what each of them sees and does once inside. Identity comes from the validated bearer token (`email` or `sub` claim). Running with access control enabled but authentication off is possible (anonymous callers match only unconstrained rules), but for per-user policy you want auth on.
+
+## Cross-mob control grants
+
+Everything above governs the **console plane**: human callers reaching agents through the console, REST, and RPC surfaces. The **cross-mob control channel** is a separate plane with a separate policy, and the two never see each other's rules.
+
+That channel is the TCP/UDS listener a gateway binds with `control_listen` / `--control-listen`. Peer gateways drive four verbs across it:
+
+| Verb | Reaches |
+|------|---------|
+| `wire` / `unwire` | Install or remove a trusted peer descriptor on one of your members |
+| `inject` | Deliver an external-turn message into one of your members' sessions |
+| `lookup_member` | Read a member's comms facts (peer id, comms name, transport pubkey, advertised address) |
+
+A **control grant** binds one calling gateway - identified by its Ed25519 pubkey, the same one `mobkit/peer_pubkey` reports - to the verbs and the members it may reach. Anything outside the grant is refused before the request reaches your mob, so an ungranted caller never learns whether the member it named exists.
+
+### How a caller is identified
+
+Callers sign every control request with their gateway keypair. The signature covers the request's semantic fields plus the audience (the mob id the caller dialed), so it cannot be re-pointed at another member, another verb, or another gateway. The receiving side matches the verified pubkey against its grant table.
+
+This is independent of the response signing you may already be using: `pubkey` on a contact entry authenticates the *answers you receive*, a control grant authorizes the *requests you serve*. They compose, and either can be used alone.
+
+### Configuring grants
+
+```toml
+[control_grants.ops-mob]
+# The calling gateway's pubkey, from its `mobkit/peer_pubkey`.
+pubkey = "ed25519:KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio="
+verbs = ["lookup_member", "wire", "unwire"]
+members = ["bob"]
+
+[control_grants.dispatcher]
+pubkey = "ed25519:..."
+verbs = ["inject"]
+# `members` omitted (or ["*"]) grants every member, present and future.
+```
+
+`verbs = ["*"]` grants all four. An unknown verb, a missing or empty `verbs` list, an undecodable pubkey, or two labels sharing one pubkey are all config errors - the table refuses to load rather than granting something the operator did not write.
+
+A caller entry accepts only `pubkey`, `verbs`, and `members`; any other key is a config error too. That is deliberate rather than pedantic: `member = ["bob"]` (singular) would otherwise leave `members` absent, and an absent `members` means *every* member - the typo would quietly widen a one-member grant to the whole mob. Put notes in `#` comments.
+
+Refusals come back with a stable code: `unauthenticated_caller`, `invalid_caller_credential`, `invalid_caller_signature`, `caller_not_granted`, `verb_not_granted`, `member_not_granted`, `audience_mismatch`. On the calling side they surface as a distinct error from an ordinary rejection, because the remedy is different: nothing about the request is malformed and retrying will not help until the peer operator widens the grant.
+
+<Warning>
+**A control listener without grants authorizes nothing.** `start_control_listener`, the Rust builder's `control_listen`, and the gateway `--control-listen` path bind with an empty table and refuse every request until scoped grants are installed. An **empty** table is not the same as an explicitly open authorizer: empty refuses everyone, while `ControlAuthorizer::open()` is a lower-level compatibility choice an embedder must name deliberately.
+</Warning>
+
+Embedders mount a table directly:
+
+```rust
+let mut table = ControlGrantTable::new();
+table.insert(
+    peer_pubkey,
+    ControlGrant::new(
+        "ops-mob",
+        [ControlVerb::Inject],
+        ControlMemberScope::members(["bob"]),
+    ),
+);
+let advertised = runtime
+    .start_control_listener_with_authorizer(
+        &addr,
+        Arc::new(ControlAuthorizer::with_grants(table)),
+    )
+    .await?;
+```
+
+Use `ControlAuthorizer::with_grants_for_audience(table, "my-mob-id")` when one caller holds grants on several of your gateways and a captured request must not be replayable across them; the mob id is the one peers use for this gateway in their contact directories.
+
+<Note>
+The SDK-driven `rpc_gateway` accepts the same TOML under `runtime_options.control_grants_toml`; the conventional `mobkit_gateway` reads `[control_grants]` beside `[mobs]` in `config/contacts.toml`. The Rust builder accepts a `ControlGrantTable` through `control_grants`. Every configured-listener path binds the table to the runtime's mob id as the signed audience. `ControlAuthorizer::from_toml` still distinguishes an absent section from an empty section for embedders that explicitly choose compatibility behavior.
+</Note>
+
+Three limits worth stating plainly:
+
+- A grant is checked per request, so a caller granted `inject` on a member may inject repeatedly. Grants bound *who and what*, not *how often*.
+- The channel has no replay cache: a captured request stays valid at its audience until the grant is withdrawn. Each request carries a client-minted nonce inside the signed material, so a future replay guard has something to key on, but none is enforced today.
+- `wire` is a trust-granting verb. A caller granted `wire` on a member may install a trusted peer descriptor of its choosing on that member - including one naming a third party's key. Grant it only to peers you would let choose who your member talks to; `inject` and `lookup_member` are the narrower verbs.

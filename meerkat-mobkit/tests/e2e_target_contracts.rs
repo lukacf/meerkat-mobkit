@@ -457,7 +457,7 @@ fn choke_101_rpc_ingress_target_defined_red() {
             "jsonrpc":"2.0",
             "id":"choke-101",
             "result":{
-                "contract_version":"0.4.0",
+                "contract_version":"0.5.0",
                 "running":true,
                 "loaded_modules":["router"]
             }
@@ -675,7 +675,7 @@ fn choke_105_auth_to_console_route_target_defined_red() {
         ),
         (
             200,
-            json!({"contract_version":"0.4.0","modules":["router","delivery"]}),
+            json!({"contract_version":"0.5.0","modules":["router","delivery"]}),
             401,
             json!({"error":"unauthorized","reason":"provider_mismatch"}),
             401,
@@ -683,46 +683,6 @@ fn choke_105_auth_to_console_route_target_defined_red() {
             200
         ),
         "CHOKE-105: auth middleware enforces user provider+allowlist and service-identity path with concrete error reasons"
-    );
-}
-
-#[test]
-#[ignore]
-fn choke_106_scheduling_dispatch_handoff_target_defined_red() {
-    let mut runtime = runtime_with_router_and_delivery();
-    let first_dispatch = parse_response(&handle_mobkit_rpc_json(
-        &mut runtime,
-        r#"{"jsonrpc":"2.0","id":"choke-106-a","method":"mobkit/scheduling/dispatch","params":{"tick_ms":120000,"schedules":[{"schedule_id":"delivery-minute","interval":"*/1m","timezone":"UTC","enabled":true}]}}"#,
-        Duration::from_secs(1),
-    ));
-    let second_dispatch = parse_response(&handle_mobkit_rpc_json(
-        &mut runtime,
-        r#"{"jsonrpc":"2.0","id":"choke-106-b","method":"mobkit/scheduling/dispatch","params":{"tick_ms":120000,"schedules":[{"schedule_id":"delivery-minute","interval":"*/1m","timezone":"UTC","enabled":true}]}}"#,
-        Duration::from_secs(1),
-    ));
-
-    runtime.shutdown();
-
-    assert_eq!(
-        (
-            first_dispatch["result"]["due_count"].clone(),
-            first_dispatch["result"]["dispatched"][0]["schedule_id"].clone(),
-            first_dispatch["result"]["dispatched"][0]["claim_key"].clone(),
-            first_dispatch["result"]["skipped_claims"].clone(),
-            second_dispatch["result"]["due_count"].clone(),
-            second_dispatch["result"]["dispatched"].clone(),
-            second_dispatch["result"]["skipped_claims"].clone(),
-        ),
-        (
-            json!(1),
-            json!("delivery-minute"),
-            json!("delivery-minute:120000"),
-            json!([]),
-            json!(1),
-            json!([]),
-            json!(["delivery-minute:120000"]),
-        ),
-        "CHOKE-106: scheduling dispatch handoff is concretely idempotent for repeated claims in the same tick"
     );
 }
 
@@ -1121,7 +1081,7 @@ fn e2e_401_rpc_surface_target_defined_red() {
                 "jsonrpc":"2.0",
                 "id":"e2e-401-status",
                 "result":{
-                    "contract_version":"0.4.0",
+                    "contract_version":"0.5.0",
                     "running":true,
                     "loaded_modules":["router"]
                 }
@@ -1673,7 +1633,7 @@ fn e2e_801_console_experience_target_defined_red() {
             open.body["activity_feed"]["keep_alive"]["event"].clone()
         ),
         (
-            json!("0.4.0"),
+            json!("0.5.0"),
             json!("console.home"),
             json!("/console/experience"),
             json!([
@@ -1697,56 +1657,6 @@ fn e2e_801_console_experience_target_defined_red() {
             json!("keep-alive")
         ),
         "E2E-801: console route emits concrete capability-driven base/module panel schema and the unified timeline feed contract"
-    );
-}
-
-#[test]
-#[ignore]
-fn e2e_901_scheduled_action_flow_target_defined_red() {
-    let mut runtime = runtime_with_router_and_delivery();
-    let evaluation = parse_response(&handle_mobkit_rpc_json(
-        &mut runtime,
-        r#"{"jsonrpc":"2.0","id":"e2e-901-eval","method":"mobkit/scheduling/evaluate","params":{"tick_ms":28980000,"schedules":[{"schedule_id":"delivery-three-minute","interval":"*/3m","timezone":"UTC","enabled":true},{"schedule_id":"delivery-pacific","interval":"*/1m","timezone":"UTC-08:00","enabled":true}]}}"#,
-        Duration::from_secs(1),
-    ));
-    let dispatch = parse_response(&handle_mobkit_rpc_json(
-        &mut runtime,
-        r#"{"jsonrpc":"2.0","id":"e2e-901-dispatch","method":"mobkit/scheduling/dispatch","params":{"tick_ms":28980000,"schedules":[{"schedule_id":"delivery-three-minute","interval":"*/3m","timezone":"UTC","enabled":true},{"schedule_id":"delivery-pacific","interval":"*/1m","timezone":"UTC-08:00","enabled":true}]}}"#,
-        Duration::from_secs(1),
-    ));
-    let replay = parse_response(&handle_mobkit_rpc_json(
-        &mut runtime,
-        r#"{"jsonrpc":"2.0","id":"e2e-901-events","method":"mobkit/events/subscribe","params":{"scope":"mob"}}"#,
-        Duration::from_secs(1),
-    ));
-
-    runtime.shutdown();
-
-    assert_eq!(
-        evaluation["result"]["due_triggers"][0]["schedule_id"],
-        json!("delivery-pacific")
-    );
-    assert_eq!(
-        evaluation["result"]["due_triggers"][1]["schedule_id"],
-        json!("delivery-three-minute")
-    );
-
-    let first_event_id = dispatch["result"]["dispatched"][0]["event_id"]
-        .as_str()
-        .expect("event id should be string");
-    let second_event_id = dispatch["result"]["dispatched"][1]["event_id"]
-        .as_str()
-        .expect("event id should be string");
-    assert!(first_event_id.starts_with("evt-schedule-delivery-pacific-28980000-"));
-    assert!(second_event_id.starts_with("evt-schedule-delivery-three-minute-28980000-"));
-    assert_ne!(first_event_id, second_event_id);
-    assert_eq!(
-        replay["result"]["events"][2]["event"]["module"],
-        json!("scheduling")
-    );
-    assert_eq!(
-        replay["result"]["events"][2]["event"]["event_type"],
-        json!("dispatch")
     );
 }
 
@@ -1873,8 +1783,6 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
         "mobkit/capabilities",
         "mobkit/reconcile",
         "mobkit/spawn_member",
-        "mobkit/scheduling/evaluate",
-        "mobkit/scheduling/dispatch",
         "mobkit/routing/resolve",
         "mobkit/routing/routes/list",
         "mobkit/routing/routes/add",
@@ -1901,7 +1809,7 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
                 SdkMappedOutcome::Success {
                     id: json!("e2e-1101-status"),
                     result: json!({
-                        "contract_version":"0.4.0",
+                        "contract_version":"0.5.0",
                         "running":true,
                         "loaded_modules":["router"]
                     }),
@@ -1909,7 +1817,7 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
                 SdkMappedOutcome::Success {
                     id: json!("e2e-1101-caps"),
                     result: json!({
-                        "contract_version":"0.4.0",
+                        "contract_version":"0.5.0",
                         "methods": expected_capability_methods.clone(),
                         "loaded_modules":["router"],
                         "runtime_capabilities": {
@@ -1936,7 +1844,7 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
                 SdkMappedOutcome::Success {
                     id: json!("e2e-1101-status"),
                     result: json!({
-                        "contract_version":"0.4.0",
+                        "contract_version":"0.5.0",
                         "running":true,
                         "loaded_modules":["router"]
                     }),
@@ -1944,7 +1852,7 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
                 SdkMappedOutcome::Success {
                     id: json!("e2e-1101-caps"),
                     result: json!({
-                        "contract_version":"0.4.0",
+                        "contract_version":"0.5.0",
                         "methods": expected_capability_methods,
                         "loaded_modules":["router"],
                         "runtime_capabilities": {
@@ -2322,7 +2230,7 @@ fn e2e_1401_program_smoke_target_defined_red() {
                 "jsonrpc":"2.0",
                 "id":"e2e-1401-status",
                 "result":{
-                    "contract_version":"0.4.0",
+                    "contract_version":"0.5.0",
                     "running":true,
                     "loaded_modules":["router"]
                 }

@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
+use meerkat_client::{LlmError, LlmEvent, LlmRequest};
 use meerkat_core::types::StopReason;
 use meerkat_mob::{MobDefinition, ProfileName};
 use meerkat_mobkit::UnifiedRuntimeBuilder;
@@ -40,6 +40,11 @@ use meerkat_mobkit::identity_first::{
 };
 use meerkat_mobkit::mob_handle_runtime::SessionCreatedContext;
 use tokio::time::sleep;
+
+/// The one definition of the normalized-provider-accounting contract every
+/// MobKit LLM double must satisfy under meerkat 0.8.22. See the module docs.
+#[path = "support/llm_usage.rs"]
+mod llm_usage;
 
 fn id(name: &str) -> AgentIdentity {
     AgentIdentity::parse(name).unwrap()
@@ -58,6 +63,7 @@ fn spec(name: &str, addr: AgentAddressability, profile: &str) -> DurableAgentSpe
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     }
 }
 
@@ -170,11 +176,14 @@ impl meerkat_client::LlmClient for CaptureClient {
             .lock()
             .unwrap()
             .push(serde_json::to_string(request).unwrap_or_default());
+        // meerkat 0.8.22 rejects a turn whose stream carried no normalized
+        // provider accounting, so the terminal `Done` never travels alone.
+        let [usage, done] =
+            llm_usage::usage_then_done(request, meerkat::Provider::OpenAI, StopReason::EndTurn);
         Box::pin(async_stream::stream! {
             yield Ok(LlmEvent::TextDelta { delta: "ok".to_string(), meta: None });
-            yield Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success { stop_reason: StopReason::EndTurn },
-            });
+            yield Ok(usage);
+            yield Ok(done);
         })
     }
     fn provider(&self) -> meerkat::Provider {

@@ -15,10 +15,9 @@
 use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
+use meerkat_client::{LlmError, LlmEvent, LlmRequest};
 use meerkat_core::types::{HandlingMode, StopReason};
 use meerkat_mob::{MobDefinition, ProfileName};
 use meerkat_mobkit::UnifiedRuntimeBuilder;
@@ -31,7 +30,11 @@ use meerkat_mobkit::identity_first::{
     TopologyError,
 };
 use meerkat_mobkit::mob_handle_runtime::SessionCreatedContext;
-use tokio::time::sleep;
+
+/// The one definition of the normalized-provider-accounting contract every
+/// MobKit LLM double must satisfy under meerkat 0.8.22.
+#[path = "support/llm_usage.rs"]
+mod llm_usage;
 
 fn id(name: &str) -> AgentIdentity {
     AgentIdentity::parse(name).unwrap()
@@ -50,6 +53,7 @@ fn spec(name: &str, profile: &str) -> DurableAgentSpec {
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     }
 }
 
@@ -94,12 +98,73 @@ struct CaptureClient {
     requests: Arc<std::sync::Mutex<Vec<String>>>,
 }
 impl CaptureClient {
-    fn count(&self) -> usize {
-        self.requests.lock().unwrap().len()
+    /// Snapshot of every captured request, in arrival order.
+    ///
+    /// A turn can produce more than one request, and unrelated turns interleave,
+    /// so `last()` is not a reliable way to name "the turn under test" - see
+    /// [`select_request_containing`].
+    fn all(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
     }
-    fn last(&self) -> Option<String> {
-        self.requests.lock().unwrap().last().cloned()
+}
+
+/// Select the single captured request carrying ALL of `markers`.
+///
+/// Assertions about a specific turn must run against a request identified by
+/// its CONTENT, never by position. `capture.last()` was doing the latter, and
+/// on the authored turn it returned whichever request happened to arrive last:
+/// the authored one on some runs and an unrelated 2-message replay on others.
+/// The visible symptom was a failure that moved between two assertions on the
+/// same commit pair, which reads as flakiness in the product rather than in
+/// the selector.
+///
+/// On no match this dumps a summary of every captured request - markers, message
+/// count, roles - because "which requests DID arrive" is the first question
+/// anyone asks next, and a bare "not found" throws that away.
+fn select_request_containing(capture: &CaptureClient, markers: &[(&str, &str)]) -> String {
+    // SYNCHRONOUS, and deliberately so. Every delivery in this file now returns
+    // only after its OWN turn has committed, so the request under test is
+    // already captured by the time we look. There is nothing left to wait for,
+    // and the 100ms polling loop this replaces could only ever hide a bug: it
+    // turned "the request never arrived" into "the request arrived late",
+    // which are different failures with the same symptom.
+    //
+    // Content-identified, not count-identified and not last-identified: the
+    // authored delivery is preceded by an unrelated 2-message replay, so
+    // "one more request than before" and "the newest request" both name the
+    // decoy.
+    let all = capture.all();
+    if let Some(one) = all
+        .iter()
+        .find(|req| markers.iter().all(|(_, needle)| req.contains(needle)))
+    {
+        return one.clone();
     }
+    let all = capture.all();
+    let mut summary = String::new();
+    for (i, req) in all.iter().enumerate() {
+        let parsed: serde_json::Value =
+            serde_json::from_str(req).unwrap_or(serde_json::Value::Null);
+        let msgs = parsed.get("messages").and_then(|m| m.as_array());
+        let present: Vec<&str> = markers
+            .iter()
+            .filter(|(_, needle)| req.contains(needle))
+            .map(|(label, _)| *label)
+            .collect();
+        summary.push_str(&format!(
+            "\n  [{i}] markers_present={present:?} messages={:?} roles={:?}",
+            msgs.map(std::vec::Vec::len),
+            msgs.map(|m| m
+                .iter()
+                .map(|x| x.get("role").and_then(|r| r.as_str()).unwrap_or("?"))
+                .collect::<Vec<_>>())
+        ));
+    }
+    panic!(
+        "no captured request carries all of {:?}; {} request(s) captured:{summary}",
+        markers.iter().map(|(label, _)| *label).collect::<Vec<_>>(),
+        all.len()
+    );
 }
 impl meerkat_client::LlmClient for CaptureClient {
     fn project_replay_messages(
@@ -116,11 +181,18 @@ impl meerkat_client::LlmClient for CaptureClient {
             .lock()
             .unwrap()
             .push(serde_json::to_string(request).unwrap_or_default());
+        // meerkat 0.8.22 fails a turn closed when its stream carried no
+        // normalized provider accounting. A double that hand-rolls `Done`
+        // still COMPILES, then fails every turn it drives with
+        // `IncompleteResponse` - which surfaces as a member that retries
+        // forever rather than as anything resembling a usage error. This file
+        // was missed when the other doubles adopted the helper.
+        let [usage, done] =
+            llm_usage::usage_then_done(request, meerkat::Provider::OpenAI, StopReason::EndTurn);
         Box::pin(async_stream::stream! {
             yield Ok(LlmEvent::TextDelta { delta: "ok".to_string(), meta: None });
-            yield Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success { stop_reason: StopReason::EndTurn },
-            });
+            yield Ok(usage);
+            yield Ok(done);
         })
     }
     fn provider(&self) -> meerkat::Provider {
@@ -179,17 +251,6 @@ async fn boot(
     (unified, identity_rt)
 }
 
-async fn wait_for_request(capture: &CaptureClient, secs: u64, what: &str) {
-    let deadline = Instant::now() + Duration::from_secs(secs);
-    while capture.count() < 1 {
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for {what} to reach the LLM"
-        );
-        sleep(Duration::from_millis(100)).await;
-    }
-}
-
 /// THE incident shape, end to end: boot 1 creates the member on
 /// `gpt-5.5` (durable provider: openai). Boot 2's definition moves the
 /// profile to `claude-opus-4-8` with NO provider key. The resume must apply
@@ -233,16 +294,17 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
             other => panic!("expected Created on first boot, got {other:?}"),
         }
 
+        // Subscribe BEFORE the send so the turn's terminal cannot be missed,
+        // then await it. The 500ms sleep this replaces was waiting for the turn
+        // to COMMIT, which a timer cannot express: it elapses whether the turn
+        // succeeded, failed closed, or never ran.
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &alice,
                 &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
             )
             .await
             .expect("send turn 1");
-        wait_for_request(&capture, 20, "turn 1").await;
-        // Let turn 1's assistant response commit before the shutdown flush.
-        sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
 
@@ -279,16 +341,18 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
             ),
         }
 
+        // Subscribe BEFORE the send so this turn's terminal cannot be missed.
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &alice,
                 &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
             )
             .await
             .expect("send turn 2");
-        wait_for_request(&capture, 30, "the post-edit turn").await;
-
-        let last_request = capture.last().expect("a post-edit request was captured");
+        let last_request = select_request_containing(
+            &capture,
+            &[("post-edit model", "\"model\":\"claude-opus-4-8\"")],
+        );
         assert!(
             last_request.contains("\"model\":\"claude-opus-4-8\""),
             "the resumed turn must run on the DECLARED model (the edit was inert): {last_request}"
@@ -299,7 +363,6 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
         );
 
         // Let turn 2 persist the effective identity before reading it back.
-        sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
 
@@ -432,15 +495,17 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
             }
             other => panic!("expected Created on first boot, got {other:?}"),
         }
+        // Subscribe BEFORE the send so the turn's terminal cannot be missed,
+        // then await it. The 500ms sleep this replaces was waiting for the turn
+        // to COMMIT, which a timer cannot express: it elapses whether the turn
+        // succeeded, failed closed, or never ran.
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &bob,
                 &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
             )
             .await
             .expect("send turn 1");
-        wait_for_request(&capture, 20, "turn 1").await;
-        sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
 
@@ -509,15 +574,15 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
             ),
         }
 
+        // Subscribe BEFORE the send so this turn's terminal cannot be missed.
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &bob,
                 &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
             )
             .await
             .expect("send post-refusal turn");
-        wait_for_request(&capture, 30, "the post-refusal turn").await;
-        let last_request = capture.last().expect("a post-refusal request was captured");
+        let last_request = select_request_containing(&capture, &[("TOKEN", TOKEN)]);
         assert!(
             last_request.contains("\"model\":\"gpt-5.5\""),
             "the resumed turn must run on the durable pair: {last_request}"
@@ -527,7 +592,6 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
             "the resumed turn must replay the preserved transcript (token {TOKEN})"
         );
 
-        sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
 
@@ -662,15 +726,17 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
             }
             other => panic!("expected Created on first boot, got {other:?}"),
         }
+        // Subscribe BEFORE the send so the turn's terminal cannot be missed,
+        // then await it. The 500ms sleep this replaces was waiting for the turn
+        // to COMMIT, which a timer cannot express: it elapses whether the turn
+        // succeeded, failed closed, or never ran.
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &alice,
                 &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
             )
             .await
             .expect("send turn 1");
-        wait_for_request(&capture, 20, "turn 1").await;
-        sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
 
@@ -709,15 +775,15 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
             }
             other => panic!("an edited definition must resume, got {other:?}"),
         }
+        // Subscribe BEFORE the send so this turn's terminal cannot be missed.
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &alice,
                 &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
             )
             .await
             .expect("send post-edit turn");
-        wait_for_request(&capture, 30, "the post-edit turn").await;
-        let last_request = capture.last().expect("a post-edit request was captured");
+        let last_request = select_request_containing(&capture, &[("TOKEN", TOKEN)]);
         assert!(
             last_request.contains(ROLE_BASE),
             "the durable authored prompt must survive resume byte-for-byte: {last_request}"
@@ -731,7 +797,6 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
             last_request.contains(TOKEN),
             "the resumed turn must replay the persisted transcript (token {TOKEN})"
         );
-        sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
 
@@ -770,22 +835,19 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
         )
         .await
         .expect("restore_flow (neutral boot 3)");
-        assert!(
-            matches!(
-                result.outcomes.get(&alice).expect("alice outcome"),
-                RestoreOutcome::Resumed { .. }
-            ),
-            "a neutral boot must resume"
-        );
+        match result.outcomes.get(&alice).expect("alice outcome") {
+            RestoreOutcome::Resumed { .. } => {}
+            other => panic!("a neutral boot must resume, got {other:?}"),
+        }
+        // Subscribe BEFORE the send so this turn's terminal cannot be missed.
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &alice,
                 &meerkat_core::ContentInput::Text("neutral ping".to_string()),
             )
             .await
             .expect("send neutral-boot turn");
-        wait_for_request(&capture, 30, "the neutral-boot turn").await;
-        sleep(Duration::from_millis(500)).await;
+        select_request_containing(&capture, &[("neutral ping", "neutral ping")]);
         unified.shutdown().await;
     }
     let (systems_final, rewrites_final) =
@@ -929,15 +991,17 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             }
             other => panic!("expected Created on first boot, got {other:?}"),
         }
+        // Subscribe BEFORE the send so the turn's terminal cannot be missed,
+        // then await it. The 500ms sleep this replaces was waiting for the turn
+        // to COMMIT, which a timer cannot express: it elapses whether the turn
+        // succeeded, failed closed, or never ran.
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &carol,
                 &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
             )
             .await
             .expect("send turn 1");
-        wait_for_request(&capture, 20, "turn 1").await;
-        sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
 
@@ -974,52 +1038,62 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
         )
         .await
         .expect("restore_flow (boot 2)");
-        let runtime_id = match result.outcomes.get(&carol).expect("carol outcome") {
+        match result.outcomes.get(&carol).expect("carol outcome") {
             RestoreOutcome::Resumed { record, .. } => {
                 assert_eq!(
                     record.session_id, original_session_id,
                     "boot 2 must resume the SAME durable session"
                 );
-                record.agent_runtime_id.clone()
             }
             other => panic!("expected Resumed on boot 2, got {other:?}"),
-        };
+        }
 
-        // The IdentityRuntime send surface has no per-turn System parameter;
-        // the mobkit ingress for the 0.8.11 carrier IS the session bridge
-        // (commit 6eb69017), so the authored leg drives it directly - the
-        // same object restore_flow just resumed the member through.
-        let bridge: Arc<dyn SessionBridge> = unified
-            .session_bridge()
-            .expect("session_bridge should exist")
-            .clone();
-        let delivered = bridge
-            .deliver_with_mode_context_and_system_prompt(
-                &runtime_id,
+        // The authored leg now goes through the IdentityRuntime like every
+        // other delivery. It used to drive the session bridge directly, because
+        // the send surface had no per-turn System parameter; it does now, and
+        // going around the runtime meant this turn alone skipped lease
+        // validation, alias pinning and session reconciliation.
+        //
+        // Returns only after THIS turn commits, so there is no fuse, no
+        // interaction-event correlation and no sleep.
+        identity_rt
+            .send_awaiting_commit_with_system_prompt(
+                &carol,
                 &meerkat_core::ContentInput::Text(TURN_2_TEXT.to_string()),
                 Some(AUTHORED_PROMPT),
-                &[],
                 HandlingMode::Queue,
                 None,
             )
             .await
-            .expect("deliver the authored-System turn");
+            .expect("the authored system turn must complete");
         assert_eq!(
-            delivered, original_session_id,
+            identity_rt
+                .status(&carol)
+                .await
+                .expect("carol status")
+                .session_id
+                .expect("carol must still be bound to a session"),
+            original_session_id,
             "the authored turn must land on the same durable session"
         );
-        wait_for_request(&capture, 30, "the authored turn").await;
-        let last_request = capture.last().expect("the authored turn was captured");
-        assert!(
-            last_request.contains(AUTHORED_PROMPT),
-            "the authored System message must reach the very turn it was authored for: \
-             {last_request}"
+        // Identify the authored turn by CONTENT - it is the request carrying
+        // both the authored System prompt and this turn's user text - and then
+        // assert the transcript on THAT SAME request. Selecting by position
+        // (`capture.last()`) made the failure move between assertions on one
+        // commit pair, because unrelated requests interleave.
+        let authored_request = select_request_containing(
+            &capture,
+            &[
+                ("AUTHORED_PROMPT", AUTHORED_PROMPT),
+                ("TURN_2_TEXT", TURN_2_TEXT),
+            ],
         );
         assert!(
-            last_request.contains(TOKEN),
-            "the authored turn must replay the persisted transcript (token {TOKEN})"
+            authored_request.contains(TOKEN),
+            "the authored turn must replay the persisted transcript (token {TOKEN}): \
+             {authored_request}"
         );
-        sleep(Duration::from_millis(500)).await;
+        // No commit sleep: the send returned only after this turn committed.
         unified.shutdown().await;
     }
 
@@ -1096,15 +1170,18 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             }
             other => panic!("expected Resumed on boot 3, got {other:?}"),
         }
+        // Subscribe BEFORE the send so this turn's terminal cannot be missed.
         identity_rt
-            .send(
+            .send_awaiting_commit(
                 &carol,
                 &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
             )
             .await
             .expect("send the neutral turn");
-        wait_for_request(&capture, 30, "the neutral turn").await;
-        let last_request = capture.last().expect("the neutral turn was captured");
+        let last_request = select_request_containing(
+            &capture,
+            &[("neutral turn text", "What token did I give you earlier?")],
+        );
         assert!(
             last_request.contains(AUTHORED_PROMPT),
             "the authored System row must replay byte-for-byte into the resumed turn's \
@@ -1114,7 +1191,6 @@ async fn authored_system_turn_appends_exactly_once_and_replays() {
             last_request.contains(TOKEN),
             "the resumed turn must replay the persisted transcript (token {TOKEN})"
         );
-        sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
 

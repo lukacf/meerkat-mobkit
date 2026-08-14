@@ -321,8 +321,7 @@ impl EventLogStore for ReferenceEventLogStore {
 // ---------------------------------------------------------------------------
 
 /// Minimal in-memory `AgentMemoryProvider` for the reference bundle: the
-/// recall/remember/forget shape (the `MarkdownAgentMemoryStore` capability
-/// profile) with every other capability honestly refused via the trait's
+/// recall/remember/forget shape with every other capability honestly refused via the trait's
 /// `Unsupported` defaults.
 #[derive(Default)]
 pub struct ReferenceInMemoryAgentMemoryStore {

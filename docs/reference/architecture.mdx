@@ -81,7 +81,6 @@ meerkat-mobkit/src/
 │   ├── gating_methods.rs
 │   ├── memory_methods.rs
 │   ├── routing_delivery_methods.rs
-│   ├── scheduling_methods.rs
 │   ├── session_store_methods.rs
 │   └── subscribe_methods.rs
 ├── runtime/                  # Runtime implementation
@@ -97,7 +96,6 @@ meerkat-mobkit/src/
 │   ├── module_boundary.rs    # MCP/subprocess boundary
 │   ├── rpc.rs                # Runtime JSON-RPC helpers
 │   ├── routing.rs            # Route resolution
-│   ├── scheduling.rs         # Schedule evaluation
 │   ├── session_store.rs      # Persistence backends
 │   └── supervisor.rs         # Process supervision
 ├── unified_runtime/          # Builder, lifecycle, event log, edge reconcile
@@ -122,7 +120,6 @@ Key MCP tools per module:
 |--------|-------|
 | router | `routing.resolve` |
 | delivery | `delivery.send` |
-| scheduling | `scheduling.dispatch` |
 | gating | `gating.evaluate`, `gating.decide` |
 | memory | `memory.index`, `memory.query`, `memory.conflict_read` |
 
@@ -185,7 +182,7 @@ Routers are merged into a single `axum::Router` served on the configured port.
 | `axum` | HTTP framework |
 | `serde` / `serde_json` | Serialization |
 | `reqwest` | HTTP client |
-| `chrono` / `chrono-tz` | Time and timezone |
+| `chrono` | Time |
 | `hmac` / `sha2` / `ed25519-dalek` | JWT and peer-key cryptography |
 | `toml` | Configuration parsing |
 

@@ -15,8 +15,7 @@ use crate::identity_first::{
     AgentCustomizer, AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryProvider,
     AgentMemoryRuntimeInjector, AgentRuntimeServices, ContinuitySessionStoreAdapter,
     DurabilityPolicy, IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig,
-    LocalContinuityStore, LocalLeaseProvider, MarkdownAgentMemoryStore, RosterContext,
-    RosterProvider, TopologyProvider,
+    LocalContinuityStore, LocalLeaseProvider, RosterContext, RosterProvider, TopologyProvider,
 };
 use crate::mob_handle_runtime::{
     CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, SessionHook,
@@ -87,7 +86,6 @@ pub struct UnifiedRuntimeBuilder {
     agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>>,
     agent_memory_config: Option<AgentMemoryConfig>,
     agent_memory_profile_policy: BTreeMap<meerkat_mob::ProfileName, bool>,
-    agent_memory_from_persistent_state: bool,
     agent_memory_engines: Option<crate::memory_wiring::MemoryEnginesConfig>,
     identity_bootstrap_mode: IdentityBootstrapMode,
     identity_bootstrap_mode_configured: bool,
@@ -98,6 +96,7 @@ pub struct UnifiedRuntimeBuilder {
     ephemeral_blobs: bool,
     ephemeral_runtime_store: bool,
     schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
+    workgraph_store: Option<Arc<dyn meerkat::WorkGraphStore>>,
     storage_provider: Option<Arc<dyn crate::storage_provider::MobKitStorageProvider>>,
     // Materialized from `storage_provider` (M4b): the meerkat-level bundle
     // opened through `meerkat_provider()` for non-disk backends, and the
@@ -121,6 +120,7 @@ pub struct UnifiedRuntimeBuilder {
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
     contact_directory: Option<ContactDirectory>,
     control_listen: Option<String>,
+    control_grants: Option<crate::runtime::cross_mob_control::ControlGrantTable>,
     persistent_metadata: Option<Arc<dyn PersistentMetadataStore>>,
     access_controller: Option<crate::access::AccessController>,
     topology_control_policy: crate::topology_control::TopologyControlPolicy,
@@ -347,14 +347,6 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
-    /// Enable identity-first agent memory using the bundled markdown store
-    /// under `persistent_state()/agent-memory`.
-    pub fn persistent_agent_memory(mut self, config: AgentMemoryConfig) -> Self {
-        self.agent_memory_from_persistent_state = true;
-        self.agent_memory_config = Some(config);
-        self
-    }
-
     /// Enable the FULL agent-memory stack (bundled SQLite store + the taint
     /// firewall + the enabled judgment-plane engines) — the same stack the
     /// rpc gateway assembles, reachable from the Rust builder (the OB3
@@ -492,6 +484,35 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    /// Set an external [`WorkGraphStore`](meerkat::WorkGraphStore) (item 5):
+    /// the agent-facing workgraph tools attach over the caller's store
+    /// instead of the SQLite file beside `runtime.sqlite`. Injectable
+    /// INDEPENDENTLY of continuity, schedule, lease, console and blob - that
+    /// independence is the point of the item, replacing the previous
+    /// all-or-nothing composition where a durable workgraph was reachable
+    /// only by adopting a whole composite provider.
+    ///
+    /// Durability rides with the injector. Mobkit does NOT gate on
+    /// [`WorkGraphStore::kind()`](meerkat::WorkGraphStore::kind), which is a
+    /// backend-SHAPE tag and not a durability oracle: the path behind
+    /// `Sqlite` is caller-supplied and says nothing about whether it
+    /// survives a restart, and `Custom` says nothing either way.
+    ///
+    /// Two things an injected store does NOT get, both deliberate:
+    /// - It is a MEERKAT-level slot, so it is absent from
+    ///   `storage_provider::REQUIRED_MOBKIT_DURABILITY_DOMAINS` and from the
+    ///   mobkit `RealmStoreSet`. On the provider path the workgraph rides
+    ///   `provider_meerkat_stores` instead, and per-slot injection takes
+    ///   precedence over it.
+    /// - The cross-process admission sidecar is keyed on the STATE DIR, not
+    ///   on the store. An injected backend can live anywhere, so the sidecar
+    ///   serializes co-processes sharing a state dir rather than co-processes
+    ///   sharing this store.
+    pub fn workgraph_store(mut self, store: Arc<dyn meerkat::WorkGraphStore>) -> Self {
+        self.workgraph_store = Some(store);
+        self
+    }
+
     /// Install a composite [`MobKitStorageProvider`] — the one-remote-bundle
     /// seam (M4). The provider's realm store set supplies the identity
     /// substrate (continuity + lease authority), console timeline, metadata,
@@ -529,30 +550,63 @@ impl UnifiedRuntimeBuilder {
     }
 
     /// Enable or disable builtin tools (default: true).
+    ///
+    /// NOT a containment control for mob members. This sets the agent
+    /// factory's runtime DEFAULT, and a default only applies where the
+    /// per-session intent is `ToolCategoryOverride::Inherit`. A member built
+    /// from an inline mob profile never inherits: `build_agent_config` maps
+    /// every `profile.tools.*` boolean through
+    /// `ToolCategoryOverride::from_effective`, which returns only
+    /// `Enable`/`Disable` and never `Inherit`
+    /// (`meerkat-core/src/session.rs:6656-6658`), and `resolve()` ignores the
+    /// runtime default for those two (`:6626-6632`). So a profile declaring
+    /// `tools.builtins = true` still gets builtins after `builtins(false)`.
+    /// This flag governs sessions built through the same factory that are not
+    /// profile-driven. For per-member containment set `profiles.<name>.tools`
+    /// (or a `tool_access_policy`), not this.
     pub fn builtins(mut self, enabled: bool) -> Self {
         self.capability_flags.builtins = enabled;
         self
     }
 
     /// Enable or disable shell tool (default: true).
+    ///
+    /// A profile's `tools.shell` wins on the definition path; this is a
+    /// factory default, not member containment. See [`Self::builtins`].
     pub fn shell(mut self, enabled: bool) -> Self {
         self.capability_flags.shell = enabled;
         self
     }
 
     /// Enable or disable mob tools (default: true).
+    ///
+    /// A profile's `tools.mob` wins on the definition path; see
+    /// [`Self::builtins`]. Narrower still: the factory never reads its own
+    /// mob default when composing, because `effective_mob` is derived from
+    /// the build's mob operator authority context
+    /// (`meerkat/src/factory.rs:5462-5467`).
     pub fn mob(mut self, enabled: bool) -> Self {
         self.capability_flags.mob = enabled;
         self
     }
 
     /// Enable or disable comms (default: true).
+    ///
+    /// A profile's `tools.comms` wins on the definition path; see
+    /// [`Self::builtins`]. Note also that `tools.comms = false` is refused
+    /// outright for mob members (`meerkat-mob/src/build.rs:170-173`), and the
+    /// factory's own comms default is consulted only when the build carries
+    /// no comms name, which the mob path always sets
+    /// (`meerkat/src/factory.rs:4977-4981`, `meerkat-mob/src/build.rs:212`).
     pub fn comms(mut self, enabled: bool) -> Self {
         self.capability_flags.comms = enabled;
         self
     }
 
     /// Enable or disable memory tools (default: true).
+    ///
+    /// A profile's `tools.memory` wins on the definition path; this is a
+    /// factory default, not member containment. See [`Self::builtins`].
     pub fn memory(mut self, enabled: bool) -> Self {
         self.capability_flags.memory = enabled;
         self
@@ -652,6 +706,20 @@ impl UnifiedRuntimeBuilder {
     /// [`UnifiedRuntime::control_listener_advertised_address`].
     pub fn control_listen(mut self, addr: impl Into<String>) -> Self {
         self.control_listen = Some(addr.into());
+        self
+    }
+
+    /// Authorize callers of the configured cross-mob control listener.
+    ///
+    /// Grants are bound to this runtime's mob id when the listener starts,
+    /// so a signed request captured from one gateway cannot be replayed at
+    /// another. Omitting this method is fail-closed: a configured listener
+    /// still binds, but its empty grant table refuses every request.
+    pub fn control_grants(
+        mut self,
+        grants: crate::runtime::cross_mob_control::ControlGrantTable,
+    ) -> Self {
+        self.control_grants = Some(grants);
         self
     }
 
@@ -776,18 +844,6 @@ impl UnifiedRuntimeBuilder {
             || has_agent_customizer
             || has_identity_runtime_instance_id
             || self.identity_bootstrap_mode_configured;
-        if self.agent_memory_provider.is_some() && self.agent_memory_from_persistent_state {
-            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                "agent_memory() and persistent_agent_memory() are mutually exclusive".to_string(),
-            ));
-        }
-
-        if self.agent_memory_from_persistent_state && !has_persistent_state {
-            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                "persistent_agent_memory() requires persistent_state()".to_string(),
-            ));
-        }
-
         // REQ-23, lifted (M4): an external continuity/lease pair may coexist
         // with persistent_state() — the external substrate stays the
         // identity and session authority while the state directory supplies
@@ -922,25 +978,6 @@ impl UnifiedRuntimeBuilder {
             .persistent_state_path
             .as_ref()
             .map(|path| MobKitStorageLayout::with_injected_roots(path.clone(), None));
-        let persistent_agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>> =
-            if self.agent_memory_from_persistent_state {
-                let Some(layout) = storage_layout.as_ref() else {
-                    return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                        "persistent_agent_memory() requires persistent_state()".to_string(),
-                    ));
-                };
-                let memory_path = layout.agent_memory_root()?.path;
-                Some(Arc::new(
-                    MarkdownAgentMemoryStore::open(&memory_path).map_err(|e| {
-                        UnifiedRuntimeBuilderError::Io(format!(
-                            "failed to open agent memory store at {}: {e}",
-                            memory_path.display()
-                        ))
-                    })?,
-                ))
-            } else {
-                None
-            };
         // Full-stack path: the stack provider exists pre-runtime so it can
         // serve as the provider (recorder + recall) from the first spawn;
         // the firewall + engines attach post-construction, when the memory
@@ -979,8 +1016,7 @@ impl UnifiedRuntimeBuilder {
         let agent_memory_provider = self
             .agent_memory_provider
             .clone()
-            .or_else(|| stack_provider.clone())
-            .or(persistent_agent_memory_provider);
+            .or_else(|| stack_provider.clone());
         let agent_memory_injector = agent_memory_provider.as_ref().map(|provider| {
             AgentMemoryRuntimeInjector::new(
                 provider.clone(),
@@ -1431,12 +1467,22 @@ impl UnifiedRuntimeBuilder {
         // steps: the fully assembled runtime owns the serve task, so a bind
         // failure follows the same cooperative shutdown path as the other
         // late bootstrap errors above.
-        if let Some(addr) = control_listen.as_ref()
-            && let Err(error) = runtime.start_control_listener(addr).await
-        {
-            let build_error = UnifiedRuntimeBuilderError::Io(format!("control_listen(): {error}"));
-            runtime.shutdown().await;
-            return Err(build_error);
+        if let Some(addr) = control_listen.as_ref() {
+            let authorizer = std::sync::Arc::new(
+                crate::runtime::cross_mob_control::ControlAuthorizer::with_grants_for_audience(
+                    self.control_grants.take().unwrap_or_default(),
+                    runtime.mob_id(),
+                ),
+            );
+            if let Err(error) = runtime
+                .start_control_listener_with_authorizer(addr, authorizer)
+                .await
+            {
+                let build_error =
+                    UnifiedRuntimeBuilderError::Io(format!("control_listen(): {error}"));
+                runtime.shutdown().await;
+                return Err(build_error);
+            }
         }
 
         // Start event log ingestion if configured
@@ -1523,6 +1569,13 @@ impl UnifiedRuntimeBuilder {
             ("blob_store()", self.blob_store.is_some()),
             ("binary_blob_store()", self.binary_blob_store.is_some()),
             ("schedule_store()", self.schedule_store.is_some()),
+            // The workgraph is a meerkat-level slot, so it is NOT part of the
+            // mobkit `RealmStoreSet` this seam materializes - the provider's
+            // workgraph rides `provider_meerkat_stores`. It still conflicts:
+            // two independent channels would otherwise both claim the slot,
+            // and per-slot injection silently winning is exactly the
+            // ambiguity the typed error exists to prevent.
+            ("workgraph_store()", self.workgraph_store.is_some()),
             ("with_console_log_store()", self.console_log_store.is_some()),
             ("persistent_metadata()", self.persistent_metadata.is_some()),
         ]
@@ -1634,7 +1687,6 @@ impl UnifiedRuntimeBuilder {
             });
         }
         if self.agent_memory_provider.is_none()
-            && !self.agent_memory_from_persistent_state
             && (self.agent_memory_config.is_some() || self.agent_memory_engines.is_some())
             && let Some(memory) = set.agent_memory_provider
         {
@@ -1675,6 +1727,8 @@ impl UnifiedRuntimeBuilder {
         };
         caps.image_generation |=
             crate::mob_handle_runtime::mob_definition_may_use_image_generation(&definition);
+        // Declared-versus-resolved capability invariant. This is the ONLY
+        // sound place for it: on the definition path `self.schedule_store`
         let max_sessions = self.max_sessions.unwrap_or(DEFAULT_MAX_SESSIONS);
         if max_sessions == 0 {
             return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
@@ -1751,6 +1805,7 @@ impl UnifiedRuntimeBuilder {
                 self.ephemeral_blobs,
                 self.ephemeral_runtime_store,
                 self.schedule_store.clone(),
+                self.workgraph_store.clone(),
                 hook,
                 caps,
                 after_hook.clone(),
@@ -1786,6 +1841,7 @@ impl UnifiedRuntimeBuilder {
                 self.custom_session_store_kind(),
                 self.blob_injection()?,
                 self.schedule_store.clone(),
+                self.workgraph_store.clone(),
                 hook,
                 caps,
                 after_hook,
@@ -1808,6 +1864,7 @@ impl UnifiedRuntimeBuilder {
                 self.custom_session_store_kind(),
                 self.blob_injection()?,
                 self.schedule_store.clone(),
+                self.workgraph_store.clone(),
                 hook,
                 caps,
                 after_hook,

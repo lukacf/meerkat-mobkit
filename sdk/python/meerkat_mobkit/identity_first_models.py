@@ -373,6 +373,9 @@ class DurableAgentSpec:
     labels: dict[str, str] = field(default_factory=dict)
     context: Any | None = None
     additional_instructions: list[str] = field(default_factory=list)
+    # Exact canonical Meerkat host ref. Callers must never reinterpret an
+    # unavailable selected host as local placement.
+    placement: str | None = None
 
     def __post_init__(self) -> None:
         self.identity = _validate_agent_identity(self.identity)
@@ -389,6 +392,8 @@ class DurableAgentSpec:
         if self.context is not None:
             result["context"] = self.context
         result["additional_instructions"] = list(self.additional_instructions)
+        if self.placement is not None:
+            result["placement"] = self.placement
         return result
 
     @classmethod
@@ -401,6 +406,7 @@ class DurableAgentSpec:
             labels=dict(data.get("labels") or {}),
             context=data.get("context"),
             additional_instructions=list(data.get("additional_instructions") or []),
+            placement=data.get("placement"),
         )
 
 

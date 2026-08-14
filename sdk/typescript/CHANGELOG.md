@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Breaking (mobkit 0.8.16, tracking meerkat 0.8.22's exact helper contract):
+  `spawnHelper` and `forkHelper` now take required `resultLabel: string` and
+  `maxTextBytes: number` parameters (wire fields `result_label` /
+  `max_text_bytes`); the byte bound is validated upstream before admission.
+  The response regains `session_id`, populating the existing
+  `HelperResult.sessionId` that older releases left `null`.
+
+- Breaking: removed `MobKitBuilder.scheduling(...)`, static schedule-file
+  discovery, and `MobHandle.schedulingEvaluate` / `schedulingDispatch`.
+  Create durable schedules through Meerkat schedule tools or
+  `ScheduleService`.
+
 ### Gateway stderr passthrough
 
 - Gateway stderr (tracing lines, panic hooks, storage-migration progress) is

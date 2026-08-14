@@ -62,6 +62,7 @@ fn make_spec(name: &str) -> DurableAgentSpec {
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     }
 }
 
@@ -223,9 +224,7 @@ async fn identity_first_e2e_02_restart_all_ready() {
     assert_eq!(restart_result.outcomes.len(), 2);
     for (id, outcome) in &restart_result.outcomes {
         match outcome {
-            RestoreOutcome::Resumed {
-                record, snapshot, ..
-            } => {
+            RestoreOutcome::Resumed { record, .. } => {
                 let first = first_records.get(id).unwrap();
                 assert_eq!(
                     record.agent_runtime_id, first.agent_runtime_id,
@@ -235,7 +234,6 @@ async fn identity_first_e2e_02_restart_all_ready() {
                     record.session_id, first.session_id,
                     "same SessionId on restart for {id}"
                 );
-                assert!(!snapshot.data.is_empty());
             }
             other => panic!("expected Resumed for {id} on restart, got: {other:?}"),
         }

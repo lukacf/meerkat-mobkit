@@ -33,7 +33,7 @@ use meerkat_mobkit::memory::{
 use meerkat_mobkit::memory_wiring::{MemoryEnginesConfig, MemoryStackSeams, attach_memory_engines};
 use meerkat_mobkit::{
     AgentMemoryConfig, AgentMemoryError, AgentMemoryProvider, AgentMemoryRecallRequest,
-    AgentMemoryRecord, MarkdownAgentMemoryStore, UnifiedRuntime,
+    AgentMemoryRecord, UnifiedRuntime,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -766,24 +766,36 @@ async fn classic_path_never_clobbers_an_embedder_installed_gate() {
 }
 
 // ---------------------------------------------------------------------------
-// Markdown provider: recall-only by its capability flags.
+// Custom provider: recall-only by its capability flags.
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
+struct RecallOnlyProvider;
+
+#[async_trait]
+impl AgentMemoryProvider for RecallOnlyProvider {
+    async fn recall(
+        &self,
+        _request: AgentMemoryRecallRequest,
+    ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
+        Ok(Vec::new())
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn markdown_provider_stays_recall_only_by_flags() {
-    let memory_dir = tempfile::tempdir().expect("memory dir");
-    let markdown = MarkdownAgentMemoryStore::open(memory_dir.path()).expect("markdown store");
+async fn custom_provider_stays_recall_only_by_flags() {
+    let provider = RecallOnlyProvider;
 
     // The flags ARE the recall-only fact: no judgment capability advertised.
-    assert!(markdown.as_taintable().is_none());
-    assert!(markdown.as_steward_store().is_none());
-    assert!(markdown.as_memory_panel_store().is_none());
-    assert!(markdown.as_selected_record_fetch().is_none());
-    assert!(markdown.as_tombstone_source().is_none());
+    assert!(provider.as_taintable().is_none());
+    assert!(provider.as_steward_store().is_none());
+    assert!(provider.as_memory_panel_store().is_none());
+    assert!(provider.as_selected_record_fetch().is_none());
+    assert!(provider.as_tombstone_source().is_none());
 
     // Stack assembly against it refuses loudly, naming the capability.
     let err = attach_memory_engines(
-        Arc::new(markdown.clone()),
+        Arc::new(provider.clone()),
         &AgentMemoryConfig::default(),
         &MemoryEnginesConfig::default(),
         MemoryStackSeams {
@@ -801,12 +813,12 @@ async fn markdown_provider_stays_recall_only_by_flags() {
     let runtime = Box::pin(
         UnifiedRuntime::builder()
             .definition(test_definition())
-            .agent_memory(Arc::new(markdown), AgentMemoryConfig::default())
+            .agent_memory(Arc::new(provider), AgentMemoryConfig::default())
             .default_llm_client(Arc::new(StubClient))
             .build(),
     )
     .await
-    .expect("classic runtime over the markdown provider must build");
+    .expect("classic runtime over the custom recall-only provider must build");
     assert!(
         runtime.memory_panel_store().is_none(),
         "a provider without MemoryPanelStore must not register a panel"

@@ -29,9 +29,12 @@ use std::sync::Arc;
 use meerkat_client::TestClient;
 use meerkat_mob::MobDefinition;
 
-use meerkat_mobkit::UnifiedRuntimeBuilder;
 use meerkat_mobkit::contact_directory::{ContactDirectory, MobTransport};
+use meerkat_mobkit::runtime::cross_mob_control::{ControlAuthorizer, ControlListenAddr};
+use meerkat_mobkit::runtime::cross_mob_remote::RemoteEndpoint;
+use meerkat_mobkit::runtime::remote_host::RemoteHostClient;
 use meerkat_mobkit::unified_runtime::cross_mob::{CrossMobError, build_tcp_peer_spec};
+use meerkat_mobkit::{GatewayPeerKeys, UnifiedRuntimeBuilder};
 
 const MINIMAL_MOB_TOML_A: &str = r#"
 [mob]
@@ -212,4 +215,44 @@ async fn unknown_mob_rejected_before_dispatch() {
     assert!(matches!(err, CrossMobError::UnknownMob(ref id) if id == "no-such-mob"));
 
     drop(rt);
+}
+
+#[tokio::test]
+async fn listener_first_key_install_late_binds_signed_host_facts_and_health() {
+    let mut runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(definition_a())
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("build runtime");
+    let advertised = runtime
+        .start_control_listener_with_authorizer(
+            &ControlListenAddr::parse("tcp://127.0.0.1:0").expect("listen address"),
+            Arc::new(ControlAuthorizer::open()),
+        )
+        .await
+        .expect("start listener before keys");
+
+    let keys = GatewayPeerKeys::ephemeral();
+    runtime.set_gateway_peer_keys(keys.clone());
+
+    let dial = advertised
+        .strip_prefix("tcp://")
+        .expect("tcp advertised address");
+    let client = RemoteHostClient::new(RemoteEndpoint::Tcp(dial.to_string()), keys.pubkey_bytes());
+    let verified = client
+        .describe()
+        .await
+        .expect("late-bound host facts are signed by installed keys");
+    assert_eq!(verified.host_key_b64(), keys.pubkey_b64());
+    assert_eq!(verified.dialed_endpoint(), advertised);
+    assert!(verified.facts().capabilities.features.multi_host_mobs);
+    assert_eq!(
+        client.health().await.expect("signed host health").status,
+        meerkat_contracts::RuntimeHostHealthStatus::Ok
+    );
+
+    runtime.shutdown().await;
 }

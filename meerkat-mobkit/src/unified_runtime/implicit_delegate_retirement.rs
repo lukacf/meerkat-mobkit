@@ -514,6 +514,7 @@ comms = true
             runtime_mode_override: None,
             backend: None,
             binding: None,
+            placement: None,
         };
         identity_runtime
             .register(

@@ -19,9 +19,12 @@
 //!   normalize-at-write section of [`crate::workgraph_admission`]'s module
 //!   docs.
 //! - `goal/create`, `attention/resume` and `attention/reassign` refuse to
-//!   give a target a second Active-or-Paused binding (upstream would brick
-//!   the member with `MultipleActiveBindings` on every scoped turn). The
-//!   check lives in [`crate::workgraph_admission::WorkGraphAdmission`] —
+//!   give a target a second Active-or-Paused binding. Upstream ask 25 refuses
+//!   the Active-vs-Active, identical-target-key half of that in the store
+//!   itself; mobkit still owns the paused, cross-spelling and
+//!   session-identity-alias cases, where an admitted duplicate makes the turn
+//!   overlay arbitrate newest-binding-wins and silently starve the losing
+//!   goal. The check lives in [`crate::workgraph_admission::WorkGraphAdmission`] —
 //!   shared with the agent tool plane's `workgraph_attention_reassign` —
 //!   which resolves session↔identity target aliases through the mob roster
 //!   and the shared session store's member-binding metadata, and serializes
@@ -31,6 +34,17 @@
 //!   upstream turn overlays resolve nowhere else.
 //! - The `attention/list` `status` filter accepts the SDKs' bare-string
 //!   spelling beside upstream's internally-tagged object form.
+//! - `events` already carries meerkat's TRANSACTIONAL `WorkGraphFact` rows:
+//!   `WorkGraphEvent::facts` serializes verbatim through this dispatch (it is
+//!   only elided when empty). `facts` is its projected sibling - the same
+//!   ledger page reduced to
+//!   [`WorkGraphFactEnvelope`](crate::workgraph_events::WorkGraphFactEnvelope)
+//!   rows, which is exactly the shape the fact stream publishes. It exists so
+//!   a reconnecting stream client has a catch-up read in the stream's own
+//!   shape instead of every SDK re-deriving the projection. Facts are LOSSY
+//!   WAKE ACCELERANTS: they carry identifiers only, and a client reconciles
+//!   authoritative state through `get`/`list`/`ready`/`snapshot`. Nothing on
+//!   this surface may treat a fact as authority.
 
 use meerkat::{
     AddEvidenceRequest, AttentionListRequest, AttentionPauseRequest, AttentionProjectionRequest,
@@ -55,6 +69,7 @@ pub(crate) const WORKGRAPH_READ_METHODS: &[&str] = &[
     "mobkit/workgraph/get",
     "mobkit/workgraph/ready",
     "mobkit/workgraph/events",
+    "mobkit/workgraph/facts",
     "mobkit/workgraph/attention/list",
     "mobkit/workgraph/goal/status",
 ];
@@ -127,7 +142,7 @@ pub(crate) fn workgraph_unavailable_error() -> JsonRpcError {
 
 /// Upstream `validate_workgraph_attention_projection_current` spells a stale
 /// authority witness as a generic `InvalidTransition` with this message
-/// prefix (meerkat 0.7.23, meerkat-workgraph/src/tool_surface.rs). The
+/// prefix (meerkat 0.8.22, meerkat-workgraph/src/tool_surface.rs). The
 /// variant carries no structure to match on, so the prefix is pinned by
 /// `stale_attention_witness_maps_to_conflict`.
 const STALE_ATTENTION_WITNESS_PREFIX: &str = "stale WorkGraph attention projection";
@@ -244,11 +259,20 @@ fn normalize_attention_status_param(object: &mut Map<String, Value>) -> Result<(
 
 /// Goal/attention methods must stay in the service's default namespace:
 /// upstream turn-overlay resolution lists attention with `namespace: None`
-/// — the default only (meerkat 0.7.23, meerkat/src/surface.rs,
+/// — the default only (meerkat 0.8.22, meerkat/src/surface.rs,
 /// `resolve_workgraph_attention_projection_for_session`) — so a goal or
 /// binding filed anywhere else is silently inert: it never reaches its
-/// member. Reject rather than accept-and-strand. Item-level methods keep
-/// namespace passthrough (items don't ride the overlay).
+/// member. Reject rather than accept-and-strand.
+///
+/// ITEM-LEVEL PASSTHROUGH IS GONE AS OF 0.8.22 and this comment used to say
+/// otherwise. One `WorkGraphService` owns ONE IMMUTABLE namespace grant -
+/// upstream states it directly: "a namespace grant authorizes exactly one
+/// immutable namespace" (meerkat-workgraph/src/service.rs). MobKit installs a
+/// single service scoped to the canonical mob realm + default namespace, so an
+/// item filed into a sidecar namespace is refused by the grant, typed and
+/// fail-closed, rather than passed through. That refusal is CORRECT: a sidecar
+/// namespace needs its own service, grant and surface, not a wildcard on this
+/// one. Never widen the grant to restore the old passthrough.
 fn reject_non_default_namespace(
     service: &WorkGraphService,
     object: &Map<String, Value>,
@@ -431,7 +455,7 @@ fn reassign_error_to_rpc(
                 .and_then(|value| value.as_str().map(str::to_string))
                 .unwrap_or_else(|| format!("{mode:?}"));
             let detail = format!(
-                "attention binding {binding_id} is in '{mode}' mode; meerkat 0.7.23 derives the \
+                "attention binding {binding_id} is in '{mode}' mode; meerkat 0.8.22 derives the \
                  derived_from link authority reassignment requires only for coordinate-mode \
                  bindings — pause the binding or recreate the goal with mode 'coordinate'",
             );
@@ -496,6 +520,25 @@ pub(crate) enum WorkgraphSurface<'a> {
     Console {
         authenticated_principal: Option<&'a str>,
     },
+}
+
+/// Params for `mobkit/workgraph/facts`.
+///
+/// Deliberately narrower than `events`: `namespace` is not accepted, because
+/// the projection is scoped exactly like the fact tail (this service's realm
+/// and default namespace). `deny_unknown_fields` makes that refusal explicit -
+/// silently ignoring a supplied `namespace` would read to a caller as a filter
+/// that works.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FactsParams {
+    /// Exclusive lower bound; pass back
+    /// `WorkGraphFactPage::next_after_seq`.
+    #[serde(default)]
+    after_seq: Option<i64>,
+    /// Page size, clamped into `1..=MAX_FACT_POLL_LIMIT` by the projection.
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 pub(crate) async fn handle_workgraph_method(
@@ -570,6 +613,19 @@ pub(crate) async fn handle_workgraph_method(
                 .await
                 .map_err(workgraph_error_to_rpc)?;
             Ok(serde_json::json!({ "events": events }))
+        }
+        "mobkit/workgraph/facts" => {
+            let request: FactsParams = parse_request(object)?;
+            let page = crate::workgraph_events::poll_workgraph_facts(
+                service,
+                request.after_seq,
+                request
+                    .limit
+                    .unwrap_or(crate::workgraph_events::DEFAULT_FACT_POLL_LIMIT),
+            )
+            .await
+            .map_err(workgraph_error_to_rpc)?;
+            Ok(to_result_value(&page))
         }
         "mobkit/workgraph/attention/list" => {
             reject_non_default_namespace(service, &object)?;
@@ -1017,6 +1073,40 @@ mod tests {
         assert!(!is_workgraph_method("mobkit/memory/query"));
     }
 
+    /// The fact projection is a READ. Every surface catalog and ABAC gate is
+    /// driven off these arrays (`rpc.rs` advertises `WORKGRAPH_READ_METHODS`,
+    /// `http_console.rs` maps `is_workgraph_read_method` to `workgraph.view`),
+    /// so a fact page can never reach a caller who may not read WorkGraph.
+    #[test]
+    fn facts_is_a_read_method_on_every_surface() {
+        assert!(WORKGRAPH_READ_METHODS.contains(&"mobkit/workgraph/facts"));
+        assert!(is_workgraph_read_method("mobkit/workgraph/facts"));
+        assert!(!is_workgraph_mutating_method("mobkit/workgraph/facts"));
+        // Positive control: the predicate can say yes to a known mutator.
+        assert!(is_workgraph_mutating_method("mobkit/workgraph/close"));
+    }
+
+    #[test]
+    fn facts_params_refuse_a_silently_ignored_namespace() {
+        let empty: FactsParams =
+            serde_json::from_value(serde_json::json!({})).expect("empty params parse");
+        assert_eq!(empty.after_seq, None);
+        assert_eq!(empty.limit, None);
+
+        let cursor: FactsParams = serde_json::from_value(serde_json::json!({
+            "after_seq": 42,
+            "limit": 8,
+        }))
+        .expect("cursor params parse");
+        assert_eq!(cursor.after_seq, Some(42));
+        assert_eq!(cursor.limit, Some(8));
+
+        // A namespace filter does not exist here; accepting and dropping it
+        // would read as a working scope narrowing.
+        serde_json::from_value::<FactsParams>(serde_json::json!({ "namespace": "other" }))
+            .expect_err("namespace must be refused, not ignored");
+    }
+
     #[test]
     fn error_taxonomy_matches_wire_contract() {
         let conflict = workgraph_error_to_rpc(WorkGraphError::StaleRevision {
@@ -1151,6 +1241,26 @@ mod tests {
                 },
                 mode: Default::default(),
                 completion_policy: Default::default(),
+                // meerkat 0.8.22 promoted the item-shaping fields of
+                // `CreateWorkItemRequest` onto `GoalCreateRequest`. Eight of
+                // the ten already existed on `CreateWorkItemRequest` in
+                // 0.8.21, where `create_goal` filled them from
+                // `..CreateWorkItemRequest::default()`; the two join policies
+                // are new in 0.8.22 and so had no prior value to preserve.
+                // The values below therefore reproduce the pre-port item
+                // exactly. Both join policies are inert here in any case:
+                // this fixture creates no `parent` edges, so no child can
+                // fail or cancel into this goal.
+                failed_child_join_policy: Default::default(),
+                cancelled_child_join_policy: Default::default(),
+                priority: Default::default(),
+                labels: Default::default(),
+                due_at: None,
+                not_before: None,
+                snoozed_until: None,
+                external_refs: Vec::new(),
+                evidence_refs: Vec::new(),
+                status: None,
                 delegated_authority: Default::default(),
                 projection_policy: Default::default(),
             })

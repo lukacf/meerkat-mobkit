@@ -177,9 +177,10 @@ with Meerkat's, plus three failure classes Meerkat does not have:
      (`unified_runtime/mod.rs:793`, `http_console.rs`), wired through an
      `as_sqlite_store()` downcast baked into the `AgentMemoryProvider`
      trait itself (`identity_first/agent_memory.rs:438`).
-   - The entire judgment plane is instantiated **only in the SQLite arm**
-     of the gateway and builder (`rpc_gateway.rs:5120`, `builder.rs:623`);
-     the Markdown provider arm gets a bare recall-only provider.
+   - The entire judgment plane is instantiated through the SQLite provider.
+     SQLite is the sole bundled live agent-memory backend; the former Markdown
+     provider is retired, and Markdown is accepted only as one-shot migration
+     input when a realm is first accessed and its SQLite connection opens.
    - **Already clean**: Distiller and Coordinator consume
      `Arc<dyn AgentMemoryProvider>` plus small source traits
      (`distiller.rs:1131-1134`, `coordinator.rs:329`) — they are the
@@ -552,9 +553,9 @@ The core of the arc: MobKit plugs into Meerkat's `RealmStorageProvider`
   3. Generalize the assembly: `AgentMemoryStack` and
      `attach_memory_engines` accept the capability traits; the
      SQLite-only branches in `rpc_gateway.rs:5120` and `builder.rs:623`
-     become capability checks. The Markdown provider stays recall-only
-     *by its capability flags*, not by which arm of a match it was born
-     in; the Selector's "requires the sqlite store" hard-fail becomes
+     become capability checks. No bundled Markdown provider remains:
+     Markdown is import-only, and selecting it as a live gateway store is
+     refused. The Selector's "requires the sqlite store" hard-fail becomes
      "requires a `SelectedRecordFetch` provider".
   Distiller and Coordinator are the pattern to copy; they need no
   changes. The HNSW discard source stays classified `RebuildableCache`.

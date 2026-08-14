@@ -11,11 +11,11 @@ pub mod coordinator;
 pub mod dispatch_taint;
 pub mod distiller;
 pub mod events;
+pub mod factory_handle;
 pub mod guards;
 pub mod hygienist;
 pub mod records;
 pub mod secrets;
-pub mod selector;
 pub mod spawn_customizer;
 pub mod sqlite_store;
 pub mod staged;
@@ -40,6 +40,10 @@ pub use distiller::{
     TombstoneMeta, TombstoneSource, TranscriptSource,
 };
 pub use events::{MemoryEventSink, MemoryTimelineEvent};
+pub use factory_handle::{
+    AnnotatedRecord, FactoryModelClientHandle, ModelClientError, ModelClientHandle,
+    RecordProvenance, SelectedRecordFetch,
+};
 pub use guards::{BackgroundBudget, BackgroundBudgetConfig, BudgetDenied, BudgetPermit};
 pub use hygienist::{
     AppliedRevision, DistillationGate, FactoryHygienistHandle, HygieneCause, HygieneOutcome,
@@ -53,11 +57,6 @@ pub use records::{
     CalibrationRef, EvidenceRef, InjectionLogEntry, InjectionSurface, ManifestTier, MemoryAuthor,
     MemoryId, MemoryKind, MemoryProvenance, MemoryRecord, MemoryScope, NewMemoryRecord, ProposalId,
     RecordMeta, RecordStatus, TrustTier, UsageEvent, UsageStats, VerificationClaim, content_hash,
-};
-pub use selector::{
-    AnnotatedRecord, Coverage, FactorySelectorHandle, RecordProvenance, SELECTOR_ENV_VAR,
-    SelectedRecordFetch, Selection, SelectorError, SelectorHandle, SelectorProfile,
-    SelectorRuntime, SelectorSpec, SelectorStage, select,
 };
 pub use spawn_customizer::MemorySpawnCustomizer;
 pub use sqlite_store::SqliteAgentMemoryStore;

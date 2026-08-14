@@ -102,7 +102,7 @@ class TestCapabilitiesResult:
     def test_from_dict_with_runtime_capabilities(self):
         r = CapabilitiesResult.from_dict(
             {
-                "contract_version": "0.4.0",
+                "contract_version": "0.5.0",
                 "methods": ["status"],
                 "loaded_modules": ["x"],
                 "runtime_capabilities": {
@@ -123,7 +123,7 @@ class TestCapabilitiesResult:
     def test_from_dict_with_profile_capabilities(self):
         r = CapabilitiesResult.from_dict(
             {
-                "contract_version": "0.4.0",
+                "contract_version": "0.5.0",
                 "methods": [],
                 "loaded_modules": [],
                 "runtime_capabilities": {

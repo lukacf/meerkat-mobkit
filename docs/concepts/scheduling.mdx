@@ -1,92 +1,83 @@
 ---
 title: "Scheduling"
-description: "Cron-based schedule evaluation with timezone support, jitter, and MCP-backed dispatch."
+description: "Durable schedule ownership, occurrence claims, firing, and target delivery."
 icon: "clock"
 ---
 
-Scheduling lets MobKit trigger actions on a recurring basis. Define schedules with cron-like intervals, and MobKit evaluates them at each tick to determine which are due.
+MobKit uses Meerkat's durable `ScheduleService` as its only scheduling
+authority. Schedule definitions live in the schedule store, every firing is
+claimed as an occurrence, and the firing host records the outcome before it
+advances.
 
-## Schedule definitions
+<Warning>
+The stateless `mobkit/scheduling/evaluate` and
+`mobkit/scheduling/dispatch` methods were removed in contract 0.5.0.
+`runtime_options.scheduling_files` is also rejected. Static TOML evaluation
+never owned durable firing authority.
+</Warning>
 
-A schedule is defined by a `ScheduleDefinition`:
+## Enable schedule tools
 
-```rust
-ScheduleDefinition {
-    schedule_id: "daily-report",
-    interval: "0 9 * * *",         // cron expression: every day at 09:00
-    timezone: "Europe/Stockholm",
-    jitter_ms: 5000,               // up to 5s of random jitter
-    enabled: true,
-}
+Enable schedule tools on the member profile:
+
+```toml
+[profiles.operator.tools]
+schedule = true
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `schedule_id` | `String` | Unique identifier (canonicalized: trimmed, lowercased) |
-| `interval` | `String` | Cron expression defining the recurrence |
-| `timezone` | `String` | IANA timezone for schedule evaluation |
-| `jitter_ms` | `u64` | Maximum random jitter in milliseconds to spread load |
-| `enabled` | `bool` | Whether the schedule is active |
+The gateway binds the member's
+`meerkat_schedule_{create,get,list,update,pause,resume,delete,occurrences}`
+tools and the firing host to the same `ScheduleService` and store.
 
-## Evaluation
+## Durable ownership
 
-Schedules are evaluated at discrete ticks using `evaluate_schedules_at_tick`:
+A persistent gateway stores schedules under its state directory. The firing
+pipeline has four parts:
 
-```rust
-let evaluation = evaluate_schedules_at_tick(&schedules, tick_ms)?;
+1. `ScheduleService` owns definitions and occurrence state.
+2. The schedule host resolves due occurrences.
+3. The host claims each occurrence before target delivery.
+4. The terminal firing result is written back to the same store.
 
-for trigger in &evaluation.due_triggers {
-    println!("Schedule {} is due at {}", trigger.schedule_id, trigger.due_tick_ms);
-}
-```
+This makes restart recovery and duplicate suppression properties of the
+schedule domain itself. Callers do not poll a tick oracle or keep a second
+schedule registry.
 
-The evaluation returns a `ScheduleEvaluation` containing the tick timestamp and a sorted vector of `ScheduleTrigger` entries for every schedule that is due at that tick.
+## Targets
 
-### Trigger ordering
+Schedules can target:
 
-Due triggers are sorted by:
-1. `due_tick_ms` (ascending)
-2. `schedule_id` (alphabetical)
-3. `interval` (alphabetical)
-4. `timezone` (alphabetical)
+- a session
+- a mob member
+- a named host runnable
 
-This ensures deterministic dispatch ordering when multiple schedules fire at the same tick.
+Python applications register deterministic host runnables with
+`MobKitBuilder.host_runnables(...)` and handle
+`callback/schedule_fire` through `MobKitRuntime.on_schedule_fire(...)`.
+The callback is delivery for a durable occurrence, not a substitute scheduler.
 
-## Dispatch
+## Rust embedding
 
-When a schedule fires, the runtime dispatches it through the scheduling module via MCP tool call. The dispatch report includes:
+Rust embedders can supply a schedule store and attach both schedule tools and
+the firing host through `meerkat_mobkit::schedule_wiring`. Keep those two
+surfaces on one `ScheduleService`; using separate stores would split
+authoring from firing authority.
 
-```rust
-ScheduleDispatchReport {
-    schedule_id: "daily-report",
-    dispatched_at_ms: 1709500000000,
-    trigger: ScheduleTrigger { ... },
-}
-```
+## Migration from static scheduling
 
-## Validation
+1. Remove `.scheduling(...)` from Python and TypeScript builders.
+2. Remove `runtime_options.scheduling_files`.
+3. Create schedules through the `meerkat_schedule_create` tool or
+   `ScheduleService`.
+4. Bind deterministic application work as a host runnable when needed.
+5. Inspect occurrences through `meerkat_schedule_occurrences`.
 
-Schedule definitions are validated before evaluation:
-
-- Schedule IDs must be non-empty and unique (after canonicalization)
-- Intervals must be valid cron expressions
-- Timezones must be valid IANA timezone names
-
-Invalid definitions produce typed `ScheduleValidationError` variants:
-
-| Error | Cause |
-|-------|-------|
-| `EmptyScheduleId` | Schedule ID is empty or whitespace-only |
-| `DuplicateScheduleId` | Two schedules resolve to the same canonical ID |
-| `InvalidInterval` | Cron expression cannot be parsed |
-| `InvalidTimezone` | Timezone name not recognized |
-
-## Limits
-
-The RPC API enforces a maximum of 256 schedules per request (`MAX_SCHEDULES_PER_REQUEST`). This prevents unbounded evaluation cost.
+Unknown `runtime_options.scheduling_files` fails `mobkit/init` with
+`-32602`. Calls to either removed `mobkit/scheduling/*` method return the
+standard `-32601` method-not-found error.
 
 ## See also
 
-- [Delivery](/concepts/delivery) -- scheduled deliveries
-- [RPC API](/api/rpc) -- `scheduling.*` methods
-- [Configuration](/reference/configuration) -- schedule-related settings
+- [Rust SDK](/sdks/rust) - library-mode composition
+- [Python SDK](/sdks/python) - host-runnable callbacks
+- [RPC API](/api/rpc) - current contract 0.5.0

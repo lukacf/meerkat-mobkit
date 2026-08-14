@@ -1,6 +1,6 @@
 ---
 title: "JSON-RPC"
-description: "JSON-RPC 2.0 protocol for MobKit runtime operations: gating, memory, routing, delivery, scheduling, sessions, and subscriptions."
+description: "JSON-RPC 2.0 protocol for MobKit runtime operations: gating, memory, routing, delivery, sessions, and subscriptions."
 icon: "plug"
 ---
 
@@ -11,14 +11,14 @@ MobKit exposes its operational API over JSON-RPC 2.0. SDK gateways use JSON line
 - **SDK transport:** JSON lines over stdio (one JSON object per line)
 - **Console transport:** HTTP `POST /console/rpc`
 - **Version:** JSON-RPC 2.0
-- **Contract version:** `0.4.0`
+- **Contract version:** `0.5.0`
 
 ### Capabilities handshake
 
 The first line from the MobKit process is a capabilities declaration:
 
 ```json
-{"contract_version": "0.4.0"}
+{"contract_version": "0.5.0"}
 ```
 
 Clients must validate the contract version before sending requests.
@@ -536,38 +536,15 @@ Return delivery records for audit and inspection.
 
 ---
 
-## Scheduling methods
+## Scheduling migration
 
-### `mobkit/scheduling/evaluate`
+Contract 0.5.0 removed `mobkit/scheduling/evaluate` and
+`mobkit/scheduling/dispatch`. Both names now return the standard `-32601`
+method-not-found error. Use the durable schedule tools and `ScheduleService`,
+which own schedule definitions, occurrence claims, firing records, and target
+delivery.
 
-Evaluate schedules at a given tick and return due triggers.
-
-<Accordion title="Parameters">
-| Param | Type | Required | Description |
-|-------|------|----------|-------------|
-| `schedules` | `array` | yes | Array of `ScheduleDefinition` objects |
-| `tick_ms` | `integer` | yes | Evaluation timestamp in milliseconds |
-</Accordion>
-
-<Accordion title="Response">
-```json
-{
-  "tick_ms": 1709500000000,
-  "due_triggers": [
-    {
-      "schedule_id": "daily-report",
-      "interval": "0 9 * * *",
-      "timezone": "Europe/Stockholm",
-      "due_tick_ms": 1709500000000
-    }
-  ]
-}
-```
-</Accordion>
-
-<Note>
-Maximum 256 schedules per request.
-</Note>
+See [Scheduling](/concepts/scheduling) for migration guidance.
 
 ---
 

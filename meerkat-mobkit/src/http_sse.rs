@@ -20,9 +20,11 @@ use meerkat_core::event::agent_event_type;
 use meerkat_mob::{MobEventRouterHandle, MobHandle};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::broadcast;
 
 use crate::access::{
-    ACTION_AGENT_VIEW, ACTION_MOB_OBSERVE, AccessController, AccessView, AgentResourceAttributes,
+    ACTION_AGENT_VIEW, ACTION_MOB_OBSERVE, ACTION_WORKGRAPH_VIEW, AccessController, AccessView,
+    AgentResourceAttributes,
 };
 use crate::console_aggregator::{
     AllowAllConsoleVisibilityPolicy, ConsoleCursor, ConsoleFrame, ConsoleFrameSource,
@@ -33,6 +35,7 @@ use crate::unified_runtime::EventQuery;
 use crate::unified_runtime::mob_events::{
     MOB_EVENTS_STREAM_PATH, MobEventsStore, ProjectedMobEvent,
 };
+use crate::workgraph_events::{WorkGraphFactHub, workgraph_resync_required_event};
 
 use crate::mob_handle_runtime::{MobRuntime, MobRuntimeError};
 use meerkat_core::comms::SendError;
@@ -43,6 +46,10 @@ pub(crate) const DEFAULT_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15)
 pub(crate) const KEEP_ALIVE_TEXT: &str = "keep-alive";
 
 pub(crate) use crate::mob_handle_runtime::console_agent_event_payload;
+
+/// Lossy WorkGraph wake stream. Durable WorkGraph pull methods remain the
+/// only state and replay authority.
+pub const WORKGRAPH_FACTS_STREAM_PATH: &str = "/mobkit/workgraph/facts/stream";
 
 pub fn agent_event_sse(interaction_id: &str, seq: u64, event: &AgentEvent) -> Event {
     let event_name = agent_event_name(event);
@@ -676,6 +683,68 @@ mod tests {
             "rt:identity:secret:0:7"
         );
     }
+
+    fn forced_workgraph_serialization_failure(
+        _event: &crate::types::UnifiedEvent,
+    ) -> Result<String, serde_json::Error> {
+        serde_json::from_str::<String>("{")
+    }
+
+    fn forced_lag_resync_serialization_failure(
+        event: &crate::types::UnifiedEvent,
+    ) -> Result<String, serde_json::Error> {
+        if let crate::types::UnifiedEvent::Module(module) = event
+            && module.event_type == crate::workgraph_events::WORKGRAPH_RESYNC_REQUIRED_EVENT_TYPE
+            && module.payload["reason"] == "lagged"
+        {
+            return serde_json::from_str::<String>("{");
+        }
+        serialize_workgraph_event(event)
+    }
+
+    #[tokio::test]
+    async fn mandatory_workgraph_serialization_failure_closes_without_a_fallback_body() {
+        let hub = WorkGraphFactHub::new();
+        let receiver = hub.subscribe();
+        let stream = workgraph_facts_event_stream(receiver, forced_workgraph_serialization_failure);
+        futures::pin_mut!(stream);
+
+        assert!(
+            stream.next().await.is_none(),
+            "serialization failure must close before emitting any SSE event",
+        );
+    }
+
+    #[tokio::test]
+    async fn workgraph_lag_resync_serialization_failure_closes_before_the_retained_fact() {
+        let (tx, receiver) = broadcast::channel(1);
+        let fact_event = |seq| {
+            crate::types::UnifiedEvent::Module(crate::types::ModuleEvent {
+                module: crate::workgraph_events::WORKGRAPH_EVENT_MODULE.to_string(),
+                event_type: crate::workgraph_events::WORKGRAPH_FACT_EVENT_TYPE.to_string(),
+                payload: json!({"seq": seq}),
+            })
+        };
+        let first = fact_event(1);
+        let retained = fact_event(2);
+        assert!(tx.send(first).is_ok(), "first synthetic fact is queued");
+        assert!(
+            tx.send(retained).is_ok(),
+            "retained synthetic fact is queued",
+        );
+
+        let stream =
+            workgraph_facts_event_stream(receiver, forced_lag_resync_serialization_failure);
+        futures::pin_mut!(stream);
+        assert!(
+            stream.next().await.is_some(),
+            "initial_sync is serializable"
+        );
+        assert!(
+            stream.next().await.is_none(),
+            "failed mandatory lag resync must close before the retained fact",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -732,6 +801,137 @@ impl MobStructuralStreamQuery {
             after_seq: self.after_seq,
         }
     }
+}
+
+#[derive(Clone)]
+struct WorkGraphFactsSseState {
+    hub: WorkGraphFactHub,
+    decisions: Option<RuntimeDecisionState>,
+    access: Option<AccessController>,
+}
+
+/// Route the runtime-owned WorkGraph wake hub over SSE.
+///
+/// This transport intentionally has no SSE `id`, `Last-Event-ID`, catch-up,
+/// or replay contract. Every connection begins with
+/// `workgraph.resync_required` and `reason=initial_sync`; clients establish
+/// state through the durable WorkGraph pull methods, then treat subsequent
+/// facts as wake accelerants only.
+pub fn workgraph_facts_sse_router(
+    hub: WorkGraphFactHub,
+    decisions: Option<RuntimeDecisionState>,
+    access: Option<AccessController>,
+) -> Router {
+    Router::new()
+        .route(
+            WORKGRAPH_FACTS_STREAM_PATH,
+            get(workgraph_facts_sse_handler),
+        )
+        .with_state(WorkGraphFactsSseState {
+            hub,
+            decisions,
+            access,
+        })
+}
+
+type WorkGraphEventSerializer =
+    fn(&crate::types::UnifiedEvent) -> Result<String, serde_json::Error>;
+
+fn serialize_workgraph_event(
+    event: &crate::types::UnifiedEvent,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(event)
+}
+
+fn workgraph_module_sse_event(
+    event: &crate::types::UnifiedEvent,
+    serializer: WorkGraphEventSerializer,
+) -> Option<Event> {
+    let crate::types::UnifiedEvent::Module(module) = event else {
+        tracing::error!("workgraph fact hub yielded a non-module event; dropping wake");
+        return None;
+    };
+    match serializer(event) {
+        Ok(data) => Some(Event::default().event(module.event_type.clone()).data(data)),
+        Err(error) => {
+            tracing::error!(
+                %error,
+                event_type = %module.event_type,
+                "workgraph module event serialization failed; dropping wake",
+            );
+            None
+        }
+    }
+}
+
+fn workgraph_facts_event_stream(
+    mut receiver: broadcast::Receiver<crate::types::UnifiedEvent>,
+    serializer: WorkGraphEventSerializer,
+) -> impl futures::Stream<Item = Result<Event, Infallible>> {
+    stream! {
+        // Subscription is a state-machine transition, not a claim that this
+        // lossy transport has synchronized anything. Failure to serialize
+        // this mandatory transition closes the stream instead of inventing
+        // an untyped fallback body.
+        let initial_sync = workgraph_resync_required_event("initial_sync", None);
+        let Some(initial_sync) = workgraph_module_sse_event(&initial_sync, serializer) else {
+            tracing::error!(
+                "mandatory workgraph initial_sync serialization failed; closing SSE stream",
+            );
+            return;
+        };
+        yield Ok::<Event, Infallible>(initial_sync);
+        loop {
+            match receiver.recv().await {
+                Ok(event) => {
+                    if let Some(event) = workgraph_module_sse_event(&event, serializer) {
+                        yield Ok(event);
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    let resync = workgraph_resync_required_event("lagged", Some(skipped));
+                    let Some(event) = workgraph_module_sse_event(&resync, serializer) else {
+                        tracing::error!(
+                            "mandatory workgraph lag resync serialization failed; closing SSE stream",
+                        );
+                        return;
+                    };
+                    yield Ok(event);
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    }
+}
+
+async fn workgraph_facts_sse_handler(
+    State(state): State<WorkGraphFactsSseState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)>
+{
+    let access_view = sse_access_context(
+        state.decisions.as_ref(),
+        state.access.as_ref(),
+        &headers,
+        &uri,
+    )
+    .map_err(|()| sse_unauthorized("workgraph facts stream requires a valid auth token"))?;
+    if access_view
+        .as_ref()
+        .is_some_and(|view| view.enforced() && !view.allows(ACTION_WORKGRAPH_VIEW))
+    {
+        return Err(sse_access_denied(ACTION_WORKGRAPH_VIEW));
+    }
+
+    let receiver = state.hub.subscribe();
+    let stream = workgraph_facts_event_stream(receiver, serialize_workgraph_event);
+
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(DEFAULT_KEEP_ALIVE_INTERVAL)
+            .text(KEEP_ALIVE_TEXT),
+    ))
 }
 
 #[derive(Clone)]

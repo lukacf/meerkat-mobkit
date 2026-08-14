@@ -17,7 +17,6 @@
     clippy::unnecessary_semicolon
 )]
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -32,16 +31,16 @@ use meerkat_core::{
     SessionServiceControlExt, SessionServiceHistoryExt, SessionSummary, SessionView,
     StartTurnRequest, StreamError,
 };
-use meerkat_mob::{MobDefinition, MobId, MobSessionService, MobState, MobStorage, SpawnMemberSpec};
+use meerkat_mob::{MobDefinition, MobId, MobSessionService, MobState, MobStorage};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConfigResolutionError, ConsolePolicy, DiscoverySpec, EventEnvelope,
     LifecycleStage, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, MobkitRuntimeError,
-    ModuleConfig, ModuleHealthState, ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse,
-    NormalizationError, PreSpawnData, RestartPolicy, RpcRouteError, RuntimeDecisionInputs,
-    RuntimeOpsPolicy, RuntimeOptions, ScheduleDefinition, TrustedOidcRuntimeConfig, UnifiedEvent,
-    UnifiedRuntime, UnifiedRuntimeBootstrapError, build_runtime_decision_state,
-    normalize_event_line, route_module_call, route_module_call_rpc_json,
-    route_module_call_rpc_subprocess, start_mobkit_runtime, start_mobkit_runtime_with_options,
+    ModuleHealthState, ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse,
+    NormalizationError, RestartPolicy, RpcRouteError, RuntimeDecisionInputs, RuntimeOpsPolicy,
+    RuntimeOptions, TrustedOidcRuntimeConfig, UnifiedEvent, UnifiedRuntime,
+    UnifiedRuntimeBootstrapError, build_runtime_decision_state, normalize_event_line,
+    route_module_call, route_module_call_rpc_json, route_module_call_rpc_subprocess,
+    start_mobkit_runtime, start_mobkit_runtime_with_options,
 };
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -60,9 +59,6 @@ fn shell_module(
         restart_policy,
     }
 }
-
-const BOUNDARY_ENV_KEY: &str = "MOBKIT_MODULE_BOUNDARY";
-const BOUNDARY_ENV_VALUE_MCP: &str = "mcp";
 
 struct UnifiedRuntimeFixture {
     _temp_dir: tempfile::TempDir,
@@ -104,6 +100,22 @@ impl SessionService for CheckpointerCancelProbeSessionService {
 
     async fn interrupt(&self, id: &SessionId) -> Result<(), SessionError> {
         self.inner.interrupt(id).await
+    }
+
+    // meerkat 0.8.22 adds the exact-run hard cancel to `SessionService` with an
+    // `Err(Unsupported)` default. The inner ephemeral service implements it for
+    // real, so inheriting the default here would let this probe answer
+    // "unsupported" on its own authority and hide the inner service's exact-run
+    // interrupt (same forwarding class as the lib's
+    // `delegate_mob_session_service!`).
+    async fn interrupt_run_if_current(
+        &self,
+        id: &SessionId,
+        expected_run_id: &meerkat_core::lifecycle::RunId,
+    ) -> Result<bool, SessionError> {
+        self.inner
+            .interrupt_run_if_current(id, expected_run_id)
+            .await
     }
 
     async fn read(&self, id: &SessionId) -> Result<SessionView, SessionError> {
@@ -154,14 +166,52 @@ impl SessionServiceHistoryExt for CheckpointerCancelProbeSessionService {
 
 #[async_trait::async_trait]
 impl MobSessionService for CheckpointerCancelProbeSessionService {
+    // The verdict below is issued by `inner`, so the authority bundle it
+    // carries must come from the SAME owner: the mob provisioner calls
+    // `revalidate_session_resume_authority` on the service it holds (this
+    // wrapper), and that trait default compares `self.observe_...` against the
+    // bundle the verdict carried. Hardcoding an empty bundle here while
+    // forwarding the verdict would reject every persistent-inner resume as
+    // `AuthorityChangedDuringMaterialization`. Zero delta for the ephemeral
+    // inner used today, whose own observation is exactly the empty bundle.
     async fn observe_session_resume_authority(
         &self,
-        _session_id: &meerkat::SessionId,
+        session_id: &meerkat::SessionId,
     ) -> Result<meerkat_mob::SessionResumeAuthority, meerkat::SessionError> {
-        // Test double: truthfully an empty authority bundle (the ephemeral
-        // arm of the meerkat 0.8.21 resume-verdict contract).
-        Ok(meerkat_mob::SessionResumeAuthority::default())
+        self.inner
+            .observe_session_resume_authority(session_id)
+            .await
     }
+
+    // meerkat 0.8.22 DELETED the required `prepare_session_for_resume` hook
+    // this probe used to pass through. Its durable-tail convergence now lives
+    // only inside `PersistentSessionService`'s override of
+    // `materialize_session_resume_verdict`; the TRAIT DEFAULT of that method is
+    // the non-persistent composition (bracketed read-only observations plus a
+    // `NonPersistent` receipt, converging nothing). Dropping the dead
+    // passthrough and stopping there would compile while silently resuming a
+    // persistent inner from stale committed authority, so the delegation moves
+    // to the method that now owns convergence. This wrapper only counts
+    // `cancel_all_checkpointers`; it has no projection of its own to re-apply
+    // to the authorized body, so the verdict is forwarded verbatim.
+    //
+    // The receipt this verdict now carries is consumed by the two
+    // `..._actor_witness_...` creates, which this probe has never forwarded
+    // (pre-existing at 0.8.21, when they took no receipt). Left inheriting
+    // their defaults deliberately: both refuse with `Err(Unsupported)`, and
+    // `execute_session_actor_materialization_under_runtime_turn_boundary` is
+    // the sole lowering owner with no non-witness fallback, so an unconsumed
+    // receipt fails loudly instead of being silently dropped. This probe's
+    // bootstrap-failure assertion never reaches actor materialization anyway.
+    async fn materialize_session_resume_verdict(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<meerkat_mob::SessionResumeVerdict, SessionError> {
+        self.inner
+            .materialize_session_resume_verdict(session_id)
+            .await
+    }
+
     async fn create_session_under_runtime_turn_boundary(
         &self,
         req: CreateSessionRequest,
@@ -183,15 +233,42 @@ impl MobSessionService for CheckpointerCancelProbeSessionService {
             .await
     }
 
-    async fn prepare_session_for_resume(&self, session_id: &SessionId) -> Result<(), SessionError> {
-        self.inner.prepare_session_for_resume(session_id).await
-    }
-
     async fn load_session_for_resume(
         &self,
         session_id: &SessionId,
     ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
         self.inner.load_session_for_resume(session_id).await
+    }
+
+    // meerkat 0.8.22: durable transcript fork moved onto the session service
+    // with an `Err(Unsupported)` default. Not forwarding would make this probe
+    // claim a persistent inner has no fork authority at all.
+    async fn fork_persisted_session(
+        &self,
+        source_session_id: &SessionId,
+        message_count: Option<usize>,
+        tool_access_policy: Option<meerkat_core::ops::ToolAccessPolicy>,
+        target: meerkat_core::DurableSessionForkTarget,
+    ) -> Result<meerkat_core::SessionForkResult, SessionError> {
+        self.inner
+            .fork_persisted_session(source_session_id, message_count, tool_access_policy, target)
+            .await
+    }
+
+    // meerkat 0.8.22: exact-run machine-authorized hard cancel, trait default
+    // `Err(Unsupported)`. The mob provisioner's interrupt handle calls this on
+    // the service it was handed (this wrapper) and absorbs only `NotRunning`,
+    // so an unforwarded default turns every exact-run cancel into a control
+    // failure even though the ephemeral inner implements it.
+    async fn interrupt_run_with_machine_authority(
+        &self,
+        session_id: &SessionId,
+        expected_run_id: &meerkat_core::lifecycle::RunId,
+        authority: meerkat_runtime::MachineSessionControlAuthority,
+    ) -> Result<bool, SessionError> {
+        self.inner
+            .interrupt_run_with_machine_authority(session_id, expected_run_id, authority)
+            .await
     }
 
     async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary(
@@ -200,6 +277,23 @@ impl MobSessionService for CheckpointerCancelProbeSessionService {
     ) -> Result<(), SessionError> {
         self.inner
             .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary(session_id)
+            .await
+    }
+
+    // meerkat 0.8.22: member-session disposal moved from the boundary archive
+    // above to this deadline-aware sibling, whose trait default is
+    // `Err(Unsupported)`. The ephemeral inner implements it explicitly, so an
+    // unforwarded default would make every member retirement archive through
+    // this probe fail and wedge the roster anchor in `retiring`.
+    async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_before(
+        &self,
+        session_id: &SessionId,
+        deadline: meerkat_core::time_compat::Instant,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_before(
+                session_id, deadline,
+            )
             .await
     }
 
@@ -232,65 +326,6 @@ impl MobSessionService for CheckpointerCancelProbeSessionService {
     async fn rearm_all_checkpointers(&self) {
         self.inner.rearm_all_checkpointers().await;
     }
-}
-
-fn fixture_binary_path() -> PathBuf {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_mcp_fixture") {
-        return PathBuf::from(path);
-    }
-
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir
-        .parent()
-        .and_then(|path| path.parent())
-        .expect("workspace root");
-    let binary_path = workspace_root
-        .join("target")
-        .join("debug")
-        .join("mcp_fixture");
-    if binary_path.exists() {
-        return binary_path;
-    }
-
-    let status = Command::new("cargo")
-        .args(["build", "-p", "meerkat-mobkit", "--bin", "mcp_fixture"])
-        .current_dir(workspace_root)
-        .status()
-        .expect("build mcp_fixture");
-    assert!(status.success(), "building mcp_fixture must succeed");
-    binary_path
-}
-
-fn fixture_module(id: &str, fixture_binary: &Path) -> ModuleConfig {
-    ModuleConfig {
-        id: id.to_string(),
-        command: fixture_binary.display().to_string(),
-        args: vec!["--module".to_string(), id.to_string()],
-        restart_policy: RestartPolicy::Never,
-    }
-}
-
-fn mcp_env(extra: &[(&str, &str)]) -> Vec<(String, String)> {
-    let mut env = vec![(
-        BOUNDARY_ENV_KEY.to_string(),
-        BOUNDARY_ENV_VALUE_MCP.to_string(),
-    )];
-    env.extend(
-        extra
-            .iter()
-            .map(|(key, value)| ((*key).to_string(), (*value).to_string())),
-    );
-    env
-}
-
-fn spawn_spec(profile: &str, member_id: &str) -> SpawnMemberSpec {
-    SpawnMemberSpec::from_wire(
-        profile.to_string(),
-        member_id.to_string(),
-        Some(format!("You are {member_id}. Keep responses concise.").into()),
-        None,
-        None,
-    )
 }
 
 fn build_phase1_session_service(temp_dir: &tempfile::TempDir) -> Arc<dyn MobSessionService> {
@@ -983,22 +1018,6 @@ async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    fixture
-        .runtime
-        .dispatch_schedule_tick(
-            &[ScheduleDefinition {
-                schedule_id: "phase1-merge".to_string(),
-                interval: "*/1m".to_string(),
-                timezone: "UTC".to_string(),
-                enabled: true,
-                jitter_ms: 0,
-                catch_up: false,
-            }],
-            9_000_000_000_000_000_000,
-        )
-        .await
-        .expect("dispatch should add a late module event");
-
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let subscribed = loop {
         let response = fixture
@@ -1036,154 +1055,6 @@ async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
     assert!(subscribed.events.iter().any(|event| {
         matches!(&event.event, UnifiedEvent::Agent { agent_id, .. } if agent_id == "worker-1")
     }));
-
-    let shutdown = fixture.runtime.shutdown().await;
-    assert!(
-        shutdown.mob_stop.is_ok(),
-        "mob stop failed at teardown: {:?}",
-        shutdown.mob_stop
-    );
-}
-
-#[tokio::test]
-#[ignore]
-async fn choke_002_unified_dispatch_executes_mob_runtime_injection_success_path() {
-    let fixture_binary = fixture_binary_path();
-    let config = MobKitConfig {
-        modules: vec![fixture_module("scheduling", &fixture_binary)],
-        discovery: DiscoverySpec {
-            namespace: "phase1-unified".to_string(),
-            modules: vec!["scheduling".to_string()],
-        },
-        pre_spawn: vec![PreSpawnData {
-            module_id: "scheduling".to_string(),
-            env: mcp_env(&[
-                ("MOBKIT_PHASE_C_SCHEDULING_MEMBER", "worker-1"),
-                ("MOBKIT_PHASE_C_SCHEDULING_MESSAGE_PREFIX", "phase1-success"),
-                ("MOBKIT_PHASE_C_SCHEDULING_DISABLE_INJECTION", "0"),
-            ]),
-        }],
-    };
-
-    let fixture = Box::pin(build_unified_runtime_fixture(config)).await;
-    fixture
-        .runtime
-        .spawn(spawn_spec("worker", "worker-1"))
-        .await
-        .expect("spawn worker");
-
-    let dispatch = fixture
-        .runtime
-        .dispatch_schedule_tick(
-            &[ScheduleDefinition {
-                schedule_id: "phase1-success".to_string(),
-                interval: "*/1m".to_string(),
-                timezone: "UTC".to_string(),
-                enabled: true,
-                jitter_ms: 0,
-                catch_up: false,
-            }],
-            60_000,
-        )
-        .await
-        .expect("dispatch should succeed");
-
-    assert_eq!(dispatch.dispatched.len(), 1);
-    assert!(dispatch.dispatched[0].runtime_injection.is_some());
-    assert!(dispatch.dispatched[0].runtime_injection_error.is_none());
-
-    let merged = fixture.runtime.module_events().await;
-    let executed = merged
-        .iter()
-        .find(|event| {
-            matches!(
-                &event.event,
-                UnifiedEvent::Module(module_event)
-                    if module_event.module == "runtime"
-                        && module_event.event_type == "runtime.injection.executed"
-            )
-        })
-        .expect("expected runtime.injection.executed event");
-    // Verify the executed event contains the expected payload fields
-    match &executed.event {
-        UnifiedEvent::Module(module_event) => {
-            assert!(module_event.payload.get("member_id").is_some());
-            assert!(module_event.payload.get("message").is_some());
-        }
-        _ => panic!("expected Module event"),
-    };
-
-    let shutdown = fixture.runtime.shutdown().await;
-    assert!(
-        shutdown.mob_stop.is_ok(),
-        "mob stop failed at teardown: {:?}",
-        shutdown.mob_stop
-    );
-}
-
-#[tokio::test]
-#[ignore]
-async fn choke_003_unified_dispatch_surfaces_mob_runtime_injection_failure() {
-    let fixture_binary = fixture_binary_path();
-    let config = MobKitConfig {
-        modules: vec![fixture_module("scheduling", &fixture_binary)],
-        discovery: DiscoverySpec {
-            namespace: "phase1-unified".to_string(),
-            modules: vec!["scheduling".to_string()],
-        },
-        pre_spawn: vec![PreSpawnData {
-            module_id: "scheduling".to_string(),
-            env: mcp_env(&[
-                ("MOBKIT_PHASE_C_SCHEDULING_MEMBER", "missing-member"),
-                ("MOBKIT_PHASE_C_SCHEDULING_MESSAGE_PREFIX", "phase1-failure"),
-                ("MOBKIT_PHASE_C_SCHEDULING_DISABLE_INJECTION", "0"),
-            ]),
-        }],
-    };
-
-    let fixture = Box::pin(build_unified_runtime_fixture(config)).await;
-    let dispatch = fixture
-        .runtime
-        .dispatch_schedule_tick(
-            &[ScheduleDefinition {
-                schedule_id: "phase1-failure".to_string(),
-                interval: "*/1m".to_string(),
-                timezone: "UTC".to_string(),
-                enabled: true,
-                jitter_ms: 0,
-                catch_up: false,
-            }],
-            60_000,
-        )
-        .await
-        .expect("dispatch should produce report");
-
-    assert_eq!(dispatch.dispatched.len(), 1);
-    assert!(dispatch.dispatched[0].runtime_injection.is_some());
-    assert!(dispatch.dispatched[0].runtime_injection_error.is_some());
-
-    let merged = fixture.runtime.module_events().await;
-    let failed = merged
-        .iter()
-        .find(|event| {
-            matches!(
-                &event.event,
-                UnifiedEvent::Module(module_event)
-                    if module_event.module == "runtime"
-                        && module_event.event_type == "runtime.injection.failed"
-            )
-        })
-        .expect("expected runtime.injection.failed event");
-    let error_kind = match &failed.event {
-        UnifiedEvent::Module(module_event) => module_event
-            .payload
-            .get("error_kind")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        _ => String::new(),
-    };
-    assert_eq!(error_kind, "mob_runtime");
 
     let shutdown = fixture.runtime.shutdown().await;
     assert!(

@@ -33,6 +33,26 @@
           "const": "system_prefix",
           "description": "Mark the stable top-level system prompt as an ephemeral cache prefix.",
           "type": "string"
+        },
+        {
+          "const": "system_and_conversation",
+          "description": "Mark the stable system/profile prefix and up to three recent\nconversation boundaries. This is explicit provider authoring, not a\nprocess-wide cache default.",
+          "type": "string"
+        }
+      ]
+    },
+    "AnthropicCacheTtl": {
+      "description": "Anthropic prompt-cache TTL selected per agent/profile.",
+      "oneOf": [
+        {
+          "const": "5m",
+          "description": "Provider-default five-minute cache lifetime.",
+          "type": "string"
+        },
+        {
+          "const": "1h",
+          "description": "One-hour cache lifetime for sufficiently frequent profiles.",
+          "type": "string"
         }
       ]
     },
@@ -1004,6 +1024,17 @@
                 }
               ],
               "description": "Prompt-cache breakpoint policy."
+            },
+            "cache_ttl": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AnthropicCacheTtl"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Prompt-cache lifetime. Effective only when this profile explicitly\nenables a cache-control policy."
             },
             "compaction": {
               "anyOf": [

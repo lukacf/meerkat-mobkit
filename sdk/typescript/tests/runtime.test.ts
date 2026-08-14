@@ -45,7 +45,6 @@ function createMockRuntime(): {
     consoleFetchTimeoutMs: null,
     gatingConfigPath: null,
     routingConfigPath: null,
-    schedulingFiles: [],
     workgraphEnabled: null,
     memoryConfig: null,
     agentMemoryConfig: null,
@@ -417,7 +416,7 @@ describe("MobHandle.status()", () => {
   it("sends mobkit/status and parses the result", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => ({
-      contract_version: "0.4.0",
+      contract_version: "0.5.0",
       running: true,
       loaded_modules: ["mod-a", "mod-b"],
     }));
@@ -425,7 +424,7 @@ describe("MobHandle.status()", () => {
     const result = await handle.status();
     assert.equal(calls.length, 1);
     assert.equal(calls[0].method, "mobkit/status");
-    assert.equal(result.contractVersion, "0.4.0");
+    assert.equal(result.contractVersion, "0.5.0");
     assert.equal(result.running, true);
     assert.deepEqual(result.loadedModules, ["mod-a", "mod-b"]);
   });
@@ -435,14 +434,14 @@ describe("MobHandle.capabilities()", () => {
   it("sends mobkit/capabilities and parses the result", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => ({
-      contract_version: "0.4.0",
+      contract_version: "0.5.0",
       methods: ["mobkit/status", "mobkit/capabilities"],
       loaded_modules: ["mod-a"],
     }));
 
     const result = await handle.capabilities();
     assert.equal(calls[0].method, "mobkit/capabilities");
-    assert.equal(result.contractVersion, "0.4.0");
+    assert.equal(result.contractVersion, "0.5.0");
     assert.deepEqual(result.methods, ["mobkit/status", "mobkit/capabilities"]);
     assert.deepEqual(result.loadedModules, ["mod-a"]);
   });
@@ -502,25 +501,6 @@ describe("MobHandle.storageDoctor()", () => {
 });
 
 describe("MobHandle Rust gateway parity wrappers", () => {
-  it("sends scheduling evaluate and dispatch RPC names", async () => {
-    const { handle, calls, setResponse } = createMockRuntime();
-    setResponse(() => ({ ok: true }));
-
-    await handle.schedulingEvaluate([{ id: "daily" }], 1234);
-    await handle.schedulingDispatch([{ id: "daily" }], 5678);
-
-    assert.equal(calls[0].method, "mobkit/scheduling/evaluate");
-    assert.deepEqual(calls[0].params, {
-      schedules: [{ id: "daily" }],
-      tick_ms: 1234,
-    });
-    assert.equal(calls[1].method, "mobkit/scheduling/dispatch");
-    assert.deepEqual(calls[1].params, {
-      schedules: [{ id: "daily" }],
-      tick_ms: 5678,
-    });
-  });
-
   it("sends session store BigQuery RPC name", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => ({ rows: 1 }));

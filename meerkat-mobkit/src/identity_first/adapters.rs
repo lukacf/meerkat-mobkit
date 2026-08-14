@@ -130,6 +130,7 @@ pub fn agent_discovery_to_durable(
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     })
 }
 
@@ -3084,6 +3085,94 @@ impl meerkat::SessionStore for ContinuityIncrementalSessionStore {
 
 #[async_trait]
 impl meerkat_core::session_store::IncrementalSessionStore for ContinuityIncrementalSessionStore {
+    /// meerkat 0.8.22 store-wide format-door activation (NEW in 0.8.22;
+    /// required, no default). This wrapper REFUSES it, typed, and the
+    /// refusal is the honest answer rather than a shortfall we hid.
+    ///
+    /// The contract is a census, not a loop: the backend must enumerate its
+    /// PHYSICAL session identities, cross and verify each one, and return the
+    /// complete result from ONE write transaction or equivalent snapshot -
+    /// and it must NOT derive that census from `SessionStore::list`, which is
+    /// a filtered metadata projection.
+    ///
+    /// This wrapper cannot satisfy that. Its substrate seam
+    /// ([`super::contracts::ContinuityIncrementalSessions`]) has no
+    /// store-wide census verb at all, and the outer
+    /// [`super::contracts::ContinuityStore`] has no physical session
+    /// enumeration either (`resolve_many` is identity-keyed,
+    /// `load_session_snapshot` is id-keyed). The only shapes available here
+    /// are the two the contract forbids: the adapter's `list` projection, or
+    /// an enumeration composed with N separate per-id
+    /// `cross_head_canonical_authority` calls - which together span N+1
+    /// snapshots and can therefore report a census of a store state that
+    /// never existed at any instant. That is exactly the tearing this repo already refuses to
+    /// commit for a single document (see `load_canonical_session`'s
+    /// single-snapshot obligation in `contracts.rs`), widened store-wide.
+    ///
+    /// Why not `NotApplicable`: that variant asserts "this store's durable
+    /// profile is not HeadCanonical", and here that would be false in the one
+    /// direction that matters. The continuity substrate does hold physical
+    /// head-canonical rows (`continuity_session_heads`, operator-gated by
+    /// `HEAD_CANONICAL_CONTINUITY_SCHEMA_VERSION`), and this very impl
+    /// forwards a REAL `AlreadyCurrent` crossing for a named session below.
+    /// A store that answers `AlreadyCurrent` per session while answering "not
+    /// HeadCanonical" store-wide is contradicting itself, and it would
+    /// mis-diagnose the failure for whoever hit it: meerkat's
+    /// `activate_external_head_canonical_store` turns `NotApplicable` into
+    /// "profile mismatch", pointing the reader at operator configuration
+    /// instead of at the missing census seam.
+    ///
+    /// Reachability, stated exactly, because the comfortable version of this
+    /// sentence is false. meerkat calls this verb from
+    /// `activate_external_head_canonical_store`, which runs inside its
+    /// `open_realm_bundle_with_provider`. mobkit does not go through that
+    /// function: `storage_provider::open_provider_meerkat_stores` calls
+    /// `RealmStorageProvider::open` directly and keeps only the runtime,
+    /// workgraph and jobs slots, DISCARDING the meerkat-level session store.
+    /// So this refusal fires only for an embedder that composes this store
+    /// through meerkat's own realm-bundle seam, and for that consumer it is
+    /// a fail-closed backstop naming the seam that is missing.
+    ///
+    /// It is deliberately NOT claimed to be the guard for mobkit's own
+    /// provider pairing, because it is not one. `unified_runtime::builder`
+    /// pairs a provider-supplied runtime store with this session store
+    /// (through `SessionStoreBackedRuntimeStore`), and that runtime store's
+    /// persistence profile is whatever the provider declares - mobkit's own
+    /// `!= WholeBlobV1` gates in `mob_handle_runtime` exist precisely because
+    /// a HeadCanonical inner store is contemplated there. A composite
+    /// provider declaring HeadCanonical would therefore start with NO
+    /// store-wide activation performed by anyone: mobkit's provider path
+    /// takes no census and asks for none. Closing that needs BOTH the census
+    /// verb below and an activation call on the provider path, and the second
+    /// half is currently not expressible: meerkat published
+    /// `enforce_fail_closed_durability` from its post-`open()` obligation set
+    /// but kept `activate_external_head_canonical_store` private, so an
+    /// external composer of `RealmStorageProvider` cannot discharge it
+    /// without re-deriving meerkat's dedup and token-alignment invariants.
+    /// That is an upstream ask reported with this port, not something already
+    /// tracked, and not something a port may smuggle in - pretending this
+    /// `Err` already covers it would be the lie.
+    ///
+    /// The census verb, when a HeadCanonical pairing is actually wanted, is
+    /// one transaction on `ContinuityIncrementalSessions` implemented by
+    /// `LocalContinuityStore`; the SQL already exists as
+    /// `storage_doctor.rs`'s `census_head_canonical_sessions`.
+    async fn activate_head_canonical_store(
+        &self,
+    ) -> Result<
+        meerkat_core::session_store::HeadCanonicalStoreActivation,
+        meerkat_store::SessionStoreError,
+    > {
+        Err(meerkat_store::SessionStoreError::Internal(
+            "continuity incremental session store cannot activate a HeadCanonical store: the \
+             continuity substrate exposes no one-snapshot physical session census \
+             (ContinuityIncrementalSessions has no census verb, ContinuityStore has no physical \
+             session enumeration), and the activation contract forbids deriving the census from \
+             SessionStore::list"
+                .to_string(),
+        ))
+    }
+
     async fn append_messages(
         &self,
         id: &meerkat_core::types::SessionId,
@@ -6612,6 +6701,35 @@ mod tests {
         assert!(
             meerkat::SessionStore::as_incremental(capable).is_some(),
             "an advertising substrate must surface through the adapter"
+        );
+    }
+
+    /// meerkat 0.8.22 store-wide activation: this wrapper must REFUSE, never
+    /// answer a census it did not take. The rationale otherwise lives only in
+    /// a doc comment, and a doc comment is not a guard - this pins it as
+    /// behavior so a later "just return `NotApplicable`" edit fails here.
+    ///
+    /// `NotApplicable` is the specific wrong answer being fenced out: it
+    /// asserts "this store's durable profile is not HeadCanonical" while the
+    /// same impl forwards genuine per-session crossings, and meerkat's
+    /// activation caller converts it into an operator profile mismatch,
+    /// pointing a reader at configuration instead of at the missing census
+    /// seam.
+    #[tokio::test]
+    async fn store_wide_head_canonical_activation_is_refused_not_faked() {
+        let adapter = Arc::new(ContinuitySessionStoreAdapter::new(Arc::new(
+            LocalContinuityStore::in_memory().expect("store"),
+        )));
+        let incremental = meerkat::SessionStore::as_incremental(adapter)
+            .expect("the bundled LocalContinuityStore ships the delta channel");
+
+        let error = incremental
+            .activate_head_canonical_store()
+            .await
+            .expect_err("the continuity substrate exposes no one-snapshot physical census");
+        assert!(
+            matches!(error, meerkat_store::SessionStoreError::Internal(_)),
+            "store-wide activation must refuse, never report a census it did not take: {error}"
         );
     }
 

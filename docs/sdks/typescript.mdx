@@ -35,15 +35,6 @@ const results = await handle.memoryQuery({
   store: "knowledge_graph",
 });
 
-const evaluation = await handle.schedulingEvaluate([
-  {
-    schedule_id: "daily-report",
-    interval: "0 9 * * *",
-    timezone: "Europe/Stockholm",
-    jitter_ms: 0,
-    enabled: true,
-  },
-], Date.now());
 ```
 
 ## Durable detached tools
@@ -124,13 +115,6 @@ interface UnifiedEvent {
   payload?: unknown;
 }
 
-interface ScheduleDefinition {
-  schedule_id: string;
-  interval: string;
-  timezone: string;
-  jitter_ms: number;
-  enabled: boolean;
-}
 ```
 
 ## Module support

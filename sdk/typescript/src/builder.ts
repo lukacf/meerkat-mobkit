@@ -74,9 +74,17 @@ const STEWARD_KEYS = new Set([
   "perMob",
   "runsPerDay",
   "minSignals",
+  "maxOutputTokens",
+  "max_output_tokens",
 ]);
 
-const HYGIENIST_KEYS = new Set(["enabled", "runsPerDay", "model"]);
+const HYGIENIST_KEYS = new Set([
+  "enabled",
+  "runsPerDay",
+  "model",
+  "maxOutputTokens",
+  "max_output_tokens",
+]);
 
 function rejectUnknownKeys(
   config: object,
@@ -111,7 +119,6 @@ export interface MobKitBuilderConfig {
   memberCommsAddress: string | null;
   gatingConfigPath: string | null;
   routingConfigPath: string | null;
-  schedulingFiles: string[];
   workgraphEnabled: boolean | string | null;
   memoryConfig: unknown;
   agentMemoryConfig: unknown;
@@ -150,7 +157,6 @@ function defaultConfig(): MobKitBuilderConfig {
     memberCommsAddress: null,
     gatingConfigPath: null,
     routingConfigPath: null,
-    schedulingFiles: [],
     workgraphEnabled: null,
     memoryConfig: null,
     agentMemoryConfig: null,
@@ -330,11 +336,6 @@ export class MobKitBuilder {
     return this;
   }
 
-  scheduling(...scheduleFiles: string[]): this {
-    this._config.schedulingFiles = scheduleFiles;
-    return this;
-  }
-
   /**
    * Enable or disable WorkGraph service construction (goals, work items,
    * attention bindings). Defaults to enabled on the gateway; pass `false`
@@ -371,7 +372,14 @@ export class MobKitBuilder {
       instructionHeader?: string;
       perTurnInjection?: "off" | "budgeted";
       defangInbound?: boolean;
-      store?: "sqlite" | "markdown";
+      /**
+       * `"markdown"` is deliberately absent: it is retired as a live store and
+       * the gateway now refuses it at init (-32014). A compile error here beats
+       * a boot failure. Existing markdown files still migrate - point the
+       * default sqlite store at the same agent-memory directory and it imports
+       * them on first open.
+       */
+      store?: "sqlite";
       llmWrites?: "observed" | "quarantined";
       recorderTool?: boolean;
       contentTrust?: {
@@ -379,7 +387,14 @@ export class MobKitBuilder {
         untrustedTools?: string[];
         trustedTools?: string[];
       };
-      selector?: "off" | "default" | `profile:${string}`;
+      /**
+       * RETIRED, and narrowed to the one value that still means anything.
+       * The §8.3 LLM recall-selector stage was removed unactivated, so recall
+       * is the deterministic lexical path on every turn. The gateway accepts
+       * absent or `"off"` for migration compatibility and refuses every
+       * activation-shaped value at init.
+       */
+      selector?: "off";
       operatorScope?: "off" | "provisional";
       distiller?: boolean | {
         enabled?: boolean;
@@ -394,11 +409,19 @@ export class MobKitBuilder {
         perMob?: boolean;
         runsPerDay?: number;
         minSignals?: number;
+        /** Output-token ceiling for the dream call. Unset keeps the profile default. */
+        maxOutputTokens?: number;
       };
-      hygienist?: boolean | {
-        enabled?: boolean;
+      /**
+       * PARKED. Only disabled compatibility forms are accepted. The internal
+       * Rust engine remains available for validation, but the public gateway
+       * has no supported activation seam or provider proof in this release.
+       */
+      hygienist?: false | {
+        enabled: false;
         runsPerDay?: number;
         model?: string;
+        maxOutputTokens?: number;
       };
     } = true,
   ): this {
@@ -459,7 +482,14 @@ export class MobKitBuilder {
       }
       wire.content_trust = contentTrust;
     }
-    if (config.selector !== undefined) wire.selector = config.selector;
+    if (config.selector !== undefined) {
+      if (config.selector !== "off") {
+        throw new Error(
+          "agentMemory selector is RETIRED; remove it or set selector to 'off'",
+        );
+      }
+      wire.selector = config.selector;
+    }
     if (config.operatorScope !== undefined) {
       wire.operator_scope = config.operatorScope;
     }
@@ -506,6 +536,9 @@ export class MobKitBuilder {
         if (config.steward.perMob !== undefined) {
           steward.per_mob = config.steward.perMob;
         }
+        if (config.steward.maxOutputTokens !== undefined) {
+          steward.max_output_tokens = config.steward.maxOutputTokens;
+        }
         if (config.steward.runsPerDay !== undefined) {
           steward.runs_per_day = config.steward.runsPerDay;
         }
@@ -516,6 +549,15 @@ export class MobKitBuilder {
       }
     }
     if (config.hygienist !== undefined) {
+      if (
+        config.hygienist !== false &&
+        (typeof config.hygienist !== "object" ||
+          config.hygienist.enabled !== false)
+      ) {
+        throw new Error(
+          "agentMemory hygienist is PARKED and cannot be enabled; remove it, use false, or use { enabled: false }",
+        );
+      }
       if (typeof config.hygienist === "boolean") {
         wire.hygienist = config.hygienist;
       } else {
@@ -533,6 +575,9 @@ export class MobKitBuilder {
         }
         if (config.hygienist.model !== undefined) {
           hygienist.model = config.hygienist.model;
+        }
+        if (config.hygienist.maxOutputTokens !== undefined) {
+          hygienist.max_output_tokens = config.hygienist.maxOutputTokens;
         }
         wire.hygienist = hygienist;
       }
@@ -706,16 +751,6 @@ export class MobKitBuilder {
       }
     }
 
-    if (this._config.schedulingFiles.length === 0) {
-      const files: string[] = [];
-      const defaultFile = "config/defaults/schedules.toml";
-      if (existsSync(defaultFile)) files.push(defaultFile);
-      const overrideFile = "deployment/schedules.toml";
-      if (existsSync(overrideFile)) files.push(overrideFile);
-      if (files.length > 0) {
-        this._config.schedulingFiles = files;
-      }
-    }
   }
 }
 

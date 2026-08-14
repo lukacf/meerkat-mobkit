@@ -67,6 +67,7 @@ fn make_spec(name: &str) -> DurableAgentSpec {
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     }
 }
 
@@ -330,8 +331,8 @@ async fn identity_first_choke_03_session_snapshot_restore_path() {
     let result = restore_flow(&runtime, &roster, None, None).await.unwrap();
 
     match result.outcomes.get(&id).unwrap() {
-        RestoreOutcome::Resumed { snapshot, .. } => {
-            assert_eq!(snapshot.data, original_data);
+        RestoreOutcome::Resumed { record, .. } => {
+            assert_eq!(record.identity, id);
         }
         other => panic!("expected Resumed, got: {other:?}"),
     }
@@ -648,6 +649,7 @@ async fn identity_first_choke_09_durable_agent_spec_gateway_round_trip() {
         runtime_mode_override: None,
         backend: None,
         binding: None,
+        placement: None,
     };
 
     // Serialize to JSON (simulates gateway wire)
@@ -1266,6 +1268,7 @@ async fn identity_first_choke_20_session_hook_adapter_unsupported_mutation() {
     };
     let spec = make_spec("triage:main");
     let mut draft = AgentBuildDraft {
+        compaction_curator: Default::default(),
         model: None,
         system_prompt: None,
         additional_instructions: vec![],

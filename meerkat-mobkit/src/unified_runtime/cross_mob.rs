@@ -1411,9 +1411,40 @@ impl UnifiedRuntime {
     /// this before `attach_identity_first_context` is safe: generated
     /// `rt:*` aliases fail closed until the authority is attached and are
     /// admitted afterwards.
+    ///
+    /// This convenience form is fail-closed: it binds with an empty grant
+    /// table, so every request is refused. Use
+    /// [`Self::start_control_listener_with_authorizer`] with a populated
+    /// table to admit scoped callers. An intentionally open listener must
+    /// name [`ControlAuthorizer::open`](crate::runtime::cross_mob_control::ControlAuthorizer::open)
+    /// explicitly at that lower-level seam.
     pub async fn start_control_listener(
         &self,
         addr: &crate::runtime::cross_mob_control::ControlListenAddr,
+    ) -> Result<String, CrossMobError> {
+        tracing::warn!(%addr, "cross-mob control listener has no caller grants; refusing every request");
+        self.start_control_listener_with_authorizer(
+            addr,
+            std::sync::Arc::new(
+                crate::runtime::cross_mob_control::ControlAuthorizer::with_grants_for_audience(
+                    crate::runtime::cross_mob_control::ControlGrantTable::new(),
+                    self.mob_id(),
+                ),
+            ),
+        )
+        .await
+    }
+
+    /// Bind the cross-mob control listener with caller authorization.
+    ///
+    /// `authorizer` is supplied by the host rather than held on the
+    /// runtime because grants come from configuration the caller already
+    /// holds before it starts the listener - unlike the gateway keypair,
+    /// which hosts install late and which therefore needs a live slot.
+    pub async fn start_control_listener_with_authorizer(
+        &self,
+        addr: &crate::runtime::cross_mob_control::ControlListenAddr,
+        authorizer: std::sync::Arc<crate::runtime::cross_mob_control::ControlAuthorizer>,
     ) -> Result<String, CrossMobError> {
         let mut task_slot = self.cross_mob_control_task.lock().await;
         if task_slot.is_some() {
@@ -1433,11 +1464,15 @@ impl UnifiedRuntime {
         if let Some(service) = self.mob_runtime.session_service() {
             handler = handler.with_session_service(std::sync::Arc::clone(service));
         }
+        self.install_remote_host_facts(&advertised);
+        handler = handler.with_host_facts_slot(std::sync::Arc::clone(&self.remote_host_facts));
         let handler: std::sync::Arc<dyn crate::runtime::cross_mob_control::ControlHandler> =
             std::sync::Arc::new(handler);
-        *task_slot = Some(tokio::spawn(
-            bound.serve(handler, std::sync::Arc::clone(&self.gateway_peer_keys)),
-        ));
+        *task_slot = Some(tokio::spawn(bound.serve_with_authorizer(
+            handler,
+            std::sync::Arc::clone(&self.gateway_peer_keys),
+            authorizer,
+        )));
         *self
             .cross_mob_control_advertised
             .write()
@@ -1455,6 +1490,48 @@ impl UnifiedRuntime {
             .clone()
     }
 
+    fn install_remote_host_facts(&self, advertised: &str) {
+        let Some(keys) = self.gateway_peer_keys() else {
+            return;
+        };
+        let mut options = meerkat::surface::RuntimeHostSurfaceOptions::process(
+            "meerkat-mobkit",
+            env!("CARGO_PKG_VERSION"),
+        );
+        options.runtime_backed_sessions = self.mob_runtime.session_service().is_some();
+        options.mobs = true;
+        options.multi_host_mobs = true;
+        options.comms = true;
+        options.session_events = true;
+        options.session_streams = true;
+        options.rpc_transport = Some("mobkit_control".to_string());
+        options.rpc_methods = vec!["host/describe".to_string(), "host/health".to_string()];
+        let capabilities = meerkat::surface::build_runtime_host_capabilities(&options);
+        let facts = crate::runtime::remote_host::HostFacts::new(
+            self.mob_id(),
+            keys.pubkey_b64(),
+            advertised,
+            capabilities,
+        )
+        .with_endpoints(meerkat_contracts::RuntimeHostEndpointProjection {
+            rpc_transport: Some("mobkit_control".to_string()),
+            rest_base_url: None,
+            rpc_methods: vec!["host/describe".to_string(), "host/health".to_string()],
+            rest_paths: Vec::new(),
+        });
+        let health = meerkat_contracts::RuntimeHostHealth {
+            contract_version: meerkat_contracts::ContractVersion::CURRENT,
+            status: meerkat_contracts::RuntimeHostHealthStatus::Ok,
+            checks: std::collections::BTreeMap::new(),
+        };
+        *self
+            .remote_host_facts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::sync::Arc::new(
+            crate::runtime::remote_host::StaticHostFacts::new(facts, health),
+        ));
+    }
+
     /// Install the long-lived Ed25519 keypair this gateway advertises via
     /// `mobkit/peer_pubkey` and signs cross-mob control responses with.
     ///
@@ -1465,10 +1542,166 @@ impl UnifiedRuntime {
     /// that is already serving (the serve task re-reads the slot per
     /// request).
     pub fn set_gateway_peer_keys(&mut self, keys: GatewayPeerKeys) {
+        // Key replacement would have to migrate the signer, pairing store,
+        // and caller identity used by an in-flight reconnect controller as one
+        // joined transition. This synchronous composition API cannot provide
+        // that boundary, so it remains explicitly one-shot and never detaches
+        // the already-owned controller task.
+        if self.gateway_peer_keys().is_some() {
+            tracing::warn!("gateway peer keys are already installed; refusing live replacement");
+            return;
+        }
+        let state_root = keys.state_root().map(std::path::Path::to_path_buf);
         *self
             .gateway_peer_keys
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::sync::Arc::new(keys));
+        if let Some(advertised) = self.control_listener_advertised_address() {
+            self.install_remote_host_facts(&advertised);
+        }
+        let Some(state_root) = state_root else {
+            return;
+        };
+        let path = state_root.join(crate::runtime::remote_host::HOST_PAIRING_FILE_NAME);
+        match crate::runtime::remote_host::RemoteHostLifecycle::load(
+            path,
+            crate::runtime::remote_host::HostReconnectPolicy::default(),
+        ) {
+            Ok(lifecycle) => {
+                let lifecycle = std::sync::Arc::new(lifecycle);
+                *self
+                    .remote_host_lifecycle
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(std::sync::Arc::clone(&lifecycle));
+                *self
+                    .remote_host_lifecycle_error
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                self.start_remote_host_reconnect_task(lifecycle);
+            }
+            Err(error) => {
+                *self
+                    .remote_host_lifecycle
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                *self
+                    .remote_host_lifecycle_error
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+            }
+        }
+    }
+
+    fn start_remote_host_reconnect_task(
+        &mut self,
+        lifecycle: std::sync::Arc<crate::runtime::remote_host::RemoteHostLifecycle>,
+    ) {
+        // `set_gateway_peer_keys` is normally a one-shot composition step.
+        // Refuse to detach a prior controller if an embedder calls it twice:
+        // the original remains owned by `shutdown` and no duplicate probes run.
+        if self.remote_host_reconnect_task.get_mut().is_some() {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let caller_keys = self.gateway_peer_keys();
+        let task = handle.spawn(async move {
+            // Only already-durable pairings are eligible for reconnect. A
+            // pinned contact alone is not enrollment authority: the explicit
+            // `pair_runtime_host` boundary must first authenticate and commit
+            // its endpoint identity.
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                for outcome in lifecycle
+                    .probe_due(
+                        caller_keys.clone(),
+                        crate::runtime::remote_host::unix_now_secs(),
+                    )
+                    .await
+                {
+                    if let Err(error) = outcome.result {
+                        tracing::debug!(
+                            host_key_b64 = %outcome.host_key_b64,
+                            %error,
+                            "runtime-host reconnect probe failed"
+                        );
+                    }
+                }
+            }
+        });
+        *self.remote_host_reconnect_task.get_mut() = Some(task);
+    }
+
+    fn remote_host_lifecycle(
+        &self,
+    ) -> Result<
+        std::sync::Arc<crate::runtime::remote_host::RemoteHostLifecycle>,
+        crate::runtime::remote_host::RemoteHostLifecycleError,
+    > {
+        if let Some(error) = self
+            .remote_host_lifecycle_error
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            return Err(error.into());
+        }
+        self.remote_host_lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| {
+                crate::runtime::remote_host::RemoteHostLifecycleError::Pairing(
+                    crate::runtime::remote_host::HostPairingError::Io {
+                        path: crate::runtime::remote_host::HOST_PAIRING_FILE_NAME.to_string(),
+                        reason: "gateway has no durable state root".to_string(),
+                    },
+                )
+            })
+    }
+
+    /// Explicitly pair a pinned remote contact and return its exact Meerkat
+    /// placement carrier. This never binds the host or mutates a member;
+    /// Meerkat's host authority must admit the returned `WireHostRef` later.
+    pub async fn pair_runtime_host(
+        &self,
+        contact_id: &str,
+    ) -> Result<
+        crate::runtime::remote_host::RuntimeHostPlacement,
+        crate::runtime::remote_host::RemoteHostLifecycleError,
+    > {
+        let contact = self
+            .contact_directory
+            .as_ref()
+            .and_then(|directory| directory.get(contact_id))
+            .cloned()
+            .ok_or_else(|| {
+                crate::runtime::remote_host::RemoteHostLifecycleError::UnknownContact {
+                    contact: contact_id.to_string(),
+                }
+            })?;
+        self.remote_host_lifecycle()?
+            .pair_contact(
+                &contact,
+                self.gateway_peer_keys(),
+                crate::runtime::remote_host::unix_now_secs(),
+            )
+            .await
+    }
+
+    /// Resolve an already-paired host to an exact placement carrier. Unknown,
+    /// never-authenticated, unreachable, unhealthy, and incapable hosts all
+    /// refuse typed; there is no `Option` that a caller could treat as local.
+    pub async fn runtime_host_placement(
+        &self,
+        host_key_b64: &str,
+    ) -> Result<
+        crate::runtime::remote_host::RuntimeHostPlacement,
+        crate::runtime::remote_host::RemoteHostLifecycleError,
+    > {
+        self.remote_host_lifecycle()?.placement(host_key_b64).await
     }
 
     /// The local gateway keypair if one was installed.
@@ -2011,7 +2244,12 @@ impl UnifiedRuntime {
         {
             return Ok(LocalOrRemote::Local(Box::new(authority)));
         }
-        match RemoteMobProxy::from_entry(entry)? {
+        // Authenticate ourselves to the peer with this gateway's keypair
+        // so a peer that enforces scoped control grants can attribute the
+        // call. `None` (no keypair installed) still dispatches: peers that
+        // do not enforce grants are unaffected, and peers that do refuse
+        // us typed rather than silently.
+        match RemoteMobProxy::from_entry_with_caller(entry, self.gateway_peer_keys())? {
             Some(proxy) => Ok(LocalOrRemote::Remote(proxy)),
             None => Err(CrossMobError::NoPeerHandle(entry.mob_id.clone())),
         }

@@ -181,6 +181,7 @@ class TestDurableAgentSpec:
             labels={"env": "prod"},
             context={"key": "value"},
             additional_instructions=["Be concise."],
+            placement="12D3KooWExactRemoteHost",
         )
         assert spec.identity == "triage:main"
         assert spec.profile == "assistant"
@@ -189,6 +190,7 @@ class TestDurableAgentSpec:
         assert spec.labels == {"env": "prod"}
         assert spec.context == {"key": "value"}
         assert spec.additional_instructions == ["Be concise."]
+        assert spec.placement == "12D3KooWExactRemoteHost"
 
     def test_addressability_defaults_to_addressable(self):
         spec = DurableAgentSpec(identity="a:main", profile="default")
@@ -200,6 +202,7 @@ class TestDurableAgentSpec:
         assert spec.labels == {}
         assert spec.context is None
         assert spec.additional_instructions == []
+        assert spec.placement is None
 
     def test_to_dict(self):
         spec = DurableAgentSpec(
@@ -209,6 +212,7 @@ class TestDurableAgentSpec:
             labels={"env": "prod"},
             context={"k": "v"},
             additional_instructions=["inst1"],
+            placement="12D3KooWExactRemoteHost",
         )
         d = spec.to_dict()
         assert d["identity"] == "triage:main"
@@ -218,12 +222,14 @@ class TestDurableAgentSpec:
         assert d["labels"] == {"env": "prod"}
         assert d["context"] == {"k": "v"}
         assert d["additional_instructions"] == ["inst1"]
+        assert d["placement"] == "12D3KooWExactRemoteHost"
 
     def test_to_dict_omits_none_optional_fields(self):
         spec = DurableAgentSpec(identity="a:main", profile="default")
         d = spec.to_dict()
         assert "display_name" not in d
         assert "context" not in d
+        assert "placement" not in d
         # labels and additional_instructions are always present (empty)
         assert d["labels"] == {}
         assert d["additional_instructions"] == []
@@ -237,6 +243,7 @@ class TestDurableAgentSpec:
             "labels": {"role": "gate"},
             "context": {"priority": 1},
             "additional_instructions": ["Check all."],
+            "placement": "12D3KooWExactRemoteHost",
         }
         spec = DurableAgentSpec.from_dict(data)
         assert spec.identity == "gate:main"
@@ -246,6 +253,7 @@ class TestDurableAgentSpec:
         assert spec.labels == {"role": "gate"}
         assert spec.context == {"priority": 1}
         assert spec.additional_instructions == ["Check all."]
+        assert spec.placement == "12D3KooWExactRemoteHost"
 
     def test_from_dict_minimal(self):
         data = {"identity": "a:main", "profile": "default"}
@@ -257,6 +265,7 @@ class TestDurableAgentSpec:
         assert spec.labels == {}
         assert spec.context is None
         assert spec.additional_instructions == []
+        assert spec.placement is None
 
     def test_round_trip(self):
         original = DurableAgentSpec(
@@ -267,6 +276,7 @@ class TestDurableAgentSpec:
             labels={"env": "test"},
             context={"nested": {"deep": True}},
             additional_instructions=["a", "b"],
+            placement="12D3KooWExactRemoteHost",
         )
         restored = DurableAgentSpec.from_dict(original.to_dict())
         assert restored.identity == original.identity
@@ -276,6 +286,7 @@ class TestDurableAgentSpec:
         assert restored.labels == original.labels
         assert restored.context == original.context
         assert restored.additional_instructions == original.additional_instructions
+        assert restored.placement == original.placement
 
 
 class TestContentBlock:

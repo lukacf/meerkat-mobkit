@@ -74,7 +74,15 @@ pub enum UnifiedEvent {
     Module(ModuleEvent),
 }
 
-/// An event originating from a loaded MCP module.
+/// A module-shaped runtime event.
+///
+/// Most values originate from loaded MCP modules. Runtime-owned projections
+/// also use this existing shape rather than extending [`UnifiedEvent`]. In
+/// particular, the WorkGraph SSE wake path emits module `mobkit.workgraph`
+/// with event types `workgraph.fact` and `workgraph.resync_required`. Those
+/// values are lossy notifications only: they are not duplicated into the
+/// unified event log, carry no SSE replay authority, and cannot replace a
+/// durable WorkGraph pull (`get`, `list`, `ready`, or `snapshot`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleEvent {
     pub module: String,

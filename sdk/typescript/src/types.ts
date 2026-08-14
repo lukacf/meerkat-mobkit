@@ -2105,6 +2105,8 @@ export interface DurableAgentSpec {
   readonly runtimeModeOverride?: "autonomous_host" | "turn_driven" | null;
   readonly backend?: "session" | "external" | null;
   readonly binding?: Readonly<Record<string, unknown>> | null;
+  /** Exact canonical Meerkat host ref. Never interpreted as a local fallback. */
+  readonly placement?: string | null;
 }
 
 export function parseDurableAgentSpec(raw: unknown): DurableAgentSpec {
@@ -2127,6 +2129,7 @@ export function parseDurableAgentSpec(raw: unknown): DurableAgentSpec {
       d.binding != null && typeof d.binding === "object"
         ? { ...(d.binding as Record<string, unknown>) }
         : null,
+    placement: typeof d.placement === "string" ? d.placement : null,
   };
 }
 
@@ -2149,6 +2152,11 @@ export function durableAgentSpecToDict(
   }
   if (spec.backend) result.backend = spec.backend;
   if (spec.binding) result.binding = { ...spec.binding };
+  // Presence, not truthiness, owns placement. Even an invalid empty ref must
+  // reach Rust and fail typed rather than disappear into local `None`.
+  if (spec.placement !== undefined && spec.placement !== null) {
+    result.placement = spec.placement;
+  }
   return result;
 }
 

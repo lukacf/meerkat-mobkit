@@ -18,11 +18,13 @@ classes:
 
 ## Architecture
 
-The bundled `agent_memory` provider is intentionally lightweight. It writes an
-inspectable markdown hot store under `<persistent_state>/agent-memory` so an
-explicit `remember` write is available to the next turn without requiring an
-external service or LLM-powered extraction pipeline. This store is the default
-gateway implementation, not the long-term knowledge authority.
+The bundled live `agent_memory` provider is the per-realm SQLite store under
+`<persistent_state>/agent-memory`. It makes an explicit `remember` write
+available to the next turn without requiring an external service or
+LLM-powered extraction pipeline. Legacy per-identity markdown files are
+import-only: selecting `store: "markdown"` is refused at gateway init, while
+the SQLite provider imports a realm's files when that realm is first accessed
+and renames each source to `.md.imported`.
 
 Elephant is not integrated today. A real Elephant integration — a deep-memory
 hub with a knowledge graph, document/vector retrieval, truth maintenance,
@@ -110,7 +112,7 @@ MobKit.builder()
   })
 ```
 
-By default, the bundled provider writes markdown under `<persistent_state>/agent-memory/<realm>/<identity>.md`. Records are inspectable and are injected as a quoted observation block for the matching durable identity. The bundled markdown store enforces an explicit retention policy per identity file: at most 512 records and 8 MiB of rendered markdown, retaining the newest records when compacting. Recall reads within that bounded file, contextual recall receives the raw turn or RPC `query_text`, ignores common stopwords, scores matching records, and size-caps injected records; malformed records are skipped rather than promoted into runtime context. Automatic build/turn injection is time-bounded by `recall_timeout_ms` (default `500`) and defaults to `recall_failure_policy: "skip"`, so provider slowness or outage does not block normal delivery. Set `recall_failure_policy: "fail"` for fail-closed deployments. Explicit `mobkit/agent_memory/recall` calls still return provider errors to the caller.
+By default, the bundled provider stores one SQLite database per realm under `<persistent_state>/agent-memory`. Records are injected as a quoted observation block for the matching durable identity. Contextual recall receives the raw turn or RPC `query_text`, ignores common stopwords, scores matching records, and size-caps injected records. Existing markdown files under a realm's legacy subdirectory are parsed only when that realm is first accessed, imported through the SQLite validator, and renamed rather than deleted; malformed records are skipped instead of being promoted into runtime context. Automatic build/turn injection is time-bounded by `recall_timeout_ms` (default `500`) and defaults to `recall_failure_policy: "skip"`, so provider slowness or outage does not block normal delivery. Set `recall_failure_policy: "fail"` for fail-closed deployments. Explicit `mobkit/agent_memory/recall` calls still return provider errors to the caller.
 
 Apps write identity-scoped agent memory explicitly through `mobkit/agent_memory/remember`, TypeScript `handle.rememberAgentMemory(...)`, or Python `handle.remember_agent_memory(...)`; read it through `mobkit/agent_memory/recall`, `handle.recallAgentMemory(...)`, or `handle.recall_agent_memory(...)`; and delete individual records through `mobkit/agent_memory/forget`, `handle.forgetAgentMemory(...)`, or `handle.forget_agent_memory(...)`. A successful `remember` means the configured hot identity-memory provider durably accepted the record and it is available to the next identity-first send for that identity, plus build context on materialization/resume/respawn/reset. It does not imply Elephant entity extraction, truth maintenance, or document/vector indexing has completed. Custom providers receive both raw `query_text` and normalized `query_terms` so they can implement stronger retrieval without changing MobKit runtime authority.
 
@@ -138,7 +140,7 @@ A memory tool that can be poisoned by prompt injection is worse than no memory t
 - **Session-sticky taint**: once a session ingests untrusted tool content, every LLM-authored memory write from that session lands `quarantined` — stored, auditable, but never injected or recalled until review. Taint clears only at a fresh-context boundary (reset, respawn, fresh spawn); compaction does not clear it.
 - **Write posture** (`agent_memory.llm_writes`): `"observed"` (default) quarantines only tainted-session writes; `"quarantined"` quarantines *every* LLM-authored write pending review. Choose `"quarantined"` if you cannot accept the known race: a write issued in the same turn as the session's *first* untrusted ingestion can beat the observe-stream taint signal (closed in a later phase by dispatch-time taint visibility).
 
-Application/operator writes (the `mobkit/agent_memory/*` RPCs) are non-LLM principals and are never quarantined by this machinery. `llm_writes` and `content_trust` require `store: "sqlite"`; configuring them with the markdown store fails loudly at startup.
+Application/operator writes (the `mobkit/agent_memory/*` RPCs) are non-LLM principals and are never quarantined by this machinery. `llm_writes` and `content_trust` require `store: "sqlite"`. Selecting `store: "markdown"` is refused before a runtime can start; combining it with these SQLite-only knobs is rejected earlier during config validation.
 
 ```typescript
 MobKit.builder().agentMemory({

@@ -215,13 +215,15 @@ class TestBuilderChain:
             "content_trust": {"trusted_tools": ["safe_calc"]},
         }
 
-    def test_agent_memory_selector_serializes_to_gateway_wire_key(self):
-        b = MobKit.builder().agent_memory(selector="profile:/etc/mobkit/selector.toml")
+    def test_agent_memory_selector_keeps_only_off_compatibility(self):
+        b = MobKit.builder().agent_memory(selector="off")
         params = MobKitRuntime(b._config)._build_init_params()
 
         assert params["runtime_options"]["agent_memory"] == {
-            "selector": "profile:/etc/mobkit/selector.toml",
+            "selector": "off",
         }
+        with pytest.raises(ValueError, match="selector is RETIRED"):
+            MobKit.builder().agent_memory(selector="profile:/tmp/selector.toml")
 
     def test_agent_memory_distiller_serializes_to_gateway_wire_keys(self):
         b = MobKit.builder().agent_memory(
@@ -306,33 +308,42 @@ class TestBuilderChain:
         params = MobKitRuntime(b._config)._build_init_params()
         assert params["runtime_options"]["agent_memory"] == {"operator_scope": "off"}
 
-    def test_agent_memory_hygienist_serializes_to_gateway_wire_keys(self):
+    def test_agent_memory_hygienist_keeps_only_disabled_compatibility(self):
         b = MobKit.builder().agent_memory(
             hygienist={
-                "enabled": True,
+                "enabled": False,
                 "runs_per_day": 3,
-                "model": "claude-haiku-4-5",
+                "model": "legacy-model",
+                "max_output_tokens": 8192,
             },
         )
         params = MobKitRuntime(b._config)._build_init_params()
         assert params["runtime_options"]["agent_memory"] == {
             "hygienist": {
-                "enabled": True,
+                "enabled": False,
                 "runs_per_day": 3,
-                "model": "claude-haiku-4-5",
+                "model": "legacy-model",
+                "max_output_tokens": 8192,
             },
         }
 
-    def test_agent_memory_hygienist_accepts_camel_case_and_bool(self):
-        b = MobKit.builder().agent_memory(hygienist={"runsPerDay": 2})
+    def test_agent_memory_hygienist_accepts_disabled_camel_case_and_bool(self):
+        b = MobKit.builder().agent_memory(
+            hygienist={"enabled": False, "runsPerDay": 2}
+        )
         params = MobKitRuntime(b._config)._build_init_params()
         assert params["runtime_options"]["agent_memory"] == {
-            "hygienist": {"runs_per_day": 2},
+            "hygienist": {"enabled": False, "runs_per_day": 2},
         }
 
-        b = MobKit.builder().agent_memory(hygienist=True)
+        b = MobKit.builder().agent_memory(hygienist=False)
         params = MobKitRuntime(b._config)._build_init_params()
-        assert params["runtime_options"]["agent_memory"] == {"hygienist": True}
+        assert params["runtime_options"]["agent_memory"] == {"hygienist": False}
+
+        with pytest.raises(ValueError, match="hygienist is PARKED"):
+            MobKit.builder().agent_memory(hygienist=True)
+        with pytest.raises(ValueError, match="hygienist is PARKED"):
+            MobKit.builder().agent_memory(hygienist={})
 
     def test_agent_memory_unknown_option_raises_instead_of_silently_dropping(self):
         with pytest.raises(ValueError, match="per_turn_injecton"):
@@ -346,7 +357,9 @@ class TestBuilderChain:
         with pytest.raises(ValueError, match="steward.*cadance"):
             MobKit.builder().agent_memory(steward={"cadance": "*/6h"})
         with pytest.raises(ValueError, match="hygienist.*runs_per_dya"):
-            MobKit.builder().agent_memory(hygienist={"runs_per_dya": 2})
+            MobKit.builder().agent_memory(
+                hygienist={"enabled": False, "runs_per_dya": 2}
+            )
 
     def test_external_authoritative_path_requires_all_three_parts(self):
         class Store:
@@ -420,19 +433,6 @@ class TestConventionDefaults:
         b._apply_convention_defaults()
         assert b._config.routing_config_path == "deployment/routing.toml"
 
-    def test_scheduling_discovered(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "config" / "defaults").mkdir(parents=True)
-        (tmp_path / "deployment").mkdir()
-        (tmp_path / "config" / "defaults" / "schedules.toml").write_text("default")
-        (tmp_path / "deployment" / "schedules.toml").write_text("override")
-
-        b = MobKit.builder().mob("config/mob.toml")
-        b._apply_convention_defaults()
-        assert len(b._config.scheduling_files) == 2
-        assert "defaults" in b._config.scheduling_files[0]
-        assert "deployment" in b._config.scheduling_files[1]
-
     def test_missing_files_skipped(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
 
@@ -440,7 +440,6 @@ class TestConventionDefaults:
         b._apply_convention_defaults()
         assert b._config.gating_config_path is None
         assert b._config.routing_config_path is None
-        assert b._config.scheduling_files == []
 
     def test_explicit_overrides_convention(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -450,12 +449,3 @@ class TestConventionDefaults:
         b = MobKit.builder().mob("config/mob.toml").gating("custom/gating.toml")
         b._apply_convention_defaults()
         assert b._config.gating_config_path == "custom/gating.toml"
-
-    def test_explicit_scheduling_overrides_convention(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "config" / "defaults").mkdir(parents=True)
-        (tmp_path / "config" / "defaults" / "schedules.toml").write_text("conventional")
-
-        b = MobKit.builder().mob("config/mob.toml").scheduling("custom/s.toml")
-        b._apply_convention_defaults()
-        assert b._config.scheduling_files == ["custom/s.toml"]

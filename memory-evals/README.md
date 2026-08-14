@@ -5,11 +5,12 @@ Calibration corpus and runner for the agent-memory judgment stages
 versioned, evaluated artifact — this directory holds the artifacts (profiles,
 prompt bundles, fixtures) and `scripts/memory-evals` runs them.
 
-All four judgment stages (Selector, Distiller, Steward, Hygienist) have
-profiles, fixtures, and mock lanes; the deterministic checks and mock-lane
-invariant verdicts gate CI today. `--mode live` is wired for every stage and
-runs real model calls where provider auth resolves (exit-3 SKIP otherwise),
-gating on judgment scorecards — it runs in no CI lane yet (credentials).
+Distiller, Steward, and Hygienist have runnable profiles, fixtures, and mock
+lanes; deterministic checks and mock-lane invariant verdicts gate CI today.
+The Selector corpus is retained only as historical calibration evidence after
+the unactivated stage was retired. It is validated by `--check`, but it is not
+a runnable stage. Live modes run real model calls where provider auth resolves
+(exit-3 SKIP otherwise); they run in no CI lane yet (credentials).
 
 ## Layout
 
@@ -26,8 +27,7 @@ memory-evals/
 
 ```bash
 scripts/memory-evals --check                  # schema/consistency validation (CI gate; default)
-scripts/memory-evals --stage selector --mode mock   # deterministic mock scorecard (plumbing check)
-scripts/memory-evals --stage selector --mode live   # real Selector via selector-eval
+scripts/memory-evals --stage distiller --mode mock  # deterministic mock scorecard
 make memory-evals                             # = --check
 ```
 
@@ -35,18 +35,8 @@ make memory-evals                             # = --check
 `--mode mock` runs a trivial title-word-overlap selector purely to exercise the
 scorecard plumbing — mock misses are expected and never fail the run.
 
-`--mode live` drives the real Selector through the `selector-eval` binary
-(`cargo run --bin selector-eval`; override the command with the
-`MEMORY_EVALS_SELECTOR_EVAL` environment variable, e.g. a prebuilt binary
-path). Each fixture runs 3 times with independently shuffled manifests and is
-scored on `must_select`, `must_not_select`, and shuffle stability (identical
-`selected_ids` across the runs — a §11 label-free invariant). Provider auth
-resolves through meerkat's factory seam from the process environment; when no
-auth is resolvable (`selector-eval` exit 3) the run prints a SKIP notice and
-falls back to `selector-eval --mock`, which pushes a deterministic scripted
-model through the full prompt-render/shuffle/JSON-parse plumbing —
-informational only. Scorecard regressions exit nonzero ONLY when live
-actually ran.
+The retired Selector profiles and fixtures remain readable inputs to
+`--check`; no live or mock command executes them.
 
 ## Profile format
 
@@ -149,9 +139,10 @@ selector fixtures' PascalCase kinds:
   consolidation carries the provenance ceiling (§10.2;
   `transitive_taint_ceiling`).
 
-## The stage-eval seam (selector-eval, distiller-eval, steward-eval, hygienist-eval)
+## The stage-eval seam (distiller-eval, steward-eval, hygienist-eval)
 
-`--mode live` drives the Selector's single entry point
+The following describes the retired Selector's former entry point and is kept
+only as calibration provenance. It is not a supported command. It drove
 (`memory::selector::select` — manifest + turn text + suppression list in,
 structured `{selected_ids, coverage}` out) through the `selector-eval`
 binary, one fixture-shaped JSON object on stdin per invocation:

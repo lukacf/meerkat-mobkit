@@ -440,42 +440,50 @@ rate_limit_per_minute = 10
     assert_eq!(routes["result"]["routes"][0]["sink"], json!("email"));
 }
 
+/// Phase B rejects the removed static scheduling config at the init boundary.
 #[test]
-fn gateway_runtime_options_scheduling_files_load_default_schedules() {
+fn gateway_runtime_options_scheduling_files_are_rejected() {
     let state_dir = tempfile::tempdir().expect("state dir");
-    let schedule_path = write_config(
-        state_dir.path(),
-        "schedules.toml",
-        r#"
-[[schedules]]
-schedule_id = "every-minute"
-interval = "* * * * *"
-timezone = "UTC"
-enabled = true
-"#,
-    );
     let mut gateway = GatewayProcess::start();
 
     let init = gateway.init_with_runtime_options(
         &state_dir,
         json!({
-            "scheduling_files": [schedule_path]
+            "scheduling_files": ["config/defaults/schedules.toml"]
         }),
     );
-    assert!(init["result"]["contract_version"].is_string());
-
-    let evaluated = gateway.rpc(json!({
-        "jsonrpc": "2.0",
-        "id": "schedule",
-        "method": "mobkit/scheduling/evaluate",
-        "params": {
-            "tick_ms": 0
-        }
-    }));
-    assert_eq!(
-        evaluated["result"]["due_triggers"][0]["schedule_id"],
-        json!("every-minute")
+    assert!(
+        init["result"].is_null(),
+        "removed config must refuse init: {init}"
     );
+    assert_eq!(init["error"]["code"], json!(-32602), "{init}");
+    assert!(
+        init["error"]["message"].as_str().is_some_and(
+            |message| message.contains("unsupported runtime_options fields: scheduling_files")
+        ),
+        "{init}"
+    );
+}
+
+/// Removed module-plane scheduling methods use the ordinary JSON-RPC
+/// method-not-found contract. Durable schedule tools remain separate.
+#[test]
+fn gateway_static_scheduling_methods_are_not_found() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let mut gateway = GatewayProcess::start();
+    let init = gateway.init_with_runtime_options(&state_dir, json!({}));
+    assert_eq!(init["result"]["contract_version"], json!("0.5.0"), "{init}");
+
+    for method in ["mobkit/scheduling/evaluate", "mobkit/scheduling/dispatch"] {
+        let response = gateway.rpc(json!({
+            "jsonrpc": "2.0",
+            "id": method,
+            "method": method,
+            "params": {}
+        }));
+        assert!(response["result"].is_null(), "{response}");
+        assert_eq!(response["error"]["code"], json!(-32601), "{response}");
+    }
 }
 
 #[test]

@@ -73,7 +73,7 @@ Returns experience metadata describing the current runtime state. This is the pr
   "health_overview": {
     "title": "Health",
     "live_snapshot": {
-      "loaded_modules": ["router", "delivery", "scheduling"],
+      "loaded_modules": ["router", "delivery", "memory"],
       "loaded_module_count": 3,
       "running": true
     }
@@ -94,7 +94,7 @@ Returns the list of loaded modules.
   "modules": [
     { "id": "router", "health": "healthy" },
     { "id": "delivery", "health": "healthy" },
-    { "id": "scheduling", "health": "starting" }
+    { "id": "memory", "health": "starting" }
   ]
 }
 ```

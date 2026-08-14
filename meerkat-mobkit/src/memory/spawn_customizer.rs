@@ -144,8 +144,9 @@ impl SpawnMemberCustomizer for MemorySpawnCustomizer {
 /// runtime keeps this correct on any caller runtime flavor (no
 /// `block_in_place` panic on current-thread runtimes, and the coordinator's
 /// internal `tokio::time::timeout`s get a live timer driver). Bounded by the
-/// coordinator's own recall budget (2× `recall_timeout_ms` for the selector
-/// stage), so a spawn never hangs on memory.
+/// coordinator's own recall budget (`recall_timeout_ms`; the 2× build-time
+/// extension retired with the §8.3 selector stage), so a spawn never hangs
+/// on memory.
 fn block_on_build_injection(
     coordinator: &RecallCoordinator,
     identity: &AgentIdentity,
@@ -231,6 +232,18 @@ mod tests {
     use meerkat_core::agent::AgentToolDispatcher;
     use meerkat_mob::ProfileName;
     use meerkat_mob::ids::AgentIdentity as MobIdentity;
+
+    struct RecallOnlyProvider;
+
+    #[async_trait::async_trait]
+    impl AgentMemoryProvider for RecallOnlyProvider {
+        async fn recall(
+            &self,
+            _request: crate::identity_first::AgentMemoryRecallRequest,
+        ) -> Result<Vec<crate::identity_first::AgentMemoryRecord>, AgentMemoryError> {
+            Ok(Vec::new())
+        }
+    }
 
     fn sqlite_store(dir: &std::path::Path) -> Arc<SqliteAgentMemoryStore> {
         Arc::new(SqliteAgentMemoryStore::open(dir).expect("open sqlite store"))
@@ -392,13 +405,9 @@ mod tests {
             .expect("apply succeeds");
         assert!(spec.external_tools.is_none(), "recorder_tool=false");
 
-        // Markdown store: no authored-write support, so injection-only.
-        let md_dir = tempfile::tempdir().expect("temp dir");
-        let markdown = Arc::new(
-            crate::identity_first::MarkdownAgentMemoryStore::open(md_dir.path())
-                .expect("markdown store"),
-        );
-        let customizer = MemorySpawnCustomizer::new(markdown, AgentMemoryConfig::default());
+        // A custom recall-only provider has no authored-write support.
+        let customizer =
+            MemorySpawnCustomizer::new(Arc::new(RecallOnlyProvider), AgentMemoryConfig::default());
         let mut spec = spec_for("agent:mem");
         customizer
             .apply(&MobId::from("test-mob"), None, &mut spec)

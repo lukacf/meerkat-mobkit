@@ -21,12 +21,12 @@ pub use agent_memory::{
     AgentMemoryLlmWrites, AgentMemoryOperatorScope, AgentMemoryPerTurnInjection,
     AgentMemoryProvider, AgentMemoryRecallFailurePolicy, AgentMemoryRecallRequest,
     AgentMemoryRecord, AgentMemoryRuntimeInjector, AgentMemorySelection, AuthoredWriteReceipt,
-    MEMORY_TOOL_NAME, MarkdownAgentMemoryStore, NewAgentMemory,
+    MEMORY_TOOL_NAME, NewAgentMemory,
 };
 pub use bridge::{
-    BridgeDelivery, BridgeError, CommittedBoundaryRecoverer, CommittedBoundaryRepair,
-    MemberInspection, MobSessionBridge, ResumeFallbackReason, ResumeRejectionKind,
-    ResumeSessionOutcome, SessionBridge,
+    BridgeAdmissionError, BridgeDelivery, BridgeError, BridgeTurnError, BridgeTurnReceipt,
+    CommittedBoundaryRecoverer, CommittedBoundaryRepair, MemberInspection, MobSessionBridge,
+    ResumeFallbackReason, ResumeRejectionKind, ResumeSessionOutcome, SessionBridge,
 };
 pub use contracts::*;
 pub use gateway_bridges::{
@@ -39,7 +39,7 @@ pub use local_store::{
 };
 pub use orchestrator::{
     ReconcileAction, RestoreFlowResult, RestoreOutcome, compute_reconcile_actions,
-    lazy_register_flow, restore_flow, restore_flow_for_bootstrap,
+    lazy_register_flow, restore_flow,
 };
 pub use runtime::{
     ContinuityRepairPolicy, IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig,

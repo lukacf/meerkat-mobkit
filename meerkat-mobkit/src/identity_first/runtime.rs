@@ -22,21 +22,21 @@ use super::agent_memory::{
     AgentMemoryRuntimeInjector, NewAgentMemory,
 };
 use super::bridge::{
-    BridgeError, CommittedBoundaryRepair, ResumeRejectionKind, SessionBridge,
-    archived_not_revivable_park_reason,
+    BridgeAdmissionError, BridgeError, BridgeTurnError, CommittedBoundaryRepair,
+    ResumeRejectionKind, SessionBridge, archived_not_revivable_park_reason,
 };
 use super::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
 };
 use super::types::{
-    AgentAddressability, AgentBuildContext, AgentIdentity, AgentRuntimeId, AgentRuntimeServices,
-    CheckpointVersion, CompletionCursor, CompletionProgress, ContinuityGeneration,
-    ContinuityHealth, ContinuityRecord, ContinuityStoreError, ContinuityUnrecoverable,
-    DispatchAdmission, DispatchInput, DurabilityPolicy, DurableAgentSpec, FencingToken,
-    HostRejectedBuildPark, IdentityBootstrapEntry, IdentityBootstrapMode, IdentityBootstrapState,
-    IdentityBootstrapStatus, IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo,
-    ManagedPeerEdge, NotAddressable, RosterContext, SendAdmission, SessionSnapshot,
-    TopologyContext,
+    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeId,
+    AgentRuntimeServices, CheckpointVersion, CompletionCursor, CompletionProgress,
+    ContinuityFailure, ContinuityFailureKind, ContinuityGeneration, ContinuityHealth,
+    ContinuityRecord, ContinuityStoreError, ContinuityUnrecoverable, DispatchAdmission,
+    DispatchInput, DurabilityPolicy, DurableAgentSpec, FencingToken, HostRejectedBuildPark,
+    IdentityBootstrapEntry, IdentityBootstrapMode, IdentityBootstrapState, IdentityBootstrapStatus,
+    IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable,
+    RosterContext, SendAdmission, SessionSnapshot, TopologyContext,
 };
 use crate::memory::records::{
     ManifestTier, MemoryId, MemoryKind, MemoryScope, NewMemoryRecord, RecordMeta, UsageEvent,
@@ -75,6 +75,88 @@ fn interaction_id_for_delivery<'a>(
 // Error types
 // ---------------------------------------------------------------------------
 
+/// The identity embodiment a completion-bearing delivery was admitted onto.
+///
+/// Compared by value across the unlocked window. Any inequality means the
+/// identity was reset, retired or rebound while its turn ran, and the turn's
+/// result belongs to an embodiment that no longer exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CapturedIncarnation {
+    runtime_id: Option<AgentRuntimeId>,
+    generation: Option<u64>,
+    fencing_token: Option<FencingToken>,
+}
+
+/// Which bridge verb the shared send core delivers through.
+///
+/// A typed mode rather than a bool, and one shared body rather than two, for
+/// the same reason the bridge's own submit path is shaped this way: the parts
+/// that differ between the lanes are trivial, and the parts that must NOT
+/// differ - lease acquisition, alias pinning, defanging, memory injection,
+/// session reconciliation - are the ones a second copy would silently drift on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SendCommitMode {
+    /// Return once the work is admitted. The historical behaviour of `send`.
+    Ingress,
+    /// Return only after this exact turn has committed its terminal boundary.
+    /// Fails closed when completion cannot be observed.
+    AwaitCommit,
+}
+
+/// One invocation of the shared identity delivery state machine.
+///
+/// Keeping the lane-specific carriers in one value makes the common send body
+/// explicit without growing a positional parameter list that is easy to wire
+/// incorrectly when a new carrier is added.
+struct SendRequest<'a> {
+    expected_alias: Option<&'a str>,
+    content: &'a meerkat_core::ContentInput,
+    system_prompt: Option<&'a str>,
+    handling_mode: HandlingMode,
+    interaction_id: Option<&'a str>,
+    commit_mode: SendCommitMode,
+}
+
+/// Map the admission edge of a completion-bearing delivery. Post-admission
+/// outcomes are unrepresentable in this input type.
+fn admission_phase_error(
+    identity: &AgentIdentity,
+    err: BridgeAdmissionError,
+) -> IdentityRuntimeError {
+    let identity = identity.clone();
+    match err {
+        BridgeAdmissionError::CompletionUnsupported(reason) => {
+            IdentityRuntimeError::CompletionUnavailable { identity, reason }
+        }
+        BridgeAdmissionError::Mob(detail)
+        | BridgeAdmissionError::InvalidInput(detail)
+        | BridgeAdmissionError::InvariantViolation(detail) => {
+            IdentityRuntimeError::AdmissionFailed { identity, detail }
+        }
+        other @ (BridgeAdmissionError::ResumeRejected { .. }
+        | BridgeAdmissionError::ActorAdmissionTimeout { .. }) => {
+            IdentityRuntimeError::AdmissionFailed {
+                identity,
+                detail: other.to_string(),
+            }
+        }
+    }
+}
+
+/// Map the terminal edge of an admitted turn. Pre-admission outcomes are
+/// unrepresentable in this input type.
+fn turn_phase_error(identity: &AgentIdentity, err: BridgeTurnError) -> IdentityRuntimeError {
+    let identity = identity.clone();
+    match err {
+        BridgeTurnError::CompletionFailed(detail) => {
+            IdentityRuntimeError::CompletionFailed { identity, detail }
+        }
+        BridgeTurnError::PostAdmissionResolutionFailed(detail) => {
+            IdentityRuntimeError::PostAdmissionResolutionFailed { identity, detail }
+        }
+    }
+}
+
 /// Errors from identity-first runtime operations.
 #[derive(Debug)]
 pub enum IdentityRuntimeError {
@@ -82,6 +164,57 @@ pub enum IdentityRuntimeError {
     UnknownIdentity(AgentIdentity),
     /// send() rejected: target is InternalOnly.
     NotAddressable(NotAddressable),
+    /// PHASE 1 of 4. A completion-bearing send could not be honoured AT ALL.
+    ///
+    /// Nothing was submitted: either no bridge is installed, the identity has
+    /// no bound runtime id, or the bridge is ingress-only. The completion lane
+    /// fails closed here rather than degrading to the admission-only path -
+    /// degrading would report success for a turn that was never awaited.
+    ///
+    /// Safe to fall back or fail; nothing ran.
+    CompletionUnavailable {
+        identity: AgentIdentity,
+        reason: String,
+    },
+    /// PHASE 2 of 4. A completion-bearing send failed AT ADMISSION.
+    ///
+    /// The turn never started. Distinct from [`Self::CompletionFailed`] on
+    /// purpose: this names a delivery that did not land, so retry semantics are
+    /// the ordinary admission ones, not "the turn already ran".
+    AdmissionFailed {
+        identity: AgentIdentity,
+        detail: String,
+    },
+    /// PHASE 3 of 4. The work WAS admitted and its turn reached a FAILED
+    /// terminal.
+    ///
+    /// The turn RAN. Never retry - a retry would run the identity's turn a
+    /// second time.
+    CompletionFailed {
+        identity: AgentIdentity,
+        detail: String,
+    },
+    /// PHASE 4 of 4. The turn was admitted, reached a SUCCESSFUL terminal, and
+    /// only then did projecting its session id fail.
+    ///
+    /// The member did the work. Non-retryable: repairing cannot undo a turn
+    /// that already ran, and resubmitting would run it twice.
+    PostAdmissionResolutionFailed {
+        identity: AgentIdentity,
+        detail: String,
+    },
+    /// The turn was admitted and ran, and the identity was RESET, RETIRED or
+    /// REBOUND while it ran.
+    ///
+    /// Distinct from [`Self::PostAdmissionResolutionFailed`]: there the
+    /// embodiment is intact and only the projection failed; here the embodiment
+    /// the turn belonged to no longer exists. Non-retryable, and deliberately
+    /// NOT reconciled - binding the live incarnation to a dead turn's session
+    /// is worse than losing the attribution.
+    PostAdmissionSuperseded {
+        identity: AgentIdentity,
+        detail: String,
+    },
     /// Operation rejected: no active lease for this identity.
     NoActiveLease(AgentIdentity),
     /// Fail-closed single-embodiment guard: the identity's durable lease is
@@ -159,6 +292,11 @@ pub enum IdentityRuntimeError {
         identity: AgentIdentity,
         reason: String,
     },
+    /// A concrete member resume reached a typed terminal refusal. The
+    /// continuity record is preserved and the failure remains attributable to
+    /// this identity when an eager fleet restore converts it into a visible
+    /// `RestoreOutcome::Broken`.
+    EmbodimentRejected(Box<ContinuityFailure>),
     /// Generic I/O or internal error.
     Internal(String),
 }
@@ -168,6 +306,32 @@ impl std::fmt::Display for IdentityRuntimeError {
         match self {
             Self::UnknownIdentity(id) => write!(f, "unknown identity: {id}"),
             Self::NotAddressable(err) => write!(f, "{err}"),
+            Self::CompletionUnavailable { identity, reason } => write!(
+                f,
+                "completion-bearing send to {identity} cannot be honoured: {reason}; \
+                 NOTHING was submitted"
+            ),
+            Self::AdmissionFailed { identity, detail } => write!(
+                f,
+                "completion-bearing send to {identity} failed at admission: {detail}; \
+                 the turn never started"
+            ),
+            Self::CompletionFailed { identity, detail } => write!(
+                f,
+                "completion-bearing send to {identity} was admitted and then failed: {detail}; \
+                 the turn RAN - do not retry"
+            ),
+            Self::PostAdmissionResolutionFailed { identity, detail } => write!(
+                f,
+                "completion-bearing send to {identity} COMPLETED and then its session \
+                 projection failed: {detail}; the turn RAN - do not retry"
+            ),
+            Self::PostAdmissionSuperseded { identity, detail } => write!(
+                f,
+                "completion-bearing send to {identity} COMPLETED, but the identity was \
+                 superseded while it ran: {detail}; the turn RAN against an embodiment \
+                 that no longer exists - do not retry, and its session was NOT rebound"
+            ),
             Self::NoActiveLease(id) => write!(f, "no active lease for {id}"),
             Self::AlreadyEmbodied { identity, holder } => write!(
                 f,
@@ -240,6 +404,11 @@ impl std::fmt::Display for IdentityRuntimeError {
                 f,
                 "identity {identity} is parked: the host deterministically rejected its build \
                  ({reason}); a roster/policy (spec) change clears the park"
+            ),
+            Self::EmbodimentRejected(failure) => write!(
+                f,
+                "identity {} embodiment was rejected: {}",
+                failure.identity, failure.detail
             ),
             Self::Internal(msg) => write!(f, "internal: {msg}"),
         }
@@ -572,15 +741,17 @@ impl IdentityFirstRuntimeContext {
             self.runtime.fail_identity_bootstrap(generation, &error);
             return Err(error);
         }
-        self.apply_roster_controlled(generation, roster, true).await
+        self.apply_roster_controlled(generation, roster).await
     }
 
     /// Apply a roster under the runtime's single bootstrap controller.
     ///
-    /// Startup callers may skip snapshot payloads for bridges that explicitly
-    /// opt out because they discard [`RestoreOutcome`] after registration.
-    /// The existing public refresh API must preserve its historical payload,
-    /// so it always selects the full restore path.
+    /// Startup and the public refresh API now share ONE restore path. The
+    /// former split (bootstrap skipped snapshot payloads for opted-out
+    /// bridges, public refresh always loaded them) meant console add-member
+    /// and every reconcile pass paid a full session-blob read per Ready
+    /// member for a payload nothing reads. `restore_flow` owns the single
+    /// read-on-need rule; see its docs.
     async fn prepare_controlled_bootstrap(&self) -> Result<(), IdentityRuntimeError> {
         if self.runtime.bootstrap_shutdown.load(Ordering::Acquire) {
             return Err(IdentityRuntimeError::Internal(
@@ -603,7 +774,6 @@ impl IdentityFirstRuntimeContext {
         &self,
         generation: u64,
         roster: &[DurableAgentSpec],
-        optimize_startup_snapshot_load: bool,
     ) -> Result<super::orchestrator::RestoreFlowResult, IdentityRuntimeError> {
         if let Err(message) = self.bootstrap_mode.validate() {
             let error = IdentityRuntimeError::Internal(message);
@@ -633,17 +803,10 @@ impl IdentityFirstRuntimeContext {
             self.runtime.fail_identity_bootstrap(generation, &error);
             return Err(error);
         }
-        let result = match (&self.bootstrap_mode, optimize_startup_snapshot_load) {
-            (IdentityBootstrapMode::EagerMaterialize, true) => {
-                super::orchestrator::restore_flow_for_bootstrap(
-                    &self.runtime,
-                    roster,
-                    self.topology_provider.as_deref(),
-                    self.customizer.as_deref(),
-                )
-                .await
-            }
-            (IdentityBootstrapMode::EagerMaterialize, false) => {
+        // One eager path for both startup and refresh: the snapshot-policy
+        // twin is gone, so there is nothing left for the caller to select.
+        let result = match &self.bootstrap_mode {
+            IdentityBootstrapMode::EagerMaterialize => {
                 super::orchestrator::restore_flow(
                     &self.runtime,
                     roster,
@@ -652,11 +815,8 @@ impl IdentityFirstRuntimeContext {
                 )
                 .await
             }
-            (
-                IdentityBootstrapMode::LazyMaterialize
-                | IdentityBootstrapMode::LazyWithBackgroundWarm { .. },
-                _,
-            ) => {
+            IdentityBootstrapMode::LazyMaterialize
+            | IdentityBootstrapMode::LazyWithBackgroundWarm { .. } => {
                 super::orchestrator::lazy_register_flow(
                     &self.runtime,
                     roster,
@@ -715,8 +875,7 @@ impl IdentityFirstRuntimeContext {
             }
         };
 
-        self.apply_roster_controlled(generation, &roster, false)
-            .await
+        self.apply_roster_controlled(generation, &roster).await
     }
 
     /// Cancellation-safe reconcile for RPC/host request boundaries.
@@ -1238,6 +1397,22 @@ struct DispatchOutcome {
     session_id: Option<SessionId>,
 }
 
+/// Exact result of the one concrete embodiment door shared by eager restore,
+/// lazy foreground materialization, and background warming.
+pub(crate) struct EmbodimentOutcome {
+    pub(crate) record: ContinuityRecord,
+    pub(crate) resumed: bool,
+    pub(crate) draft: AgentBuildDraft,
+}
+
+/// Eager-only inputs to the shared embodiment transaction. Lazy foreground
+/// and background callers use the registered entry's spec and customizer.
+#[derive(Default)]
+pub(crate) struct EmbodimentOverrides<'a> {
+    pub(crate) spec: Option<&'a DurableAgentSpec>,
+    pub(crate) customizer: Option<&'a dyn AgentCustomizer>,
+}
+
 #[derive(Clone)]
 struct ResetRosterSource {
     provider: Arc<dyn RosterProvider>,
@@ -1575,19 +1750,66 @@ impl IdentityRuntime {
             snapshot.complete = false;
             snapshot.ready = false;
             snapshot.error = None;
+            // Per-identity causes are pass-scoped. `begin_identity_bootstrap`
+            // already rebuilds every entry with `error: None`, but it runs only
+            // AFTER the prepare/provider await, and `fail_identity_bootstrap`
+            // is reachable before that (prepare failure in `bootstrap_roster`,
+            // roster-provider failure in `refresh_desired_topology`). Without
+            // this reset, its `entry.error.is_none()` guard cannot tell "this
+            // identity produced its own cause during THIS pass" from "left
+            // over from the last pass", and an early failure would report a
+            // previous pass's cause beside the current pass's `error`.
+            // Only causes are cleared: `refresh_aggregates` reads `entry.state`
+            // exclusively, so no count, `ready`, or `materialization_terminal`
+            // value moves here.
+            for entry in snapshot.identities.values_mut() {
+                entry.error = None;
+            }
         });
         current_generation
     }
 
+    /// Record a PASS-level bootstrap failure.
+    ///
+    /// Terminality is preserved deliberately: the barrier rule is
+    /// `complete && dormant == 0 && warming == 0`
+    /// ([`IdentityBootstrapStatus::materialization_terminal`]), and an eager
+    /// pass seeds the whole roster `Warming`, so leaving those entries alone
+    /// would hang `wait_identity_bootstrap_terminal` until its timeout
+    /// instead of returning a truthful failure snapshot.
+    ///
+    /// What must NOT happen is attributing the pass cause to each identity as
+    /// if it were that identity's own. Before embodiment became per identity,
+    /// one member's `bridge create_session:` failure was copied onto 16 peers
+    /// (HomeCore activation-33 shape). Member failures now bypass this method,
+    /// while a genuine pass failure stamps only what is known: the pass died
+    /// before this identity's own outcome was recorded. A cause the identity actually produced
+    /// during the pass (`mark_bootstrap_from_lifecycle`,
+    /// `mark_bootstrap_materialization_finished`) is authoritative and is
+    /// never overwritten. That equivalence between "the entry already has a
+    /// cause" and "this pass produced it" is not free: it holds because
+    /// `begin_identity_bootstrap_pending` resets per-entry causes when the
+    /// pass opens, which is the only reason this `is_none()` guard cannot
+    /// resurrect a previous pass's cause. Member embodiment failures no longer
+    /// enter this path; they park only their own identity. The pass cause still rides
+    /// `snapshot.error`, which the type documents as the pass-level slot and
+    /// which every reader (RPC status, `wait_identity_bootstrap`, the Python
+    /// SDK model) already parses.
     fn fail_identity_bootstrap(&self, generation: u64, error: &IdentityRuntimeError) {
         self.modify_bootstrap_status(Some(generation), |snapshot| {
             let detail = error.to_string();
+            let unattributed = format!(
+                "identity bootstrap pass failed before this identity reached its own \
+                 outcome: {detail}"
+            );
             snapshot.complete = true;
-            snapshot.error = Some(detail.clone());
+            snapshot.error = Some(detail);
             for entry in snapshot.identities.values_mut() {
                 if entry.state != IdentityBootstrapState::Active {
                     entry.state = IdentityBootstrapState::Broken;
-                    entry.error = Some(detail.clone());
+                    if entry.error.is_none() {
+                        entry.error = Some(unattributed.clone());
+                    }
                 }
             }
             snapshot.refresh_aggregates();
@@ -3593,7 +3815,7 @@ impl IdentityRuntime {
     where
         F: Future<Output = ()>,
     {
-        // `materialize_inner` binds this attempt to the generation stored on
+        // `embody_identity` binds this attempt to the generation stored on
         // the IdentityEntry after it acquires the lifecycle lock. Sampling the
         // global generation here is insufficient: a newer reconcile can
         // publish G+1 and win that lock before this future reaches the entry,
@@ -3601,14 +3823,16 @@ impl IdentityRuntime {
         let mut bootstrap_generation = None;
         let mut shutdown = self.foreground_cancel.subscribe();
         let result = self
-            .materialize_inner(
+            .embody_identity(
                 identity,
                 expected_alias,
                 Some(&mut shutdown),
                 None,
                 &mut bootstrap_generation,
+                EmbodimentOverrides::default(),
             )
-            .await;
+            .await
+            .map(|outcome| outcome.record);
         after_inner.await;
         if matches!(
             &result,
@@ -3620,7 +3844,7 @@ impl IdentityRuntime {
             return result;
         }
         // Alias validation happens under the lifecycle lock before
-        // `materialize_inner` marks bootstrap work as started. A stale alias
+        // `embody_identity` marks bootstrap work as started. A stale alias
         // therefore must leave the replacement generation's exact readiness
         // state untouched.
         if matches!(&result, Err(IdentityRuntimeError::StaleRuntimeAlias { .. })) {
@@ -3976,14 +4200,16 @@ impl IdentityRuntime {
     ) -> Option<Result<ContinuityRecord, IdentityRuntimeError>> {
         let mut bound_generation = None;
         let result = self
-            .materialize_inner(
+            .embody_identity(
                 identity,
                 None,
                 Some(cancellation),
                 Some(generation),
                 &mut bound_generation,
+                EmbodimentOverrides::default(),
             )
-            .await;
+            .await
+            .map(|outcome| outcome.record);
         if matches!(
             &result,
             Err(IdentityRuntimeError::Internal(message)) if message == BACKGROUND_WARM_CANCELLED
@@ -4007,14 +4233,15 @@ impl IdentityRuntime {
         Some(result)
     }
 
-    async fn materialize_inner(
+    pub(crate) async fn embody_identity(
         &self,
         identity: &AgentIdentity,
         expected_alias: Option<&str>,
         mut cancellation: Option<&mut watch::Receiver<bool>>,
         expected_bootstrap_generation: Option<u64>,
         bound_bootstrap_generation: &mut Option<u64>,
-    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        overrides: EmbodimentOverrides<'_>,
+    ) -> Result<EmbodimentOutcome, IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
         let bootstrap_generation = {
@@ -4049,18 +4276,38 @@ impl IdentityRuntime {
             let entry = entries
                 .get(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-            if entry.state == IdentityLifecycleState::Active {
-                let continuity = entry.continuity.clone().ok_or_else(|| {
-                    IdentityRuntimeError::Internal(format!(
-                        "active identity {identity} has no continuity record"
-                    ))
-                })?;
-                drop(entries);
-                self.clear_materialization_backoff(identity).await;
-                return Ok(continuity);
-            }
-            (entry.spec.clone(), entry.continuity.clone(), entry.state)
+            (
+                overrides
+                    .spec
+                    .cloned()
+                    .unwrap_or_else(|| entry.spec.clone()),
+                entry.continuity.clone(),
+                entry.state,
+            )
         };
+        if state == IdentityLifecycleState::Active {
+            // Converged eager restore still validates the time-sensitive
+            // external lease. This is part of the shared embodiment door, not
+            // a second restore implementation: healthy authority is reused,
+            // due authority is renewed, and lost authority parks this member.
+            let record = self.reuse_active_restore_state(&spec).await?;
+            self.clear_materialization_backoff(identity).await;
+            return Ok(EmbodimentOutcome {
+                record,
+                resumed: true,
+                draft: AgentBuildDraft {
+                    model: None,
+                    system_prompt: None,
+                    additional_instructions: spec.additional_instructions.clone(),
+                    labels: spec.labels.clone(),
+                    app_context: spec.context.clone(),
+                    external_tools: Vec::new(),
+                    local_external_tools: Default::default(),
+                    provider_params: None,
+                    compaction_curator: Default::default(),
+                },
+            });
+        }
         // Host-rejected-build park: the app-side gate answered this exact
         // spec with a deterministic rejection. Fail fast typed — every
         // attempt would otherwise burn a full member build plus a callback
@@ -4164,7 +4411,7 @@ impl IdentityRuntime {
             managed_edges,
             runtime_services: self.runtime_services(),
         };
-        let mut draft = super::types::AgentBuildDraft {
+        let mut draft = AgentBuildDraft {
             model: None,
             system_prompt: None,
             additional_instructions: spec.additional_instructions.clone(),
@@ -4173,8 +4420,10 @@ impl IdentityRuntime {
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
             provider_params: None,
+            compaction_curator: Default::default(),
         };
-        if let Some(customizer) = self.customizer.read().await.clone() {
+        let installed_customizer = self.customizer.read().await.clone();
+        if let Some(customizer) = overrides.customizer.or(installed_customizer.as_deref()) {
             let customize = customizer.customize_build(&build_context, &spec, &mut draft);
             tokio::pin!(customize);
             let customize_result = if let Some(cancellation) = cancellation.as_mut() {
@@ -4207,8 +4456,9 @@ impl IdentityRuntime {
         }
 
         let mut abandoned_session_registrations: Vec<SessionId> = Vec::new();
+        let mut resumed = false;
         let mut record = if let Some(mut record) = continuity {
-            let snapshot = if self
+            let resume_snapshot = if self
                 .bridge
                 .as_ref()
                 .is_none_or(|bridge| bridge.requires_resume_snapshot())
@@ -4265,7 +4515,8 @@ impl IdentityRuntime {
                     )));
                 }
                 let registered_session_id = record.session_id.clone();
-                let snapshot = snapshot.unwrap_or(SessionSnapshot { data: Vec::new() });
+                let empty_snapshot = SessionSnapshot { data: Vec::new() };
+                let snapshot = resume_snapshot.as_ref().unwrap_or(&empty_snapshot);
                 let outcome = bridge
                     .resume_session(
                         identity,
@@ -4273,7 +4524,7 @@ impl IdentityRuntime {
                         &spec,
                         &draft,
                         &record.session_id,
-                        &snapshot,
+                        snapshot,
                     )
                     .await;
                 let outcome = match outcome {
@@ -4361,9 +4612,28 @@ impl IdentityRuntime {
                                 .map(|e| format!("; lease cleanup failed: {e}"))
                                 .unwrap_or_default(),
                         );
-                        return Err(IdentityRuntimeError::Internal(detail));
+                        let kind = if matches!(
+                            err,
+                            BridgeError::ResumeRejected {
+                                kind: ResumeRejectionKind::ArchivedNotRevivable,
+                                ..
+                            }
+                        ) {
+                            ContinuityFailureKind::CheckpointUnrecoverable
+                        } else {
+                            ContinuityFailureKind::ResumeRejected
+                        };
+                        return Err(IdentityRuntimeError::EmbodimentRejected(Box::new(
+                            ContinuityFailure {
+                                identity: identity.clone(),
+                                kind,
+                                record: Some(record.clone()),
+                                detail,
+                            },
+                        )));
                     }
                 };
+                resumed = outcome.fallback_reason().is_none();
                 if let Some(reason) = outcome.fallback_reason().cloned() {
                     tracing::warn!(
                         %identity,
@@ -4400,6 +4670,8 @@ impl IdentityRuntime {
                     abandoned_session_registrations.push(registered_session_id);
                 }
                 record.session_id = effective_session_id;
+            } else {
+                resumed = resume_snapshot.is_some();
             }
             record
         } else {
@@ -4727,7 +4999,59 @@ impl IdentityRuntime {
         )
         .await;
         self.clear_materialization_backoff(identity).await;
-        Ok(record)
+        Ok(EmbodimentOutcome {
+            record,
+            resumed,
+            draft,
+        })
+    }
+
+    /// Project one member-attributable embodiment failure into the durable
+    /// identity runtime without turning it into a fleet-level bootstrap
+    /// failure. The returned payload is the exact typed outcome installed by
+    /// eager restore. Pass-level roster, topology, and batch-store failures do
+    /// not enter this door.
+    pub(crate) async fn park_embodiment_failure(
+        &self,
+        identity: &AgentIdentity,
+        error: &IdentityRuntimeError,
+    ) -> ContinuityFailure {
+        let explicit_failure = match error {
+            IdentityRuntimeError::EmbodimentRejected(failure) => Some((**failure).clone()),
+            _ => None,
+        };
+        let (record, transitioned) = {
+            let mut entries = self.entries.write().await;
+            let record = entries
+                .get(identity)
+                .and_then(|entry| entry.continuity.clone());
+            let mut transitioned = false;
+            if let Some(entry) = entries.get_mut(identity) {
+                transitioned = entry.state != IdentityLifecycleState::Broken;
+                entry.state = IdentityLifecycleState::Broken;
+            }
+            (record, transitioned)
+        };
+        if transitioned {
+            self.emit_event(
+                identity,
+                IdentityEvent::StateChanged {
+                    identity: identity.clone(),
+                    new_state: IdentityLifecycleState::Broken,
+                },
+            )
+            .await;
+        }
+
+        explicit_failure.unwrap_or_else(|| ContinuityFailure {
+            identity: identity.clone(),
+            kind: match error {
+                IdentityRuntimeError::Store(_) => ContinuityFailureKind::StoreUnavailable,
+                _ => ContinuityFailureKind::EmbodimentFailed,
+            },
+            record,
+            detail: error.to_string(),
+        })
     }
 
     async fn best_effort_materialize_identity(
@@ -5007,6 +5331,20 @@ impl IdentityRuntime {
             }
         }
         Ok(true)
+    }
+
+    /// Prepare an existing Broken entry for metadata replacement while the
+    /// caller owns its lifecycle lock. The concrete member is disposed before
+    /// the exact retained provider grant is moved through the pending-release
+    /// ledger. A failure leaves the entry Broken and the authority visible for
+    /// retry or shutdown.
+    pub(crate) async fn prepare_broken_identity_for_registration(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<(), IdentityRuntimeError> {
+        self.cleanup_broken_lower_plane_locked(identity).await?;
+        self.release_broken_lease_locked(identity).await?;
+        Ok(())
     }
 
     /// Dispose the concrete member and its session-store authority retained by
@@ -6254,6 +6592,102 @@ impl IdentityRuntime {
     // Delivery: send() — REQ-01, REQ-03
     // -----------------------------------------------------------------------
 
+    /// Send conversational content and return only after the runtime has
+    /// COMMITTED this exact turn's terminal boundary.
+    ///
+    /// Same body, same enforcement, same memory/defang/alias handling as
+    /// [`Self::send`]; the single difference is the bridge verb. Use this when
+    /// the caller needs PROOF the turn finished rather than proof it was
+    /// admitted.
+    ///
+    /// Why this exists rather than "send, then watch the event stream": a
+    /// session-wide `RunCompleted`/`RunFailed` cannot authorize a specific
+    /// turn, because queued turns share a `session_id`. Waiting on one means
+    /// some OTHER turn's terminal can satisfy the wait, so a test built that
+    /// way can pass while the behaviour it claims to prove is broken. A timer
+    /// is worse still: it elapses whether the turn succeeded, failed closed, or
+    /// never ran at all.
+    ///
+    /// FAILS CLOSED. If no bridge is installed, or the identity has no bound
+    /// runtime id, or the bridge is ingress-only, this returns a typed error.
+    /// It never silently degrades to the admission-only path - that would
+    /// report success for a turn whose outcome is unknown.
+    pub async fn send_awaiting_commit(
+        &self,
+        identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.send_awaiting_commit_with_mode(identity, content, HandlingMode::Queue)
+            .await
+    }
+
+    /// [`Self::send_awaiting_commit`] with an explicit turn handling mode.
+    pub async fn send_awaiting_commit_with_mode(
+        &self,
+        identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.send_awaiting_commit_with_mode_and_interaction(identity, content, handling_mode, None)
+            .await
+    }
+
+    /// [`Self::send_awaiting_commit`] carrying a host-minted interaction id, so
+    /// the completed turn can be looked up EXACTLY afterwards by the identity
+    /// the caller stamped on it - rather than by "the last request", by a
+    /// request count, or by polling content, none of which name one turn.
+    pub async fn send_awaiting_commit_with_mode_and_interaction(
+        &self,
+        identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.send_core(
+            identity,
+            SendRequest {
+                expected_alias: None,
+                content,
+                system_prompt: None,
+                handling_mode,
+                interaction_id,
+                commit_mode: SendCommitMode::AwaitCommit,
+            },
+        )
+        .await
+        .map(|(token, _)| token)
+    }
+
+    /// [`Self::send_awaiting_commit`] carrying one ordinary System message
+    /// authored for THIS exact turn (meerkat 0.8.11 `WorkSpec::system_prompt`,
+    /// appended at the turn's admitted transcript boundary).
+    ///
+    /// Per-turn content, never member or session configuration - the same
+    /// carrier the ingress authored path uses, on the lane that can prove the
+    /// turn finished.
+    pub async fn send_awaiting_commit_with_system_prompt(
+        &self,
+        identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+        system_prompt: Option<&str>,
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.send_core(
+            identity,
+            SendRequest {
+                expected_alias: None,
+                content,
+                system_prompt,
+                handling_mode,
+                interaction_id,
+                commit_mode: SendCommitMode::AwaitCommit,
+            },
+        )
+        .await
+        .map(|(token, _)| token)
+    }
+
     /// Send conversational content to an addressable identity.
     ///
     /// Enforces:
@@ -6416,6 +6850,39 @@ impl IdentityRuntime {
         handling_mode: HandlingMode,
         interaction_id: Option<&str>,
     ) -> Result<(FencingToken, CompletionCursor), IdentityRuntimeError> {
+        self.send_core(
+            identity,
+            SendRequest {
+                expected_alias,
+                content,
+                system_prompt: None,
+                handling_mode,
+                interaction_id,
+                commit_mode: SendCommitMode::Ingress,
+            },
+        )
+        .await
+    }
+
+    /// The ONE send body. Both lanes run it; the only difference is which
+    /// bridge verb the delivery step calls, which is exactly the part that must
+    /// not drift. A second copy would let the completion lane diverge from the
+    /// ingress lane on lease acquisition, alias pinning, memory injection,
+    /// defanging or session reconciliation - every one of which is load-bearing
+    /// and none of which is visible from a test.
+    async fn send_core(
+        &self,
+        identity: &AgentIdentity,
+        request: SendRequest<'_>,
+    ) -> Result<(FencingToken, CompletionCursor), IdentityRuntimeError> {
+        let SendRequest {
+            expected_alias,
+            content,
+            system_prompt,
+            handling_mode,
+            interaction_id,
+            commit_mode,
+        } = request;
         let should_materialize = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -6505,17 +6972,168 @@ impl IdentityRuntime {
             .await?;
 
         // Deliver through the session bridge when available.
+        //
+        // AwaitCommit FAILS CLOSED here and nowhere else: if there is no bridge
+        // or no runtime id, the ingress lane legitimately no-ops, but the
+        // completion lane must NOT - silently taking the ingress path would
+        // return success for a turn that was never awaited, which is the exact
+        // false-success this API exists to remove.
+        if commit_mode == SendCommitMode::AwaitCommit
+            && (self.bridge.is_none() || runtime_id.is_none())
+        {
+            return Err(IdentityRuntimeError::CompletionUnavailable {
+                identity: identity.clone(),
+                reason: if self.bridge.is_none() {
+                    "no session bridge is installed on this runtime".to_string()
+                } else {
+                    "the identity has no bound agent runtime id".to_string()
+                },
+            });
+        }
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
-            let delivered_session_id = bridge
-                .deliver_with_mode_and_context(
-                    rid,
-                    &content_to_deliver,
-                    &injected_context,
-                    handling_mode,
-                    bridge_interaction_id,
-                )
-                .await
-                .map_err(|e| IdentityRuntimeError::Internal(format!("bridge deliver: {e}")))?;
+            let delivered_session_id = match commit_mode {
+                // Validated -> Delivered. One await, all of it bounded, all of
+                // it under the lock. Unchanged.
+                SendCommitMode::Ingress => bridge
+                    .deliver_with_mode_context_and_system_prompt(
+                        rid,
+                        &content_to_deliver,
+                        system_prompt,
+                        &injected_context,
+                        handling_mode,
+                        bridge_interaction_id,
+                    )
+                    .await
+                    .map_err(|e| IdentityRuntimeError::Internal(format!("bridge deliver: {e}")))?,
+
+                // Validated -> Admitted(receipt) -> [UNLOCK] -> Terminal ->
+                // [RELOCK] -> Revalidated -> Reconciled | Superseded.
+                //
+                // The lock covers admission and bounded session resolution and
+                // NOTHING else. Awaiting an LLM turn under it would serialise
+                // same-identity sends behind a model call and block every
+                // lifecycle operation - reset, retire, alias rebind - for the
+                // turn's whole duration.
+                SendCommitMode::AwaitCommit => {
+                    // ADMITTED. Bounded; still under the lock.
+                    let receipt = bridge
+                        .begin_awaiting_commit(
+                            rid,
+                            &content_to_deliver,
+                            system_prompt,
+                            &injected_context,
+                            handling_mode,
+                            bridge_interaction_id,
+                        )
+                        .await
+                        .map_err(|err| admission_phase_error(identity, err))?;
+
+                    // CAPTURE the incarnation we admitted onto, so a reset,
+                    // retire or alias rebind during the unlocked window is
+                    // detectable rather than silently reconciled onto.
+                    let captured = self.capture_incarnation(identity).await?;
+
+                    // UNLOCK. Nothing is held from here.
+                    drop(_lifecycle_guard);
+
+                    // TERMINAL. The LLM turn. The only long step.
+                    let terminal = receipt.wait().await;
+
+                    // RELOCK.
+                    let _relock_guard = lifecycle_lock.lock().await;
+
+                    // DETECT supersede WITHOUT returning on it. What the turn
+                    // did and whether its embodiment still exists are
+                    // INDEPENDENT axes, so neither may swallow the other. A
+                    // post-lock read failure IS a supersede - the identity was
+                    // retired or deleted while the turn ran - and must never
+                    // surface as a pre-admission-shaped UnknownIdentity, which
+                    // would say nothing was delivered.
+                    let supersede: Option<String> = match self.capture_incarnation(identity).await {
+                        Err(IdentityRuntimeError::UnknownIdentity(_)) => {
+                            Some("the identity no longer exists".to_string())
+                        }
+                        Err(other) => Some(format!("the identity could not be re-read: {other}")),
+                        Ok(current) if current != captured => {
+                            Some(format!("admitted onto {captured:?}, now {current:?}"))
+                        }
+                        // Re-run the ORIGINAL expected alias through the
+                        // authoritative check rather than comparing a copy
+                        // of it. Any failure is a POST-admission supersede.
+                        Ok(_) => match expected_alias {
+                            Some(expected) => match self
+                                .ensure_expected_member_alias_current(identity, expected)
+                                .await
+                            {
+                                Ok(()) => None,
+                                Err(err) => Some(format!(
+                                    "the expected member alias {expected} is no longer \
+                                         current: {err}"
+                                )),
+                            },
+                            None => None,
+                        },
+                    };
+
+                    // REVALIDATE BEFORE RECONCILE is load-bearing rather than
+                    // defensive: `reconcile_delivered_session_locked` treats a
+                    // session mismatch as "the bridge rotated the session" and
+                    // calls `rebind_session_after_live_respawn_locked`, which
+                    // SUSPENDS the identity and RE-ACQUIRES its leases. After a
+                    // reset during the unlocked window, current belongs to the
+                    // NEW incarnation and delivered to the dead OLD turn, so
+                    // reconciling first would bind the live incarnation to a
+                    // dead turn's session - an active corruption path with a
+                    // lifecycle mutation in it.
+                    return match (terminal, supersede) {
+                        // The turn did not reach a clean success. Nothing was
+                        // superseded, so this is the ordinary phase mapping.
+                        (Err(err), None) => Err(turn_phase_error(identity, err)),
+                        // Both axes fired. Which one leads depends on what the
+                        // turn actually did, and the two phases mean opposite
+                        // things about that.
+                        (
+                            Err(BridgeTurnError::PostAdmissionResolutionFailed(detail)),
+                            Some(sup),
+                        ) => Err(IdentityRuntimeError::PostAdmissionSuperseded {
+                            identity: identity.clone(),
+                            detail: format!(
+                                "{sup}; the turn also failed to project its session: \
+                                     {detail}"
+                            ),
+                        }),
+                        // The turn RAN AND FAILED. That is what an operator
+                        // acts on, so it leads; the supersede is secondary.
+                        (Err(BridgeTurnError::CompletionFailed(detail)), Some(sup)) => {
+                            Err(IdentityRuntimeError::CompletionFailed {
+                                identity: identity.clone(),
+                                detail: format!(
+                                    "{detail}; additionally, the identity was superseded \
+                                     while the turn ran: {sup}"
+                                ),
+                            })
+                        }
+                        // The turn SUCCEEDED against an embodiment that is
+                        // gone. Do NOT reconcile: losing the attribution beats
+                        // binding the live incarnation to a dead turn's session.
+                        (Ok(_), Some(sup)) => Err(IdentityRuntimeError::PostAdmissionSuperseded {
+                            identity: identity.clone(),
+                            detail: sup,
+                        }),
+                        // RECONCILED. Same relocked guard the ingress lane
+                        // would have held throughout.
+                        (Ok(delivered), None) => {
+                            if let Some(rebound_token) = self
+                                .reconcile_delivered_session_locked(identity, delivered)
+                                .await?
+                            {
+                                token = rebound_token;
+                            }
+                            Ok((token, completion_baseline))
+                        }
+                    };
+                }
+            };
             if let Some(rebound_token) = self
                 .reconcile_delivered_session_locked(identity, delivered_session_id)
                 .await?
@@ -6525,6 +7143,40 @@ impl IdentityRuntime {
         }
 
         Ok((token, completion_baseline))
+    }
+
+    /// The exact incarnation a delivery was admitted onto.
+    ///
+    /// Captured under the lifecycle lock at admission and compared under it
+    /// again after the turn, so any reset, retire or alias rebind during the
+    /// unlocked window is DETECTED rather than silently reconciled onto.
+    ///
+    /// THREE fields, all read from authoritative state: a fresh spawn moves
+    /// `runtime_id`, a resume moves `generation`, a lease re-acquisition moves
+    /// `fencing_token`.
+    ///
+    /// The member alias is deliberately NOT captured here. Deriving it from
+    /// `agent_runtime_id` would have made it a duplicate of a field already in
+    /// this struct rather than an independent signal, so it could never have
+    /// detected the alias divergence it was there for. The alias is instead
+    /// revalidated after relock by re-running the ORIGINAL expected alias
+    /// through `ensure_expected_member_alias_current`, which is the authority.
+    async fn capture_incarnation(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<CapturedIncarnation, IdentityRuntimeError> {
+        let entries = self.entries.read().await;
+        let entry = entries
+            .get(identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        Ok(CapturedIncarnation {
+            runtime_id: entry
+                .continuity
+                .as_ref()
+                .map(|c| c.agent_runtime_id.clone()),
+            generation: entry.continuity.as_ref().map(|c| c.generation.get()),
+            fencing_token: entry.lease.as_ref().map(|lease| lease.fencing_token),
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -7643,6 +8295,7 @@ impl IdentityRuntime {
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
             provider_params: None,
+            compaction_curator: Default::default(),
         };
         if self.bridge.is_some() {
             let active_peers = self.entries.read().await.keys().cloned().collect();
@@ -9899,6 +10552,7 @@ mod reset_reprofile_tests {
         session_runtime_states: AsyncMutex<BTreeSet<String>>,
         retire_calls: AtomicUsize,
         unregister_calls: AtomicUsize,
+        unregistered_sessions: AsyncMutex<Vec<String>>,
         resume_collisions: AtomicUsize,
     }
 
@@ -10029,6 +10683,10 @@ mod reset_reprofile_tests {
             session_id: &SessionId,
         ) -> Result<(), BridgeError> {
             self.unregister_calls.fetch_add(1, Ordering::SeqCst);
+            self.unregistered_sessions
+                .lock()
+                .await
+                .push(session_id.to_string());
             self.session_runtime_states
                 .lock()
                 .await
@@ -10050,6 +10708,7 @@ mod reset_reprofile_tests {
             runtime_mode_override: None,
             backend: None,
             binding: None,
+            placement: None,
         }
     }
 
@@ -11531,6 +12190,8 @@ mod reset_reprofile_tests {
         context
             .bootstrap_roster(std::slice::from_ref(&original))
             .await?;
+        let registered_after_bootstrap: BTreeSet<String> =
+            bridge.session_runtime_states.lock().await.clone();
         force_renewal_lost(&runtime, &lease_provider, &identity).await?;
         let unregisters_after_lost = bridge.unregister_calls.load(Ordering::SeqCst);
 
@@ -11544,11 +12205,36 @@ mod reset_reprofile_tests {
             status.profile.as_ref().map(ToString::to_string).as_deref(),
             Some("personal-v2")
         );
-        assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 1);
+        // Measured at the meerkat 0.8.22 / mobkit 0.8.16 pair (release-lead
+        // fallback ruling 2026-08-13, dual-driver-unattributed): the
+        // retire+unregister cleanup sequence runs TWICE inside the single
+        // refresh window on the same runtime/session (the old binding ran it
+        // once). Phase-bracketed diagnostics attribute the first pair to
+        // reconcile_roster_members; the second pair's frames were inlined
+        // beyond attribution and the driver pair is an OPEN follow-up on the
+        // release record (candidate lead: retire_reset_superseded_member's
+        // single caller). The redundancy is idempotent and the final state is
+        // fully correct, so the counts are pinned at the measured values -
+        // if either count changes again, RE-DERIVE the driver set; do not
+        // pattern-match the number. Collapse of the double-drive is a tracked
+        // next-release item per the fast-track ruling.
+        assert_eq!(
+            bridge.retire_calls.load(Ordering::SeqCst),
+            2,
+            "measured at the pair: reconcile cleanup plus one unattributed idempotent repeat"
+        );
         assert_eq!(
             bridge.unregister_calls.load(Ordering::SeqCst),
-            unregisters_after_lost + 1,
-            "profile replacement must idempotently unregister before resume"
+            unregisters_after_lost + 2,
+            "measured at the pair: one unregister per retire inside the refresh window"
+        );
+        let unregistered_sessions_log: Vec<String> =
+            bridge.unregistered_sessions.lock().await.clone();
+        assert!(
+            unregistered_sessions_log
+                .iter()
+                .all(|session| registered_after_bootstrap.contains(session)),
+            "every unregister must target the pre-loss session, never the replacement: {unregistered_sessions_log:?}"
         );
         assert_eq!(
             bridge.resume_collisions.load(Ordering::SeqCst),
@@ -12469,6 +13155,7 @@ mod continuity_repair_supervisor_tests {
             runtime_mode_override: None,
             backend: None,
             binding: None,
+            placement: None,
         }
     }
 
@@ -12632,6 +13319,229 @@ mod foreground_shutdown_tests {
         assert!(
             *receiver.borrow(),
             "a task subscribed after close must still observe shutdown"
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod bootstrap_failure_attribution_tests {
+    use super::*;
+    use crate::identity_first::{LocalContinuityStore, LocalLeaseProvider};
+
+    fn make_runtime() -> Result<IdentityRuntime, ContinuityStoreError> {
+        Ok(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "bootstrap-failure-attribution-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }))
+    }
+
+    /// Before embodiment became per identity, `restore_flow` failed the whole
+    /// pass on one member's error and copied that cause onto every peer. The
+    /// pass-failure mechanism remains for fleet-level roster, topology, and
+    /// batch-store failures. This pins the three things that must hold there:
+    /// terminality (or the wait barrier hangs), the pass cause in the
+    /// pass-level slot, and no borrowed cause on a bystander.
+    #[test]
+    fn pass_failure_keeps_terminality_without_borrowing_one_members_cause()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = make_runtime()?;
+        let culprit = AgentIdentity::parse("agent:culprit")?;
+        let bystander = AgentIdentity::parse("agent:bystander")?;
+        let survivor = AgentIdentity::parse("agent:survivor")?;
+        let culprit_cause = "bridge create_session: culprit exploded";
+
+        let generation =
+            runtime.begin_identity_bootstrap_pending(IdentityBootstrapMode::EagerMaterialize);
+        assert!(
+            runtime.modify_bootstrap_status(Some(generation), |snapshot| {
+                snapshot.identities.insert(
+                    culprit.clone(),
+                    IdentityBootstrapEntry {
+                        state: IdentityBootstrapState::Broken,
+                        error: Some(culprit_cause.to_string()),
+                    },
+                );
+                snapshot.identities.insert(
+                    bystander.clone(),
+                    IdentityBootstrapEntry {
+                        state: IdentityBootstrapState::Warming,
+                        error: None,
+                    },
+                );
+                snapshot.identities.insert(
+                    survivor.clone(),
+                    IdentityBootstrapEntry {
+                        state: IdentityBootstrapState::Active,
+                        error: None,
+                    },
+                );
+                snapshot.refresh_aggregates();
+            }),
+            "seeding must land on the generation under test"
+        );
+
+        // Positive control: prove the pre-failure snapshot is NOT already in
+        // the state the post-failure assertions claim. Without this, a seeding
+        // bug that produced a Broken, cause-less bystander would let every
+        // assertion below pass vacuously.
+        let before = runtime.identity_bootstrap_status();
+        assert!(before.error.is_none());
+        assert!(!before.materialization_terminal());
+        let before_bystander = before
+            .identities
+            .get(&bystander)
+            .ok_or_else(|| "seeded bystander entry".to_string())?;
+        assert_eq!(before_bystander.state, IdentityBootstrapState::Warming);
+        assert!(before_bystander.error.is_none());
+
+        // `IdentityRuntimeError`'s `Display` prefixes `Internal` ("internal:
+        // {msg}"), and `fail_identity_bootstrap` stamps `error.to_string()`,
+        // not the inner message. Pin the rendered form so the test tracks the
+        // mechanism instead of one variant's wording.
+        let pass_error = IdentityRuntimeError::Internal(culprit_cause.to_string());
+        let pass_detail = pass_error.to_string();
+        runtime.fail_identity_bootstrap(generation, &pass_error);
+
+        let after = runtime.identity_bootstrap_status();
+        // The pass cause rides the slot the type documents for it.
+        assert_eq!(after.error.as_deref(), Some(pass_detail.as_str()));
+        // Terminality survives: `wait_identity_bootstrap_terminal` returns a
+        // truthful failure snapshot instead of waiting out its timeout.
+        assert!(after.complete);
+        assert!(after.materialization_terminal());
+        assert!(!after.ready);
+
+        // An identity that already reached Active is not retro-broken.
+        let survivor_entry = after
+            .identities
+            .get(&survivor)
+            .ok_or_else(|| "survivor entry".to_string())?;
+        assert_eq!(survivor_entry.state, IdentityBootstrapState::Active);
+        assert!(survivor_entry.error.is_none());
+
+        // The identity that actually failed keeps ITS own cause verbatim.
+        let culprit_entry = after
+            .identities
+            .get(&culprit)
+            .ok_or_else(|| "culprit entry".to_string())?;
+        assert_eq!(culprit_entry.state, IdentityBootstrapState::Broken);
+        assert_eq!(culprit_entry.error.as_deref(), Some(culprit_cause));
+
+        // The bystander transitions Warming -> Broken for terminality, but
+        // must not report the culprit's cause as its own, and must not be
+        // left cause-less either (17 Broken with no reason on record was the
+        // original operator complaint).
+        let bystander_entry = after
+            .identities
+            .get(&bystander)
+            .ok_or_else(|| "bystander entry".to_string())?;
+        assert_eq!(bystander_entry.state, IdentityBootstrapState::Broken);
+        let bystander_error = bystander_entry
+            .error
+            .as_deref()
+            .ok_or_else(|| "a Broken entry must carry a reason".to_string())?;
+        assert_ne!(
+            bystander_error, culprit_cause,
+            "the culprit's raw cause must never be reported as the bystander's own"
+        );
+        // The discriminating assertion: the rendered pass detail is EXACTLY
+        // what the previous implementation stamped on every non-Active entry,
+        // so this is the one that fails if the borrowed-cause behaviour comes
+        // back. (`assert_ne!` against `culprit_cause` alone would pass under
+        // the old code too, because `Display` prefixes it.)
+        assert_ne!(
+            bystander_error, pass_detail,
+            "a bystander must never carry the raw pass detail as its own cause"
+        );
+        assert!(
+            bystander_error.starts_with("identity bootstrap pass failed before this identity"),
+            "an unattributed entry must be labelled pass-level: {bystander_error}"
+        );
+        Ok(())
+    }
+
+    /// The `entry.error.is_none()` guard above is only truthful because a
+    /// pass RESETS per-entry causes when it opens. Two failure paths stamp
+    /// entries that `begin_identity_bootstrap` has not yet republished -
+    /// `bootstrap_roster`'s prepare failure and `refresh_desired_topology`'s
+    /// roster-provider failure - so without the reset a pass would report the
+    /// PREVIOUS pass's cause per identity beside its own `status.error`.
+    #[test]
+    fn a_new_pass_does_not_report_the_previous_passs_cause()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = make_runtime()?;
+        let identity = AgentIdentity::parse("agent:stale")?;
+        let first_cause = "pass one: resume rejected";
+
+        let first =
+            runtime.begin_identity_bootstrap_pending(IdentityBootstrapMode::EagerMaterialize);
+        assert!(
+            runtime.modify_bootstrap_status(Some(first), |snapshot| {
+                snapshot.identities.insert(
+                    identity.clone(),
+                    IdentityBootstrapEntry {
+                        state: IdentityBootstrapState::Broken,
+                        error: Some(first_cause.to_string()),
+                    },
+                );
+                snapshot.refresh_aggregates();
+            }),
+            "seeding must land on the first generation"
+        );
+
+        // Positive control: the stale cause really IS on the entry before the
+        // next pass opens, so the assertions below observe a transition rather
+        // than a state that was never there.
+        let stale = runtime.identity_bootstrap_status();
+        let stale_entry = stale
+            .identities
+            .get(&identity)
+            .ok_or_else(|| "seeded pass-one entry".to_string())?;
+        assert_eq!(stale_entry.error.as_deref(), Some(first_cause));
+
+        // Pass two fails before `begin_identity_bootstrap` republishes entries.
+        let second =
+            runtime.begin_identity_bootstrap_pending(IdentityBootstrapMode::EagerMaterialize);
+        let cleared = runtime.identity_bootstrap_status();
+        let cleared_entry = cleared
+            .identities
+            .get(&identity)
+            .ok_or_else(|| "entry survives the pass boundary".to_string())?;
+        assert!(
+            cleared_entry.error.is_none(),
+            "opening a pass must drop the previous pass's cause"
+        );
+        assert_eq!(
+            cleared_entry.state,
+            IdentityBootstrapState::Broken,
+            "only causes are pass-scoped; states are not touched here"
+        );
+
+        let pass_error =
+            IdentityRuntimeError::Internal("pass two: roster provider down".to_string());
+        let pass_detail = pass_error.to_string();
+        runtime.fail_identity_bootstrap(second, &pass_error);
+
+        let after = runtime.identity_bootstrap_status();
+        assert_eq!(after.error.as_deref(), Some(pass_detail.as_str()));
+        let entry_error = after
+            .identities
+            .get(&identity)
+            .and_then(|entry| entry.error.as_deref())
+            .ok_or_else(|| "a Broken entry must carry a reason".to_string())?;
+        assert!(
+            entry_error.contains("pass two: roster provider down"),
+            "an entry stamped by pass two must name pass two: {entry_error}"
+        );
+        assert!(
+            !entry_error.contains("pass one"),
+            "pass one's cause must not survive into pass two: {entry_error}"
         );
         Ok(())
     }

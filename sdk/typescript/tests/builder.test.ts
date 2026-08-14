@@ -191,16 +191,6 @@ describe("MobKitBuilder chainable methods", () => {
     assert.equal(builder._config.routingConfigPath, "deployment/routing.toml");
   });
 
-  it("scheduling() sets schedulingFiles and returns this", () => {
-    const builder = MobKit.builder();
-    const result = builder.scheduling("sched1.toml", "sched2.toml");
-    assert.equal(result, builder);
-    assert.deepEqual(builder._config.schedulingFiles, [
-      "sched1.toml",
-      "sched2.toml",
-    ]);
-  });
-
   it("workgraph() defaults to enabled=true and returns this", () => {
     const builder = MobKit.builder();
     const result = builder.workgraph();
@@ -290,7 +280,6 @@ describe("MobKitBuilder default config", () => {
     assert.equal(cfg.memberCommsAddress, null);
     assert.equal(cfg.gatingConfigPath, null);
     assert.equal(cfg.routingConfigPath, null);
-    assert.deepEqual(cfg.schedulingFiles, []);
     assert.equal(cfg.workgraphEnabled, null);
     assert.equal(cfg.memoryConfig, null);
     assert.equal(cfg.authConfig, null);
@@ -315,11 +304,6 @@ describe("MobKitBuilder convention defaults", () => {
   it("does not set routing if file does not exist", () => {
     const builder = MobKit.builder();
     assert.equal(builder._config.routingConfigPath, null);
-  });
-
-  it("does not set scheduling files if none exist", () => {
-    const builder = MobKit.builder();
-    assert.deepEqual(builder._config.schedulingFiles, []);
   });
 
   it("explicit accessControl overrides convention auto-discovery", () => {
@@ -347,7 +331,6 @@ describe("MobKitBuilder method chaining", () => {
       .memberCommsTcp()
       .gating("gating.toml")
       .routing("routing.toml")
-      .scheduling("s1.toml")
       .workgraph(false)
       .auth({ provider: "jwt" })
       .maxSessions(320)
@@ -365,7 +348,6 @@ describe("MobKitBuilder method chaining", () => {
     assert.equal(builder._config.gatingConfigPath, "gating.toml");
     assert.equal(builder._config.workgraphEnabled, false);
     assert.equal(builder._config.routingConfigPath, "routing.toml");
-    assert.deepEqual(builder._config.schedulingFiles, ["s1.toml"]);
     assert.deepEqual(builder._config.authConfig, { provider: "jwt" });
     assert.equal(builder._config.maxSessions, 320);
     assert.equal(builder._config.gatewayTimeoutMs, 300_000);

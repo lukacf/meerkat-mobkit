@@ -191,34 +191,3 @@ async fn shutdown_drain_uses_default_timeout_from_bootstrap() {
     assert!(!shutdown.drain.timed_out);
     shutdown.mob_stop.expect("mob stop should succeed");
 }
-
-#[tokio::test]
-#[ignore]
-async fn shutting_down_flag_prevents_new_dispatches_during_drain() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = Box::pin(
-        UnifiedRuntime::builder()
-            .mob_spec(mob_spec(&temp_dir))
-            .module_config(empty_module_config("drain-flag"))
-            .timeout(Duration::from_secs(2))
-            .drain_timeout(Duration::from_millis(100))
-            .build(),
-    )
-    .await
-    .expect("build");
-
-    // Trigger shutdown to set the shutting_down flag
-    let _shutdown = runtime.shutdown().await;
-
-    // After shutdown, dispatch_schedule_tick should be rejected
-    let result = runtime.dispatch_schedule_tick(&[], 0).await;
-    assert!(
-        result.is_err(),
-        "dispatch_schedule_tick should fail after shutdown"
-    );
-    let err = result.unwrap_err();
-    assert!(
-        err.to_string().contains("shutting down"),
-        "error should mention shutting down, got: {err}"
-    );
-}

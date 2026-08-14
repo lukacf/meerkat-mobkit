@@ -45,7 +45,7 @@ You define agents as profiles in a mob config, wire them together with peer conn
 - **Orchestration.** Bootstrap an entire mob and its operational modules in a single call. Process supervision, health gates, and configurable restart policies.
 - **Identity-first continuity.** Durable agent identities with roster providers, topology-aware prompts, non-destructive respawn, destructive reset, and in-process reconciliation. Agents survive restarts with stable session IDs.
 - **Roster management.** List, inspect, spawn, retire, and respawn members. Ensure agents exist before sending them work. Reconcile the roster against a desired state.
-- **Operational subsystems.** Message routing with sink adapters, risk-based approval gates, cron scheduling with timezone support, and semantic memory — all wired in as supervised modules.
+- **Operational subsystems.** Message routing with sink adapters, risk-based approval gates, durable scheduling with occurrence claims, and semantic memory.
 - **Admin console.** React web UI with agent sidebar, activity feed, chat inspector, topology view, and health overview — all updating in real time via SSE.
 - **Session persistence.** JSON file storage for development, BigQuery adapter for production. Complements Meerkat's own runtime-backed session durability.
 - **Authentication.** JWT/OIDC validation with JWKS discovery and email allowlists. Google, GitHub, Generic OIDC, and Service Identity providers.
@@ -68,7 +68,7 @@ Meerkat is the engine that makes each agent work. MobKit is the toolkit that mak
     Bootstrap a runtime with modules and a Meerkat mob in under a minute.
   </Card>
   <Card title="Core Concepts" icon="shapes" href="/concepts/modules">
-    Modules, events, gating, delivery, scheduling, memory, and sessions.
+    Modules, events, gating, delivery, durable scheduling, memory, and sessions.
   </Card>
   <Card title="Guides" icon="book-open" href="/guides/unified-runtime">
     Step-by-step walkthroughs for the unified runtime, module system, and console.

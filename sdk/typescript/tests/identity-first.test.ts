@@ -25,6 +25,7 @@ describe("DurableAgentSpec (REQ-46)", () => {
       additional_instructions: ["Be concise."],
       runtime_mode_override: "turn_driven",
       backend: "external",
+      placement: "12D3KooWExactRemoteHost",
       binding: {
         kind: "external",
         address: "tcp://127.0.0.1:4777",
@@ -43,6 +44,7 @@ describe("DurableAgentSpec (REQ-46)", () => {
     assert.deepEqual(spec.additionalInstructions, ["Be concise."]);
     assert.equal(spec.runtimeModeOverride, "turn_driven");
     assert.equal(spec.backend, "external");
+    assert.equal(spec.placement, "12D3KooWExactRemoteHost");
     assert.deepEqual(spec.binding, {
       kind: "external",
       address: "tcp://127.0.0.1:4777",
@@ -86,6 +88,7 @@ describe("DurableAgentSpec (REQ-46)", () => {
       additionalInstructions: ["Be concise."],
       runtimeModeOverride: "turn_driven",
       backend: "external",
+      placement: "12D3KooWExactRemoteHost",
       binding: {
         kind: "external",
         address: "tcp://127.0.0.1:4777",
@@ -104,6 +107,7 @@ describe("DurableAgentSpec (REQ-46)", () => {
     assert.deepEqual(wire.additional_instructions, ["Be concise."]);
     assert.equal(wire.runtime_mode_override, "turn_driven");
     assert.equal(wire.backend, "external");
+    assert.equal(wire.placement, "12D3KooWExactRemoteHost");
     assert.deepEqual(wire.binding, {
       kind: "external",
       address: "tcp://127.0.0.1:4777",
@@ -112,6 +116,25 @@ describe("DurableAgentSpec (REQ-46)", () => {
         public_key: "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
       },
     });
+  });
+
+  it("never turns a present placement into local omission", async () => {
+    const { durableAgentSpecToDict } = await import("../src/types.js");
+    const wire = durableAgentSpecToDict({
+      identity: "triage:main",
+      profile: "triage",
+      addressability: "addressable",
+      displayName: null,
+      labels: {},
+      context: null,
+      additionalInstructions: [],
+      placement: "",
+    });
+    assert.equal(
+      wire.placement,
+      "",
+      "Rust must receive and reject an invalid ref instead of seeing local None",
+    );
   });
 });
 
@@ -893,7 +916,6 @@ describe("Identity-first runtime APIs (REQ-47)", () => {
       consoleFetchTimeoutMs: null,
       gatingConfigPath: null,
       routingConfigPath: null,
-      schedulingFiles: [],
       memoryConfig: null,
       authConfig: null,
       implicitDelegateIdleRetireSecs: undefined,
@@ -1294,7 +1316,6 @@ describe("Builder identity-first extensions (REQ-50)", () => {
       memberCommsAddress: null,
       gatingConfigPath: null,
       routingConfigPath: null,
-      schedulingFiles: [],
       memoryConfig: null,
       authConfig: null,
       implicitDelegateIdleRetireSecs: undefined,

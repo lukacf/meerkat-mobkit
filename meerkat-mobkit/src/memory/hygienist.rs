@@ -45,9 +45,9 @@ use crate::identity_first::agent_memory::{compact_whitespace, truncate_utf8_boun
 use crate::memory::capabilities::StewardStore;
 use crate::memory::distiller::{CompactionFollowUp, DistillOutcome, DistillerEngine};
 use crate::memory::events::{MemoryEventSink, MemoryTimelineEvent};
+use crate::memory::factory_handle::FactoryModelClientHandle;
 use crate::memory::guards::{BackgroundBudget, BackgroundBudgetConfig};
 use crate::memory::records::{ManifestTier, MemoryScope, RecordStatus};
-use crate::memory::selector::FactorySelectorHandle;
 use crate::memory::taint::MemberAgentEventSink;
 
 /// Embedded prompt bundle (crate-local copy of
@@ -66,8 +66,21 @@ pub const DEFAULT_RUNS_PER_DAY: u32 = 2;
 /// Per-message and total byte bounds on the rendered transcript.
 const MAX_TRANSCRIPT_MESSAGE_BYTES: usize = 2 * 1024;
 const MAX_TRANSCRIPT_TOTAL_BYTES: usize = 48 * 1024;
-/// Output budget for the structured op list.
-const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 2048;
+/// Output budget for the structured op list, overridable per deployment via
+/// [`HygienistConfig::max_output_tokens`].
+///
+/// Why this is 16_384 and not the 2048 it used to be: the provider spends
+/// the provider spends ONE budget on reasoning tokens AND the visible answer,
+/// so a ceiling sized for a non-reasoning model is consumed before the op
+/// list begins, and the truncation is silent rather than an error. The
+/// steward's sibling constant at the old 4096 is why a production fleet
+/// committed ZERO ops across twelve consecutive runs over four days; this
+/// stage had the same defect one power of two lower.
+///
+/// 16_384 is the largest value that cannot be a hard provider rejection on
+/// any text model in meerkat's catalog (the smallest cataloged ceiling is
+/// `gpt-5.4-mini`'s 16_384), and an unreached ceiling costs nothing.
+const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_384;
 /// Quarantine rows consulted per pass for the §8.6 hard-block.
 const SPAN_QUARANTINE_LIMIT: usize = 256;
 /// Cap on the collapse replacement note.
@@ -82,6 +95,13 @@ pub enum HygienistError {
     Profile(String),
     Auth(String),
     Client(String),
+    /// The model stopped because it hit the output ceiling. Carried as its
+    /// own variant because the alternative - a truncated body returned as an
+    /// ordinary success - is how a production fleet ran this stage for four
+    /// days committing zero ops while the error blamed the model's JSON.
+    Truncated {
+        max_output_tokens: u32,
+    },
     Parse(String),
     Seam(String),
     Spans(String),
@@ -93,6 +113,12 @@ impl std::fmt::Display for HygienistError {
             Self::Profile(msg) => write!(f, "hygienist profile error: {msg}"),
             Self::Auth(msg) => write!(f, "hygienist auth error: {msg}"),
             Self::Client(msg) => write!(f, "hygienist client error: {msg}"),
+            Self::Truncated { max_output_tokens } => write!(
+                f,
+                "hygienist response hit the output ceiling of {max_output_tokens} tokens and was \
+                 truncated; raise it via the hygienist config's max_output_tokens (models spend this \
+                 same budget on thinking/reasoning tokens as well as the answer)"
+            ),
             Self::Parse(msg) => write!(f, "hygienist parse error: {msg}"),
             Self::Seam(msg) => write!(f, "hygienist revision seam error: {msg}"),
             Self::Spans(msg) => write!(f, "hygienist span source error: {msg}"),
@@ -185,6 +211,27 @@ impl HygienistProfile {
             ))
         })?;
         self.model = model.to_string();
+        Ok(self)
+    }
+
+    /// Replace the profile's output-token ceiling (the config-block
+    /// override). Fail-loud in the same shape as [`Self::with_model_override`]:
+    /// a zero budget cannot produce an answer, so it is a typed error rather
+    /// than a pass that silently revises nothing.
+    ///
+    /// Deliberately no upper bound: the real ceiling is the model's, it is
+    /// context-dependent, and the provider rejects an over-large request
+    /// loudly - unlike the under-large one this override exists to fix.
+    pub fn with_max_output_tokens(
+        mut self,
+        max_output_tokens: u32,
+    ) -> Result<Self, HygienistError> {
+        if max_output_tokens == 0 {
+            return Err(HygienistError::Profile(
+                "hygienist max_output_tokens override must be greater than zero".to_string(),
+            ));
+        }
+        self.params.max_output_tokens = max_output_tokens;
         Ok(self)
     }
 
@@ -285,6 +332,31 @@ pub struct HygienistConfig {
     pub runs_per_day: u32,
     /// Model override for the embedded profile.
     pub model: Option<String>,
+    /// Output-token ceiling for the curation call. `None` keeps the embedded
+    /// profile's default.
+    ///
+    /// Exposed because the provider spends this single budget on
+    /// reasoning tokens AND the visible answer, so a ceiling sized for a
+    /// non-reasoning model truncates the op list to nothing without raising
+    /// an error. The defect was not that the default was wrong but that it
+    /// was a private constant a deployment could neither see nor change;
+    /// [`crate::memory::steward::StewardConfig::max_output_tokens`] carries
+    /// the production incident that made it visible, and
+    /// [`crate::memory::distiller::DistillerConfig`] has the same knob.
+    ///
+    /// NOT YET HONORED BY ANY SHIPPED WIRING. Unlike its distiller and
+    /// steward siblings there is no `memory_wiring` site for this stage: the
+    /// module scope note in [`crate::memory_wiring`] keeps the Hygienist
+    /// gateway-wired because the transcript-revision seam is not
+    /// builder-owned, and the gateway's only `HygienistProfile` construction
+    /// applies `model` alone. Setting this today changes nothing until that
+    /// construction also calls [`HygienistProfile::with_max_output_tokens`].
+    /// Deliberately not worked around from here: giving `HygienistEngine::new`
+    /// a second, stage-specific place to reconcile profile against config
+    /// would either swallow the zero-budget error or break every caller's
+    /// signature, and inventing a `MemoryEnginesConfig.hygienist` field would
+    /// be inventing architecture rather than wiring.
+    pub max_output_tokens: Option<u32>,
 }
 
 impl Default for HygienistConfig {
@@ -293,6 +365,7 @@ impl Default for HygienistConfig {
             enabled: false,
             runs_per_day: DEFAULT_RUNS_PER_DAY,
             model: None,
+            max_output_tokens: None,
         }
     }
 }
@@ -311,7 +384,7 @@ pub trait HygienistClientHandle: Send + Sync {
 /// The production handle: meerkat's factory seam with auth-lease refresh,
 /// shared implementation with the Selector/Distiller.
 pub struct FactoryHygienistHandle {
-    inner: FactorySelectorHandle,
+    inner: FactoryModelClientHandle,
 }
 
 impl FactoryHygienistHandle {
@@ -322,7 +395,7 @@ impl FactoryHygienistHandle {
         profile: &HygienistProfile,
     ) -> Self {
         Self {
-            inner: FactorySelectorHandle::for_model(
+            inner: FactoryModelClientHandle::for_model(
                 store_path,
                 config,
                 realm,
@@ -336,15 +409,15 @@ impl FactoryHygienistHandle {
 #[async_trait]
 impl HygienistClientHandle for FactoryHygienistHandle {
     async fn client(&self) -> Result<Arc<dyn LlmClient>, HygienistError> {
-        use crate::memory::selector::{SelectorError, SelectorHandle};
+        use crate::memory::factory_handle::{ModelClientError, ModelClientHandle};
         self.inner.client().await.map_err(|err| match err {
-            SelectorError::Auth(msg) => HygienistError::Auth(msg),
+            ModelClientError::Auth(msg) => HygienistError::Auth(msg),
             other => HygienistError::Client(other.to_string()),
         })
     }
 
     fn invalidate(&self) {
-        use crate::memory::selector::SelectorHandle;
+        use crate::memory::factory_handle::ModelClientHandle;
         self.inner.invalidate();
     }
 }
@@ -1525,6 +1598,11 @@ impl MemberAgentEventSink for HygienistTriggers {
 // ---------------------------------------------------------------------------
 
 /// One bounded completion against the profile's model/params.
+///
+/// `temperature` is set unconditionally on purpose: whether it reaches the
+/// wire is the provider client's decision, which already consults the model's
+/// catalog row. See [`crate::memory::steward::complete_text`] for the full
+/// reasoning.
 pub async fn complete_text(
     client: &dyn LlmClient,
     profile: &HygienistProfile,
@@ -1542,7 +1620,17 @@ pub async fn complete_text(
         match event.map_err(classify_llm_error)? {
             LlmEvent::TextDelta { delta, .. } => text.push_str(&delta),
             LlmEvent::Done { outcome } => match outcome {
-                LlmDoneOutcome::Success { .. } => break,
+                LlmDoneOutcome::Success { stop_reason } => {
+                    // Do NOT discard stop_reason. A MaxTokens stop arrives with a
+                    // partial or empty body; returning it as a short answer sends a
+                    // truncation into a strict parse, which then blames the model.
+                    if matches!(stop_reason, meerkat_core::StopReason::MaxTokens) {
+                        return Err(HygienistError::Truncated {
+                            max_output_tokens: profile.params.max_output_tokens,
+                        });
+                    }
+                    break;
+                }
                 LlmDoneOutcome::Error { error } => return Err(classify_llm_error(error)),
             },
             _ => {}
@@ -2046,7 +2134,7 @@ mod tests {
             HygienistConfig {
                 enabled: true,
                 runs_per_day,
-                model: None,
+                ..HygienistConfig::default()
             },
             Arc::new(ScriptedHandle {
                 reply: reply.to_string(),
@@ -2290,5 +2378,17 @@ mod tests {
             .with_model_override("claude-haiku-4-5")
             .expect("catalog model accepted");
         assert_eq!(overridden.model, "claude-haiku-4-5");
+    }
+
+    /// The budget override is the reachable half of the output-ceiling fix: a
+    /// zero budget is a typed error, not a pass that silently revises nothing.
+    #[test]
+    fn max_output_tokens_override_is_fail_loud() {
+        let profile = HygienistProfile::embedded_default();
+        assert!(profile.clone().with_max_output_tokens(0).is_err());
+        let raised = profile
+            .with_max_output_tokens(32_768)
+            .expect("nonzero budget accepted");
+        assert_eq!(raised.params.max_output_tokens, 32_768);
     }
 }

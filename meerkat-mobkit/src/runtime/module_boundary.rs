@@ -17,7 +17,6 @@ pub(super) const CORE_MODULE_MCP_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const ROUTER_RESOLVE_MCP_TOOL: &str = "routing.resolve";
 pub(super) const DELIVERY_SEND_MCP_TOOL: &str = "delivery.send";
 pub(super) const MEMORY_CONFLICT_READ_MCP_TOOL: &str = "memory.conflict_read";
-pub(super) const SCHEDULING_DISPATCH_MCP_TOOL: &str = "scheduling.dispatch";
 
 pub(super) fn module_uses_mcp(module: &ModuleConfig, pre_spawn: Option<&PreSpawnData>) -> bool {
     pre_spawn

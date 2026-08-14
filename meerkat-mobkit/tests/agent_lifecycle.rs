@@ -30,8 +30,8 @@ use meerkat_mobkit::runtime::{DeliverySendRequest, RoutingResolveRequest};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, LifecycleStage, MobBootstrapOptions,
     MobBootstrapSpec, MobKitConfig, ModuleConfig, ModuleHealthState, PreSpawnData, RestartPolicy,
-    RuntimeDecisionInputs, RuntimeOpsPolicy, RuntimeOptions, ScheduleDefinition,
-    TrustedOidcRuntimeConfig, UnifiedEvent, UnifiedRuntime, build_runtime_decision_state,
+    RuntimeDecisionInputs, RuntimeOpsPolicy, RuntimeOptions, TrustedOidcRuntimeConfig,
+    UnifiedRuntime, build_runtime_decision_state,
 };
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -192,11 +192,6 @@ command = "delivery-bin"
 args = ["--sink", "memory"]
 restart_policy = "on_failure"
 
-[[modules]]
-id = "scheduling"
-command = "scheduling-bin"
-args = ["--tick", "60"]
-restart_policy = "always"
 "#
     .to_string()
 }
@@ -370,22 +365,17 @@ async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and
 
 #[test]
 #[ignore]
-fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_shutdown() {
+fn e2e_004_happy_path_full_lifecycle_startup_reconcile_route_delivery_shutdown() {
     let fixture_binary = fixture_binary_path();
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let module_config = MobKitConfig {
         modules: vec![
             fixture_module("router", &fixture_binary),
             fixture_module("delivery", &fixture_binary),
-            fixture_module("scheduling", &fixture_binary),
         ],
         discovery: DiscoverySpec {
             namespace: "phase5-e2e-004".to_string(),
-            modules: vec![
-                "router".to_string(),
-                "delivery".to_string(),
-                "scheduling".to_string(),
-            ],
+            modules: vec!["router".to_string(), "delivery".to_string()],
         },
         pre_spawn: vec![
             PreSpawnData {
@@ -395,14 +385,6 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
             PreSpawnData {
                 module_id: "delivery".to_string(),
                 env: mcp_env(&[]),
-            },
-            PreSpawnData {
-                module_id: "scheduling".to_string(),
-                env: mcp_env(&[
-                    ("MOBKIT_PHASE_C_SCHEDULING_MEMBER", "worker-1"),
-                    ("MOBKIT_PHASE_C_SCHEDULING_MESSAGE_PREFIX", "phase5-happy"),
-                    ("MOBKIT_PHASE_C_SCHEDULING_DISABLE_INJECTION", "0"),
-                ]),
             },
         ],
     };
@@ -430,11 +412,7 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
     assert!(tokio_runtime.block_on(runtime.module_is_running()));
     assert_eq!(
         tokio_runtime.block_on(runtime.loaded_modules()),
-        vec![
-            "delivery".to_string(),
-            "router".to_string(),
-            "scheduling".to_string(),
-        ]
+        vec!["delivery".to_string(), "router".to_string(),]
     );
 
     tokio_runtime.block_on(async {
@@ -485,32 +463,6 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
         .await
         .expect("send_message should succeed");
 
-        let dispatch = runtime
-            .dispatch_schedule_tick(
-                &[ScheduleDefinition {
-                    schedule_id: "phase5-happy".to_string(),
-                    interval: "*/1m".to_string(),
-                    timezone: "UTC".to_string(),
-                    enabled: true,
-                    jitter_ms: 0,
-                    catch_up: false,
-                }],
-                60_000,
-            )
-            .await
-            .expect("dispatch schedule tick");
-        assert_eq!(dispatch.dispatched.len(), 1);
-        assert!(dispatch.dispatched[0].runtime_injection.is_some());
-        assert!(dispatch.dispatched[0].runtime_injection_error.is_none());
-        assert!(runtime.module_events().await.iter().any(|event| {
-            matches!(
-                &event.event,
-                UnifiedEvent::Module(module_event)
-                    if module_event.module == "runtime"
-                        && module_event.event_type == "runtime.injection.executed"
-            )
-        }));
-
         server_shutdown_tx
             .send(())
             .expect("signal reference app shutdown");
@@ -555,11 +507,7 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
     assert_eq!(shutdown.module_shutdown.orphan_processes, 0);
     assert_eq!(
         shutdown.module_shutdown.terminated_modules,
-        vec![
-            "delivery".to_string(),
-            "router".to_string(),
-            "scheduling".to_string(),
-        ]
+        vec!["delivery".to_string(), "router".to_string(),]
     );
     shutdown
         .mob_stop

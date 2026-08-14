@@ -4,7 +4,7 @@ description: "MCP-based subprocess modules with supervision, restart policies, a
 icon: "puzzle-piece"
 ---
 
-Modules are the building blocks of MobKit's operational layer. Each module is an MCP server or subprocess executable that provides a specific capability -- routing, delivery, scheduling, gating, or memory. MobKit supervises their lifecycle and routes calls to them.
+Modules are the building blocks of MobKit's operational layer. Each module is an MCP server or subprocess executable that provides a specific capability -- routing, delivery, gating, or memory. MobKit supervises their lifecycle and routes calls to them. Durable scheduling is owned separately by Meerkat's `ScheduleService`.
 
 ## Module configuration
 
@@ -41,7 +41,7 @@ Modules are discovered through a `DiscoverySpec` that declares a namespace and t
 ```rust
 DiscoverySpec {
     namespace: "production",
-    modules: vec!["router", "delivery", "scheduling", "gating", "memory"],
+    modules: vec!["router", "delivery", "gating", "memory"],
 }
 ```
 
@@ -64,17 +64,18 @@ This is useful for injecting secrets or connection strings without hardcoding th
 
 ## Core modules
 
-MobKit ships with five core module types, each backed by an MCP server:
+MobKit ships with four core module types, each backed by an MCP server:
 
 | Module | Purpose | Key MCP tools |
 |--------|---------|---------------|
 | **router** | Routing resolution and dispatch | `routing.resolve`, `routing.routes` |
 | **delivery** | Message delivery with sink adapters | `delivery.send` |
-| **scheduling** | Cron-based schedule evaluation | `scheduling.dispatch` |
 | **gating** | Risk-based approval workflows | `gating.evaluate`, `gating.decide` |
 | **memory** | Elephant integration for semantic memory | `memory.index`, `memory.query` |
 
 Each core module communicates with the runtime over MCP tool calls. Non-MCP modules use the JSON-line subprocess protocol.
+
+Scheduling is not a module-plane capability. Use the durable scheduling tools and `ScheduleService` described in [Scheduling](/concepts/scheduling).
 
 ## Module health
 

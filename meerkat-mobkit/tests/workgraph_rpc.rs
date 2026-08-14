@@ -227,7 +227,10 @@ async fn item_lifecycle_end_to_end() {
     let item_id = item["id"].as_str().expect("item id").to_string();
     assert_eq!(item["title"], json!("ship the release"));
     assert_eq!(item["status"], json!("open"));
-    assert_eq!(item["realm_id"], json!("workgraph-rpc-mob"));
+    // CANONICAL mob realm (`mob.<mob_id>`) since the item-6 fix; the mob id
+    // itself is unprefixed. Pinned as a literal because the spelling decides
+    // where rows physically live - see workgraph_wiring::scoped_workgraph_service.
+    assert_eq!(item["realm_id"], json!("mob.workgraph-rpc-mob"));
     let revision = item["revision"].as_u64().expect("revision");
 
     // get
@@ -989,6 +992,25 @@ async fn resume_with_another_active_binding_on_the_target_is_conflict() {
             },
             mode: Default::default(),
             completion_policy: Default::default(),
+            // meerkat 0.8.22 promoted the item-shaping fields of
+            // `CreateWorkItemRequest` onto `GoalCreateRequest`. Eight of the
+            // ten already existed on `CreateWorkItemRequest` in 0.8.21, where
+            // `create_goal` filled them from
+            // `..CreateWorkItemRequest::default()`; the two join policies are
+            // new in 0.8.22 and so had no prior value to preserve. The values
+            // below therefore reproduce the pre-port item exactly. Both join
+            // policies are inert here in any case: this fixture creates no
+            // `parent` edges, so no child can fail or cancel into this goal.
+            failed_child_join_policy: Default::default(),
+            cancelled_child_join_policy: Default::default(),
+            priority: Default::default(),
+            labels: Default::default(),
+            due_at: None,
+            not_before: None,
+            snoozed_until: None,
+            external_refs: Vec::new(),
+            evidence_refs: Vec::new(),
+            status: None,
             delegated_authority: Default::default(),
             projection_policy: Default::default(),
         })
@@ -1387,15 +1409,21 @@ async fn non_default_namespace_is_rejected_on_goal_and_attention_methods() {
     .await;
     assert!(response["error"].is_null(), "{response:#?}");
 
-    // Item-level methods keep namespace passthrough.
+    // Item-level methods NO LONGER pass a namespace through. Since 0.8.22 one
+    // service owns one immutable grant, so a sidecar namespace is refused
+    // fail-closed rather than stranded in a scope no operator surface reads.
+    // A sidecar needs its own service/grant/surface.
     let response = rpc(
         &runtime,
         "mobkit/workgraph/create",
         json!({ "title": "namespaced item", "namespace": "sidecar" }),
     )
     .await;
-    assert!(response["error"].is_null(), "{response:#?}");
-    assert_eq!(result(&response)["item"]["namespace"], json!("sidecar"));
+    assert_eq!(
+        response["error"]["code"],
+        json!(-32602),
+        "a non-default namespace must be refused typed, not stranded: {response:#?}"
+    );
     runtime.mob_handle().stop().await.expect("stop");
 }
 
