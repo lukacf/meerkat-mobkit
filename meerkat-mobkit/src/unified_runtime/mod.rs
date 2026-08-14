@@ -261,9 +261,19 @@ enum MobEventIngress {
 }
 
 struct MobEventForwarder {
-    event_rx: Receiver<EventEnvelope<UnifiedEvent>>,
+    event_rx: Receiver<ForwardedMemberEvent>,
     task: JoinHandle<()>,
     identity_stream_health_task: JoinHandle<()>,
+}
+
+/// A forwarded member event: the wire-facing unified envelope plus a
+/// drain-side alert extracted at ingest, while the member `AgentEvent` was
+/// still typed. The alert never reaches the wire — the drain fires it on
+/// the error hook (which gateways install after construction, so the
+/// forwarder task cannot capture it) and forwards only the envelope.
+struct ForwardedMemberEvent {
+    envelope: EventEnvelope<UnifiedEvent>,
+    alert: Option<ErrorEvent>,
 }
 
 struct WorkGraphFactTailTask(Option<JoinHandle<()>>);
@@ -1228,6 +1238,27 @@ impl UnifiedRuntime {
         })
     }
 
+    /// Test seam: replace the live ingress with a caller-owned channel so
+    /// tests can push forwarded member events through the real drain path.
+    #[cfg(test)]
+    async fn install_test_event_ingress(&self) -> Sender<ForwardedMemberEvent> {
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
+        let replaced = self
+            .mob_event_ingress
+            .lock()
+            .await
+            .replace(MobEventIngress::Forwarder(MobEventForwarder {
+                event_rx,
+                task: tokio::spawn(async {}),
+                identity_stream_health_task: tokio::spawn(async {}),
+            }));
+        if let Some(MobEventIngress::Forwarder(forwarder)) = replaced {
+            forwarder.task.abort();
+            forwarder.identity_stream_health_task.abort();
+        }
+        event_tx
+    }
+
     async fn rollback_mob_runtime(
         mob_runtime: MobRuntime,
         startup_error: UnifiedRuntimeBootstrapError,
@@ -1576,7 +1607,7 @@ async fn trigger_identity_stream_repair(
 async fn run_resilient_mob_agent_event_forwarder(
     handle: MobHandle,
     agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
-    event_tx: Sender<EventEnvelope<UnifiedEvent>>,
+    event_tx: Sender<ForwardedMemberEvent>,
     mob_events: MobEventsStore,
 ) {
     let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
@@ -1614,7 +1645,7 @@ async fn run_resilient_mob_agent_event_forwarder(
                         // future code add attribution without touching this shape.
                         let _ = mob_events.project_attributed_event(&attributed_event).await;
                         if event_tx
-                            .send(attributed_event_to_unified(attributed_event))
+                            .send(forwarded_member_event(attributed_event))
                             .await
                             .is_err()
                         {
@@ -2024,6 +2055,39 @@ async fn run_mob_events_subscription(
     }
 }
 
+/// Project a forwarded member event for the drain: the wire envelope plus
+/// any drain-side alert extracted while the member event is still typed.
+fn forwarded_member_event(attributed: AttributedEvent) -> ForwardedMemberEvent {
+    ForwardedMemberEvent {
+        alert: compaction_rejection_alert(&attributed),
+        envelope: attributed_event_to_unified(attributed),
+    }
+}
+
+/// Compaction persistence rejections must page rather than pass as ordinary
+/// console traffic — meerkat emits `CompactionFailed` on every rejected
+/// compaction commit, and fleets otherwise discover wedged members by
+/// silence. Extracted here, where the member event and its session source
+/// identity are still typed.
+fn compaction_rejection_alert(attributed: &AttributedEvent) -> Option<ErrorEvent> {
+    let AgentEvent::CompactionFailed { reason } = &attributed.envelope.payload else {
+        return None;
+    };
+    // Live member session streams stamp session source identity; a
+    // non-session source has no session to attribute.
+    let session_id = attributed
+        .envelope
+        .source
+        .session_id()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    Some(ErrorEvent::CompactionPersistenceRejected {
+        identity: crate::member_comms_id::runtime_event_alias(&attributed.source),
+        session_id,
+        error: reason.to_string(),
+    })
+}
+
 fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<UnifiedEvent> {
     EventEnvelope {
         event_id: format!("evt-agent-{}", attributed.envelope.event_id),
@@ -2214,5 +2278,134 @@ mod tests {
         // Saturates at the cap for arbitrarily many failures (no shift overflow).
         assert_eq!(subscribe_backoff_delay(50), SUBSCRIBE_BACKOFF_MAX);
         assert!(subscribe_backoff_delay(2) > subscribe_backoff_delay(1));
+    }
+
+    async fn bootstrap_minimal_runtime(temp_dir: &tempfile::TempDir) -> UnifiedRuntime {
+        let session_path = temp_dir.path().join("sessions");
+        std::fs::create_dir_all(&session_path).expect("session path");
+        let factory = meerkat::AgentFactory::new(&session_path);
+        let session_service: Arc<dyn meerkat_mob::MobSessionService> = Arc::new(
+            meerkat::build_ephemeral_service(factory, meerkat::Config::default(), 16),
+        );
+
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "compaction-alert-mob"
+
+[profiles.worker]
+model = "gpt-5.5"
+"#,
+        )
+        .expect("parse mob definition");
+        let mob_spec = MobBootstrapSpec::new(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            session_service,
+        )
+        .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(meerkat_client::TestClient::for_provider(
+                meerkat_core::Provider::OpenAI,
+            ))),
+        });
+        let module_config = MobKitConfig {
+            modules: vec![],
+            discovery: crate::types::DiscoverySpec {
+                namespace: "compaction-alert".to_string(),
+                modules: vec![],
+            },
+            pre_spawn: vec![],
+        };
+        UnifiedRuntime::bootstrap(mob_spec, module_config, Duration::from_secs(2))
+            .await
+            .expect("bootstrap unified runtime")
+    }
+
+    /// Compaction persistence rejections must page, not pass as ordinary
+    /// console traffic: a member `CompactionFailed` agent event pushed
+    /// through the drain path fires the error hook with the typed
+    /// `CompactionPersistenceRejected` alert carrying the member identity,
+    /// the emitting session, and the rejection detail.
+    #[tokio::test]
+    async fn compaction_failed_member_event_pages_error_hook_through_drain() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut runtime = bootstrap_minimal_runtime(&temp_dir).await;
+
+        let captured: Arc<tokio::sync::Mutex<Vec<ErrorEvent>>> =
+            Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let hook_captured = captured.clone();
+        let hook: ErrorHook = Arc::new(move |event| {
+            let hook_captured = hook_captured.clone();
+            Box::pin(async move {
+                hook_captured.lock().await.push(event);
+            })
+        });
+        runtime.set_error_hook(hook);
+
+        let event_tx = runtime.install_test_event_ingress().await;
+        let session_id = meerkat_core::types::SessionId::new();
+        let attributed = AttributedEvent {
+            source: AgentRuntimeId::new(
+                AgentIdentity::from("compaction-worker"),
+                Generation::new(0),
+            ),
+            source_fence_token: FenceToken::new(1),
+            role: ProfileName::from("worker"),
+            envelope: meerkat_core::event::EventEnvelope {
+                event_id: Default::default(),
+                source: meerkat_core::event::EventSourceIdentity::session(session_id.clone()),
+                seq: 3,
+                mob_id: None,
+                timestamp_ms: 9,
+                payload: AgentEvent::CompactionFailed {
+                    reason: meerkat_core::event::CompactionFailureReason::TranscriptRewriteFailed {
+                        message: "runtime epoch mismatch".to_string(),
+                    },
+                },
+            },
+        };
+
+        event_tx
+            .send(forwarded_member_event(attributed))
+            .await
+            .expect("send forwarded event");
+        runtime
+            .drain_mob_agent_events()
+            .await
+            .expect("drain member events");
+
+        // `fire_error` spawns a detached task; wait bounded for the hook.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if !captured.lock().await.is_empty() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "error hook did not receive the compaction persistence rejection"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let events = captured.lock().await;
+        match &events[0] {
+            ErrorEvent::CompactionPersistenceRejected {
+                identity,
+                session_id: rejected_session,
+                error,
+            } => {
+                assert_eq!(identity, "compaction-worker:0");
+                assert_eq!(rejected_session, &session_id.to_string());
+                assert!(
+                    error.contains("runtime epoch mismatch"),
+                    "error must carry the rejection detail: {error}"
+                );
+            }
+            other => panic!("expected CompactionPersistenceRejected, got {other:?}"),
+        }
+        drop(events);
+
+        runtime.shutdown().await;
     }
 }
