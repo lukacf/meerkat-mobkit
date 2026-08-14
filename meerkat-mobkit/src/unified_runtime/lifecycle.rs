@@ -10,7 +10,6 @@ use tokio::sync::mpsc::error::TryRecvError;
 
 use crate::mob_handle_runtime::MobRuntimeError;
 use crate::runtime::RuntimeDecisionState;
-use crate::types::{EventEnvelope, UnifiedEvent};
 
 use super::types::{
     IdentityAuthorityReleaseOutcome, RediscoverReport, ShutdownDrainReport, UnifiedRuntimeError,
@@ -408,7 +407,15 @@ impl UnifiedRuntime {
 
         loop {
             match Self::try_recv_ingress_event(ingress) {
-                Some(Ok(unified_event)) => {
+                Some(Ok(forwarded)) => {
+                    // Fire the typed alert the forwarder extracted at ingest
+                    // (e.g. a member compaction persistence rejection). The
+                    // hook is read here, at drain time, so hooks installed
+                    // via `set_error_hook` after construction still fire.
+                    if let Some(alert) = forwarded.alert {
+                        self.fire_error(alert);
+                    }
+                    let unified_event = forwarded.envelope;
                     // Detect agent run failures and fire HostLoopCrash
                     if let crate::types::UnifiedEvent::Agent {
                         ref agent_id,
@@ -473,7 +480,7 @@ impl UnifiedRuntime {
 
     fn try_recv_ingress_event(
         ingress: &mut MobEventIngress,
-    ) -> Option<Result<EventEnvelope<UnifiedEvent>, TryRecvError>> {
+    ) -> Option<Result<super::ForwardedMemberEvent, TryRecvError>> {
         Some(match ingress {
             MobEventIngress::Forwarder(forwarder) => forwarder.event_rx.try_recv(),
         })

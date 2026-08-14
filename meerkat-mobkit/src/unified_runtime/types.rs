@@ -372,6 +372,8 @@ pub struct ShutdownDrainReport {
 /// - `RediscoverFailure` — `lifecycle.rs` rediscover error path
 /// - `HostLoopCrash` — `lifecycle.rs` detects `run_failed` agent events during drain
 /// - `CheckpointFailure` — via `run_periodic_gc_with_error_callback` in session store
+/// - `CompactionPersistenceRejected` — `lifecycle.rs` drain fires the alert the
+///   agent-event forwarder extracted from a member `CompactionFailed` event
 /// - `IdentityMaterializationFailure` — identity-first peer/fleet hydration skipped a member
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -387,6 +389,11 @@ pub enum ErrorEvent {
         skipped: usize,
     },
     CheckpointFailure {
+        session_id: String,
+        error: String,
+    },
+    CompactionPersistenceRejected {
+        identity: String,
         session_id: String,
         error: String,
     },
@@ -424,6 +431,16 @@ impl Display for ErrorEvent {
             }
             Self::CheckpointFailure { session_id, error } => {
                 write!(f, "checkpoint_failure: {session_id}: {error}")
+            }
+            Self::CompactionPersistenceRejected {
+                identity,
+                session_id,
+                error,
+            } => {
+                write!(
+                    f,
+                    "compaction_persistence_rejected: {identity} ({session_id}): {error}"
+                )
             }
             Self::HostLoopCrash { member_id, error } => {
                 write!(f, "host_loop_crash: {member_id}: {error}")
