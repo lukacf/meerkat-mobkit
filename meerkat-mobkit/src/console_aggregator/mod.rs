@@ -6181,6 +6181,17 @@ mod tests {
     /// canonical owner is `Provider::OpenAI`, so the turn would fail closed
     /// with `normalized_provider_accounting_identity_mismatch`. See the rule
     /// in `tests/support/llm_usage.rs`.
+    /// Per-test mob id: 0.8.23's fail-closed in-proc registration means
+    /// concurrently running tests must not share a supervisor participant
+    /// name, so every bootstrap gets its own id.
+    fn unique_console_mob_id(prefix: &str) -> String {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        format!(
+            "{prefix}-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    }
+
     async fn build_single_member_runtime() -> UnifiedRuntime {
         build_single_member_runtime_with_client(Arc::new(TestClient::for_provider(
             meerkat_core::Provider::OpenAI,
@@ -6189,10 +6200,10 @@ mod tests {
     }
 
     async fn build_single_member_runtime_with_client(client: Arc<dyn LlmClient>) -> UnifiedRuntime {
-        let definition = MobDefinition::from_toml(
+        let definition = MobDefinition::from_toml(&format!(
             r#"
 [mob]
-id = "console-aggregator-perf-test"
+id = "{}"
 
 [profiles.worker]
 model = "gpt-5.5"
@@ -6201,7 +6212,8 @@ external_addressable = true
 [profiles.worker.tools]
 comms = true
 "#,
-        )
+            unique_console_mob_id("console-aggregator-perf-test")
+        ))
         .expect("definition parses");
         let runtime = UnifiedRuntime::builder()
             .definition(definition)
@@ -6326,10 +6338,10 @@ comms = true
         ));
         let delayed_service = DelayedHistorySessionService::new(base_service, history_delay);
         let session_service: Arc<dyn MobSessionService> = Arc::new(delayed_service.clone());
-        let definition = MobDefinition::from_toml(
+        let definition = MobDefinition::from_toml(&format!(
             r#"
 [mob]
-id = "console-aggregator-stress-test"
+id = "{}"
 
 [profiles.worker]
 model = "gpt-5.5"
@@ -6338,7 +6350,8 @@ external_addressable = true
 [profiles.worker.tools]
 comms = true
 "#,
-        )
+            unique_console_mob_id("console-aggregator-stress-test")
+        ))
         .expect("definition parses");
         let spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
             .with_options(crate::mob_handle_runtime::MobBootstrapOptions {

@@ -3147,10 +3147,18 @@ external_addressable = true
             runtime_store,
             blob_store,
         ));
+        static NEXT_DELIVERY_MOB: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        // Per-call mob id: 0.8.23's fail-closed in-proc registration means
+        // concurrently running tests must not share a supervisor route.
+        let delivery_mob_id = format!(
+            "delivery-e2e-{}",
+            NEXT_DELIVERY_MOB.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
         let definition = meerkat_mob::MobDefinition::from_toml(&format!(
             r#"
 [mob]
-id = "delivery-e2e"
+id = "{delivery_mob_id}"
 
 [profiles.general]
 model = "gpt-5.5"

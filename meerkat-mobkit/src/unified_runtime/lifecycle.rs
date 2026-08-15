@@ -292,6 +292,24 @@ impl UnifiedRuntime {
             }
         }
 
+        // `stop` quiesces members but keeps the mob actor - and its
+        // `{mob_id}/__mob_supervisor__` in-proc route - alive for resume.
+        // UnifiedRuntime shutdown is terminal, and meerkat 0.8.23 refuses
+        // route displacement, so a same-process cold replacement for this mob
+        // id must observe the name actually freed. Drive the mob's own
+        // terminal teardown (which retires the supervisor route) now that the
+        // members are quiesced. Best-effort: a refusal leaves the route
+        // registered and is reported loudly rather than failing the report.
+        if mob_stop.is_ok()
+            && let Err(error) = self.mob_handle().shutdown().await
+        {
+            tracing::warn!(
+                %error,
+                "mob terminal shutdown after stop did not converge; the supervisor \
+                 in-proc route may remain registered until process exit"
+            );
+        }
+
         // Fencing authority must outlive the physical members it protects.
         // Keep renewal running through mob quiescence, then stop it before the
         // final provider release so no renewal can race the release boundary.
