@@ -7460,6 +7460,15 @@ external_addressable = true
     // Stable owner id for the schedule driver, captured before `definition` is
     // moved into the bootstrap spec.
     let schedule_owner_id = definition.id.to_string();
+    // Operator-verb seam: the CONCRETE persistent session service the mob
+    // bootstraps with, reached through the transcript extension traits. The
+    // erased Arc<dyn MobSessionService> cannot recover this (no trait
+    // upcasting), and it must be THIS instance - a second service over the
+    // same stores has its own live registry, so its Busy check would not see
+    // this gateway's running members. Ephemeral lanes stay None.
+    let mut gateway_transcript_edit_service: Option<
+        Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
+    > = None;
     let (
         mob_spec,
         _temp_dir,
@@ -7781,6 +7790,7 @@ external_addressable = true
         let committed_boundary_recoverer: Arc<
             dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer,
         > = Arc::clone(&concrete_service) as _;
+        gateway_transcript_edit_service = Some(Arc::clone(&concrete_service) as _);
         let session_service: Arc<dyn meerkat_mob::MobSessionService> = concrete_service;
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
             .with_session_write_epochs(&session_write_epochs)
@@ -8075,6 +8085,7 @@ external_addressable = true
                     blob_store.clone(),
                 ));
                 committed_boundary_recoverer = Some(Arc::clone(&concrete) as _);
+                gateway_transcript_edit_service = Some(Arc::clone(&concrete) as _);
                 concrete
             } else {
                 Arc::new(EphemeralSessionService::new(
@@ -8366,6 +8377,11 @@ external_addressable = true
         if let Some(recoverer) = runtime.mob_runtime().committed_boundary_recoverer() {
             identity_bridge = identity_bridge.with_committed_boundary_recoverer(recoverer);
         }
+        // Operator-verb seam: share the bridge's compaction-floor registry
+        // with the RPC context BEFORE the bridge is erased, so
+        // mobkit/compact_member arms floors on the same registry the
+        // materialization path reads.
+        let compaction_floors = identity_bridge.compaction_floors();
         let bridge_arc: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> =
             Arc::new(identity_bridge);
 
@@ -8783,6 +8799,8 @@ external_addressable = true
             customizer,
             agent_memory_provider,
             mob_definition: Some(mob_definition),
+            transcript_edit_service: gateway_transcript_edit_service.clone(),
+            compaction_floors: Some(compaction_floors),
         })
     } else {
         None
