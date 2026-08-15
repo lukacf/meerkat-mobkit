@@ -75,6 +75,7 @@ use sha2::{Digest, Sha256};
 
 use crate::console_aggregator::SqliteConsoleLogStore;
 use crate::identity_first::LocalContinuityStore;
+use crate::identity_first::local_store::HeadCanonicalBackfillReport;
 use crate::memory::sqlite_store::SqliteAgentMemoryStore;
 use crate::runtime::SqliteMetadataStore;
 use crate::storage_doctor::{self, DATABASE_FAMILIES, MEMORY_LEDGER_DOMAIN, MEMORY_ROOT_SPELLINGS};
@@ -317,6 +318,12 @@ pub struct MobKitMigrateReport {
     /// File-name twins and their resolution (case 3).
     #[serde(default)]
     pub twins: Vec<TwinReport>,
+    /// Head-canonical backfill of legacy v1 sessions (apply only). The
+    /// `mobkit-continuity` v2 stamp rides on this: it advances only when
+    /// every legacy blob has been converted, so a partial crossing leaves
+    /// the file at v1 with rollback available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_canonical_backfill: Option<HeadCanonicalBackfillReport>,
     /// Deprecated-leftover findings (case 5; report-only), reusing the
     /// doctor finding vocabulary.
     #[serde(default)]
@@ -582,6 +589,23 @@ pub fn migrate_state_dir(
     mode: MigrateMode,
     adopt: Option<&Path>,
 ) -> MobKitMigrateReport {
+    migrate_state_dir_acknowledging_skipped(
+        state_dir,
+        mode,
+        adopt,
+        &std::collections::BTreeSet::new(),
+    )
+}
+
+/// [`migrate_state_dir`], with explicit acknowledgement of blob rows that
+/// cannot be parsed as sessions. Without it the ledger refuses to advance
+/// while any such row exists — see the backfill's stamp guard.
+pub fn migrate_state_dir_acknowledging_skipped(
+    state_dir: &Path,
+    mode: MigrateMode,
+    adopt: Option<&Path>,
+    acknowledged_rows: &std::collections::BTreeSet<String>,
+) -> MobKitMigrateReport {
     let mut report = MobKitMigrateReport::new(mode, state_dir);
     if !state_dir.is_dir() {
         report.errors.push(format!(
@@ -677,7 +701,15 @@ pub fn migrate_state_dir(
     // ── Case 1: ledger baseline. ─────────────────────────────────────────
     let before = read_ledger_matrix(state_dir);
     if apply {
-        open_stores_through_ledgered_constructors(&layout, &unfenced, &mut report.errors);
+        let mut backfill_report: Option<HeadCanonicalBackfillReport> = None;
+        open_stores_through_ledgered_constructors(
+            &layout,
+            &unfenced,
+            &mut report.errors,
+            &mut backfill_report,
+            acknowledged_rows,
+        );
+        report.head_canonical_backfill = backfill_report;
         let after = read_ledger_matrix(state_dir);
         let before_of = |database: &Path, domain: &str| -> Option<i64> {
             before
@@ -779,6 +811,32 @@ pub fn migrate_state_dir(
     // vocabulary meerkat no longer reads. Released 0.8.10 documents now
     // surface in the doctor census and convert through the explicit
     // one-time importer instead.
+
+    // A DRY RUN MUST STILL REPORT THE CENSUS. The whole purpose of dry run
+    // is to answer "what would --apply do to this corpus", and the answer is
+    // dominated by how many legacy sessions would be converted. Without this
+    // the operator gets renames and leftovers and total silence on the one
+    // irreversible thing the verb does.
+    //
+    // The engine's own dry-run path opens READ-ONLY and mutates nothing,
+    // including the journal mode, so this is safe to run in the same mode
+    // that promises to change nothing.
+    if !apply
+        && let Ok(resolved) = layout.continuity_db()
+        && resolved.path.is_file()
+        && !unfenced.contains(&resolved.path)
+    {
+        match LocalContinuityStore::backfill_head_canonical_sessions_at(
+            &resolved.path,
+            false,
+            acknowledged_rows,
+        ) {
+            Ok(census) => report.head_canonical_backfill = Some(census),
+            Err(error) => report
+                .errors
+                .push(format!("continuity head-canonical census failed: {error}")),
+        }
+    }
 
     // ── Case 5: deprecated leftovers (report-only). ──────────────────────
     let scope = DiagnoseScope::new(vec![state_dir.to_path_buf()]);
@@ -911,14 +969,14 @@ fn open_stores_through_ledgered_constructors(
     layout: &MobKitStorageLayout,
     unfenced: &[PathBuf],
     errors: &mut Vec<String>,
+    backfill_report: &mut Option<HeadCanonicalBackfillReport>,
+    acknowledged_rows: &std::collections::BTreeSet<String>,
 ) {
     match layout.continuity_db() {
         Ok(resolved) if resolved.path.is_file() && !unfenced.contains(&resolved.path) => {
             if let Err(error) = LocalContinuityStore::open(&resolved.path) {
                 errors.push(format!("continuity store open failed: {error}"));
-            } else if let Err(error) =
-                LocalContinuityStore::apply_head_canonical_schema_at(&resolved.path)
-            {
+            } else {
                 // The head-canonical (`mobkit-continuity` v2) bump is the one
                 // migration a plain gateway open deliberately does NOT
                 // commit: it locks previous releases out of the file, so it
@@ -926,9 +984,37 @@ fn open_stores_through_ledgered_constructors(
                 // fence, as an explicit operator action — or lazily, in the
                 // transaction of a delta write that actually creates a head
                 // row (a refused write leaves the file at v1).
-                errors.push(format!(
-                    "continuity head-canonical schema migration failed: {error}"
-                ));
+                //
+                // It is committed here ONLY BEHIND THE BACKFILL. Applying the
+                // schema alone used to stamp v2 and create the three empty
+                // head-canonical tables while converting nothing, so an
+                // operator paid the whole one-way cost — a file no `<= 0.8.5`
+                // binary can open again — and received a corpus still wholly
+                // on the legacy blob path. The stamp now advances only when
+                // every legacy blob carries a head row, so a partial or
+                // failed crossing leaves the file at v1 and rollback intact.
+                match LocalContinuityStore::backfill_head_canonical_sessions_at(
+                    &resolved.path,
+                    true,
+                    acknowledged_rows,
+                ) {
+                    Ok(backfill) => {
+                        for (session_id, failure) in &backfill.failures {
+                            errors.push(if session_id.is_empty() {
+                                format!("continuity head-canonical backfill refused: {failure}")
+                            } else {
+                                format!(
+                                    "continuity head-canonical backfill failed for session \
+                                     {session_id}: {failure}"
+                                )
+                            });
+                        }
+                        *backfill_report = Some(backfill);
+                    }
+                    Err(error) => errors.push(format!(
+                        "continuity head-canonical backfill failed: {error}"
+                    )),
+                }
             }
         }
         Ok(_) => {}
@@ -1839,6 +1925,18 @@ mod tests {
         conn
     }
 
+    /// A well-formed `(session_id, serialized Session)` pair. Fixtures that
+    /// plant continuity blobs need real sessions now that `--apply` converts
+    /// them before stamping the ledger.
+    fn legacy_session_blob(text: &str) -> (String, Vec<u8>) {
+        let mut session = meerkat_core::Session::new();
+        session.push(meerkat_core::Message::User(
+            meerkat_core::UserMessage::text(text.to_string()),
+        ));
+        let id = session.id().to_string();
+        (id, serde_json::to_vec(&session).expect("encode session"))
+    }
+
     fn insert_snapshot(conn: &Connection, session_id: &str, identity: &str, data: &[u8]) {
         conn.execute(
             "INSERT INTO session_snapshots \
@@ -2019,6 +2117,104 @@ mod tests {
             );
         }
         drop(foreign);
+    }
+
+    /// The operator crossing must CONVERT before it stamps. Until 0.8.16
+    /// `--apply` ran the guarded domain migration directly: it stamped v2
+    /// and created the three empty head-canonical tables while converting
+    /// nothing, so the operator paid the whole one-way cost — a file no
+    /// `<= 0.8.5` binary can open again — and still had a corpus wholly on
+    /// the legacy blob path, which no amount of rebooting could leave.
+    #[test]
+    fn apply_converts_legacy_sessions_before_stamping_the_continuity_ledger() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = temp.path();
+        let db = state.join("continuity.sqlite3");
+        let mut session = meerkat_core::Session::new();
+        session.push(meerkat_core::Message::User(
+            meerkat_core::UserMessage::text("hello".to_string()),
+        ));
+        let session_id = session.id().to_string();
+        {
+            let conn = create_legacy_continuity(&db);
+            insert_snapshot(
+                &conn,
+                &session_id,
+                "test:alice",
+                &serde_json::to_vec(&session).expect("encode session"),
+            );
+        }
+
+        let applied = migrate_state_dir(state, MigrateMode::Apply, None);
+        assert!(!applied.has_errors(), "{:?}", applied.errors);
+
+        let backfill = applied
+            .head_canonical_backfill
+            .as_ref()
+            .expect("apply must report a backfill");
+        assert_eq!(backfill.converted, vec![session_id.clone()]);
+        assert!(backfill.complete());
+        assert!(backfill.ledger_stamped);
+
+        // The session actually crossed: a head row exists, and the blob is
+        // retained as a frozen archive rather than deleted.
+        let probe = Connection::open(&db).expect("probe");
+        let heads: i64 = probe
+            .query_row(
+                "SELECT COUNT(*) FROM continuity_session_heads WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .expect("count heads");
+        assert_eq!(heads, 1, "apply stamped without converting the session");
+        let blobs: i64 = probe
+            .query_row("SELECT COUNT(*) FROM session_snapshots", [], |row| {
+                row.get(0)
+            })
+            .expect("count blobs");
+        assert_eq!(blobs, 1, "the legacy blob must be retained");
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-continuity").expect("ledger"),
+            Some(crate::identity_first::HEAD_CANONICAL_CONTINUITY_SCHEMA_VERSION)
+        );
+    }
+
+    /// The one-way door stays shut when the crossing is incomplete: a corpus
+    /// containing a session that cannot convert must be left at v1, so
+    /// rollback to a pre-head-canonical release survives a failed migration.
+    #[test]
+    fn apply_leaves_the_continuity_ledger_at_v1_when_a_session_cannot_convert() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = temp.path();
+        let db = state.join("continuity.sqlite3");
+        // A well-formed session id whose blob is not a decodable Session:
+        // a real conversion failure, not structural garbage.
+        let doomed = meerkat_core::types::SessionId::new().to_string();
+        {
+            let conn = create_legacy_continuity(&db);
+            insert_snapshot(&conn, &doomed, "test:alice", b"not-a-session");
+        }
+
+        let applied = migrate_state_dir(state, MigrateMode::Apply, None);
+        assert!(
+            applied.has_errors(),
+            "an unconvertible session must surface as an error"
+        );
+        let backfill = applied
+            .head_canonical_backfill
+            .as_ref()
+            .expect("apply must report a backfill");
+        assert!(!backfill.complete());
+        assert!(
+            !backfill.ledger_stamped,
+            "a partial crossing must NOT stamp the ledger"
+        );
+        let probe = Connection::open(&db).expect("probe");
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-continuity").expect("ledger"),
+            Some(1),
+            "a failed crossing must leave the file rollback-safe at v1"
+        );
     }
 
     /// M4b: the one-way head-canonical continuity bump is an OPERATOR
@@ -2352,13 +2548,18 @@ mod tests {
         let state = temp.path();
         let legacy = state.join("continuity.db");
         let canonical = state.join("continuity.sqlite3");
+        // Real sessions, because apply now CONVERTS before it stamps: a row
+        // that is not a decodable session would (correctly) withhold the
+        // ledger bump and this test is about twin adoption, not conversion.
+        let keep = legacy_session_blob("keep-me");
+        let lose = legacy_session_blob("archive-me");
         {
             let conn = create_legacy_continuity(&legacy);
-            insert_snapshot(&conn, "s-keep", "test:alice", b"keep-me");
+            insert_snapshot(&conn, &keep.0, "test:alice", &keep.1);
         }
         {
             let conn = create_legacy_continuity(&canonical);
-            insert_snapshot(&conn, "s-lose", "test:alice", b"archive-me");
+            insert_snapshot(&conn, &lose.0, "test:alice", &lose.1);
         }
         let other_digest = file_digest_hex(&canonical);
 
@@ -2403,12 +2604,25 @@ mod tests {
         let conn = Connection::open(&canonical).expect("reopen canonical");
         let data: Vec<u8> = conn
             .query_row(
-                "SELECT data FROM session_snapshots WHERE session_id = 's-keep'",
-                [],
+                "SELECT data FROM session_snapshots WHERE session_id = ?1",
+                rusqlite::params![keep.0],
                 |row| row.get(0),
             )
             .expect("adopted row");
-        assert_eq!(data, b"keep-me");
+        assert_eq!(data, keep.1, "adopted copy must carry the kept session");
+        // The adopted copy is the one that survived: the archived twin's
+        // session is absent from the canonical file.
+        let lost: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_snapshots WHERE session_id = ?1",
+                rusqlite::params![lose.0],
+                |row| row.get(0),
+            )
+            .expect("archived row absent");
+        assert_eq!(
+            lost, 0,
+            "archived twin's session must not be in the adopted copy"
+        );
         drop(conn);
         assert!(!legacy.exists());
         let layout = MobKitStorageLayout::with_injected_roots(state.to_path_buf(), None);

@@ -740,6 +740,11 @@ const STORAGE_MIGRATE_USAGE: &str = "usage: mobkit_gateway storage-migrate --sta
      Dry-run by default; --apply mutates under the exclusive maintenance \
      fence. --adopt <path> resolves a divergent file-name twin by adopting \
      that copy and archiving the rest read-only (requires --apply).\n\
+     --acknowledge-skipped <SESSION_ID> (repeatable) authorises the ledger \
+     bump to proceed despite a blob row that cannot be parsed as a session. \
+     Acknowledgement is BY ROW ID, never by count: a row you did not name \
+     still blocks, so a later run cannot silently authorise a different set \
+     than the one you read.\n\
      Exit codes: 0 clean, 1 refusals or fence/store failure, 2 usage error.";
 
 /// Maintenance verb: `mobkit_gateway storage-migrate`. Runs the five-case
@@ -751,6 +756,8 @@ fn run_storage_migrate(args: &[String]) -> i32 {
     let mut adopt: Option<PathBuf> = None;
     let mut apply = false;
     let mut json = false;
+    let mut acknowledged_rows: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -765,6 +772,17 @@ fn run_storage_migrate(args: &[String]) -> i32 {
                 Some(value) => adopt = Some(PathBuf::from(value)),
                 None => {
                     eprintln!("--adopt requires a path\n{STORAGE_MIGRATE_USAGE}");
+                    return 2;
+                }
+            },
+            "--acknowledge-skipped" => match iter.next() {
+                Some(value) => {
+                    acknowledged_rows.insert(value.clone());
+                }
+                None => {
+                    eprintln!(
+                        "--acknowledge-skipped requires a session id\n{STORAGE_MIGRATE_USAGE}"
+                    );
                     return 2;
                 }
             },
@@ -789,7 +807,12 @@ fn run_storage_migrate(args: &[String]) -> i32 {
     } else {
         meerkat_mobkit::MigrateMode::DryRun
     };
-    let report = meerkat_mobkit::migrate_state_dir(&state_dir, mode, adopt.as_deref());
+    let report = meerkat_mobkit::migrate_state_dir_acknowledging_skipped(
+        &state_dir,
+        mode,
+        adopt.as_deref(),
+        &acknowledged_rows,
+    );
     if json {
         match serde_json::to_string_pretty(&report) {
             Ok(text) => println!("{text}"),
@@ -814,6 +837,43 @@ fn print_migrate_report_text(report: &meerkat_mobkit::MobKitMigrateReport) {
         report.state_dir.display(),
         report.fenced_databases.len()
     );
+    if let Some(backfill) = &report.head_canonical_backfill {
+        // The head-canonical crossing is the one irreversible thing this verb
+        // does, so its outcome is printed before anything else and states
+        // explicitly whether the ledger advanced.
+        println!(
+            "head-canonical backfill: {} converted of {} pending",
+            backfill.converted.len(),
+            backfill.examined
+        );
+        if !backfill.skipped_unparseable.is_empty() {
+            println!(
+                "  {} blob row(s) could not be parsed as sessions and are NOT converted; \
+                 the ledger will not advance until each is acknowledged by id \
+                 (--acknowledge-skipped <SESSION_ID>): {}",
+                backfill.skipped_unparseable.len(),
+                backfill.skipped_unparseable.join(", ")
+            );
+        }
+        for (session_id, failure) in &backfill.failures {
+            if session_id.is_empty() {
+                println!("  REFUSED: {failure}");
+            } else {
+                println!("  FAILED {session_id}: {failure}");
+            }
+        }
+        if backfill.ledger_stamped {
+            println!(
+                "  ledger STAMPED v2 - the corpus is wholly head-canonical; \
+                 rollback to a pre-head-canonical release is no longer possible"
+            );
+        } else if backfill.applied {
+            println!(
+                "  ledger LEFT AT v1 - the crossing is incomplete, so rollback \
+                 remains available; re-run to resume"
+            );
+        }
+    }
     for twin in &report.twins {
         println!("twin [{}]:", twin.slot);
         for path in &twin.paths {

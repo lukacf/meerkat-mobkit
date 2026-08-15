@@ -3,6 +3,24 @@
 # Falls back to workspace clippy when root Cargo.toml/Cargo.lock changes.
 set -euo pipefail
 
+# Incremental compilation is OFF for the push gates.
+#
+# rustc's incremental cache is a per-worktree, cross-invocation artifact, and a
+# stale or half-written one makes the compiler abort with an internal error
+# rather than a diagnostic:
+#
+#   error: internal compiler error: encountered incremental compilation error
+#          with evaluate_obligation(...)
+#   Found unstable fingerprints ... compiler/rustc_middle/src/verify_ich.rs
+#
+# It reproduces across runs, so it reads as a deterministic failure in the code
+# being pushed, and it is not — `cargo clean` clears it. Gates are the wrong
+# place to carry that risk: they run rarely, usually against a cache that has
+# been idle or written by a different toolchain, so incremental buys little and
+# can block a push on a compiler bug unrelated to the change. Interactive
+# builds still use it; only the gates opt out.
+export CARGO_INCREMENTAL=0
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CARGO="${SCRIPT_DIR}/repo-cargo"
 
