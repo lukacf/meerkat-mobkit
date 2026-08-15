@@ -69,6 +69,8 @@ errors. SDKs surface it on `RpcError.data`.
 | `-32012` | `memory/{index,query}` backend unavailable | none |
 | `-32013` | `mobkit/console/query_timeline` cursor cannot be replayed from the console timeline | `{error: "replay_unavailable"}` |
 | `-32014` | `mobkit/init` fail-closed storage refusal: file-name twins the storage layout refuses to pick between, a session/runtime/blob/metadata/console store that failed to open (formerly a silent in-memory fallback), or an uncreatable state root. The message carries the remediation (the storage doctor, or the explicit ephemeral declaration). The gateway writes the error response and exits. | none |
+| `-32015` | `mobkit/bound_member_transcript` target session is live/running (transcript surgery only supports reject-while-active); quiesce the member first (retire or park it), then retry | none |
+| `-32016` | operator verb exists but its gateway wiring is absent (no compaction-floor registry / no concrete transcript-edit service threaded into the RPC context) | none |
 
 The `-32010` constant is exported from both SDKs as
 `MOB_EVENTS_STALE_CURSOR_CODE`. The Python and TypeScript SDKs auto-
@@ -535,6 +537,45 @@ Send a message through a resolved route.
 Return delivery records for audit and inspection.
 
 ---
+
+## Operator transcript verbs
+
+Two identity-scoped operator affordances for oversized or wedged member
+transcripts. Both resolve their target through the same identity-control gate
+as `mobkit/respawn` / `mobkit/reset`, so identities the gateway does not own
+are refused at resolution.
+
+### `mobkit/compact_member`
+
+Force one transcript compaction on a member, then restore its original
+compaction threshold. Arms a temporary `auto_compact_threshold` floor for the
+identity, respawns the member in place so the fresh build picks the floor up,
+drives one queued maintenance turn (the forced compaction fires at that turn's
+pre-LLM boundary), then disarms the floor and respawns again.
+
+Params: `identity` (required), `floor_tokens` (default `1024`), `timeout_ms`
+(default `60000`, budget for the maintenance turn).
+
+Result: `identity`, `session_id`, `floor_tokens`, `messages_before`,
+`messages_after`, `compaction_applied`, `head_revision`,
+`last_rewrite_reason` (message counts and revision facts are `null` when the
+gateway has no concrete transcript-edit service).
+
+### `mobkit/bound_member_transcript`
+
+Surgical escape hatch: commit one audited keep-last-N transcript rewrite on a
+QUIESCED member session (running sessions refuse with `-32015`; retire or park
+the member first). The cut point is pair-safe: it never separates an assistant
+tool-use message from its adjacent tool_results. The removed prefix is
+replaced by one operator marker notice, and the rewrite is committed with a
+compare-and-swap against the head revision observed at read time.
+
+Params: `identity` (required), `keep_last` (default `50`), `note` (optional
+audit note recorded on the rewrite reason).
+
+Result: `bounded`, `removed`, `kept`, `message_count`, `parent_revision`,
+`revision` (or `bounded: false` with `removed: 0` when the transcript is
+already within `keep_last`).
 
 ## Scheduling migration
 

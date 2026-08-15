@@ -27,6 +27,7 @@ mod console_ingress;
 mod gating_methods;
 pub(crate) mod memory_methods;
 pub(crate) mod mob_methods;
+pub(crate) mod operator_methods;
 pub(crate) mod params;
 mod routing_delivery_methods;
 mod session_store_methods;
@@ -1239,6 +1240,21 @@ pub struct IdentityFirstContext {
     pub agent_memory_provider:
         Option<std::sync::Arc<dyn crate::identity_first::AgentMemoryProvider>>,
     pub mob_definition: Option<meerkat_mob::MobDefinition>,
+    /// CONCRETE persistent session service reached through the transcript
+    /// extension traits, for the `bound_member_transcript` operator verb (and
+    /// `compact_member`'s before/after evidence). The erased
+    /// `Arc<dyn MobSessionService>` cannot reach
+    /// `SessionServiceTranscriptEditExt` (no trait upcasting), so composition
+    /// must thread the typed handle here. `None` disables the verbs with a
+    /// typed refusal.
+    pub transcript_edit_service:
+        Option<std::sync::Arc<dyn crate::memory::hygienist::TranscriptEditSessionService>>,
+    /// The identity bridge's compaction-floor registry
+    /// ([`crate::identity_first::MobSessionBridge::compaction_floors`]),
+    /// shared here so the `compact_member` operator verb arms/disarms floors
+    /// on the same registry the materialization path reads. `None` disables
+    /// the verb with a typed refusal.
+    pub compaction_floors: Option<std::sync::Arc<crate::identity_first::CompactionFloorRegistry>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1710,6 +1726,8 @@ async fn handle_unified_rpc_json_inner(
                     "mobkit/reset",
                     "mobkit/delete_identity",
                     "mobkit/inspect_identity",
+                    "mobkit/compact_member",
+                    "mobkit/bound_member_transcript",
                     "mobkit/reconcile_identity",
                     "mobkit/status_identity_bootstrap",
                     "mobkit/wait_identity_bootstrap",
@@ -4278,6 +4296,32 @@ async fn handle_unified_rpc_json_inner(
                 Err(e) => identity_error_response(response_id, &e),
             }
         }
+        "mobkit/compact_member" => {
+            let ctx = match identity_ctx {
+                Some(ctx) => ctx,
+                None => return maybe_identity_not_configured(is_notification, response_id),
+            };
+            Box::pin(operator_methods::handle_compact_member(
+                runtime,
+                ctx,
+                &request.params,
+                response_id,
+            ))
+            .await
+        }
+        "mobkit/bound_member_transcript" => {
+            let ctx = match identity_ctx {
+                Some(ctx) => ctx,
+                None => return maybe_identity_not_configured(is_notification, response_id),
+            };
+            Box::pin(operator_methods::handle_bound_member_transcript(
+                runtime,
+                ctx,
+                &request.params,
+                response_id,
+            ))
+            .await
+        }
         "mobkit/reconcile_identity" => {
             let ctx = match identity_ctx {
                 Some(ctx) => ctx,
@@ -5726,6 +5770,8 @@ shell = true
             customizer: None,
             agent_memory_provider: None,
             mob_definition: Some(runtime.mob_handle().definition().clone()),
+            transcript_edit_service: None,
+            compaction_floors: None,
         };
         let held_lock = identity_runtime
             .raw_member_alias_lock("compat-worker")
@@ -6083,6 +6129,8 @@ shell = true
             customizer: None,
             agent_memory_provider: None,
             mob_definition: Some(runtime.mob_handle().definition().clone()),
+            transcript_edit_service: None,
+            compaction_floors: None,
         };
 
         let response: Value = serde_json::from_str(
@@ -6254,6 +6302,8 @@ shell = true
             customizer: None,
             agent_memory_provider: None,
             mob_definition: Some(runtime.mob_handle().definition().clone()),
+            transcript_edit_service: None,
+            compaction_floors: None,
         };
 
         let runtime_ref = &runtime;
@@ -6432,6 +6482,8 @@ shell = true
             customizer: None,
             agent_memory_provider: None,
             mob_definition: Some(runtime.mob_handle().definition().clone()),
+            transcript_edit_service: None,
+            compaction_floors: None,
         };
 
         let response: Value = serde_json::from_str(
@@ -6538,6 +6590,8 @@ shell = true
             customizer: None,
             agent_memory_provider: Some(provider),
             mob_definition: None,
+            transcript_edit_service: None,
+            compaction_floors: None,
         };
         let capabilities: Value = serde_json::from_str(
             &handle_unified_rpc_json(
@@ -6647,6 +6701,8 @@ shell = true
             customizer: None,
             agent_memory_provider: Some(provider),
             mob_definition: None,
+            transcript_edit_service: None,
+            compaction_floors: None,
         };
 
         let capabilities: Value = serde_json::from_str(
@@ -6982,6 +7038,8 @@ shell = true
             customizer: None,
             agent_memory_provider: Some(provider),
             mob_definition: None,
+            transcript_edit_service: None,
+            compaction_floors: None,
         };
 
         // The sqlite store supports the v2 surface, so update/manifest are
@@ -7208,6 +7266,8 @@ shell = true
             customizer: None,
             agent_memory_provider: Some(provider),
             mob_definition: None,
+            transcript_edit_service: None,
+            compaction_floors: None,
         };
 
         let capabilities: Value = serde_json::from_str(
@@ -8097,6 +8157,8 @@ shell = true
             customizer: None,
             agent_memory_provider: None,
             mob_definition: None,
+            transcript_edit_service: None,
+            compaction_floors: None,
         };
         for requested_identity in ["review:singleton", "rt:review:singleton:0"] {
             let response: Value = serde_json::from_str(
@@ -8347,6 +8409,8 @@ shell = true
             customizer: None,
             agent_memory_provider: None,
             mob_definition: None,
+            transcript_edit_service: None,
+            compaction_floors: None,
         };
 
         let send = |id: u64, params: Value| {
@@ -8568,6 +8632,8 @@ shell = true
             customizer: None,
             agent_memory_provider: None,
             mob_definition: None,
+            transcript_edit_service: None,
+            compaction_floors: None,
         };
         let raw = handle_unified_rpc_json(
             &runtime,
@@ -8699,6 +8765,8 @@ shell = true
             customizer: None,
             agent_memory_provider: None,
             mob_definition: None,
+            transcript_edit_service: None,
+            compaction_floors: None,
         };
 
         // The raw roster member is part of the declared baseline ...
@@ -8825,6 +8893,8 @@ shell = true
             customizer: None,
             agent_memory_provider: None,
             mob_definition: None,
+            transcript_edit_service: None,
+            compaction_floors: None,
         };
         assert!(
             runtime.identity_runtime().is_none(),
@@ -9206,6 +9276,8 @@ shell = true
             customizer: None,
             agent_memory_provider: None,
             mob_definition: None,
+            transcript_edit_service: None,
+            compaction_floors: None,
         };
 
         let raw = handle_unified_rpc_json(

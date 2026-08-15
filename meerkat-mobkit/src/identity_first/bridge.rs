@@ -1529,6 +1529,54 @@ fn unmasked_resume_divergence(
 /// external bindings are the exception: Meerkat's external peer names require
 /// identifier-safe `<mob>/<profile>/<member>` segments, so the bridge maps the
 /// runtime ID to the durable identity for those members.
+/// Per-identity temporary auto-compaction floors for the `compact_member`
+/// operator verb.
+///
+/// A floor recorded here is applied by [`MobSessionBridge`] to the NEXT spawn
+/// spec it builds for that identity: the resolved definition profile is
+/// snapshotted into `SpawnMemberSpec::override_profile` with
+/// `auto_compact_threshold` replaced by the floor, which meerkat-mob lowers
+/// into `SessionBuildOptions::auto_compact_threshold_override` (the strongest
+/// compaction-threshold authority). The registry is in-memory only and the
+/// verb clears the entry after the forced compaction fires; a floor is never
+/// persisted, so a crash mid-verb degrades to the original profile value on
+/// the next boot rather than freezing a compact-every-turn build.
+#[derive(Debug, Default)]
+pub struct CompactionFloorRegistry {
+    floors: std::sync::Mutex<std::collections::BTreeMap<String, std::num::NonZeroU64>>,
+}
+
+impl CompactionFloorRegistry {
+    /// Record a temporary floor for `identity`, returning any previous one.
+    pub fn set(
+        &self,
+        identity: &AgentIdentity,
+        floor: std::num::NonZeroU64,
+    ) -> Option<std::num::NonZeroU64> {
+        self.floors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(identity.as_str().to_string(), floor)
+    }
+
+    /// Clear the floor for `identity`, returning it if one was recorded.
+    pub fn clear(&self, identity: &AgentIdentity) -> Option<std::num::NonZeroU64> {
+        self.floors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(identity.as_str())
+    }
+
+    /// The floor currently recorded for `identity`, if any.
+    pub fn get(&self, identity: &AgentIdentity) -> Option<std::num::NonZeroU64> {
+        self.floors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(identity.as_str())
+            .copied()
+    }
+}
+
 pub struct MobSessionBridge {
     handle: MobHandle,
     /// Session store used for checkpoint (loading session data to serialize).
@@ -1563,6 +1611,10 @@ pub struct MobSessionBridge {
     /// session. `None` (validation-only compositions) keeps the legacy
     /// destroy-on-dispose behavior, minus the carry observability.
     runtime_ingress_authority: Option<Arc<dyn meerkat_runtime::SessionServiceRuntimeExt>>,
+    /// Temporary per-identity compaction floors for the `compact_member`
+    /// operator verb, consulted at every spawn-spec build. Always present;
+    /// composition shares it out via [`Self::compaction_floors`].
+    compaction_floors: Arc<CompactionFloorRegistry>,
 }
 
 /// One queued/steered member input captured before a repair disposal, for
@@ -1647,6 +1699,7 @@ impl MobSessionBridge {
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
             runtime_ingress_authority: None,
+            compaction_floors: Arc::new(CompactionFloorRegistry::default()),
         }
     }
 
@@ -1667,6 +1720,7 @@ impl MobSessionBridge {
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
             runtime_ingress_authority: None,
+            compaction_floors: Arc::new(CompactionFloorRegistry::default()),
         }
     }
 
@@ -1687,6 +1741,7 @@ impl MobSessionBridge {
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
             runtime_ingress_authority: None,
+            compaction_floors: Arc::new(CompactionFloorRegistry::default()),
         }
     }
 
@@ -1708,6 +1763,7 @@ impl MobSessionBridge {
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
             runtime_ingress_authority: None,
+            compaction_floors: Arc::new(CompactionFloorRegistry::default()),
         }
     }
 
@@ -1729,7 +1785,52 @@ impl MobSessionBridge {
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
             runtime_ingress_authority: None,
+            compaction_floors: Arc::new(CompactionFloorRegistry::default()),
         }
+    }
+
+    /// The shared per-identity compaction-floor registry this bridge consults
+    /// at every spawn-spec build. Composition hands this to the RPC layer so
+    /// the `compact_member` operator verb can arm/disarm floors on the same
+    /// registry the materialization path reads.
+    pub fn compaction_floors(&self) -> Arc<CompactionFloorRegistry> {
+        Arc::clone(&self.compaction_floors)
+    }
+
+    /// Apply a pending `compact_member` floor to a freshly built spawn spec.
+    ///
+    /// The floor must ride the typed profile carrier meerkat-mob reads
+    /// (`override_profile.auto_compact_threshold` ->
+    /// `SessionBuildOptions::auto_compact_threshold_override`), so it needs a
+    /// profile snapshot: the one the spec build already installed (model pin /
+    /// provider params), else the resolved inline definition profile. A
+    /// realm-ref profile resolves to no inline snapshot; fail closed rather
+    /// than silently materializing a member the verb believes is floored.
+    fn apply_compaction_floor(
+        &self,
+        identity: &AgentIdentity,
+        spec: &DurableAgentSpec,
+        spawn_spec: &mut SpawnMemberSpec,
+    ) -> Result<(), BridgeError> {
+        let Some(floor) = self.compaction_floors.get(identity) else {
+            return Ok(());
+        };
+        let Some(mut profile) = spawn_spec
+            .override_profile
+            .take()
+            .or_else(|| self.base_profile_for_spec(spec))
+        else {
+            return Err(BridgeError::InvalidInput(format!(
+                "compact_member floor is armed for identity {} but profile '{}' resolves to no \
+                 inline definition profile to carry it; realm-ref profiles are not supported by \
+                 this verb",
+                identity.as_str(),
+                spec.profile.as_str(),
+            )));
+        };
+        profile.auto_compact_threshold = Some(floor);
+        spawn_spec.override_profile = Some(profile);
+        Ok(())
     }
 
     /// Override the per-delivery-attempt mob-actor admission budget.
@@ -3152,19 +3253,20 @@ impl SessionBridge for MobSessionBridge {
 
     async fn create_session(
         &self,
-        _identity: &AgentIdentity,
+        identity: &AgentIdentity,
         runtime_id: &AgentRuntimeId,
         spec: &DurableAgentSpec,
         draft: &AgentBuildDraft,
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let mid = member_id_for_spawn_spec(runtime_id, spec);
-        let spawn_spec = build_spawn_spec(
+        let mut spawn_spec = build_spawn_spec(
             runtime_id,
             spec,
             draft,
             self.base_profile_for_spec(spec).as_ref(),
         )?;
+        self.apply_compaction_floor(identity, spec, &mut spawn_spec)?;
 
         self.spawn_member_spec(spawn_spec)
             .await
@@ -3199,13 +3301,14 @@ impl SessionBridge for MobSessionBridge {
         )
         .await;
         if spec_uses_external_binding(spec) {
-            let spawn_spec = build_resume_spawn_spec(
+            let mut spawn_spec = build_resume_spawn_spec(
                 runtime_id,
                 spec,
                 draft,
                 self.base_profile_for_spec(spec).as_ref(),
                 session_id,
             )?;
+            self.apply_compaction_floor(identity, spec, &mut spawn_spec)?;
             let mid = member_id_for_spawn_spec(runtime_id, spec);
             self.spawn_member_spec(spawn_spec).await.map_err(|error| {
                 resume_rejected(identity, session_id, &error, "external-binding resume")
@@ -3219,13 +3322,14 @@ impl SessionBridge for MobSessionBridge {
 
         // MemberLaunchMode::Resume loads the existing session from the session
         // store (conversation history intact).
-        let spawn_spec = build_resume_spawn_spec(
+        let mut spawn_spec = build_resume_spawn_spec(
             runtime_id,
             spec,
             draft,
             self.base_profile_for_spec(spec).as_ref(),
             session_id,
         )?;
+        self.apply_compaction_floor(identity, spec, &mut spawn_spec)?;
 
         let mid = member_id_for_spawn_spec(runtime_id, spec);
 
