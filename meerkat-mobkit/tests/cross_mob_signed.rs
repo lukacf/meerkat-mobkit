@@ -35,6 +35,10 @@ use meerkat_mobkit::{
 use serde_json::Value;
 use tempfile::TempDir;
 
+/// Per-test mob id counter: 0.8.23's fail-closed in-proc registration
+/// means concurrently running tests must not share a supervisor route.
+static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Build a small UnifiedRuntime fixture with comms enabled. Same shape as
 /// `console_phase0_boundaries::build_unified_runtime`, kept inline so the
 /// signed-peer suite stays self-contained and doesn't pull in identity-
@@ -47,10 +51,10 @@ async fn build_runtime() -> (TempDir, UnifiedRuntime) {
     let factory = AgentFactory::new(&session_path).comms(true);
     let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
 
-    let mut definition = MobDefinition::from_toml(
+    let mut definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "signed-peer-mob"
+id = "signed-peer-mob-{}"
 
 [profiles.lead]
 model = "gpt-5.5"
@@ -59,7 +63,8 @@ external_addressable = true
 [profiles.lead.tools]
 comms = true
 "#,
-    )
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
     .expect("parse mob definition");
     for binding in definition.profiles.values_mut() {
         if let Some(profile) = binding.as_inline_mut() {

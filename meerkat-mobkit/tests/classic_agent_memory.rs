@@ -25,9 +25,17 @@ use meerkat_mobkit::{
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-const CLASSIC_MOB_TOML: &str = r#"
+/// Per-test mob id counter: 0.8.23's fail-closed in-proc registration
+/// means concurrently running tests must not share a supervisor route.
+static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Per-call mob id: 0.8.23's fail-closed in-proc registration means
+/// concurrently running tests must not share a supervisor route.
+fn classic_mob_toml() -> String {
+    format!(
+        r#"
 [mob]
-id = "classic-memory-mob"
+id = "classic-memory-mob-{}"
 
 [profiles.worker]
 model = "gpt-5.5"
@@ -36,10 +44,13 @@ external_addressable = true
 
 [profiles.worker.tools]
 comms = true
-"#;
+"#,
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
 
 fn test_definition() -> MobDefinition {
-    MobDefinition::from_toml(CLASSIC_MOB_TOML).expect("parse test mob definition")
+    MobDefinition::from_toml(&classic_mob_toml()).expect("parse test mob definition")
 }
 
 // A commander-like profile that ALSO enables meerkat's built-in tool
@@ -48,9 +59,13 @@ fn test_definition() -> MobDefinition {
 // categories are on (they compose, they do not suppress it). Diagnoses the
 // live finding that the commander reached for `task_create` (a mob_tasks tool)
 // instead of `memory`: that is tool *competition*, not a missing recorder.
-const COMMANDER_LIKE_MOB_TOML: &str = r#"
+/// Per-call mob id: 0.8.23's fail-closed in-proc registration means
+/// concurrently running tests must not share a supervisor route.
+fn commander_like_mob_toml() -> String {
+    format!(
+        r#"
 [mob]
-id = "classic-memory-mob"
+id = "classic-memory-mob-{}"
 
 [profiles.worker]
 model = "gpt-5.5"
@@ -62,10 +77,13 @@ builtins = true
 comms = true
 mob = true
 mob_tasks = true
-"#;
+"#,
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
 
 fn commander_like_definition() -> MobDefinition {
-    MobDefinition::from_toml(COMMANDER_LIKE_MOB_TOML).expect("parse commander-like definition")
+    MobDefinition::from_toml(&commander_like_mob_toml()).expect("parse commander-like definition")
 }
 
 /// LLM stub that records every request (tool names + full JSON) so tests can

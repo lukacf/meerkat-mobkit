@@ -26,9 +26,17 @@ use meerkat_mobkit::{
 };
 use serde_json::{Value, json};
 
-const CREW_MOB_TOML: &str = r#"
+/// Per-test mob id counter: 0.8.23's fail-closed in-proc registration
+/// means concurrently running tests must not share a supervisor route.
+static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Per-call mob id: 0.8.23's fail-closed in-proc registration means
+/// concurrently running tests must not share a supervisor route.
+fn crew_mob_toml() -> String {
+    format!(
+        r#"
 [mob]
-id = "edge-wiring-crew"
+id = "edge-wiring-crew-{}"
 orchestrator = "lead"
 
 [wiring]
@@ -58,7 +66,10 @@ external_addressable = true
 
 [profiles.reviewer.tools]
 comms = true
-"#;
+"#,
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
 
 /// Gateway-path runtime (MobBootstrapSpec + `UnifiedRuntime::bootstrap`) —
 /// the construction both gateways use, where no embedder edge policy is ever
@@ -67,7 +78,7 @@ async fn build_gateway_path_runtime() -> (tempfile::TempDir, UnifiedRuntime) {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let factory = AgentFactory::new(temp_dir.path()).comms(true);
     let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 8));
-    let definition = MobDefinition::from_toml(CREW_MOB_TOML).expect("parse crew definition");
+    let definition = MobDefinition::from_toml(&crew_mob_toml()).expect("parse crew definition");
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,

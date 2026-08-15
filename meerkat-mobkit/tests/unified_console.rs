@@ -42,6 +42,10 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+/// Per-test mob id counter: 0.8.23's fail-closed in-proc registration
+/// means concurrently running tests must not share a supervisor route.
+static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// The one definition of the normalized-provider-accounting contract every
 /// MobKit LLM double must satisfy under meerkat 0.8.22. See the module docs.
 #[path = "support/llm_usage.rs"]
@@ -126,10 +130,10 @@ async fn build_runtime_fixture() -> RuntimeFixture {
     let factory = AgentFactory::new(&session_path).comms(true);
     let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
 
-    let definition = MobDefinition::from_toml(
+    let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "phase-h1-console-mob"
+id = "phase-h1-console-mob-{}"
 
 [profiles.lead]
 model = "gpt-5.5"
@@ -138,7 +142,8 @@ external_addressable = true
 [profiles.lead.tools]
 comms = true
 "#,
-    )
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
     .expect("parse console mob definition");
 
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
@@ -546,10 +551,10 @@ async fn reconcile_spawns_colon_identities_and_member_rows_keep_public_alias() {
 
 #[tokio::test]
 async fn multipart_blob_upload_round_trips_through_reference_router() {
-    let definition = MobDefinition::from_toml(
+    let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "multipart-console-mob"
+id = "multipart-console-mob-{}"
 
 [profiles.lead]
 model = "gpt-5.5"
@@ -558,7 +563,8 @@ external_addressable = true
 [profiles.lead.tools]
 comms = true
 "#,
-    )
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
     .expect("parse multipart mob definition");
     let runtime = Box::pin(
         UnifiedRuntime::builder()
@@ -1332,10 +1338,10 @@ fn is_outgoing_comms_frame(frame: &Value, tool_name: &str, body: &str) -> bool {
 ///   transcript) while the sender's outgoing comms exist only as assistant
 ///   tool calls the history projection used to drop.
 async fn run_outgoing_comms_console_scenario(drain_live_events: bool) {
-    let definition = MobDefinition::from_toml(
+    let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "comms-console-mob"
+id = "comms-console-mob-{}"
 
 [profiles.lead]
 model = "gpt-5.5"
@@ -1351,7 +1357,8 @@ auto_wire_orchestrator = false
 a = "lead"
 b = "lead"
 "#,
-    )
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
     .expect("parse comms console mob definition");
 
     let temp_dir = tempfile::tempdir().expect("temp dir");

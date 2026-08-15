@@ -34,6 +34,9 @@ const STALE_CURSOR_CODE: i64 = -32010;
 struct Fixture {
     _temp_dir: TempDir,
     runtime: UnifiedRuntime,
+    /// Per-fixture mob id: 0.8.23's fail-closed in-proc registration means
+    /// concurrently running tests must not share a supervisor route.
+    mob_id: String,
 }
 
 async fn build_fixture() -> Fixture {
@@ -44,10 +47,15 @@ async fn build_fixture() -> Fixture {
     let factory = AgentFactory::new(&session_path).comms(true);
     let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
 
-    let definition = MobDefinition::from_toml(
+    static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mob_id = format!(
+        "query-ledger-mob-{}",
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "query-ledger-mob"
+id = "{mob_id}"
 
 [profiles.lead]
 model = "gpt-5.5"
@@ -63,7 +71,7 @@ description = "demo"
 role = "lead"
 message = "first"
 "#,
-    )
+    ))
     .expect("parse mob definition");
 
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
@@ -88,6 +96,7 @@ message = "first"
     Fixture {
         _temp_dir: temp_dir,
         runtime,
+        mob_id,
     }
 }
 
@@ -268,7 +277,7 @@ async fn subscribe_url_carries_continuation_cursor_and_filters() {
                 "id": "subscribe-1",
                 "method": "mobkit/mob_events/subscribe",
                 "params": {
-                    "mob_id": "query-ledger-mob",
+                    "mob_id": fixture.mob_id,
                     "event_types": ["flow_started", "flow_completed"],
                     "limit": 8
                 }
@@ -300,7 +309,7 @@ async fn subscribe_url_carries_continuation_cursor_and_filters() {
         "subscribe_url must carry after_seq, got {url}"
     );
     assert!(
-        url.contains("mob_id=query-ledger-mob"),
+        url.contains(&format!("mob_id={}", fixture.mob_id)),
         "subscribe_url must carry mob_id filter, got {url}"
     );
     assert!(

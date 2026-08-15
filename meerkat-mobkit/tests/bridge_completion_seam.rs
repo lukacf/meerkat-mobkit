@@ -37,6 +37,10 @@ use meerkat_mobkit::identity_first::{
 };
 use meerkat_mobkit::mob_handle_runtime::SessionCreatedContext;
 
+/// Per-test mob id counter: 0.8.23's fail-closed in-proc registration
+/// means concurrently running tests must not share a supervisor route.
+static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 #[path = "support/llm_usage.rs"]
 mod llm_usage;
 
@@ -61,9 +65,13 @@ fn spec(name: &str) -> DurableAgentSpec {
     }
 }
 
-const MOB_TOML: &str = r#"
+/// Per-call mob id: 0.8.23's fail-closed in-proc registration means
+/// concurrently running tests must not share a supervisor route.
+fn mob_toml() -> String {
+    format!(
+        r#"
 [mob]
-id = "bridge-completion-seam"
+id = "bridge-completion-seam-{}"
 
 [profiles.personal]
 model = "gpt-5.5"
@@ -72,7 +80,10 @@ runtime_mode = "turn_driven"
 
 [profiles.personal.tools]
 comms = true
-"#;
+"#,
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
 
 struct EmptyTopology;
 #[async_trait]
@@ -221,7 +232,7 @@ async fn boot_one_member(
     AgentRuntimeId,
 ) {
     let unified = UnifiedRuntimeBuilder::default()
-        .definition(MobDefinition::from_toml(MOB_TOML).expect("parse seam mob definition"))
+        .definition(MobDefinition::from_toml(&mob_toml()).expect("parse seam mob definition"))
         .persistent_state(state_path)
         .comms(true)
         .default_llm_client(Arc::new(client))

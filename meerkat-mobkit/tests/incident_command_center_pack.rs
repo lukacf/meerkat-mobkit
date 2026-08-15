@@ -49,6 +49,17 @@ use incident_command_center::{
     scenario_path,
 };
 
+/// Per-test mob id counter: 0.8.23's fail-closed in-proc registration
+/// means concurrently running tests must not share a supervisor route.
+static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The shipped example pack pins `id = "incident-command-center"`, so tests
+/// that build the stock bundle share ONE supervisor route name. Serialize
+/// them and stand each runtime down (terminal shutdown releases the route)
+/// so successive bootstraps succeed under 0.8.23's fail-closed registration.
+static STOCK_BUNDLE_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 #[derive(Clone, Default)]
 struct IncidentPackTestClient {
     requested_models: Arc<std::sync::Mutex<Vec<String>>>,
@@ -372,6 +383,7 @@ impl AgentToolDispatcher for RecorderMarkerDispatcher {
 
 #[tokio::test]
 async fn incident_pack_exposes_seeded_stock_console_state() {
+    let _serial = STOCK_BUNDLE_LOCK.lock().await;
     let bundle = Box::pin(build_runtime_bundle_with_default_client(
         &scenario_path().expect("incident scenario path"),
         Arc::new(IncidentPackTestClient::default()),
@@ -495,6 +507,12 @@ async fn incident_pack_exposes_seeded_stock_console_state() {
         !pending_rows.is_empty(),
         "seeded gating pending entry should exist"
     );
+    // Retire the roster through the ordinary reconcile path before terminal
+    // shutdown: an autonomous kickoff caught mid-attach cannot be interrupted
+    // by the machine Shutdown path ("Runtime not ready: attached"), which
+    // would leave the stock supervisor route occupied for the next test.
+    let _ = bundle.runtime.reconcile(Vec::new()).await;
+    let _ = bundle.runtime.shutdown().await;
 }
 
 /// Regression test: the seeded R3 gating action must deliver its approval
@@ -506,6 +524,7 @@ async fn incident_pack_exposes_seeded_stock_console_state() {
 /// and the pending request timed out to safe_draft.
 #[tokio::test]
 async fn incident_pack_gating_approval_notification_fires_from_async_context() {
+    let _serial = STOCK_BUNDLE_LOCK.lock().await;
     let bundle = Box::pin(build_runtime_bundle_with_default_client(
         &scenario_path().expect("incident scenario path"),
         Arc::new(IncidentPackTestClient::default()),
@@ -551,7 +570,7 @@ async fn incident_pack_gating_approval_notification_fires_from_async_context() {
     );
 
     let audit = json_response(
-        app,
+        app.clone(),
         Request::builder()
             .method("POST")
             .uri("/console/rpc")
@@ -582,6 +601,49 @@ async fn incident_pack_gating_approval_notification_fires_from_async_context() {
         pending_created["detail"]["approval_notification_error"].is_null(),
         "approval notification must not fail: {pending_created:?}"
     );
+
+    // Settle the pending action through the real approval lifecycle before
+    // teardown: the gated member turn stays parked (runtime session
+    // "attached") while the decision is outstanding, and terminal shutdown
+    // cannot interrupt a parked turn - the supervisor route would stay live
+    // and block the next stock-bundle bootstrap in this process.
+    let decided = json_response(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri("/console/rpc")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": "incident-pack-gating-decide",
+                    "method": "mobkit/gating/decide",
+                    "params": {
+                        "pending_id": seeded["pending_id"],
+                        // The seeded pending pins its approver; a mismatched
+                        // principal is refused.
+                        "approver_id": seeded["requested_approver"]
+                            .as_str()
+                            .unwrap_or("incident-pack-test-operator"),
+                        "decision": "reject",
+                        "reason": "test teardown: settle the seeded pending action",
+                    },
+                })
+                .to_string(),
+            ))
+            .expect("gating decide request"),
+    )
+    .await;
+    assert!(
+        decided["error"].is_null(),
+        "seeded pending action must be decidable: {decided:#?}"
+    );
+    // Retire the roster through the ordinary reconcile path before terminal
+    // shutdown: an autonomous kickoff caught mid-attach cannot be interrupted
+    // by the machine Shutdown path ("Runtime not ready: attached"), which
+    // would leave the stock supervisor route occupied for the next test.
+    let _ = bundle.runtime.reconcile(Vec::new()).await;
+    let _ = bundle.runtime.shutdown().await;
 }
 
 async fn assert_public_ephemeral_constructor_supports_live_llm_switching(with_hook: bool) {
@@ -764,10 +826,10 @@ async fn public_ephemeral_with_hook_constructor_supports_live_model_and_provider
 
 #[tokio::test]
 async fn unified_runtime_member_turn_returns_exact_session_and_committed_completion() {
-    let definition = MobDefinition::from_toml(
+    let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "member-turn-wrapper-test"
+id = "member-turn-wrapper-test-{}"
 
 [profiles.worker]
 model = "gpt-5.5"
@@ -777,7 +839,8 @@ external_addressable = true
 [profiles.worker.tools]
 comms = true
 "#,
-    )
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
     .expect("parse turn-driven test definition");
     let llm_client = Arc::new(IncidentPackTestClient::default());
     let runtime = Box::pin(
@@ -895,7 +958,7 @@ async fn unified_runtime_member_turn_preserves_exact_self_hosted_route_at_execut
     let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "member-turn-self-hosted-route-test"
+id = "member-turn-self-hosted-route-test-{}"
 
 [profiles.worker]
 model = "{INFERRED_MODEL}"
@@ -906,6 +969,7 @@ external_addressable = true
 [profiles.worker.tools]
 comms = true
 "#,
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     ))
     .expect("parse self-hosted route test definition");
 
@@ -1114,10 +1178,10 @@ comms = true
 
 #[tokio::test]
 async fn unified_runtime_fails_closed_without_installed_session_llm_reconfigure_host() {
-    let definition = MobDefinition::from_toml(
+    let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "member-turn-missing-llm-host-test"
+id = "member-turn-missing-llm-host-test-{}"
 
 [profiles.worker]
 model = "gpt-5.5"
@@ -1127,7 +1191,8 @@ external_addressable = true
 [profiles.worker.tools]
 comms = true
 "#,
-    )
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
     .expect("parse missing-host test definition");
     let temp_dir = tempfile::tempdir().expect("missing-host test tempdir");
     let factory = meerkat::AgentFactory::new(temp_dir.path().join("sessions")).comms(true);
@@ -1207,6 +1272,7 @@ comms = true
 
 #[tokio::test]
 async fn stock_incident_commander_rejects_unrepresentable_tracked_turn() {
+    let _serial = STOCK_BUNDLE_LOCK.lock().await;
     let bundle = Box::pin(build_runtime_bundle_with_default_client(
         &scenario_path().expect("incident scenario path"),
         Arc::new(IncidentPackTestClient::default()),
@@ -1234,5 +1300,10 @@ async fn stock_incident_commander_rejects_unrepresentable_tracked_turn() {
         "expected typed unsupported-mode rejection, got {error}"
     );
 
+    // Retire the roster through the ordinary reconcile path before terminal
+    // shutdown: an autonomous kickoff caught mid-attach cannot be interrupted
+    // by the machine Shutdown path ("Runtime not ready: attached"), which
+    // would leave the stock supervisor route occupied for the next test.
+    let _ = bundle.runtime.reconcile(Vec::new()).await;
     let _ = bundle.runtime.shutdown().await;
 }

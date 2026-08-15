@@ -53,10 +53,32 @@ model = "gpt-5.5"
 "#;
 
 fn definition_a() -> MobDefinition {
-    MobDefinition::from_toml(MINIMAL_MOB_TOML_A).expect("parse mob-a")
+    // Per-call mob id: 0.8.23's fail-closed in-proc registration means
+    // concurrently running tests must not share a supervisor route. Nothing
+    // in these tests asserts on the local definition id.
+    static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    MobDefinition::from_toml(&MINIMAL_MOB_TOML_A.replace(
+        "id = \"mob-a\"",
+        &format!(
+            "id = \"mob-a-{}\"",
+            NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ),
+    ))
+    .expect("parse mob-a")
 }
 fn definition_b() -> MobDefinition {
-    MobDefinition::from_toml(MINIMAL_MOB_TOML_B).expect("parse mob-b")
+    // Per-call mob id: 0.8.23's fail-closed in-proc registration means
+    // concurrently running tests must not share a supervisor route. Nothing
+    // in these tests asserts on the local definition id.
+    static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    MobDefinition::from_toml(&MINIMAL_MOB_TOML_B.replace(
+        "id = \"mob-b\"",
+        &format!(
+            "id = \"mob-b-{}\"",
+            NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ),
+    ))
+    .expect("parse mob-b")
 }
 
 /// Pick a free TCP port on loopback. The port is released immediately;

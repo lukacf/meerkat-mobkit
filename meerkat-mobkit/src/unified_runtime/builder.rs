@@ -1296,12 +1296,23 @@ impl UnifiedRuntimeBuilder {
         // particular, LazyWithBackgroundWarm spawns materialization from
         // bootstrap_roster; a later hook failure must not detach that task or
         // leave its leases alive after build() returns an error.
+        //
+        // The mob is already bootstrapped here, so its supervisor in-proc
+        // route is live; under meerkat 0.8.23's fail-closed registration an
+        // ordinary-drop return would leave the name occupied and block any
+        // same-process rebuild of this mob id. Failure must follow the same
+        // cooperative shutdown path as the later bootstrap errors.
         let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {
-            hook().await.map_err(|err| {
-                UnifiedRuntimeBuilderError::Bootstrap(UnifiedRuntimeBootstrapError::PreSpawnHook(
-                    err.to_string(),
-                ))
-            })?
+            match hook().await {
+                Ok(context) => context,
+                Err(err) => {
+                    let build_error = UnifiedRuntimeBuilderError::Bootstrap(
+                        UnifiedRuntimeBootstrapError::PreSpawnHook(err.to_string()),
+                    );
+                    runtime.shutdown().await;
+                    return Err(build_error);
+                }
+            }
         } else {
             serde_json::Value::Null
         };
@@ -1411,9 +1422,14 @@ impl UnifiedRuntimeBuilder {
         }
 
         // All fallible builder-only setup is complete. Install the circular
-        // MobRuntime <-> IdentityRuntime authority only now: earlier hook or
+        // MobRuntime <-> IdentityRuntime authority only now: earlier
         // memory-stack errors can return by ordinary drop without retaining
-        // the runtime and its persistent controller locks.
+        // the runtime and its persistent controller locks. (Ordinary drop
+        // does NOT retire the live supervisor in-proc route under meerkat
+        // 0.8.23; the pre-spawn hook path above already shuts down
+        // cooperatively for that reason, and the memory-stack `?` returns
+        // between runtime construction and this point share that latent
+        // route leak for same-process same-id rebuilds.)
         if let (Some(context), Some(roster_specs)) = (
             runtime.identity_first_context.clone(),
             identity_roster_specs.as_ref(),

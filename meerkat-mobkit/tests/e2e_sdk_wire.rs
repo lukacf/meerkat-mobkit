@@ -20,6 +20,10 @@ use meerkat_mobkit::{
 };
 use serde_json::{Value, json};
 
+/// Per-test mob id counter: 0.8.23's fail-closed in-proc registration
+/// means concurrently running tests must not share a supervisor route.
+static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 const TIMEOUT: Duration = Duration::from_secs(2);
 
 fn noop_module(id: &str) -> ModuleConfig {
@@ -234,15 +238,22 @@ fn e2e_unknown_method_returns_minus_32601() {
 // asserted in the shapes the SDK parsers consume.
 // ---------------------------------------------------------------------------
 
-const WORKGRAPH_WIRE_MOB_TOML: &str = r#"
+/// Per-call mob id: 0.8.23's fail-closed in-proc registration means
+/// concurrently running tests must not share a supervisor route.
+fn workgraph_wire_mob_toml() -> String {
+    format!(
+        r#"
 [mob]
-id = "e2e-wire-workgraph"
+id = "e2e-wire-workgraph-{}"
 
 [profiles.worker]
 model = "gpt-5.5"
 runtime_mode = "autonomous_host"
 external_addressable = true
-"#;
+"#,
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
 
 /// Builder-constructed runtime: the builder path wires a memory-backed
 /// WorkGraph service automatically.
@@ -250,7 +261,7 @@ async fn workgraph_runtime() -> meerkat_mobkit::UnifiedRuntime {
     Box::pin(
         meerkat_mobkit::UnifiedRuntime::builder()
             .definition(
-                meerkat_mob::MobDefinition::from_toml(WORKGRAPH_WIRE_MOB_TOML)
+                meerkat_mob::MobDefinition::from_toml(&workgraph_wire_mob_toml())
                     .expect("parse workgraph wire definition"),
             )
             .default_llm_client(std::sync::Arc::new(meerkat_client::TestClient::default()))
@@ -271,7 +282,7 @@ async fn runtime_without_workgraph() -> (tempfile::TempDir, meerkat_mobkit::Unif
         8,
     ));
     let mob_spec = meerkat_mobkit::MobBootstrapSpec::new(
-        meerkat_mob::MobDefinition::from_toml(WORKGRAPH_WIRE_MOB_TOML)
+        meerkat_mob::MobDefinition::from_toml(&workgraph_wire_mob_toml())
             .expect("parse workgraph wire definition"),
         meerkat_mob::MobStorage::in_memory(),
         session_service,

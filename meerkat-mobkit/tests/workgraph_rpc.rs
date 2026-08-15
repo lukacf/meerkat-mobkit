@@ -29,11 +29,19 @@ use meerkat_mobkit::{
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+/// Per-test mob id counter: 0.8.23's fail-closed in-proc registration
+/// means concurrently running tests must not share a supervisor route.
+static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 type HmacSha256 = Hmac<sha2::Sha256>;
 
-const WORKGRAPH_MOB_TOML: &str = r#"
+/// Per-call mob id: 0.8.23's fail-closed in-proc registration means
+/// concurrently running tests must not share a supervisor route.
+fn workgraph_mob_toml() -> String {
+    format!(
+        r#"
 [mob]
-id = "workgraph-rpc-mob"
+id = "workgraph-rpc-mob-{}"
 
 [profiles.worker]
 model = "gpt-5.5"
@@ -42,7 +50,10 @@ external_addressable = true
 
 [profiles.worker.tools]
 comms = true
-"#;
+"#,
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
 
 const ALL_WORKGRAPH_METHODS: &[&str] = &[
     "mobkit/workgraph/snapshot",
@@ -70,7 +81,13 @@ const ALL_WORKGRAPH_METHODS: &[&str] = &[
 ];
 
 fn definition() -> MobDefinition {
-    MobDefinition::from_toml(WORKGRAPH_MOB_TOML).expect("parse workgraph test definition")
+    MobDefinition::from_toml(&workgraph_mob_toml()).expect("parse workgraph test definition")
+}
+
+/// The runtime's OWN mob id - `definition()` mints a fresh id per call, so
+/// expectations must read the id back off the runtime under test.
+fn runtime_mob_id(runtime: &UnifiedRuntime) -> String {
+    runtime.mob_handle().definition().id.as_str().to_string()
 }
 
 /// Standard fixture: builder-constructed ephemeral runtime — the builder path
@@ -228,9 +245,13 @@ async fn item_lifecycle_end_to_end() {
     assert_eq!(item["title"], json!("ship the release"));
     assert_eq!(item["status"], json!("open"));
     // CANONICAL mob realm (`mob.<mob_id>`) since the item-6 fix; the mob id
-    // itself is unprefixed. Pinned as a literal because the spelling decides
-    // where rows physically live - see workgraph_wiring::scoped_workgraph_service.
-    assert_eq!(item["realm_id"], json!("mob.workgraph-rpc-mob"));
+    // itself is unprefixed. The `mob.` prefix spelling is the pinned part -
+    // it decides where rows physically live; see
+    // workgraph_wiring::scoped_workgraph_service.
+    assert_eq!(
+        item["realm_id"],
+        json!(format!("mob.{}", runtime_mob_id(&runtime)))
+    );
     let revision = item["revision"].as_u64().expect("revision");
 
     // get
@@ -475,7 +496,10 @@ async fn goal_lifecycle_with_identity_target() {
     assert_eq!(goal["attention"]["target"]["kind"], json!("lowered_owner"));
     assert_eq!(
         goal["attention"]["target"]["owner_key"],
-        json!({ "kind": "agent", "id": "mob/workgraph-rpc-mob/agent/helper" })
+        json!({
+            "kind": "agent",
+            "id": format!("mob/{}/agent/helper", runtime_mob_id(&runtime)),
+        })
     );
     assert_eq!(goal["attention"]["status"]["state"], json!("active"));
     let binding_revision = goal["attention"]["machine_state"]["revision"]
@@ -595,7 +619,7 @@ async fn goal_create_lowers_member_session_targets_to_owner_form() {
     );
     assert_eq!(
         goal["attention"]["target"]["owner_key"]["id"],
-        json!("mob/workgraph-rpc-mob/agent/helper")
+        json!(format!("mob/{}/agent/helper", runtime_mob_id(&runtime)))
     );
 
     // A session that is NOT a roster member keeps its session spelling.
@@ -688,7 +712,7 @@ async fn attention_reassign_injects_witness_server_side() {
     assert_eq!(reassigned["attention"]["status"]["state"], json!("active"));
     assert_eq!(
         reassigned["attention"]["target"]["owner_key"]["id"],
-        json!("mob/workgraph-rpc-mob/agent/backup")
+        json!(format!("mob/{}/agent/backup", runtime_mob_id(&runtime)))
     );
     runtime.mob_handle().stop().await.expect("stop");
 }
@@ -984,8 +1008,11 @@ async fn resume_with_another_active_binding_on_the_target_is_conflict() {
             title: "second watch".to_string(),
             description: None,
             target: meerkat::GoalAttentionTarget::Owner {
+                // MUST be the running mob's own id - `definition()` mints a
+                // fresh unique id per call, which would target a different
+                // owner and defeat the sibling-conflict guard under test.
                 owner_key: meerkat_mob::lower_agent_identity_owner_key(
-                    &definition().id,
+                    &runtime.mob_handle().definition().id,
                     &AgentIdentity::from("helper"),
                 )
                 .expect("lower owner key"),
@@ -2147,7 +2174,7 @@ async fn console_break_glass_reassign_recovers_pursue_binding_with_audit() {
     );
     assert_eq!(
         response["result"]["attention"]["target"]["owner_key"]["id"],
-        json!("mob/workgraph-rpc-mob/agent/backup")
+        json!(format!("mob/{}/agent/backup", runtime_mob_id(&runtime)))
     );
 
     // The audit trail carries the authenticated principal and the reason.

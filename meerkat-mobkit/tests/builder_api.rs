@@ -33,19 +33,30 @@ use meerkat_mobkit::{
     DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, SessionHook, UnifiedRuntime,
 };
 
-const MINIMAL_MOB_TOML: &str = r#"
+/// Per-test mob id counter: 0.8.23's fail-closed in-proc registration
+/// means concurrently running tests must not share a supervisor route.
+static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Per-call mob id: 0.8.23's fail-closed in-proc registration means
+/// concurrently running tests must not share a supervisor route.
+fn minimal_mob_toml() -> String {
+    format!(
+        r#"
 [mob]
-id = "builder-test-mob"
+id = "builder-test-mob-{}"
 
 [profiles.worker]
 model = "gpt-5.5"
-"#;
+"#,
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Helper: build a definition from the inline TOML
 // ---------------------------------------------------------------------------
 fn test_definition() -> MobDefinition {
-    MobDefinition::from_toml(MINIMAL_MOB_TOML).expect("parse test mob definition")
+    MobDefinition::from_toml(&minimal_mob_toml()).expect("parse test mob definition")
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +127,7 @@ async fn test_builder_persistent_default() {
 async fn test_builder_toml_definition() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let toml_path = tmp.path().join("mob.toml");
-    std::fs::write(&toml_path, MINIMAL_MOB_TOML).expect("write toml");
+    std::fs::write(&toml_path, minimal_mob_toml()).expect("write toml");
 
     let runtime = Box::pin(
         UnifiedRuntime::builder()
@@ -365,10 +376,10 @@ async fn builder_workgraph_store_injection_suppresses_the_local_sqlite_fallback(
 #[tokio::test]
 async fn test_builder_ephemeral_custom_store_persists_sessions() {
     let custom_store: Arc<dyn meerkat::SessionStore> = Arc::new(meerkat::MemoryStore::new());
-    let definition = MobDefinition::from_toml(
+    let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "builder-test-mob"
+id = "builder-test-mob-{}"
 
 [profiles.worker]
 model = "gpt-5.5"
@@ -376,7 +387,8 @@ model = "gpt-5.5"
 [profiles.worker.tools]
 comms = true
 "#,
-    )
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
     .expect("parse test mob definition");
     let runtime = Box::pin(
         UnifiedRuntime::builder()

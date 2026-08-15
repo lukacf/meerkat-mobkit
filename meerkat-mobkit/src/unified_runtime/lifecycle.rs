@@ -292,24 +292,6 @@ impl UnifiedRuntime {
             }
         }
 
-        // `stop` quiesces members but keeps the mob actor - and its
-        // `{mob_id}/__mob_supervisor__` in-proc route - alive for resume.
-        // UnifiedRuntime shutdown is terminal, and meerkat 0.8.23 refuses
-        // route displacement, so a same-process cold replacement for this mob
-        // id must observe the name actually freed. Drive the mob's own
-        // terminal teardown (which retires the supervisor route) now that the
-        // members are quiesced. Best-effort: a refusal leaves the route
-        // registered and is reported loudly rather than failing the report.
-        if mob_stop.is_ok()
-            && let Err(error) = self.mob_handle().shutdown().await
-        {
-            tracing::warn!(
-                %error,
-                "mob terminal shutdown after stop did not converge; the supervisor \
-                 in-proc route may remain registered until process exit"
-            );
-        }
-
         // Fencing authority must outlive the physical members it protects.
         // Keep renewal running through mob quiescence, then stop it before the
         // final provider release so no renewal can race the release boundary.
@@ -360,6 +342,50 @@ impl UnifiedRuntime {
                 .implicit_delegate_identity_runtime
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+
+        // `stop` quiesces members but keeps the mob actor - and its
+        // `{mob_id}/__mob_supervisor__` in-proc route - alive for resume.
+        // UnifiedRuntime shutdown is terminal, and meerkat 0.8.23 refuses
+        // route displacement, so a same-process cold replacement for this mob
+        // id must observe the name actually freed. Drive the mob's own
+        // terminal teardown (which retires the supervisor route) only AFTER
+        // identity authority is released and detached: terminal member
+        // teardown observed by a still-attached IdentityRuntime would park
+        // Active identities Broken instead of leaving them Dormant.
+        // Best-effort: a refusal leaves the route registered and is reported
+        // loudly rather than failing the report.
+        if mob_stop.is_ok() {
+            // The mob actor deliberately retains itself as the retry owner
+            // when terminal teardown catches an in-flight run
+            // terminalization ("runtime teardown observed owned
+            // terminalization ... after acquiring its driver authority");
+            // `MobHandle::shutdown` auto-retries only the lifecycle-pending
+            // error classes, so drive the remaining convergence here with a
+            // bounded retry instead of abandoning the route on first refusal.
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut retry_delay = Duration::from_millis(50);
+            loop {
+                match self.mob_handle().shutdown().await {
+                    Ok(()) => break,
+                    Err(error) if std::time::Instant::now() < deadline => {
+                        tracing::debug!(
+                            %error,
+                            "mob terminal shutdown refused; retrying until the actor converges"
+                        );
+                        tokio::time::sleep(retry_delay).await;
+                        retry_delay = (retry_delay * 2).min(Duration::from_millis(250));
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "mob terminal shutdown after stop did not converge; the supervisor \
+                             in-proc route may remain registered until process exit"
+                        );
+                        break;
+                    }
+                }
+            }
         }
 
         // Phase 3: Close event router

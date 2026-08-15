@@ -67,9 +67,20 @@ fn spec(name: &str, addr: AgentAddressability, profile: &str) -> DurableAgentSpe
     }
 }
 
+/// Per-test mob id: unique ACROSS tests (0.8.23's fail-closed in-proc
+/// registration - concurrent tests must not share a supervisor route) but
+/// stable WITHIN a test, whose restarts re-bootstrap the same mob.
+fn unique_cold_restart_mob_id() -> String {
+    static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "cold-restart-continuity-{}",
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
 const MOB_TOML: &str = r#"
 [mob]
-id = "cold-restart-continuity"
+id = "MOB_ID_PLACEHOLDER"
 
 [profiles.personal]
 model = "gpt-5.5"
@@ -80,8 +91,9 @@ runtime_mode = "turn_driven"
 comms = true
 "#;
 
-fn one_member_definition() -> MobDefinition {
-    MobDefinition::from_toml(MOB_TOML).expect("parse cold-restart mob definition")
+fn one_member_definition(mob_id: &str) -> MobDefinition {
+    MobDefinition::from_toml(&MOB_TOML.replace("MOB_ID_PLACEHOLDER", mob_id))
+        .expect("parse cold-restart mob definition")
 }
 
 struct EmptyTopology;
@@ -206,10 +218,11 @@ const RUNTIME_INSTANCE: &str = "cold-restart-continuity";
 /// requests into `capture`. Mirrors a process (re)start against a durable store.
 async fn boot(
     state_path: &std::path::Path,
+    mob_id: &str,
     capture: CaptureClient,
 ) -> (meerkat_mobkit::UnifiedRuntime, IdentityRuntime) {
     let unified = UnifiedRuntimeBuilder::default()
-        .definition(one_member_definition())
+        .definition(one_member_definition(mob_id))
         .persistent_state(state_path)
         .comms(true)
         .default_llm_client(Arc::new(capture))
@@ -247,6 +260,7 @@ async fn boot(
 async fn identity_first_cold_restart_preserves_transcript() {
     let temp = tempfile::TempDir::new().expect("temp dir");
     let state_path = temp.path().join("state");
+    let mob_id = unique_cold_restart_mob_id();
     let alice = id("personal:alice");
     let roster = vec![spec(
         "personal:alice",
@@ -259,7 +273,7 @@ async fn identity_first_cold_restart_preserves_transcript() {
     let original_session_id;
     {
         let capture = CaptureClient::default();
-        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let (unified, identity_rt) = boot(&state_path, &mob_id, capture.clone()).await;
 
         let result = restore_flow(
             &identity_rt,
@@ -301,7 +315,7 @@ async fn identity_first_cold_restart_preserves_transcript() {
     // --- Boot 2: fresh runtime, SAME store. Resume must carry the transcript ---
     {
         let capture = CaptureClient::default(); // fresh: only boot-2 requests
-        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let (unified, identity_rt) = boot(&state_path, &mob_id, capture.clone()).await;
 
         let result = restore_flow(
             &identity_rt,
@@ -362,7 +376,7 @@ async fn identity_first_cold_restart_preserves_transcript() {
     // grew after a resume. ---
     {
         let capture = CaptureClient::default(); // fresh: only boot-3 requests
-        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let (unified, identity_rt) = boot(&state_path, &mob_id, capture.clone()).await;
 
         let result = restore_flow(
             &identity_rt,
@@ -432,6 +446,7 @@ async fn identity_first_cold_restart_preserves_transcript() {
 async fn identity_first_cold_restart_turnless_resume_chain_preserves_transcript() {
     let temp = tempfile::TempDir::new().expect("temp dir");
     let state_path = temp.path().join("state");
+    let mob_id = unique_cold_restart_mob_id();
     let alice = id("personal:alice");
     let roster = vec![spec(
         "personal:alice",
@@ -447,7 +462,7 @@ async fn identity_first_cold_restart_turnless_resume_chain_preserves_transcript(
     let original_session_id;
     {
         let capture = CaptureClient::default();
-        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let (unified, identity_rt) = boot(&state_path, &mob_id, capture.clone()).await;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -487,7 +502,7 @@ async fn identity_first_cold_restart_turnless_resume_chain_preserves_transcript(
     for boot_n in 2..=4 {
         *customizer.tag.lock().unwrap() = format!("boot-{boot_n}");
         let capture = CaptureClient::default();
-        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let (unified, identity_rt) = boot(&state_path, &mob_id, capture.clone()).await;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -518,7 +533,7 @@ async fn identity_first_cold_restart_turnless_resume_chain_preserves_transcript(
     {
         *customizer.tag.lock().unwrap() = "boot-5".to_string();
         let capture = CaptureClient::default();
-        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let (unified, identity_rt) = boot(&state_path, &mob_id, capture.clone()).await;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -584,6 +599,7 @@ async fn identity_first_cold_restart_turnless_resume_chain_preserves_transcript(
 async fn identity_first_resume_revives_terminally_retired_runtime() {
     let temp = tempfile::TempDir::new().expect("temp dir");
     let state_path = temp.path().join("state");
+    let mob_id = unique_cold_restart_mob_id();
     let alice = id("personal:alice");
     let roster = vec![spec(
         "personal:alice",
@@ -597,7 +613,7 @@ async fn identity_first_resume_revives_terminally_retired_runtime() {
     let original_session_id;
     {
         let capture = CaptureClient::default();
-        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let (unified, identity_rt) = boot(&state_path, &mob_id, capture.clone()).await;
 
         let result = restore_flow(
             &identity_rt,
@@ -664,7 +680,7 @@ async fn identity_first_resume_revives_terminally_retired_runtime() {
     // session. The resume must revive it with the transcript intact. ---
     {
         let capture = CaptureClient::default();
-        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let (unified, identity_rt) = boot(&state_path, &mob_id, capture.clone()).await;
 
         let result = restore_flow(
             &identity_rt,
@@ -725,6 +741,7 @@ async fn identity_first_resume_revives_terminally_retired_runtime() {
 async fn never_persisted_continuity_head_fresh_spawns_instead_of_wedging() {
     let temp = tempfile::TempDir::new().expect("temp dir");
     let state_path = temp.path().join("state");
+    let mob_id = unique_cold_restart_mob_id();
     let alice = id("personal:alice");
     let roster = vec![spec(
         "personal:alice",
@@ -736,7 +753,7 @@ async fn never_persisted_continuity_head_fresh_spawns_instead_of_wedging() {
     // production-shaped runtime id, then shut down cleanly. ---
     {
         let capture = CaptureClient::default();
-        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let (unified, identity_rt) = boot(&state_path, &mob_id, capture.clone()).await;
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -786,7 +803,7 @@ async fn never_persisted_continuity_head_fresh_spawns_instead_of_wedging() {
     // and a real turn must run on the fresh member. ---
     {
         let capture = CaptureClient::default();
-        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let (unified, identity_rt) = boot(&state_path, &mob_id, capture.clone()).await;
         let result = restore_flow(
             &identity_rt,
             &roster,
