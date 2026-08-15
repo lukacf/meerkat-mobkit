@@ -189,12 +189,18 @@ pub enum BridgeError {
     /// A mob-actor round trip in the delivery path did not answer within the
     /// attempt's admission budget. meerkat's mob actor is ONE serialized
     /// command loop and `MobHandle::send_actor_command` has no timeout of its
-    /// own, so a handler that blocks freezes every member's dispatch behind it
-    /// with no upstream bound. This is containment, not a repair: the delivery
-    /// did NOT happen and the actor is still blocked — but the failure is
-    /// finite and names the round trip and member that hit it instead of
-    /// hanging the caller indefinitely. Never treat this as a repairable
-    /// stale-runtime-state error: repairing a member cannot unblock an actor.
+    /// own, so a blocked handler CAN freeze every member's dispatch — but one
+    /// expired budget cannot establish that scope. Production 2026-08-14: this
+    /// fired while two other members demonstrably drained (the blocked wait
+    /// was in a spawned admission task / the member's own runtime-loop layer,
+    /// not the shared loop), and the old "loop is not draining" wording sent
+    /// the whole incident after a fleet-wide wedge that was not happening.
+    /// The observation is exactly: THIS round trip, for THIS member, was not
+    /// answered in time. Loop-scope verdicts belong to the ActorLoopStalled
+    /// probe, whose timed heartbeat is the only observation that can honestly
+    /// make them. This is containment, not a repair: the delivery did NOT
+    /// happen. Never treat it as a repairable stale-runtime-state error:
+    /// repairing a member cannot unblock whatever the wait was parked on.
     ActorAdmissionTimeout {
         /// Which actor round trip expired, e.g. `deliver.submit_work`.
         operation: &'static str,
@@ -272,8 +278,10 @@ impl std::fmt::Display for BridgeError {
                 waited,
             } => write!(
                 f,
-                "session bridge actor call `{operation}` for member {identity} exceeded the \
-                 admission budget after {waited:?}; the mob actor command loop is not draining"
+                "session bridge actor call `{operation}` for member {identity} did not answer \
+                 within the admission budget ({waited:?}). This observation cannot establish \
+                 scope: the shared actor loop may be stalled, OR only this member's round trip \
+                 is blocked while the loop drains others (production 2026-08-14 was the latter)"
             ),
         }
     }
@@ -338,8 +346,10 @@ impl std::fmt::Display for BridgeAdmissionError {
                 waited,
             } => write!(
                 f,
-                "session bridge actor call `{operation}` for member {identity} exceeded the \
-                 admission budget after {waited:?}; the mob actor command loop is not draining"
+                "session bridge actor call `{operation}` for member {identity} did not answer \
+                 within the admission budget ({waited:?}). This observation cannot establish \
+                 scope: the shared actor loop may be stalled, OR only this member's round trip \
+                 is blocked while the loop drains others (production 2026-08-14 was the latter)"
             ),
             Self::InvariantViolation(msg) => {
                 write!(f, "session bridge admission invariant violated: {msg}")
@@ -687,7 +697,10 @@ impl ActorAdmissionDeadline {
                     identity = %identity,
                     waited_ms = waited.as_millis(),
                     "mob actor did not answer within the delivery admission budget; the actor \
-                     command loop is not draining (head-of-line block) — delivery abandoned"
+                     round trip was not answered within budget — delivery abandoned. \
+                     Scope unknown from one timeout: the loop may be stalled or only this \
+                     member's call blocked; the ActorLoopStalled probe carries the loop-scope \
+                     verdict"
                 );
                 Err(BridgeError::ActorAdmissionTimeout {
                     operation,
