@@ -621,6 +621,7 @@ fn event_kind_label(kind: &MobEventKind) -> &'static str {
         MobEventKind::StepSkipped { .. } => "step_skipped",
         MobEventKind::TopologyViolation { .. } => "topology_violation",
         MobEventKind::SupervisorEscalation { .. } => "supervisor_escalation",
+        MobEventKind::SupervisorEscalationFailed { .. } => "supervisor_escalation_failed",
         MobEventKind::OperatorActionRecorded { .. } => "operator_action_recorded",
         MobEventKind::ObjectiveOwnerBound { .. } => "objective_owner_bound",
         MobEventKind::ObjectiveConcluded { .. } => "objective_concluded",
@@ -696,6 +697,13 @@ pub(crate) fn extract_structural_fields(
             Some(run_id.to_string()),
             Some(step_id.as_str().to_string()),
             Some(decode_member_id(escalated_to.as_str())),
+        ),
+        MobEventKind::SupervisorEscalationFailed {
+            run_id, step_id, ..
+        } => (
+            Some(run_id.to_string()),
+            Some(step_id.as_str().to_string()),
+            None,
         ),
         MobEventKind::RemoteTurnObligationRecorded { obligation }
         | MobEventKind::RemoteTurnOutcomeResolved { obligation }

@@ -1126,7 +1126,13 @@ async fn downstream_alias_failure_removes_attempt_state_and_allows_clean_retry()
         alice_sender,
         PeerMeta::default(),
     );
-    assert!(!alias.is_rejected() && !alias.displaced_existing());
+    assert!(
+        !alias.is_rejected()
+            && !matches!(
+                alias,
+                meerkat_comms::RegistrationOutcome::ReplacedPubkey { .. }
+            )
+    );
 
     // Remove Bob's canonical route only long enough to force alias
     // installation to fail after Alice's trust repair has succeeded.
@@ -1164,7 +1170,13 @@ async fn downstream_alias_failure_removes_attempt_state_and_allows_clean_retry()
         bob_sender,
         bob_registration.meta,
     );
-    assert!(!restored.is_rejected() && !restored.displaced_existing());
+    assert!(
+        !restored.is_rejected()
+            && !matches!(
+                restored,
+                meerkat_comms::RegistrationOutcome::ReplacedPubkey { .. }
+            )
+    );
     assert!(
         !registry
             .peers_in_namespace(&left_namespace)
