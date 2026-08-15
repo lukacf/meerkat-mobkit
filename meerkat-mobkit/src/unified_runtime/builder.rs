@@ -1266,7 +1266,6 @@ impl UnifiedRuntimeBuilder {
             topology_controller,
             post_spawn_hook: self.post_spawn_hook,
             post_reconcile_hook: self.post_reconcile_hook,
-            error_hook: self.error_hook,
             drain_timeout: self.drain_timeout.unwrap_or(DEFAULT_DRAIN_TIMEOUT),
             discovery: self.discovery,
             // A custom embedder policy overrides the definition-derived
@@ -1284,6 +1283,13 @@ impl UnifiedRuntimeBuilder {
             console_log_store,
             ..runtime
         };
+        // The error hook lives in a late-bound shared slot created at
+        // construction (runtime-owned tasks already hold it), so a
+        // builder-supplied hook installs into the slot rather than
+        // replacing it.
+        if let Some(hook) = self.error_hook {
+            runtime.set_error_hook(hook);
+        }
 
         // Run the host's last fallible pre-bootstrap hook before identity
         // hydration can start any runtime-owned background work. In

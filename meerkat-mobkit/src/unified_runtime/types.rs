@@ -374,6 +374,8 @@ pub struct ShutdownDrainReport {
 /// - `CheckpointFailure` — via `run_periodic_gc_with_error_callback` in session store
 /// - `CompactionPersistenceRejected` — `lifecycle.rs` drain fires the alert the
 ///   agent-event forwarder extracted from a member `CompactionFailed` event
+/// - `ActorLoopStalled` — `mod.rs` actor-loop probe's round trip through the
+///   serialized mob command loop went unanswered past its budget
 /// - `IdentityMaterializationFailure` — identity-first peer/fleet hydration skipped a member
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -396,6 +398,10 @@ pub enum ErrorEvent {
         identity: String,
         session_id: String,
         error: String,
+    },
+    ActorLoopStalled {
+        probe_waited_secs: u64,
+        detail: String,
     },
     HostLoopCrash {
         member_id: String,
@@ -440,6 +446,15 @@ impl Display for ErrorEvent {
                 write!(
                     f,
                     "compaction_persistence_rejected: {identity} ({session_id}): {error}"
+                )
+            }
+            Self::ActorLoopStalled {
+                probe_waited_secs,
+                detail,
+            } => {
+                write!(
+                    f,
+                    "actor_loop_stalled: probe unanswered for {probe_waited_secs}s: {detail}"
                 )
             }
             Self::HostLoopCrash { member_id, error } => {
