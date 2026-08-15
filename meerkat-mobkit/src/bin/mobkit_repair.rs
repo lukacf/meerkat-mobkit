@@ -14,6 +14,24 @@
 //!   rows by position, drop every earlier one. Strictly more destructive
 //!   (discards genuinely different superseded prompt versions); an explicit
 //!   operator lever, never the default.
+//! - `--truncate-tool-results <max_bytes>`: tool-result bounding - replace
+//!   the content of every ToolResult entry whose serialized bytes exceed
+//!   the bound with a typed truncation marker plus a UTF-8-safe kept prefix
+//!   of the original text projection (HomeCore parent-1, 2026-08-14: 72.4%
+//!   of a 3.75 MB member strand was tool_results the System modes could not
+//!   touch).
+//! - `--drop-tool-results-older-than <N>`: tail-window elision - replace
+//!   the content of every ToolResult entry more than N messages from the
+//!   transcript tail with a typed elision marker.
+//!
+//! The tool-result modes edit ToolResults rows IN PLACE and never remove a
+//! row: removing one would orphan the paired assistant tool_use block and
+//! break provider replay. `tool_use_id` and `is_error` always survive, and
+//! System/User rows are never touched (the selector matches only
+//! `Message::ToolResults`). Marker-led entries are never re-ground, so a
+//! second pass over an already-bounded strand reports nothing_to_do. The two
+//! tool-result flags may combine (elision wins where both select an entry);
+//! combining either with `--keep-newest` is a usage error.
 //!
 //! Procedure (single-writer discipline, unchanged from the field-proven
 //! window-4/5 runs):
@@ -54,6 +72,25 @@ enum SelectionMode {
     KeepNewest(usize),
 }
 
+/// Byte/window bounds for the tool-result modes. At least one is `Some`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ToolResultBounds {
+    truncate_max_bytes: Option<usize>,
+    drop_older_than: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepairMode {
+    System(SelectionMode),
+    ToolResults(ToolResultBounds),
+}
+
+/// Grep-stable lead-in shared by both tool-result markers. Doubles as the
+/// idempotency guard: a single-Text-block entry starting with this prefix
+/// was bounded by an earlier pass and is never re-ground (re-grinding would
+/// shave more bytes on every pass and overwrite the recorded provenance).
+const TOOL_RESULT_MARKER_PREFIX: &str = "[mobkit-repair:tool-result-";
+
 #[derive(Debug, serde::Serialize)]
 struct SessionReport {
     session_id: String,
@@ -67,6 +104,25 @@ struct SessionReport {
     bytes_after: Option<usize>,
     system_rows_before: Option<usize>,
     system_rows_after: Option<usize>,
+    /// Tool-result bounding accounting, present only for the tool-result
+    /// modes so System-mode reports keep their existing shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_result_messages: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_results_bounded: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_result_bytes_before: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_result_bytes_after: Option<usize>,
+}
+
+/// Per-entry accounting for one session's tool-result bounding plan.
+#[derive(Debug, Clone, Copy)]
+struct ToolResultAccounting {
+    messages: usize,
+    bounded: usize,
+    bytes_before: usize,
+    bytes_after: usize,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -100,6 +156,8 @@ async fn run() -> Result<i32, Box<dyn std::error::Error>> {
     let mut sessions: Vec<String> = Vec::new();
     let mut all_sessions = false;
     let mut keep_newest: Option<usize> = None;
+    let mut truncate_tool_results: Option<usize> = None;
+    let mut drop_tool_results_older_than: Option<usize> = None;
     let mut apply = false;
     let mut report_path: Option<String> = None;
     let mut args = std::env::args().skip(1);
@@ -122,6 +180,32 @@ async fn run() -> Result<i32, Box<dyn std::error::Error>> {
                 }
                 keep_newest = Some(n);
             }
+            "--truncate-tool-results" => {
+                let value = args
+                    .next()
+                    .ok_or("--truncate-tool-results requires a value")?;
+                let n: usize = value.parse().map_err(|_| {
+                    format!("--truncate-tool-results must be a byte count: {value}")
+                })?;
+                if n == 0 {
+                    return Err("--truncate-tool-results must be >= 1 byte".into());
+                }
+                truncate_tool_results = Some(n);
+            }
+            "--drop-tool-results-older-than" => {
+                let value = args
+                    .next()
+                    .ok_or("--drop-tool-results-older-than requires a value")?;
+                let n: usize = value.parse().map_err(|_| {
+                    format!("--drop-tool-results-older-than must be a message count: {value}")
+                })?;
+                if n == 0 {
+                    return Err("--drop-tool-results-older-than must be >= 1 (the \
+                                tail row's own results always stay)"
+                        .into());
+                }
+                drop_tool_results_older_than = Some(n);
+            }
             "--apply" => apply = true,
             "--report" => report_path = args.next(),
             other => return Err(format!("unknown argument: {other}").into()),
@@ -134,7 +218,24 @@ async fn run() -> Result<i32, Box<dyn std::error::Error>> {
     if !all_sessions && sessions.is_empty() {
         return Err("select sessions with --session <uuid> (repeatable) or --all-sessions".into());
     }
-    let mode = keep_newest.map_or(SelectionMode::ContentDedup, SelectionMode::KeepNewest);
+    let tool_result_bounds = match (truncate_tool_results, drop_tool_results_older_than) {
+        (None, None) => None,
+        (truncate_max_bytes, drop_older_than) => Some(ToolResultBounds {
+            truncate_max_bytes,
+            drop_older_than,
+        }),
+    };
+    if keep_newest.is_some() && tool_result_bounds.is_some() {
+        return Err("--keep-newest selects System rows; it cannot combine with \
+                    the tool-result bounding flags"
+            .into());
+    }
+    let mode = match tool_result_bounds {
+        Some(bounds) => RepairMode::ToolResults(bounds),
+        None => RepairMode::System(
+            keep_newest.map_or(SelectionMode::ContentDedup, SelectionMode::KeepNewest),
+        ),
+    };
 
     let local = Arc::new(LocalContinuityStore::open(&db)?);
     let targets: Vec<(Option<String>, meerkat_core::types::SessionId)> = if all_sessions {
@@ -178,6 +279,10 @@ async fn run() -> Result<i32, Box<dyn std::error::Error>> {
                     bytes_after: None,
                     system_rows_before: None,
                     system_rows_after: None,
+                    tool_result_messages: None,
+                    tool_results_bounded: None,
+                    tool_result_bytes_before: None,
+                    tool_result_bytes_after: None,
                 });
             }
         }
@@ -185,8 +290,18 @@ async fn run() -> Result<i32, Box<dyn std::error::Error>> {
 
     let report = RepairReport {
         mode: match mode {
-            SelectionMode::ContentDedup => "content_dedup".to_string(),
-            SelectionMode::KeepNewest(n) => format!("keep_newest_{n}"),
+            RepairMode::System(SelectionMode::ContentDedup) => "content_dedup".to_string(),
+            RepairMode::System(SelectionMode::KeepNewest(n)) => format!("keep_newest_{n}"),
+            RepairMode::ToolResults(bounds) => {
+                let mut parts = Vec::new();
+                if let Some(n) = bounds.truncate_max_bytes {
+                    parts.push(format!("truncate_tool_results_{n}"));
+                }
+                if let Some(n) = bounds.drop_older_than {
+                    parts.push(format!("drop_tool_results_older_than_{n}"));
+                }
+                parts.join("+")
+            }
         },
         applied: apply,
         sessions: reports,
@@ -238,7 +353,7 @@ async fn run() -> Result<i32, Box<dyn std::error::Error>> {
 async fn repair_session(
     continuity: &Arc<dyn ContinuityStore>,
     session_id: &meerkat_core::types::SessionId,
-    mode: SelectionMode,
+    mode: RepairMode,
     apply: bool,
 ) -> Result<SessionReport, Box<dyn std::error::Error>> {
     let adapter = Arc::new(ContinuitySessionStoreAdapter::new(Arc::clone(continuity)));
@@ -306,72 +421,127 @@ async fn repair_session(
         .map(|(index, _)| index)
         .collect();
 
-    let duplicate_indices: Vec<usize> = match mode {
-        SelectionMode::ContentDedup => {
-            // Group System rows by (content, identity), ignoring only the
-            // envelope timestamp; keep the FIRST occurrence per group.
-            let mut seen_groups: std::collections::HashMap<String, usize> =
-                std::collections::HashMap::new();
-            let mut duplicates = Vec::new();
-            for &index in &system_positions {
-                let value = &values[index];
-                let key = serde_json::to_string(&serde_json::json!({
-                    "content": value.get("content"),
-                    "identity": value.get("identity"),
-                }))?;
-                match seen_groups.entry(key) {
-                    std::collections::hash_map::Entry::Vacant(slot) => {
-                        slot.insert(index);
-                    }
-                    std::collections::hash_map::Entry::Occupied(_) => duplicates.push(index),
-                }
-            }
-            duplicates
-        }
-        SelectionMode::KeepNewest(n) => {
-            let cut = system_positions.len().saturating_sub(n);
-            system_positions[..cut].to_vec()
-        }
-    };
-
     let rows_before = messages.len();
     let bytes_before: usize = serialized.iter().map(Vec::len).sum();
     let system_before = system_positions.len();
-    if duplicate_indices.is_empty() {
-        eprintln!(
-            "mobkit-repair: session {session_id}: {system_before} System row(s), \
-             nothing to drop"
-        );
-        return Ok(SessionReport {
-            session_id: session_id.to_string(),
-            identity: Some(record.identity.to_string()),
-            outcome: "nothing_to_do".to_string(),
-            detail: None,
-            rows_before: Some(rows_before),
-            rows_after: Some(rows_before),
-            bytes_before: Some(bytes_before),
-            bytes_after: Some(bytes_before),
-            system_rows_before: Some(system_before),
-            system_rows_after: Some(system_before),
-        });
-    }
 
-    let cleaned: Vec<meerkat_core::Message> = messages
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| !duplicate_indices.contains(index))
-        .map(|(_, message)| message.clone())
-        .collect();
+    // Per-mode plan: the transcript to commit, the resulting System count,
+    // and (tool-result modes only) the per-entry accounting.
+    let (cleaned, system_after, tool_accounting) = match mode {
+        RepairMode::System(selection) => {
+            let duplicate_indices: Vec<usize> = match selection {
+                SelectionMode::ContentDedup => {
+                    // Group System rows by (content, identity), ignoring only the
+                    // envelope timestamp; keep the FIRST occurrence per group.
+                    let mut seen_groups: std::collections::HashMap<String, usize> =
+                        std::collections::HashMap::new();
+                    let mut duplicates = Vec::new();
+                    for &index in &system_positions {
+                        let value = &values[index];
+                        let key = serde_json::to_string(&serde_json::json!({
+                            "content": value.get("content"),
+                            "identity": value.get("identity"),
+                        }))?;
+                        match seen_groups.entry(key) {
+                            std::collections::hash_map::Entry::Vacant(slot) => {
+                                slot.insert(index);
+                            }
+                            std::collections::hash_map::Entry::Occupied(_) => {
+                                duplicates.push(index);
+                            }
+                        }
+                    }
+                    duplicates
+                }
+                SelectionMode::KeepNewest(n) => {
+                    let cut = system_positions.len().saturating_sub(n);
+                    system_positions[..cut].to_vec()
+                }
+            };
+            if duplicate_indices.is_empty() {
+                eprintln!(
+                    "mobkit-repair: session {session_id}: {system_before} System row(s), \
+                     nothing to drop"
+                );
+                return Ok(SessionReport {
+                    session_id: session_id.to_string(),
+                    identity: Some(record.identity.to_string()),
+                    outcome: "nothing_to_do".to_string(),
+                    detail: None,
+                    rows_before: Some(rows_before),
+                    rows_after: Some(rows_before),
+                    bytes_before: Some(bytes_before),
+                    bytes_after: Some(bytes_before),
+                    system_rows_before: Some(system_before),
+                    system_rows_after: Some(system_before),
+                    tool_result_messages: None,
+                    tool_results_bounded: None,
+                    tool_result_bytes_before: None,
+                    tool_result_bytes_after: None,
+                });
+            }
+            let cleaned: Vec<meerkat_core::Message> = messages
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !duplicate_indices.contains(index))
+                .map(|(_, message)| message.clone())
+                .collect();
+            let system_after = system_before - duplicate_indices.len();
+            (cleaned, system_after, None)
+        }
+        RepairMode::ToolResults(bounds) => {
+            let plan = plan_tool_result_bounds(messages, bounds)?;
+            let accounting = ToolResultAccounting {
+                messages: plan.tool_result_messages,
+                bounded: plan.bounded,
+                bytes_before: plan.tool_bytes_before,
+                bytes_after: plan.tool_bytes_after,
+            };
+            if plan.bounded == 0 {
+                eprintln!(
+                    "mobkit-repair: session {session_id}: {} tool-result row(s), \
+                     nothing to bound",
+                    accounting.messages
+                );
+                return Ok(SessionReport {
+                    session_id: session_id.to_string(),
+                    identity: Some(record.identity.to_string()),
+                    outcome: "nothing_to_do".to_string(),
+                    detail: None,
+                    rows_before: Some(rows_before),
+                    rows_after: Some(rows_before),
+                    bytes_before: Some(bytes_before),
+                    bytes_after: Some(bytes_before),
+                    system_rows_before: Some(system_before),
+                    system_rows_after: Some(system_before),
+                    tool_result_messages: Some(accounting.messages),
+                    tool_results_bounded: Some(0),
+                    tool_result_bytes_before: Some(accounting.bytes_before),
+                    tool_result_bytes_after: Some(accounting.bytes_after),
+                });
+            }
+            // System rows are out of scope for this mode by construction:
+            // the planner rewrites only `Message::ToolResults` rows.
+            (plan.cleaned, system_before, Some(accounting))
+        }
+    };
+
     let rows_after = cleaned.len();
     let bytes_after: usize = cleaned
         .iter()
         .map(|m| serde_json::to_vec(m).map(|v| v.len()).unwrap_or(0))
         .sum();
-    let system_after = system_before - duplicate_indices.len();
     eprintln!(
         "mobkit-repair: session {session_id}: plan {rows_before} -> {rows_after} rows, \
          ~{bytes_before} -> ~{bytes_after} bytes, System {system_before} -> {system_after}"
     );
+    if let Some(tool) = tool_accounting {
+        eprintln!(
+            "mobkit-repair: session {session_id}: bounding {} tool-result entry(ies) \
+             across {} tool-result row(s) in place, ~{} -> ~{} tool-result bytes",
+            tool.bounded, tool.messages, tool.bytes_before, tool.bytes_after
+        );
+    }
 
     if !apply {
         return Ok(SessionReport {
@@ -385,9 +555,23 @@ async fn repair_session(
             bytes_after: Some(bytes_after),
             system_rows_before: Some(system_before),
             system_rows_after: Some(system_after),
+            tool_result_messages: tool_accounting.map(|t| t.messages),
+            tool_results_bounded: tool_accounting.map(|t| t.bounded),
+            tool_result_bytes_before: tool_accounting.map(|t| t.bytes_before),
+            tool_result_bytes_after: tool_accounting.map(|t| t.bytes_after),
         });
     }
 
+    let (rewrite_reason, rewrite_provenance) = match mode {
+        RepairMode::System(_) => (
+            "operator prune of superseded System rows (mobkit-repair)",
+            "mobkit-repair/system-rows",
+        ),
+        RepairMode::ToolResults(_) => (
+            "operator bound of tool-result bulk (mobkit-repair)",
+            "mobkit-repair/tool-results",
+        ),
+    };
     let parent_revision = session.transcript_revision()?;
     let selection_end = messages.len();
     let mut rewritten = session.clone();
@@ -397,10 +581,8 @@ async fn repair_session(
             end: selection_end,
         },
         cleaned,
-        meerkat_core::TranscriptRewriteReason::new(
-            "operator prune of superseded System rows (mobkit-repair)",
-        ),
-        Some("mobkit-repair/system-rows".to_string()),
+        meerkat_core::TranscriptRewriteReason::new(rewrite_reason),
+        Some(rewrite_provenance.to_string()),
         Some(parent_revision),
     )?;
     meerkat::SessionStore::save_transcript_rewrite(adapter.as_ref(), &rewritten, &commit).await?;
@@ -420,5 +602,120 @@ async fn repair_session(
         bytes_after: Some(bytes_after),
         system_rows_before: Some(system_before),
         system_rows_after: Some(system_after),
+        tool_result_messages: tool_accounting.map(|t| t.messages),
+        tool_results_bounded: tool_accounting.map(|t| t.bounded),
+        tool_result_bytes_before: tool_accounting.map(|t| t.bytes_before),
+        tool_result_bytes_after: tool_accounting.map(|t| t.bytes_after),
+    })
+}
+
+/// One session's computed tool-result bounding plan.
+struct ToolResultBoundsPlan {
+    cleaned: Vec<meerkat_core::Message>,
+    tool_result_messages: usize,
+    bounded: usize,
+    tool_bytes_before: usize,
+    tool_bytes_after: usize,
+}
+
+/// A single-Text-block entry led by the tool's own marker was bounded by an
+/// earlier pass; re-grinding it would shave more bytes on every run and
+/// overwrite the recorded original_bytes provenance.
+fn is_already_bounded(result: &meerkat_core::types::ToolResult) -> bool {
+    match result.content.as_slice() {
+        [meerkat_core::types::ContentBlock::Text { text }] => {
+            text.starts_with(TOOL_RESULT_MARKER_PREFIX)
+        }
+        _ => false,
+    }
+}
+
+/// Compute the bounded transcript for the tool-result modes.
+///
+/// Only `Message::ToolResults` rows are rewritten - every other row is cloned
+/// through untouched, so System and User rows cannot be affected. Entries are
+/// bounded IN PLACE (`tool_use_id` and `is_error` survive) because removing a
+/// row would orphan the paired assistant tool_use block and break provider
+/// replay. Elision (the tail-window lever) wins over truncation where both
+/// select an entry. Byte counts measure each entry's serialized JSON; the
+/// truncation bound therefore triggers on envelope size but keeps at most
+/// `max_bytes` of the original text projection (UTF-8-safe cut) under the
+/// marker, so multimodal bulk (image/video blocks) is bounded too.
+fn plan_tool_result_bounds(
+    messages: &[meerkat_core::Message],
+    bounds: ToolResultBounds,
+) -> Result<ToolResultBoundsPlan, serde_json::Error> {
+    let total = messages.len();
+    let mut cleaned = Vec::with_capacity(total);
+    let mut tool_result_messages = 0usize;
+    let mut bounded = 0usize;
+    let mut tool_bytes_before = 0usize;
+    let mut tool_bytes_after = 0usize;
+    for (index, message) in messages.iter().enumerate() {
+        let meerkat_core::Message::ToolResults {
+            results,
+            created_at,
+        } = message
+        else {
+            cleaned.push(message.clone());
+            continue;
+        };
+        tool_result_messages += 1;
+        // Distance 1 is the tail row itself: `--drop-tool-results-older-than N`
+        // elides strictly beyond the newest N transcript positions.
+        let distance_from_tail = total - index;
+        let elide = bounds
+            .drop_older_than
+            .is_some_and(|n| distance_from_tail > n);
+        let mut bounded_results = Vec::with_capacity(results.len());
+        for result in results {
+            let entry_bytes = serde_json::to_vec(result)?.len();
+            tool_bytes_before += entry_bytes;
+            let replacement = if is_already_bounded(result) {
+                None
+            } else if elide {
+                Some(format!(
+                    "{TOOL_RESULT_MARKER_PREFIX}elided original_bytes={entry_bytes}]"
+                ))
+            } else {
+                match bounds.truncate_max_bytes {
+                    Some(max_bytes) if entry_bytes > max_bytes => {
+                        let text = result.text_content();
+                        let mut cut = max_bytes.min(text.len());
+                        while cut > 0 && !text.is_char_boundary(cut) {
+                            cut -= 1;
+                        }
+                        Some(format!(
+                            "{TOOL_RESULT_MARKER_PREFIX}truncated \
+                             original_bytes={entry_bytes} kept_bytes={cut}]\n{}",
+                            &text[..cut]
+                        ))
+                    }
+                    _ => None,
+                }
+            };
+            let entry = match replacement {
+                Some(marker_text) => {
+                    bounded += 1;
+                    let mut bounded_entry = result.clone();
+                    bounded_entry.set_text_content(marker_text);
+                    bounded_entry
+                }
+                None => result.clone(),
+            };
+            tool_bytes_after += serde_json::to_vec(&entry)?.len();
+            bounded_results.push(entry);
+        }
+        cleaned.push(meerkat_core::Message::ToolResults {
+            results: bounded_results,
+            created_at: *created_at,
+        });
+    }
+    Ok(ToolResultBoundsPlan {
+        cleaned,
+        tool_result_messages,
+        bounded,
+        tool_bytes_before,
+        tool_bytes_after,
     })
 }
