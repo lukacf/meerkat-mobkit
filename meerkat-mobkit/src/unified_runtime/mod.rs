@@ -12,7 +12,7 @@ use meerkat_core::comms::EventStream;
 use meerkat_core::event::{AgentEvent, agent_event_type};
 use meerkat_mob::{
     AgentIdentity, AgentRuntimeId, AttributedEvent, FenceToken, MobError, MobHandle,
-    MobMemberStatus, ProfileName, SpawnMemberSpec,
+    MobMemberStatus, MobState, ProfileName, SpawnMemberSpec,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
@@ -76,6 +76,30 @@ pub type PostReconcileHook = Arc<
 pub type ErrorHook =
     Arc<dyn Fn(ErrorEvent) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
+/// Late-bound shared error hook slot (the same pattern as the identity
+/// authority and `gateway_peer_keys`): gateways install the hook via
+/// [`UnifiedRuntime::set_error_hook`] AFTER construction, while runtime-owned
+/// background tasks that must fire it (the actor-loop probe) start AT
+/// construction. Tasks hold the slot and read the hook at fire time.
+type SharedErrorHook = Arc<std::sync::RwLock<Option<ErrorHook>>>;
+
+fn current_error_hook(slot: &SharedErrorHook) -> Option<ErrorHook> {
+    slot.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// Fire an error event on the hook currently installed in `slot`, if any.
+/// Truly fire-and-forget — spawns a detached task so slow hooks (HTTP to
+/// Slack, PagerDuty) never block the caller.
+fn fire_error_hook(slot: &SharedErrorHook, event: ErrorEvent) {
+    if let Some(hook) = current_error_hook(slot) {
+        tokio::spawn(async move {
+            let () = hook(event).await;
+        });
+    }
+}
+
 const ROSTER_ROUTE_PREFIX: &str = "mob.member.";
 const ROSTER_ROUTE_CHANNEL: &str = "notification";
 const ROSTER_ROUTE_SINK: &str = "mob_member";
@@ -126,7 +150,7 @@ pub struct UnifiedRuntime {
     mob_runtime: MobRuntime,
     post_spawn_hook: Option<PostSpawnHook>,
     post_reconcile_hook: Option<PostReconcileHook>,
-    error_hook: Option<ErrorHook>,
+    error_hook: SharedErrorHook,
     drain_timeout: Duration,
     discovery: Option<Box<dyn Discovery>>,
     edge_discovery: Option<Arc<dyn EdgeDiscovery>>,
@@ -142,6 +166,11 @@ pub struct UnifiedRuntime {
     console_events: ConsoleEventStore,
     mob_events: MobEventsStore,
     mob_events_subscriber_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    /// Actor-loop liveness probe: a periodic O(1) round trip through the
+    /// serialized mob command loop that pages (`ErrorEvent::ActorLoopStalled`)
+    /// when the loop stops draining. Observation only — aborted first during
+    /// shutdown so the intentional actor stop cannot fire a false page.
+    actor_loop_probe_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     implicit_delegate_retirement_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     /// Late-bound identity authority observed by the already-running idle
     /// retirement sweeper. Gateways attach identity-first after base runtime
@@ -322,6 +351,12 @@ impl UnifiedRuntime {
             mob_events_store.clone(),
             persistent_metadata.clone(),
         );
+        // The probe starts at construction while the error hook is installed
+        // later (`set_error_hook`), so it holds the late-bound slot and reads
+        // the hook at fire time.
+        let error_hook: SharedErrorHook = Arc::new(std::sync::RwLock::new(None));
+        let actor_loop_probe_task =
+            Self::spawn_actor_loop_probe(mob_runtime.handle(), Arc::clone(&error_hook));
         let console_events = ConsoleEventStore::new();
         // Agent-tool spawns (mob_spawn_member/delegate) project their members
         // into this runtime's console event store so spawned workers are
@@ -351,7 +386,7 @@ impl UnifiedRuntime {
             mob_runtime,
             post_spawn_hook: None,
             post_reconcile_hook: None,
-            error_hook: None,
+            error_hook,
             drain_timeout: DEFAULT_DRAIN_TIMEOUT,
             discovery: None,
             // Default the edge policy to the definition's declared wiring
@@ -372,6 +407,7 @@ impl UnifiedRuntime {
             console_events,
             mob_events: mob_events_store,
             mob_events_subscriber_task: tokio::sync::Mutex::new(mob_events_task),
+            actor_loop_probe_task: tokio::sync::Mutex::new(actor_loop_probe_task),
             implicit_delegate_retirement_task: tokio::sync::Mutex::new(None),
             implicit_delegate_identity_runtime: identity_runtime_authority,
             identity_lease_renewal_task: tokio::sync::Mutex::new(None),
@@ -425,6 +461,32 @@ impl UnifiedRuntime {
             handle,
             store,
             persistent_metadata,
+        )))
+    }
+
+    /// Spawn the actor-loop liveness probe (see [`run_actor_loop_probe`]).
+    ///
+    /// The probe round trip is `MobHandle::status()` → `MobCommand::QueryPhase`:
+    /// the cheapest command the handle exposes — the actor's handler is a pure
+    /// in-memory phase read (`reply_tx.send(Ok(self.state()))`), read-only and
+    /// O(1) — while still riding the same serialized command loop whose stall
+    /// it exists to detect.
+    ///
+    /// Returns `None` when there is no current tokio runtime (e.g. unit
+    /// tests outside an async context), like the events subscriber above.
+    fn spawn_actor_loop_probe(
+        handle: MobHandle,
+        error_hook: SharedErrorHook,
+    ) -> Option<JoinHandle<()>> {
+        let runtime_handle = tokio::runtime::Handle::try_current().ok()?;
+        Some(runtime_handle.spawn(run_actor_loop_probe(
+            move || {
+                let handle = handle.clone();
+                async move { handle.status().await }
+            },
+            error_hook,
+            actor_loop_probe_interval(),
+            actor_loop_probe_budget(),
         )))
     }
 
@@ -564,7 +626,10 @@ impl UnifiedRuntime {
     /// Register an error hook after construction. Useful when the runtime
     /// is built via `bootstrap()` rather than the builder.
     pub fn set_error_hook(&mut self, hook: ErrorHook) {
-        self.error_hook = Some(hook.clone());
+        *self
+            .error_hook
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook.clone());
         if let Some(identity_runtime) = self.identity_runtime() {
             identity_runtime.set_error_hook(Some(hook));
         }
@@ -574,7 +639,7 @@ impl UnifiedRuntime {
     /// construction (the builder calls this automatically when event_log
     /// config is provided).
     pub fn start_event_log(&mut self, config: EventLogConfig) {
-        let handle = event_log::start_event_log(config, self.error_hook.clone());
+        let handle = event_log::start_event_log(config, current_error_hook(&self.error_hook));
         self.event_log = Some(handle);
     }
 
@@ -1197,12 +1262,7 @@ impl UnifiedRuntime {
     /// Truly fire-and-forget — spawns a detached task so slow hooks
     /// (HTTP to Slack, PagerDuty) never block the runtime operation.
     pub(crate) fn fire_error(&self, event: ErrorEvent) {
-        if let Some(ref hook) = self.error_hook {
-            let hook = hook.clone();
-            tokio::spawn(async move {
-                let () = hook(event).await;
-            });
-        }
+        fire_error_hook(&self.error_hook, event);
     }
 
     fn create_event_ingress(
@@ -2055,6 +2115,120 @@ async fn run_mob_events_subscription(
     }
 }
 
+/// How often the actor-loop probe sends its round trip.
+const ACTOR_LOOP_PROBE_INTERVAL: Duration = Duration::from_mins(1);
+
+/// How long one probe round trip may go unanswered before the stall pages.
+///
+/// Unlike the delivery path's admission budget (`identity_first/bridge.rs`,
+/// 600s), which must stay wide because firing it drops a delivery, a probe
+/// timeout drops nothing — it only names the stall — so it can afford to be
+/// aggressive. The probe's handler is a pure in-memory phase read whose
+/// healthy latency is microseconds; 30s therefore cannot fire on a healthy
+/// loop, only on one that is queued behind a blocked handler.
+const ACTOR_LOOP_PROBE_BUDGET: Duration = Duration::from_secs(30);
+
+/// Effective probe interval: `MOBKIT_ACTOR_LOOP_PROBE_INTERVAL_SECS`
+/// overrides the default, clamped to [1, 3600] seconds (the same knob idiom
+/// as `MOBKIT_BRIDGE_ACTOR_ADMISSION_SECS`).
+fn actor_loop_probe_interval() -> Duration {
+    parse_probe_secs(
+        std::env::var("MOBKIT_ACTOR_LOOP_PROBE_INTERVAL_SECS")
+            .ok()
+            .as_deref(),
+        ACTOR_LOOP_PROBE_INTERVAL,
+    )
+}
+
+/// Effective probe budget: `MOBKIT_ACTOR_LOOP_PROBE_BUDGET_SECS` overrides
+/// the default, clamped to [1, 3600] seconds.
+fn actor_loop_probe_budget() -> Duration {
+    parse_probe_secs(
+        std::env::var("MOBKIT_ACTOR_LOOP_PROBE_BUDGET_SECS")
+            .ok()
+            .as_deref(),
+        ACTOR_LOOP_PROBE_BUDGET,
+    )
+}
+
+fn parse_probe_secs(raw: Option<&str>, default: Duration) -> Duration {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|secs| Duration::from_secs(secs.clamp(1, 3600)))
+        .unwrap_or(default)
+}
+
+/// Actor-loop liveness probe.
+///
+/// meerkat's mob actor is ONE serialized command loop: a handler that blocks
+/// freezes every member's dispatch behind it, and the only existing witness
+/// is the delivery path's admission budget — which fires only if a delivery
+/// happens to be waiting. If nobody waits, nobody learns. This probe is the
+/// unconditional waiter: every `interval` it sends the cheapest round trip
+/// the handle exposes (`QueryPhase`, an O(1) in-memory phase read) and pages
+/// `ErrorEvent::ActorLoopStalled` when the reply does not arrive within
+/// `budget`.
+///
+/// At most ONE probe is ever outstanding: on timeout the task stays parked
+/// on the SAME round trip until the loop drains it, rather than stacking
+/// further commands onto a stalled actor (uncapped retry loops already
+/// amplify channel pressure there; the probe must never join them). When the
+/// parked round trip finally resolves, recovery is reported as an info-level
+/// log — `ErrorEvent` has no recovery precedent (every variant names a
+/// failure, and the hook is a paging channel), so recovery deliberately does
+/// not page.
+///
+/// The probe treats ANY completion within budget — `Ok` or a typed error —
+/// as a live loop: it measures whether the loop drains, not whether the mob
+/// is healthy. A terminal phase reply (`Stopped`/`Completed`/`Destroyed`)
+/// ends the probe: there is no loop left worth watching.
+async fn run_actor_loop_probe<P, F>(
+    mut probe: P,
+    error_hook: SharedErrorHook,
+    interval: Duration,
+    budget: Duration,
+) where
+    P: FnMut() -> F,
+    F: Future<Output = Result<MobState, MobError>>,
+{
+    loop {
+        tokio::time::sleep(interval).await;
+        let started = tokio::time::Instant::now();
+        let round_trip = probe();
+        tokio::pin!(round_trip);
+        let result = match tokio::time::timeout(budget, &mut round_trip).await {
+            Ok(result) => result,
+            Err(_) => {
+                fire_error_hook(
+                    &error_hook,
+                    ErrorEvent::ActorLoopStalled {
+                        probe_waited_secs: budget.as_secs(),
+                        detail: format!(
+                            "QueryPhase probe round trip unanswered after {}s; the mob actor \
+                             is one serialized command loop, so every member's dispatch is \
+                             queued behind whatever is blocking it; the probe stays parked on \
+                             this round trip and will not stack another",
+                            budget.as_secs()
+                        ),
+                    },
+                );
+                // Park on the SAME round trip until the loop drains it.
+                let result = round_trip.await;
+                tracing::info!(
+                    stalled_for_secs = started.elapsed().as_secs(),
+                    "mob actor command loop recovered: stalled probe round trip completed"
+                );
+                result
+            }
+        };
+        if matches!(
+            result,
+            Ok(MobState::Stopped | MobState::Completed | MobState::Destroyed)
+        ) {
+            break;
+        }
+    }
+}
+
 /// Project a forwarded member event for the drain: the wire envelope plus
 /// any drain-side alert extracted while the member event is still typed.
 fn forwarded_member_event(attributed: AttributedEvent) -> ForwardedMemberEvent {
@@ -2139,6 +2313,8 @@ impl crate::memory::events::MemoryEventSink for ConsoleMemoryEventSink {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use super::*;
     use meerkat_mob::ids::Generation;
 
@@ -2407,5 +2583,177 @@ model = "gpt-5.5"
         drop(events);
 
         runtime.shutdown().await;
+    }
+
+    fn capturing_error_hook_slot() -> (SharedErrorHook, Arc<tokio::sync::Mutex<Vec<ErrorEvent>>>) {
+        let captured: Arc<tokio::sync::Mutex<Vec<ErrorEvent>>> =
+            Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let hook_captured = captured.clone();
+        let hook: ErrorHook = Arc::new(move |event| {
+            let hook_captured = hook_captured.clone();
+            Box::pin(async move {
+                hook_captured.lock().await.push(event);
+            })
+        });
+        let slot: SharedErrorHook = Arc::new(std::sync::RwLock::new(Some(hook)));
+        (slot, captured)
+    }
+
+    /// A probe round trip that goes unanswered past its budget must page
+    /// `ActorLoopStalled` through the error hook with the waited budget.
+    #[tokio::test(start_paused = true)]
+    async fn stalled_actor_loop_pages_error_hook() {
+        let (slot, captured) = capturing_error_hook_slot();
+        let probe_task = tokio::spawn(run_actor_loop_probe(
+            std::future::pending::<Result<MobState, MobError>>,
+            slot,
+            Duration::from_mins(1),
+            Duration::from_secs(30),
+        ));
+
+        // One interval (60s) + one budget (30s), plus slack for the
+        // detached hook task.
+        tokio::time::sleep(Duration::from_secs(95)).await;
+        tokio::task::yield_now().await;
+
+        let events = captured.lock().await;
+        assert_eq!(events.len(), 1, "exactly one stall page: {events:?}");
+        match &events[0] {
+            ErrorEvent::ActorLoopStalled {
+                probe_waited_secs,
+                detail,
+            } => {
+                assert_eq!(*probe_waited_secs, 30);
+                assert!(
+                    detail.contains("QueryPhase"),
+                    "detail must name the probe round trip: {detail}"
+                );
+            }
+            other => panic!("expected ActorLoopStalled, got {other:?}"),
+        }
+        drop(events);
+        probe_task.abort();
+    }
+
+    /// A responsive command loop must never page across many probe cycles.
+    #[tokio::test(start_paused = true)]
+    async fn healthy_actor_loop_never_pages() {
+        let (slot, captured) = capturing_error_hook_slot();
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = probes.clone();
+        let probe_task = tokio::spawn(run_actor_loop_probe(
+            move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Ok(MobState::Running))
+            },
+            slot,
+            Duration::from_mins(1),
+            Duration::from_secs(30),
+        ));
+
+        tokio::time::sleep(Duration::from_secs(60 * 5 + 5)).await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            probes.load(Ordering::SeqCst) >= 4,
+            "probe must keep its cadence on a healthy loop: {}",
+            probes.load(Ordering::SeqCst)
+        );
+        assert!(
+            captured.lock().await.is_empty(),
+            "a healthy loop must not page"
+        );
+        probe_task.abort();
+    }
+
+    /// A stalled probe must never stack another round trip onto the blocked
+    /// actor: one page, one parked command, no matter how many cycles pass.
+    /// When the parked round trip finally drains, the cadence resumes and
+    /// recovery does not page.
+    #[tokio::test(start_paused = true)]
+    async fn stalled_probe_never_stacks_and_resumes_after_recovery() {
+        let (slot, captured) = capturing_error_hook_slot();
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let counted = probes.clone();
+        let released_probe = released.clone();
+        let gate_probe = gate.clone();
+        let probe_task = tokio::spawn(run_actor_loop_probe(
+            move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let released = released_probe.clone();
+                let gate = gate_probe.clone();
+                async move {
+                    if !released.load(Ordering::SeqCst) {
+                        gate.notified().await;
+                    }
+                    Ok(MobState::Running)
+                }
+            },
+            slot,
+            Duration::from_mins(1),
+            Duration::from_secs(30),
+        ));
+
+        // Many full interval+budget cycles while the first round trip is
+        // parked: no second probe, no second page.
+        tokio::time::sleep(Duration::from_mins(10)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            probes.load(Ordering::SeqCst),
+            1,
+            "a stalled probe must not stack another round trip"
+        );
+        assert_eq!(
+            captured.lock().await.len(),
+            1,
+            "a persisting stall pages exactly once"
+        );
+
+        // Drain the parked round trip; the probe resumes its cadence.
+        released.store(true, Ordering::SeqCst);
+        gate.notify_one();
+        tokio::time::sleep(Duration::from_secs(61)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            probes.load(Ordering::SeqCst) >= 2,
+            "probe must resume after the stalled round trip drains: {}",
+            probes.load(Ordering::SeqCst)
+        );
+        assert_eq!(
+            captured.lock().await.len(),
+            1,
+            "recovery is an info log, never a page"
+        );
+        probe_task.abort();
+    }
+
+    #[test]
+    fn probe_env_knob_parses_and_clamps() {
+        assert_eq!(
+            parse_probe_secs(None, ACTOR_LOOP_PROBE_INTERVAL),
+            Duration::from_mins(1)
+        );
+        assert_eq!(
+            parse_probe_secs(Some("120"), ACTOR_LOOP_PROBE_INTERVAL),
+            Duration::from_mins(2)
+        );
+        assert_eq!(
+            parse_probe_secs(Some(" 15 "), ACTOR_LOOP_PROBE_BUDGET),
+            Duration::from_secs(15)
+        );
+        assert_eq!(
+            parse_probe_secs(Some("0"), ACTOR_LOOP_PROBE_BUDGET),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            parse_probe_secs(Some("999999"), ACTOR_LOOP_PROBE_BUDGET),
+            Duration::from_hours(1)
+        );
+        assert_eq!(
+            parse_probe_secs(Some("junk"), ACTOR_LOOP_PROBE_BUDGET),
+            ACTOR_LOOP_PROBE_BUDGET
+        );
     }
 }

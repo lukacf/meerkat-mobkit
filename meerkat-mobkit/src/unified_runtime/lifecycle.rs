@@ -156,6 +156,13 @@ impl UnifiedRuntime {
 
     pub async fn shutdown(&self) -> UnifiedRuntimeShutdownReport {
         self.shutting_down.store(true, Ordering::SeqCst);
+        // The liveness probe is observation only. Abort it before anything
+        // can quiesce the mob actor so an intentional shutdown stall cannot
+        // page a false ActorLoopStalled.
+        if let Some(task) = self.actor_loop_probe_task.lock().await.take() {
+            task.abort();
+            let _ = task.await;
+        }
         // The fact tail owns only a lossy wake projection, so shutdown does
         // not drain it. Abort and join the sole runtime-owned task before
         // taking down the authoritative WorkGraph-bearing mob runtime.
