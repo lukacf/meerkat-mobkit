@@ -427,12 +427,23 @@ pub(super) async fn handle_send_message(
             };
             // Console events are keyed by the durable identity for
             // identity-bridge sends (mirroring the console plane) and by the
-            // wire member id for roster sends.
+            // wire member id for roster sends. `reserve_interaction_value`'s
+            // registration OVERWRITES `runtime_to_identity`, so the identity
+            // argument must never be a generated `rt:{identity}:{generation}`
+            // alias: self-mapping the incarnation clobbers the spawn path's
+            // incarnation -> durable registration and re-keys every later
+            // live event onto the incarnation conversation (the console
+            // dispatch-mirroring defect). The MobMember arm is unreachable
+            // for generated aliases (they resolve to Identity or
+            // AuthorityUnavailable - pinned by test below), so its wire
+            // member id IS the durable identity.
             let (events_identity, events_member_id) = match &target {
                 SendMessageTarget::MobMember => (member_id.clone(), Some(member_id.clone())),
-                SendMessageTarget::AuthorityUnavailable { alias } => {
-                    (alias.clone(), Some(alias.clone()))
-                }
+                SendMessageTarget::AuthorityUnavailable { alias } => (
+                    crate::member_comms_id::durable_identity_from_runtime_alias(alias)
+                        .unwrap_or_else(|| alias.clone()),
+                    Some(alias.clone()),
+                ),
                 SendMessageTarget::Identity {
                     identity,
                     runtime_member_id,
@@ -3243,6 +3254,128 @@ pub(super) async fn handle_peer_pubkey(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pin for the send_message reservation contract: a generated
+    /// `rt:{identity}:{generation}` alias must NEVER take the MobMember arm -
+    /// even when a same-named member is physically present in the roster -
+    /// because that arm reserves console interactions under the wire member
+    /// id, which for a fenced alias would self-map the incarnation in
+    /// `runtime_to_identity` (the console dispatch-mirroring defect). Both
+    /// branches are pinned on the SAME rostered member: without identity
+    /// authority the reserved-alias refusal wins, with it the Identity arm
+    /// wins, and the roster probe is reached in neither case.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_alias_never_resolves_to_the_mob_member_arm() -> Result<(), String> {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "send-message-generated-alias-pin-test"
+
+[profiles.worker]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.worker.tools]
+comms = true
+"#,
+        )
+        .map_err(|err| format!("definition parses: {err:?}"))?;
+        let runtime = crate::UnifiedRuntime::builder()
+            .definition(definition)
+            .default_llm_client(std::sync::Arc::new(
+                meerkat_client::TestClient::for_provider(meerkat_core::Provider::OpenAI),
+            ))
+            .build()
+            .await
+            .map_err(|err| format!("runtime builds: {err:?}"))?;
+        // A physically rostered member under the generated alias (the
+        // identity runtime's own spawn shape). Roster presence must not
+        // degrade the alias into the raw member plane.
+        let mut spec = meerkat_mob::SpawnMemberSpec::from_wire(
+            "worker".to_string(),
+            "rt:builder:0".to_string(),
+            Some("You are Builder.".into()),
+            None,
+            None,
+        );
+        spec.identity = crate::member_comms_id::mob_member_id("rt:builder:0");
+        runtime
+            .mob_handle()
+            .spawn_spec(spec)
+            .await
+            .map_err(|err| format!("generated-alias member spawns: {err:?}"))?;
+
+        // No identity authority: the reserved-alias refusal, not the roster.
+        if !matches!(
+            resolve_send_message_target(&runtime, None, "rt:builder:0").await,
+            SendMessageTarget::AuthorityUnavailable { .. }
+        ) {
+            return Err("a generated alias without identity authority must resolve \
+                        AuthorityUnavailable, never MobMember"
+                .to_string());
+        }
+
+        // Identity authority present: the identity plane is consulted BEFORE
+        // the roster probe, so the same rostered alias resolves to its
+        // durable identity.
+        let identity_rt = std::sync::Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: std::sync::Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()
+                        .map_err(|err| format!("in-memory continuity store: {err:?}"))?,
+                ),
+                lease_provider: std::sync::Arc::new(
+                    crate::identity_first::LocalLeaseProvider::new(),
+                ),
+                runtime_instance_id: "send-message-generated-alias-pin-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        let resolved =
+            match resolve_send_message_target(&runtime, Some(&identity_rt), "rt:builder:0").await {
+                SendMessageTarget::Identity { identity, .. } => identity,
+                SendMessageTarget::MobMember => {
+                    return Err(
+                        "a generated alias under identity authority must never reach the \
+                            roster plane"
+                            .to_string(),
+                    );
+                }
+                SendMessageTarget::AuthorityUnavailable { alias } => {
+                    return Err(format!(
+                        "a generated alias under identity authority must resolve Identity, got \
+                     AuthorityUnavailable for {alias}"
+                    ));
+                }
+            };
+        if resolved.as_str() != "builder" {
+            return Err(format!(
+                "the alias must resolve to its DURABLE identity, got {}",
+                resolved.as_str()
+            ));
+        }
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    /// The AuthorityUnavailable reservation keys console events under the
+    /// DURABLE identity derived from the alias, not the alias itself.
+    #[test]
+    fn authority_unavailable_reservation_identity_is_the_durable_identity() {
+        assert_eq!(
+            crate::member_comms_id::durable_identity_from_runtime_alias("rt:builder:0").as_deref(),
+            Some("builder")
+        );
+        assert_eq!(
+            crate::member_comms_id::durable_identity_from_runtime_alias("rt:review:singleton:3")
+                .as_deref(),
+            Some("review:singleton")
+        );
+    }
 
     /// HomeCore DX (2026-07-09): `cross_mob/peer_info` emits
     /// `transport_public_key` with the `ed25519:` scheme prefix; callers

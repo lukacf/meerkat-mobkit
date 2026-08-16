@@ -1507,6 +1507,106 @@ pub fn handle_unified_rpc_json_with_live_arc<'a>(
     ))
 }
 
+/// Typed error code for a read-only console arm that exhausted its deadline.
+///
+/// Continues the operator-verb block (`OPERATOR_SESSION_BUSY_CODE` -32015,
+/// `OPERATOR_VERB_UNAVAILABLE_CODE` -32016). The `-32001..-32005` range is the
+/// identity plane and `-32004` is the SDKs' reserved capability code, so the
+/// read-timeout signal takes the next free code above the operator block.
+pub const CONSOLE_READ_TIMEOUT_CODE: i64 = -32017;
+
+/// Read budget for console/identity arms that cross the member's session task
+/// or the mob actor loop.
+///
+/// Both seams are strict sequential command loops, so a member that is busy -
+/// a long tool chain, a post-cycle compaction - makes every console read on
+/// that member queue behind the turn with no signal at all. That is the OB3
+/// shape (2026-08-16): `mobkit/identity/resolved_tools` hung past 60 seconds
+/// and never completed, because a read has no way to say "the loop is busy".
+///
+/// Thirty seconds is deliberately generous. These arms take snapshot reads,
+/// not turns, so a healthy one answers in milliseconds; a bound this loose
+/// fires only when the loop is genuinely blocked rather than merely slow.
+const CONSOLE_READ_BUDGET: Duration = Duration::from_secs(30);
+
+/// Effective read budget: `MOBKIT_CONSOLE_READ_TIMEOUT_SECS` overrides the
+/// default, clamped to [1, 3600] seconds. The floor keeps `0` from failing
+/// every read; the ceiling keeps a mistyped value from silently restoring the
+/// unbounded wait this replaces (the `MOBKIT_BRIDGE_ACTOR_ADMISSION_SECS`
+/// idiom).
+///
+/// The dispatch `timeout` argument is deliberately NOT the source here: it is
+/// the gateway's runtime-event drain budget reused as a dispatch parameter,
+/// and callers pass values as low as one second. Deriving the read budget
+/// from it would convert slow-but-working reads into typed failures.
+fn console_read_budget() -> Duration {
+    parse_console_read_budget(
+        std::env::var("MOBKIT_CONSOLE_READ_TIMEOUT_SECS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn parse_console_read_budget(raw: Option<&str>) -> Duration {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|secs| Duration::from_secs(secs.clamp(1, 3600)))
+        .unwrap_or(CONSOLE_READ_BUDGET)
+}
+
+/// Bound a READ-ONLY console arm, converting a silent queue-behind-the-turn
+/// hang into a typed error naming the arm and the seam it was awaiting.
+///
+/// Only pure reads may route through here. Abandoning the future drops the
+/// reply oneshot of an in-flight `send_actor_command` or session-service read
+/// at worst: the command still executes on the loop and its reply send fails
+/// silently, which for a read leaves nothing half-applied. Mutation and
+/// lifecycle arms - and reads that run inside a member authority transaction,
+/// such as `cross_mob/peer_info` - keep their own semantics and MUST NOT be
+/// wrapped.
+async fn with_read_deadline<F>(
+    arm: &'static str,
+    awaiting: &'static str,
+    response_id: Value,
+    fut: F,
+) -> JsonRpcResponse
+where
+    F: Future<Output = JsonRpcResponse>,
+{
+    let budget = console_read_budget();
+    match tokio::time::timeout(budget, fut).await {
+        Ok(response) => response,
+        Err(_) => console_read_timeout_response(arm, awaiting, budget, response_id),
+    }
+}
+
+fn console_read_timeout_response(
+    arm: &'static str,
+    awaiting: &'static str,
+    budget: Duration,
+    response_id: Value,
+) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: None,
+        error: Some(JsonRpcError {
+            code: CONSOLE_READ_TIMEOUT_CODE,
+            message: format!(
+                "{arm} timed out after {}s awaiting {awaiting}; the member's session task or \
+                 the mob actor loop may be mid-turn, and both are strict sequential command \
+                 loops - reads queue behind a running turn rather than degrading",
+                budget.as_secs()
+            ),
+            data: Some(serde_json::json!({
+                "kind": "console_read_timeout",
+                "arm": arm,
+                "awaiting": awaiting,
+                "timeout_secs": budget.as_secs(),
+            })),
+        }),
+    }
+}
+
 async fn handle_unified_rpc_json_inner(
     runtime: &UnifiedRuntime,
     runtime_owner: Option<&Arc<UnifiedRuntime>>,
@@ -2884,11 +2984,16 @@ async fn handle_unified_rpc_json_inner(
             .await
         }
         "mobkit/find_members" => {
-            mob_methods::handle_find_members(
-                runtime,
-                identity_ctx.map(|ctx| &ctx.runtime),
-                response_id,
-                &request.params,
+            with_read_deadline(
+                "mobkit/find_members",
+                "the mob actor roster search and the identity staleness reads",
+                response_id.clone(),
+                mob_methods::handle_find_members(
+                    runtime,
+                    identity_ctx.map(|ctx| &ctx.runtime),
+                    response_id,
+                    &request.params,
+                ),
             )
             .await
         }
@@ -2902,19 +3007,29 @@ async fn handle_unified_rpc_json_inner(
             .await
         }
         "mobkit/list_members" => {
-            mob_methods::handle_list_members(
-                runtime,
-                identity_ctx.map(|ctx| &ctx.runtime),
-                response_id,
+            with_read_deadline(
+                "mobkit/list_members",
+                "the mob actor roster snapshot and the identity staleness reads",
+                response_id.clone(),
+                mob_methods::handle_list_members(
+                    runtime,
+                    identity_ctx.map(|ctx| &ctx.runtime),
+                    response_id,
+                ),
             )
             .await
         }
         "mobkit/get_member" => {
-            mob_methods::handle_get_member(
-                runtime,
-                identity_ctx.map(|ctx| &ctx.runtime),
-                response_id,
-                &request.params,
+            with_read_deadline(
+                "mobkit/get_member",
+                "the mob actor roster read and the identity staleness read",
+                response_id.clone(),
+                mob_methods::handle_get_member(
+                    runtime,
+                    identity_ctx.map(|ctx| &ctx.runtime),
+                    response_id,
+                    &request.params,
+                ),
             )
             .await
         }
@@ -3002,20 +3117,30 @@ async fn handle_unified_rpc_json_inner(
         }
         "mobkit/peer_pubkey" => mob_methods::handle_peer_pubkey(runtime, response_id).await,
         "mobkit/member_status" => {
-            mob_methods::handle_member_status(
-                runtime,
-                identity_ctx.map(|ctx| &ctx.runtime),
-                response_id,
-                &request.params,
+            with_read_deadline(
+                "mobkit/member_status",
+                "the mob actor member-status round trip",
+                response_id.clone(),
+                mob_methods::handle_member_status(
+                    runtime,
+                    identity_ctx.map(|ctx| &ctx.runtime),
+                    response_id,
+                    &request.params,
+                ),
             )
             .await
         }
         "mobkit/identity/resolved_tools" => {
-            mob_methods::handle_identity_resolved_tools(
-                runtime,
-                identity_ctx.map(|ctx| &ctx.runtime),
-                response_id,
-                &request.params,
+            with_read_deadline(
+                "mobkit/identity/resolved_tools",
+                "the identity status read and the session tool-scope snapshot",
+                response_id.clone(),
+                mob_methods::handle_identity_resolved_tools(
+                    runtime,
+                    identity_ctx.map(|ctx| &ctx.runtime),
+                    response_id,
+                    &request.params,
+                ),
             )
             .await
         }
@@ -3059,11 +3184,23 @@ async fn handle_unified_rpc_json_inner(
             mob_methods::handle_cancel_flow(runtime, response_id, &request.params).await
         }
         "mobkit/flow_status" => {
-            mob_methods::handle_flow_status(runtime, response_id, &request.params).await
+            with_read_deadline(
+                "mobkit/flow_status",
+                "the mob actor flow-status read",
+                response_id.clone(),
+                mob_methods::handle_flow_status(runtime, response_id, &request.params),
+            )
+            .await
         }
         "mobkit/list_flows" => mob_methods::handle_list_flows(runtime, response_id).await,
         "mobkit/list_runs" => {
-            mob_methods::handle_list_runs(runtime, response_id, &request.params).await
+            with_read_deadline(
+                "mobkit/list_runs",
+                "the mob actor run-ledger read",
+                response_id.clone(),
+                mob_methods::handle_list_runs(runtime, response_id, &request.params),
+            )
+            .await
         }
         "mobkit/run_flow" => {
             Box::pin(mob_methods::handle_run_flow(
@@ -5336,10 +5473,11 @@ fn serialize_response(response: &JsonRpcResponse) -> String {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::{
-        IdentityMemberReadiness, error_response, handle_unified_rpc_json, identity_error_response,
+        CONSOLE_READ_BUDGET, CONSOLE_READ_TIMEOUT_CODE, IdentityMemberReadiness, error_response,
+        handle_unified_rpc_json, identity_error_response, parse_console_read_budget,
         resolve_live_target, resolve_rpc_identity_control_target, rpc_live_identity_alias_visible,
         rpc_member_id_matches_durable_identity, rpc_runtime_alias_generation,
-        wait_identity_startup_ready,
+        wait_identity_startup_ready, with_read_deadline,
     };
     use crate::identity_first::contracts::{ContinuityStore, LeaseProvider, RosterProvider};
     use crate::identity_first::{
@@ -5364,6 +5502,101 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::time::Duration;
+
+    /// OB3 (2026-08-16): `mobkit/identity/resolved_tools` hung past 60 seconds
+    /// with no completion because the member's session task was mid-turn and
+    /// the read had no deadline - the session task is a strict sequential
+    /// command loop, so the read queued instead of degrading. A read that
+    /// never answers must now become a TYPED timeout naming the arm and the
+    /// seam it was waiting on.
+    #[tokio::test(start_paused = true)]
+    async fn a_blocked_read_arm_returns_the_typed_timeout_instead_of_hanging() {
+        let response = with_read_deadline(
+            "mobkit/identity/resolved_tools",
+            "the identity status read and the session tool-scope snapshot",
+            json!(7),
+            std::future::pending::<super::JsonRpcResponse>(),
+        )
+        .await;
+
+        assert_eq!(
+            response.id,
+            json!(7),
+            "the timeout answers the same request"
+        );
+        assert!(
+            response.result.is_none(),
+            "a timed-out read must not fabricate a result"
+        );
+        let error = response
+            .error
+            .expect("a blocked read must surface an error");
+        assert_eq!(error.code, CONSOLE_READ_TIMEOUT_CODE);
+        assert!(
+            error.message.contains("mobkit/identity/resolved_tools")
+                && error.message.contains("session tool-scope snapshot"),
+            "the message must name the arm AND what it was awaiting: {}",
+            error.message
+        );
+        let data = error
+            .data
+            .expect("the typed timeout carries structured data");
+        assert_eq!(data["kind"], json!("console_read_timeout"));
+        assert_eq!(data["arm"], json!("mobkit/identity/resolved_tools"));
+        assert_eq!(data["timeout_secs"], json!(CONSOLE_READ_BUDGET.as_secs()));
+    }
+
+    /// A read that answers within its budget is returned untouched - the
+    /// deadline must not change any healthy read's response.
+    #[tokio::test(start_paused = true)]
+    async fn a_read_arm_that_answers_within_budget_is_passed_through() {
+        let response = with_read_deadline(
+            "mobkit/member_status",
+            "the mob actor member-status round trip",
+            json!(1),
+            async {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                super::JsonRpcResponse {
+                    jsonrpc: super::JSONRPC_VERSION.to_string(),
+                    id: json!(1),
+                    result: Some(json!({"state": "idle"})),
+                    error: None,
+                }
+            },
+        )
+        .await;
+
+        assert!(response.error.is_none(), "a healthy read must not time out");
+        assert_eq!(response.result, Some(json!({"state": "idle"})));
+    }
+
+    /// `MOBKIT_CONSOLE_READ_TIMEOUT_SECS` is clamped like the bridge admission
+    /// knob: `0` must not turn every console read into an instant failure, and
+    /// an over-large value must not restore the unbounded wait.
+    #[test]
+    fn the_console_read_budget_knob_is_clamped_at_both_ends() {
+        assert_eq!(parse_console_read_budget(None), CONSOLE_READ_BUDGET);
+        assert_eq!(
+            parse_console_read_budget(Some("not-a-number")),
+            CONSOLE_READ_BUDGET,
+            "an unparseable value falls back to the default"
+        );
+        assert_eq!(
+            parse_console_read_budget(Some(" 45 ")),
+            Duration::from_secs(45),
+            "a plain value is honored (whitespace trimmed)"
+        );
+        assert_eq!(
+            parse_console_read_budget(Some("0")),
+            Duration::from_secs(1),
+            "zero must not fail every read"
+        );
+        assert_eq!(
+            parse_console_read_budget(Some("100000")),
+            Duration::from_hours(1),
+            "an over-large value must not restore the unbounded wait"
+        );
+    }
 
     #[derive(Debug, Default)]
     struct EmptyRosterProvider;

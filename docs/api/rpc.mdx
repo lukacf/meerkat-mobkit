@@ -71,6 +71,7 @@ errors. SDKs surface it on `RpcError.data`.
 | `-32014` | `mobkit/init` fail-closed storage refusal: file-name twins the storage layout refuses to pick between, a session/runtime/blob/metadata/console store that failed to open (formerly a silent in-memory fallback), or an uncreatable state root. The message carries the remediation (the storage doctor, or the explicit ephemeral declaration). The gateway writes the error response and exits. | none |
 | `-32015` | `mobkit/bound_member_transcript` target session is live/running (transcript surgery only supports reject-while-active); quiesce the member first (retire or park it), then retry | none |
 | `-32016` | operator verb exists but its gateway wiring is absent (no compaction-floor registry / no concrete transcript-edit service threaded into the RPC context) | none |
+| `-32017` | a read-only console arm exhausted its deadline. The member's meerkat session task and the mob actor loop are strict sequential command loops, so a read issued while the member is mid-turn queues behind that turn instead of degrading; the arms that cross either loop (`identity/resolved_tools`, `member_status`, `list_members`, `get_member`, `find_members`, `flow_status`, `list_runs`) give up after the read budget and say so. The read is abandoned, never half-applied. Budget defaults to 30s, overridable with `MOBKIT_CONSOLE_READ_TIMEOUT_SECS` (clamped to 1..3600). | `{kind: "console_read_timeout", arm, awaiting, timeout_secs}` |
 
 The `-32010` constant is exported from both SDKs as
 `MOB_EVENTS_STALE_CURSOR_CODE`. The Python and TypeScript SDKs auto-
@@ -555,6 +556,16 @@ pre-LLM boundary), then disarms the floor and respawns again.
 
 Params: `identity` (required), `floor_tokens` (default `1024`), `timeout_ms`
 (default `60000`, budget for the maintenance turn).
+
+On `timeout_ms` expiry the verb disarms the floor and rolls the member back to
+its original threshold. That rollback rebuild retires the member, and mob
+retirement quiesces the session's active runtime turn before retiring, so a
+landed rollback also stops the maintenance turn. The error states which
+happened: the turn was quiesced by the rollback, or - when the rollback itself
+failed - it may still be running on the floored build, leaving the member
+briefly unresponsive. Because the forced compaction fires at the turn's pre-LLM
+boundary, it may already be durable when the wait expires; the error reports
+that from the transcript when a bounded re-read can confirm it.
 
 Result: `identity`, `session_id`, `floor_tokens`, `messages_before`,
 `messages_after`, `compaction_applied`, `head_revision`,

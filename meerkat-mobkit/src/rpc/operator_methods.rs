@@ -57,6 +57,12 @@ const DEFAULT_COMPACT_FLOOR_TOKENS: u64 = 1024;
 /// Default budget for the forced-compaction maintenance turn.
 const DEFAULT_COMPACT_TIMEOUT_MS: u64 = 60_000;
 
+/// Bound for the post-timeout transcript read that decides whether the forced
+/// compaction had already landed. It reads the same session whose turn just
+/// missed its budget, so the evidence clause is worth a few seconds and never
+/// worth a second unbounded wait.
+const COMPACT_TIMEOUT_EVIDENCE_BUDGET: Duration = Duration::from_secs(5);
+
 /// Default keep-last-N for `bound_member_transcript`.
 const DEFAULT_BOUND_KEEP_LAST: usize = 50;
 
@@ -280,7 +286,7 @@ pub(super) async fn handle_compact_member(
             Ok(facts) => Some(facts),
             Err(err) => {
                 floors.clear(&identity);
-                let restore = restore_after_floor(ctx, &identity, spec.clone()).await;
+                let (_, restore) = restore_after_floor(ctx, &identity, spec.clone()).await;
                 return rpc_error(
                     response_id,
                     -32000,
@@ -314,7 +320,7 @@ pub(super) async fn handle_compact_member(
         Ok(admission) => admission,
         Err(err) => {
             floors.clear(&identity);
-            let restore = restore_after_floor(ctx, &identity, spec.clone()).await;
+            let (_, restore) = restore_after_floor(ctx, &identity, spec.clone()).await;
             return rpc_error(
                 response_id,
                 -32000,
@@ -331,11 +337,55 @@ pub(super) async fn handle_compact_member(
         .await
     {
         floors.clear(&identity);
-        let restore = restore_after_floor(ctx, &identity, spec.clone()).await;
+        let (rolled_back, restore) = restore_after_floor(ctx, &identity, spec.clone()).await;
+        // Honest timeout semantics: the wait gave up, not the turn. The
+        // rollback rebuild that just ran retires the member, and mob
+        // retirement quiesces the session's active runtime turn before
+        // retiring it (`cancel_active_runtime_turn_before_retire`, under the
+        // retirement deadline), so a landed rollback IS the interrupt - no
+        // second cancel path is introduced here. A failed rollback leaves the
+        // turn running on the floored build, and the caller must be told so
+        // rather than left to infer that the timeout stopped anything.
+        let turn_fate = if rolled_back {
+            "; the in-flight maintenance turn was quiesced by the rollback rebuild \
+             (mob retirement cancels the active runtime turn before retiring)"
+        } else {
+            "; the maintenance turn may still be running on the floored build, so this member \
+             can stay briefly unresponsive and later reads on it may queue"
+        };
+        // The forced compaction fires at the turn's PRE-LLM boundary, so it
+        // can already be durable when the wait expires. This evidence read
+        // touches the same session that just failed to answer in time, so it
+        // gets its own short bound: unproven evidence is dropped from the
+        // message, never traded for a second hang.
+        let compaction_evidence = match (before.as_ref(), ctx.transcript_edit_service.as_ref()) {
+            (Some(before), Some(service)) => {
+                match tokio::time::timeout(
+                    COMPACT_TIMEOUT_EVIDENCE_BUDGET,
+                    read_transcript_facts(service, &session_id),
+                )
+                .await
+                {
+                    Ok(Ok(after)) if &after != before => {
+                        "; the forced compaction rewrite IS durably applied \
+                         (transcript facts changed before the timeout)"
+                    }
+                    Ok(Ok(_)) => {
+                        "; the forced compaction rewrite had not durably applied at \
+                                  timeout"
+                    }
+                    Ok(Err(_)) | Err(_) => "",
+                }
+            }
+            _ => "",
+        };
         return rpc_error(
             response_id,
             -32000,
-            format!("compact_member maintenance turn did not complete: {err}{restore}"),
+            format!(
+                "compact_member maintenance turn did not complete within {timeout_ms}ms: \
+                 {err}{turn_fate}{compaction_evidence}{restore}"
+            ),
         );
     }
 
@@ -471,20 +521,30 @@ async fn rebuild_member_for_fresh_build(
 }
 
 /// Best-effort restore rebuild for `compact_member` error paths, after the
-/// floor registry entry was cleared. Returns a suffix for the error message
-/// stating what the member build is left with.
+/// floor registry entry was cleared.
+///
+/// Returns whether the rollback rebuild actually landed, plus a suffix for the
+/// error message stating what the member build is left with. The landed flag
+/// is load-bearing on the timeout path: the rebuild retires the member, and
+/// mob retirement quiesces the session's active runtime turn before retiring,
+/// so a landed rollback is also what stops an in-flight maintenance turn.
 async fn restore_after_floor(
     ctx: &IdentityFirstContext,
     identity: &AgentIdentity,
     spec: crate::identity_first::DurableAgentSpec,
-) -> String {
+) -> (bool, String) {
     match rebuild_member_for_fresh_build(ctx, identity, None, spec).await {
-        Ok(_) => "; the temporary floor was rolled back (member rebuilt at its original \
-                  threshold)"
-            .to_string(),
-        Err(detail) => format!(
-            "; rollback rebuild also failed ({detail}) - the member keeps the temporary floor \
-             until its next rebuild"
+        Ok(_) => (
+            true,
+            "; the temporary floor was rolled back (member rebuilt at its original threshold)"
+                .to_string(),
+        ),
+        Err(detail) => (
+            false,
+            format!(
+                "; rollback rebuild also failed ({detail}) - the member keeps the temporary \
+                 floor until its next rebuild"
+            ),
         ),
     }
 }
@@ -1221,6 +1281,73 @@ comms = true
             response["error"]["code"],
             serde_json::json!(-32001),
             "an unowned identity must surface the typed unknown-identity refusal: {response:#?}"
+        );
+
+        let _ = harness.runtime.mob_handle().stop().await;
+    }
+
+    /// Honest timeout semantics: when the maintenance-turn wait gives up, the
+    /// error must state what actually happened to the turn - the rollback
+    /// rebuild's retire quiesces it, or, when the rollback did not land, it
+    /// may still be running on the floored build - instead of implying the
+    /// timeout stopped anything. The member must also come back usable: the
+    /// rollback rebuild restores the original profile threshold.
+    ///
+    /// Only the invariants that hold on BOTH branches are asserted. Which
+    /// branch runs depends on wall-clock progress the test does not control,
+    /// and the optional compaction-evidence clause is dropped whenever its
+    /// own bounded read cannot answer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compact_member_timeout_names_the_turn_fate_and_restores_the_member() {
+        let harness = operator_verb_harness("rt:worker:main:0", "operator-compact-timeout").await;
+        let fat = "seeded transcript ballast ".repeat(160);
+        for turn in 0..4 {
+            harness.run_turn(format!("turn {turn}: {fat}")).await;
+        }
+
+        // A 1ms wait cannot outlast a real bridge respawn + turn: the wait
+        // times out while the verb's machinery is still working.
+        let response = rpc(
+            &harness,
+            "mobkit/compact_member",
+            serde_json::json!({
+                "identity": harness.member_alias,
+                "floor_tokens": 256,
+                "timeout_ms": 1,
+            }),
+        )
+        .await;
+        let message = response["error"]["message"]
+            .as_str()
+            .unwrap_or_else(|| panic!("timeout must surface a typed error: {response:#?}"));
+        assert!(
+            message.contains("did not complete within 1ms"),
+            "the error must name the exhausted deadline: {message}"
+        );
+        assert!(
+            message.contains("quiesced by the rollback rebuild")
+                || message.contains("may still be running on the floored build"),
+            "the error must state the in-flight turn's actual fate: {message}"
+        );
+        assert!(
+            !message.contains("did not complete: "),
+            "the pre-fix message shape (bare wait error, no turn fate) must be gone: {message}"
+        );
+        assert!(
+            harness.floors.get(&harness.identity).is_none(),
+            "the floor registry must be disarmed after a timed-out verb"
+        );
+
+        // The member must be usable after the rollback: a probe turn appends.
+        let (count_before_probe, _) = harness.transcript_facts().await;
+        harness
+            .run_turn("post-timeout probe turn".to_string())
+            .await;
+        let (count_after_probe, _) = harness.transcript_facts().await;
+        assert!(
+            count_after_probe > count_before_probe,
+            "the rolled-back member must accept turns: {count_before_probe} -> \
+             {count_after_probe}"
         );
 
         let _ = harness.runtime.mob_handle().stop().await;
