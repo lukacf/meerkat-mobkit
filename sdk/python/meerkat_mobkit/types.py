@@ -1866,12 +1866,22 @@ class MobRunSnapshot:
 
 
 class ErrorCategory(str, Enum):
-    """Error event categories matching Rust's ErrorEvent variants."""
+    """Error event categories matching Rust's ErrorEvent variants.
+
+    Every Rust ``ErrorEvent`` variant must appear here with its serde
+    ``snake_case`` wire tag. The Rust test
+    ``meerkat-mobkit/tests/sdk_error_category_parity.rs`` fails the build if
+    this set drifts from the Rust enum.
+    """
     SPAWN_FAILURE = "spawn_failure"
     RECONCILE_INCOMPLETE = "reconcile_incomplete"
     CHECKPOINT_FAILURE = "checkpoint_failure"
+    COMPACTION_PERSISTENCE_REJECTED = "compaction_persistence_rejected"
+    ACTOR_LOOP_STALLED = "actor_loop_stalled"
     HOST_LOOP_CRASH = "host_loop_crash"
     REDISCOVER_FAILURE = "rediscover_failure"
+    EVENT_LOG_FLUSH_FAILURE = "event_log_flush_failure"
+    IDENTITY_MATERIALIZATION_FAILURE = "identity_materialization_failure"
 
 
 @dataclass(frozen=True)
@@ -1908,11 +1918,21 @@ class ErrorEvent:
         elif category == ErrorCategory.CHECKPOINT_FAILURE:
             session_id = context.get("session_id", "")
             message = f"{session_id}: {error}" if session_id else error
+        elif category == ErrorCategory.COMPACTION_PERSISTENCE_REJECTED:
+            identity = context.get("identity", "")
+            session_id = context.get("session_id", "")
+            message = f"{identity} ({session_id}): {error}"
+        elif category == ErrorCategory.ACTOR_LOOP_STALLED:
+            waited = context.get("probe_waited_secs", 0)
+            detail = context.get("detail", "")
+            message = f"probe unanswered for {waited}s: {detail}"
         elif category == ErrorCategory.HOST_LOOP_CRASH:
             message = f"{member_id}: {error}" if member_id else error
         elif category == ErrorCategory.REDISCOVER_FAILURE:
             message = error
-        elif category == "identity_materialization_failure":
+        elif category == ErrorCategory.EVENT_LOG_FLUSH_FAILURE:
+            message = error
+        elif category == ErrorCategory.IDENTITY_MATERIALIZATION_FAILURE:
             identity = context.get("identity", "")
             initiator = context.get("initiator", "")
             operation = context.get("operation", "")

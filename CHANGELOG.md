@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The Python and TypeScript SDK `ErrorCategory` enums declared only five of the
+  nine Rust `ErrorEvent` variants, so a host could not write a typed alert arm
+  for `compaction_persistence_rejected`, `actor_loop_stalled`,
+  `event_log_flush_failure`, or `identity_materialization_failure` - the very
+  events operators are told to page on. The events always arrived (both SDKs
+  pass unknown categories through as raw strings), but only as a catch-all.
+  All four are now declared in both SDKs, with `message` formatting mirroring
+  the Rust `Display` impl instead of falling through to a raw JSON dump.
+
+### Added
+
+- `meerkat-mobkit/tests/sdk_error_category_parity.rs` fails the build when the
+  SDK `ErrorCategory` sets drift from the Rust `ErrorEvent` enum, naming the
+  missing/extra tags and the file to edit. The authoritative Rust set is read
+  back out of serde itself, so a per-variant `#[serde(rename = "...")]` cannot
+  slip past it.
+
 ### Removed
 
 - **Item 14 phase B** - removed the second scheduling authority as one breaking

@@ -8,6 +8,7 @@ from meerkat_mobkit.types import (
     CapabilitiesResult,
     DeliveryHistoryResult,
     DeliveryResult,
+    ErrorCategory,
     ErrorEvent,
     EventEnvelope,
     EventQuery,
@@ -1075,6 +1076,52 @@ class TestErrorEvent:
             == "initiative:broken for review:singleton: materialize_reachable_peers: bridge create_session: missing skill"
         )
         assert r.context["identity"] == "initiative:broken"
+
+    def test_compaction_persistence_rejected_from_dict(self):
+        r = ErrorEvent.from_dict(
+            {
+                "category": "compaction_persistence_rejected",
+                "identity": "review:singleton",
+                "session_id": "sess-9",
+                "error": "store rejected summary",
+            }
+        )
+        assert r.category == "compaction_persistence_rejected"
+        assert r.message == "review:singleton (sess-9): store rejected summary"
+
+    def test_actor_loop_stalled_from_dict(self):
+        r = ErrorEvent.from_dict(
+            {
+                "category": "actor_loop_stalled",
+                "probe_waited_secs": 30,
+                "detail": "mob command loop busy",
+            }
+        )
+        assert r.category == "actor_loop_stalled"
+        assert r.message == "probe unanswered for 30s: mob command loop busy"
+
+    def test_event_log_flush_failure_from_dict(self):
+        r = ErrorEvent.from_dict(
+            {"category": "event_log_flush_failure", "error": "disk full"}
+        )
+        assert r.category == "event_log_flush_failure"
+        assert r.message == "disk full"
+
+    # The full set is gated against the Rust `ErrorEvent` enum by
+    # meerkat-mobkit/tests/sdk_error_category_parity.rs; this asserts the exact
+    # tags so a rename here cannot pass by editing both sides of that gate.
+    def test_error_category_members_match_expected_values(self):
+        assert {member.name: member.value for member in ErrorCategory} == {
+            "SPAWN_FAILURE": "spawn_failure",
+            "RECONCILE_INCOMPLETE": "reconcile_incomplete",
+            "CHECKPOINT_FAILURE": "checkpoint_failure",
+            "COMPACTION_PERSISTENCE_REJECTED": "compaction_persistence_rejected",
+            "ACTOR_LOOP_STALLED": "actor_loop_stalled",
+            "HOST_LOOP_CRASH": "host_loop_crash",
+            "REDISCOVER_FAILURE": "rediscover_failure",
+            "EVENT_LOG_FLUSH_FAILURE": "event_log_flush_failure",
+            "IDENTITY_MATERIALIZATION_FAILURE": "identity_materialization_failure",
+        }
 
 
 class TestEventQuery:

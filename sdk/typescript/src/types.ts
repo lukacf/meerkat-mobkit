@@ -2022,12 +2022,20 @@ export function parseMobpackDeployResult(raw: unknown): MobpackDeployResult {
 
 // -- ErrorCategory / ErrorEvent -------------------------------------------
 
+// Every Rust `ErrorEvent` variant must appear here with its serde
+// `snake_case` wire tag. The Rust test
+// `meerkat-mobkit/tests/sdk_error_category_parity.rs` fails the build if this
+// set drifts from the Rust enum.
 export const ErrorCategory = {
   SPAWN_FAILURE: "spawn_failure",
   RECONCILE_INCOMPLETE: "reconcile_incomplete",
   CHECKPOINT_FAILURE: "checkpoint_failure",
+  COMPACTION_PERSISTENCE_REJECTED: "compaction_persistence_rejected",
+  ACTOR_LOOP_STALLED: "actor_loop_stalled",
   HOST_LOOP_CRASH: "host_loop_crash",
   REDISCOVER_FAILURE: "rediscover_failure",
+  EVENT_LOG_FLUSH_FAILURE: "event_log_flush_failure",
+  IDENTITY_MATERIALIZATION_FAILURE: "identity_materialization_failure",
 } as const;
 
 export type ErrorCategoryValue =
@@ -2066,13 +2074,28 @@ export function parseErrorEvent(raw: unknown): ErrorEvent {
       message = sessionId ? `${sessionId}: ${error}` : error;
       break;
     }
+    case ErrorCategory.COMPACTION_PERSISTENCE_REJECTED: {
+      const identity = String(context.identity ?? "");
+      const sessionId = String(context.session_id ?? "");
+      message = `${identity} (${sessionId}): ${error}`;
+      break;
+    }
+    case ErrorCategory.ACTOR_LOOP_STALLED: {
+      const waited = Number(context.probe_waited_secs ?? 0);
+      const detail = String(context.detail ?? "");
+      message = `probe unanswered for ${waited}s: ${detail}`;
+      break;
+    }
     case ErrorCategory.HOST_LOOP_CRASH:
       message = memberId ? `${memberId}: ${error}` : error;
       break;
     case ErrorCategory.REDISCOVER_FAILURE:
       message = error;
       break;
-    case "identity_materialization_failure": {
+    case ErrorCategory.EVENT_LOG_FLUSH_FAILURE:
+      message = error;
+      break;
+    case ErrorCategory.IDENTITY_MATERIALIZATION_FAILURE: {
       const identity = String(context.identity ?? "");
       const initiator = String(context.initiator ?? "");
       const operation = String(context.operation ?? "");

@@ -1414,12 +1414,57 @@ describe("parseErrorEvent", () => {
     assert.equal(result.context.extra, "data");
   });
 
+  it("parses compaction_persistence_rejected", () => {
+    const result = parseErrorEvent({
+      category: "compaction_persistence_rejected",
+      identity: "review:singleton",
+      session_id: "sess-9",
+      error: "store rejected summary",
+    });
+    assert.equal(result.category, "compaction_persistence_rejected");
+    assert.equal(
+      result.message,
+      "review:singleton (sess-9): store rejected summary",
+    );
+  });
+
+  it("parses actor_loop_stalled", () => {
+    const result = parseErrorEvent({
+      category: "actor_loop_stalled",
+      probe_waited_secs: 30,
+      detail: "mob command loop busy",
+    });
+    assert.equal(result.category, "actor_loop_stalled");
+    assert.equal(
+      result.message,
+      "probe unanswered for 30s: mob command loop busy",
+    );
+  });
+
+  it("parses event_log_flush_failure", () => {
+    const result = parseErrorEvent({
+      category: "event_log_flush_failure",
+      error: "disk full",
+    });
+    assert.equal(result.category, "event_log_flush_failure");
+    assert.equal(result.message, "disk full");
+  });
+
+  // The full set is gated against the Rust `ErrorEvent` enum by
+  // meerkat-mobkit/tests/sdk_error_category_parity.rs; this asserts the exact
+  // tags so a rename here cannot pass by editing both sides of that gate.
   it("ErrorCategory constants match expected values", () => {
-    assert.equal(ErrorCategory.SPAWN_FAILURE, "spawn_failure");
-    assert.equal(ErrorCategory.RECONCILE_INCOMPLETE, "reconcile_incomplete");
-    assert.equal(ErrorCategory.CHECKPOINT_FAILURE, "checkpoint_failure");
-    assert.equal(ErrorCategory.HOST_LOOP_CRASH, "host_loop_crash");
-    assert.equal(ErrorCategory.REDISCOVER_FAILURE, "rediscover_failure");
+    assert.deepEqual({ ...ErrorCategory }, {
+      SPAWN_FAILURE: "spawn_failure",
+      RECONCILE_INCOMPLETE: "reconcile_incomplete",
+      CHECKPOINT_FAILURE: "checkpoint_failure",
+      COMPACTION_PERSISTENCE_REJECTED: "compaction_persistence_rejected",
+      ACTOR_LOOP_STALLED: "actor_loop_stalled",
+      HOST_LOOP_CRASH: "host_loop_crash",
+      REDISCOVER_FAILURE: "rediscover_failure",
+      EVENT_LOG_FLUSH_FAILURE: "event_log_flush_failure",
+      IDENTITY_MATERIALIZATION_FAILURE: "identity_materialization_failure",
+    });
   });
 });
 
