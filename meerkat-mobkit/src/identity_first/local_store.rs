@@ -140,6 +140,10 @@ pub(crate) const MOBKIT_CONTINUITY_DOMAIN: meerkat_sqlite::SchemaDomain =
         ],
         initialize_current: initialize_current_continuity_schema,
         allowed_existing_versions: &[1, 2],
+        // Unledgered mobkit files are refused at open (below the 0.8.8 ledger
+        // floor) and mobkit never runs the offline bridge, so no source
+        // version is inferable.
+        bridge_recoverable_versions: &[],
         released_predecessors: &[meerkat_sqlite::SchemaPredecessor {
             version: 1,
             verify: verify_released_v1_continuity_schema,
@@ -243,6 +247,10 @@ const MOBKIT_CONTINUITY_BASELINE_DOMAIN: meerkat_sqlite::SchemaDomain =
         }],
         initialize_current: migration_0001_continuity_schema,
         allowed_existing_versions: &[1],
+        // Unledgered mobkit files are refused at open (below the 0.8.8 ledger
+        // floor) and mobkit never runs the offline bridge, so no source
+        // version is inferable.
+        bridge_recoverable_versions: &[],
         released_predecessors: &[],
         owned_objects: RELEASED_V1_CONTINUITY_OBJECTS,
         retired_objects: &[],
@@ -6232,6 +6240,10 @@ mod tests {
         }],
         initialize_current: migration_0001_continuity_schema,
         allowed_existing_versions: &[1],
+        // Unledgered mobkit files are refused at open (below the 0.8.8 ledger
+        // floor) and mobkit never runs the offline bridge, so no source
+        // version is inferable.
+        bridge_recoverable_versions: &[],
         released_predecessors: &[],
         owned_objects: RELEASED_V1_CONTINUITY_OBJECTS,
         retired_objects: &[],
