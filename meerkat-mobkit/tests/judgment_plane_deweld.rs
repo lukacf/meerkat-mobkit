@@ -38,11 +38,19 @@ use meerkat_mobkit::{
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+/// Per-test mob id counter: 0.8.23's fail-closed in-proc registration
+/// means concurrently running tests must not share a supervisor route.
+static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 const REALM: &str = "fake-realm";
 
-const DEWELD_MOB_TOML: &str = r#"
+/// Per-call mob id: 0.8.23's fail-closed in-proc registration means
+/// concurrently running tests must not share a supervisor route.
+fn deweld_mob_toml() -> String {
+    format!(
+        r#"
 [mob]
-id = "deweld-memory-mob"
+id = "deweld-memory-mob-{}"
 
 [profiles.worker]
 model = "gpt-5.5"
@@ -51,10 +59,13 @@ external_addressable = true
 
 [profiles.worker.tools]
 comms = true
-"#;
+"#,
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
 
 fn test_definition() -> MobDefinition {
-    MobDefinition::from_toml(DEWELD_MOB_TOML).expect("parse test mob definition")
+    MobDefinition::from_toml(&deweld_mob_toml()).expect("parse test mob definition")
 }
 
 // ---------------------------------------------------------------------------

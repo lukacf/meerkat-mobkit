@@ -438,10 +438,13 @@ async fn build_access_runtime_fixture() -> (tempfile::TempDir, UnifiedRuntime) {
     std::fs::create_dir_all(&session_path).expect("session path");
     let factory = AgentFactory::new(&session_path).comms(true);
     let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
-    let definition = MobDefinition::from_toml(
+    // Per-runtime mob id: 0.8.23's fail-closed in-proc registration means
+    // concurrently running tests must not share a supervisor route.
+    static NEXT_ACCESS_MOB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "access-control-mob"
+id = "access-control-mob-{}"
 
 [profiles.lead]
 model = "gpt-5.5"
@@ -450,7 +453,8 @@ external_addressable = true
 [profiles.lead.tools]
 comms = true
 "#,
-    )
+        NEXT_ACCESS_MOB.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
     .expect("definition");
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
         .with_options(MobBootstrapOptions {

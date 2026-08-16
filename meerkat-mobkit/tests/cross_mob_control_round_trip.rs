@@ -115,6 +115,13 @@ fn grants_for(caller: &GatewayPeerKeys, member: &str) -> ControlGrantTable {
     grants
 }
 
+/// Every test here bootstraps the same mob-a/mob-b pair and shuts both down
+/// cleanly. 0.8.23's fail-closed in-proc registration refuses a live route
+/// takeover, so the tests serialize (topology_control precedent): terminal
+/// shutdown releases the supervisor routes before the next test bootstraps.
+static CONTROL_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 async fn build_runtime(
     mob_toml: &str,
     control_listen: &str,
@@ -215,6 +222,7 @@ fn assert_acked(receipt: meerkat_core::comms::SendReceipt, leg: &str) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn configured_listener_without_grants_refuses_every_caller() {
+    let _serial = CONTROL_TEST_LOCK.lock().await;
     let definition = MobDefinition::from_toml(MOB_TOML_B).expect("parse mob definition");
     let server_keys = GatewayPeerKeys::ephemeral();
     let mut runtime = Box::pin(
@@ -265,6 +273,7 @@ async fn configured_listener_without_grants_refuses_every_caller() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tcp_control_round_trip_wires_and_delivers_both_ways() {
+    let _serial = CONTROL_TEST_LOCK.lock().await;
     let keys_a = GatewayPeerKeys::ephemeral();
     let keys_b = GatewayPeerKeys::ephemeral();
     // B first: its bound control address feeds A's contact directory.
@@ -390,6 +399,7 @@ async fn tcp_control_round_trip_wires_and_delivers_both_ways() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn uds_control_round_trip_wires_both_sides() {
+    let _serial = CONTROL_TEST_LOCK.lock().await;
     let keys_a = GatewayPeerKeys::ephemeral();
     let keys_b = GatewayPeerKeys::ephemeral();
     let dir = tempfile::tempdir().expect("tempdir");

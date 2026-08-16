@@ -26,16 +26,21 @@ use meerkat_mobkit::unified_runtime::UnifiedRuntimeBuilder;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+/// Per-test mob id counter: 0.8.23's fail-closed in-proc registration
+/// means concurrently running tests must not share a supervisor route.
+static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn test_definition() -> meerkat_mob::MobDefinition {
-    meerkat_mob::MobDefinition::from_toml(
+    meerkat_mob::MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "storage-layout-boot-test"
+id = "storage-layout-boot-test-{}"
 
 [profiles.default]
 model = "gpt-5.5"
 "#,
-    )
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
     .expect("parse test mob definition")
 }
 
@@ -181,13 +186,20 @@ async fn builder_refuses_session_file_name_twins() {
 // rpc_gateway (SDK stdio surface)
 // ---------------------------------------------------------------------------
 
-const RPC_MOB_CONFIG: &str = r#"
+/// Per-call mob id: 0.8.23's fail-closed in-proc registration means
+/// concurrently running tests must not share a supervisor route.
+fn rpc_mob_config() -> String {
+    format!(
+        r#"
 [mob]
-id = "storage-layout-rpc-test"
+id = "storage-layout-rpc-test-{}"
 
 [profiles.default]
 model = "gpt-5.5"
-"#;
+"#,
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
 
 /// Spawn the real `rpc_gateway --persistent`, send one `mobkit/init` with
 /// `persistent_state`, and return the init response.
@@ -206,7 +218,7 @@ fn rpc_gateway_init(state_dir: &Path) -> Value {
         "method": "mobkit/init",
         "params": {
             "persistent_state": state_dir,
-            "mob_config": RPC_MOB_CONFIG,
+            "mob_config": &rpc_mob_config(),
         }
     });
     writeln!(

@@ -23,6 +23,10 @@ use meerkat_mobkit::{
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+/// Per-test mob id counter: 0.8.23's fail-closed in-proc registration
+/// means concurrently running tests must not share a supervisor route.
+static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// The one definition of the normalized-provider-accounting contract every
 /// MobKit LLM double must satisfy under meerkat 0.8.22. See the module docs.
 #[path = "support/llm_usage.rs"]
@@ -57,10 +61,10 @@ async fn build_unified_runtime_with_flow_and_client(
 
     // Mob definition with one flow ("demo") so list_flows has something to
     // return. The flow has a single trivial step targeting the lead role.
-    let definition = MobDefinition::from_toml(
+    let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "flow-test-mob"
+id = "flow-test-mob-{}"
 
 [profiles.lead]
 model = "gpt-5.5"
@@ -76,7 +80,8 @@ description = "demo flow"
 role = "lead"
 message = "first"
 "#,
-    )
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
     .expect("parse mob definition");
 
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)

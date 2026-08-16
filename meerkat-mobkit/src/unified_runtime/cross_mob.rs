@@ -2565,7 +2565,16 @@ fn register_cross_namespace_aliases(
             target_sender,
             PeerMeta::default(),
         );
-        if outcome.is_rejected() || outcome.displaced_existing() {
+        // 0.8.23: name-occupied displacement now fails closed as
+        // Rejected(NameOccupied) (caught by is_rejected); ReplacedPubkey is
+        // the one surviving displacement shape (same pubkey evicting its own
+        // old name) and keeps mobkit's fail-closed posture here.
+        if outcome.is_rejected()
+            || matches!(
+                outcome,
+                meerkat_comms::RegistrationOutcome::ReplacedPubkey { .. }
+            )
+        {
             return Err(format!("target alias installation failed: {outcome:?}"));
         }
     }
@@ -2577,7 +2586,16 @@ fn register_cross_namespace_aliases(
             source_sender,
             PeerMeta::default(),
         );
-        if outcome.is_rejected() || outcome.displaced_existing() {
+        // 0.8.23: name-occupied displacement now fails closed as
+        // Rejected(NameOccupied) (caught by is_rejected); ReplacedPubkey is
+        // the one surviving displacement shape (same pubkey evicting its own
+        // old name) and keeps mobkit's fail-closed posture here.
+        if outcome.is_rejected()
+            || matches!(
+                outcome,
+                meerkat_comms::RegistrationOutcome::ReplacedPubkey { .. }
+            )
+        {
             if !target_preexisting {
                 registry.unregister_in_namespace(source_namespace, &target_pubkey);
             }

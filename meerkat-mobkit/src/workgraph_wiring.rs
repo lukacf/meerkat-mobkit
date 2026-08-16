@@ -1008,11 +1008,22 @@ mod tests {
     const SESSION_MOVER: &str = "019e63c2-0000-7000-8000-0000000000a2";
     const SESSION_FREE: &str = "019e63c2-0000-7000-8000-0000000000a3";
 
-    fn admission_definition() -> meerkat_mob::MobDefinition {
-        meerkat_mob::MobDefinition::from_toml(
+    /// Per-test mob id: same-name supervisor routes in the process-global
+    /// in-proc registry collide across concurrently running tests now that
+    /// meerkat 0.8.23 refuses displacement, so each plane gets its own id.
+    fn unique_admission_mob_id() -> String {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        format!(
+            "wiring-admission-mob-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    }
+
+    fn admission_definition(mob_id: &str) -> meerkat_mob::MobDefinition {
+        meerkat_mob::MobDefinition::from_toml(&format!(
             r#"
 [mob]
-id = "wiring-admission-mob"
+id = "{mob_id}"
 
 [profiles.worker]
 model = "gpt-5.5"
@@ -1020,8 +1031,8 @@ runtime_mode = "autonomous_host"
 
 [profiles.worker.tools]
 comms = true
-"#,
-        )
+"#
+        ))
         .expect("parse admission test definition")
     }
 
@@ -1030,6 +1041,83 @@ comms = true
     /// admission slot on the bootstrap spec, and let `MobRuntime::bootstrap`
     /// fill it — the exact wiring a gateway gets.
     async fn bootstrapped_tool_plane() -> (
+        crate::MobRuntime,
+        WorkGraphService,
+        Arc<dyn meerkat_core::AgentToolDispatcher>,
+        tempfile::TempDir,
+        String,
+    ) {
+        let mob_id = unique_admission_mob_id();
+        let (runtime, service, dispatcher, dir) = tool_plane_for(&mob_id).await;
+        (runtime, service, dispatcher, dir, mob_id)
+    }
+
+    /// Durable variant of [`tool_plane_for`] for the twin-plane succession
+    /// tests: the roster-owning incumbent and the roster-blind successor are
+    /// SEPARATE PROCESSES sharing a durable state dir in production, so the
+    /// twin tests model them as two runtimes over one SQLite session store.
+    /// The incumbent stands down terminally (releasing its supervisor route -
+    /// meerkat 0.8.23 refuses displacement) before the successor bootstraps
+    /// the SAME mob id ordinarily; the member session's binding survives in
+    /// the shared store, which is exactly what blind resolution reads.
+    async fn durable_tool_plane_for(
+        mob_id: &str,
+        state: &Path,
+    ) -> (
+        crate::MobRuntime,
+        WorkGraphService,
+        Arc<dyn meerkat_core::AgentToolDispatcher>,
+    ) {
+        let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(state.join("sessions.db"))
+                .expect("session store"),
+        );
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(state.join("runtime.sqlite"))
+                .expect("runtime store"),
+        );
+        let blob_store: Arc<dyn meerkat_core::BlobStore> =
+            Arc::new(meerkat_store::MemoryBlobStore::new());
+        let mut builder = test_builder(state);
+        let (service, slot) = attach_workgraph_tools_ephemeral(&builder, "admission-realm");
+        let dispatcher = builder
+            .default_workgraph_tools
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .expect("dispatcher installed");
+        builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+            session_store.clone(),
+        )));
+        builder.default_blob_store = Some(blob_store.clone());
+        let concrete = Arc::new(meerkat_session::PersistentSessionService::new(
+            builder,
+            8,
+            session_store,
+            runtime_store,
+            blob_store,
+        ));
+        let spec = crate::MobBootstrapSpec::new(
+            admission_definition(mob_id),
+            meerkat_mob::MobStorage::in_memory(),
+            concrete,
+        )
+        .with_workgraph_service(Some(service.clone()))
+        .with_workgraph_admission_slot(slot)
+        .with_options(crate::MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+        });
+        let runtime = crate::MobRuntime::bootstrap(spec)
+            .await
+            .expect("bootstrap mob runtime");
+        (runtime, service, dispatcher)
+    }
+
+    async fn tool_plane_for(
+        mob_id: &str,
+    ) -> (
         crate::MobRuntime,
         WorkGraphService,
         Arc<dyn meerkat_core::AgentToolDispatcher>,
@@ -1047,7 +1135,7 @@ comms = true
         let session_service: Arc<dyn meerkat_mob::MobSessionService> =
             Arc::new(meerkat_session::EphemeralSessionService::new(builder, 8));
         let spec = crate::MobBootstrapSpec::new(
-            admission_definition(),
+            admission_definition(mob_id),
             meerkat_mob::MobStorage::in_memory(),
             session_service,
         )
@@ -1151,7 +1239,7 @@ comms = true
     /// forward and succeed.
     #[tokio::test(flavor = "multi_thread")]
     async fn tool_plane_reassign_onto_an_occupied_target_names_the_occupant() {
-        let (runtime, service, dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let (runtime, service, dispatcher, _dir, _mob_id) = bootstrapped_tool_plane().await;
         let occupant = create_session_goal(
             &service,
             "occupant",
@@ -1286,7 +1374,7 @@ comms = true
     /// windows, so whichever acquires second sees the other's binding.
     #[tokio::test(flavor = "multi_thread")]
     async fn tool_reassign_and_rpc_goal_create_racing_admit_exactly_one() {
-        let (runtime, service, dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let (runtime, service, dispatcher, _dir, _mob_id) = bootstrapped_tool_plane().await;
         let mover = create_session_goal(
             &service,
             "mover",
@@ -1367,7 +1455,7 @@ comms = true
     /// can be providing the exclusion.
     #[tokio::test(flavor = "multi_thread")]
     async fn admissions_sharing_a_sidecar_serialize_like_two_processes() {
-        let (runtime, _service, _dispatcher, dir) = bootstrapped_tool_plane().await;
+        let (runtime, _service, _dispatcher, dir, _mob_id) = bootstrapped_tool_plane().await;
         let sidecar = crate::workgraph_admission::workgraph_admission_sidecar_path(dir.path());
         let first = crate::workgraph_admission::WorkGraphAdmission::new(
             runtime.handle(),
@@ -1440,11 +1528,26 @@ comms = true
     /// session in session form (no aliasing exists for it).
     #[tokio::test(flavor = "multi_thread")]
     async fn blind_roster_admission_resolves_members_through_the_shared_session_store() {
-        let (runtime_knows, service, _dispatcher, dir) = bootstrapped_tool_plane().await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mob_id = unique_admission_mob_id();
+        let (runtime_knows, service, _dispatcher) =
+            durable_tool_plane_for(&mob_id, dir.path()).await;
         let session_id = spawn_helper_member(&runtime_knows).await;
+        // Succession through the real lifecycle: the roster-owning incumbent
+        // stands down (terminal shutdown releases its supervisor route), then
+        // the roster-blind co-runtime bootstraps the SAME mob id ordinarily.
+        // The blind plane must share the id - store-based member resolution
+        // filters bindings by the resolving runtime's own mob id.
+        let knows_service = runtime_knows.session_service().cloned();
+        runtime_knows
+            .handle()
+            .shutdown()
+            .await
+            .expect("incumbent stands down before the blind co-runtime boots");
 
         // The "co-process": same mob definition, no members ever spawned.
-        let (runtime_blind, _service_b, _dispatcher_b, _dir_b) = bootstrapped_tool_plane().await;
+        let (runtime_blind, _service_b, _dispatcher_b) =
+            durable_tool_plane_for(&mob_id, dir.path()).await;
         assert!(
             runtime_blind
                 .handle()
@@ -1462,7 +1565,7 @@ comms = true
         // `load_persisted_session` is the store read this models.
         let blind = crate::workgraph_admission::WorkGraphAdmission::new(
             runtime_blind.handle(),
-            runtime_knows.session_service().cloned(),
+            knows_service.clone(),
             Some(sidecar),
         );
 
@@ -1483,7 +1586,7 @@ comms = true
         );
         assert_eq!(
             created["attention"]["target"]["owner_key"]["id"],
-            serde_json::json!("mob/wiring-admission-mob/agent/helper"),
+            serde_json::json!(format!("mob/{mob_id}/agent/helper")),
         );
         let occupant = created["attention"]["binding_id"].as_str().unwrap();
 
@@ -1527,7 +1630,7 @@ comms = true
             serde_json::json!("session"),
             "{non_member:#?}"
         );
-        runtime_knows.handle().stop().await.expect("stop");
+
         runtime_blind.handle().stop().await.expect("stop");
     }
 
@@ -1537,7 +1640,7 @@ comms = true
     /// after the member has left the roster.
     #[tokio::test(flavor = "multi_thread")]
     async fn occupancy_check_holds_while_the_member_is_absent_from_the_roster() {
-        let (runtime, service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let (runtime, service, _dispatcher, _dir, _mob_id) = bootstrapped_tool_plane().await;
         let session_id = spawn_helper_member(&runtime).await;
         let admission = runtime.workgraph_admission();
 
@@ -1593,7 +1696,7 @@ comms = true
     /// form — the tool plane writes the same spelling as the RPC arms.
     #[tokio::test(flavor = "multi_thread")]
     async fn tool_plane_reassign_lowers_member_session_targets_to_owner_form() {
-        let (runtime, service, dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let (runtime, service, dispatcher, _dir, mob_id) = bootstrapped_tool_plane().await;
         let session_id = spawn_helper_member(&runtime).await;
         let mover = create_session_goal(
             &service,
@@ -1632,7 +1735,7 @@ comms = true
                 .owner_key()
                 .expect("owner key")
                 .canonical(),
-            "agent:mob/wiring-admission-mob/agent/helper",
+            format!("agent:mob/{mob_id}/agent/helper"),
             "tool-plane writes must store the owner form for members"
         );
         runtime.handle().stop().await.expect("stop");
@@ -1649,7 +1752,7 @@ comms = true
     /// denial, while a witnessed call queues on the held gate.
     #[tokio::test(flavor = "multi_thread")]
     async fn witnessless_reassign_forwards_without_taking_the_admission() {
-        let (runtime, service, dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let (runtime, service, dispatcher, _dir, _mob_id) = bootstrapped_tool_plane().await;
         let mover = create_session_goal(
             &service,
             "mover",
@@ -2147,7 +2250,7 @@ comms = true
     /// lowered row then conflicts with an identity-form duplicate.
     #[tokio::test(flavor = "multi_thread")]
     async fn owner_spelled_member_session_lowers_to_owner_form_on_goal_create() {
-        let (runtime, service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let (runtime, service, _dispatcher, _dir, mob_id) = bootstrapped_tool_plane().await;
         let session_id = spawn_helper_member(&runtime).await;
         let admission = runtime.workgraph_admission();
 
@@ -2171,7 +2274,7 @@ comms = true
         );
         assert_eq!(
             created["attention"]["target"]["owner_key"]["id"],
-            serde_json::json!("mob/wiring-admission-mob/agent/helper"),
+            serde_json::json!(format!("mob/{mob_id}/agent/helper")),
         );
 
         let error = rpc_goal_create(
@@ -2191,7 +2294,7 @@ comms = true
     /// target lowered to the member's agent-owner form.
     #[tokio::test(flavor = "multi_thread")]
     async fn tool_plane_reassign_lowers_owner_spelled_member_session_targets() {
-        let (runtime, service, dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let (runtime, service, dispatcher, _dir, mob_id) = bootstrapped_tool_plane().await;
         let session_id = spawn_helper_member(&runtime).await;
         let mover = create_session_goal(
             &service,
@@ -2238,7 +2341,7 @@ comms = true
                 .owner_key()
                 .expect("owner key")
                 .canonical(),
-            "agent:mob/wiring-admission-mob/agent/helper",
+            format!("agent:mob/{mob_id}/agent/helper"),
             "the owner-spelled session key must not reach the store verbatim"
         );
         runtime.handle().stop().await.expect("stop");
@@ -2256,12 +2359,27 @@ comms = true
     /// alias for the first row - both owner spellings must canonicalize.
     #[tokio::test(flavor = "multi_thread")]
     async fn owner_spelled_session_rows_cannot_reopen_the_blind_duplicate_window() {
-        let (runtime_knows, service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mob_id = unique_admission_mob_id();
+        let (runtime_knows, service, _dispatcher) =
+            durable_tool_plane_for(&mob_id, dir.path()).await;
         let session_id = spawn_helper_member(&runtime_knows).await;
-        let (runtime_blind, _service_b, _dispatcher_b, _dir_b) = bootstrapped_tool_plane().await;
+        // Succession through the real lifecycle: the roster-owning incumbent
+        // stands down (terminal shutdown releases its supervisor route), then
+        // the roster-blind co-runtime bootstraps the SAME mob id ordinarily.
+        // The blind plane must share the id - store-based member resolution
+        // filters bindings by the resolving runtime's own mob id.
+        let knows_service = runtime_knows.session_service().cloned();
+        runtime_knows
+            .handle()
+            .shutdown()
+            .await
+            .expect("incumbent stands down before the blind co-runtime boots");
+        let (runtime_blind, _service_b, _dispatcher_b) =
+            durable_tool_plane_for(&mob_id, dir.path()).await;
         let blind = crate::workgraph_admission::WorkGraphAdmission::new(
             runtime_blind.handle(),
-            runtime_knows.session_service().cloned(),
+            knows_service.clone(),
             None,
         );
 
@@ -2278,7 +2396,7 @@ comms = true
         .expect("the blind admission canonicalizes the owner-spelled session key");
         assert_eq!(
             created["attention"]["target"]["owner_key"]["id"],
-            serde_json::json!("mob/wiring-admission-mob/agent/helper"),
+            serde_json::json!(format!("mob/{mob_id}/agent/helper")),
             "{created:#?}"
         );
         let occupant = created["attention"]["binding_id"].as_str().unwrap();
@@ -2296,7 +2414,7 @@ comms = true
             error.message.contains(occupant),
             "conflict must name the occupying binding: {error:?}"
         );
-        runtime_knows.handle().stop().await.expect("stop");
+
         runtime_blind.handle().stop().await.expect("stop");
     }
 
@@ -2307,7 +2425,7 @@ comms = true
     /// session-kind owner key whose id is not a session id is refused.
     #[tokio::test(flavor = "multi_thread")]
     async fn non_member_session_kind_owner_keys_canonicalize_to_plain_session_targets() {
-        let (runtime, service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let (runtime, service, _dispatcher, _dir, _mob_id) = bootstrapped_tool_plane().await;
         let admission = runtime.workgraph_admission();
 
         let created = rpc_goal_create(
@@ -2367,12 +2485,27 @@ comms = true
     /// observes an adoption.
     #[tokio::test(flavor = "multi_thread")]
     async fn member_resolution_is_cached_after_the_first_store_read() {
-        let (runtime_knows, _service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mob_id = unique_admission_mob_id();
+        let (runtime_knows, _service, _dispatcher) =
+            durable_tool_plane_for(&mob_id, dir.path()).await;
         let session_id = spawn_helper_member(&runtime_knows).await;
-        let (runtime_blind, _service_b, _dispatcher_b, _dir_b) = bootstrapped_tool_plane().await;
+        // Succession through the real lifecycle: the roster-owning incumbent
+        // stands down (terminal shutdown releases its supervisor route), then
+        // the roster-blind co-runtime bootstraps the SAME mob id ordinarily.
+        // The blind plane must share the id - store-based member resolution
+        // filters bindings by the resolving runtime's own mob id.
+        let knows_service = runtime_knows.session_service().cloned();
+        runtime_knows
+            .handle()
+            .shutdown()
+            .await
+            .expect("incumbent stands down before the blind co-runtime boots");
+        let (runtime_blind, _service_b, _dispatcher_b) =
+            durable_tool_plane_for(&mob_id, dir.path()).await;
         let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let probe: Arc<dyn meerkat_mob::MobSessionService> = Arc::new(AdmissionStoreProbe {
-            delegate: runtime_knows.session_service().cloned(),
+            delegate: knows_service.clone(),
             loads: Arc::clone(&loads),
         });
         let admission = crate::workgraph_admission::WorkGraphAdmission::new(
@@ -2392,7 +2525,7 @@ comms = true
             matches!(
                 &first,
                 meerkat::GoalAttentionTarget::Owner { owner_key }
-                    if owner_key.id == "mob/wiring-admission-mob/agent/helper"
+                    if owner_key.id == format!("mob/{mob_id}/agent/helper")
             ),
             "{first:?}"
         );
@@ -2425,7 +2558,7 @@ comms = true
             "negative resolutions are NEVER cached — adoption can turn a \
              non-member session into a member session at any moment"
         );
-        runtime_knows.handle().stop().await.expect("stop");
+
         runtime_blind.handle().stop().await.expect("stop");
     }
 
@@ -2438,22 +2571,45 @@ comms = true
     /// next lookup); positives expire after the TTL.
     #[tokio::test(flavor = "multi_thread")]
     async fn adoption_flips_are_observed_because_negatives_are_uncached_and_positives_expire() {
-        let (runtime_knows, _service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mob_id = unique_admission_mob_id();
+        let (runtime_knows, _service, _dispatcher) =
+            durable_tool_plane_for(&mob_id, dir.path()).await;
         let member_session = spawn_helper_member(&runtime_knows).await;
-        let (runtime_blind, _service_b, _dispatcher_b, _dir_b) = bootstrapped_tool_plane().await;
+        // Succession through the real lifecycle: the roster-owning incumbent
+        // stands down (terminal shutdown releases its supervisor route), then
+        // the roster-blind co-runtime bootstraps the SAME mob id ordinarily.
+        // The blind plane must share the id - store-based member resolution
+        // filters bindings by the resolving runtime's own mob id.
+        let knows_service = runtime_knows.session_service().cloned();
+        runtime_knows
+            .handle()
+            .shutdown()
+            .await
+            .expect("incumbent stands down before the blind co-runtime boots");
+        let (runtime_blind, _service_b, _dispatcher_b) =
+            durable_tool_plane_for(&mob_id, dir.path()).await;
         let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         // Switchable delegate: starts BLANK (session unknown = non-member),
         // then "adopts" by switching to the member-knowing store — the same
         // session id transitions non-member → member, as resume_session does.
         let adopted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Pre-adoption blankness must be a service that has never seen the
+        // session. The blind plane now shares the durable store with the
+        // stood-down incumbent (that sharing IS the co-process wiring), so
+        // its own service already reads the binding; a fresh empty ephemeral
+        // service is the honest "not adopted yet" view.
+        let blank_pre_adoption: Arc<dyn meerkat_mob::MobSessionService> = Arc::new(
+            meerkat_session::EphemeralSessionService::new(test_builder(dir.path()), 4),
+        );
         let store: Arc<dyn meerkat_mob::MobSessionService> = Arc::new(SwitchableStore {
             probe_pre: AdmissionStoreProbe {
-                delegate: runtime_blind.session_service().cloned(),
+                delegate: Some(blank_pre_adoption),
                 loads: Arc::clone(&loads),
             },
             probe_post: AdmissionStoreProbe {
-                delegate: runtime_knows.session_service().cloned(),
+                delegate: knows_service.clone(),
                 loads: Arc::clone(&loads),
             },
             adopted: Arc::clone(&adopted),
@@ -2485,7 +2641,7 @@ comms = true
             matches!(
                 &lowered,
                 meerkat::GoalAttentionTarget::Owner { owner_key }
-                    if owner_key.id == "mob/wiring-admission-mob/agent/helper"
+                    if owner_key.id == format!("mob/{mob_id}/agent/helper")
             ),
             "the very next lookup observes the adoption: {lowered:?}"
         );
@@ -2500,7 +2656,6 @@ comms = true
             .expect("post-adoption-away lookup");
         assert_eq!(reverted, target, "expired positive re-reads the store");
 
-        runtime_knows.handle().stop().await.expect("stop");
         runtime_blind.handle().stop().await.expect("stop");
     }
 
@@ -2511,7 +2666,7 @@ comms = true
     /// the store fallback exists to plug.
     #[tokio::test(flavor = "multi_thread")]
     async fn session_store_read_failure_refuses_admission_instead_of_writing_session_form() {
-        let (runtime, service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let (runtime, service, _dispatcher, _dir, _mob_id) = bootstrapped_tool_plane().await;
         let probe: Arc<dyn meerkat_mob::MobSessionService> = Arc::new(AdmissionStoreProbe {
             delegate: None,
             loads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -2604,7 +2759,7 @@ comms = true
     fn spec_constructors_configure_the_admission_sidecar_per_store_kind() {
         let dir = tempfile::tempdir().expect("temp dir");
         let spec = crate::MobBootstrapSpec::persistent(
-            admission_definition(),
+            admission_definition(&unique_admission_mob_id()),
             meerkat_mob::MobStorage::in_memory(),
             dir.path().to_path_buf(),
             8,
@@ -2627,7 +2782,7 @@ comms = true
         let session_service: Arc<dyn meerkat_mob::MobSessionService> =
             Arc::new(meerkat_session::EphemeralSessionService::new(builder, 8));
         let ephemeral_spec = crate::MobBootstrapSpec::new(
-            admission_definition(),
+            admission_definition(&unique_admission_mob_id()),
             meerkat_mob::MobStorage::in_memory(),
             session_service,
         )

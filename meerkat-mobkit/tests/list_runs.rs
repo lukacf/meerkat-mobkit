@@ -27,6 +27,9 @@ use tempfile::TempDir;
 struct Fixture {
     _temp_dir: TempDir,
     runtime: UnifiedRuntime,
+    /// Per-fixture mob id: 0.8.23's fail-closed in-proc registration means
+    /// concurrently running tests must not share a supervisor route.
+    mob_id: String,
 }
 
 async fn build_runtime_two_flows() -> Fixture {
@@ -37,10 +40,15 @@ async fn build_runtime_two_flows() -> Fixture {
     let factory = AgentFactory::new(&session_path).comms(true);
     let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
 
-    let definition = MobDefinition::from_toml(
+    static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mob_id = format!(
+        "list-runs-mob-{}",
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "list-runs-mob"
+id = "{mob_id}"
 
 [profiles.lead]
 model = "gpt-5.5"
@@ -63,7 +71,7 @@ description = "beta flow"
 role = "lead"
 message = "beta-1"
 "#,
-    )
+    ))
     .expect("parse mob definition");
 
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
@@ -88,6 +96,7 @@ message = "beta-1"
     Fixture {
         _temp_dir: temp_dir,
         runtime,
+        mob_id,
     }
 }
 
@@ -193,7 +202,7 @@ async fn list_runs_returns_full_ledger_projection_for_all_flows() {
         }
         assert_eq!(
             run.get("mob_id").and_then(Value::as_str),
-            Some("list-runs-mob"),
+            Some(fixture.mob_id.as_str()),
             "run {run_id} should carry mob_id"
         );
     }

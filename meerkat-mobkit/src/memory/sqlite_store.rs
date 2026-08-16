@@ -229,6 +229,10 @@ const MOBKIT_MEMORY_DOMAIN: meerkat_sqlite::SchemaDomain = meerkat_sqlite::Schem
     // the logical identity (task #53) - data-only, so the v2 predecessor
     // verifier is the CURRENT schema fingerprint.
     allowed_existing_versions: &[2, 3],
+    // Unledgered mobkit files are refused at open (below the 0.8.8 ledger
+    // floor) and mobkit never runs the offline bridge, so no source
+    // version is inferable.
+    bridge_recoverable_versions: &[],
     released_predecessors: &[meerkat_sqlite::SchemaPredecessor {
         version: 2,
         verify: verify_released_0_8_10_memory_schema,

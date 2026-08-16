@@ -73,6 +73,10 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+/// Per-test mob id counter: 0.8.23's fail-closed in-proc registration
+/// means concurrently running tests must not share a supervisor route.
+static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 // ---------------------------------------------------------------------------
 // The domain under pin
 // ---------------------------------------------------------------------------
@@ -222,10 +226,10 @@ async fn label_fixture() -> Fixture {
     let factory = AgentFactory::new(&session_path).comms(true);
     let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
 
-    let definition = MobDefinition::from_toml(
+    let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "label-golden-mob"
+id = "label-golden-mob-{}"
 
 [profiles.lead]
 model = "gpt-5.5"
@@ -234,7 +238,8 @@ external_addressable = true
 [profiles.lead.tools]
 comms = true
 "#,
-    )
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
     .expect("parse mob definition");
 
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)

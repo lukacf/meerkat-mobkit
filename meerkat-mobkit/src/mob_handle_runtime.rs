@@ -13389,13 +13389,98 @@ comms = true
         );
     }
 
+    /// Pins meerkat 0.8.23's fail-closed default at mobkit's bootstrap
+    /// boundary: a second same-process bootstrap of an already-published mob
+    /// id surfaces the typed in-proc `NameOccupied` rejection as an ordinary
+    /// bootstrap error - not a panic, not a hang, and not a silent
+    /// displacement. Succession has exactly one sanctioned shape: the
+    /// incumbent stands down through its real lifecycle (terminal shutdown
+    /// releases `{mob_id}/__mob_supervisor__` at supervisor retirement), and
+    /// only then does an ordinary same-id bootstrap succeed. There is no
+    /// takeover flag on purpose - upstream's replacement seams demand the
+    /// predecessor's own runtime handle as evidence, and a blind bootstrap
+    /// has none.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn second_same_id_bootstrap_fails_closed_until_incumbent_stands_down() {
+        let mob_id = unique_test_mob_id();
+        let spec_for = || {
+            let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+            let factory = AgentFactory::new(dir.path()).builtins(false).comms(true);
+            let builder = FactoryAgentBuilder::new(factory, Config::default());
+            let session_service: Arc<dyn MobSessionService> =
+                Arc::new(meerkat_session::EphemeralSessionService::new(builder, 4));
+            let definition = meerkat_mob::MobDefinition::from_toml(&format!(
+                "[mob]\nid = \"{mob_id}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n[profiles.worker.tools]\ncomms = true\n",
+            ))
+            .unwrap_or_else(|e| panic!("{e}"));
+            let mut spec = MobBootstrapSpec::new(
+                definition,
+                meerkat_mob::MobStorage::in_memory(),
+                session_service,
+            );
+            spec.options.default_llm_client = Some(Arc::new(
+                meerkat_client::TestClient::for_provider(meerkat_core::Provider::OpenAI),
+            ));
+            (spec, dir)
+        };
+
+        let (first_spec, _first_dir) = spec_for();
+        let first = MobRuntime::bootstrap(first_spec)
+            .await
+            .unwrap_or_else(|e| panic!("first bootstrap must succeed: {e}"));
+
+        let (denied_spec, _denied_dir) = spec_for();
+        let denied = MobRuntime::bootstrap(denied_spec).await;
+        let error = match denied {
+            Err(error) => error.to_string(),
+            Ok(_) => {
+                panic!("second same-id bootstrap must fail closed while the incumbent is live")
+            }
+        };
+        assert!(
+            error.contains("already has a live route"),
+            "the bootstrap error must surface the typed in-proc NameOccupied \
+             rejection, got: {error}"
+        );
+
+        // The sanctioned succession: the incumbent stands down through its
+        // real lifecycle (terminal shutdown releases the supervisor route at
+        // retirement); the successor then bootstraps ordinarily with no
+        // takeover of any kind.
+        first
+            .handle()
+            .shutdown()
+            .await
+            .unwrap_or_else(|e| panic!("incumbent stand-down must succeed: {e}"));
+        let (successor_spec, _successor_dir) = spec_for();
+        let successor = MobRuntime::bootstrap(successor_spec)
+            .await
+            .unwrap_or_else(|e| {
+                panic!("ordinary same-id bootstrap after stand-down must succeed: {e}")
+            });
+
+        let _ = successor.handle().shutdown().await;
+    }
+
+    /// Per-test mob id for tests that BOOTSTRAP a runtime: 0.8.23's
+    /// fail-closed in-proc registration means concurrent bootstraps must not
+    /// share a `{mob_id}/__mob_supervisor__` route.
+    fn unique_test_mob_id() -> String {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        format!(
+            "test-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    }
+
     #[tokio::test]
     async fn agent_mob_tools_expose_definition_profiles_as_realm_profiles() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
-        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(
-            "[mob]\nid = \"test\"\n\n[profiles.investigation-worker]\nmodel = \"gpt-5.5\"\n[profiles.investigation-worker.tools]\ncomms = true\nmob = true\n\n[profiles.person-worker]\nmodel = \"gpt-5.5\"\n[profiles.person-worker.tools]\ncomms = true\n",
-        ) else {
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(&format!(
+            "[mob]\nid = \"{}\"\n\n[profiles.investigation-worker]\nmodel = \"gpt-5.5\"\n[profiles.investigation-worker.tools]\ncomms = true\nmob = true\n\n[profiles.person-worker]\nmodel = \"gpt-5.5\"\n[profiles.person-worker.tools]\ncomms = true\n",
+            unique_test_mob_id()
+        )) else {
             panic!("failed to parse mob definition with worker profiles");
         };
 
@@ -13518,9 +13603,10 @@ comms = true
     async fn ephemeral_runtime_backed_custom_session_store_persists_created_session() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
-        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(
-            "[mob]\nid = \"test\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n[profiles.worker.tools]\ncomms = true\n",
-        ) else {
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(&format!(
+            "[mob]\nid = \"{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n[profiles.worker.tools]\ncomms = true\n",
+            unique_test_mob_id()
+        )) else {
             panic!("failed to parse minimal mob definition");
         };
         let custom_store: Arc<dyn SessionStore> = Arc::new(meerkat_store::MemoryStore::new());
@@ -13581,8 +13667,11 @@ comms = true
     async fn ephemeral_runtime_backed_custom_session_store_resumes_after_runtime_restart() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
-        let definition_toml = "[mob]\nid = \"test\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n[profiles.worker.tools]\ncomms = true\n";
-        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(definition_toml) else {
+        let definition_toml = format!(
+            "[mob]\nid = \"{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n[profiles.worker.tools]\ncomms = true\n",
+            unique_test_mob_id()
+        );
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(&definition_toml) else {
             panic!("failed to parse minimal mob definition");
         };
         let custom_store: Arc<dyn SessionStore> = Arc::new(meerkat_store::MemoryStore::new());
@@ -13647,7 +13736,7 @@ comms = true
         );
         drop(runtime);
 
-        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(definition_toml) else {
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(&definition_toml) else {
             panic!("failed to parse minimal mob definition");
         };
         let mut restarted_spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
@@ -13715,9 +13804,10 @@ comms = true
     fn ephemeral_bootstrap_without_image_generation_retains_runtime_host() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
-        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(
-            "[mob]\nid = \"test\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\nruntime_mode = \"autonomous_host\"\n[profiles.worker.tools]\ncomms = true\n",
-        ) else {
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(&format!(
+            "[mob]\nid = \"{}\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\nruntime_mode = \"autonomous_host\"\n[profiles.worker.tools]\ncomms = true\n",
+            unique_test_mob_id()
+        )) else {
             panic!("failed to parse definition");
         };
         let spec = MobBootstrapSpec::ephemeral_inner(

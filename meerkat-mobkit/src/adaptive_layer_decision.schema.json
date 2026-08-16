@@ -926,6 +926,7 @@
             "mcp_servers": [],
             "memory": false,
             "mob": false,
+            "read_only": false,
             "rust_bundles": [],
             "schedule": false,
             "shell": false,
@@ -1617,6 +1618,11 @@
         "mob": {
           "default": false,
           "description": "Enable mob management tools (spawn, retire, wire, unwire, list).",
+          "type": "boolean"
+        },
+        "read_only": {
+          "default": false,
+          "description": "Declare this profile read-only: every tool call is admitted at the\nexecution gate only when the dispatcher that owns the tool declares it\nread-only ([`meerkat_core::ToolMutationClass::ReadOnly`]).\n\nThis is an enforcement declaration, not prompt guidance, and it wins\nover the per-spawn tool access policy (a spawn cannot widen a\nread-only profile). The category booleans above still decide what is\n*visible*; this decides what may *execute*. The guarantee covers only\ntools that traverse the dispatcher: see\n`meerkat_core::tool_execution_policy` for the exact boundary\n(provider-native tools, MCP tools, and `shell` are not read-only).",
           "type": "boolean"
         },
         "rust_bundles": {

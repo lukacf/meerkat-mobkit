@@ -41,6 +41,10 @@ use meerkat_mobkit::{
 };
 use serde_json::json;
 
+/// Per-test mob id counter: 0.8.23's fail-closed in-proc registration
+/// means concurrently running tests must not share a supervisor route.
+static NEXT_TEST_MOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 // ---------------------------------------------------------------------------
 // Minimal mock implementations for builder testing
 // ---------------------------------------------------------------------------
@@ -1127,11 +1131,21 @@ impl TopologyProvider for GatedTopologyProvider {
     }
 }
 
-fn test_definition() -> meerkat_mob::MobDefinition {
-    meerkat_mob::MobDefinition::from_toml(
+fn unique_builder_mob_id() -> String {
+    format!(
+        "identity-builder-test-{}",
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+/// Stable-id variant for tests that build the SAME mob twice (persistent
+/// state reuse, continuity resume): the topology authority and continuity
+/// records are keyed by mob id, so both builds must agree on it.
+fn test_definition_with_id(mob_id: &str) -> meerkat_mob::MobDefinition {
+    meerkat_mob::MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "identity-builder-test"
+id = "{mob_id}"
 
 [profiles.default]
 model = "gpt-5.5"
@@ -1139,16 +1153,20 @@ runtime_mode = "turn_driven"
 
 [profiles.default.tools]
 comms = true
-"#,
-    )
+"#
+    ))
     .unwrap()
 }
 
+fn test_definition() -> meerkat_mob::MobDefinition {
+    test_definition_with_id(&unique_builder_mob_id())
+}
+
 fn review_flow_definition() -> meerkat_mob::MobDefinition {
-    meerkat_mob::MobDefinition::from_toml(
+    meerkat_mob::MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "identity-builder-flow-test"
+id = "identity-builder-flow-test-{}"
 
 [profiles.default]
 model = "gpt-5.5"
@@ -1164,15 +1182,16 @@ description = "OB3-shaped review flow"
 role = "default"
 message = "run review cycle"
 "#,
-    )
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
     .unwrap()
 }
 
 fn domain_security_definition() -> meerkat_mob::MobDefinition {
-    meerkat_mob::MobDefinition::from_toml(
+    meerkat_mob::MobDefinition::from_toml(&format!(
         r#"
 [mob]
-id = "identity-builder-reset-reprofile-test"
+id = "identity-builder-reset-reprofile-test-{}"
 
 [profiles.domain]
 model = "gpt-5.5"
@@ -1189,7 +1208,8 @@ runtime_mode = "turn_driven"
 comms = true
 shell = true
 "#,
-    )
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
     .unwrap()
 }
 
@@ -2127,6 +2147,7 @@ async fn identity_first_failed_builder_shutdown_retries_unpublished_lease() {
 async fn identity_first_failed_builder_terminates_runtime_owned_memory_supervisors() {
     let tmp = tempfile::tempdir().unwrap();
     let state = tmp.path().join("state");
+    let mob_id = unique_builder_mob_id();
     let identity = AgentIdentity::parse("agent:alpha").unwrap();
     // Re-anchored at the meerkat 0.8.22 / mobkit 0.8.16 pair (1ff4c8ca
     // park-as-Broken): a per-member customizer failure now parks Broken and
@@ -2143,7 +2164,7 @@ async fn identity_first_failed_builder_terminates_runtime_owned_memory_superviso
 
     let failed = Box::pin(
         UnifiedRuntimeBuilder::default()
-            .definition(test_definition())
+            .definition(test_definition_with_id(&mob_id))
             .persistent_state(state.clone())
             .persistent_agent_memory_stack(AgentMemoryConfig::default(), engines())
             .roster_provider(Arc::new(StubRosterProvider::new(vec![
@@ -2169,7 +2190,7 @@ async fn identity_first_failed_builder_terminates_runtime_owned_memory_superviso
     // immediately by a fresh runtime.
     let retry = Box::pin(
         UnifiedRuntimeBuilder::default()
-            .definition(test_definition())
+            .definition(test_definition_with_id(&mob_id))
             .persistent_state(state)
             .persistent_agent_memory_stack(AgentMemoryConfig::default(), engines())
             .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
@@ -2279,6 +2300,7 @@ async fn identity_first_builder_failed_pre_spawn_hook_never_starts_background_wa
 async fn identity_first_failed_pre_spawn_releases_persistent_runtime_authority() {
     let tmp = tempfile::tempdir().unwrap();
     let state = tmp.path().join("state");
+    let mob_id = unique_builder_mob_id();
     let hook: meerkat_mobkit::unified_runtime::PreSpawnHook = Box::new(|| {
         Box::pin(async {
             Err(Box::new(std::io::Error::other(
@@ -2290,7 +2312,7 @@ async fn identity_first_failed_pre_spawn_releases_persistent_runtime_authority()
 
     let failed = Box::pin(
         UnifiedRuntimeBuilder::default()
-            .definition(test_definition())
+            .definition(test_definition_with_id(&mob_id))
             .persistent_state(state.clone())
             .roster_provider(roster.clone())
             .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
@@ -2311,7 +2333,7 @@ async fn identity_first_failed_pre_spawn_releases_persistent_runtime_authority()
 
     let retry = Box::pin(
         UnifiedRuntimeBuilder::default()
-            .definition(test_definition())
+            .definition(test_definition_with_id(&mob_id))
             .persistent_state(state)
             .roster_provider(roster)
             .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
@@ -2327,6 +2349,7 @@ async fn identity_first_failed_pre_spawn_releases_persistent_runtime_authority()
 async fn classic_discovery_failure_terminates_runtime_owned_memory_supervisors() {
     let tmp = tempfile::tempdir().unwrap();
     let state = tmp.path().join("state");
+    let mob_id = unique_builder_mob_id();
     let engines = || meerkat_mobkit::memory_wiring::MemoryEnginesConfig {
         steward: meerkat_mobkit::memory::steward::StewardConfig {
             enabled: true,
@@ -2347,7 +2370,7 @@ async fn classic_discovery_failure_terminates_runtime_owned_memory_supervisors()
 
     let failed = Box::pin(
         UnifiedRuntimeBuilder::default()
-            .definition(test_definition())
+            .definition(test_definition_with_id(&mob_id))
             .persistent_state(state.clone())
             .persistent_agent_memory_stack(AgentMemoryConfig::default(), engines())
             .discovery(discovery)
@@ -2362,7 +2385,7 @@ async fn classic_discovery_failure_terminates_runtime_owned_memory_supervisors()
 
     let retry = Box::pin(
         UnifiedRuntimeBuilder::default()
-            .definition(test_definition())
+            .definition(test_definition_with_id(&mob_id))
             .persistent_state(state)
             .persistent_agent_memory_stack(AgentMemoryConfig::default(), engines())
             .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
@@ -3761,14 +3784,15 @@ async fn reset_checkpoint_version_is_the_initial_document_flush_not_cleanup() {
 #[tokio::test]
 async fn identity_first_builder_resume_checkpoint_follows_registered_session_save_version() {
     let continuity_store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let mob_id = unique_builder_mob_id();
     let identity = AgentIdentity::parse("agent:alpha").unwrap();
 
     {
         let tmp = tempfile::tempdir().unwrap();
         let roster = Arc::new(StubRosterProvider::new(vec![durable_spec("agent:alpha")]));
-        Box::pin(
+        let seed = Box::pin(
             UnifiedRuntimeBuilder::default()
-                .definition(test_definition())
+                .definition(test_definition_with_id(&mob_id))
                 .continuity_store(continuity_store.clone())
                 .lease_provider(Arc::new(StubLeaseProvider))
                 .roster_provider(roster)
@@ -3779,13 +3803,17 @@ async fn identity_first_builder_resume_checkpoint_follows_registered_session_sav
         )
         .await
         .expect("seed runtime should create continuity");
+        // Stand the seed down through the real lifecycle: 0.8.23's
+        // fail-closed in-proc registration means the resumed runtime (same
+        // mob id) cannot publish while the seed's route is still live.
+        seed.shutdown().await;
     }
 
     let tmp = tempfile::tempdir().unwrap();
     let roster = Arc::new(StubRosterProvider::new(vec![durable_spec("agent:alpha")]));
     let runtime = Box::pin(
         UnifiedRuntimeBuilder::default()
-            .definition(test_definition())
+            .definition(test_definition_with_id(&mob_id))
             .continuity_store(continuity_store)
             .lease_provider(Arc::new(StubLeaseProvider))
             .roster_provider(roster)

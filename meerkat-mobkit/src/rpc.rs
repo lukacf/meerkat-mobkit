@@ -5522,6 +5522,18 @@ mod tests {
         }
     }
 
+    /// Per-test mob id: supervisor routes live in the process-global in-proc
+    /// registry under `{mob_id}/__mob_supervisor__`, and meerkat 0.8.23
+    /// refuses displacement, so concurrently running tests must not share an
+    /// id.
+    fn unique_rpc_test_mob_id() -> String {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        format!(
+            "rpc-identity-alias-test-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    }
+
     fn rpc_test_mob_spec(
         temp_dir: &tempfile::TempDir,
     ) -> Result<MobBootstrapSpec, Box<dyn std::error::Error + Send + Sync>> {
@@ -5529,10 +5541,10 @@ mod tests {
         std::fs::create_dir_all(&session_path)?;
         let factory = AgentFactory::new(&session_path).comms(true);
         let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
-        let definition = MobDefinition::from_toml(
+        let definition = MobDefinition::from_toml(&format!(
             r#"
 [mob]
-id = "rpc-identity-alias-test"
+id = "{}"
 
 [profiles.worker]
 model = "gpt-5.5"
@@ -5541,7 +5553,8 @@ external_addressable = true
 [profiles.worker.tools]
 comms = true
 "#,
-        )?;
+            unique_rpc_test_mob_id()
+        ))?;
         Ok(
             MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
                 .with_options(MobBootstrapOptions {
@@ -5573,10 +5586,10 @@ comms = true
         std::fs::create_dir_all(&session_path)?;
         let factory = AgentFactory::new(&session_path).comms(true);
         let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
-        let definition = MobDefinition::from_toml(
+        let definition = MobDefinition::from_toml(&format!(
             r#"
 [mob]
-id = "rpc-reset-reprofile-test"
+id = "rpc-reset-reprofile-test-{}"
 
 [profiles.domain]
 model = "gpt-5.5"
@@ -5593,7 +5606,8 @@ external_addressable = true
 comms = true
 shell = true
 "#,
-        )?;
+            unique_rpc_test_mob_id()
+        ))?;
         Ok(
             MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
                 .with_options(MobBootstrapOptions {
