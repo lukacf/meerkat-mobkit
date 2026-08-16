@@ -1487,11 +1487,23 @@ impl MobKitConsoleAggregator {
         }
 
         let interaction_id = format!("console-interaction-{}", hash_short(&dedupe_key));
+        // Reserve under the DURABLE console identity with the runtime
+        // incarnation as the mapping KEY - the same runtime-id -> identity
+        // registration the spawn path makes. Reserving under the runtime
+        // identity itself (the pre-fix shape) self-mapped the incarnation in
+        // `runtime_to_identity`, clobbering the spawn registration: every
+        // live completion event then keyed the `{identity}:{generation}`
+        // conversation while the durable conversation - the one the console
+        // UI renders - showed only this user_input frame.
+        let durable_identity =
+            crate::member_comms_id::durable_identity_label(&resolved.member.labels)
+                .unwrap_or(resolved.runtime_identity.as_str())
+                .to_string();
         resolved
             .entry
             .console_events
             .reserve_interaction_value(
-                &resolved.runtime_identity,
+                &durable_identity,
                 Some(resolved.runtime_identity.as_str()),
                 &interaction_id,
                 &request.origin,
@@ -6314,6 +6326,156 @@ comms = true
         assert_ne!(
             matches[sendable[0]].member.status,
             meerkat_mob::MobMemberStatus::Retiring
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    /// Regression (HomeCore dispatch-path mirroring asymmetry): a console
+    /// send targets the DURABLE identity, but the member is rostered under
+    /// its fenced runtime incarnation (`rt:{identity}:{generation}`). The
+    /// send's interaction reservation must key the pending interaction under
+    /// the durable identity and register the incarnation -> durable mapping -
+    /// exactly what the spawn path registers. The pre-fix reservation
+    /// self-mapped the incarnation, clobbering the spawn registration, so
+    /// every live completion event landed on the `identity:...:0`
+    /// conversation while the UI thread (the durable conversation) showed
+    /// only the user_input frame.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn console_send_keys_live_completion_events_on_the_durable_conversation() {
+        let runtime = build_empty_runtime("console-send-dispatch-mirroring-test").await;
+        let labels = BTreeMap::from([("agent_identity".to_string(), "builder".to_string())]);
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:builder:0".to_string(),
+                Some("You are Builder.".into()),
+                None,
+                None,
+            )
+            .with_labels(labels),
+        )
+        .await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-a",
+            "",
+            runtime.mob_runtime().clone(),
+            None,
+            runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+        // The spawn path's registration contract (`project_spawned_member`):
+        // the runtime incarnation resolves to the durable console identity.
+        runtime
+            .console_events()
+            .register_runtime_identity("rt:builder:0", "builder")
+            .await;
+
+        let accepted = aggregator
+            .send(ConsoleSendRequest {
+                identity: "builder".to_string(),
+                content: serde_json::json!("status sweep"),
+                origin: "console:test".to_string(),
+                idempotency_key: "dispatch-mirroring-1".to_string(),
+                handling_mode: Some("queue".to_string()),
+            })
+            .await
+            .expect("console send accepted");
+
+        // A live completion event exactly as the mob event drain forwards it:
+        // `agent_id` is the member's AgentRuntimeId
+        // (`{roster alias}:{generation}`).
+        runtime
+            .console_events()
+            .project_unified_event(&crate::types::EventEnvelope {
+                event_id: "evt-dispatch-run-completed".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: 10,
+                event: crate::types::UnifiedEvent::Agent {
+                    agent_id: "rt:builder:0:0".to_string(),
+                    event_type: "run_completed".to_string(),
+                    payload: Some(serde_json::json!({ "result": "done" })),
+                },
+            })
+            .await;
+
+        let replay = runtime
+            .console_events()
+            .replay_all(None)
+            .await
+            .expect("console event replay");
+        let completion = replay
+            .iter()
+            .find(|event| event.event_id == "evt-dispatch-run-completed")
+            .expect("completion event projected");
+        assert_eq!(
+            completion.identity, "builder",
+            "a console-send-driven completion must key the durable conversation, \
+             not the runtime incarnation"
+        );
+        assert_eq!(
+            completion.interaction_id.as_deref(),
+            Some(accepted.interaction_id.as_str()),
+            "the completion must correlate to the console send's reserved interaction"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    /// The channel-path twin of the dispatch-mirroring regression: a live
+    /// completion for a member that was NOT addressed through console send
+    /// (channel deliveries reserve nothing on the console store) resolves
+    /// through the spawn registration alone and must land on the durable
+    /// conversation. Keeps the two origins provably symmetric.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn channel_origin_completion_events_key_the_durable_conversation() {
+        let runtime = build_empty_runtime("console-channel-mirroring-test").await;
+        let labels = BTreeMap::from([("agent_identity".to_string(), "builder".to_string())]);
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:builder:0".to_string(),
+                Some("You are Builder.".into()),
+                None,
+                None,
+            )
+            .with_labels(labels),
+        )
+        .await;
+        runtime
+            .console_events()
+            .register_runtime_identity("rt:builder:0", "builder")
+            .await;
+
+        runtime
+            .console_events()
+            .project_unified_event(&crate::types::EventEnvelope {
+                event_id: "evt-channel-run-completed".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: 10,
+                event: crate::types::UnifiedEvent::Agent {
+                    agent_id: "rt:builder:0:0".to_string(),
+                    event_type: "run_completed".to_string(),
+                    payload: Some(serde_json::json!({ "result": "done" })),
+                },
+            })
+            .await;
+
+        let replay = runtime
+            .console_events()
+            .replay_all(None)
+            .await
+            .expect("console event replay");
+        let completion = replay
+            .iter()
+            .find(|event| event.event_id == "evt-channel-run-completed")
+            .expect("completion event projected");
+        assert_eq!(
+            completion.identity, "builder",
+            "a channel-origin completion must key the durable conversation"
         );
 
         let _ = runtime.mob_handle().stop().await;
