@@ -6414,9 +6414,21 @@ mod tests {
 
         let orient_alpha = engine.orient(&partitions[0]).await.expect("orient alpha");
         assert!(orient_alpha.text.contains("a1 fact"));
+        // Assert on the seeded semantic tokens (the quoted scope key and the
+        // record title), never a bare contains("b1"): orient renders manifest
+        // rows with minted record ids (`mem-{ns}-{pid:x}-{seq:x}-{fnv:x}`),
+        // and the hex digram "b1" lands in the process-global id sequence /
+        // pid under full-suite parallelism (observed as a full-suite-only
+        // flake 3x on 2026-08-15/16; same class as the 2026-08-03 "a1" flake
+        // fixed below).
         assert!(
-            !orient_alpha.text.contains("b1"),
+            !orient_alpha.text.contains("'b1'"),
             "mob alpha's dream must not see mob beta's identity scope: {}",
+            orient_alpha.text
+        );
+        assert!(
+            !orient_alpha.text.contains("b1 fact"),
+            "mob alpha's dream must not see mob beta's records: {}",
             orient_alpha.text
         );
         assert!(!orient_alpha.text.contains("operator"));

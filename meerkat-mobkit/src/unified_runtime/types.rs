@@ -358,6 +358,42 @@ pub struct ShutdownDrainReport {
     pub drain_duration_ms: u64,
 }
 
+/// Whether the history a failed compaction preserved can still be sent to
+/// the provider.
+///
+/// Mobkit-owned wire mirror of meerkat's
+/// [`CompactionPreservedHistoryFit`](meerkat_core::event::CompactionPreservedHistoryFit)
+/// discriminator, so `ErrorEvent`'s serialized shape does not track upstream's
+/// `#[non_exhaustive]` growth: unknown future upstream verdicts degrade to
+/// [`Self::Unclassified`] ("no verdict") at the drain seam instead of failing
+/// deserialization downstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionPreservedHistoryFit {
+    /// No authority could answer at composed-request scope.
+    Unclassified,
+    /// The preserved history still composes a sendable request: the failed
+    /// persistence costs a summary call and a retry, not progress.
+    StillFits,
+    /// The preserved history already exceeds the window or byte cap: every
+    /// subsequent turn is refused until a compaction persists. Page.
+    OverWindow,
+}
+
+impl From<meerkat_core::event::CompactionPreservedHistoryFit> for CompactionPreservedHistoryFit {
+    fn from(fit: meerkat_core::event::CompactionPreservedHistoryFit) -> Self {
+        use meerkat_core::event::CompactionPreservedHistoryFit as Upstream;
+        match fit {
+            Upstream::StillFits => Self::StillFits,
+            Upstream::OverWindow => Self::OverWindow,
+            // `Unclassified`, plus whatever `#[non_exhaustive]` upstream adds
+            // later: an unknown verdict is still "no verdict this vocabulary
+            // can route on".
+            _ => Self::Unclassified,
+        }
+    }
+}
+
 /// Operational error event for alerting.
 ///
 /// Fired via the `on_error` hook when runtime operations fail. Apps
@@ -398,6 +434,18 @@ pub enum ErrorEvent {
         identity: String,
         session_id: String,
         error: String,
+        /// Whether the request the preserved history composes can still be
+        /// sent: the severity discriminator between a wedged member (page)
+        /// and a costly-but-progressing one (log line). Carried only when
+        /// meerkat reported the typed projection-handoff refusal; other
+        /// compaction failure reasons (and events recorded before this field
+        /// existed) carry `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preserved_history: Option<CompactionPreservedHistoryFit>,
+        /// Discard entries the refused durable handoff would have projected.
+        /// Populated alongside `preserved_history`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempted_entries: Option<usize>,
     },
     ActorLoopStalled {
         probe_waited_secs: u64,
@@ -442,7 +490,11 @@ impl Display for ErrorEvent {
                 identity,
                 session_id,
                 error,
+                ..
             } => {
+                // `error` is the upstream reason's Display, which already
+                // renders the fit and attempted-entry facts for the typed
+                // handoff-refusal case.
                 write!(
                     f,
                     "compaction_persistence_rejected: {identity} ({session_id}): {error}"
