@@ -96,6 +96,16 @@ report of that is still an operational loose end you have to close.
   have an agent that "stopped responding" and looked healthy when you checked,
   this is a candidate explanation, and it is not a dispatch story.
 
+  **Whether you saw it depends on which history your UI renders, not on which
+  version you run.** The split is in MobKit's console conversation store, so it
+  reaches operators whose UI reads that store. An adopter whose dashboard reads
+  its OWN session store (OB3 renders `/api/dashboard/chat/history` off their
+  BigQuery store) saw completions normally throughout and would never have
+  noticed. Check which endpoint your console calls before concluding you were
+  unaffected - and note that mounting `/console/*` is enough to be exposed:
+  anyone opening the stock console directly on such a deployment hits this in
+  full, however insulated the primary dashboard is.
+
   Fixed at the existing mechanism, no new mirroring layer: the reservation keys
   the pending interaction under the member's DURABLE console identity with the
   incarnation as the mapping KEY - the same registration the spawn path makes.
