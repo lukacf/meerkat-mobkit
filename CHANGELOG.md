@@ -147,6 +147,15 @@ report of that is still an operational loose end you have to close.
   back out of serde itself, so a per-variant `#[serde(rename = "...")]` cannot
   slip past it.
 
+- `meerkat-mobkit/tests/sdk_enum_mirror_parity.rs` extends that gate to the two
+  SDK mirrors of MEERKAT-owned enums, `MobRunStatus` and `MobMemberStatus`.
+  These are the more fragile case despite being the smaller one: drift arrives
+  with an upstream version bump and no mobkit commit involved, so it appears at
+  the repin and is invisible in a review of the repin diff. Three declaration
+  sites per vocabulary, not two - `parseMobRunStatus` carries a runtime
+  allowlist that is a third mirror, and it is the one that decides what a host
+  actually observes.
+
 ### Changed
 
 - Test-suite timing hygiene: assertions that bounded a STRUCTURAL property with
@@ -155,6 +164,27 @@ report of that is still an operational loose end you have to close.
   the machine's load decides. Genuinely duration-shaped assertions - the ones
   that verify nothing happened inside a window - were deliberately left alone,
   since load only makes those safer. No production behaviour changes.
+- The same sweep, extended to the JS suites and to one clock bug the first pass
+  missed. The `flow-editor` browser smoke carried 31 unnamed 30s ceilings, every
+  one guarding a structural question ("does this element ever appear"); they are
+  now a named `STRUCTURAL_TIMEOUT_MS`. And
+  `compact_member_forces_one_compaction_and_restores_the_profile` read the
+  durable session surface on the identity's completion cursor, which leads it -
+  the same clock split already documented in that file and already fixed once in
+  its sibling. Its baseline is now settled and the growth polled, because a
+  baseline snapshotted mid-write drifts upward on its own and would satisfy
+  "did it grow" without the append it names. Both were found the same way: a
+  diff that could not possibly have caused the failure it was blamed for.
+
+### Known limitations
+
+- **`MobRunStatus` coerces an unrecognized status to `pending` in both SDKs**
+  (Python `MobRunStatus.parse`, TypeScript `parseMobRunStatus`). A status this
+  release does not know is therefore reported to a host as NOT STARTED rather
+  than as unknown - a wrong and actionable value. The new parity gate makes the
+  drift that would trigger this a build failure, so the fallback cannot be
+  reached silently by an upstream bump; changing the fallback itself is an SDK
+  contract change and is deferred rather than made mid-release.
 
 ## [0.8.17] - 2026-08-16
 
