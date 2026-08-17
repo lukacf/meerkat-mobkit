@@ -75,12 +75,45 @@ report of that is still an operational loose end you have to close.
   post-timeout transcript read that decides whether the forced compaction had
   already landed runs under its own 5s bound, so unproven evidence is dropped
   from the message instead of traded for a second hang.
+- **A member could appear to answer nothing at all, for days, while answering
+  normally.** On identity-first gateways `MobKitConsoleAggregator::send`
+  reserved its pending interaction under `(alias, alias)`, and since the roster
+  alias there IS the fenced runtime incarnation, that self-map OVERWROTE the
+  spawn path's incarnation-to-durable-identity registration - process-wide, for
+  every ingress, until the process restarted. From then on the console resolved
+  every live agent event for that member to `{identity}:{generation}`, while the
+  `user_input` frames (built separately, from the durable identity) kept landing
+  on the bare conversation the UI renders. The result is a thread showing
+  questions and never answers.
+
+  **Scope, corrected by HomeCore after the first fix:** this was reported as a
+  `/dev/dispatch` problem because that is where it was first hit, and describing
+  it that way understates it badly. A recurring SCHEDULED prompt reaches the
+  runtime through `WorkSpec`/`MobHandle` and reserves nothing on the console
+  store, so it never keyed anything itself - it was collateral damage of the
+  poisoned map, and it is the path scheduled household work actually runs on.
+  The operator-visible symptom is a scheduled agent that appears dead. If you
+  have an agent that "stopped responding" and looked healthy when you checked,
+  this is a candidate explanation, and it is not a dispatch story.
+
+  **Whether you saw it depends on which history your UI renders, not on which
+  version you run.** The split is in MobKit's console conversation store, so it
+  reaches operators whose UI reads that store. An adopter whose dashboard reads
+  its OWN session store (OB3 renders `/api/dashboard/chat/history` off their
+  BigQuery store) saw completions normally throughout and would never have
+  noticed. Check which endpoint your console calls before concluding you were
+  unaffected - and note that mounting `/console/*` is enough to be exposed:
+  anyone opening the stock console directly on such a deployment hits this in
+  full, however insulated the primary dashboard is.
+
+  Fixed at the existing mechanism, no new mirroring layer: the reservation keys
+  the pending interaction under the member's DURABLE console identity with the
+  incarnation as the mapping KEY - the same registration the spawn path makes.
+  Classic (non-identity-first) mobs were never affected, because there the
+  roster alias IS the identity and the self-map was benign.
 - **`send_message` self-mapped the incarnation on its `AuthorityUnavailable`
-  arm,** reserving the console interaction under `(alias, alias)` and clobbering
-  the spawn path's incarnation-to-durable-identity registration process-wide -
-  the same shape fixed on the console send path in 4a076774, found by HomeCore.
-  It now reserves under the durable identity with the incarnation as the mapping
-  key.
+  arm,** the same shape on a second call site, also found by HomeCore. It now
+  reserves under the durable identity with the incarnation as the mapping key.
 - **Every `ErrorEvent` now reaches the log whether or not an error hook is
   wired.** Previously the three fire points only logged through a registered
   hook, so a host that never called `on_error` - HomeCore's case - had every

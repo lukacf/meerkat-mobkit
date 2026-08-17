@@ -6424,6 +6424,103 @@ comms = true
         let _ = runtime.mob_handle().stop().await;
     }
 
+    /// HomeCore field report (2026-08-17), and the case neither sibling test
+    /// covers: a SCHEDULED turn's completions, arriving on a member that was
+    /// addressed through console send EARLIER in the same process.
+    ///
+    /// The two tests around this one both assert a completion that belongs to
+    /// the console send - so they prove the reservation keys its OWN
+    /// interaction correctly. The reported symptom is the other half: the
+    /// self-map clobbered `runtime_to_identity` PROCESS-WIDE, so every later
+    /// completion for that member resolved to the incarnation no matter which
+    /// ingress produced it. A recurring scheduled prompt reaches the runtime
+    /// through `WorkSpec`/`MobHandle` and reserves nothing on the console
+    /// store, so it never keyed anything itself - it was collateral damage,
+    /// and it is the path a household actually runs on. The operator-visible
+    /// symptom was a scheduled agent that appeared to answer nothing for days
+    /// while it was in fact answering.
+    ///
+    /// The completion here is deliberately UNCORRELATED to the send: a
+    /// distinct event id, arriving later, standing in for a turn the console
+    /// never initiated.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scheduled_turn_completions_key_the_durable_conversation_after_a_console_send() {
+        let runtime = build_empty_runtime("console-scheduled-mirroring-test").await;
+        let labels = BTreeMap::from([("agent_identity".to_string(), "builder".to_string())]);
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:builder:0".to_string(),
+                Some("You are Builder.".into()),
+                None,
+                None,
+            )
+            .with_labels(labels),
+        )
+        .await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-a",
+            "",
+            runtime.mob_runtime().clone(),
+            None,
+            runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+        runtime
+            .console_events()
+            .register_runtime_identity("rt:builder:0", "builder")
+            .await;
+
+        // The operation that used to poison the map for everything after it.
+        aggregator
+            .send(ConsoleSendRequest {
+                identity: "builder".to_string(),
+                content: serde_json::json!("status sweep"),
+                origin: "console:test".to_string(),
+                idempotency_key: "scheduled-mirroring-1".to_string(),
+                handling_mode: Some("queue".to_string()),
+            })
+            .await
+            .expect("console send accepted");
+
+        // A later, independent turn's completion - the shape a scheduled
+        // prompt produces, forwarded by the mob event drain with the member's
+        // AgentRuntimeId (`{roster alias}:{generation}`).
+        runtime
+            .console_events()
+            .project_unified_event(&crate::types::EventEnvelope {
+                event_id: "evt-scheduled-run-completed".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: 20,
+                event: crate::types::UnifiedEvent::Agent {
+                    agent_id: "rt:builder:0:0".to_string(),
+                    event_type: "run_completed".to_string(),
+                    payload: Some(serde_json::json!({ "result": "published" })),
+                },
+            })
+            .await;
+
+        let replay = runtime
+            .console_events()
+            .replay_all(None)
+            .await
+            .expect("console event replay");
+        let completion = replay
+            .iter()
+            .find(|event| event.event_id == "evt-scheduled-run-completed")
+            .expect("completion event projected");
+        assert_eq!(
+            completion.identity, "builder",
+            "a scheduled turn's completion must key the durable conversation the console \
+             renders, even when a console send preceded it in the same process - keying it on \
+             the incarnation is what made a working agent look silent for days"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+    }
+
     /// The channel-path twin of the dispatch-mirroring regression: a live
     /// completion for a member that was NOT addressed through console send
     /// (channel deliveries reserve nothing on the console store) resolves
