@@ -33046,7 +33046,14 @@ depends_on_mode = "all"
     fn times_out_hung_rkat_mob_run_execution() {
         let dir = tempfile::tempdir().expect("tempdir");
         let fake_rkat = dir.path().join("rkat");
-        std::fs::write(&fake_rkat, "#!/bin/sh\nexec sleep 2\n").expect("write fake rkat");
+        // Sleep far past any plausible scheduling delay. The assertion below is
+        // genuinely temporal (it proves `max_duration` was ENFORCED rather than
+        // waited out), so it needs a wide gap between "enforced" and "not
+        // enforced". The old fixture slept 2s against a 2s ceiling - zero
+        // margin, so ordinary spawn latency under load failed a correct
+        // implementation. 120s vs a 30s ceiling keeps the discrimination while
+        // putting the ceiling out of load's reach.
+        std::fs::write(&fake_rkat, "#!/bin/sh\nexec sleep 120\n").expect("write fake rkat");
         let mut permissions = std::fs::metadata(&fake_rkat)
             .expect("fake rkat metadata")
             .permissions();
@@ -33070,7 +33077,12 @@ depends_on_mode = "all"
         }))
         .expect("deploy result");
 
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the 1ms max_duration must be enforced, not waited out: the fake rkat sleeps 120s \
+             and deploy returned after {:?}",
+            started.elapsed()
+        );
         assert!(result.executed);
         assert!(!result.success);
         assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
