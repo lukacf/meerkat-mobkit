@@ -35,6 +35,15 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+/// Backstop ceiling for every "this either arrives or the gateway is wedged"
+/// wait in this file. Each such wait guards a STRUCTURAL property - the
+/// dispatch loop either answers the request or it is blocked behind the
+/// pending callback, which is the regression under test. The ceiling is only a
+/// hang detector, never a latency measurement, so it is deliberately generous:
+/// the old mixed 15s/30s ceilings measured runner load instead, and flaked the
+/// suite under full parallel CI while passing standalone.
+const WEDGE_BACKSTOP: Duration = Duration::from_mins(1);
+
 const MOB_CONFIG: &str = r#"
 [mob]
 id = "gateway-concurrent-dispatch-test"
@@ -177,7 +186,7 @@ fn initialize_for_shutdown(gateway: &mut Gateway, state_dir: &tempfile::TempDir)
     }));
     let init = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |_, _| {},
             |m| is_response_with_id(m, "init"),
         )
@@ -285,7 +294,7 @@ fn persistent_gateway_exits_after_stdin_eof() {
     initialize_for_shutdown(&mut gateway, &state_dir);
 
     gateway.close_stdin();
-    gateway.wait_for_exit(Duration::from_secs(15));
+    gateway.wait_for_exit(WEDGE_BACKSTOP);
 }
 
 #[test]
@@ -314,7 +323,7 @@ fn explicit_shutdown_keeps_callbacks_open_until_external_leases_are_released() {
     }));
     let init = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_identity_provider_callback(gateway, message, &release_seen);
             },
@@ -340,7 +349,7 @@ fn explicit_shutdown_keeps_callbacks_open_until_external_leases_are_released() {
     }));
     let shutdown = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_identity_provider_callback(gateway, message, &release_seen);
             },
@@ -360,7 +369,7 @@ fn explicit_shutdown_keeps_callbacks_open_until_external_leases_are_released() {
     // Match SDK behavior: close stdin only after the gateway confirms runtime
     // cleanup, which also releases Tokio's blocking stdin helper.
     gateway.close_stdin();
-    gateway.wait_for_exit(Duration::from_secs(15));
+    gateway.wait_for_exit(WEDGE_BACKSTOP);
 }
 
 #[cfg(unix)]
@@ -375,7 +384,7 @@ fn persistent_gateway_exits_after_sigint_with_stdin_open() {
         .status()
         .expect("send SIGINT to rpc_gateway");
     assert!(status.success(), "kill -INT failed: {status}");
-    gateway.wait_for_exit(Duration::from_mins(1));
+    gateway.wait_for_exit(WEDGE_BACKSTOP);
 }
 
 #[test]
@@ -395,7 +404,7 @@ fn rpc_dispatch_serves_requests_while_a_callback_is_pending() {
     }));
     let init = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |_, _| {},
             |m| is_response_with_id(m, "init"),
         )
@@ -415,7 +424,7 @@ fn rpc_dispatch_serves_requests_while_a_callback_is_pending() {
     }));
     let build_callback = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |_, _| {},
             |m| is_callback_request(m, "callback/build_agent"),
         )
@@ -433,7 +442,7 @@ fn rpc_dispatch_serves_requests_while_a_callback_is_pending() {
     }));
     let status = gateway
         .wait_for(
-            Duration::from_secs(15),
+            WEDGE_BACKSTOP,
             |_, _| {},
             |m| is_response_with_id(m, "status"),
         )
@@ -453,7 +462,7 @@ fn rpc_dispatch_serves_requests_while_a_callback_is_pending() {
     }));
     let spawn = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 if message.get("method").is_some()
                     && let Some(id) = message.get("id").cloned()
@@ -545,7 +554,7 @@ fn callback_built_member_resolves_declared_workgraph_tools_on_create() {
     }));
     let init = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_provider_callback_holding_builds(gateway, message, &release_seen);
             },
@@ -570,7 +579,7 @@ fn callback_built_member_resolves_declared_workgraph_tools_on_create() {
     }));
     let build_callback = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_provider_callback_holding_builds(gateway, message, &release_seen);
             },
@@ -584,7 +593,7 @@ fn callback_built_member_resolves_declared_workgraph_tools_on_create() {
     }));
     let dispatch = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_provider_callback_holding_builds(gateway, message, &release_seen);
             },
@@ -604,7 +613,7 @@ fn callback_built_member_resolves_declared_workgraph_tools_on_create() {
     }));
     let resolved = gateway
         .wait_for(
-            Duration::from_secs(30),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_provider_callback_holding_builds(gateway, message, &release_seen);
             },
@@ -663,7 +672,7 @@ fn agent_memory_recall_answers_while_the_same_identity_build_is_parked() {
     }));
     let init = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_provider_callback_holding_builds(gateway, message, &release_seen);
             },
@@ -689,7 +698,7 @@ fn agent_memory_recall_answers_while_the_same_identity_build_is_parked() {
     }));
     let build_callback = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_provider_callback_holding_builds(gateway, message, &release_seen);
             },
@@ -711,7 +720,7 @@ fn agent_memory_recall_answers_while_the_same_identity_build_is_parked() {
     }));
     let recall = gateway
         .wait_for(
-            Duration::from_secs(15),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_provider_callback_holding_builds(gateway, message, &release_seen);
             },
@@ -732,7 +741,7 @@ fn agent_memory_recall_answers_while_the_same_identity_build_is_parked() {
     }));
     let dispatch = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_provider_callback_holding_builds(gateway, message, &release_seen);
             },
@@ -912,7 +921,7 @@ fn dispatch_alpha_through_build(
     }));
     let build_callback = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_stateful_provider_callback_holding_builds(
                     gateway,
@@ -931,7 +940,7 @@ fn dispatch_alpha_through_build(
     }));
     gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_stateful_provider_callback_holding_builds(
                     gateway,
@@ -960,7 +969,7 @@ fn resolved_tools_for_alpha(
     }));
     let resolved = gateway
         .wait_for(
-            Duration::from_secs(30),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_stateful_provider_callback_holding_builds(
                     gateway,
@@ -1038,7 +1047,7 @@ fn resumed_member_resolves_tool_category_declared_after_creation() {
     }));
     let init = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_stateful_provider_callback_holding_builds(
                     gateway,
@@ -1076,7 +1085,7 @@ fn resumed_member_resolves_tool_category_declared_after_creation() {
     if !continuity.has_snapshot() {
         let save = gateway
             .wait_for(
-                Duration::from_mins(1),
+                WEDGE_BACKSTOP,
                 |gateway, message| {
                     answer_stateful_provider_callback_holding_builds(
                         gateway,
@@ -1102,7 +1111,7 @@ fn resumed_member_resolves_tool_category_declared_after_creation() {
     }));
     let shutdown = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_stateful_provider_callback_holding_builds(
                     gateway,
@@ -1119,7 +1128,7 @@ fn resumed_member_resolves_tool_category_declared_after_creation() {
         "phase-1 shutdown failed: {shutdown}"
     );
     gateway.close_stdin();
-    gateway.wait_for_exit(Duration::from_secs(15));
+    gateway.wait_for_exit(WEDGE_BACKSTOP);
     drop(gateway);
 
     let phase1_record = continuity
@@ -1160,7 +1169,7 @@ fn resumed_member_resolves_tool_category_declared_after_creation() {
     }));
     let init = gateway
         .wait_for(
-            Duration::from_mins(1),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_stateful_provider_callback_holding_builds(
                     gateway,
@@ -1208,7 +1217,7 @@ fn resumed_member_resolves_tool_category_declared_after_creation() {
     }));
     let status = gateway
         .wait_for(
-            Duration::from_secs(30),
+            WEDGE_BACKSTOP,
             |gateway, message| {
                 answer_stateful_provider_callback_holding_builds(
                     gateway,
