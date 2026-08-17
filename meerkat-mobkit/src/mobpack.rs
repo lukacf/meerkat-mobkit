@@ -33045,7 +33045,7 @@ depends_on_mode = "all"
             result.stderr
         );
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(240),
+            started.elapsed() < std::time::Duration::from_mins(4),
             "large output must not pipe-deadlock into a timeout, elapsed: {:?}",
             started.elapsed()
         );
