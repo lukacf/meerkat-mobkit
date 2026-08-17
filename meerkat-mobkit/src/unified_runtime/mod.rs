@@ -55,11 +55,11 @@ pub use event_log::{
 pub use http::DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS;
 pub use mob_ops::MemberTurnAdmission;
 pub use types::{
-    ErrorEvent, IdentityAuthorityReleaseOutcome, RediscoverReport, ShutdownDrainReport,
-    UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,
-    UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
-    UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport,
-    UnifiedRuntimeShutdownReport,
+    CompactionPreservedHistoryFit, ErrorEvent, IdentityAuthorityReleaseOutcome, RediscoverReport,
+    ShutdownDrainReport, UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilderError,
+    UnifiedRuntimeBuilderField, UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport,
+    UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
+    UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
 };
 
 /// Called after members are spawned. Receives the list of spawned member IDs.
@@ -89,11 +89,60 @@ fn current_error_hook(slot: &SharedErrorHook) -> Option<ErrorHook> {
         .clone()
 }
 
+/// The default sink every [`ErrorEvent`] passes through, whether or not a
+/// host registered an [`ErrorHook`].
+///
+/// A paging channel that discards when nobody wired it is indistinguishable
+/// from a healthy fleet. A host with zero `on_error` call sites used to get
+/// silence for every operational failure mobkit detected — 136 compaction
+/// rejections in one observed fleet, found only by reading a console table
+/// by hand. Logging here costs a wired host nothing (the hook still fires,
+/// exactly once) and gives an unwired one somewhere an operator or a
+/// log-shipper can see the event.
+///
+/// Emitted with the typed event (`Debug`, so the variant name and its fields
+/// both land) rather than only the `Display` rendering, and synchronously on
+/// the caller's thread so the record is not stranded on a detached task.
+pub(crate) fn log_error_event(event: &ErrorEvent, hook_registered: bool) {
+    tracing::error!(
+        error_event = ?event,
+        hook_registered,
+        "mobkit runtime error event: {event}"
+    );
+    if !hook_registered {
+        warn_error_hook_absent_once();
+    }
+}
+
+/// State the missing-hook condition plainly: nobody is listening, and here is
+/// where to fix it. Emitted at build time by `UnifiedRuntimeBuilder::build`
+/// for hosts that never called `on_error`, and once per process from the fire
+/// path for hosts that bootstrap directly and install the hook afterwards.
+pub(crate) fn emit_error_hook_absent_notice() {
+    tracing::warn!(
+        "no error hook is registered, so runtime error events reach logs only; \
+         register one with UnifiedRuntimeBuilder::on_error (or \
+         UnifiedRuntime::set_error_hook) to route them to paging"
+    );
+}
+
+/// The fire-path guard for the notice: the condition is per-process, and
+/// repeating it on every event would bury the events themselves.
+fn warn_error_hook_absent_once() {
+    static NOTICED: std::sync::Once = std::sync::Once::new();
+    NOTICED.call_once(emit_error_hook_absent_notice);
+}
+
 /// Fire an error event on the hook currently installed in `slot`, if any.
 /// Truly fire-and-forget — spawns a detached task so slow hooks (HTTP to
 /// Slack, PagerDuty) never block the caller.
+///
+/// The event reaches [`log_error_event`] either way: an unregistered hook
+/// must not be the difference between an operator seeing a failure and not.
 fn fire_error_hook(slot: &SharedErrorHook, event: ErrorEvent) {
-    if let Some(hook) = current_error_hook(slot) {
+    let hook = current_error_hook(slot);
+    log_error_event(&event, hook.is_some());
+    if let Some(hook) = hook {
         tokio::spawn(async move {
             let () = hook(event).await;
         });
@@ -2255,10 +2304,24 @@ fn compaction_rejection_alert(attributed: &AttributedEvent) -> Option<ErrorEvent
         .session_id()
         .map(ToString::to_string)
         .unwrap_or_default();
+    // The projection-handoff refusal carries the severity facts typed: the
+    // preserved-history fit is the wedged-member (page) vs still-progressing
+    // (log line) discriminator, and hosts must not fish it out of the message
+    // string. Other compaction failure reasons have no fit verdict to carry.
+    let (preserved_history, attempted_entries) = match reason {
+        meerkat_core::event::CompactionFailureReason::ProjectionHandoffRefused {
+            preserved_history,
+            attempted_entries,
+            ..
+        } => (Some((*preserved_history).into()), Some(*attempted_entries)),
+        _ => (None, None),
+    };
     Some(ErrorEvent::CompactionPersistenceRejected {
         identity: crate::member_comms_id::runtime_event_alias(&attributed.source),
         session_id,
         error: reason.to_string(),
+        preserved_history,
+        attempted_entries,
     })
 }
 
@@ -2499,13 +2562,19 @@ model = "gpt-5.5"
             .expect("bootstrap unified runtime")
     }
 
-    /// Compaction persistence rejections must page, not pass as ordinary
-    /// console traffic: a member `CompactionFailed` agent event pushed
-    /// through the drain path fires the error hook with the typed
-    /// `CompactionPersistenceRejected` alert carrying the member identity,
-    /// the emitting session, and the rejection detail.
-    #[tokio::test]
-    async fn compaction_failed_member_event_pages_error_hook_through_drain() {
+    /// Push member `CompactionFailed` events carrying `reasons` through the
+    /// real drain path and return the alerts the error hook received.
+    ///
+    /// Every reason rides ONE bootstrapped runtime. The mapping is only worth
+    /// anything if the fields survive the forwarder, the drain, and the
+    /// detached hook fire, so this goes the whole way to the hook — but the
+    /// lib suite runs ~1500 tests in one process and `bootstrap`'s 2s budget
+    /// is a wall-clock allowance, so a second concurrent bootstrap is load
+    /// the suite should not have to carry.
+    async fn compaction_alerts_through_drain(
+        session_id: &meerkat_core::types::SessionId,
+        reasons: Vec<meerkat_core::event::CompactionFailureReason>,
+    ) -> Vec<ErrorEvent> {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut runtime = bootstrap_minimal_runtime(&temp_dir).await;
 
@@ -2521,38 +2590,262 @@ model = "gpt-5.5"
         runtime.set_error_hook(hook);
 
         let event_tx = runtime.install_test_event_ingress().await;
-        let session_id = meerkat_core::types::SessionId::new();
-        let attributed = AttributedEvent {
-            source: AgentRuntimeId::new(
-                AgentIdentity::from("compaction-worker"),
-                Generation::new(0),
-            ),
-            source_fence_token: FenceToken::new(1),
-            role: ProfileName::from("worker"),
-            envelope: meerkat_core::event::EventEnvelope {
-                event_id: Default::default(),
-                source: meerkat_core::event::EventSourceIdentity::session(session_id.clone()),
-                seq: 3,
-                mob_id: None,
-                timestamp_ms: 9,
-                payload: AgentEvent::CompactionFailed {
-                    reason: meerkat_core::event::CompactionFailureReason::TranscriptRewriteFailed {
-                        message: "runtime epoch mismatch".to_string(),
-                    },
+        let expected = reasons.len();
+        for (seq, reason) in reasons.into_iter().enumerate() {
+            let attributed = AttributedEvent {
+                source: AgentRuntimeId::new(
+                    AgentIdentity::from("compaction-worker"),
+                    Generation::new(0),
+                ),
+                source_fence_token: FenceToken::new(1),
+                role: ProfileName::from("worker"),
+                envelope: meerkat_core::event::EventEnvelope {
+                    event_id: Default::default(),
+                    source: meerkat_core::event::EventSourceIdentity::session(session_id.clone()),
+                    seq: seq as u64,
+                    mob_id: None,
+                    timestamp_ms: 9,
+                    payload: AgentEvent::CompactionFailed { reason },
                 },
-            },
-        };
-
-        event_tx
-            .send(forwarded_member_event(attributed))
-            .await
-            .expect("send forwarded event");
+            };
+            event_tx
+                .send(forwarded_member_event(attributed))
+                .await
+                .expect("send forwarded event");
+        }
         runtime
             .drain_mob_agent_events()
             .await
             .expect("drain member events");
 
-        // `fire_error` spawns a detached task; wait bounded for the hook.
+        // `fire_error` spawns a detached task; wait bounded for every hook.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if captured.lock().await.len() >= expected {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "error hook did not receive all {expected} compaction persistence rejections"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let alerts = captured.lock().await.clone();
+        runtime.shutdown().await;
+        alerts
+    }
+
+    /// Compaction persistence rejections must page, not pass as ordinary
+    /// console traffic: member `CompactionFailed` agent events pushed through
+    /// the drain path fire the error hook with the typed
+    /// `CompactionPersistenceRejected` alert carrying the member identity,
+    /// the emitting session, and the rejection detail.
+    ///
+    /// meerkat's typed `ProjectionHandoffRefused` reason additionally lands
+    /// its severity facts on the hook typed: the preserved-history fit
+    /// discriminator (page vs log line) and the attempted entry count arrive
+    /// as fields, not as message substrings, while `error` keeps the full
+    /// human rendering for catch-all adopters. `StillFits` is the
+    /// discriminating value — an "always page" default would say
+    /// `OverWindow`. Every other failure reason carries no verdict at all.
+    #[tokio::test]
+    async fn compaction_failures_page_error_hook_with_typed_fit_through_drain() {
+        let session_id = meerkat_core::types::SessionId::new();
+        let alerts = compaction_alerts_through_drain(
+            &session_id,
+            vec![
+                meerkat_core::event::CompactionFailureReason::TranscriptRewriteFailed {
+                    message: "runtime epoch mismatch".to_string(),
+                },
+                meerkat_core::event::CompactionFailureReason::ProjectionHandoffRefused {
+                    refusal: meerkat_core::memory::CompactionHandoffRefusal::RuntimeEpochRotated,
+                    preserved_history:
+                        meerkat_core::event::CompactionPreservedHistoryFit::StillFits,
+                    attempted_entries: 12,
+                    message: "runtime epoch rotated under the coordinator".to_string(),
+                },
+            ],
+        )
+        .await;
+
+        // The hook fires from detached tasks, so arrival order is not the
+        // send order: pick each alert out by the fact under test.
+        let mut untyped = None;
+        let mut typed = None;
+        for alert in &alerts {
+            match alert {
+                ErrorEvent::CompactionPersistenceRejected {
+                    identity,
+                    session_id: rejected_session,
+                    error,
+                    preserved_history,
+                    attempted_entries,
+                } => {
+                    assert_eq!(identity, "compaction-worker:0");
+                    assert_eq!(rejected_session, &session_id.to_string());
+                    if preserved_history.is_some() {
+                        typed = Some((error.clone(), *preserved_history, *attempted_entries));
+                    } else {
+                        untyped = Some((error.clone(), *attempted_entries));
+                    }
+                }
+                other => panic!("expected CompactionPersistenceRejected, got {other:?}"),
+            }
+        }
+
+        let (untyped_error, untyped_entries) =
+            untyped.unwrap_or_else(|| panic!("the non-handoff failure must page too: {alerts:?}"));
+        assert!(
+            untyped_error.contains("runtime epoch mismatch"),
+            "error must carry the rejection detail: {untyped_error}"
+        );
+        assert_eq!(
+            untyped_entries, None,
+            "a non-handoff compaction failure carries no fit verdict"
+        );
+
+        let (typed_error, typed_fit, typed_entries) = typed.unwrap_or_else(|| {
+            panic!("the projection-handoff refusal must page with its fit: {alerts:?}")
+        });
+        assert_eq!(
+            typed_fit,
+            Some(CompactionPreservedHistoryFit::StillFits),
+            "the wedged/progressing discriminator must cross typed"
+        );
+        assert_eq!(typed_entries, Some(12));
+        assert!(
+            typed_error.contains("runtime epoch rotated under the coordinator"),
+            "error must keep the human rendering: {typed_error}"
+        );
+    }
+
+    /// Captures formatted tracing output so the default-sink tests can assert
+    /// on the emitted records. `with_default` is thread-local, so everything
+    /// asserted here must be logged synchronously on the calling thread.
+    #[derive(Clone, Default)]
+    struct CaptureWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CaptureWriter {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(
+                &self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+            .into_owned()
+        }
+    }
+
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+        type Writer = CaptureWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_tracing<T>(body: impl FnOnce() -> T) -> (T, String) {
+        let writer = CaptureWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer.clone())
+            .with_max_level(tracing::Level::WARN)
+            // Without this the formatter wraps every field name and `=` in
+            // ANSI escapes, so `contains("hook_registered=false")` reads a
+            // string that is never literally present.
+            .with_ansi(false)
+            .finish();
+        let value = tracing::subscriber::with_default(subscriber, body);
+        (value, writer.contents())
+    }
+
+    fn sample_alert() -> ErrorEvent {
+        ErrorEvent::CompactionPersistenceRejected {
+            identity: "compaction-worker:0".to_string(),
+            session_id: "sess-1".to_string(),
+            error: "runtime refused the durable compaction projection handoff".to_string(),
+            preserved_history: Some(CompactionPreservedHistoryFit::OverWindow),
+            attempted_entries: Some(12),
+        }
+    }
+
+    /// An `ErrorEvent` fired with NO hook registered must still reach the log,
+    /// with its typed variant and fields — a paging channel that discards when
+    /// nobody wired it is indistinguishable from a healthy fleet. Fired
+    /// through `fire_error_hook` (not the log helper directly) so the test
+    /// covers the branch that used to drop the event on the floor.
+    #[test]
+    fn error_event_without_hook_still_reaches_the_log() {
+        let slot: SharedErrorHook = Arc::new(std::sync::RwLock::new(None));
+        // No hook means no `tokio::spawn`, so this needs no runtime — which is
+        // also what keeps the record on this thread where the capture sees it.
+        let ((), logged) = capture_tracing(|| fire_error_hook(&slot, sample_alert()));
+
+        assert!(
+            logged.contains("CompactionPersistenceRejected"),
+            "the typed variant must be named in the record: {logged}"
+        );
+        assert!(
+            logged.contains("OverWindow") && logged.contains("compaction-worker:0"),
+            "typed fields must ride the record, not just the Display string: {logged}"
+        );
+        assert!(
+            logged.contains("hook_registered=false"),
+            "the record must say nobody was listening: {logged}"
+        );
+    }
+
+    /// A wired host loses nothing: the record is still emitted, marked as
+    /// delivered. Split from the delivery assertion below so that a single
+    /// mutation of either behaviour fails its own test.
+    #[test]
+    fn error_event_with_hook_is_logged_as_delivered() {
+        let hook: ErrorHook = Arc::new(move |_event| Box::pin(async move {}));
+        let slot: SharedErrorHook = Arc::new(std::sync::RwLock::new(Some(hook)));
+
+        // The dispatch spawns, so this needs a runtime; the log record itself
+        // is still written synchronously on this thread.
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = runtime.enter();
+        let ((), logged) = capture_tracing(|| fire_error_hook(&slot, sample_alert()));
+
+        assert!(
+            logged.contains("hook_registered=true"),
+            "a wired host still gets the record, marked as delivered: {logged}"
+        );
+    }
+
+    /// The default sink is an addition to the hook, not a second delivery
+    /// path through it: a registered hook must fire EXACTLY once per event.
+    #[tokio::test]
+    async fn registered_error_hook_fires_exactly_once() {
+        let captured: Arc<tokio::sync::Mutex<Vec<ErrorEvent>>> =
+            Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let hook_captured = captured.clone();
+        let hook: ErrorHook = Arc::new(move |event| {
+            let hook_captured = hook_captured.clone();
+            Box::pin(async move {
+                hook_captured.lock().await.push(event);
+            })
+        });
+        let slot: SharedErrorHook = Arc::new(std::sync::RwLock::new(Some(hook)));
+
+        fire_error_hook(&slot, sample_alert());
+
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         loop {
             if !captured.lock().await.is_empty() {
@@ -2560,29 +2853,84 @@ model = "gpt-5.5"
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "error hook did not receive the compaction persistence rejection"
+                "registered hook never received the event"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let events = captured.lock().await;
-        match &events[0] {
-            ErrorEvent::CompactionPersistenceRejected {
-                identity,
-                session_id: rejected_session,
-                error,
-            } => {
-                assert_eq!(identity, "compaction-worker:0");
-                assert_eq!(rejected_session, &session_id.to_string());
-                assert!(
-                    error.contains("runtime epoch mismatch"),
-                    "error must carry the rejection detail: {error}"
-                );
-            }
-            other => panic!("expected CompactionPersistenceRejected, got {other:?}"),
-        }
-        drop(events);
+        // Settle any second delivery a double-dispatch bug would produce.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            captured.lock().await.len(),
+            1,
+            "the hook must fire exactly once per event"
+        );
+    }
 
-        runtime.shutdown().await;
+    /// The unwired notice must name the condition AND the fix. This is the
+    /// same function `UnifiedRuntimeBuilder::build` calls when a host never
+    /// registered a hook, so the text is pinned in one place.
+    #[test]
+    fn error_hook_absent_notice_points_at_the_registration_call() {
+        let ((), logged) = capture_tracing(emit_error_hook_absent_notice);
+
+        assert!(
+            logged.contains("no error hook is registered"),
+            "the notice must state the condition plainly: {logged}"
+        );
+        assert!(
+            logged.contains("on_error"),
+            "the notice must point at the registration call: {logged}"
+        );
+    }
+
+    /// The additive fields must not move the wire shape under an adopter
+    /// that predates them: a rejection with no fit verdict serializes
+    /// without the new keys, and a payload written before the fields
+    /// existed still deserializes.
+    #[test]
+    fn compaction_rejection_wire_shape_stays_additive() {
+        let legacy_json = serde_json::json!({
+            "category": "compaction_persistence_rejected",
+            "identity": "compaction-worker:0",
+            "session_id": "sess-1",
+            "error": "compaction curator failed: no summary",
+        });
+
+        let alert: ErrorEvent =
+            serde_json::from_value(legacy_json.clone()).expect("pre-field payload must load");
+        assert_eq!(
+            alert,
+            ErrorEvent::CompactionPersistenceRejected {
+                identity: "compaction-worker:0".to_string(),
+                session_id: "sess-1".to_string(),
+                error: "compaction curator failed: no summary".to_string(),
+                preserved_history: None,
+                attempted_entries: None,
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&alert).expect("serialize"),
+            legacy_json,
+            "an alert with no fit verdict must not emit the new keys"
+        );
+
+        let typed = ErrorEvent::CompactionPersistenceRejected {
+            identity: "compaction-worker:0".to_string(),
+            session_id: "sess-1".to_string(),
+            error: "runtime refused the durable compaction projection handoff".to_string(),
+            preserved_history: Some(CompactionPreservedHistoryFit::OverWindow),
+            attempted_entries: Some(12),
+        };
+        let encoded = serde_json::to_value(&typed).expect("serialize typed");
+        assert_eq!(
+            encoded["preserved_history"],
+            serde_json::json!("over_window")
+        );
+        assert_eq!(encoded["attempted_entries"], serde_json::json!(12));
+        assert_eq!(
+            serde_json::from_value::<ErrorEvent>(encoded).expect("round trip"),
+            typed
+        );
     }
 
     fn capturing_error_hook_slot() -> (SharedErrorHook, Arc<tokio::sync::Mutex<Vec<ErrorEvent>>>) {

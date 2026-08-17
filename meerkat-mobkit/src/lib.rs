@@ -242,11 +242,11 @@ pub use types::{
     ModuleConfig, ModuleEvent, PreSpawnData, RestartPolicy, UnifiedEvent,
 };
 pub use unified_runtime::{
-    DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS, DesiredPeerEdge, DesiredPeerEdgeError,
-    Discovery, EdgeDiscovery, EdgeReconcileFailure, ErrorEvent, ErrorHook, EventLogConfig,
-    EventLogStore, EventQuery, IdentityAuthorityReleaseOutcome, IdentityBootstrapMode,
-    MemberTurnAdmission, PersistedEvent, PostReconcileHook, PostSpawnHook, PreSpawnContext,
-    PreSpawnHook, RediscoverReport, ShutdownDrainReport, UnifiedRuntime,
+    CompactionPreservedHistoryFit, DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS, DesiredPeerEdge,
+    DesiredPeerEdgeError, Discovery, EdgeDiscovery, EdgeReconcileFailure, ErrorEvent, ErrorHook,
+    EventLogConfig, EventLogStore, EventQuery, IdentityAuthorityReleaseOutcome,
+    IdentityBootstrapMode, MemberTurnAdmission, PersistedEvent, PostReconcileHook, PostSpawnHook,
+    PreSpawnContext, PreSpawnHook, RediscoverReport, ShutdownDrainReport, UnifiedRuntime,
     UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilder, UnifiedRuntimeBuilderError,
     UnifiedRuntimeBuilderField, UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport,
     UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
