@@ -7,8 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Operator and adopter guidance
+
+This section carries the operator-facing guidance for the release. The GitHub
+release body is written FROM it, not alongside it: 0.8.17 shipped with its
+guidance only in the release body and no CHANGELOG section at all, and nothing
+in CI can see that drift.
+
+**If you switch on the new `ErrorCategory` members, write explicit match arms.**
+Both SDKs have always passed unknown categories through as raw strings, so an
+`if/elif` chain or a `switch` written against the old five members still
+compiles, still runs, and now sends six additional categories - including every
+one we tell you to page on - down the catch-all branch. Adding the members to
+the enum does not route them; your arms do. In Python, match on
+`ErrorCategory` and keep a final `case _:` that logs the raw tag so a future
+addition is loud rather than silent. In TypeScript, exhaustive-check the union
+with a `never` assertion in the default branch so the same addition fails at
+compile time. Treat `actor_loop_recovered` as a RESOLUTION, not an incident -
+use `ErrorEvent.is_resolution` / `isResolutionErrorEvent()` rather than
+listing categories yourself, or a resolved stall raises a second page.
+
+**Operator recovery matrix** (supersedes the 0.8.17 matrix; the
+`compact_member` row changed this release):
+
+| Situation | Action |
+|---|---|
+| Member's context has overgrown | `mobkit/compact_member`, then `mobkit/bound_member_transcript` if it is still too large |
+| `compact_member` timed out | Read the error: it now names the turn's fate. "Quiesced by the rollback" means the member is yours again and you may retry. "Still running on the floored build" means the member is briefly unresponsive - wait, do not stack a second verb on it |
+| Console reads returning `-32017` | The member is mid-turn on a long tool chain or compaction, not wedged. The `awaiting` field names which loop. Retry, or raise `MOBKIT_CONSOLE_READ_TIMEOUT_SECS` for a known-slow deployment |
+| `ActorLoopStalled` paged | Wait for the `ActorLoopRecovered` carrying the same `stall_id` before escalating. Zero `prior_resolved_stalls` and no resolution arriving is the wedged shape; a high count is merely a chronically busy loop |
+| `CompactionPersistenceRejected` paged | Check the typed fit and `attempted_entries`. On a meerkat pin older than 0.8.23 this is the epoch-seam defect and the member is permanently wedged: retire and respawn |
+| Member is wedged | `respawn` does NOT recover it (continuity-preserving; it resumes the same strand). `reset` recovers but destroys the member's entire history - last resort |
+
+**Quiesce before you stop.** `bound_member_transcript` already refuses with a
+typed Busy on an in-flight turn, and teardown now reports
+`ProceededWithoutInterrupt` rather than claiming a clean stop it did not
+achieve - but both of those are the platform telling you it could not do the
+safe thing, not the platform doing it for you. Let in-flight turns finish, or
+stop them deliberately, before tearing a mob down. A stop that races a member's
+kickoff leaves a turn admitted and possibly still running, and the honest
+report of that is still an operational loose end you have to close.
+
 ### Fixed
 
+- **Console read arms could hang indefinitely.** The gateway awaited the member
+  session task or the mob actor loop with no bound at all, and both are strict
+  sequential command loops, so any long turn (a tool chain, a post-cycle
+  compaction) made every console read on that member queue silently instead of
+  degrading. Reported by OB3 as `mobkit/identity/resolved_tools` hanging past 60
+  seconds with no completion. The seven read arms that cross those two loops -
+  `identity/resolved_tools`, `member_status`, `list_members`, `get_member`,
+  `find_members`, `flow_status`, `list_runs` - are now bounded and return a
+  typed error code `-32017` naming the arm and the seam it was awaiting, with
+  structured `data` (`kind`, `arm`, `awaiting`, `timeout_secs`) for SDK callers.
+  Budget is 30s, overridable via `MOBKIT_CONSOLE_READ_TIMEOUT_SECS` and clamped
+  to `[1, 3600]`. Reads that do NOT cross those loops are deliberately left
+  unbounded: `memory/query` can legitimately run long over a large HNSW index,
+  and `cross_mob/peer_info` runs inside a member authority transaction where
+  abandoning the future is not safe.
+- **`mobkit/compact_member` left its maintenance turn running on timeout,** so
+  later console reads queued behind the very turn the operator had given up on.
+  The turn is now actually stopped, through the mechanism already on the path:
+  the error path's rollback rebuild retires the member, and retirement quiesces
+  the session's active runtime turn. The error now states the turn's real fate -
+  quiesced by the rollback, or still running on the floored build with the
+  member briefly unresponsive - rather than leaving the caller to guess. The
+  post-timeout transcript read that decides whether the forced compaction had
+  already landed runs under its own 5s bound, so unproven evidence is dropped
+  from the message instead of traded for a second hang.
+- **`send_message` self-mapped the incarnation on its `AuthorityUnavailable`
+  arm,** reserving the console interaction under `(alias, alias)` and clobbering
+  the spawn path's incarnation-to-durable-identity registration process-wide -
+  the same shape fixed on the console send path in 4a076774, found by HomeCore.
+  It now reserves under the durable identity with the incarnation as the mapping
+  key.
+- **Every `ErrorEvent` now reaches the log whether or not an error hook is
+  wired.** Previously the three fire points only logged through a registered
+  hook, so a host that never called `on_error` - HomeCore's case - had every
+  `ErrorEvent` this platform ever emitted go to `None` with nothing in the log
+  either. The default sink logs at ERROR (INFO for resolutions) and records
+  `hook_registered`, so an absent hook is visible as an absent hook rather than
+  as an absence of failures.
 - The Python and TypeScript SDK `ErrorCategory` enums declared only five of the
   nine Rust `ErrorEvent` variants, so a host could not write a typed alert arm
   for `compaction_persistence_rejected`, `actor_loop_stalled`,
@@ -25,6 +104,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`ErrorEvent::ActorLoopRecovered`, and a stall you can close.** 0.8.17's
+  `ActorLoopStalled` could only ever open an incident: nothing ever reported the
+  stall ENDING, and its one number (`probe_waited_secs`) was the configured
+  budget echoed back, identical on every page. The stall now carries `stall_id`
+  plus `prior_resolved_stalls`, and the resolution arrives as a sibling event
+  carrying the same `stall_id` and the true `stalled_for_secs`. Note the
+  direction before wiring an alert: the probe parks on the same round trip
+  instead of starting a new one, so a genuinely WEDGED loop pages once and never
+  increments again, while a merely slow loop recovers and stalls afresh. A high
+  `prior_resolved_stalls` therefore means "repeatedly late"; the wedged loop is
+  the one sitting at zero priors with no resolution ever arriving. Distinguishing
+  busy from wedged still needs a progress counter on the meerkat-owned loop,
+  which mobkit cannot observe from here; that ask is filed upstream.
+- **`UnifiedRuntime::stop_mob_for_teardown()` returning `MobStopOutcome`.**
+  Teardown could be refused for its entire window on runtime-attach readiness
+  and still be reported as a clean stop. The outcome is now explicit -
+  `Stopped`, `ProceededWithoutInterrupt { waited_ms, member, error }`, or
+  `Failed(..)` - and the middle variant says exactly that and nothing stronger:
+  a mid-attach member has already had a turn admitted and its kickoff is about
+  to bind, so calling that an interrupt would be a false success the caller
+  cannot detect. It also fires as `ErrorEvent::MobStopProceededWithoutInterrupt`,
+  so the condition reaches a pager and is never swallowed. Upstream root cause
+  (a refusal the caller has no action to clear) is accepted as a meerkat P1;
+  this degrade makes mobkit teardown independent of that timing either way.
+- **The compaction rejection alert now carries meerkat's typed fit.**
+  `CompactionPersistenceRejected` previously reported only a reason string, so a
+  host could not tell a rejected commit that preserved usable history from one
+  that did not. It now carries the typed `CompactionPreservedHistoryFit` and,
+  where meerkat supplies it, `attempted_entries` - the count of real work at risk
+  of being discarded.
 - `ErrorEvent.is_resolution` (Python) / `isResolutionErrorEvent()` plus
   `RESOLUTION_ERROR_CATEGORIES` (TypeScript) distinguish the one category that
   reports a failure ENDING (`actor_loop_recovered`) from the rest. Mirrors the
@@ -38,6 +147,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   back out of serde itself, so a per-variant `#[serde(rename = "...")]` cannot
   slip past it.
 
+### Changed
+
+- Test-suite timing hygiene: assertions that bounded a STRUCTURAL property with
+  a wall clock (waiting for a spawn, a settle, a drain) now poll for the
+  condition under a generous liveness backstop instead of asserting a duration
+  the machine's load decides. Genuinely duration-shaped assertions - the ones
+  that verify nothing happened inside a window - were deliberately left alone,
+  since load only makes those safer. No production behaviour changes.
+
+## [0.8.17] - 2026-08-16
+
+Paired release on meerkat v0.8.23.
+
+**Mixed-version rollout warning (inherited from meerkat 0.8.23).**
+`ToolAccessPolicy::ReadOnly` is serde-closed and persisted in durable session
+metadata, so the hazard triggers on first USE, not on upgrade: once any session
+carries a ReadOnly policy, pre-0.8.23 binaries cannot decode it. Roll the fleet
+forward one-way BEFORE enabling read-only sessions.
+
+### Changed
+- Meerkat pins `=0.8.23`, which fixes the compaction-epoch seam defect: a
+  seam-routed member with durable semantic memory could never persist a
+  compaction, warn-only, retriggering every turn. Field evidence across the
+  pin boundary: 36 attempts / 36 failures on 0.8.22, 2 attempts / 2 successes
+  on 0.8.23.
+- **Fail-closed supervisor routes** - no silent in-proc displacement anywhere.
+  Same-id succession now requires the predecessor's terminal shutdown, which
+  correctly releases the route (it previously leaked on every same-process clean
+  restart). Two further shutdown-ordering bugs fixed: identities no longer park
+  Broken during teardown, and a failed pre-spawn hook no longer leaks the route.
+  **Adopter note:** a test suite that constructs multiple runtimes in one
+  process under a shared participant name now fails closed with a message naming
+  a public key. That reads as a crypto problem but is a test-isolation problem -
+  before 0.8.17 each registration silently displaced the previous one, so such
+  suites passed by accident. Use unique per-test mob ids, or have the incumbent
+  stand down via terminal shutdown where succession is the intent.
+
+### Added
+- `ErrorEvent::CompactionPersistenceRejected` fires through the error hook on
+  every rejected compaction commit (previously warn-only - fleets discovered
+  wedged members by silence).
+- `ErrorEvent::ActorLoopStalled` from a periodic heartbeat round trip, the only
+  observation that can honestly claim loop scope. Knobs
+  `MOBKIT_ACTOR_LOOP_PROBE_INTERVAL_SECS` / `_BUDGET_SECS`.
+- Gateway operator verbs `mobkit/compact_member` (forced compaction via a
+  profile floor plus rebuild) and `mobkit/bound_member_transcript` (pair-safe
+  keep-last-N; typed Busy refusal on in-flight turns - quiesce first).
+- `mobkit_repair` tool-result bounding: `--truncate-tool-results <max_bytes>`
+  and `--drop-tool-results-older-than <N>`, in place, pair-preserving, and
+  idempotent via the marker prefix `[mobkit-repair:tool-result-`.
+
+### Fixed
+- **P0**: `storage-migrate --apply` stamped the irreversible continuity ledger
+  while converting nothing. Conversion now precedes the stamp, and blobs that
+  changed after an earlier conversion are reconverted before it.
+- `ActorAdmissionTimeout` stopped asserting loop scope it cannot observe.
+
+## [0.8.16] - 2026-08-11
+
+Paired release on meerkat v0.8.22. Delivers the owner-ratified 26-item
+program; every item's disposition is stated below, including the items
+deliberately refused and the ones shipped as documented partials.
+
 ### Removed
 
 - **Item 14 phase B** - removed the second scheduling authority as one breaking
@@ -48,12 +220,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   is now `0.5.0`. Durable Meerkat `ScheduleService` storage, schedule tools,
   firing hosts, targets, `host_runnables`, and `callback/schedule_fire` remain
   the single scheduling path.
-
-## [0.8.16] - 2026-08-11
-
-Paired release on meerkat v0.8.22. Delivers the owner-ratified 26-item
-program; every item's disposition is stated below, including the items
-deliberately refused and the ones shipped as documented partials.
 
 ### Changed
 - Meerkat pins `=0.8.22`. Ported nine adaptation seams plus the normalized

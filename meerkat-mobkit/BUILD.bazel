@@ -6997,6 +6997,83 @@ rust_test(
 )
 
 rust_test(
+    name = "sdk_enum_mirror_parity_test",
+    aliases = aliases(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    crate_name = "sdk_enum_mirror_parity",
+    crate_root = "tests/sdk_enum_mirror_parity.rs",
+    crate_features = [],
+    edition = "2024",
+    compile_data = [
+        "Cargo.toml",
+        "assets/release-targets.json",
+        "console-dist/console-app.css",
+        "console-dist/console-app.js",
+        "console-dist/index.html",
+        "examples/library_mode_reference.rs",
+        "flow-editor-dist/flow-editor.css",
+        "flow-editor-dist/flow-editor.js",
+        "flow-editor-dist/index.html",
+        "flow-editor-dist/react-globals.js",
+        "src/adaptive_layer_decision.schema.json",
+        "src/bin/mobkit_gateway.rs",
+        "src/bin/rpc_gateway.rs",
+        "src/identity_first/agent_memory.rs",
+        "src/identity_first/mod.rs",
+        "src/lib.rs",
+        "src/memory/distiller_prompt_v0.md",
+        "src/memory/hygienist_prompt_v0.md",
+        "src/memory/sqlite_store.rs",
+        "src/memory/steward_prompt_v0.md",
+        "src/mob_handle_runtime.rs",
+        "src/unified_runtime/builder.rs",
+        "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
+        "tests/fixtures/homecore_ledgerv1_closure/calendar-continuity-closure.json",
+        "tests/fixtures/homecore_ledgerv1_closure/continuity-schema.sql",
+        "tests/fixtures/homecore_security_idempotency/security-head-evolution.json",
+        "tests/fixtures/v0_8_10_released_session.json",
+        "tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json",
+    ],
+    srcs = [
+        "tests/sdk_enum_mirror_parity.rs",
+    ],
+    visibility = ["//visibility:public"],
+    rustc_env = {
+        "CARGO_PKG_VERSION": "0.8.17",
+        "CARGO_BIN_NAME": "sdk_enum_mirror_parity",
+        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+    },
+    tags = [
+        "fast",
+    ],
+    size = "small",
+    data = [
+        ":package_runfiles",
+    ],
+    env = {
+        "RUST_MIN_STACK": "16777216",
+    },
+    proc_macro_deps = all_crate_deps(
+        package_name = "meerkat-mobkit",
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [
+        "//meerkat-mobkit:meerkat_mobkit",
+    ] + all_crate_deps(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
     name = "sdk_error_category_parity_test",
     aliases = aliases(
         package_name = "meerkat-mobkit",
@@ -8833,6 +8910,7 @@ test_suite(
         ":rpc_envelope_golden_labels_test",
         ":runtime_bootstrap_test",
         ":schedule_store_text_carry_test",
+        ":sdk_enum_mirror_parity_test",
         ":sdk_error_category_parity_test",
         ":sdk_parity_test",
         ":sdk_productization_test",
