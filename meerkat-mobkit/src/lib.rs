@@ -42,6 +42,8 @@ pub mod storage_health;
 pub mod storage_layout;
 pub mod storage_migrate;
 pub mod storage_provider;
+#[cfg(test)]
+mod test_wait;
 pub mod tool_compose;
 pub mod topology_control;
 pub mod types;
@@ -242,14 +244,14 @@ pub use types::{
     ModuleConfig, ModuleEvent, PreSpawnData, RestartPolicy, UnifiedEvent,
 };
 pub use unified_runtime::{
-    DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS, DesiredPeerEdge, DesiredPeerEdgeError,
-    Discovery, EdgeDiscovery, EdgeReconcileFailure, ErrorEvent, ErrorHook, EventLogConfig,
-    EventLogStore, EventQuery, IdentityAuthorityReleaseOutcome, IdentityBootstrapMode,
-    MemberTurnAdmission, PersistedEvent, PostReconcileHook, PostSpawnHook, PreSpawnContext,
-    PreSpawnHook, RediscoverReport, ShutdownDrainReport, UnifiedRuntime,
-    UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilder, UnifiedRuntimeBuilderError,
-    UnifiedRuntimeBuilderField, UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport,
-    UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
-    UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
-    discovery_spec_to_spawn_spec,
+    CompactionPreservedHistoryFit, DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS, DesiredPeerEdge,
+    DesiredPeerEdgeError, Discovery, EdgeDiscovery, EdgeReconcileFailure, ErrorEvent, ErrorHook,
+    EventLogConfig, EventLogStore, EventQuery, IdentityAuthorityReleaseOutcome,
+    IdentityBootstrapMode, MemberTurnAdmission, MobStopOutcome, PersistedEvent, PostReconcileHook,
+    PostSpawnHook, PreSpawnContext, PreSpawnHook, RediscoverReport, ShutdownDrainReport,
+    UnifiedRuntime, UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilder,
+    UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
+    UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
+    UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport,
+    UnifiedRuntimeShutdownReport, discovery_spec_to_spawn_spec,
 };

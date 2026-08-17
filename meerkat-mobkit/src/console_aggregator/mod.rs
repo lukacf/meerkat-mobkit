@@ -7153,19 +7153,17 @@ comms = true
         }
 
         // The miss triggered refresh_soon: the read model converges, after
-        // which even the UNSCOPED gate passes the frame.
-        let mut converged = false;
-        for _ in 0..40 {
-            if aggregator.timeline_event_visible(&event).await {
-                converged = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        assert!(
-            converged,
-            "the unknown-identity miss must self-heal the read model"
-        );
+        // which even the UNSCOPED gate passes the frame. Convergence is
+        // structural - the debounced refresh either lands or it never will -
+        // so poll for it rather than budgeting 40 tries * 50ms (a 2s ceiling
+        // that full-suite load reached on its own).
+        crate::test_wait::poll_until(
+            "the unknown-identity miss must self-heal the read model (refresh_soon never made \
+             the frame visible to the unscoped gate)",
+            crate::test_wait::STRUCTURAL_BACKSTOP,
+            async || aggregator.timeline_event_visible(&event).await,
+        )
+        .await;
 
         let _ = runtime.mob_handle().stop().await;
         Ok(())
@@ -10201,30 +10199,30 @@ comms = true
             "initial explicit child timeline should return existing store frames without waiting for session history"
         );
 
-        let mut observed_backfill = false;
-        for _ in 0..80 {
-            let page = aggregator
-                .query_timeline(ConsoleTimelineQuery {
-                    identity: Some("test/agent-a".to_string()),
-                    limit: 20,
-                    ..ConsoleTimelineQuery::default()
+        // The scheduled backfill either lands the kickoff prompt or it never
+        // will: structural, so poll for it instead of budgeting 80 tries * 25ms
+        // (a 2s ceiling that measured runner load, not the backfill).
+        crate::test_wait::poll_until(
+            "scheduled explicit child timeline backfill never included the kickoff prompt (no \
+             SessionHistory-sourced user_input frame carrying \"You are agent-a.\")",
+            crate::test_wait::STRUCTURAL_BACKSTOP,
+            async || {
+                let page = aggregator
+                    .query_timeline(ConsoleTimelineQuery {
+                        identity: Some("test/agent-a".to_string()),
+                        limit: 20,
+                        ..ConsoleTimelineQuery::default()
+                    })
+                    .await
+                    .expect("query child timeline after scheduled backfill");
+                page.frames.iter().any(|frame| {
+                    frame.kind == "user_input"
+                        && frame.source.kind == ConsoleFrameSourceKind::SessionHistory
+                        && frame.payload.to_string().contains("You are agent-a.")
                 })
-                .await
-                .expect("query child timeline after scheduled backfill");
-            if page.frames.iter().any(|frame| {
-                frame.kind == "user_input"
-                    && frame.source.kind == ConsoleFrameSourceKind::SessionHistory
-                    && frame.payload.to_string().contains("You are agent-a.")
-            }) {
-                observed_backfill = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        assert!(
-            observed_backfill,
-            "scheduled explicit child timeline backfill should eventually include the kickoff prompt"
-        );
+            },
+        )
+        .await;
         let _ = runtime.mob_handle().stop().await;
     }
 
@@ -10310,31 +10308,41 @@ comms = true
                 runtime_entry_for_test("runtime-stress", &runtime),
             );
 
-        let started = Instant::now();
         aggregator
             .refresh_session_history()
             .await
             .expect("stress refresh");
-        let elapsed = started.elapsed();
 
         assert!(
             delayed_service.read_calls() >= MEMBER_COUNT,
             "expected at least one history read per member, saw {}",
             delayed_service.read_calls()
         );
+        // Fan-out is asserted on the OBSERVED PEAK, not on wall-clock elapsed.
+        // `backfill_session_history_targets` collects all MEMBER_COUNT targets
+        // up front and spawns every one into the JoinSet before joining any, so
+        // each task's first act is to take a `session_backfill_permits` permit
+        // and increment `active_reads` before its 40ms read. With more members
+        // than permits the peak is therefore structurally the permit count: a
+        // lower peak would require a holder to finish its whole 40ms read
+        // before a sibling that already holds a permit was ever polled.
+        //
+        // The old check was `elapsed < 600ms`. That only separated concurrency
+        // >= 3 from <= 2 (32 members * 40ms is 1280ms serial, 80ms at the full
+        // limit), and any ceiling generous enough to survive full-suite CPU
+        // starvation would have stopped discriminating regressions at all. The
+        // peak assertion is strictly sharper AND load-independent.
+        let permit_limit = ConsoleAggregatorOptions::default().max_concurrent_session_backfills;
         assert!(
-            delayed_service.max_active_reads() > 1,
-            "session history backfill should fan out instead of reading members serially"
+            MEMBER_COUNT > permit_limit,
+            "fixture must oversubscribe the limiter for the peak to be decidable"
         );
-        assert!(
+        assert_eq!(
+            delayed_service.max_active_reads(),
+            permit_limit,
+            "session history backfill must saturate the concurrency limit, not read members \
+             serially (peak concurrent reads observed: {})",
             delayed_service.max_active_reads()
-                <= ConsoleAggregatorOptions::default().max_concurrent_session_backfills,
-            "session history backfill should respect the default concurrency limit"
-        );
-        assert!(
-            elapsed < Duration::from_millis(600),
-            "parallel backfill should be far below serial {}ms path, elapsed: {elapsed:?}",
-            MEMBER_COUNT * 40
         );
         let _ = runtime.mob_handle().stop().await;
     }

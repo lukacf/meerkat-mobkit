@@ -57,6 +57,12 @@ const DEFAULT_COMPACT_FLOOR_TOKENS: u64 = 1024;
 /// Default budget for the forced-compaction maintenance turn.
 const DEFAULT_COMPACT_TIMEOUT_MS: u64 = 60_000;
 
+/// Bound for the post-timeout transcript read that decides whether the forced
+/// compaction had already landed. It reads the same session whose turn just
+/// missed its budget, so the evidence clause is worth a few seconds and never
+/// worth a second unbounded wait.
+const COMPACT_TIMEOUT_EVIDENCE_BUDGET: Duration = Duration::from_secs(5);
+
 /// Default keep-last-N for `bound_member_transcript`.
 const DEFAULT_BOUND_KEEP_LAST: usize = 50;
 
@@ -280,7 +286,7 @@ pub(super) async fn handle_compact_member(
             Ok(facts) => Some(facts),
             Err(err) => {
                 floors.clear(&identity);
-                let restore = restore_after_floor(ctx, &identity, spec.clone()).await;
+                let (_, restore) = restore_after_floor(ctx, &identity, spec.clone()).await;
                 return rpc_error(
                     response_id,
                     -32000,
@@ -314,7 +320,7 @@ pub(super) async fn handle_compact_member(
         Ok(admission) => admission,
         Err(err) => {
             floors.clear(&identity);
-            let restore = restore_after_floor(ctx, &identity, spec.clone()).await;
+            let (_, restore) = restore_after_floor(ctx, &identity, spec.clone()).await;
             return rpc_error(
                 response_id,
                 -32000,
@@ -331,11 +337,55 @@ pub(super) async fn handle_compact_member(
         .await
     {
         floors.clear(&identity);
-        let restore = restore_after_floor(ctx, &identity, spec.clone()).await;
+        let (rolled_back, restore) = restore_after_floor(ctx, &identity, spec.clone()).await;
+        // Honest timeout semantics: the wait gave up, not the turn. The
+        // rollback rebuild that just ran retires the member, and mob
+        // retirement quiesces the session's active runtime turn before
+        // retiring it (`cancel_active_runtime_turn_before_retire`, under the
+        // retirement deadline), so a landed rollback IS the interrupt - no
+        // second cancel path is introduced here. A failed rollback leaves the
+        // turn running on the floored build, and the caller must be told so
+        // rather than left to infer that the timeout stopped anything.
+        let turn_fate = if rolled_back {
+            "; the in-flight maintenance turn was quiesced by the rollback rebuild \
+             (mob retirement cancels the active runtime turn before retiring)"
+        } else {
+            "; the maintenance turn may still be running on the floored build, so this member \
+             can stay briefly unresponsive and later reads on it may queue"
+        };
+        // The forced compaction fires at the turn's PRE-LLM boundary, so it
+        // can already be durable when the wait expires. This evidence read
+        // touches the same session that just failed to answer in time, so it
+        // gets its own short bound: unproven evidence is dropped from the
+        // message, never traded for a second hang.
+        let compaction_evidence = match (before.as_ref(), ctx.transcript_edit_service.as_ref()) {
+            (Some(before), Some(service)) => {
+                match tokio::time::timeout(
+                    COMPACT_TIMEOUT_EVIDENCE_BUDGET,
+                    read_transcript_facts(service, &session_id),
+                )
+                .await
+                {
+                    Ok(Ok(after)) if &after != before => {
+                        "; the forced compaction rewrite IS durably applied \
+                         (transcript facts changed before the timeout)"
+                    }
+                    Ok(Ok(_)) => {
+                        "; the forced compaction rewrite had not durably applied at \
+                                  timeout"
+                    }
+                    Ok(Err(_)) | Err(_) => "",
+                }
+            }
+            _ => "",
+        };
         return rpc_error(
             response_id,
             -32000,
-            format!("compact_member maintenance turn did not complete: {err}{restore}"),
+            format!(
+                "compact_member maintenance turn did not complete within {timeout_ms}ms: \
+                 {err}{turn_fate}{compaction_evidence}{restore}"
+            ),
         );
     }
 
@@ -471,20 +521,30 @@ async fn rebuild_member_for_fresh_build(
 }
 
 /// Best-effort restore rebuild for `compact_member` error paths, after the
-/// floor registry entry was cleared. Returns a suffix for the error message
-/// stating what the member build is left with.
+/// floor registry entry was cleared.
+///
+/// Returns whether the rollback rebuild actually landed, plus a suffix for the
+/// error message stating what the member build is left with. The landed flag
+/// is load-bearing on the timeout path: the rebuild retires the member, and
+/// mob retirement quiesces the session's active runtime turn before retiring,
+/// so a landed rollback is also what stops an in-flight maintenance turn.
 async fn restore_after_floor(
     ctx: &IdentityFirstContext,
     identity: &AgentIdentity,
     spec: crate::identity_first::DurableAgentSpec,
-) -> String {
+) -> (bool, String) {
     match rebuild_member_for_fresh_build(ctx, identity, None, spec).await {
-        Ok(_) => "; the temporary floor was rolled back (member rebuilt at its original \
-                  threshold)"
-            .to_string(),
-        Err(detail) => format!(
-            "; rollback rebuild also failed ({detail}) - the member keeps the temporary floor \
-             until its next rebuild"
+        Ok(_) => (
+            true,
+            "; the temporary floor was rolled back (member rebuilt at its original threshold)"
+                .to_string(),
+        ),
+        Err(detail) => (
+            false,
+            format!(
+                "; rollback rebuild also failed ({detail}) - the member keeps the temporary \
+                 floor until its next rebuild"
+            ),
         ),
     }
 }
@@ -908,6 +968,65 @@ mod tests {
         }
     }
 
+    /// Message count on the DURABLE session surface - the one the operator
+    /// verbs read, which is not the same clock as the identity's completion
+    /// cursor.
+    async fn transcript_len(
+        service: &Arc<dyn crate::memory::hygienist::TranscriptEditSessionService>,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> usize {
+        service
+            .read_history(
+                session_id,
+                meerkat_core::service::SessionHistoryQuery {
+                    offset: 0,
+                    limit: None,
+                },
+            )
+            .await
+            .expect("read durable transcript")
+            .messages
+            .len()
+    }
+
+    /// [`transcript_len`], but only once the durable transcript has stopped
+    /// moving.
+    ///
+    /// A turn's completion cursor advances before the turn's rows are all
+    /// durable, so a length read immediately after `run_turn` is a RACING
+    /// READ. Any index computed from it is stale the moment a trailing row
+    /// lands, which does not happen on an idle box and does happen under
+    /// full-suite contention. Requiring the length to repeat across
+    /// consecutive observations is what makes it usable as an index.
+    ///
+    /// The ceiling is a backstop, not a measurement: the transcript settles in
+    /// milliseconds when anything is working.
+    async fn settled_transcript_len(
+        service: &Arc<dyn crate::memory::hygienist::TranscriptEditSessionService>,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> usize {
+        const REQUIRED_STABLE_OBSERVATIONS: usize = 3;
+        let deadline = std::time::Instant::now() + Duration::from_mins(1);
+        let mut settled = transcript_len(service, session_id).await;
+        let mut stable = 1;
+        while stable < REQUIRED_STABLE_OBSERVATIONS {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let observed = transcript_len(service, session_id).await;
+            if observed == settled {
+                stable += 1;
+            } else {
+                settled = observed;
+                stable = 1;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "durable transcript never settled: still growing (last observed {observed} \
+                 messages), so no index derived from it can be trusted"
+            );
+        }
+        settled
+    }
+
     /// Full production wiring in one process: a concrete
     /// `PersistentSessionService` backing the mob, an identity-first member
     /// bridged by the production `MobSessionBridge`, and the bridge's own
@@ -1226,6 +1345,73 @@ comms = true
         let _ = harness.runtime.mob_handle().stop().await;
     }
 
+    /// Honest timeout semantics: when the maintenance-turn wait gives up, the
+    /// error must state what actually happened to the turn - the rollback
+    /// rebuild's retire quiesces it, or, when the rollback did not land, it
+    /// may still be running on the floored build - instead of implying the
+    /// timeout stopped anything. The member must also come back usable: the
+    /// rollback rebuild restores the original profile threshold.
+    ///
+    /// Only the invariants that hold on BOTH branches are asserted. Which
+    /// branch runs depends on wall-clock progress the test does not control,
+    /// and the optional compaction-evidence clause is dropped whenever its
+    /// own bounded read cannot answer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compact_member_timeout_names_the_turn_fate_and_restores_the_member() {
+        let harness = operator_verb_harness("rt:worker:main:0", "operator-compact-timeout").await;
+        let fat = "seeded transcript ballast ".repeat(160);
+        for turn in 0..4 {
+            harness.run_turn(format!("turn {turn}: {fat}")).await;
+        }
+
+        // A 1ms wait cannot outlast a real bridge respawn + turn: the wait
+        // times out while the verb's machinery is still working.
+        let response = rpc(
+            &harness,
+            "mobkit/compact_member",
+            serde_json::json!({
+                "identity": harness.member_alias,
+                "floor_tokens": 256,
+                "timeout_ms": 1,
+            }),
+        )
+        .await;
+        let message = response["error"]["message"]
+            .as_str()
+            .unwrap_or_else(|| panic!("timeout must surface a typed error: {response:#?}"));
+        assert!(
+            message.contains("did not complete within 1ms"),
+            "the error must name the exhausted deadline: {message}"
+        );
+        assert!(
+            message.contains("quiesced by the rollback rebuild")
+                || message.contains("may still be running on the floored build"),
+            "the error must state the in-flight turn's actual fate: {message}"
+        );
+        assert!(
+            !message.contains("did not complete: "),
+            "the pre-fix message shape (bare wait error, no turn fate) must be gone: {message}"
+        );
+        assert!(
+            harness.floors.get(&harness.identity).is_none(),
+            "the floor registry must be disarmed after a timed-out verb"
+        );
+
+        // The member must be usable after the rollback: a probe turn appends.
+        let (count_before_probe, _) = harness.transcript_facts().await;
+        harness
+            .run_turn("post-timeout probe turn".to_string())
+            .await;
+        let (count_after_probe, _) = harness.transcript_facts().await;
+        assert!(
+            count_after_probe > count_before_probe,
+            "the rolled-back member must accept turns: {count_before_probe} -> \
+             {count_after_probe}"
+        );
+
+        let _ = harness.runtime.mob_handle().stop().await;
+    }
+
     /// `mobkit/bound_member_transcript` on an idle member session whose tool
     /// pair straddles the naive cut point: the commit must succeed with the
     /// pair kept whole, and the resulting transcript must start with the
@@ -1252,20 +1438,24 @@ comms = true
             .expect("identity status")
             .session_id
             .expect("identity session");
-        let seeded_len = service
-            .read_history(
-                &session_id,
-                meerkat_core::service::SessionHistoryQuery {
-                    offset: 0,
-                    limit: None,
-                },
-            )
-            .await
-            .expect("read seeded transcript")
-            .messages
-            .len();
+        // Every index below is derived from this length, so it must be read
+        // off a SETTLED transcript. `run_turn` waits on the identity's
+        // completion cursor, which advances when the turn completes - not when
+        // the turn's rows are durable in the session store, which is the
+        // surface both this rewrite and the verb read. Snapshotting on the
+        // cursor's timing is a racing read: under full-suite contention two
+        // further rows landed between the snapshot and the rewrite and every
+        // derived index was wrong (`removed` 7 against an expected 4, 1-of-5
+        // full-suite runs). Quiesce on the durable surface instead.
+        let seeded_len = settled_transcript_len(&service, &session_id).await;
         let (assistant, results) = tool_use_pair("call-straddle");
         let fixture = vec![user("older"), assistant, results, user("tail")];
+        let fixture_len = fixture.len();
+        // The turn just finished, so a still-draining runtime admission can
+        // answer Busy briefly; that is the documented posture, retried here
+        // rather than raced. Kept tight deliberately: the refusal is TRUE when
+        // it happens, so a longer wait would only delay a correct answer and
+        // hide the mechanism behind it.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             let request = meerkat_core::service::SessionTranscriptRewriteRequest {
@@ -1296,6 +1486,19 @@ comms = true
         // keep_last = 2 naively cuts at len - 2 = seeded_len + 2, which IS
         // the tool_results row; the pair-safe cut walks back one to keep the
         // pair whole (removed = seeded_len + 1, kept = 3).
+        //
+        // Pin that premise before spending it on `removed` below. If anything
+        // else reached the transcript, this fails naming the race rather than
+        // surfacing later as unexplained index arithmetic.
+        let staged_len = transcript_len(&service, &session_id).await;
+        assert_eq!(
+            staged_len,
+            seeded_len + fixture_len,
+            "the seeded fixture must be the whole of the transcript growth: expected the \
+             {seeded_len} settled rows plus the {fixture_len} fixture rows, saw {staged_len}. A \
+             different count means rows landed alongside the fixture and every index below is \
+             derived from a stale premise."
+        );
         let response = rpc(
             &harness,
             "mobkit/bound_member_transcript",
@@ -1369,11 +1572,14 @@ comms = true
             )
             .await
             .expect("held turn admitted");
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        // Backstop only: the admitted turn either reaches the gated LLM call or
+        // it never will. Generous so full-suite CPU starvation cannot reach it.
+        let deadline = std::time::Instant::now() + Duration::from_mins(1);
         while !harness.in_call.load(Ordering::SeqCst) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the held turn must reach the LLM call"
+                "the held turn never reached the LLM call: the gate was armed and the turn was \
+                 admitted, but `in_call` was never set"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

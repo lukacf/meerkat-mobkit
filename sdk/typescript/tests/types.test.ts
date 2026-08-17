@@ -13,6 +13,7 @@ import {
   MEMBER_STATE_ACTIVE,
   MEMBER_STATE_RETIRING,
   ErrorCategory,
+  isResolutionErrorEvent,
   parseStatusResult,
   parseCapabilitiesResult,
   parseReconcileResult,
@@ -1414,12 +1415,113 @@ describe("parseErrorEvent", () => {
     assert.equal(result.context.extra, "data");
   });
 
+  it("parses compaction_persistence_rejected", () => {
+    const result = parseErrorEvent({
+      category: "compaction_persistence_rejected",
+      identity: "review:singleton",
+      session_id: "sess-9",
+      error: "store rejected summary",
+    });
+    assert.equal(result.category, "compaction_persistence_rejected");
+    assert.equal(
+      result.message,
+      "review:singleton (sess-9): store rejected summary",
+    );
+  });
+
+  it("parses actor_loop_stalled", () => {
+    const result = parseErrorEvent({
+      category: "actor_loop_stalled",
+      probe_waited_secs: 30,
+      detail: "mob command loop busy",
+    });
+    assert.equal(result.category, "actor_loop_stalled");
+    assert.equal(
+      result.message,
+      "probe unanswered for 30s: mob command loop busy",
+    );
+  });
+
+  it("parses event_log_flush_failure", () => {
+    const result = parseErrorEvent({
+      category: "event_log_flush_failure",
+      error: "disk full",
+    });
+    assert.equal(result.category, "event_log_flush_failure");
+    assert.equal(result.message, "disk full");
+  });
+
+  it("parses actor_loop_recovered as a resolution", () => {
+    const result = parseErrorEvent({
+      category: "actor_loop_recovered",
+      stall_id: 7,
+      stalled_for_secs: 42,
+    });
+    assert.equal(result.category, "actor_loop_recovered");
+    assert.equal(result.message, "stall 7 resolved after 42s");
+    // Closes a prior stall; a host must be able to resolve rather than open
+    // a second incident.
+    assert.equal(isResolutionErrorEvent(result), true);
+  });
+
+  it("parses mob_stop_proceeded_without_interrupt without reading as clean", () => {
+    const result = parseErrorEvent({
+      category: "mob_stop_proceeded_without_interrupt",
+      waited_ms: 5000,
+      member: "review:singleton",
+      error: "runtime attach not ready",
+    });
+    assert.equal(result.category, "mob_stop_proceeded_without_interrupt");
+    assert.equal(
+      result.message,
+      "teardown proceeded after 5000ms WITHOUT a successful interrupt " +
+        "on review:singleton; a turn may have been admitted and may " +
+        "still be running: runtime attach not ready",
+    );
+    assert.equal(isResolutionErrorEvent(result), false);
+  });
+
+  it("parses mob_stop_proceeded_without_interrupt without a member", () => {
+    const result = parseErrorEvent({
+      category: "mob_stop_proceeded_without_interrupt",
+      waited_ms: 250,
+      error: "runtime attach not ready",
+    });
+    assert.equal(
+      result.message,
+      "teardown proceeded after 250ms WITHOUT a successful interrupt; " +
+        "a turn may have been admitted and may still be running: " +
+        "runtime attach not ready",
+    );
+  });
+
+  it("only actor_loop_recovered is a resolution", () => {
+    for (const category of Object.values(ErrorCategory)) {
+      assert.equal(
+        isResolutionErrorEvent({ category, message: "", context: {} }),
+        category === ErrorCategory.ACTOR_LOOP_RECOVERED,
+        category,
+      );
+    }
+  });
+
+  // The full set is gated against the Rust `ErrorEvent` enum by
+  // meerkat-mobkit/tests/sdk_error_category_parity.rs; this asserts the exact
+  // tags so a rename here cannot pass by editing both sides of that gate.
   it("ErrorCategory constants match expected values", () => {
-    assert.equal(ErrorCategory.SPAWN_FAILURE, "spawn_failure");
-    assert.equal(ErrorCategory.RECONCILE_INCOMPLETE, "reconcile_incomplete");
-    assert.equal(ErrorCategory.CHECKPOINT_FAILURE, "checkpoint_failure");
-    assert.equal(ErrorCategory.HOST_LOOP_CRASH, "host_loop_crash");
-    assert.equal(ErrorCategory.REDISCOVER_FAILURE, "rediscover_failure");
+    assert.deepEqual({ ...ErrorCategory }, {
+      SPAWN_FAILURE: "spawn_failure",
+      RECONCILE_INCOMPLETE: "reconcile_incomplete",
+      CHECKPOINT_FAILURE: "checkpoint_failure",
+      COMPACTION_PERSISTENCE_REJECTED: "compaction_persistence_rejected",
+      ACTOR_LOOP_STALLED: "actor_loop_stalled",
+      ACTOR_LOOP_RECOVERED: "actor_loop_recovered",
+      HOST_LOOP_CRASH: "host_loop_crash",
+      REDISCOVER_FAILURE: "rediscover_failure",
+      EVENT_LOG_FLUSH_FAILURE: "event_log_flush_failure",
+      IDENTITY_MATERIALIZATION_FAILURE: "identity_materialization_failure",
+      MOB_STOP_PROCEEDED_WITHOUT_INTERRUPT: "mob_stop_proceeded_without_interrupt",
+    });
   });
 });
 

@@ -1866,12 +1866,34 @@ class MobRunSnapshot:
 
 
 class ErrorCategory(str, Enum):
-    """Error event categories matching Rust's ErrorEvent variants."""
+    """Error event categories matching Rust's ErrorEvent variants.
+
+    Every Rust ``ErrorEvent`` variant must appear here with its serde
+    ``snake_case`` wire tag. The Rust test
+    ``meerkat-mobkit/tests/sdk_error_category_parity.rs`` fails the build if
+    this set drifts from the Rust enum.
+    """
     SPAWN_FAILURE = "spawn_failure"
     RECONCILE_INCOMPLETE = "reconcile_incomplete"
     CHECKPOINT_FAILURE = "checkpoint_failure"
+    COMPACTION_PERSISTENCE_REJECTED = "compaction_persistence_rejected"
+    ACTOR_LOOP_STALLED = "actor_loop_stalled"
+    ACTOR_LOOP_RECOVERED = "actor_loop_recovered"
     HOST_LOOP_CRASH = "host_loop_crash"
     REDISCOVER_FAILURE = "rediscover_failure"
+    EVENT_LOG_FLUSH_FAILURE = "event_log_flush_failure"
+    IDENTITY_MATERIALIZATION_FAILURE = "identity_materialization_failure"
+    MOB_STOP_PROCEEDED_WITHOUT_INTERRUPT = "mob_stop_proceeded_without_interrupt"
+
+
+#: Categories that report a failure ENDING rather than starting. Mirrors the
+#: Rust runtime's ``log_error_event``, which logs these at INFO instead of
+#: ERROR. A receiver that pages on every ``on_error`` call would otherwise
+#: raise a second incident for a stall that already resolved.
+#:
+#: Holds wire strings, not enum members: ``ErrorEvent.category`` carries the
+#: raw wire value, so membership must not depend on ``Enum`` hash semantics.
+RESOLUTION_ERROR_CATEGORIES = frozenset({ErrorCategory.ACTOR_LOOP_RECOVERED.value})
 
 
 @dataclass(frozen=True)
@@ -1908,19 +1930,51 @@ class ErrorEvent:
         elif category == ErrorCategory.CHECKPOINT_FAILURE:
             session_id = context.get("session_id", "")
             message = f"{session_id}: {error}" if session_id else error
+        elif category == ErrorCategory.COMPACTION_PERSISTENCE_REJECTED:
+            identity = context.get("identity", "")
+            session_id = context.get("session_id", "")
+            message = f"{identity} ({session_id}): {error}"
+        elif category == ErrorCategory.ACTOR_LOOP_STALLED:
+            waited = context.get("probe_waited_secs", 0)
+            detail = context.get("detail", "")
+            message = f"probe unanswered for {waited}s: {detail}"
+        elif category == ErrorCategory.ACTOR_LOOP_RECOVERED:
+            stall_id = context.get("stall_id", 0)
+            stalled_for = context.get("stalled_for_secs", 0)
+            message = f"stall {stall_id} resolved after {stalled_for}s"
         elif category == ErrorCategory.HOST_LOOP_CRASH:
             message = f"{member_id}: {error}" if member_id else error
         elif category == ErrorCategory.REDISCOVER_FAILURE:
             message = error
-        elif category == "identity_materialization_failure":
+        elif category == ErrorCategory.EVENT_LOG_FLUSH_FAILURE:
+            message = error
+        elif category == ErrorCategory.IDENTITY_MATERIALIZATION_FAILURE:
             identity = context.get("identity", "")
             initiator = context.get("initiator", "")
             operation = context.get("operation", "")
             target = f"{identity} for {initiator}" if initiator else identity
             message = ": ".join(str(part) for part in (target, operation, error) if part)
+        elif category == ErrorCategory.MOB_STOP_PROCEEDED_WITHOUT_INTERRUPT:
+            waited_ms = context.get("waited_ms", 0)
+            member = context.get("member") or ""
+            subject = f" on {member}" if member else ""
+            message = (
+                f"teardown proceeded after {waited_ms}ms WITHOUT a successful "
+                f"interrupt{subject}; a turn may have been admitted and may "
+                f"still be running: {error}"
+            )
         else:
             message = str(data)
         return cls(category=category, message=message, context=context)
+
+    @property
+    def is_resolution(self) -> bool:
+        """True when this reports a failure ENDING rather than starting.
+
+        Lets a host close an incident instead of opening a second one. See
+        :data:`RESOLUTION_ERROR_CATEGORIES`.
+        """
+        return self.category in RESOLUTION_ERROR_CATEGORIES
 
 
 # -----------------------------------------------------------------

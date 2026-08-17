@@ -55,9 +55,10 @@ pub use event_log::{
 pub use http::DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS;
 pub use mob_ops::MemberTurnAdmission;
 pub use types::{
-    ErrorEvent, IdentityAuthorityReleaseOutcome, RediscoverReport, ShutdownDrainReport,
-    UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,
-    UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
+    CompactionPreservedHistoryFit, ErrorEvent, IdentityAuthorityReleaseOutcome, MobStopOutcome,
+    RediscoverReport, ShutdownDrainReport, UnifiedRuntimeBootstrapError,
+    UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
+    UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
     UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport,
     UnifiedRuntimeShutdownReport,
 };
@@ -89,11 +90,71 @@ fn current_error_hook(slot: &SharedErrorHook) -> Option<ErrorHook> {
         .clone()
 }
 
+/// The default sink every [`ErrorEvent`] passes through, whether or not a
+/// host registered an [`ErrorHook`].
+///
+/// A paging channel that discards when nobody wired it is indistinguishable
+/// from a healthy fleet. A host with zero `on_error` call sites used to get
+/// silence for every operational failure mobkit detected — 136 compaction
+/// rejections in one observed fleet, found only by reading a console table
+/// by hand. Logging here costs a wired host nothing (the hook still fires,
+/// exactly once) and gives an unwired one somewhere an operator or a
+/// log-shipper can see the event.
+///
+/// Emitted with the typed event (`Debug`, so the variant name and its fields
+/// both land) rather than only the `Display` rendering, and synchronously on
+/// the caller's thread so the record is not stranded on a detached task.
+pub(crate) fn log_error_event(event: &ErrorEvent, hook_registered: bool) {
+    // `ActorLoopRecovered` is the one variant that reports a failure ENDING.
+    // Logging a recovery at ERROR would make the level a lie and would put a
+    // second scary line in the log for every stall that resolved fine.
+    if matches!(event, ErrorEvent::ActorLoopRecovered { .. }) {
+        tracing::info!(
+            error_event = ?event,
+            hook_registered,
+            "mobkit runtime error event resolved: {event}"
+        );
+    } else {
+        tracing::error!(
+            error_event = ?event,
+            hook_registered,
+            "mobkit runtime error event: {event}"
+        );
+    }
+    if !hook_registered {
+        warn_error_hook_absent_once();
+    }
+}
+
+/// State the missing-hook condition plainly: nobody is listening, and here is
+/// where to fix it. Emitted at build time by `UnifiedRuntimeBuilder::build`
+/// for hosts that never called `on_error`, and once per process from the fire
+/// path for hosts that bootstrap directly and install the hook afterwards.
+pub(crate) fn emit_error_hook_absent_notice() {
+    tracing::warn!(
+        "no error hook is registered, so runtime error events reach logs only; \
+         register one with UnifiedRuntimeBuilder::on_error (or \
+         UnifiedRuntime::set_error_hook) to route them to paging"
+    );
+}
+
+/// The fire-path guard for the notice: the condition is per-process, and
+/// repeating it on every event would bury the events themselves.
+fn warn_error_hook_absent_once() {
+    static NOTICED: std::sync::Once = std::sync::Once::new();
+    NOTICED.call_once(emit_error_hook_absent_notice);
+}
+
 /// Fire an error event on the hook currently installed in `slot`, if any.
 /// Truly fire-and-forget — spawns a detached task so slow hooks (HTTP to
 /// Slack, PagerDuty) never block the caller.
+///
+/// The event reaches [`log_error_event`] either way: an unregistered hook
+/// must not be the difference between an operator seeing a failure and not.
 fn fire_error_hook(slot: &SharedErrorHook, event: ErrorEvent) {
-    if let Some(hook) = current_error_hook(slot) {
+    let hook = current_error_hook(slot);
+    log_error_event(&event, hook.is_some());
+    if let Some(hook) = hook {
         tokio::spawn(async move {
             let () = hook(event).await;
         });
@@ -2124,8 +2185,28 @@ const ACTOR_LOOP_PROBE_INTERVAL: Duration = Duration::from_mins(1);
 /// 600s), which must stay wide because firing it drops a delivery, a probe
 /// timeout drops nothing — it only names the stall — so it can afford to be
 /// aggressive. The probe's handler is a pure in-memory phase read whose
-/// healthy latency is microseconds; 30s therefore cannot fire on a healthy
-/// loop, only on one that is queued behind a blocked handler.
+/// healthy latency is microseconds; 30s therefore cannot fire because the
+/// READ is slow, only because the read is queued behind a handler that has
+/// not yet RETURNED.
+///
+/// That is deliberately weaker than "blocked". A handler that has not
+/// returned may be wedged, or may be doing legitimate long work — a member
+/// revival, a large replay, a compaction, a storage migration. The probe
+/// cannot tell those apart, because `QueryPhase` rides the same serialized
+/// loop it is watching, so its round trip measures "time to drain everything
+/// queued ahead", not health. Note the scale this sits at: the same system
+/// treats a 600s in-flight admission as normal (`BRIDGE_ACTOR_ADMISSION_BUDGET`),
+/// which is 20x this budget, so a busy loop can cross 30s without anything
+/// being wrong. Widening the budget is NOT the fix — it would only move the
+/// same ambiguity — and one such long command has already been suppressed by
+/// hand (`lifecycle.rs` aborts the probe on shutdown so an intentional
+/// shutdown stall cannot page). The real discriminator is whether the loop
+/// made PROGRESS while the probe waited, which needs a monotonic
+/// command-completion counter on meerkat's mob actor; mobkit cannot observe
+/// it from here. Until that exists, the stall is an OPEN INCIDENT rather
+/// than a verdict: it is closed by the correlated
+/// [`ErrorEvent::ActorLoopRecovered`], and a receiver decides severity from
+/// how long the incident stays open on its own clock.
 const ACTOR_LOOP_PROBE_BUDGET: Duration = Duration::from_secs(30);
 
 /// Effective probe interval: `MOBKIT_ACTOR_LOOP_PROBE_INTERVAL_SECS`
@@ -2172,10 +2253,33 @@ fn parse_probe_secs(raw: Option<&str>, default: Duration) -> Duration {
 /// on the SAME round trip until the loop drains it, rather than stacking
 /// further commands onto a stalled actor (uncapped retry loops already
 /// amplify channel pressure there; the probe must never join them). When the
-/// parked round trip finally resolves, recovery is reported as an info-level
-/// log — `ErrorEvent` has no recovery precedent (every variant names a
-/// failure, and the hook is a paging channel), so recovery deliberately does
-/// not page.
+/// parked round trip finally resolves, recovery is emitted as
+/// [`ErrorEvent::ActorLoopRecovered`], correlated to the stall by `stall_id`.
+///
+/// That variant amends a previously stated invariant — `ErrorEvent` used to
+/// have no recovery precedent, on the reasoning that every variant names a
+/// failure and the hook is a paging channel. An open-only paging channel is
+/// not decidable: a receiver that pages on a stall can never close the
+/// incident it opened, so it can only escalate. The resolution is filtered
+/// out of error-level logging by the default sink, and unaware consumers see
+/// it fall into the `_` arm `#[non_exhaustive]` already forces.
+///
+/// THE CORRELATED PAIR PLUS THE RECEIVER'S OWN CLOCK IS THE DISCRIMINATOR.
+/// An open `stall_id` with no matching resolution after ten minutes is a
+/// wedged loop; one closed after fifty seconds was a busy loop. That is a
+/// complete decision procedure using only what this emitter already sends,
+/// which is why the missing progress counter is an IMPROVEMENT rather than a
+/// missing piece: it would let the probe skip PAGING for the busy case at
+/// all, whereas today the receiver pages first and decides after. Better,
+/// but strictly an optimization of a decision the receiver can already make.
+///
+/// Note what the counters can and cannot say. Because the probe parks on the
+/// SAME round trip rather than starting a new one, a genuinely wedged loop
+/// pages exactly once and never gets another cycle, so no counter can climb;
+/// a merely slow loop recovers and stalls again, so it is the slow case that
+/// accumulates. `prior_resolved_stalls` is therefore chronic-busyness
+/// evidence, and "wedged" is the absence of a resolution, measured by the
+/// receiver's own clock — not by any count this emitter could produce.
 ///
 /// The probe treats ANY completion within budget — `Ok` or a typed error —
 /// as a live loop: it measures whether the loop drains, not whether the mob
@@ -2190,6 +2294,11 @@ async fn run_actor_loop_probe<P, F>(
     P: FnMut() -> F,
     F: Future<Output = Result<MobState, MobError>>,
 {
+    // Correlates each stall with the resolution that closes it, and counts
+    // the stalls that have already resolved. Task-local: one probe per
+    // runtime, so no shared counter is needed.
+    let mut next_stall_id: u64 = 1;
+    let mut resolved_stalls: u64 = 0;
     loop {
         tokio::time::sleep(interval).await;
         let started = tokio::time::Instant::now();
@@ -2198,24 +2307,45 @@ async fn run_actor_loop_probe<P, F>(
         let result = match tokio::time::timeout(budget, &mut round_trip).await {
             Ok(result) => result,
             Err(_) => {
+                let stall_id = next_stall_id;
+                next_stall_id += 1;
                 fire_error_hook(
                     &error_hook,
                     ErrorEvent::ActorLoopStalled {
-                        probe_waited_secs: budget.as_secs(),
+                        // Measured, not the configured budget echoed back: a
+                        // field that looks like data must be data. At page
+                        // time this necessarily reads ~= the budget (we page
+                        // the instant it expires), so it is a truthfulness
+                        // fix rather than new information — the informative
+                        // elapsed is `ActorLoopRecovered::stalled_for_secs`.
+                        probe_waited_secs: started.elapsed().as_secs(),
                         detail: format!(
                             "QueryPhase probe round trip unanswered after {}s; the mob actor \
                              is one serialized command loop, so every member's dispatch is \
                              queued behind whatever is blocking it; the probe stays parked on \
-                             this round trip and will not stack another",
-                            budget.as_secs()
+                             this round trip and will not stack another. THIS STALL PAGES \
+                             ONCE: no further stall events will be emitted for it, so silence \
+                             is NOT recovery — hold the incident open until an \
+                             actor_loop_recovered arrives with stall_id {}",
+                            budget.as_secs(),
+                            stall_id
                         ),
+                        stall_id: Some(stall_id),
+                        prior_resolved_stalls: Some(resolved_stalls),
                     },
                 );
                 // Park on the SAME round trip until the loop drains it.
                 let result = round_trip.await;
-                tracing::info!(
-                    stalled_for_secs = started.elapsed().as_secs(),
-                    "mob actor command loop recovered: stalled probe round trip completed"
+                resolved_stalls += 1;
+                // The receiver opened an incident on the stall above; this is
+                // the only thing that lets it close that incident rather than
+                // escalate forever.
+                fire_error_hook(
+                    &error_hook,
+                    ErrorEvent::ActorLoopRecovered {
+                        stall_id,
+                        stalled_for_secs: started.elapsed().as_secs(),
+                    },
                 );
                 result
             }
@@ -2255,10 +2385,24 @@ fn compaction_rejection_alert(attributed: &AttributedEvent) -> Option<ErrorEvent
         .session_id()
         .map(ToString::to_string)
         .unwrap_or_default();
+    // The projection-handoff refusal carries the severity facts typed: the
+    // preserved-history fit is the wedged-member (page) vs still-progressing
+    // (log line) discriminator, and hosts must not fish it out of the message
+    // string. Other compaction failure reasons have no fit verdict to carry.
+    let (preserved_history, attempted_entries) = match reason {
+        meerkat_core::event::CompactionFailureReason::ProjectionHandoffRefused {
+            preserved_history,
+            attempted_entries,
+            ..
+        } => (Some((*preserved_history).into()), Some(*attempted_entries)),
+        _ => (None, None),
+    };
     Some(ErrorEvent::CompactionPersistenceRejected {
         identity: crate::member_comms_id::runtime_event_alias(&attributed.source),
         session_id,
         error: reason.to_string(),
+        preserved_history,
+        attempted_entries,
     })
 }
 
@@ -2499,13 +2643,19 @@ model = "gpt-5.5"
             .expect("bootstrap unified runtime")
     }
 
-    /// Compaction persistence rejections must page, not pass as ordinary
-    /// console traffic: a member `CompactionFailed` agent event pushed
-    /// through the drain path fires the error hook with the typed
-    /// `CompactionPersistenceRejected` alert carrying the member identity,
-    /// the emitting session, and the rejection detail.
-    #[tokio::test]
-    async fn compaction_failed_member_event_pages_error_hook_through_drain() {
+    /// Push member `CompactionFailed` events carrying `reasons` through the
+    /// real drain path and return the alerts the error hook received.
+    ///
+    /// Every reason rides ONE bootstrapped runtime. The mapping is only worth
+    /// anything if the fields survive the forwarder, the drain, and the
+    /// detached hook fire, so this goes the whole way to the hook — but the
+    /// lib suite runs ~1500 tests in one process and `bootstrap`'s 2s budget
+    /// is a wall-clock allowance, so a second concurrent bootstrap is load
+    /// the suite should not have to carry.
+    async fn compaction_alerts_through_drain(
+        session_id: &meerkat_core::types::SessionId,
+        reasons: Vec<meerkat_core::event::CompactionFailureReason>,
+    ) -> Vec<ErrorEvent> {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut runtime = bootstrap_minimal_runtime(&temp_dir).await;
 
@@ -2521,38 +2671,265 @@ model = "gpt-5.5"
         runtime.set_error_hook(hook);
 
         let event_tx = runtime.install_test_event_ingress().await;
-        let session_id = meerkat_core::types::SessionId::new();
-        let attributed = AttributedEvent {
-            source: AgentRuntimeId::new(
-                AgentIdentity::from("compaction-worker"),
-                Generation::new(0),
-            ),
-            source_fence_token: FenceToken::new(1),
-            role: ProfileName::from("worker"),
-            envelope: meerkat_core::event::EventEnvelope {
-                event_id: Default::default(),
-                source: meerkat_core::event::EventSourceIdentity::session(session_id.clone()),
-                seq: 3,
-                mob_id: None,
-                timestamp_ms: 9,
-                payload: AgentEvent::CompactionFailed {
-                    reason: meerkat_core::event::CompactionFailureReason::TranscriptRewriteFailed {
-                        message: "runtime epoch mismatch".to_string(),
-                    },
+        let expected = reasons.len();
+        for (seq, reason) in reasons.into_iter().enumerate() {
+            let attributed = AttributedEvent {
+                source: AgentRuntimeId::new(
+                    AgentIdentity::from("compaction-worker"),
+                    Generation::new(0),
+                ),
+                source_fence_token: FenceToken::new(1),
+                role: ProfileName::from("worker"),
+                envelope: meerkat_core::event::EventEnvelope {
+                    event_id: Default::default(),
+                    source: meerkat_core::event::EventSourceIdentity::session(session_id.clone()),
+                    seq: seq as u64,
+                    mob_id: None,
+                    timestamp_ms: 9,
+                    payload: AgentEvent::CompactionFailed { reason },
                 },
-            },
-        };
-
-        event_tx
-            .send(forwarded_member_event(attributed))
-            .await
-            .expect("send forwarded event");
+            };
+            event_tx
+                .send(forwarded_member_event(attributed))
+                .await
+                .expect("send forwarded event");
+        }
         runtime
             .drain_mob_agent_events()
             .await
             .expect("drain member events");
 
-        // `fire_error` spawns a detached task; wait bounded for the hook.
+        // `fire_error` spawns a detached task; wait bounded for every hook.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if captured.lock().await.len() >= expected {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "error hook did not receive all {expected} compaction persistence rejections"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let alerts = captured.lock().await.clone();
+        runtime.shutdown().await;
+        alerts
+    }
+
+    /// Compaction persistence rejections must page, not pass as ordinary
+    /// console traffic: member `CompactionFailed` agent events pushed through
+    /// the drain path fire the error hook with the typed
+    /// `CompactionPersistenceRejected` alert carrying the member identity,
+    /// the emitting session, and the rejection detail.
+    ///
+    /// meerkat's typed `ProjectionHandoffRefused` reason additionally lands
+    /// its severity facts on the hook typed: the preserved-history fit
+    /// discriminator (page vs log line) and the attempted entry count arrive
+    /// as fields, not as message substrings, while `error` keeps the full
+    /// human rendering for catch-all adopters. `StillFits` is the
+    /// discriminating value — an "always page" default would say
+    /// `OverWindow`. Every other failure reason carries no verdict at all.
+    #[tokio::test]
+    async fn compaction_failures_page_error_hook_with_typed_fit_through_drain() {
+        let session_id = meerkat_core::types::SessionId::new();
+        let alerts = compaction_alerts_through_drain(
+            &session_id,
+            vec![
+                meerkat_core::event::CompactionFailureReason::TranscriptRewriteFailed {
+                    message: "runtime epoch mismatch".to_string(),
+                },
+                meerkat_core::event::CompactionFailureReason::ProjectionHandoffRefused {
+                    refusal: meerkat_core::memory::CompactionHandoffRefusal::RuntimeEpochRotated,
+                    preserved_history:
+                        meerkat_core::event::CompactionPreservedHistoryFit::StillFits,
+                    attempted_entries: 12,
+                    message: "runtime epoch rotated under the coordinator".to_string(),
+                },
+            ],
+        )
+        .await;
+
+        // The hook fires from detached tasks, so arrival order is not the
+        // send order: pick each alert out by the fact under test.
+        let mut untyped = None;
+        let mut typed = None;
+        for alert in &alerts {
+            match alert {
+                ErrorEvent::CompactionPersistenceRejected {
+                    identity,
+                    session_id: rejected_session,
+                    error,
+                    preserved_history,
+                    attempted_entries,
+                } => {
+                    assert_eq!(identity, "compaction-worker:0");
+                    assert_eq!(rejected_session, &session_id.to_string());
+                    if preserved_history.is_some() {
+                        typed = Some((error.clone(), *preserved_history, *attempted_entries));
+                    } else {
+                        untyped = Some((error.clone(), *attempted_entries));
+                    }
+                }
+                other => panic!("expected CompactionPersistenceRejected, got {other:?}"),
+            }
+        }
+
+        let (untyped_error, untyped_entries) =
+            untyped.unwrap_or_else(|| panic!("the non-handoff failure must page too: {alerts:?}"));
+        assert!(
+            untyped_error.contains("runtime epoch mismatch"),
+            "error must carry the rejection detail: {untyped_error}"
+        );
+        assert_eq!(
+            untyped_entries, None,
+            "a non-handoff compaction failure carries no fit verdict"
+        );
+
+        let (typed_error, typed_fit, typed_entries) = typed.unwrap_or_else(|| {
+            panic!("the projection-handoff refusal must page with its fit: {alerts:?}")
+        });
+        assert_eq!(
+            typed_fit,
+            Some(CompactionPreservedHistoryFit::StillFits),
+            "the wedged/progressing discriminator must cross typed"
+        );
+        assert_eq!(typed_entries, Some(12));
+        assert!(
+            typed_error.contains("runtime epoch rotated under the coordinator"),
+            "error must keep the human rendering: {typed_error}"
+        );
+    }
+
+    /// Captures formatted tracing output so the default-sink tests can assert
+    /// on the emitted records. `with_default` is thread-local, so everything
+    /// asserted here must be logged synchronously on the calling thread.
+    #[derive(Clone, Default)]
+    struct CaptureWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CaptureWriter {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(
+                &self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+            .into_owned()
+        }
+    }
+
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+        type Writer = CaptureWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_tracing<T>(body: impl FnOnce() -> T) -> (T, String) {
+        let writer = CaptureWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer.clone())
+            // INFO rather than WARN because the default sink deliberately
+            // drops the resolution variant to INFO, and a test that capped at
+            // WARN could not tell "logged at INFO" from "not logged at all".
+            .with_max_level(tracing::Level::INFO)
+            // Without this the formatter wraps every field name and `=` in
+            // ANSI escapes, so `contains("hook_registered=false")` reads a
+            // string that is never literally present.
+            .with_ansi(false)
+            .finish();
+        let value = tracing::subscriber::with_default(subscriber, body);
+        (value, writer.contents())
+    }
+
+    fn sample_alert() -> ErrorEvent {
+        ErrorEvent::CompactionPersistenceRejected {
+            identity: "compaction-worker:0".to_string(),
+            session_id: "sess-1".to_string(),
+            error: "runtime refused the durable compaction projection handoff".to_string(),
+            preserved_history: Some(CompactionPreservedHistoryFit::OverWindow),
+            attempted_entries: Some(12),
+        }
+    }
+
+    /// An `ErrorEvent` fired with NO hook registered must still reach the log,
+    /// with its typed variant and fields — a paging channel that discards when
+    /// nobody wired it is indistinguishable from a healthy fleet. Fired
+    /// through `fire_error_hook` (not the log helper directly) so the test
+    /// covers the branch that used to drop the event on the floor.
+    #[test]
+    fn error_event_without_hook_still_reaches_the_log() {
+        let slot: SharedErrorHook = Arc::new(std::sync::RwLock::new(None));
+        // No hook means no `tokio::spawn`, so this needs no runtime — which is
+        // also what keeps the record on this thread where the capture sees it.
+        let ((), logged) = capture_tracing(|| fire_error_hook(&slot, sample_alert()));
+
+        assert!(
+            logged.contains("CompactionPersistenceRejected"),
+            "the typed variant must be named in the record: {logged}"
+        );
+        assert!(
+            logged.contains("OverWindow") && logged.contains("compaction-worker:0"),
+            "typed fields must ride the record, not just the Display string: {logged}"
+        );
+        assert!(
+            logged.contains("hook_registered=false"),
+            "the record must say nobody was listening: {logged}"
+        );
+    }
+
+    /// A wired host loses nothing: the record is still emitted, marked as
+    /// delivered. Split from the delivery assertion below so that a single
+    /// mutation of either behaviour fails its own test.
+    #[test]
+    fn error_event_with_hook_is_logged_as_delivered() {
+        let hook: ErrorHook = Arc::new(move |_event| Box::pin(async move {}));
+        let slot: SharedErrorHook = Arc::new(std::sync::RwLock::new(Some(hook)));
+
+        // The dispatch spawns, so this needs a runtime; the log record itself
+        // is still written synchronously on this thread.
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = runtime.enter();
+        let ((), logged) = capture_tracing(|| fire_error_hook(&slot, sample_alert()));
+
+        assert!(
+            logged.contains("hook_registered=true"),
+            "a wired host still gets the record, marked as delivered: {logged}"
+        );
+    }
+
+    /// The default sink is an addition to the hook, not a second delivery
+    /// path through it: a registered hook must fire EXACTLY once per event.
+    #[tokio::test]
+    async fn registered_error_hook_fires_exactly_once() {
+        let captured: Arc<tokio::sync::Mutex<Vec<ErrorEvent>>> =
+            Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let hook_captured = captured.clone();
+        let hook: ErrorHook = Arc::new(move |event| {
+            let hook_captured = hook_captured.clone();
+            Box::pin(async move {
+                hook_captured.lock().await.push(event);
+            })
+        });
+        let slot: SharedErrorHook = Arc::new(std::sync::RwLock::new(Some(hook)));
+
+        fire_error_hook(&slot, sample_alert());
+
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         loop {
             if !captured.lock().await.is_empty() {
@@ -2560,29 +2937,84 @@ model = "gpt-5.5"
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "error hook did not receive the compaction persistence rejection"
+                "registered hook never received the event"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let events = captured.lock().await;
-        match &events[0] {
-            ErrorEvent::CompactionPersistenceRejected {
-                identity,
-                session_id: rejected_session,
-                error,
-            } => {
-                assert_eq!(identity, "compaction-worker:0");
-                assert_eq!(rejected_session, &session_id.to_string());
-                assert!(
-                    error.contains("runtime epoch mismatch"),
-                    "error must carry the rejection detail: {error}"
-                );
-            }
-            other => panic!("expected CompactionPersistenceRejected, got {other:?}"),
-        }
-        drop(events);
+        // Settle any second delivery a double-dispatch bug would produce.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            captured.lock().await.len(),
+            1,
+            "the hook must fire exactly once per event"
+        );
+    }
 
-        runtime.shutdown().await;
+    /// The unwired notice must name the condition AND the fix. This is the
+    /// same function `UnifiedRuntimeBuilder::build` calls when a host never
+    /// registered a hook, so the text is pinned in one place.
+    #[test]
+    fn error_hook_absent_notice_points_at_the_registration_call() {
+        let ((), logged) = capture_tracing(emit_error_hook_absent_notice);
+
+        assert!(
+            logged.contains("no error hook is registered"),
+            "the notice must state the condition plainly: {logged}"
+        );
+        assert!(
+            logged.contains("on_error"),
+            "the notice must point at the registration call: {logged}"
+        );
+    }
+
+    /// The additive fields must not move the wire shape under an adopter
+    /// that predates them: a rejection with no fit verdict serializes
+    /// without the new keys, and a payload written before the fields
+    /// existed still deserializes.
+    #[test]
+    fn compaction_rejection_wire_shape_stays_additive() {
+        let legacy_json = serde_json::json!({
+            "category": "compaction_persistence_rejected",
+            "identity": "compaction-worker:0",
+            "session_id": "sess-1",
+            "error": "compaction curator failed: no summary",
+        });
+
+        let alert: ErrorEvent =
+            serde_json::from_value(legacy_json.clone()).expect("pre-field payload must load");
+        assert_eq!(
+            alert,
+            ErrorEvent::CompactionPersistenceRejected {
+                identity: "compaction-worker:0".to_string(),
+                session_id: "sess-1".to_string(),
+                error: "compaction curator failed: no summary".to_string(),
+                preserved_history: None,
+                attempted_entries: None,
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&alert).expect("serialize"),
+            legacy_json,
+            "an alert with no fit verdict must not emit the new keys"
+        );
+
+        let typed = ErrorEvent::CompactionPersistenceRejected {
+            identity: "compaction-worker:0".to_string(),
+            session_id: "sess-1".to_string(),
+            error: "runtime refused the durable compaction projection handoff".to_string(),
+            preserved_history: Some(CompactionPreservedHistoryFit::OverWindow),
+            attempted_entries: Some(12),
+        };
+        let encoded = serde_json::to_value(&typed).expect("serialize typed");
+        assert_eq!(
+            encoded["preserved_history"],
+            serde_json::json!("over_window")
+        );
+        assert_eq!(encoded["attempted_entries"], serde_json::json!(12));
+        assert_eq!(
+            serde_json::from_value::<ErrorEvent>(encoded).expect("round trip"),
+            typed
+        );
     }
 
     fn capturing_error_hook_slot() -> (SharedErrorHook, Arc<tokio::sync::Mutex<Vec<ErrorEvent>>>) {
@@ -2622,17 +3054,196 @@ model = "gpt-5.5"
             ErrorEvent::ActorLoopStalled {
                 probe_waited_secs,
                 detail,
+                stall_id,
+                prior_resolved_stalls,
             } => {
                 assert_eq!(*probe_waited_secs, 30);
                 assert!(
                     detail.contains("QueryPhase"),
                     "detail must name the probe round trip: {detail}"
                 );
+                // A human reading this page must not conclude "it stopped
+                // complaining, so it recovered" — the probe pages once per
+                // stall by design, so only the correlated resolution can
+                // close it.
+                assert!(
+                    detail.contains("PAGES ONCE") && detail.contains("silence is NOT recovery"),
+                    "detail must say the absence of further pages is not recovery: {detail}"
+                );
+                assert!(
+                    detail.contains("actor_loop_recovered") && detail.contains("stall_id 1"),
+                    "detail must name the resolution to wait for, by id: {detail}"
+                );
+                assert_eq!(
+                    *stall_id,
+                    Some(1),
+                    "the stall must carry the id its resolution will echo"
+                );
+                assert_eq!(*prior_resolved_stalls, Some(0));
             }
             other => panic!("expected ActorLoopStalled, got {other:?}"),
         }
         drop(events);
         probe_task.abort();
+    }
+
+    /// The wedged case, and the reason no counter can name it: the probe
+    /// parks on the SAME round trip, so a loop that never answers pages
+    /// exactly once and then goes silent — `prior_resolved_stalls` cannot
+    /// climb, and "wedged" is the ABSENCE of a resolution on the receiver's
+    /// clock. This pins the direction so a future change cannot quietly turn
+    /// the count into a wedged proxy.
+    #[tokio::test(start_paused = true)]
+    async fn wedged_actor_loop_pages_once_and_never_resolves() {
+        let (slot, captured) = capturing_error_hook_slot();
+        let probe_task = tokio::spawn(run_actor_loop_probe(
+            std::future::pending::<Result<MobState, MobError>>,
+            slot,
+            Duration::from_mins(1),
+            Duration::from_secs(30),
+        ));
+
+        // Long enough for several more probe cycles had any been possible.
+        tokio::time::sleep(Duration::from_mins(10)).await;
+        tokio::task::yield_now().await;
+
+        let events = captured.lock().await;
+        assert_eq!(
+            events.len(),
+            1,
+            "a wedged loop pages once and cannot page again: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ErrorEvent::ActorLoopRecovered { .. })),
+            "a wedged loop must never emit a resolution: {events:?}"
+        );
+        drop(events);
+        probe_task.abort();
+    }
+
+    /// A stall that later drains must emit a resolution the receiver can
+    /// PAIR with the incident it opened. The correlation is the point: an
+    /// unpaired "something recovered" cannot close a specific incident, so
+    /// the assertion is on matching ids, not merely on both events firing.
+    #[tokio::test(start_paused = true)]
+    async fn resolved_stall_emits_recovery_correlated_by_stall_id() {
+        let (slot, captured) = capturing_error_hook_slot();
+        // Answers after 50s: past the 30s budget, so it stalls, then drains.
+        let probe_task = tokio::spawn(run_actor_loop_probe(
+            || async {
+                tokio::time::sleep(Duration::from_secs(50)).await;
+                Ok(MobState::Running)
+            },
+            slot,
+            Duration::from_mins(1),
+            Duration::from_secs(30),
+        ));
+
+        // One interval (60s) + the 50s answer, plus slack for the hook task.
+        tokio::time::sleep(Duration::from_mins(2)).await;
+        tokio::task::yield_now().await;
+
+        let events = captured.lock().await;
+        let stall_id = events
+            .iter()
+            .find_map(|event| match event {
+                ErrorEvent::ActorLoopStalled { stall_id, .. } => Some(*stall_id),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected a stall page: {events:?}"));
+        let (recovered_id, stalled_for_secs) = events
+            .iter()
+            .find_map(|event| match event {
+                ErrorEvent::ActorLoopRecovered {
+                    stall_id,
+                    stalled_for_secs,
+                } => Some((*stall_id, *stalled_for_secs)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected a resolution: {events:?}"));
+
+        assert_eq!(
+            Some(recovered_id),
+            stall_id,
+            "the resolution must name the stall it closes, or a receiver \
+             cannot close the incident it opened: {events:?}"
+        );
+        assert!(
+            stalled_for_secs >= 50,
+            "the resolution must carry how long the loop was stalled, got \
+             {stalled_for_secs}s"
+        );
+        drop(events);
+        probe_task.abort();
+    }
+
+    /// The resolution is the one variant that reports a failure ending, so
+    /// the default sink must not log it at ERROR — a recovery rendered as an
+    /// error is a lie about severity and doubles the scary lines per stall.
+    #[test]
+    fn resolved_stall_is_not_logged_as_an_error() {
+        let recovered = ErrorEvent::ActorLoopRecovered {
+            stall_id: 7,
+            stalled_for_secs: 42,
+        };
+        let ((), logged) = capture_tracing(|| log_error_event(&recovered, true));
+
+        assert!(
+            logged.contains("INFO"),
+            "a resolution must log at INFO: {logged}"
+        );
+        assert!(
+            !logged.contains("ERROR"),
+            "a resolution must not log at ERROR: {logged}"
+        );
+        assert!(
+            logged.contains("actor_loop_recovered") && logged.contains("42"),
+            "the record must still carry the resolution facts: {logged}"
+        );
+    }
+
+    /// Additivity: an `ActorLoopStalled` payload written before the
+    /// correlation fields existed must still load, and a stall carrying them
+    /// must round-trip. OB3 pages on this enum today.
+    #[test]
+    fn actor_loop_stall_wire_shape_stays_additive() {
+        let legacy_json = serde_json::json!({
+            "category": "actor_loop_stalled",
+            "probe_waited_secs": 30,
+            "detail": "QueryPhase probe round trip unanswered",
+        });
+
+        let alert: ErrorEvent =
+            serde_json::from_value(legacy_json.clone()).expect("pre-field payload must load");
+        assert_eq!(
+            alert,
+            ErrorEvent::ActorLoopStalled {
+                probe_waited_secs: 30,
+                detail: "QueryPhase probe round trip unanswered".to_string(),
+                stall_id: None,
+                prior_resolved_stalls: None,
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&alert).expect("serialize"),
+            legacy_json,
+            "a stall with no correlation must not emit the new keys"
+        );
+
+        let correlated = ErrorEvent::ActorLoopStalled {
+            probe_waited_secs: 30,
+            detail: "stalled".to_string(),
+            stall_id: Some(3),
+            prior_resolved_stalls: Some(2),
+        };
+        let encoded = serde_json::to_value(&correlated).expect("serialize correlated");
+        assert_eq!(encoded["stall_id"], serde_json::json!(3));
+        assert_eq!(
+            serde_json::from_value::<ErrorEvent>(encoded).expect("round trip"),
+            correlated
+        );
     }
 
     /// A responsive command loop must never page across many probe cycles.
@@ -2721,11 +3332,33 @@ model = "gpt-5.5"
             "probe must resume after the stalled round trip drains: {}",
             probes.load(Ordering::SeqCst)
         );
+        // Recovery used to be an info log only. It is now an event, because a
+        // receiver that can open an incident but never close it can only
+        // escalate — so the drained round trip must produce exactly one
+        // resolution, correlated to the stall it closes.
+        let events = captured.lock().await;
         assert_eq!(
-            captured.lock().await.len(),
-            1,
-            "recovery is an info log, never a page"
+            events.len(),
+            2,
+            "the drained stall must produce its resolution: {events:?}"
         );
+        let stall_id = match &events[0] {
+            ErrorEvent::ActorLoopStalled { stall_id, .. } => *stall_id,
+            other => panic!("expected the stall first, got {other:?}"),
+        };
+        match &events[1] {
+            ErrorEvent::ActorLoopRecovered {
+                stall_id: closed, ..
+            } => {
+                assert_eq!(
+                    Some(*closed),
+                    stall_id,
+                    "the resolution must close the stall that opened: {events:?}"
+                );
+            }
+            other => panic!("expected the resolution second, got {other:?}"),
+        }
+        drop(events);
         probe_task.abort();
     }
 

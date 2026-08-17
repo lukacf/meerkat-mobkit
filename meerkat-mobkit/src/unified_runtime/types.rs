@@ -173,6 +173,51 @@ impl From<SubscribeError> for UnifiedRuntimeError {
     }
 }
 
+/// What a teardown-time mob stop actually achieved.
+///
+/// The two non-failure outcomes are deliberately NOT collapsed.
+/// [`Self::Stopped`] means the mob machine accepted `Stop`;
+/// [`Self::ProceededWithoutInterrupt`] means teardown went ahead having failed
+/// to interrupt a member. Reporting the second as the first would be a false
+/// success the caller cannot detect at the call site - and a mid-attach member
+/// is precisely the case where it would be a lie, because a turn has already
+/// been admitted and its kickoff is about to bind.
+#[derive(Debug)]
+pub enum MobStopOutcome {
+    /// The mob machine accepted `Stop`.
+    Stopped,
+    /// Teardown proceeded WITHOUT a successful interrupt: the stop kept being
+    /// refused on runtime-attach readiness for the whole window. A turn may
+    /// have been admitted on the named member and may still be running. The
+    /// condition was reported through the error hook as
+    /// [`ErrorEvent::MobStopProceededWithoutInterrupt`], never swallowed.
+    ProceededWithoutInterrupt {
+        waited_ms: u64,
+        /// The session/member meerkat named in its refusal, when the refusal
+        /// carried one. `None` means the text did not name a subject - the
+        /// report omits what it did not observe rather than guessing.
+        member: Option<String>,
+        error: String,
+    },
+    /// Any other refusal, unchanged in meaning.
+    Failed(crate::mob_handle_runtime::MobRuntimeError),
+}
+
+impl MobStopOutcome {
+    /// Whether teardown may continue. NOT a success predicate: it is true for
+    /// [`Self::ProceededWithoutInterrupt`], where nothing was interrupted.
+    /// Callers that need to know the mob actually quiesced must test
+    /// [`Self::stopped_cleanly`].
+    pub fn teardown_may_proceed(&self) -> bool {
+        matches!(self, Self::Stopped | Self::ProceededWithoutInterrupt { .. })
+    }
+
+    /// Whether the mob machine actually accepted `Stop`.
+    pub fn stopped_cleanly(&self) -> bool {
+        matches!(self, Self::Stopped)
+    }
+}
+
 /// Exact disposition of identity-first lease authority during shutdown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentityAuthorityReleaseOutcome {
@@ -358,6 +403,42 @@ pub struct ShutdownDrainReport {
     pub drain_duration_ms: u64,
 }
 
+/// Whether the history a failed compaction preserved can still be sent to
+/// the provider.
+///
+/// Mobkit-owned wire mirror of meerkat's
+/// [`CompactionPreservedHistoryFit`](meerkat_core::event::CompactionPreservedHistoryFit)
+/// discriminator, so `ErrorEvent`'s serialized shape does not track upstream's
+/// `#[non_exhaustive]` growth: unknown future upstream verdicts degrade to
+/// [`Self::Unclassified`] ("no verdict") at the drain seam instead of failing
+/// deserialization downstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionPreservedHistoryFit {
+    /// No authority could answer at composed-request scope.
+    Unclassified,
+    /// The preserved history still composes a sendable request: the failed
+    /// persistence costs a summary call and a retry, not progress.
+    StillFits,
+    /// The preserved history already exceeds the window or byte cap: every
+    /// subsequent turn is refused until a compaction persists. Page.
+    OverWindow,
+}
+
+impl From<meerkat_core::event::CompactionPreservedHistoryFit> for CompactionPreservedHistoryFit {
+    fn from(fit: meerkat_core::event::CompactionPreservedHistoryFit) -> Self {
+        use meerkat_core::event::CompactionPreservedHistoryFit as Upstream;
+        match fit {
+            Upstream::StillFits => Self::StillFits,
+            Upstream::OverWindow => Self::OverWindow,
+            // `Unclassified`, plus whatever `#[non_exhaustive]` upstream adds
+            // later: an unknown verdict is still "no verdict this vocabulary
+            // can route on".
+            _ => Self::Unclassified,
+        }
+    }
+}
+
 /// Operational error event for alerting.
 ///
 /// Fired via the `on_error` hook when runtime operations fail. Apps
@@ -376,7 +457,11 @@ pub struct ShutdownDrainReport {
 ///   agent-event forwarder extracted from a member `CompactionFailed` event
 /// - `ActorLoopStalled` — `mod.rs` actor-loop probe's round trip through the
 ///   serialized mob command loop went unanswered past its budget
+/// - `ActorLoopRecovered` — the same probe's parked round trip completed;
+///   the resolution half of the stall, correlated by `stall_id`
 /// - `IdentityMaterializationFailure` — identity-first peer/fleet hydration skipped a member
+/// - `MobStopProceededWithoutInterrupt` — `lifecycle.rs` teardown gave up
+///   waiting for runtime-attach readiness and continued without interrupting
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "category", rename_all = "snake_case")]
@@ -398,10 +483,52 @@ pub enum ErrorEvent {
         identity: String,
         session_id: String,
         error: String,
+        /// Whether the request the preserved history composes can still be
+        /// sent: the severity discriminator between a wedged member (page)
+        /// and a costly-but-progressing one (log line). Carried only when
+        /// meerkat reported the typed projection-handoff refusal; other
+        /// compaction failure reasons (and events recorded before this field
+        /// existed) carry `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preserved_history: Option<CompactionPreservedHistoryFit>,
+        /// Discard entries the refused durable handoff would have projected.
+        /// Populated alongside `preserved_history`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempted_entries: Option<usize>,
     },
     ActorLoopStalled {
         probe_waited_secs: u64,
         detail: String,
+        /// Correlates this stall with the [`Self::ActorLoopRecovered`] that
+        /// closes it. A receiver that opens an incident here closes it on the
+        /// resolution carrying the same id; without the pairing it can only
+        /// ever escalate. `None` on events recorded before the id existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stall_id: Option<u64>,
+        /// How many earlier stalls on this loop already resolved.
+        ///
+        /// This is chronic-busyness evidence, NOT a wedged verdict, and the
+        /// direction matters: the probe parks on the same round trip instead
+        /// of starting a new one, so a genuinely wedged loop pages once and
+        /// never increments again, while a merely slow loop recovers and
+        /// stalls afresh. A high count therefore means "repeatedly late",
+        /// and a wedged loop is the one that sits at zero priors with no
+        /// resolution ever arriving.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prior_resolved_stalls: Option<u64>,
+    },
+    /// The stalled round trip finally completed: the loop drains again.
+    ///
+    /// The only non-failure variant, and it exists because a paging channel
+    /// that can only ever open incidents is not decidable — a receiver must
+    /// be able to close from the same hook it opened from. It is filtered out
+    /// of error-level logging by the default sink.
+    ActorLoopRecovered {
+        /// The [`Self::ActorLoopStalled`] this resolves.
+        stall_id: u64,
+        /// Wall-clock time from the probe's send to the reply, which is the
+        /// receiver's evidence of how bad the stall actually was.
+        stalled_for_secs: u64,
     },
     HostLoopCrash {
         member_id: String,
@@ -417,6 +544,18 @@ pub enum ErrorEvent {
         identity: String,
         initiator: Option<String>,
         operation: String,
+        error: String,
+    },
+    /// Teardown proceeded WITHOUT interrupting a member: the stop kept being
+    /// refused on runtime-attach readiness for its whole window.
+    ///
+    /// Says exactly that, and nothing stronger. It does NOT claim the member
+    /// was interrupted, because a mid-attach member has already had a turn
+    /// admitted and its kickoff is about to bind - calling that an interrupt
+    /// would be a false success the caller cannot detect.
+    MobStopProceededWithoutInterrupt {
+        waited_ms: u64,
+        member: Option<String>,
         error: String,
     },
 }
@@ -442,7 +581,11 @@ impl Display for ErrorEvent {
                 identity,
                 session_id,
                 error,
+                ..
             } => {
+                // `error` is the upstream reason's Display, which already
+                // renders the fit and attempted-entry facts for the typed
+                // handoff-refusal case.
                 write!(
                     f,
                     "compaction_persistence_rejected: {identity} ({session_id}): {error}"
@@ -451,10 +594,20 @@ impl Display for ErrorEvent {
             Self::ActorLoopStalled {
                 probe_waited_secs,
                 detail,
+                ..
             } => {
                 write!(
                     f,
                     "actor_loop_stalled: probe unanswered for {probe_waited_secs}s: {detail}"
+                )
+            }
+            Self::ActorLoopRecovered {
+                stall_id,
+                stalled_for_secs,
+            } => {
+                write!(
+                    f,
+                    "actor_loop_recovered: stall {stall_id} resolved after {stalled_for_secs}s"
                 )
             }
             Self::HostLoopCrash { member_id, error } => {
@@ -483,6 +636,22 @@ impl Display for ErrorEvent {
                         "identity_materialization_failure: {identity} during {operation}: {error}"
                     )
                 }
+            }
+            Self::MobStopProceededWithoutInterrupt {
+                waited_ms,
+                member,
+                error,
+            } => {
+                let subject = match member {
+                    Some(member) => format!(" on {member}"),
+                    None => String::new(),
+                };
+                write!(
+                    f,
+                    "mob_stop_proceeded_without_interrupt: teardown proceeded after {waited_ms}ms \
+                     WITHOUT a successful interrupt{subject}; a turn may have been admitted and \
+                     may still be running: {error}"
+                )
             }
         }
     }

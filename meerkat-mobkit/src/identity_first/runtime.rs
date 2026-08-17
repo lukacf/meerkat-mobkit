@@ -3116,6 +3116,10 @@ impl IdentityRuntime {
                 None
             }
         };
+        // The identity runtime owns a hook slot of its own, so it is a second
+        // place an ErrorEvent can vanish when no host wired one. Same default
+        // sink as the unified-runtime fire point.
+        crate::unified_runtime::log_error_event(&event, hook.is_some());
         if let Some(hook) = hook {
             tokio::spawn(async move {
                 let () = hook(event).await;

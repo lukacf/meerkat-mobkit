@@ -23278,6 +23278,15 @@ fn escape_toml_string(value: &str) -> String {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
+
+    /// Ceiling for the FAKE `rkat` subprocesses these tests spawn. The
+    /// fixtures are shell one-liners that echo and exit, so this is a hang
+    /// backstop, never a measurement. The 30s production default is a product
+    /// policy for a real `rkat mob validate`; inheriting it here turned
+    /// process-spawn starvation under full-suite parallel load into five
+    /// failures reading "rkat mob validate timed out after 30000ms" on a
+    /// script that does nothing but print (observed at load average 203).
+    const FAKE_RKAT_BACKSTOP_MS: u64 = 300_000;
     use super::*;
 
     fn valid_document() -> MobpackDocument {
@@ -27973,6 +27982,7 @@ model = "gpt-5.5"
         let result = validate_mobpack(&json!({
             "document": valid_document(),
             "rkat_validate": true,
+            "rkat_validate_timeout_ms": FAKE_RKAT_BACKSTOP_MS,
             "rkat_bin": rkat_path,
             "validation_output_dir": dir.path()
         }))
@@ -28031,6 +28041,7 @@ model = "gpt-5.5"
         let result = validate_mobpack(&json!({
             "document": document,
             "rkat_validate": true,
+            "rkat_validate_timeout_ms": FAKE_RKAT_BACKSTOP_MS,
             "rkat_bin": rkat_path,
             "validation_output_dir": dir.path()
         }))
@@ -28074,6 +28085,7 @@ model = "gpt-5.5"
                 "value": "Validate the operation-mutated document."
             },
             "rkat_validate": true,
+            "rkat_validate_timeout_ms": FAKE_RKAT_BACKSTOP_MS,
             "rkat_bin": rkat_path,
             "validation_output_dir": dir.path()
         }))
@@ -29236,6 +29248,7 @@ model = "gpt-5.5"
         let result = validate_mobpack(&json!({
             "document": valid_document(),
             "rkat_validate": true,
+            "rkat_validate_timeout_ms": FAKE_RKAT_BACKSTOP_MS,
             "rkat_bin": rkat_path,
             "validation_output_dir": dir.path()
         }))
@@ -33000,11 +33013,14 @@ depends_on_mode = "all"
         std::fs::set_permissions(&fake_rkat, permissions).expect("chmod fake rkat");
 
         let mut document = valid_document();
-        // Generous timeout: if it ever trips, the pipe deadlocked.
+        // Watchdog, not a measurement: if it ever trips, the pipe deadlocked.
+        // Sized so full-suite process-spawn starvation cannot reach it (the
+        // old 30s watchdog / 20s assertion pair fired at load average 203 on a
+        // shell script that only echoes).
         document.deploy = json!({
             "command": "rkat mob run",
             "surface": "cli",
-            "max_duration": "30s",
+            "max_duration": "300s",
             "prompt": "Reply with exactly OK."
         });
         let started = std::time::Instant::now();
@@ -33016,9 +33032,22 @@ depends_on_mode = "all"
         }))
         .expect("deploy execute");
 
+        // "Did not deadlock" is stated structurally: a deadlocked child is
+        // killed by the watchdog, which stamps its stderr and loses exit 0.
+        // The elapsed bound below is only the backstop behind that.
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(20),
-            "large output must not pipe-deadlock into a timeout"
+            !result
+                .stderr
+                .as_deref()
+                .unwrap_or_default()
+                .contains("timed out after"),
+            "large output must not pipe-deadlock into the watchdog: {:?}",
+            result.stderr
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_mins(4),
+            "large output must not pipe-deadlock into a timeout, elapsed: {:?}",
+            started.elapsed()
         );
         assert!(result.executed);
         assert_eq!(result.status_code, Some(0));
@@ -33046,7 +33075,14 @@ depends_on_mode = "all"
     fn times_out_hung_rkat_mob_run_execution() {
         let dir = tempfile::tempdir().expect("tempdir");
         let fake_rkat = dir.path().join("rkat");
-        std::fs::write(&fake_rkat, "#!/bin/sh\nexec sleep 2\n").expect("write fake rkat");
+        // Sleep far past any plausible scheduling delay. The assertion below is
+        // genuinely temporal (it proves `max_duration` was ENFORCED rather than
+        // waited out), so it needs a wide gap between "enforced" and "not
+        // enforced". The old fixture slept 2s against a 2s ceiling - zero
+        // margin, so ordinary spawn latency under load failed a correct
+        // implementation. 120s vs a 30s ceiling keeps the discrimination while
+        // putting the ceiling out of load's reach.
+        std::fs::write(&fake_rkat, "#!/bin/sh\nexec sleep 120\n").expect("write fake rkat");
         let mut permissions = std::fs::metadata(&fake_rkat)
             .expect("fake rkat metadata")
             .permissions();
@@ -33070,7 +33106,12 @@ depends_on_mode = "all"
         }))
         .expect("deploy result");
 
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the 1ms max_duration must be enforced, not waited out: the fake rkat sleeps 120s \
+             and deploy returned after {:?}",
+            started.elapsed()
+        );
         assert!(result.executed);
         assert!(!result.success);
         assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
