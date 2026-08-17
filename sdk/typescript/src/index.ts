@@ -133,6 +133,8 @@ export {
   MEMBER_STATE_COMPLETED,
   MEMBER_STATE_UNKNOWN,
   ErrorCategory,
+  RESOLUTION_ERROR_CATEGORIES,
+  isResolutionErrorEvent,
   parseStatusResult,
   parseStorageDoctorResult,
   parseStorageSummary,
