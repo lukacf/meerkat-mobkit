@@ -3377,6 +3377,157 @@ comms = true
         );
     }
 
+    /// Regression (the console dispatch-mirroring shape, this time on the
+    /// `send_message` arm): a send addressed to a fenced alias whose identity
+    /// authority is absent must key its console conversation on the DURABLE
+    /// identity. Pre-fix the arm reserved with `(alias, alias)`, which
+    /// self-mapped the incarnation in `runtime_to_identity` and put every
+    /// frame on the `rt:builder:0` conversation instead of the `builder` one
+    /// the console UI renders. The delivery itself still refuses - authority
+    /// is genuinely unavailable - but the refusal frame must land on the
+    /// durable conversation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn authority_unavailable_send_keys_console_events_on_the_durable_identity()
+    -> Result<(), String> {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "send-message-authority-unavailable-keying-test"
+
+[profiles.worker]
+model = "gpt-5.5"
+external_addressable = true
+"#,
+        )
+        .map_err(|err| format!("definition parses: {err:?}"))?;
+        let runtime = crate::UnifiedRuntime::builder()
+            .definition(definition)
+            .default_llm_client(std::sync::Arc::new(
+                meerkat_client::TestClient::for_provider(meerkat_core::Provider::OpenAI),
+            ))
+            .build()
+            .await
+            .map_err(|err| format!("runtime builds: {err:?}"))?;
+        // Roster the alias physically. This is what makes the test able to
+        // SEE a resolution-order regression at the entry point: if the fenced
+        // alias ever reached the MobMember arm, the send would be accepted by
+        // the mob plane instead of refused, and its frames would key on the
+        // incarnation.
+        let mut spec = meerkat_mob::SpawnMemberSpec::from_wire(
+            "worker".to_string(),
+            "rt:builder:0".to_string(),
+            Some("You are Builder.".into()),
+            None,
+            None,
+        );
+        spec.identity = crate::member_comms_id::mob_member_id("rt:builder:0");
+        runtime
+            .mob_handle()
+            .spawn_spec(spec)
+            .await
+            .map_err(|err| format!("generated-alias member spawns: {err:?}"))?;
+
+        let response = handle_send_message(
+            &runtime,
+            None,
+            serde_json::json!(1),
+            &serde_json::json!({ "member_id": "rt:builder:0", "message": "ping" }),
+        )
+        .await;
+        let error = response
+            .error
+            .ok_or_else(|| {
+                "a fenced alias without identity authority must refuse delivery; acceptance means \
+                 the send reached the raw mob plane"
+                    .to_string()
+            })?
+            .message;
+        if !error.contains("identity authority") {
+            return Err(format!(
+                "the refusal must be the identity-authority one, not a mob-plane error: {error}"
+            ));
+        }
+
+        let events = runtime
+            .console_events()
+            .replay_all(None)
+            .await
+            .map_err(|err| format!("console replay: {err:?}"))?;
+        let keyed: Vec<&str> = events
+            .iter()
+            .filter(|event| event.event_type == "interaction_failed")
+            .map(|event| event.identity.as_str())
+            .collect();
+        if keyed != vec!["builder"] {
+            return Err(format!(
+                "the refusal frame must land on the durable `builder` conversation, not the \
+                 incarnation: {keyed:?}"
+            ));
+        }
+        if runtime
+            .console_events()
+            .response_phase_for_identity("builder")
+            .await
+            .is_none()
+        {
+            return Err(
+                "the pending interaction must be reserved under the durable identity".to_string(),
+            );
+        }
+
+        // Same entry point, authority present: the identity plane must take
+        // the send. The identity is unregistered here, so the refusal comes
+        // from the identity runtime - which is itself the evidence that the
+        // roster probe was never reached, because the roster DOES hold this
+        // alias and would have accepted it.
+        let identity_rt = std::sync::Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: std::sync::Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()
+                        .map_err(|err| format!("in-memory continuity store: {err:?}"))?,
+                ),
+                lease_provider: std::sync::Arc::new(
+                    crate::identity_first::LocalLeaseProvider::new(),
+                ),
+                runtime_instance_id: "send-message-authority-unavailable-keying-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        let response = handle_send_message(
+            &runtime,
+            Some(&identity_rt),
+            serde_json::json!(2),
+            &serde_json::json!({ "member_id": "rt:builder:0", "message": "ping again" }),
+        )
+        .await;
+        if response.result.is_some() {
+            return Err(
+                "an unregistered identity must not be accepted through the roster plane"
+                    .to_string(),
+            );
+        }
+
+        // Whichever way the send resolved, no console frame may ever be keyed
+        // on the incarnation: that is the self-map this arm exists to prevent.
+        let events = runtime
+            .console_events()
+            .replay_all(None)
+            .await
+            .map_err(|err| format!("console replay: {err:?}"))?;
+        if let Some(stray) = events.iter().find(|event| event.identity == "rt:builder:0") {
+            return Err(format!(
+                "no console frame may key on the incarnation, found {}: {}",
+                stray.event_type, stray.identity
+            ));
+        }
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
     /// HomeCore DX (2026-07-09): `cross_mob/peer_info` emits
     /// `transport_public_key` with the `ed25519:` scheme prefix; callers
     /// round-tripping it into `wire_local` had to strip it by hand.

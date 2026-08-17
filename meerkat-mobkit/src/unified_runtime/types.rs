@@ -173,6 +173,34 @@ impl From<SubscribeError> for UnifiedRuntimeError {
     }
 }
 
+/// What a teardown-time mob stop actually achieved.
+///
+/// `DegradedNotReady` exists so a transient runtime-readiness refusal
+/// (`Runtime not ready: attached` while a member is mid-kickoff) can let
+/// teardown continue WITHOUT being mistaken for a clean stop. Callers that
+/// only need teardown to proceed can ignore it; callers that care whether the
+/// mob actually quiesced must distinguish it from [`Self::Stopped`].
+#[derive(Debug)]
+pub enum MobStopOutcome {
+    /// The mob machine accepted `Stop`.
+    Stopped,
+    /// The stop never converged within its window because a member's runtime
+    /// session stayed mid-attach. Teardown continued; the condition was
+    /// reported through the error hook as
+    /// [`ErrorEvent::MobStopNotReadyDegraded`].
+    DegradedNotReady { waited_ms: u64, error: String },
+    /// Any other refusal, unchanged in meaning.
+    Failed(crate::mob_handle_runtime::MobRuntimeError),
+}
+
+impl MobStopOutcome {
+    /// Whether teardown may proceed: a clean stop, or a degrade that was
+    /// reported rather than swallowed.
+    pub fn teardown_may_proceed(&self) -> bool {
+        matches!(self, Self::Stopped | Self::DegradedNotReady { .. })
+    }
+}
+
 /// Exact disposition of identity-first lease authority during shutdown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentityAuthorityReleaseOutcome {
@@ -419,6 +447,13 @@ pub enum ErrorEvent {
         operation: String,
         error: String,
     },
+    /// Teardown could not quiesce the mob because a member's runtime session
+    /// was still mid-attach when the bounded wait ran out. Teardown continued;
+    /// this says so out loud rather than leaving the condition implicit.
+    MobStopNotReadyDegraded {
+        waited_ms: u64,
+        error: String,
+    },
 }
 
 impl Display for ErrorEvent {
@@ -484,6 +519,11 @@ impl Display for ErrorEvent {
                     )
                 }
             }
+            Self::MobStopNotReadyDegraded { waited_ms, error } => write!(
+                f,
+                "mob_stop_not_ready_degraded: teardown continued after {waited_ms}ms without \
+                 quiescing the mob: {error}"
+            ),
         }
     }
 }

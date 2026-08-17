@@ -8,12 +8,13 @@ use std::time::Duration;
 use meerkat_mob::SpawnMemberSpec;
 use tokio::sync::mpsc::error::TryRecvError;
 
-use crate::mob_handle_runtime::MobRuntimeError;
+use crate::mob_handle_runtime::{MobRuntimeError, is_runtime_attach_readiness_refusal};
 use crate::runtime::RuntimeDecisionState;
 
 use super::types::{
-    IdentityAuthorityReleaseOutcome, RediscoverReport, ShutdownDrainReport, UnifiedRuntimeError,
-    UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
+    ErrorEvent, IdentityAuthorityReleaseOutcome, MobStopOutcome, RediscoverReport,
+    ShutdownDrainReport, UnifiedRuntimeError, UnifiedRuntimeRunReport,
+    UnifiedRuntimeShutdownReport,
 };
 use super::{MobEventIngress, UnifiedRuntime, discovery_spec_to_spawn_spec};
 
@@ -266,7 +267,18 @@ impl UnifiedRuntime {
         // Phase 2: Stop the mob actor while its router/module dependencies
         // are still alive. Closing them first can race Stop against an
         // already-dropped actor reply channel under teardown pressure.
+        let stop_started = tokio::time::Instant::now();
         let mut mob_stop = self.stop_mob_quiescing().await;
+        if let Err(error) = &mob_stop {
+            // Report the transient attach-readiness class through the error
+            // hook. `mob_stop` deliberately stays Err: the gates below (grant
+            // release, terminal teardown) are conservative on a mob that did
+            // not quiesce, because releasing identity authority while a member
+            // is still live parks Active identities Broken. Phases 3 and 4
+            // continue either way, so the shutdown is not aborted.
+            let _ = self
+                .report_stop_readiness_degrade(error, stop_started.elapsed().as_millis() as u64);
+        }
 
         // A first cleanup attempt can fail while the Mob stop itself finishes
         // quiescing the old runtime. Retry the retained exact debt once more;
@@ -401,6 +413,56 @@ impl UnifiedRuntime {
         }
     }
 
+    /// Stop the mob for teardown, degrading a transient runtime-readiness
+    /// refusal instead of failing the whole stop.
+    ///
+    /// `MobHandle::stop` can refuse with `Runtime not ready: attached` when a
+    /// member's runtime session is still mid-kickoff. That is a readiness
+    /// state, not a verdict: the caller cannot make a member less attached, so
+    /// a hard failure turns a millisecond-wide window into an operator-visible
+    /// teardown error (the intermittent `stop` panic at test teardown). This
+    /// waits the window out, and if it still has not cleared, reports the
+    /// condition as a typed degrade so teardown proceeds - it is never
+    /// swallowed. Every other refusal keeps its existing meaning.
+    pub async fn stop_mob_for_teardown(&self) -> MobStopOutcome {
+        let started = tokio::time::Instant::now();
+        match self.stop_mob_quiescing().await {
+            Ok(()) => MobStopOutcome::Stopped,
+            Err(error) => {
+                let waited_ms = started.elapsed().as_millis() as u64;
+                match self.report_stop_readiness_degrade(&error, waited_ms) {
+                    true => MobStopOutcome::DegradedNotReady {
+                        waited_ms,
+                        error: error.to_string(),
+                    },
+                    false => MobStopOutcome::Failed(error),
+                }
+            }
+        }
+    }
+
+    /// Classify a non-converged stop and, when it is the transient
+    /// runtime-attach readiness class, say so out loud (log + typed error
+    /// hook). Returns whether the refusal was that class.
+    ///
+    /// Both teardown entry points route their refusal through here so the
+    /// condition is reported exactly once and identically, whichever one the
+    /// host used.
+    fn report_stop_readiness_degrade(&self, error: &MobRuntimeError, waited_ms: u64) -> bool {
+        let error = error.to_string();
+        if !is_runtime_attach_readiness_refusal(&error) {
+            return false;
+        }
+        tracing::warn!(
+            %error,
+            waited_ms,
+            "mob stop still refused on runtime attach readiness after its bounded wait; \
+             teardown continues and the condition is reported, not swallowed"
+        );
+        self.fire_error(ErrorEvent::MobStopNotReadyDegraded { waited_ms, error });
+        true
+    }
+
     /// Stop the mob, quiescing in-flight member work if the machine refuses.
     ///
     /// meerkat 0.7.25's mob machine rejects `Stop` while member work is in
@@ -408,24 +470,36 @@ impl UnifiedRuntime {
     /// stopping underneath it. Shutdown is an operator act on a possibly-busy
     /// mob — a gateway going down mid-turn is normal — so a busy refusal is
     /// answered by cancelling each member's in-flight work and retrying the
-    /// stop over a bounded window. Any other error, or exhaustion of the
-    /// window, reports the machine's last refusal untouched.
+    /// stop over a bounded window.
+    ///
+    /// A `Runtime not ready: attached` refusal shares the window but not the
+    /// remedy: the member is mid-kickoff rather than busy, and cancelling work
+    /// it has not started cannot help, so that class is simply waited out.
+    /// Any other error, or exhaustion of the window, reports the machine's
+    /// last refusal untouched.
     async fn stop_mob_quiescing(&self) -> Result<(), MobRuntimeError> {
         const STOP_QUIESCE_WINDOW: Duration = Duration::from_secs(10);
         let handle = self.mob_handle();
         let deadline = tokio::time::Instant::now() + STOP_QUIESCE_WINDOW;
         let mut last = handle.stop().await;
-        while let Err(meerkat_mob::MobError::InvalidTransition { .. }) = &last {
+        loop {
+            let quiesce_work = match &last {
+                Err(meerkat_mob::MobError::InvalidTransition { .. }) => true,
+                Err(error) if is_runtime_attach_readiness_refusal(&error.to_string()) => false,
+                _ => break,
+            };
             if tokio::time::Instant::now() >= deadline {
                 break;
             }
-            for member in handle.list_members().await {
-                if let Ok(Some(entry)) = handle.get_member(&member.agent_identity).await {
-                    // Best-effort: a member that finished between list and
-                    // cancel (stale fence) is already quiesced.
-                    let _ = handle
-                        .cancel_all_work(entry.agent_runtime_id, entry.fence_token)
-                        .await;
+            if quiesce_work {
+                for member in handle.list_members().await {
+                    if let Ok(Some(entry)) = handle.get_member(&member.agent_identity).await {
+                        // Best-effort: a member that finished between list and
+                        // cancel (stale fence) is already quiesced.
+                        let _ = handle
+                            .cancel_all_work(entry.agent_runtime_id, entry.fence_token)
+                            .await;
+                    }
                 }
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -571,5 +645,136 @@ mod remote_host_task_tests {
         receiver
             .await
             .expect("joined task must drop all owned reconnect state");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod stop_degrade_tests {
+    use super::*;
+    use crate::unified_runtime::ErrorEvent;
+    use std::sync::Arc;
+
+    async fn empty_runtime(mob_id: &str) -> UnifiedRuntime {
+        let definition = meerkat_mob::MobDefinition::from_toml(&format!(
+            r#"
+[mob]
+id = "{mob_id}"
+
+[profiles.worker]
+model = "gpt-5.5"
+"#
+        ))
+        .expect("definition parses");
+        UnifiedRuntime::builder()
+            .definition(definition)
+            .default_llm_client(Arc::new(meerkat_client::TestClient::for_provider(
+                meerkat_core::Provider::OpenAI,
+            )))
+            .build()
+            .await
+            .expect("runtime builds")
+    }
+
+    fn injected_refusal(detail: &str) -> MobRuntimeError {
+        MobRuntimeError::Mob(meerkat_mob::MobError::Internal(detail.to_string()))
+    }
+
+    /// The degrade branch, driven by an injected refusal because the live
+    /// window it exists for (a member mid-kickoff) is not something a test can
+    /// hold open deterministically.
+    ///
+    /// Two properties, both load-bearing: the transient attach-readiness class
+    /// is REPORTED (typed, through the error hook) rather than swallowed, and
+    /// it is reported as its own event rather than as a generic failure.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn attach_readiness_refusal_is_reported_through_the_error_hook() {
+        let mut runtime = empty_runtime("stop-degrade-reported-test").await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        runtime.set_error_hook(Arc::new(move |event: ErrorEvent| {
+            let tx = tx.clone();
+            Box::pin(async move {
+                let _ = tx.send(event);
+            })
+        }));
+
+        let degraded = runtime.report_stop_readiness_degrade(
+            &injected_refusal(
+                "runtime-backed interrupt must resolve through MeerkatMachine for \
+                 019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: internal error: local interrupt_member \
+                 failed: Runtime not ready: attached",
+            ),
+            10_000,
+        );
+        assert!(degraded, "the attach-readiness class must degrade");
+
+        let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the degrade must reach the error hook")
+            .expect("hook channel stays open");
+        match event {
+            ErrorEvent::MobStopNotReadyDegraded { waited_ms, error } => {
+                assert_eq!(waited_ms, 10_000, "the reported wait must be the real one");
+                assert!(
+                    error.contains("Runtime not ready: attached"),
+                    "the refusal text must survive into the report: {error}"
+                );
+            }
+            other => panic!("the degrade must be its own typed event, got {other:?}"),
+        }
+
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    /// A refusal outside the readiness class keeps its meaning: no degrade,
+    /// no error-hook event, so a genuinely failed stop cannot be laundered
+    /// into "teardown may proceed".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn other_stop_refusals_are_not_degraded() {
+        let mut runtime = empty_runtime("stop-degrade-rejects-others-test").await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        runtime.set_error_hook(Arc::new(move |event: ErrorEvent| {
+            let tx = tx.clone();
+            Box::pin(async move {
+                let _ = tx.send(event);
+            })
+        }));
+
+        assert!(
+            !runtime.report_stop_readiness_degrade(
+                &injected_refusal("Runtime not ready: running"),
+                10_000,
+            ),
+            "a busy runtime is not the attach-readiness class"
+        );
+        assert!(
+            !runtime.report_stop_readiness_degrade(&injected_refusal("actor task dropped"), 10_000),
+            "an unrelated refusal must not degrade"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(250), rx.recv())
+                .await
+                .is_err(),
+            "no error-hook event may be fired for a non-degrade refusal"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    /// The outcome vocabulary is what callers branch on: a degrade lets
+    /// teardown continue, a failure does not.
+    #[test]
+    fn teardown_may_proceed_covers_stopped_and_degraded_only() {
+        assert!(MobStopOutcome::Stopped.teardown_may_proceed());
+        assert!(
+            MobStopOutcome::DegradedNotReady {
+                waited_ms: 10_000,
+                error: "Runtime not ready: attached".to_string(),
+            }
+            .teardown_may_proceed()
+        );
+        assert!(
+            !MobStopOutcome::Failed(injected_refusal("actor task dropped")).teardown_may_proceed()
+        );
     }
 }

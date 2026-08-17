@@ -55,11 +55,11 @@ pub use event_log::{
 pub use http::DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS;
 pub use mob_ops::MemberTurnAdmission;
 pub use types::{
-    ErrorEvent, IdentityAuthorityReleaseOutcome, RediscoverReport, ShutdownDrainReport,
-    UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,
-    UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
-    UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport,
-    UnifiedRuntimeShutdownReport,
+    ErrorEvent, IdentityAuthorityReleaseOutcome, MobStopOutcome, RediscoverReport,
+    ShutdownDrainReport, UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilderError,
+    UnifiedRuntimeBuilderField, UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport,
+    UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
+    UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
 };
 
 /// Called after members are spawned. Receives the list of spawned member IDs.

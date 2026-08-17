@@ -59,6 +59,23 @@ pub(crate) fn is_previous_member_cleanup_ambiguous_error(error: &str) -> bool {
     error.contains("previous member cleanup ambiguous for member ")
 }
 
+/// meerkat's provisioner refuses `interrupt_member` while the member's runtime
+/// session is still mid-kickoff, surfacing as `Runtime not ready: attached`
+/// inside the mob machine's `Internal` error.
+///
+/// `attached` is a READINESS state, not a semantic verdict: the caller cannot
+/// make a member less attached, and the condition clears on its own once
+/// kickoff completes. Teardown that fails outright on it converts a
+/// millisecond-wide window into an operator-visible hard failure - the shape
+/// that reads as an intermittent `stop` flake.
+///
+/// Deliberately narrow. `Runtime not ready: running` is NOT in this class: it
+/// means a turn is genuinely in flight, and teardown already has a real answer
+/// for it (cancel the member's work, then retry the stop).
+pub(crate) fn is_runtime_attach_readiness_refusal(error: &str) -> bool {
+    error.contains("Runtime not ready: attached")
+}
+
 pub(crate) fn is_recoverable_lifecycle_cleanup_error(error: &str) -> bool {
     is_previous_member_cleanup_ambiguous_error(error)
         || (error.contains("disposal completed but ArchiveSession failed")
@@ -14462,6 +14479,34 @@ image_generation = true
             for 019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: Runtime not ready: running";
 
         assert!(is_recoverable_lifecycle_cleanup_error(error));
+    }
+
+    /// Field flake (mobkit CI, PR 324): ordinary teardown panicked because
+    /// `MobHandle::stop` refused while a member's runtime session was still
+    /// mid-kickoff. The classifier must recognize that exact production shape,
+    /// so teardown can wait the window out and then degrade instead of turning
+    /// a transient readiness state into an operator-visible failure.
+    #[test]
+    fn runtime_attach_readiness_refusal_matches_the_field_stop_failure() {
+        let error = "runtime-backed interrupt must resolve through MeerkatMachine for \
+            019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: internal error: local interrupt_member \
+            failed: Runtime not ready: attached";
+
+        assert!(is_runtime_attach_readiness_refusal(error));
+    }
+
+    /// `running` is a DIFFERENT condition with a different remedy: a turn is
+    /// genuinely in flight, and teardown answers it by cancelling member work
+    /// and retrying the stop. Folding it into the attach-readiness class would
+    /// degrade a real busy-mob refusal into a shrug.
+    #[test]
+    fn runtime_attach_readiness_refusal_excludes_the_running_class() {
+        let error = "internal error: disposal completed but ArchiveSession failed: \
+            session error: agent error: Internal error: runtime cancel-before-retire failed \
+            for 019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: Runtime not ready: running";
+
+        assert!(!is_runtime_attach_readiness_refusal(error));
+        assert!(!is_runtime_attach_readiness_refusal("actor task dropped"));
     }
 
     #[test]
