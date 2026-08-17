@@ -105,11 +105,22 @@ fn current_error_hook(slot: &SharedErrorHook) -> Option<ErrorHook> {
 /// both land) rather than only the `Display` rendering, and synchronously on
 /// the caller's thread so the record is not stranded on a detached task.
 pub(crate) fn log_error_event(event: &ErrorEvent, hook_registered: bool) {
-    tracing::error!(
-        error_event = ?event,
-        hook_registered,
-        "mobkit runtime error event: {event}"
-    );
+    // `ActorLoopRecovered` is the one variant that reports a failure ENDING.
+    // Logging a recovery at ERROR would make the level a lie and would put a
+    // second scary line in the log for every stall that resolved fine.
+    if matches!(event, ErrorEvent::ActorLoopRecovered { .. }) {
+        tracing::info!(
+            error_event = ?event,
+            hook_registered,
+            "mobkit runtime error event resolved: {event}"
+        );
+    } else {
+        tracing::error!(
+            error_event = ?event,
+            hook_registered,
+            "mobkit runtime error event: {event}"
+        );
+    }
     if !hook_registered {
         warn_error_hook_absent_once();
     }
@@ -2174,8 +2185,28 @@ const ACTOR_LOOP_PROBE_INTERVAL: Duration = Duration::from_mins(1);
 /// 600s), which must stay wide because firing it drops a delivery, a probe
 /// timeout drops nothing — it only names the stall — so it can afford to be
 /// aggressive. The probe's handler is a pure in-memory phase read whose
-/// healthy latency is microseconds; 30s therefore cannot fire on a healthy
-/// loop, only on one that is queued behind a blocked handler.
+/// healthy latency is microseconds; 30s therefore cannot fire because the
+/// READ is slow, only because the read is queued behind a handler that has
+/// not yet RETURNED.
+///
+/// That is deliberately weaker than "blocked". A handler that has not
+/// returned may be wedged, or may be doing legitimate long work — a member
+/// revival, a large replay, a compaction, a storage migration. The probe
+/// cannot tell those apart, because `QueryPhase` rides the same serialized
+/// loop it is watching, so its round trip measures "time to drain everything
+/// queued ahead", not health. Note the scale this sits at: the same system
+/// treats a 600s in-flight admission as normal (`BRIDGE_ACTOR_ADMISSION_BUDGET`),
+/// which is 20x this budget, so a busy loop can cross 30s without anything
+/// being wrong. Widening the budget is NOT the fix — it would only move the
+/// same ambiguity — and one such long command has already been suppressed by
+/// hand (`lifecycle.rs` aborts the probe on shutdown so an intentional
+/// shutdown stall cannot page). The real discriminator is whether the loop
+/// made PROGRESS while the probe waited, which needs a monotonic
+/// command-completion counter on meerkat's mob actor; mobkit cannot observe
+/// it from here. Until that exists, the stall is an OPEN INCIDENT rather
+/// than a verdict: it is closed by the correlated
+/// [`ErrorEvent::ActorLoopRecovered`], and a receiver decides severity from
+/// how long the incident stays open on its own clock.
 const ACTOR_LOOP_PROBE_BUDGET: Duration = Duration::from_secs(30);
 
 /// Effective probe interval: `MOBKIT_ACTOR_LOOP_PROBE_INTERVAL_SECS`
@@ -2222,10 +2253,33 @@ fn parse_probe_secs(raw: Option<&str>, default: Duration) -> Duration {
 /// on the SAME round trip until the loop drains it, rather than stacking
 /// further commands onto a stalled actor (uncapped retry loops already
 /// amplify channel pressure there; the probe must never join them). When the
-/// parked round trip finally resolves, recovery is reported as an info-level
-/// log — `ErrorEvent` has no recovery precedent (every variant names a
-/// failure, and the hook is a paging channel), so recovery deliberately does
-/// not page.
+/// parked round trip finally resolves, recovery is emitted as
+/// [`ErrorEvent::ActorLoopRecovered`], correlated to the stall by `stall_id`.
+///
+/// That variant amends a previously stated invariant — `ErrorEvent` used to
+/// have no recovery precedent, on the reasoning that every variant names a
+/// failure and the hook is a paging channel. An open-only paging channel is
+/// not decidable: a receiver that pages on a stall can never close the
+/// incident it opened, so it can only escalate. The resolution is filtered
+/// out of error-level logging by the default sink, and unaware consumers see
+/// it fall into the `_` arm `#[non_exhaustive]` already forces.
+///
+/// THE CORRELATED PAIR PLUS THE RECEIVER'S OWN CLOCK IS THE DISCRIMINATOR.
+/// An open `stall_id` with no matching resolution after ten minutes is a
+/// wedged loop; one closed after fifty seconds was a busy loop. That is a
+/// complete decision procedure using only what this emitter already sends,
+/// which is why the missing progress counter is an IMPROVEMENT rather than a
+/// missing piece: it would let the probe skip PAGING for the busy case at
+/// all, whereas today the receiver pages first and decides after. Better,
+/// but strictly an optimization of a decision the receiver can already make.
+///
+/// Note what the counters can and cannot say. Because the probe parks on the
+/// SAME round trip rather than starting a new one, a genuinely wedged loop
+/// pages exactly once and never gets another cycle, so no counter can climb;
+/// a merely slow loop recovers and stalls again, so it is the slow case that
+/// accumulates. `prior_resolved_stalls` is therefore chronic-busyness
+/// evidence, and "wedged" is the absence of a resolution, measured by the
+/// receiver's own clock — not by any count this emitter could produce.
 ///
 /// The probe treats ANY completion within budget — `Ok` or a typed error —
 /// as a live loop: it measures whether the loop drains, not whether the mob
@@ -2240,6 +2294,11 @@ async fn run_actor_loop_probe<P, F>(
     P: FnMut() -> F,
     F: Future<Output = Result<MobState, MobError>>,
 {
+    // Correlates each stall with the resolution that closes it, and counts
+    // the stalls that have already resolved. Task-local: one probe per
+    // runtime, so no shared counter is needed.
+    let mut next_stall_id: u64 = 1;
+    let mut resolved_stalls: u64 = 0;
     loop {
         tokio::time::sleep(interval).await;
         let started = tokio::time::Instant::now();
@@ -2248,24 +2307,45 @@ async fn run_actor_loop_probe<P, F>(
         let result = match tokio::time::timeout(budget, &mut round_trip).await {
             Ok(result) => result,
             Err(_) => {
+                let stall_id = next_stall_id;
+                next_stall_id += 1;
                 fire_error_hook(
                     &error_hook,
                     ErrorEvent::ActorLoopStalled {
-                        probe_waited_secs: budget.as_secs(),
+                        // Measured, not the configured budget echoed back: a
+                        // field that looks like data must be data. At page
+                        // time this necessarily reads ~= the budget (we page
+                        // the instant it expires), so it is a truthfulness
+                        // fix rather than new information — the informative
+                        // elapsed is `ActorLoopRecovered::stalled_for_secs`.
+                        probe_waited_secs: started.elapsed().as_secs(),
                         detail: format!(
                             "QueryPhase probe round trip unanswered after {}s; the mob actor \
                              is one serialized command loop, so every member's dispatch is \
                              queued behind whatever is blocking it; the probe stays parked on \
-                             this round trip and will not stack another",
-                            budget.as_secs()
+                             this round trip and will not stack another. THIS STALL PAGES \
+                             ONCE: no further stall events will be emitted for it, so silence \
+                             is NOT recovery — hold the incident open until an \
+                             actor_loop_recovered arrives with stall_id {}",
+                            budget.as_secs(),
+                            stall_id
                         ),
+                        stall_id: Some(stall_id),
+                        prior_resolved_stalls: Some(resolved_stalls),
                     },
                 );
                 // Park on the SAME round trip until the loop drains it.
                 let result = round_trip.await;
-                tracing::info!(
-                    stalled_for_secs = started.elapsed().as_secs(),
-                    "mob actor command loop recovered: stalled probe round trip completed"
+                resolved_stalls += 1;
+                // The receiver opened an incident on the stall above; this is
+                // the only thing that lets it close that incident rather than
+                // escalate forever.
+                fire_error_hook(
+                    &error_hook,
+                    ErrorEvent::ActorLoopRecovered {
+                        stall_id,
+                        stalled_for_secs: started.elapsed().as_secs(),
+                    },
                 );
                 result
             }
@@ -2764,7 +2844,10 @@ model = "gpt-5.5"
         let writer = CaptureWriter::default();
         let subscriber = tracing_subscriber::fmt()
             .with_writer(writer.clone())
-            .with_max_level(tracing::Level::WARN)
+            // INFO rather than WARN because the default sink deliberately
+            // drops the resolution variant to INFO, and a test that capped at
+            // WARN could not tell "logged at INFO" from "not logged at all".
+            .with_max_level(tracing::Level::INFO)
             // Without this the formatter wraps every field name and `=` in
             // ANSI escapes, so `contains("hook_registered=false")` reads a
             // string that is never literally present.
@@ -2971,17 +3054,196 @@ model = "gpt-5.5"
             ErrorEvent::ActorLoopStalled {
                 probe_waited_secs,
                 detail,
+                stall_id,
+                prior_resolved_stalls,
             } => {
                 assert_eq!(*probe_waited_secs, 30);
                 assert!(
                     detail.contains("QueryPhase"),
                     "detail must name the probe round trip: {detail}"
                 );
+                // A human reading this page must not conclude "it stopped
+                // complaining, so it recovered" — the probe pages once per
+                // stall by design, so only the correlated resolution can
+                // close it.
+                assert!(
+                    detail.contains("PAGES ONCE") && detail.contains("silence is NOT recovery"),
+                    "detail must say the absence of further pages is not recovery: {detail}"
+                );
+                assert!(
+                    detail.contains("actor_loop_recovered") && detail.contains("stall_id 1"),
+                    "detail must name the resolution to wait for, by id: {detail}"
+                );
+                assert_eq!(
+                    *stall_id,
+                    Some(1),
+                    "the stall must carry the id its resolution will echo"
+                );
+                assert_eq!(*prior_resolved_stalls, Some(0));
             }
             other => panic!("expected ActorLoopStalled, got {other:?}"),
         }
         drop(events);
         probe_task.abort();
+    }
+
+    /// The wedged case, and the reason no counter can name it: the probe
+    /// parks on the SAME round trip, so a loop that never answers pages
+    /// exactly once and then goes silent — `prior_resolved_stalls` cannot
+    /// climb, and "wedged" is the ABSENCE of a resolution on the receiver's
+    /// clock. This pins the direction so a future change cannot quietly turn
+    /// the count into a wedged proxy.
+    #[tokio::test(start_paused = true)]
+    async fn wedged_actor_loop_pages_once_and_never_resolves() {
+        let (slot, captured) = capturing_error_hook_slot();
+        let probe_task = tokio::spawn(run_actor_loop_probe(
+            std::future::pending::<Result<MobState, MobError>>,
+            slot,
+            Duration::from_mins(1),
+            Duration::from_secs(30),
+        ));
+
+        // Long enough for several more probe cycles had any been possible.
+        tokio::time::sleep(Duration::from_mins(10)).await;
+        tokio::task::yield_now().await;
+
+        let events = captured.lock().await;
+        assert_eq!(
+            events.len(),
+            1,
+            "a wedged loop pages once and cannot page again: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ErrorEvent::ActorLoopRecovered { .. })),
+            "a wedged loop must never emit a resolution: {events:?}"
+        );
+        drop(events);
+        probe_task.abort();
+    }
+
+    /// A stall that later drains must emit a resolution the receiver can
+    /// PAIR with the incident it opened. The correlation is the point: an
+    /// unpaired "something recovered" cannot close a specific incident, so
+    /// the assertion is on matching ids, not merely on both events firing.
+    #[tokio::test(start_paused = true)]
+    async fn resolved_stall_emits_recovery_correlated_by_stall_id() {
+        let (slot, captured) = capturing_error_hook_slot();
+        // Answers after 50s: past the 30s budget, so it stalls, then drains.
+        let probe_task = tokio::spawn(run_actor_loop_probe(
+            || async {
+                tokio::time::sleep(Duration::from_secs(50)).await;
+                Ok(MobState::Running)
+            },
+            slot,
+            Duration::from_mins(1),
+            Duration::from_secs(30),
+        ));
+
+        // One interval (60s) + the 50s answer, plus slack for the hook task.
+        tokio::time::sleep(Duration::from_mins(2)).await;
+        tokio::task::yield_now().await;
+
+        let events = captured.lock().await;
+        let stall_id = events
+            .iter()
+            .find_map(|event| match event {
+                ErrorEvent::ActorLoopStalled { stall_id, .. } => Some(*stall_id),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected a stall page: {events:?}"));
+        let (recovered_id, stalled_for_secs) = events
+            .iter()
+            .find_map(|event| match event {
+                ErrorEvent::ActorLoopRecovered {
+                    stall_id,
+                    stalled_for_secs,
+                } => Some((*stall_id, *stalled_for_secs)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected a resolution: {events:?}"));
+
+        assert_eq!(
+            Some(recovered_id),
+            stall_id,
+            "the resolution must name the stall it closes, or a receiver \
+             cannot close the incident it opened: {events:?}"
+        );
+        assert!(
+            stalled_for_secs >= 50,
+            "the resolution must carry how long the loop was stalled, got \
+             {stalled_for_secs}s"
+        );
+        drop(events);
+        probe_task.abort();
+    }
+
+    /// The resolution is the one variant that reports a failure ending, so
+    /// the default sink must not log it at ERROR — a recovery rendered as an
+    /// error is a lie about severity and doubles the scary lines per stall.
+    #[test]
+    fn resolved_stall_is_not_logged_as_an_error() {
+        let recovered = ErrorEvent::ActorLoopRecovered {
+            stall_id: 7,
+            stalled_for_secs: 42,
+        };
+        let ((), logged) = capture_tracing(|| log_error_event(&recovered, true));
+
+        assert!(
+            logged.contains("INFO"),
+            "a resolution must log at INFO: {logged}"
+        );
+        assert!(
+            !logged.contains("ERROR"),
+            "a resolution must not log at ERROR: {logged}"
+        );
+        assert!(
+            logged.contains("actor_loop_recovered") && logged.contains("42"),
+            "the record must still carry the resolution facts: {logged}"
+        );
+    }
+
+    /// Additivity: an `ActorLoopStalled` payload written before the
+    /// correlation fields existed must still load, and a stall carrying them
+    /// must round-trip. OB3 pages on this enum today.
+    #[test]
+    fn actor_loop_stall_wire_shape_stays_additive() {
+        let legacy_json = serde_json::json!({
+            "category": "actor_loop_stalled",
+            "probe_waited_secs": 30,
+            "detail": "QueryPhase probe round trip unanswered",
+        });
+
+        let alert: ErrorEvent =
+            serde_json::from_value(legacy_json.clone()).expect("pre-field payload must load");
+        assert_eq!(
+            alert,
+            ErrorEvent::ActorLoopStalled {
+                probe_waited_secs: 30,
+                detail: "QueryPhase probe round trip unanswered".to_string(),
+                stall_id: None,
+                prior_resolved_stalls: None,
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&alert).expect("serialize"),
+            legacy_json,
+            "a stall with no correlation must not emit the new keys"
+        );
+
+        let correlated = ErrorEvent::ActorLoopStalled {
+            probe_waited_secs: 30,
+            detail: "stalled".to_string(),
+            stall_id: Some(3),
+            prior_resolved_stalls: Some(2),
+        };
+        let encoded = serde_json::to_value(&correlated).expect("serialize correlated");
+        assert_eq!(encoded["stall_id"], serde_json::json!(3));
+        assert_eq!(
+            serde_json::from_value::<ErrorEvent>(encoded).expect("round trip"),
+            correlated
+        );
     }
 
     /// A responsive command loop must never page across many probe cycles.
@@ -3070,11 +3332,33 @@ model = "gpt-5.5"
             "probe must resume after the stalled round trip drains: {}",
             probes.load(Ordering::SeqCst)
         );
+        // Recovery used to be an info log only. It is now an event, because a
+        // receiver that can open an incident but never close it can only
+        // escalate — so the drained round trip must produce exactly one
+        // resolution, correlated to the stall it closes.
+        let events = captured.lock().await;
         assert_eq!(
-            captured.lock().await.len(),
-            1,
-            "recovery is an info log, never a page"
+            events.len(),
+            2,
+            "the drained stall must produce its resolution: {events:?}"
         );
+        let stall_id = match &events[0] {
+            ErrorEvent::ActorLoopStalled { stall_id, .. } => *stall_id,
+            other => panic!("expected the stall first, got {other:?}"),
+        };
+        match &events[1] {
+            ErrorEvent::ActorLoopRecovered {
+                stall_id: closed, ..
+            } => {
+                assert_eq!(
+                    Some(*closed),
+                    stall_id,
+                    "the resolution must close the stall that opened: {events:?}"
+                );
+            }
+            other => panic!("expected the resolution second, got {other:?}"),
+        }
+        drop(events);
         probe_task.abort();
     }
 

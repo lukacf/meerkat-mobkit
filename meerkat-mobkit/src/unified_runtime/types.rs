@@ -457,6 +457,8 @@ impl From<meerkat_core::event::CompactionPreservedHistoryFit> for CompactionPres
 ///   agent-event forwarder extracted from a member `CompactionFailed` event
 /// - `ActorLoopStalled` — `mod.rs` actor-loop probe's round trip through the
 ///   serialized mob command loop went unanswered past its budget
+/// - `ActorLoopRecovered` — the same probe's parked round trip completed;
+///   the resolution half of the stall, correlated by `stall_id`
 /// - `IdentityMaterializationFailure` — identity-first peer/fleet hydration skipped a member
 /// - `MobStopProceededWithoutInterrupt` — `lifecycle.rs` teardown gave up
 ///   waiting for runtime-attach readiness and continued without interrupting
@@ -497,6 +499,36 @@ pub enum ErrorEvent {
     ActorLoopStalled {
         probe_waited_secs: u64,
         detail: String,
+        /// Correlates this stall with the [`Self::ActorLoopRecovered`] that
+        /// closes it. A receiver that opens an incident here closes it on the
+        /// resolution carrying the same id; without the pairing it can only
+        /// ever escalate. `None` on events recorded before the id existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stall_id: Option<u64>,
+        /// How many earlier stalls on this loop already resolved.
+        ///
+        /// This is chronic-busyness evidence, NOT a wedged verdict, and the
+        /// direction matters: the probe parks on the same round trip instead
+        /// of starting a new one, so a genuinely wedged loop pages once and
+        /// never increments again, while a merely slow loop recovers and
+        /// stalls afresh. A high count therefore means "repeatedly late",
+        /// and a wedged loop is the one that sits at zero priors with no
+        /// resolution ever arriving.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prior_resolved_stalls: Option<u64>,
+    },
+    /// The stalled round trip finally completed: the loop drains again.
+    ///
+    /// The only non-failure variant, and it exists because a paging channel
+    /// that can only ever open incidents is not decidable — a receiver must
+    /// be able to close from the same hook it opened from. It is filtered out
+    /// of error-level logging by the default sink.
+    ActorLoopRecovered {
+        /// The [`Self::ActorLoopStalled`] this resolves.
+        stall_id: u64,
+        /// Wall-clock time from the probe's send to the reply, which is the
+        /// receiver's evidence of how bad the stall actually was.
+        stalled_for_secs: u64,
     },
     HostLoopCrash {
         member_id: String,
@@ -562,10 +594,20 @@ impl Display for ErrorEvent {
             Self::ActorLoopStalled {
                 probe_waited_secs,
                 detail,
+                ..
             } => {
                 write!(
                     f,
                     "actor_loop_stalled: probe unanswered for {probe_waited_secs}s: {detail}"
+                )
+            }
+            Self::ActorLoopRecovered {
+                stall_id,
+                stalled_for_secs,
+            } => {
+                write!(
+                    f,
+                    "actor_loop_recovered: stall {stall_id} resolved after {stalled_for_secs}s"
                 )
             }
             Self::HostLoopCrash { member_id, error } => {
