@@ -966,6 +966,23 @@ mod tests {
                 .expect("transcript facts");
             (count, last_reason)
         }
+
+        /// `transcript_facts` count, read off a transcript that has stopped
+        /// moving. Use this for any count a later assertion is COMPARED
+        /// AGAINST: a baseline snapshotted mid-write drifts upward on its own,
+        /// and then a "did it grow" check passes without the growth it names.
+        async fn settled_transcript_count(&self) -> usize {
+            let service: Arc<dyn crate::memory::hygienist::TranscriptEditSessionService> =
+                Arc::clone(&self.concrete) as _;
+            let session_id = self
+                .identity_runtime
+                .status(&self.identity)
+                .await
+                .expect("identity status")
+                .session_id
+                .expect("identity session");
+            settled_transcript_len(&service, &session_id).await
+        }
     }
 
     /// Message count on the DURABLE session surface - the one the operator
@@ -1319,14 +1336,28 @@ comms = true
         // profile threshold. The recent turns alone (~5k reported input
         // tokens) are far past the 256-token floor, so a still-armed floor
         // would compact again on this very turn.
-        let (count_after_verb, _) = harness.transcript_facts().await;
+        // Both reads are on the DURABLE session surface, and `run_turn` returns
+        // on the identity's COMPLETION CURSOR, which leads it (same clock split
+        // documented on `transcript_len` and already fixed once in the sibling
+        // timeout test). Sampling the surface once, at cursor timing, made this
+        // read the append before it landed and report `3 -> 3` - a lagging
+        // write and a wrongly re-compacting build are indistinguishable in a
+        // single sample. Baseline is settled so it cannot drift upward on its
+        // own and satisfy the comparison without an append; the growth itself
+        // is then polled under the structural backstop, so a build that really
+        // does re-compact never satisfies it and fails naming what never
+        // happened.
+        let count_after_verb = harness.settled_transcript_count().await;
         harness.run_turn("post-verb probe turn".to_string()).await;
-        let (count_after_probe, _) = harness.transcript_facts().await;
-        assert!(
-            count_after_probe > count_after_verb,
-            "the restored build must append, not re-compact: {count_after_verb} -> \
-             {count_after_probe}"
-        );
+        crate::test_wait::poll_until(
+            &format!(
+                "the restored build appended to the durable transcript instead of re-compacting \
+                 (still {count_after_verb} messages)"
+            ),
+            crate::test_wait::STRUCTURAL_BACKSTOP,
+            async || harness.transcript_facts().await.0 > count_after_verb,
+        )
+        .await;
 
         // Authorization shape: an identity the gateway does not own is a
         // typed refusal, not a fall-through.
