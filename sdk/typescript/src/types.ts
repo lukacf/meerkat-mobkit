@@ -2032,11 +2032,27 @@ export const ErrorCategory = {
   CHECKPOINT_FAILURE: "checkpoint_failure",
   COMPACTION_PERSISTENCE_REJECTED: "compaction_persistence_rejected",
   ACTOR_LOOP_STALLED: "actor_loop_stalled",
+  ACTOR_LOOP_RECOVERED: "actor_loop_recovered",
   HOST_LOOP_CRASH: "host_loop_crash",
   REDISCOVER_FAILURE: "rediscover_failure",
   EVENT_LOG_FLUSH_FAILURE: "event_log_flush_failure",
   IDENTITY_MATERIALIZATION_FAILURE: "identity_materialization_failure",
+  MOB_STOP_PROCEEDED_WITHOUT_INTERRUPT: "mob_stop_proceeded_without_interrupt",
 } as const;
+
+/** Categories that report a failure ENDING rather than starting. Mirrors the
+ *  Rust runtime's `log_error_event`, which logs these at INFO instead of
+ *  ERROR. A receiver that pages on every `onError` call would otherwise raise
+ *  a second incident for a stall that already resolved. */
+export const RESOLUTION_ERROR_CATEGORIES: ReadonlySet<string> = new Set([
+  ErrorCategory.ACTOR_LOOP_RECOVERED,
+]);
+
+/** True when the event reports a failure ENDING rather than starting, so a
+ *  host can close an incident instead of opening a second one. */
+export function isResolutionErrorEvent(event: ErrorEvent): boolean {
+  return RESOLUTION_ERROR_CATEGORIES.has(event.category);
+}
 
 export type ErrorCategoryValue =
   (typeof ErrorCategory)[keyof typeof ErrorCategory];
@@ -2086,6 +2102,12 @@ export function parseErrorEvent(raw: unknown): ErrorEvent {
       message = `probe unanswered for ${waited}s: ${detail}`;
       break;
     }
+    case ErrorCategory.ACTOR_LOOP_RECOVERED: {
+      const stallId = Number(context.stall_id ?? 0);
+      const stalledFor = Number(context.stalled_for_secs ?? 0);
+      message = `stall ${stallId} resolved after ${stalledFor}s`;
+      break;
+    }
     case ErrorCategory.HOST_LOOP_CRASH:
       message = memberId ? `${memberId}: ${error}` : error;
       break;
@@ -2101,6 +2123,16 @@ export function parseErrorEvent(raw: unknown): ErrorEvent {
       const operation = String(context.operation ?? "");
       const target = initiator ? `${identity} for ${initiator}` : identity;
       message = [target, operation, error].filter(Boolean).join(": ");
+      break;
+    }
+    case ErrorCategory.MOB_STOP_PROCEEDED_WITHOUT_INTERRUPT: {
+      const waitedMs = Number(context.waited_ms ?? 0);
+      const member = String(context.member ?? "");
+      const subject = member ? ` on ${member}` : "";
+      message =
+        `teardown proceeded after ${waitedMs}ms WITHOUT a successful ` +
+        `interrupt${subject}; a turn may have been admitted and may ` +
+        `still be running: ${error}`;
       break;
     }
     default:

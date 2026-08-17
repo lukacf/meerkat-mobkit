@@ -1107,6 +1107,57 @@ class TestErrorEvent:
         assert r.category == "event_log_flush_failure"
         assert r.message == "disk full"
 
+    def test_actor_loop_recovered_reads_as_a_resolution(self):
+        r = ErrorEvent.from_dict(
+            {
+                "category": "actor_loop_recovered",
+                "stall_id": 7,
+                "stalled_for_secs": 42,
+            }
+        )
+        assert r.category == "actor_loop_recovered"
+        assert r.message == "stall 7 resolved after 42s"
+        # Closes a prior stall; a host must be able to resolve rather than
+        # open a second incident.
+        assert r.is_resolution is True
+
+    def test_mob_stop_proceeded_without_interrupt_does_not_read_as_clean(self):
+        r = ErrorEvent.from_dict(
+            {
+                "category": "mob_stop_proceeded_without_interrupt",
+                "waited_ms": 5000,
+                "member": "review:singleton",
+                "error": "runtime attach not ready",
+            }
+        )
+        assert r.category == "mob_stop_proceeded_without_interrupt"
+        assert r.message == (
+            "teardown proceeded after 5000ms WITHOUT a successful interrupt "
+            "on review:singleton; a turn may have been admitted and may "
+            "still be running: runtime attach not ready"
+        )
+        assert r.is_resolution is False
+
+    def test_mob_stop_proceeded_without_interrupt_without_member(self):
+        r = ErrorEvent.from_dict(
+            {
+                "category": "mob_stop_proceeded_without_interrupt",
+                "waited_ms": 250,
+                "error": "runtime attach not ready",
+            }
+        )
+        assert r.message == (
+            "teardown proceeded after 250ms WITHOUT a successful interrupt; "
+            "a turn may have been admitted and may still be running: "
+            "runtime attach not ready"
+        )
+
+    def test_only_recovery_is_a_resolution(self):
+        for category in ErrorCategory:
+            expected = category is ErrorCategory.ACTOR_LOOP_RECOVERED
+            event = ErrorEvent(category=category, message="", context={})
+            assert event.is_resolution is expected, category
+
     # The full set is gated against the Rust `ErrorEvent` enum by
     # meerkat-mobkit/tests/sdk_error_category_parity.rs; this asserts the exact
     # tags so a rename here cannot pass by editing both sides of that gate.
@@ -1117,10 +1168,12 @@ class TestErrorEvent:
             "CHECKPOINT_FAILURE": "checkpoint_failure",
             "COMPACTION_PERSISTENCE_REJECTED": "compaction_persistence_rejected",
             "ACTOR_LOOP_STALLED": "actor_loop_stalled",
+            "ACTOR_LOOP_RECOVERED": "actor_loop_recovered",
             "HOST_LOOP_CRASH": "host_loop_crash",
             "REDISCOVER_FAILURE": "rediscover_failure",
             "EVENT_LOG_FLUSH_FAILURE": "event_log_flush_failure",
             "IDENTITY_MATERIALIZATION_FAILURE": "identity_materialization_failure",
+            "MOB_STOP_PROCEEDED_WITHOUT_INTERRUPT": "mob_stop_proceeded_without_interrupt",
         }
 
 
