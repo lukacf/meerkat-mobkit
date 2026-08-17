@@ -297,5 +297,15 @@ async fn member_tools_and_attention_overlay_reach_live_turns() {
         "pausing the binding must restore the full tool surface: {unpaused_tools:?}"
     );
 
-    runtime.mob_handle().stop().await.expect("stop");
+    // Teardown is not this test's subject - the tool surface is - so it goes
+    // through the degrading teardown path. Raw `MobHandle::stop()` here made
+    // this test fail intermittently on a readiness state it cannot influence
+    // (upstream P1: provisioner `interrupt_member` refuses with
+    // `Runtime not ready: attached` while a member's runtime session is still
+    // mid-kickoff). The raw path is still exercised deliberately, in
+    // `unified_runtime::lifecycle::stop_degrade_tests`; do not convert that one.
+    assert!(
+        runtime.stop_mob_for_teardown().await.teardown_may_proceed(),
+        "teardown must not be blocked by a member's runtime readiness"
+    );
 }
