@@ -968,6 +968,65 @@ mod tests {
         }
     }
 
+    /// Message count on the DURABLE session surface - the one the operator
+    /// verbs read, which is not the same clock as the identity's completion
+    /// cursor.
+    async fn transcript_len(
+        service: &Arc<dyn crate::memory::hygienist::TranscriptEditSessionService>,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> usize {
+        service
+            .read_history(
+                session_id,
+                meerkat_core::service::SessionHistoryQuery {
+                    offset: 0,
+                    limit: None,
+                },
+            )
+            .await
+            .expect("read durable transcript")
+            .messages
+            .len()
+    }
+
+    /// [`transcript_len`], but only once the durable transcript has stopped
+    /// moving.
+    ///
+    /// A turn's completion cursor advances before the turn's rows are all
+    /// durable, so a length read immediately after `run_turn` is a RACING
+    /// READ. Any index computed from it is stale the moment a trailing row
+    /// lands, which does not happen on an idle box and does happen under
+    /// full-suite contention. Requiring the length to repeat across
+    /// consecutive observations is what makes it usable as an index.
+    ///
+    /// The ceiling is a backstop, not a measurement: the transcript settles in
+    /// milliseconds when anything is working.
+    async fn settled_transcript_len(
+        service: &Arc<dyn crate::memory::hygienist::TranscriptEditSessionService>,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> usize {
+        const REQUIRED_STABLE_OBSERVATIONS: usize = 3;
+        let deadline = std::time::Instant::now() + Duration::from_mins(1);
+        let mut settled = transcript_len(service, session_id).await;
+        let mut stable = 1;
+        while stable < REQUIRED_STABLE_OBSERVATIONS {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let observed = transcript_len(service, session_id).await;
+            if observed == settled {
+                stable += 1;
+            } else {
+                settled = observed;
+                stable = 1;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "durable transcript never settled: still growing (last observed {observed} \
+                 messages), so no index derived from it can be trusted"
+            );
+        }
+        settled
+    }
+
     /// Full production wiring in one process: a concrete
     /// `PersistentSessionService` backing the mob, an identity-first member
     /// bridged by the production `MobSessionBridge`, and the bridge's own
@@ -1379,26 +1438,25 @@ comms = true
             .expect("identity status")
             .session_id
             .expect("identity session");
-        let seeded_len = service
-            .read_history(
-                &session_id,
-                meerkat_core::service::SessionHistoryQuery {
-                    offset: 0,
-                    limit: None,
-                },
-            )
-            .await
-            .expect("read seeded transcript")
-            .messages
-            .len();
+        // Every index below is derived from this length, so it must be read
+        // off a SETTLED transcript. `run_turn` waits on the identity's
+        // completion cursor, which advances when the turn completes - not when
+        // the turn's rows are durable in the session store, which is the
+        // surface both this rewrite and the verb read. Snapshotting on the
+        // cursor's timing is a racing read: under full-suite contention two
+        // further rows landed between the snapshot and the rewrite and every
+        // derived index was wrong (`removed` 7 against an expected 4, 1-of-5
+        // full-suite runs). Quiesce on the durable surface instead.
+        let seeded_len = settled_transcript_len(&service, &session_id).await;
         let (assistant, results) = tool_use_pair("call-straddle");
         let fixture = vec![user("older"), assistant, results, user("tail")];
-        // Backstop only: the just-finished turn's runtime admission either
-        // finishes draining or it is wedged. The old 10s ceiling measured
-        // runner load - under full-suite parallelism the drain is merely slow,
-        // and the retry fell through to the panic arm below with a Busy that
-        // was never a defect.
-        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let fixture_len = fixture.len();
+        // The turn just finished, so a still-draining runtime admission can
+        // answer Busy briefly; that is the documented posture, retried here
+        // rather than raced. Kept tight deliberately: the refusal is TRUE when
+        // it happens, so a longer wait would only delay a correct answer and
+        // hide the mechanism behind it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             let request = meerkat_core::service::SessionTranscriptRewriteRequest {
                 selection: meerkat_core::TranscriptRewriteSelection::MessageRange {
@@ -1428,6 +1486,19 @@ comms = true
         // keep_last = 2 naively cuts at len - 2 = seeded_len + 2, which IS
         // the tool_results row; the pair-safe cut walks back one to keep the
         // pair whole (removed = seeded_len + 1, kept = 3).
+        //
+        // Pin that premise before spending it on `removed` below. If anything
+        // else reached the transcript, this fails naming the race rather than
+        // surfacing later as unexplained index arithmetic.
+        let staged_len = transcript_len(&service, &session_id).await;
+        assert_eq!(
+            staged_len,
+            seeded_len + fixture_len,
+            "the seeded fixture must be the whole of the transcript growth: expected the \
+             {seeded_len} settled rows plus the {fixture_len} fixture rows, saw {staged_len}. A \
+             different count means rows landed alongside the fixture and every index below is \
+             derived from a stale premise."
+        );
         let response = rpc(
             &harness,
             "mobkit/bound_member_transcript",
@@ -1503,7 +1574,7 @@ comms = true
             .expect("held turn admitted");
         // Backstop only: the admitted turn either reaches the gated LLM call or
         // it never will. Generous so full-suite CPU starvation cannot reach it.
-        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let deadline = std::time::Instant::now() + Duration::from_mins(1);
         while !harness.in_call.load(Ordering::SeqCst) {
             assert!(
                 std::time::Instant::now() < deadline,

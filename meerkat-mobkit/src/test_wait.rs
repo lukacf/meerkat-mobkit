@@ -21,11 +21,10 @@ use std::time::{Duration, Instant};
 
 /// Generous default ceiling for structural waits. Sized so full-suite CPU
 /// starvation cannot reach it while a genuine hang still fails the test.
-pub(crate) const STRUCTURAL_BACKSTOP: Duration = Duration::from_secs(60);
+pub(crate) const STRUCTURAL_BACKSTOP: Duration = Duration::from_mins(1);
 
-/// Poll `condition` until it holds, or panic naming `what` when `ceiling`
+/// Poll `condition` until it holds, or fail naming `what` when `ceiling`
 /// expires.
-#[allow(clippy::panic)]
 pub(crate) async fn poll_until<F>(what: &str, ceiling: Duration, mut condition: F)
 where
     F: AsyncFnMut() -> bool,
@@ -35,9 +34,10 @@ where
         if condition().await {
             return;
         }
-        if Instant::now() >= deadline {
-            panic!("never happened within {ceiling:?}: {what}");
-        }
+        assert!(
+            Instant::now() < deadline,
+            "never happened within {ceiling:?}: {what}"
+        );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
