@@ -175,29 +175,46 @@ impl From<SubscribeError> for UnifiedRuntimeError {
 
 /// What a teardown-time mob stop actually achieved.
 ///
-/// `DegradedNotReady` exists so a transient runtime-readiness refusal
-/// (`Runtime not ready: attached` while a member is mid-kickoff) can let
-/// teardown continue WITHOUT being mistaken for a clean stop. Callers that
-/// only need teardown to proceed can ignore it; callers that care whether the
-/// mob actually quiesced must distinguish it from [`Self::Stopped`].
+/// The two non-failure outcomes are deliberately NOT collapsed.
+/// [`Self::Stopped`] means the mob machine accepted `Stop`;
+/// [`Self::ProceededWithoutInterrupt`] means teardown went ahead having failed
+/// to interrupt a member. Reporting the second as the first would be a false
+/// success the caller cannot detect at the call site - and a mid-attach member
+/// is precisely the case where it would be a lie, because a turn has already
+/// been admitted and its kickoff is about to bind.
 #[derive(Debug)]
 pub enum MobStopOutcome {
     /// The mob machine accepted `Stop`.
     Stopped,
-    /// The stop never converged within its window because a member's runtime
-    /// session stayed mid-attach. Teardown continued; the condition was
-    /// reported through the error hook as
-    /// [`ErrorEvent::MobStopNotReadyDegraded`].
-    DegradedNotReady { waited_ms: u64, error: String },
+    /// Teardown proceeded WITHOUT a successful interrupt: the stop kept being
+    /// refused on runtime-attach readiness for the whole window. A turn may
+    /// have been admitted on the named member and may still be running. The
+    /// condition was reported through the error hook as
+    /// [`ErrorEvent::MobStopProceededWithoutInterrupt`], never swallowed.
+    ProceededWithoutInterrupt {
+        waited_ms: u64,
+        /// The session/member meerkat named in its refusal, when the refusal
+        /// carried one. `None` means the text did not name a subject - the
+        /// report omits what it did not observe rather than guessing.
+        member: Option<String>,
+        error: String,
+    },
     /// Any other refusal, unchanged in meaning.
     Failed(crate::mob_handle_runtime::MobRuntimeError),
 }
 
 impl MobStopOutcome {
-    /// Whether teardown may proceed: a clean stop, or a degrade that was
-    /// reported rather than swallowed.
+    /// Whether teardown may continue. NOT a success predicate: it is true for
+    /// [`Self::ProceededWithoutInterrupt`], where nothing was interrupted.
+    /// Callers that need to know the mob actually quiesced must test
+    /// [`Self::stopped_cleanly`].
     pub fn teardown_may_proceed(&self) -> bool {
-        matches!(self, Self::Stopped | Self::DegradedNotReady { .. })
+        matches!(self, Self::Stopped | Self::ProceededWithoutInterrupt { .. })
+    }
+
+    /// Whether the mob machine actually accepted `Stop`.
+    pub fn stopped_cleanly(&self) -> bool {
+        matches!(self, Self::Stopped)
     }
 }
 
@@ -405,6 +422,8 @@ pub struct ShutdownDrainReport {
 /// - `ActorLoopStalled` — `mod.rs` actor-loop probe's round trip through the
 ///   serialized mob command loop went unanswered past its budget
 /// - `IdentityMaterializationFailure` — identity-first peer/fleet hydration skipped a member
+/// - `MobStopProceededWithoutInterrupt` — `lifecycle.rs` teardown gave up
+///   waiting for runtime-attach readiness and continued without interrupting
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "category", rename_all = "snake_case")]
@@ -447,11 +466,16 @@ pub enum ErrorEvent {
         operation: String,
         error: String,
     },
-    /// Teardown could not quiesce the mob because a member's runtime session
-    /// was still mid-attach when the bounded wait ran out. Teardown continued;
-    /// this says so out loud rather than leaving the condition implicit.
-    MobStopNotReadyDegraded {
+    /// Teardown proceeded WITHOUT interrupting a member: the stop kept being
+    /// refused on runtime-attach readiness for its whole window.
+    ///
+    /// Says exactly that, and nothing stronger. It does NOT claim the member
+    /// was interrupted, because a mid-attach member has already had a turn
+    /// admitted and its kickoff is about to bind - calling that an interrupt
+    /// would be a false success the caller cannot detect.
+    MobStopProceededWithoutInterrupt {
         waited_ms: u64,
+        member: Option<String>,
         error: String,
     },
 }
@@ -519,11 +543,22 @@ impl Display for ErrorEvent {
                     )
                 }
             }
-            Self::MobStopNotReadyDegraded { waited_ms, error } => write!(
-                f,
-                "mob_stop_not_ready_degraded: teardown continued after {waited_ms}ms without \
-                 quiescing the mob: {error}"
-            ),
+            Self::MobStopProceededWithoutInterrupt {
+                waited_ms,
+                member,
+                error,
+            } => {
+                let subject = match member {
+                    Some(member) => format!(" on {member}"),
+                    None => String::new(),
+                };
+                write!(
+                    f,
+                    "mob_stop_proceeded_without_interrupt: teardown proceeded after {waited_ms}ms \
+                     WITHOUT a successful interrupt{subject}; a turn may have been admitted and \
+                     may still be running: {error}"
+                )
+            }
         }
     }
 }

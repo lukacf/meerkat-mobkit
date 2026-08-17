@@ -76,6 +76,17 @@ pub(crate) fn is_runtime_attach_readiness_refusal(error: &str) -> bool {
     error.contains("Runtime not ready: attached")
 }
 
+/// The session meerkat names in its refusal (`...must resolve through
+/// MeerkatMachine for {session}: ...`), when the text carries one.
+///
+/// Best-effort by construction: a report that names the subject is far more
+/// actionable, but this returns `None` rather than guessing when the refusal
+/// does not name one. Nothing infers a condition from the absence.
+pub(crate) fn runtime_attach_readiness_subject(error: &str) -> Option<String> {
+    let subject = error.split(" for ").nth(1)?.split(':').next()?.trim();
+    (!subject.is_empty()).then(|| subject.to_string())
+}
+
 pub(crate) fn is_recoverable_lifecycle_cleanup_error(error: &str) -> bool {
     is_previous_member_cleanup_ambiguous_error(error)
         || (error.contains("disposal completed but ArchiveSession failed")

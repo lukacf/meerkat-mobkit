@@ -8,7 +8,9 @@ use std::time::Duration;
 use meerkat_mob::SpawnMemberSpec;
 use tokio::sync::mpsc::error::TryRecvError;
 
-use crate::mob_handle_runtime::{MobRuntimeError, is_runtime_attach_readiness_refusal};
+use crate::mob_handle_runtime::{
+    MobRuntimeError, is_runtime_attach_readiness_refusal, runtime_attach_readiness_subject,
+};
 use crate::runtime::RuntimeDecisionState;
 
 use super::types::{
@@ -277,7 +279,7 @@ impl UnifiedRuntime {
             // is still live parks Active identities Broken. Phases 3 and 4
             // continue either way, so the shutdown is not aborted.
             let _ = self
-                .report_stop_readiness_degrade(error, stop_started.elapsed().as_millis() as u64);
+                .report_stop_without_interrupt(error, stop_started.elapsed().as_millis() as u64);
         }
 
         // A first cleanup attempt can fail while the Mob stop itself finishes
@@ -421,18 +423,25 @@ impl UnifiedRuntime {
     /// state, not a verdict: the caller cannot make a member less attached, so
     /// a hard failure turns a millisecond-wide window into an operator-visible
     /// teardown error (the intermittent `stop` panic at test teardown). This
-    /// waits the window out, and if it still has not cleared, reports the
-    /// condition as a typed degrade so teardown proceeds - it is never
-    /// swallowed. Every other refusal keeps its existing meaning.
+    /// waits the window out, and if it still has not cleared, lets teardown
+    /// proceed while reporting - typed, never swallowed - that it proceeded
+    /// WITHOUT interrupting. Every other refusal keeps its existing meaning.
+    ///
+    /// What this deliberately does NOT do: claim the member was interrupted,
+    /// or return [`MobStopOutcome::Stopped`]. A mid-attach member has already
+    /// had a turn admitted and its kickoff is about to bind, so "interrupted"
+    /// there would be a false success the caller cannot detect at the call
+    /// site - the mirror of the failure this whole item exists to fix.
     pub async fn stop_mob_for_teardown(&self) -> MobStopOutcome {
         let started = tokio::time::Instant::now();
         match self.stop_mob_quiescing().await {
             Ok(()) => MobStopOutcome::Stopped,
             Err(error) => {
                 let waited_ms = started.elapsed().as_millis() as u64;
-                match self.report_stop_readiness_degrade(&error, waited_ms) {
-                    true => MobStopOutcome::DegradedNotReady {
+                match self.report_stop_without_interrupt(&error, waited_ms) {
+                    true => MobStopOutcome::ProceededWithoutInterrupt {
                         waited_ms,
+                        member: runtime_attach_readiness_subject(&error.to_string()),
                         error: error.to_string(),
                     },
                     false => MobStopOutcome::Failed(error),
@@ -442,24 +451,32 @@ impl UnifiedRuntime {
     }
 
     /// Classify a non-converged stop and, when it is the transient
-    /// runtime-attach readiness class, say so out loud (log + typed error
-    /// hook). Returns whether the refusal was that class.
+    /// runtime-attach readiness class, say out loud that teardown proceeded
+    /// without interrupting (log + typed error hook). Returns whether the
+    /// refusal was that class.
     ///
     /// Both teardown entry points route their refusal through here so the
-    /// condition is reported exactly once and identically, whichever one the
-    /// host used.
-    fn report_stop_readiness_degrade(&self, error: &MobRuntimeError, waited_ms: u64) -> bool {
+    /// condition reads identically whichever one the host used. The report
+    /// states only what was observed: the stop was refused, nothing was
+    /// interrupted, a turn may already be running on the named subject.
+    fn report_stop_without_interrupt(&self, error: &MobRuntimeError, waited_ms: u64) -> bool {
         let error = error.to_string();
         if !is_runtime_attach_readiness_refusal(&error) {
             return false;
         }
+        let member = runtime_attach_readiness_subject(&error);
         tracing::warn!(
             %error,
             waited_ms,
-            "mob stop still refused on runtime attach readiness after its bounded wait; \
-             teardown continues and the condition is reported, not swallowed"
+            member = member.as_deref().unwrap_or("<unnamed>"),
+            "mob stop refused on runtime attach readiness for its whole window; teardown \
+             proceeds WITHOUT an interrupt and a turn may still be running"
         );
-        self.fire_error(ErrorEvent::MobStopNotReadyDegraded { waited_ms, error });
+        self.fire_error(ErrorEvent::MobStopProceededWithoutInterrupt {
+            waited_ms,
+            member,
+            error,
+        });
         true
     }
 
@@ -698,7 +715,7 @@ model = "gpt-5.5"
             })
         }));
 
-        let degraded = runtime.report_stop_readiness_degrade(
+        let degraded = runtime.report_stop_without_interrupt(
             &injected_refusal(
                 "runtime-backed interrupt must resolve through MeerkatMachine for \
                  019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: internal error: local interrupt_member \
@@ -713,11 +730,39 @@ model = "gpt-5.5"
             .expect("the degrade must reach the error hook")
             .expect("hook channel stays open");
         match event {
-            ErrorEvent::MobStopNotReadyDegraded { waited_ms, error } => {
+            ErrorEvent::MobStopProceededWithoutInterrupt {
+                waited_ms,
+                member,
+                error,
+            } => {
                 assert_eq!(waited_ms, 10_000, "the reported wait must be the real one");
+                assert_eq!(
+                    member.as_deref(),
+                    Some("019e3c52-0f1b-73d3-a5c7-4b21c2bbf131"),
+                    "the report must name the subject meerkat refused on"
+                );
                 assert!(
                     error.contains("Runtime not ready: attached"),
                     "the refusal text must survive into the report: {error}"
+                );
+                // The wording is the contract here: this event must never
+                // read as an interrupt or a clean stop, because a mid-attach
+                // member has already had a turn admitted.
+                let rendered = ErrorEvent::MobStopProceededWithoutInterrupt {
+                    waited_ms,
+                    member,
+                    error,
+                }
+                .to_string();
+                assert!(
+                    rendered.contains("WITHOUT a successful interrupt")
+                        && rendered.contains("may still be running"),
+                    "the report must say teardown did not interrupt and a turn may still be \
+                     running: {rendered}"
+                );
+                assert!(
+                    !rendered.contains("interrupted") && !rendered.contains("stopped"),
+                    "the report must never claim an interrupt or a clean stop: {rendered}"
                 );
             }
             other => panic!("the degrade must be its own typed event, got {other:?}"),
@@ -741,14 +786,14 @@ model = "gpt-5.5"
         }));
 
         assert!(
-            !runtime.report_stop_readiness_degrade(
+            !runtime.report_stop_without_interrupt(
                 &injected_refusal("Runtime not ready: running"),
                 10_000,
             ),
             "a busy runtime is not the attach-readiness class"
         );
         assert!(
-            !runtime.report_stop_readiness_degrade(&injected_refusal("actor task dropped"), 10_000),
+            !runtime.report_stop_without_interrupt(&injected_refusal("actor task dropped"), 10_000),
             "an unrelated refusal must not degrade"
         );
         assert!(
@@ -761,20 +806,54 @@ model = "gpt-5.5"
         let _ = runtime.mob_handle().stop().await;
     }
 
-    /// The outcome vocabulary is what callers branch on: a degrade lets
-    /// teardown continue, a failure does not.
+    /// The outcome vocabulary is what callers branch on, and the two
+    /// non-failure outcomes must stay TELLABLE APART: teardown may continue
+    /// after proceeding without an interrupt, but that is not a clean stop.
+    /// Collapsing them is the false-success shape this item refuses.
     #[test]
-    fn teardown_may_proceed_covers_stopped_and_degraded_only() {
+    fn proceeding_without_an_interrupt_is_never_reported_as_a_clean_stop() {
+        let proceeded = MobStopOutcome::ProceededWithoutInterrupt {
+            waited_ms: 10_000,
+            member: Some("019e3c52-0f1b-73d3-a5c7-4b21c2bbf131".to_string()),
+            error: "Runtime not ready: attached".to_string(),
+        };
+
         assert!(MobStopOutcome::Stopped.teardown_may_proceed());
+        assert!(MobStopOutcome::Stopped.stopped_cleanly());
+
         assert!(
-            MobStopOutcome::DegradedNotReady {
-                waited_ms: 10_000,
-                error: "Runtime not ready: attached".to_string(),
-            }
-            .teardown_may_proceed()
+            proceeded.teardown_may_proceed(),
+            "teardown must not be blocked by a readiness state"
         );
         assert!(
-            !MobStopOutcome::Failed(injected_refusal("actor task dropped")).teardown_may_proceed()
+            !proceeded.stopped_cleanly(),
+            "proceeding without an interrupt must never read as a clean stop"
+        );
+
+        let failed = MobStopOutcome::Failed(injected_refusal("actor task dropped"));
+        assert!(!failed.teardown_may_proceed());
+        assert!(!failed.stopped_cleanly());
+    }
+
+    /// The subject is extracted from what meerkat actually said, and omitted
+    /// when it said nothing - never guessed.
+    #[test]
+    fn the_reported_subject_is_only_what_the_refusal_named() {
+        assert_eq!(
+            crate::mob_handle_runtime::runtime_attach_readiness_subject(
+                "runtime-backed interrupt must resolve through MeerkatMachine for \
+                 019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: internal error: local interrupt_member \
+                 failed: Runtime not ready: attached"
+            )
+            .as_deref(),
+            Some("019e3c52-0f1b-73d3-a5c7-4b21c2bbf131")
+        );
+        assert_eq!(
+            crate::mob_handle_runtime::runtime_attach_readiness_subject(
+                "Runtime not ready: attached"
+            ),
+            None,
+            "an unnamed refusal must report no subject rather than invent one"
         );
     }
 }
