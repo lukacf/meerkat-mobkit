@@ -89,11 +89,60 @@ fn current_error_hook(slot: &SharedErrorHook) -> Option<ErrorHook> {
         .clone()
 }
 
+/// The default sink every [`ErrorEvent`] passes through, whether or not a
+/// host registered an [`ErrorHook`].
+///
+/// A paging channel that discards when nobody wired it is indistinguishable
+/// from a healthy fleet. A host with zero `on_error` call sites used to get
+/// silence for every operational failure mobkit detected — 136 compaction
+/// rejections in one observed fleet, found only by reading a console table
+/// by hand. Logging here costs a wired host nothing (the hook still fires,
+/// exactly once) and gives an unwired one somewhere an operator or a
+/// log-shipper can see the event.
+///
+/// Emitted with the typed event (`Debug`, so the variant name and its fields
+/// both land) rather than only the `Display` rendering, and synchronously on
+/// the caller's thread so the record is not stranded on a detached task.
+pub(crate) fn log_error_event(event: &ErrorEvent, hook_registered: bool) {
+    tracing::error!(
+        error_event = ?event,
+        hook_registered,
+        "mobkit runtime error event: {event}"
+    );
+    if !hook_registered {
+        warn_error_hook_absent_once();
+    }
+}
+
+/// State the missing-hook condition plainly: nobody is listening, and here is
+/// where to fix it. Emitted at build time by `UnifiedRuntimeBuilder::build`
+/// for hosts that never called `on_error`, and once per process from the fire
+/// path for hosts that bootstrap directly and install the hook afterwards.
+pub(crate) fn emit_error_hook_absent_notice() {
+    tracing::warn!(
+        "no error hook is registered, so runtime error events reach logs only; \
+         register one with UnifiedRuntimeBuilder::on_error (or \
+         UnifiedRuntime::set_error_hook) to route them to paging"
+    );
+}
+
+/// The fire-path guard for the notice: the condition is per-process, and
+/// repeating it on every event would bury the events themselves.
+fn warn_error_hook_absent_once() {
+    static NOTICED: std::sync::Once = std::sync::Once::new();
+    NOTICED.call_once(emit_error_hook_absent_notice);
+}
+
 /// Fire an error event on the hook currently installed in `slot`, if any.
 /// Truly fire-and-forget — spawns a detached task so slow hooks (HTTP to
 /// Slack, PagerDuty) never block the caller.
+///
+/// The event reaches [`log_error_event`] either way: an unregistered hook
+/// must not be the difference between an operator seeing a failure and not.
 fn fire_error_hook(slot: &SharedErrorHook, event: ErrorEvent) {
-    if let Some(hook) = current_error_hook(slot) {
+    let hook = current_error_hook(slot);
+    log_error_event(&event, hook.is_some());
+    if let Some(hook) = hook {
         tokio::spawn(async move {
             let () = hook(event).await;
         });
@@ -2667,6 +2716,170 @@ model = "gpt-5.5"
         assert!(
             typed_error.contains("runtime epoch rotated under the coordinator"),
             "error must keep the human rendering: {typed_error}"
+        );
+    }
+
+    /// Captures formatted tracing output so the default-sink tests can assert
+    /// on the emitted records. `with_default` is thread-local, so everything
+    /// asserted here must be logged synchronously on the calling thread.
+    #[derive(Clone, Default)]
+    struct CaptureWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CaptureWriter {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(
+                &self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+            .into_owned()
+        }
+    }
+
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+        type Writer = CaptureWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_tracing<T>(body: impl FnOnce() -> T) -> (T, String) {
+        let writer = CaptureWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer.clone())
+            .with_max_level(tracing::Level::WARN)
+            // Without this the formatter wraps every field name and `=` in
+            // ANSI escapes, so `contains("hook_registered=false")` reads a
+            // string that is never literally present.
+            .with_ansi(false)
+            .finish();
+        let value = tracing::subscriber::with_default(subscriber, body);
+        (value, writer.contents())
+    }
+
+    fn sample_alert() -> ErrorEvent {
+        ErrorEvent::CompactionPersistenceRejected {
+            identity: "compaction-worker:0".to_string(),
+            session_id: "sess-1".to_string(),
+            error: "runtime refused the durable compaction projection handoff".to_string(),
+            preserved_history: Some(CompactionPreservedHistoryFit::OverWindow),
+            attempted_entries: Some(12),
+        }
+    }
+
+    /// An `ErrorEvent` fired with NO hook registered must still reach the log,
+    /// with its typed variant and fields — a paging channel that discards when
+    /// nobody wired it is indistinguishable from a healthy fleet. Fired
+    /// through `fire_error_hook` (not the log helper directly) so the test
+    /// covers the branch that used to drop the event on the floor.
+    #[test]
+    fn error_event_without_hook_still_reaches_the_log() {
+        let slot: SharedErrorHook = Arc::new(std::sync::RwLock::new(None));
+        // No hook means no `tokio::spawn`, so this needs no runtime — which is
+        // also what keeps the record on this thread where the capture sees it.
+        let ((), logged) = capture_tracing(|| fire_error_hook(&slot, sample_alert()));
+
+        assert!(
+            logged.contains("CompactionPersistenceRejected"),
+            "the typed variant must be named in the record: {logged}"
+        );
+        assert!(
+            logged.contains("OverWindow") && logged.contains("compaction-worker:0"),
+            "typed fields must ride the record, not just the Display string: {logged}"
+        );
+        assert!(
+            logged.contains("hook_registered=false"),
+            "the record must say nobody was listening: {logged}"
+        );
+    }
+
+    /// A wired host loses nothing: the record is still emitted, marked as
+    /// delivered. Split from the delivery assertion below so that a single
+    /// mutation of either behaviour fails its own test.
+    #[test]
+    fn error_event_with_hook_is_logged_as_delivered() {
+        let hook: ErrorHook = Arc::new(move |_event| Box::pin(async move {}));
+        let slot: SharedErrorHook = Arc::new(std::sync::RwLock::new(Some(hook)));
+
+        // The dispatch spawns, so this needs a runtime; the log record itself
+        // is still written synchronously on this thread.
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = runtime.enter();
+        let ((), logged) = capture_tracing(|| fire_error_hook(&slot, sample_alert()));
+
+        assert!(
+            logged.contains("hook_registered=true"),
+            "a wired host still gets the record, marked as delivered: {logged}"
+        );
+    }
+
+    /// The default sink is an addition to the hook, not a second delivery
+    /// path through it: a registered hook must fire EXACTLY once per event.
+    #[tokio::test]
+    async fn registered_error_hook_fires_exactly_once() {
+        let captured: Arc<tokio::sync::Mutex<Vec<ErrorEvent>>> =
+            Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let hook_captured = captured.clone();
+        let hook: ErrorHook = Arc::new(move |event| {
+            let hook_captured = hook_captured.clone();
+            Box::pin(async move {
+                hook_captured.lock().await.push(event);
+            })
+        });
+        let slot: SharedErrorHook = Arc::new(std::sync::RwLock::new(Some(hook)));
+
+        fire_error_hook(&slot, sample_alert());
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if !captured.lock().await.is_empty() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "registered hook never received the event"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Settle any second delivery a double-dispatch bug would produce.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            captured.lock().await.len(),
+            1,
+            "the hook must fire exactly once per event"
+        );
+    }
+
+    /// The unwired notice must name the condition AND the fix. This is the
+    /// same function `UnifiedRuntimeBuilder::build` calls when a host never
+    /// registered a hook, so the text is pinned in one place.
+    #[test]
+    fn error_hook_absent_notice_points_at_the_registration_call() {
+        let ((), logged) = capture_tracing(emit_error_hook_absent_notice);
+
+        assert!(
+            logged.contains("no error hook is registered"),
+            "the notice must state the condition plainly: {logged}"
+        );
+        assert!(
+            logged.contains("on_error"),
+            "the notice must point at the registration call: {logged}"
         );
     }
 

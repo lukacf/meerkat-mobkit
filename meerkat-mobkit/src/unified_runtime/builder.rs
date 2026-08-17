@@ -1289,6 +1289,15 @@ impl UnifiedRuntimeBuilder {
         // replacing it.
         if let Some(hook) = self.error_hook {
             runtime.set_error_hook(hook);
+        } else {
+            // Say so at startup rather than at the first failure: a host that
+            // never calls `on_error` gets operational events in logs only, and
+            // that should be a decision it made rather than one it discovers
+            // months later while reading a console table by hand. Checked here
+            // rather than inside `bootstrap` because the hook installs AFTER
+            // construction, so a bootstrap-time check would fire for every
+            // correctly-wired host too.
+            super::emit_error_hook_absent_notice();
         }
 
         // Run the host's last fallible pre-bootstrap hook before identity

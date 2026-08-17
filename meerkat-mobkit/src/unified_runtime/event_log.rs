@@ -326,17 +326,22 @@ async fn flush_batch(
         let dropped = enforce_retry_cap(&mut restored);
         *batch = restored;
 
+        let msg = if dropped > 0 {
+            format!(
+                "event log flush failed: {err}; dropped {dropped} oldest events to bound the retry buffer at {EVENT_LOG_RETRY_BUFFER_CAP}"
+            )
+        } else {
+            format!("event log flush failed: {err}; will retry")
+        };
+        let event = super::types::ErrorEvent::EventLogFlushFailure { error: msg };
+        // Third fire point with its own hook Option, so it needs the same
+        // default sink: a flush failure nobody is listening for is still a
+        // flush failure.
+        super::log_error_event(&event, error_hook.is_some());
         if let Some(hook) = error_hook {
             let hook = hook.clone();
-            let msg = if dropped > 0 {
-                format!(
-                    "event log flush failed: {err}; dropped {dropped} oldest events to bound the retry buffer at {EVENT_LOG_RETRY_BUFFER_CAP}"
-                )
-            } else {
-                format!("event log flush failed: {err}; will retry")
-            };
             tokio::spawn(async move {
-                let () = hook(super::types::ErrorEvent::EventLogFlushFailure { error: msg }).await;
+                let () = hook(event).await;
             });
         }
     }
