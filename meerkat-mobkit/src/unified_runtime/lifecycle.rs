@@ -680,6 +680,9 @@ id = "{mob_id}"
 
 [profiles.worker]
 model = "gpt-5.5"
+
+[profiles.worker.tools]
+comms = true
 "#
         ))
         .expect("definition parses");
