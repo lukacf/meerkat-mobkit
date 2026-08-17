@@ -3397,6 +3397,9 @@ id = "send-message-authority-unavailable-keying-test"
 [profiles.worker]
 model = "gpt-5.5"
 external_addressable = true
+
+[profiles.worker.tools]
+comms = true
 "#,
         )
         .map_err(|err| format!("definition parses: {err:?}"))?;

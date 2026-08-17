@@ -697,6 +697,57 @@ model = "gpt-5.5"
         MobRuntimeError::Mob(meerkat_mob::MobError::Internal(detail.to_string()))
     }
 
+    /// DELIBERATE CANARY - DO NOT convert this to `stop_mob_for_teardown`.
+    ///
+    /// Every mobkit teardown site that used to trip over the upstream P1
+    /// (meerkat provisioner `interrupt_member` refusing with `Runtime not
+    /// ready: attached` while a member's runtime session is mid-kickoff) now
+    /// routes through the degrading path. That is right for those sites, whose
+    /// subject is not teardown - but if we convert ALL of them, the upstream
+    /// defect stops being observable to us: meerkat's fix landing looks the
+    /// same as it not landing, and a future regression there becomes
+    /// permanently invisible.
+    ///
+    /// So this one place keeps calling the RAW `MobHandle::stop()` in the
+    /// window where the race lives - immediately after a spawn - and demands
+    /// it succeed. When the race hits, THIS is what goes red, with a message
+    /// naming the upstream defect, instead of some unrelated tool-surface test.
+    ///
+    /// Honest about what it is: the window cannot be forced open, so this does
+    /// not reproduce the race on demand. It is a placed observation point, not
+    /// a deterministic reproduction. When meerkat 0.8.24's fix lands, the
+    /// refusal branch should stop occurring entirely.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn raw_mob_handle_stop_is_still_where_the_attach_readiness_defect_surfaces() {
+        let runtime = empty_runtime("raw-stop-attach-readiness-canary").await;
+        runtime
+            .mob_handle()
+            .spawn_spec(meerkat_mob::SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "canary".to_string(),
+                Some("You are a canary.".into()),
+                None,
+                None,
+            ))
+            .await
+            .expect("canary member spawns");
+
+        // No settling wait on purpose: that is the whole point of the site.
+        if let Err(error) = runtime.mob_handle().stop().await {
+            let error = error.to_string();
+            assert!(
+                !is_runtime_attach_readiness_refusal(&error),
+                "UPSTREAM P1 OBSERVED (meerkat provisioner interrupt_member -> \
+                 RuntimeNotReady while the member's runtime session is `attached`): raw \
+                 MobHandle::stop refused at teardown. This canary exists to make that \
+                 visible; mobkit's own teardown path degrades it via \
+                 stop_mob_for_teardown. Expected to stop happening once the meerkat 0.8.24 \
+                 fix lands. Refusal: {error}"
+            );
+            panic!("raw stop refused for an unexpected reason: {error}");
+        }
+    }
+
     /// The degrade branch, driven by an injected refusal because the live
     /// window it exists for (a member mid-kickoff) is not something a test can
     /// hold open deterministically.
