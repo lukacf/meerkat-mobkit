@@ -1393,7 +1393,12 @@ comms = true
             .len();
         let (assistant, results) = tool_use_pair("call-straddle");
         let fixture = vec![user("older"), assistant, results, user("tail")];
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        // Backstop only: the just-finished turn's runtime admission either
+        // finishes draining or it is wedged. The old 10s ceiling measured
+        // runner load - under full-suite parallelism the drain is merely slow,
+        // and the retry fell through to the panic arm below with a Busy that
+        // was never a defect.
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         loop {
             let request = meerkat_core::service::SessionTranscriptRewriteRequest {
                 selection: meerkat_core::TranscriptRewriteSelection::MessageRange {
@@ -1496,11 +1501,14 @@ comms = true
             )
             .await
             .expect("held turn admitted");
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        // Backstop only: the admitted turn either reaches the gated LLM call or
+        // it never will. Generous so full-suite CPU starvation cannot reach it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while !harness.in_call.load(Ordering::SeqCst) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the held turn must reach the LLM call"
+                "the held turn never reached the LLM call: the gate was armed and the turn was \
+                 admitted, but `in_call` was never set"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
