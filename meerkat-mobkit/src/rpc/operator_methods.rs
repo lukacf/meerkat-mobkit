@@ -1289,7 +1289,10 @@ comms = true
         for turn in 0..8 {
             harness.run_turn(format!("turn {turn}: {fat}")).await;
         }
-        let (messages_before, _) = harness.transcript_facts().await;
+        // Settled: this is a LOWER BOUND on a durable surface that lags the
+        // completion cursor, so an unsettled read fails at `>= 16` for a
+        // transcript that is merely still landing rather than one that is short.
+        let messages_before = harness.settled_transcript_count().await;
         assert!(
             messages_before >= 16,
             "seed must materialize a fat transcript, got {messages_before}"
@@ -1429,16 +1432,27 @@ comms = true
         );
 
         // The member must be usable after the rollback: a probe turn appends.
-        let (count_before_probe, _) = harness.transcript_facts().await;
+        //
+        // Read off the clock the assertion actually reads. `run_turn` returns on
+        // the identity's COMPLETION CURSOR; this reads the DURABLE session
+        // surface, which lags it. Sampling once at cursor timing cannot tell a
+        // write that has not landed from a member that never accepted the turn -
+        // both render as no growth, which is how this failed CI at `3 -> 3`.
+        // Third instance of this split in this file: the seeded-length read and
+        // the sibling forced-compaction probe were both fixed the same way.
+        let count_before_probe = harness.settled_transcript_count().await;
         harness
             .run_turn("post-timeout probe turn".to_string())
             .await;
-        let (count_after_probe, _) = harness.transcript_facts().await;
-        assert!(
-            count_after_probe > count_before_probe,
-            "the rolled-back member must accept turns: {count_before_probe} -> \
-             {count_after_probe}"
-        );
+        crate::test_wait::poll_until(
+            &format!(
+                "the rolled-back member accepted a turn and appended to the durable transcript \
+                 (still {count_before_probe} messages)"
+            ),
+            crate::test_wait::STRUCTURAL_BACKSTOP,
+            async || harness.transcript_facts().await.0 > count_before_probe,
+        )
+        .await;
 
         let _ = harness.runtime.mob_handle().stop().await;
     }
