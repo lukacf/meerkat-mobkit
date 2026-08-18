@@ -181,8 +181,15 @@ jobs:
           # release runner wants the predictable ./target path.) rpc_gateway is the
           # SDK stdin-RPC gateway; mobkit_gateway is the console/HTTP one — SDK
           # users need rpc_gateway, so both ship.
+          # --locked: the binaries we ship must be built from the SAME
+          # dependency set the audit lane checked. Without it cargo is
+          # permitted to resolve differently from the committed lock, so a
+          # green `cargo deny` would be a measurement of the source while the
+          # published artifact carried something else. RUSTSEC-2026-0258 made
+          # that distinction concrete: adopters running a prebuilt gateway are
+          # exposed by what is IN THE BINARY, not by what the lock says.
           cargo build -p meerkat-mobkit --bin mobkit_gateway --bin rpc_gateway --bin mobkit_repair \
-            --release --target "${{ matrix.target }}"
+            --locked --release --target "${{ matrix.target }}"
 
       - name: Ad-hoc codesign macOS binaries
         if: runner.os == 'macOS'
