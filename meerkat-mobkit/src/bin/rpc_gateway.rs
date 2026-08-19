@@ -4814,22 +4814,24 @@ impl DetachedCallbackJobRuntime {
             .collect())
     }
 
+    /// The exact host-store total behind `JobHealthSummary.runtime_inbox_backlog`.
+    ///
+    /// Deliberately NOT derived by walking job rows for origin sessions. The
+    /// durable runtime store is one file per realm ROOT and serves every
+    /// session this host built - including members built under `mob.<mob_id>`,
+    /// and runtime ids carry no realm - so a job-derived sum silently misses
+    /// any runtime whose job aged out or sits outside the logical realm, and
+    /// publishes a false zero exactly when a backlog is what the operator is
+    /// asking about. Over-inclusion is the safe direction here: every counted
+    /// row is a real undrained delivery in this host.
     async fn runtime_inbox_backlog_count(&self) -> Result<u64, String> {
         let Some(runtime_inbox) = self.runtime_inbox.clone() else {
             return Ok(0);
         };
-        let mut total = 0_u64;
-        for session_id in self.delivery_origin_sessions().await? {
-            let pending = runtime_inbox
-                .list_pending(
-                    &meerkat_runtime::LogicalRuntimeId::for_session(&session_id),
-                    usize::MAX,
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            total = total.saturating_add(u64::try_from(pending.len()).unwrap_or(u64::MAX));
-        }
-        Ok(total)
+        runtime_inbox
+            .pending_delivery_total()
+            .await
+            .map_err(|error| error.to_string())
     }
 
     async fn health_projection(&self) -> Result<Value, String> {

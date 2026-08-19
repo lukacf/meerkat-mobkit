@@ -231,6 +231,16 @@ report of that is still an operational loose end you have to close.
   neither, and an operator reading it could not tell which failure they had - or
   which side to go look at. Alerts keying on `delivery_backlog` must be repointed;
   they will not silently keep working, which is deliberate.
+  **Note the differing scopes, because they are not both realm numbers.**
+  `pending_outbox_jobs` is realm-scoped. `runtime_inbox_backlog` is a HOST-STORE
+  total and cannot be narrowed to a realm: the durable runtime store is one file
+  per realm root and serves every session the host built, including members built
+  under `mob.<mob_id>`, and runtime ids carry no realm. On a host serving more
+  than one logical realm this number is therefore host-wide by construction.
+  Over-inclusion is the safe direction - every counted row is a real undrained
+  delivery on this host - whereas the realm-derived sum it replaces silently
+  missed any runtime whose job had aged out, publishing a false zero exactly
+  when a backlog was the thing being asked about.
 - **`status` on both job-health surfaces gains a third value, `unreadable`.**
   Meerkat's census answers `Unreadable` when its scan window did not reach every
   row, and it is NOT a rung between `ok` and `degraded`: it says the census
