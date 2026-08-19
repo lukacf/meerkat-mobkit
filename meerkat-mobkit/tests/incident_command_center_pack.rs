@@ -1020,6 +1020,10 @@ comms = true
             backend_kind: "self_hosted".to_string(),
             base_url: None,
             options: Value::Null,
+            // Deliberately unpinned: this fixture asserts that the server is
+            // selected by the exact session identity, so binding one here
+            // would defeat what the test exists to prove.
+            server: None,
         },
     );
     realm.auth.insert(

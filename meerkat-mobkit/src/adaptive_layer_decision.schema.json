@@ -196,7 +196,7 @@
       ]
     },
     "BudgetLimits": {
-      "description": "Resource limits for an agent run",
+      "description": "Resource limits for an agent run\n\n# Two time horizons, one owner\n\n[`Budget`] is the single owner of \"may this run continue in time\". It\ncarries two independent horizons because they answer different questions\nand are measured from different epochs:\n\n- [`BudgetLimits::max_duration`] is the **agent-lifetime** horizon. Its\n  epoch is [`Budget::new`], which service-backed surfaces call once when the\n  session's agent is built, not once per turn. It therefore spans every turn\n  of that agent, including the idle wall-clock between turns.\n- [`BudgetLimits::max_turn_duration`] is the **per-turn aggregate** horizon.\n  Its epoch is re-armed by [`Budget::begin_turn`] at each run entry, so it\n  bounds one turn end-to-end regardless of how many LLM calls, retries, and\n  tool batches that turn contains.\n\nEvery segment of a turn already carries its own bound (per-call LLM timeout,\nstream-inactivity watchdog, per-tool-call timeout). Before\n`max_turn_duration` existed, the *sum* of those segments was unbounded: a\nturn could legally spend an hour without any owner asking whether it was\nallowed to. `max_turn_duration` is that owner.",
       "properties": {
         "max_duration": {
           "anyOf": [
@@ -207,7 +207,7 @@
               "type": "null"
             }
           ],
-          "description": "Maximum duration"
+          "description": "Maximum agent-lifetime duration, measured from [`Budget::new`].\n\nThis is NOT a per-turn deadline: the epoch is agent construction, which\nfor `SessionService`-backed surfaces is session creation, and it is\nnever re-armed. Use [`BudgetLimits::max_turn_duration`] to bound one\nturn."
         },
         "max_tokens": {
           "description": "Maximum tokens to consume",
@@ -226,6 +226,17 @@
             "integer",
             "null"
           ]
+        },
+        "max_turn_duration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum aggregate wall-clock for a single turn, re-armed at each run\nentry by [`Budget::begin_turn`].\n\n`None` (the default) means turns are unbounded in aggregate: every\nsegment still carries its own timeout, but their sum has no ceiling.\nAbsence is representable and never substituted with an invented\ndefault; a deployment that leaves this unset has chosen unbounded\nturns.\n\n`skip_serializing_if` is load-bearing, not style: a spec carrying no\nturn ceiling must keep its historical canonical bytes so the frozen\n`spec_digest` pin (`meerkat_contracts::wire::spec_digest`) and every\ndigest already recorded in host stores still match. Same reasoning as\n`PortableToolConfig.read_only` in 0.8.23."
         }
       },
       "type": "object"
