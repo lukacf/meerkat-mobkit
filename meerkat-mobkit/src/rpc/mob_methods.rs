@@ -1848,7 +1848,12 @@ pub(super) async fn handle_cross_mob_send(
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32000,
-                        message: format!("cross_mob/send failed: {err}"),
+                        // Context, not a verdict. A leading "failed" overrides
+                        // the inner classification for every reader - including
+                        // a model-mediated one - and would tell a caller to
+                        // retry an ambiguous delivery, which is unsafe. The
+                        // inner error already states its own outcome.
+                        message: format!("cross_mob/send: {err}"),
                     data: None,
                     }),
                 },

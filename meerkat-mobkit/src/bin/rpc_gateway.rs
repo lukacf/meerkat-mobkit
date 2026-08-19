@@ -4814,7 +4814,7 @@ impl DetachedCallbackJobRuntime {
             .collect())
     }
 
-    async fn runtime_delivery_backlog(&self) -> Result<u64, String> {
+    async fn runtime_inbox_backlog_count(&self) -> Result<u64, String> {
         let Some(runtime_inbox) = self.runtime_inbox.clone() else {
             return Ok(0);
         };
@@ -4839,11 +4839,25 @@ impl DetachedCallbackJobRuntime {
             .health_snapshot_for_realm(&self.realm_id, now_ms, usize::MAX)
             .await
             .map_err(|error| error.to_string())?;
-        let runtime_delivery_backlog = self.runtime_delivery_backlog().await?;
-        let delivery_backlog = health
-            .delivery_backlog
-            .saturating_add(runtime_delivery_backlog);
-        let degraded = health.is_degraded() || runtime_delivery_backlog > 0;
+        // NOT summed with `health.pending_outbox_jobs`. The two name different
+        // wedges: a job whose delivery was never handed to a runtime, versus a
+        // delivery a runtime accepted and never drained. 0.8.23 published their
+        // sum under one name, which is a number that means neither.
+        let runtime_inbox_backlog = self.runtime_inbox_backlog_count().await?;
+        // Fold mobkit's own runtime dimension into meerkat's census rung rather
+        // than collapsing to a boolean. `Unreadable` outranks `Degraded`: a
+        // census that could not be read may be hiding the fault, so the
+        // operator is told to look rather than told a rung.
+        let reading = health.reading().worst(if runtime_inbox_backlog > 0 {
+            meerkat::JobHealthReading::Degraded
+        } else {
+            meerkat::JobHealthReading::Ok
+        });
+        let status = match reading {
+            meerkat::JobHealthReading::Ok => "ok",
+            meerkat::JobHealthReading::Degraded => "degraded",
+            meerkat::JobHealthReading::Unreadable => "unreadable",
+        };
         let mut by_session = serde_json::Map::new();
         for job in self
             .store
@@ -4893,16 +4907,17 @@ impl DetachedCallbackJobRuntime {
             }
         }
         Ok(json!({
-            "status": if degraded { "degraded" } else { "ok" },
+            "status": status,
             "monitors_available": self.monitor_shell_config.is_some(),
             "detached_jobs": {
-                "status": if degraded { "degraded" } else { "ok" },
+                "status": status,
                 "queued": health.queued,
                 "running": health.running,
                 "awaiting_members": health.awaiting_members,
                 "stale_leases": health.stale_leases,
                 "needs_attention": health.needs_attention,
-                "delivery_backlog": delivery_backlog
+                "pending_outbox_jobs": health.pending_outbox_jobs,
+                "runtime_inbox_backlog": runtime_inbox_backlog
             },
             "by_session": by_session
         }))
@@ -6338,23 +6353,43 @@ async fn handle_callback_job_rpc(
                     )
                     .await
                     .map_err(|error| error.to_string())?;
-                let runtime_delivery_backlog = runtime.runtime_delivery_backlog().await?;
-                let delivery_backlog = health
-                    .delivery_backlog
-                    .saturating_add(runtime_delivery_backlog);
+                // Separate wedges, deliberately not summed - see the health
+                // projection above.
+                let runtime_inbox_backlog = runtime.runtime_inbox_backlog_count().await?;
+                // Carry meerkat's third rung through to the wire. Folding
+                // `Unreadable` into either `Ok` or `Degraded` would publish a
+                // verdict the census did not establish.
+                let reading = health.reading().worst(if runtime_inbox_backlog > 0 {
+                    meerkat::JobHealthReading::Degraded
+                } else {
+                    meerkat::JobHealthReading::Ok
+                });
                 serde_json::to_value(meerkat_contracts::JobsHealthResult {
                     detached_jobs: meerkat_contracts::JobHealthSummary {
-                        status: if health.is_degraded() || runtime_delivery_backlog > 0 {
-                            meerkat_contracts::JobHealthStatus::Degraded
-                        } else {
-                            meerkat_contracts::JobHealthStatus::Ok
+                        status: match reading {
+                            meerkat::JobHealthReading::Ok => meerkat_contracts::JobHealthStatus::Ok,
+                            meerkat::JobHealthReading::Degraded => {
+                                meerkat_contracts::JobHealthStatus::Degraded
+                            }
+                            meerkat::JobHealthReading::Unreadable => {
+                                meerkat_contracts::JobHealthStatus::Unreadable
+                            }
                         },
                         queued: health.queued,
                         running: health.running,
                         awaiting_members: health.awaiting_members,
                         stale_leases: health.stale_leases,
                         needs_attention: health.needs_attention,
-                        delivery_backlog,
+                        pending_outbox_jobs: health.pending_outbox_jobs,
+                        runtime_inbox_backlog,
+                        coverage: match health.coverage {
+                            meerkat::JobHealthCoverage::Complete => {
+                                meerkat_contracts::JobHealthCoverage::Complete
+                            }
+                            meerkat::JobHealthCoverage::Truncated { scanned, limit } => {
+                                meerkat_contracts::JobHealthCoverage::Truncated { scanned, limit }
+                            }
+                        },
                     },
                 })
                 .map_err(|error| error.to_string())

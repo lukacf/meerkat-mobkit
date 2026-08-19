@@ -94,6 +94,27 @@ fn map_runtime_error(error: MobRuntimeError) -> (StatusCode, Json<Value>) {
         MobRuntimeError::Mob(MobError::SessionError(SessionError::Unsupported(_))) => {
             http_error(StatusCode::UNPROCESSABLE_ENTITY, "unsupported")
         }
+        // An ambiguous delivery must not be rendered as a plain failure. The
+        // envelope may already be on the receiver's queue, so "retry" - the
+        // action a bare `internal_server_error` invites - is the one unsafe
+        // move. HTTP has no status meaning "outcome unknown", so the status is
+        // deliberately not the signal here: the body names the ambiguity and
+        // carries the envelope id as correlation evidence for reconciliation.
+        // `retry_safe` is intentionally absent rather than false: 0.8.24 comms
+        // still folds connection-refused into this variant, where nothing left
+        // the host, so asserting non-retryability would be unsubstantiated.
+        MobRuntimeError::Mob(MobError::CommsError(SendError::AmbiguousDelivery {
+            envelope_id,
+            detail,
+        })) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "delivery_outcome_ambiguous",
+                "envelope_id": envelope_id.to_string(),
+                "detail": detail,
+                "required_action": "reconcile",
+            })),
+        ),
         _ => http_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_server_error"),
     }
 }

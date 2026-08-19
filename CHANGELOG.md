@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.18] - 2026-08-19
+
+Pins meerkat `=0.8.24`.
+
 ### Operator and adopter guidance
 
 This section carries the operator-facing guidance for the release. The GitHub
@@ -137,6 +141,29 @@ report of that is still an operational loose end you have to close.
 
 ### Added
 
+- **A per-turn wall-clock ceiling you can actually set: `max_turn_duration` in
+  mobpack layer specs** (via meerkat 0.8.24's `BudgetLimits`). This is the
+  missing owner for the question operators have been asking all cycle. Every
+  segment of a turn already had its own bound - per-call LLM timeout,
+  stream-inactivity watchdog, per-tool-call timeout - but their SUM had no
+  ceiling, so a turn could legally spend an hour without anything deciding that
+  was too long. Note the epoch: `max_duration` is agent-lifetime, measured once
+  at agent construction and never re-armed, so it is not a per-turn deadline;
+  `max_turn_duration` is re-armed at each turn entry.
+  Absence stays absent - a spec that does not set it keeps its historical
+  canonical bytes, so `spec_digest` pins already recorded in host stores still
+  match, and leaving it unset is a real choice for unbounded turns rather than a
+  default someone invented for you.
+- **An ambiguous peer delivery is no longer rendered as a plain failure on the
+  SSE surface.** `map_runtime_error` now has a typed arm for
+  `SendError::AmbiguousDelivery`, returning `delivery_outcome_ambiguous` with the
+  `envelope_id` and `required_action: "reconcile"` instead of collapsing into
+  `internal_server_error`. The envelope may already be on the receiver's queue,
+  so "retry" - the action a bare 500 invites - is the one unsafe move.
+  `retry_safe` is deliberately ABSENT rather than `false`: 0.8.24 comms still
+  folds connection-refused into this variant, where nothing left the host, so
+  asserting non-retryability would be a claim we cannot substantiate. The HTTP
+  status is not the signal here and is not meant to be read as one; the body is.
 - **`ErrorEvent::ActorLoopRecovered`, and a stall you can close.** 0.8.17's
   `ActorLoopStalled` could only ever open an incident: nothing ever reported the
   stall ENDING, and its one number (`probe_waited_secs`) was the configured
@@ -191,6 +218,37 @@ report of that is still an operational loose end you have to close.
 
 ### Changed
 
+- **Meerkat pins move to `=0.8.24`** (24 exact pins across `meerkat-mobkit` and
+  `mobkit-store-conformance`).
+- **BREAKING for anyone reading job health: `delivery_backlog` is gone, replaced
+  by two fields that are not the same number.** Both gateway surfaces -
+  `jobs/health` (typed) and the `healthz` projection (JSON) - now publish
+  `pending_outbox_jobs` and `runtime_inbox_backlog` separately, plus `coverage`.
+  This is a correctness fix, not a rename: 0.8.23 published the SUM of the two
+  under one name, and they describe different wedges. `pending_outbox_jobs` is a
+  job whose delivery was never handed to a runtime; `runtime_inbox_backlog` is a
+  delivery a runtime accepted and never drained. Their sum is a number that means
+  neither, and an operator reading it could not tell which failure they had - or
+  which side to go look at. Alerts keying on `delivery_backlog` must be repointed;
+  they will not silently keep working, which is deliberate.
+- **`status` on both job-health surfaces gains a third value, `unreadable`.**
+  Meerkat's census answers `Unreadable` when its scan window did not reach every
+  row, and it is NOT a rung between `ok` and `degraded`: it says the census
+  established nothing, so `stale_leases = 0` means "none seen", not "none exist".
+  Mobkit now carries that rung through instead of collapsing it - folding it into
+  `degraded` would assert a fault nobody observed, and folding it into `ok` would
+  publish a green that means the instrument did not answer.
+  **Repoint alerts from `status == "degraded"` to `status != "ok"`**, or an
+  unreadable census will read as healthy.
+  Honest limitation: mobkit cannot currently EMIT `unreadable`, because both of
+  its census calls request an unbounded window and truncation only occurs when a
+  bounded one fills. It is carried so that a future bounded window cannot
+  silently collapse into a false rung.
+- **`cross_mob/send` errors no longer prefix a verdict.** The message was
+  `"cross_mob/send failed: {err}"`, which renders an ambiguous delivery as
+  `"failed: ... is ambiguous"` - a contradiction whose leading verb wins for
+  every reader, including the model-mediated ones that decide retries by reading
+  prose. It is now `"cross_mob/send: {err}"`: context composes, verdicts do not.
 - Test-suite timing hygiene: assertions that bounded a STRUCTURAL property with
   a wall clock (waiting for a spawn, a settle, a drain) now poll for the
   condition under a generous liveness backstop instead of asserting a duration
@@ -218,6 +276,17 @@ report of that is still an operational loose end you have to close.
   drift that would trigger this a build failure, so the fallback cannot be
   reached silently by an upstream bump; changing the fallback itself is an SDK
   contract change and is deferred rather than made mid-release.
+- **The console send path still flattens an ambiguous delivery into a failure.**
+  The SSE surface and `cross_mob/send` were fixed this release; the console was
+  not, and the reason is that its fix is not local. `IdentityRuntimeError`
+  stringifies into `detail: String` at all four of its delivery phases, so the
+  typed `AmbiguousDelivery` is already gone before `ConsoleSendError` sees it -
+  it arrives as `Dispatch(String)` and is then reported as `"console send
+  failed"` with a 500. Preserving it means changing that phase vocabulary, which
+  is a multi-layer change to a hot path with no compile pressure forcing it, and
+  release eve is the wrong time. Deferred to 0.8.19, named here rather than left
+  for an operator to discover: **on the console surface specifically, a "console
+  send failed" does not rule out that the message was delivered.**
 
 ## [0.8.17] - 2026-08-16
 

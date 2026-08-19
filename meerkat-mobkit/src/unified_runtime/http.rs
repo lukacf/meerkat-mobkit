@@ -416,7 +416,8 @@ mod tests {
                 "awaiting_members": 1,
                 "stale_leases": 0,
                 "needs_attention": 0,
-                "delivery_backlog": 0
+                "pending_outbox_jobs": 0,
+                "runtime_inbox_backlog": 0
             }
         }))));
         let text = healthz_response(HeaderMap::new(), Arc::clone(&projection)).await;
