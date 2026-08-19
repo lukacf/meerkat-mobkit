@@ -516,6 +516,63 @@ mod tests {
     use meerkat_mobkit::unified_runtime::types::IdentityAuthorityReleaseOutcome;
     use meerkat_mobkit::{RuntimeShutdownReport, ShutdownDrainReport};
 
+    /// The compiled `action_risk_tiers` table must BIND a caller, not merely
+    /// default for one. Before 0.8.19 the gateway filled the tier only when the
+    /// caller omitted it, so any client could claim `r0` for an `r3` action and
+    /// `evaluate_gating_action` would honour the claim - making the policy table
+    /// advisory against exactly the caller it exists to constrain.
+    ///
+    /// Reverting the fix (filling only under `!params.contains_key("risk_tier")`)
+    /// turns this red: the assertion below would see the caller's `r0` survive.
+    #[test]
+    fn configured_risk_tier_overrides_a_caller_supplied_tier() {
+        let mut action_risk_tiers = HashMap::new();
+        action_risk_tiers.insert("delete_household_data".to_string(), "r3".to_string());
+        let gating = GatewayGatingConfig { action_risk_tiers };
+
+        let claimed_low = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "mobkit/gating/evaluate",
+            "params": {"action": "delete_household_data", "risk_tier": "r0"}
+        })
+        .to_string();
+
+        let applied = apply_gateway_runtime_config_to_request(&claimed_low, &gating);
+        let parsed: Value = serde_json::from_str(&applied).expect("rewritten request is json");
+        assert_eq!(
+            parsed["params"]["risk_tier"], "r3",
+            "configured policy must win over a caller-supplied tier"
+        );
+
+        // The absent-tier path must keep working, and an action with no policy
+        // entry must keep the caller's value rather than being silently dropped.
+        let omitted = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "mobkit/gating/evaluate",
+            "params": {"action": "delete_household_data"}
+        })
+        .to_string();
+        let applied = apply_gateway_runtime_config_to_request(&omitted, &gating);
+        let parsed: Value = serde_json::from_str(&applied).expect("rewritten request is json");
+        assert_eq!(parsed["params"]["risk_tier"], "r3");
+
+        let unknown_action = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "mobkit/gating/evaluate",
+            "params": {"action": "not_in_policy", "risk_tier": "r1"}
+        })
+        .to_string();
+        let applied = apply_gateway_runtime_config_to_request(&unknown_action, &gating);
+        let parsed: Value = serde_json::from_str(&applied).expect("rewritten request is json");
+        assert_eq!(
+            parsed["params"]["risk_tier"], "r1",
+            "an action absent from the policy table keeps the caller's tier"
+        );
+    }
+
     /// The default tracing filter (RUST_LOG unset) must surface this crate's
     /// own INFO lines — the 0.8.8 conversion-progress observability was
     /// invisible at the old blanket "warn" default — while keeping
@@ -3539,10 +3596,30 @@ fn apply_gateway_runtime_config_to_request(
         "mobkit/gating/evaluate" => {
             let params = request.get_mut("params").and_then(Value::as_object_mut);
             if let Some(params) = params
-                && !params.contains_key("risk_tier")
-                && let Some(action) = params.get("action").and_then(Value::as_str)
-                && let Some(risk_tier) = gating.action_risk_tiers.get(action.trim())
+                && let Some(action) = params
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .map(|action| action.trim().to_string())
+                && let Some(risk_tier) = gating.action_risk_tiers.get(action.as_str())
             {
+                // The configured table WINS over a caller-supplied tier. Filling
+                // only when absent made `action_risk_tiers` a default wearing a
+                // policy's name: a caller could claim `r0` for an `r3` action and
+                // `evaluate_gating_action` would honour it, so the compiled table
+                // was advisory against exactly the caller it needs to bind.
+                if let Some(claimed) = params.get("risk_tier").and_then(Value::as_str)
+                    && claimed != risk_tier
+                {
+                    // Never drop the claim silently. A caller that keeps sending
+                    // an overridden tier must be able to learn that it is being
+                    // overridden, or it will keep sending it forever.
+                    tracing::warn!(
+                        action = %action,
+                        caller_risk_tier = %claimed,
+                        policy_risk_tier = %risk_tier,
+                        "gating risk_tier supplied by caller overridden by configured policy"
+                    );
+                }
                 params.insert("risk_tier".to_string(), Value::String(risk_tier.clone()));
             }
         }
