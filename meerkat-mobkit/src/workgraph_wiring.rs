@@ -591,7 +591,7 @@ pub fn attach_workgraph_tools_ephemeral(
 #[must_use]
 /// `mob_id` is a MOB ID, not a raw realm. It is rendered into meerkat's
 /// canonical mob realm (`mob.<mob_id>`) by
-/// [`scoped_workgraph_service`], because 0.8.22 refuses to build any member
+/// `scoped_workgraph_service`, because 0.8.22 refuses to build any member
 /// whose WorkGraph namespace grant realm differs from its build realm, and
 /// meerkat derives that build realm as `mob.<mob_id>`. Pass the mob
 /// definition id; passing an already-prefixed realm would double the prefix.

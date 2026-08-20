@@ -1351,7 +1351,7 @@ impl MobKitConsoleAggregator {
     /// 1. An identity-scoped subscriber gets the SAME own-identity
     ///    allowance the query paths grant, so its frames flow immediately.
     /// 2. A frame whose identity is unknown to the read model triggers a
-    ///    debounced [`ConsoleIdentityReadModel::refresh_soon`] — the model
+    ///    debounced `ConsoleIdentityReadModel::refresh_soon` - the model
     ///    converges for UNSCOPED streams too (members spawned mid-run via
     ///    `ensure_member` previously stayed invisible until an unrelated
     ///    refresh).

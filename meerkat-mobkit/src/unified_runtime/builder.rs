@@ -432,7 +432,7 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
-    /// Set an optional blob store in its raw-bytes [`BinaryBlobStore`] form
+    /// Set an optional blob store in its raw-bytes [`crate::blob_store::BinaryBlobStore`] form
     /// (M4). Like [`blob_store`](Self::blob_store) but without the base64
     /// adapter round-trip on the HTTP `/blobs/{id}` and `mobkit/blob/*`
     /// byte-serving paths; the meerkat `BlobStore` face is adapted from it.

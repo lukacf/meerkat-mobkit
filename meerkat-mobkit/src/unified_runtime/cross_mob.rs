@@ -1721,9 +1721,9 @@ impl UnifiedRuntime {
     ///
     /// # Local vs remote dispatch
     ///
-    /// The destination mob is dispatched as either [`LocalOrRemote::Local`]
+    /// The destination mob is dispatched as either `LocalOrRemote::Local`
     /// (when an `Arc<MobHandle>` was registered via [`Self::register_peer_mob`])
-    /// or [`LocalOrRemote::Remote`] (when only a contact-directory TCP/UDS
+    /// or `LocalOrRemote::Remote` (when only a contact-directory TCP/UDS
     /// entry exists). The remote arm performs real cross-process control
     /// RPC against the peer gateway's control listener - see
     /// `runtime::cross_mob_remote::RemoteMobProxy`.
@@ -2425,7 +2425,7 @@ fn build_external_peer_spec(
 /// [`TrustedPeerDescriptor::test_only_unsigned`], so the result carries no
 /// pubkey and is rejected by every fail-closed wire path in this module.
 /// Production callers get signed descriptors from the wire/lookup flow
-/// (which routes through [`build_external_peer_spec`] with a real pubkey);
+/// (which routes through `build_external_peer_spec` with a real pubkey);
 /// this helper exists for tests that assert address canonicalization.
 pub fn build_tcp_peer_spec(
     comms_name: &str,

@@ -733,11 +733,11 @@ impl LocalContinuityStore {
     /// Offline head-canonical backfill for a legacy v1 corpus.
     ///
     /// The lazy path mints a head row only inside a delta write
-    /// ([`ensure_head_canonical_for_write_in_txn`]), so a corpus whose
+    /// (`ensure_head_canonical_for_write_in_txn`), so a corpus whose
     /// documents are large enough to make that write expensive can never
     /// leave the whole-document branch under its own steam: the conversion
     /// is gated behind the very write it makes slow. This is the operator
-    /// path [`MOBKIT_CONTINUITY_DOMAIN`]'s stamp contract has always named
+    /// path `MOBKIT_CONTINUITY_DOMAIN`'s stamp contract has always named
     /// and never had.
     ///
     /// Contract, in the order it matters:
@@ -745,7 +745,7 @@ impl LocalContinuityStore {
     ///   leaves every already-converted session converted; re-running
     ///   resumes on the remainder, because the pending set is derived from
     ///   the absence of a head row rather than from a cursor.
-    /// - **The blob is retained.** [`migrate_legacy_blob_in_txn`] leaves the
+    /// - **The blob is retained.** `migrate_legacy_blob_in_txn` leaves the
     ///   `session_snapshots` row untouched as a frozen archive.
     /// - **The ledger stamps only on complete conversion.** A partial run
     ///   leaves the file at v1, so CONTINUITY DOES NOT BECOME THE DOMAIN THAT
@@ -2899,7 +2899,7 @@ impl ContinuityStore for LocalContinuityStore {
     /// Advertising the capability does NOT mutate the file: the head-canonical
     /// ledger bump is committed by a delta write that actually creates head
     /// state, inside that write's own transaction (see [`Self::open`] and
-    /// [`LocalContinuityStore::delta_write`]).
+    /// `LocalContinuityStore::delta_write`).
     fn as_incremental_sessions(&self) -> Option<Arc<dyn ContinuityIncrementalSessions>> {
         Some(Arc::new(self.clone()))
     }

@@ -1,8 +1,28 @@
 ---
-title: "MobKit Storage Unification Plan"
-description: "Companion arc to Meerkat's storage unification: one path authority for MobKit's nine databases, shared SQLite mechanics, fail-closed durability for every MobKit store slot, a single remote bundle over the Meerkat provider seam, and de-welding the judgment plane from concrete SQLite."
+title: "Historical record - MobKit storage unification plan"
+description: "Archived July 2026 implementation plan. Preserved for design history; not current operational guidance."
 icon: "database"
 ---
+
+<Warning>
+This page is an archived implementation record from July 2026. The storage
+unification arc was implemented, and the text below is preserved as written
+rather than maintained as current operations guidance.
+
+Two assumptions recorded in the plan were retired after implementation. The
+H3 `adopt_legacy_session` checkpoint-stamp mechanism, including its
+lazy-at-restore path and maintenance tooling, was retired in 0.8.11. That is
+separate from the supported one-time 0.8.10 envelope importer and the
+first-delta conversion of blob-canonical continuity sessions. Meerkat's
+`StorageMigrator` remains a read-only diagnosis seam; it has no mutation half
+or extension. MobKit's mutating maintenance operations are concrete
+`MobKitStorageMigrator` methods and the `mobkit_gateway storage-migrate` and
+`storage-prune` commands.
+
+For current behavior, see [storage layout and durability](/reference/configuration#storage-layout-and-durability),
+[session persistence](/concepts/sessions#on-disk-layout-and-durability), and
+[storage RPC methods](/api/rpc#storage-methods).
+</Warning>
 
 **Companion document.** Meerkat's storage unification plan
 (`docs/plans/storage-unification-plan.md` in the meerkat repo) names a

@@ -1,5 +1,6 @@
 /**
- * MobKit TypeScript SDK — companion orchestration for the Meerkat runtime.
+ * MobKit TypeScript SDK - companion gateway and operator layer for Meerkat
+ * agents and mobs.
  *
  * @example
  * ```ts
@@ -7,7 +8,7 @@
  *
  * const rt = await MobKit.builder()
  *   .mob("config/mob.toml")
- *   .gateway("./target/release/mobkit_gateway")
+ *   .gateway("./target/release/rpc_gateway")
  *   .build();
  *
  * const handle = rt.mobHandle();
