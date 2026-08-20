@@ -391,7 +391,7 @@ fn incident_module_reconcile_timeout() -> Duration {
 }
 
 fn incident_env_flag(key: &str) -> bool {
-    std::env::var(key).ok().is_some_and(|value| {
+    std::env::var(key).is_ok_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"

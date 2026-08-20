@@ -1744,8 +1744,11 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     // `LiveAdapterCommand::Open` is dispatched afterwards (R2: re-seeding
     // would compound the provider transcript).
     let capabilities: LiveChannelCapabilities;
-    let continuity: LiveContinuityMode;
-    match ctx.session_factory.open_live_adapter(&open_config).await {
+    let continuity: LiveContinuityMode = match ctx
+        .session_factory
+        .open_live_adapter(&open_config)
+        .await
+    {
         Ok(adapter) => {
             // P2#3: the adapter's real capability set, queried before the
             // host takes canonical ownership of the Arc.
@@ -1764,7 +1767,7 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
                 &open_config,
                 resolved_audio_config.clone(),
             );
-            continuity = continuity_from_snapshot(&snapshot);
+            continuity_from_snapshot(&snapshot)
         }
         Err(err) => {
             close_live_channel_after_open_failure(&ctx.host, machine, session_id, &channel_id)
@@ -1775,7 +1778,7 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
                 format!("failed to open provider session: {err}"),
             );
         }
-    }
+    };
 
     let token = match ctx
         .ws_state

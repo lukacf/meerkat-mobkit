@@ -129,6 +129,11 @@ impl MobEventsStore {
     /// Returns `None` because attributed agent events on their own do not
     /// have structural mob fields — only the `MobEvent` stream does. Kept
     /// here so callers wiring both streams have a symmetric API.
+    #[allow(
+        unknown_lints,
+        clippy::unused_async_trait_impl,
+        reason = "preserve the public async projection API shared with mob-event projection"
+    )]
     pub async fn project_attributed_event(
         &self,
         _event: &AttributedEvent,

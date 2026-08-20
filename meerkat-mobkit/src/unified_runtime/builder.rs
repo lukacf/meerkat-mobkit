@@ -1728,6 +1728,11 @@ impl UnifiedRuntimeBuilder {
 
     /// Resolve the mob spec from the definition-based path.
     /// Called only when `mob_spec` is not set (legacy path handled in `build()`).
+    #[allow(
+        unknown_lints,
+        clippy::unused_async_trait_impl,
+        reason = "preserve the awaitable builder resolution seam used throughout the build pipeline"
+    )]
     async fn resolve_mob_spec(&self) -> Result<MobBootstrapSpec, UnifiedRuntimeBuilderError> {
         let mut caps = self.capability_flags;
         // Resolved once for all three storage arms: the agent config every
