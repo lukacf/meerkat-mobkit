@@ -349,6 +349,7 @@ rt = await (
 | `.topology_provider(provider)` | Identity-first topology provider |
 | `.agent_customizer(customizer)` | Identity-first agent customizer |
 | `.identity_bootstrap_mode(mode)` | Eager, lazy, or bounded background-warm identity materialization; requires `.roster(...)` |
+| `.role_migrations(declarations)` | Authorize durable member role migrations for THIS boot. Takes an iterable of `RoleMigrationDeclaration` dataclasses or equivalent `identity` / `from_role` dicts, validating either form; a conflicting pair for one identity raises `ValueError`, an identical repeat is accepted, and leaving the setter unused emits no `role_migrations` init-params key at all |
 | `.session_service(builder, store)` | Session agent builder and optional store |
 | `.discovery(callback)` | Discovery callback (mob-level) |
 | `.pre_spawn(callback)` | Pre-spawn callback |
@@ -375,6 +376,18 @@ For continuity stores, `checkpoint_version` is monotonic per identity and
 continuity generation. A live session rebind changes `session_id` without
 resetting the version; only destructive reset advances `generation` and starts
 the version stream over.
+
+A durable member whose role changed refuses to resume with
+`MobError::MemberRoleMigrationRequired` until the host declares the migration.
+`.role_migrations([...])` is that declaration: it emits a top-level
+`role_migrations` init param, not a `runtime_options` field, and the authority
+lasts exactly one boot because nothing persists it. Meerkat re-verifies the
+declared `from_role` against durable state and refuses with
+`MobError::MemberRoleMigrationRejected` on mismatch, and ignores the declaration
+entirely once the roles already agree, so a declaration left in place after the
+migration landed is inert. It arms only where an identity plane exists; on
+`rpc_gateway` that means alongside `.roster(...)`. See
+[roster and member lifecycle](/concepts/roster#role-migration).
 
 Every explicit `.identity_bootstrap_mode(...)` call declares identity-first
 intent and requires `.roster(...)`, including explicit eager mode. Omitting the

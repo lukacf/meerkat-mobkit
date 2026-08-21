@@ -75,3 +75,22 @@ regression shipped past a synthetic 26-chain test for that reason).
   which pins that strict head equality SEES the two-boot drift (updated_at +
   the HashSet-ordered tool-visibility Allow arrays, filed upstream as S5)
   while the scoped exact-resave equality reads it as zero durable change.
+
+Not part of the frozen corpus, and listed here because it is the one fixture
+two languages read: the entry below is a hand-authored wire contract, so it is
+SUPPOSED to change when the wire changes. The rule above applies only to the
+released and forensic captures.
+
+- role_migrations_init_params.json - THE wire contract for boot-scoped member
+  role migrations: one gateway init-params object carrying a top-level
+  role_migrations array of {identity, from_role} declarations (values are
+  HomeCore activation-83: identity domain:home-automation migrating from role
+  domain). Read by BOTH languages from this ONE file. Rust:
+  identity_first::bridge::tests::
+  the_committed_wire_fixture_deserializes_into_declarations include_str!s it
+  and deserializes params["role_migrations"] into Vec<RoleMigrationDeclaration>.
+  Python: sdk/python/tests/test_role_migrations.py::
+  test_builder_output_matches_the_committed_wire_fixture asserts that
+  MobKit.builder().role_migrations([...]) puts exactly this array in the
+  gateway init params. Renaming a key on either side goes red on that side
+  instead of both sides staying green while a host arms nothing.

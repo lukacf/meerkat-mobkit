@@ -81,7 +81,7 @@ status-less Studio M1–M4 reports now carry explicit closure lines below.
 Evidence citations were code-verified against meerkat 0.7.9 (the version
 MobKit pins) and the mobkit `feat/agent-memory-system` branch; line numbers
 may have drifted. The memory-survey archive
-([`evidence/memory-survey/followups.md`](evidence/memory-survey/followups.md))
+([`../archive/design/evidence/memory-survey-2026-07/followups.md`](../archive/design/evidence/memory-survey-2026-07/followups.md))
 holds the original deep-dive evidence.
 
 ---
@@ -438,7 +438,7 @@ an agentic dream member.
 - The prior-art constraint (tool list is part of the prompt-cache key, so
   containment must be call-level): Claude Code keeps the parent's exact tool
   list and gates via a `canUseTool` closure —
-  `evidence/memory-survey/followups.md` and
+  `../archive/design/evidence/memory-survey-2026-07/followups.md` and
   `agent-memory-architecture.md` §8.4.
 - MobKit's decision record: `meerkat-mobkit/src/memory/distiller.rs` module
   docs ("full tool surface … §8.4's fork containment") — the fork seam is

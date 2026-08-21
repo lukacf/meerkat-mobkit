@@ -128,6 +128,69 @@ new status strings. Do not reduce lifecycle handling to only `active` and
 `MobHandle::retire` is the terminal lifecycle barrier and returns unit, so a
 later roster read can show the member as absent rather than retiring.
 
+## Role migration
+
+A durable member's role is part of its durable identity, not a configuration
+knob: the stored role, the member's comms name, and its mob-member binding are
+one fact. A resume that targets a different role than the durable predecessor is
+therefore a restamp of identity, and Meerkat refuses it with
+`MobError::MemberRoleMigrationRequired` unless that exact resume declares the
+migration. If a durable member stopped resuming after a role or profile rename,
+this is the refusal to look for.
+
+Migration authority is supplied by the activation, per exact identity, as a
+top-level `mobkit/init` param. It is not a `runtime_options` field:
+
+```json
+"role_migrations": [{"identity": "domain:home-automation", "from_role": "domain"}]
+```
+
+Python hosts declare the same thing on the builder, with
+`RoleMigrationDeclaration` dataclasses or plain
+`{"identity": ..., "from_role": ...}` dicts:
+
+```python
+from meerkat_mobkit import RoleMigrationDeclaration
+
+builder.role_migrations([
+    RoleMigrationDeclaration(identity="domain:home-automation", from_role="domain"),
+])
+```
+
+The declaration is boot-scoped and never persisted. It is installed on the
+session bridge, which lives for exactly one boot, so dropping it from the next
+boot payload is how the authority goes away. Lookup is an exact identity match:
+no prefix, suffix, or case variant of a declared identity inherits authority.
+MobKit only carries the declared predecessor role into the resume request.
+Meerkat re-verifies it against durable state and refuses with
+`MobError::MemberRoleMigrationRejected` on mismatch, so a mistyped `from_role`
+cannot authorize an unintended restamp, and MobKit never retries a resume that
+Meerkat refused. Once the durable and requested roles agree, Meerkat returns
+before it reads the declaration at all, so a declaration left in place after the
+migration landed is inert rather than a repeated restamp. That is why an
+identical repeated declaration is accepted on purpose, while one identity
+declared twice with conflicting predecessor roles is refused.
+
+<Warning>
+A malformed or self-contradicting `role_migrations` payload refuses the boot
+rather than arming nothing, and the two gateway binaries refuse differently.
+`rpc_gateway` parses and checks the key at init scope and answers both refusals
+with `-32602` on the request id. `mobkit_gateway` answers with a null `id` in
+both cases: `-32602` when its typed init params fail to deserialize, and
+`-32603` from the conflict check that sits inside its identity-first block.
+Under `identity_first: false` that block never runs, so a self-contradicting
+payload is then not refused at all; `identity_first` defaults to true. The
+Python builder raises `ValueError` on a conflicting pair before any of this
+reaches a gateway.
+</Warning>
+
+Only the identity plane carries migration authority. Every mob-plane resume path
+passes no declared predecessor role, so a role change reached through the worker
+plane still fails closed. Which declarations arm also depends on the binary:
+`rpc_gateway` installs them inside its roster-provider branch, `mobkit_gateway`
+inside its identity-first block. Declarations that reach neither arm nothing,
+because there is no identity plane to migrate on.
+
 ## Mutation results
 
 The underlying Meerkat Rust operations have different success types:

@@ -13,7 +13,7 @@
       "id": "mem-041",
       "kind": "Reference",
       "title": "Console timeline scalability plan",
-      "description": "Matters when planning large-scale timeline pagination or virtualization work: design doc at docs/design/console-timeline-scalability-plan.md.",
+      "description": "Matters when planning large-scale timeline pagination or virtualization work: design doc at docs/archive/design/console-timeline-scalability-plan-2026-05.md.",
       "age_days": 70,
       "rank": null
     },

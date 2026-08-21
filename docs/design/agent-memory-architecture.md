@@ -16,7 +16,7 @@ and layering decisions here (§12) but gates nothing in this plan.
 
 Evidence base: five-system survey (Claude Code, Codex, Meerkat, MobKit, Elephant)
 with adversarially verified findings, committed at
-[`evidence/memory-survey/`](evidence/memory-survey/). File:line citations below
+[`../archive/design/evidence/memory-survey-2026-07/`](../archive/design/evidence/memory-survey-2026-07/). File:line citations below
 refer to the surveyed checkouts (2026-07-01); the archive README carries the
 staleness caveat.
 
@@ -147,7 +147,7 @@ mob or identity items at all.
 ## 4. What this must fix (verified baseline defects)
 
 These are code-verified behaviors of the shipped system, not hypotheticals
-(verification detail in `evidence/memory-survey/followups.md`):
+(verification detail in `../archive/design/evidence/memory-survey-2026-07/followups.md`):
 
 | # | Defect | Evidence |
 |---|--------|----------|
