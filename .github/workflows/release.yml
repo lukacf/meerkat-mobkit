@@ -296,28 +296,25 @@ jobs:
           fail_on_unmatched_files: true
           generate_release_notes: true
 
-  publish_registries:
-    name: Publish crate + SDK packages
+  publish_sdk_packages:
+    name: Publish SDK packages
+    # Deliberately NOT gated on build_binaries or publish_github_release. The
+    # Python wheel and the npm package are pure-language artifacts that contain
+    # no gateway binary, and downstream hosts block on them, so making them wait
+    # on five cross-compiles they do not depend on delays exactly the artifact
+    # people are waiting for. The Rust crate keeps the stricter gate below.
     if: >-
       always() &&
       needs.release_validate.result == 'success' &&
       (startsWith(github.ref, 'refs/tags/v') ||
-       (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release_packages == 'true')) &&
-      ((github.event_name == 'workflow_dispatch' && github.event.inputs.registry_dry_run == 'true') ||
-       (needs.build_binaries.result == 'success' && needs.publish_github_release.result == 'success'))
-    needs: [release_validate, build_binaries, publish_github_release]
+       (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release_packages == 'true'))
+    needs: [release_validate]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref }}
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: Swatinem/rust-cache@v2
 
       - name: Install Python + Node tooling
         uses: actions/setup-python@v5
@@ -327,32 +324,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-
-      - name: Install Python publishing tools
-        run: python -m pip install --upgrade build twine
-
-      - name: Publish Rust crate
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          set -euo pipefail
-          DRY_RUN="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.registry_dry_run == 'true' }}"
-          if [[ "$DRY_RUN" == "true" ]]; then
-            echo "Running cargo publish in dry-run mode"
-            scripts/repo-cargo publish -p meerkat-mobkit --locked --dry-run
-          else
-            echo "Publishing meerkat-mobkit to crates.io"
-            output=$(scripts/repo-cargo publish -p meerkat-mobkit --locked 2>&1) && true
-            rc=$?
-            if [[ $rc -eq 0 ]]; then
-              echo "  meerkat-mobkit: published"
-            elif echo "$output" | grep -q "already exists\|already uploaded"; then
-              echo "  meerkat-mobkit: already published, skipping"
-            else
-              echo "$output" >&2
-              exit $rc
-            fi
-          fi
 
       - name: Publish Python SDK
         env:
@@ -406,6 +377,58 @@ jobs:
                 cat "$VIEW_STDERR" >&2
                 exit "$VIEW_STATUS"
               fi
+            fi
+          fi
+
+
+  publish_registries:
+    name: Publish crate + SDK packages
+    if: >-
+      always() &&
+      needs.release_validate.result == 'success' &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+       (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release_packages == 'true')) &&
+      ((github.event_name == 'workflow_dispatch' && github.event.inputs.registry_dry_run == 'true') ||
+       (needs.build_binaries.result == 'success' && needs.publish_github_release.result == 'success')) &&
+      needs.publish_sdk_packages.result == 'success'
+    needs: [release_validate, build_binaries, publish_github_release, publish_sdk_packages]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Python tooling
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Publish Rust crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          DRY_RUN="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.registry_dry_run == 'true' }}"
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "Running cargo publish in dry-run mode"
+            scripts/repo-cargo publish -p meerkat-mobkit --locked --dry-run
+          else
+            echo "Publishing meerkat-mobkit to crates.io"
+            output=$(scripts/repo-cargo publish -p meerkat-mobkit --locked 2>&1) && true
+            rc=$?
+            if [[ $rc -eq 0 ]]; then
+              echo "  meerkat-mobkit: published"
+            elif echo "$output" | grep -q "already exists\|already uploaded"; then
+              echo "  meerkat-mobkit: already published, skipping"
+            else
+              echo "$output" >&2
+              exit $rc
             fi
           fi
 

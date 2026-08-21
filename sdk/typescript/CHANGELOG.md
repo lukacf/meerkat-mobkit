@@ -1,6 +1,14 @@
 # Changelog — @rkat/mobkit-sdk (TypeScript SDK)
 
-## Unreleased
+## 0.8.19
+
+- No TypeScript equivalent of the Python `role_migrations` builder surface
+  exists, so a TypeScript host cannot authorize a role-migrating resume. A
+  durable member whose role changed refuses to resume until some host declares
+  the migration; use the Python builder, or send `role_migrations` at the top
+  level of a `mobkit/init` payload.
+
+## 0.8.16
 
 - Breaking (mobkit 0.8.16, tracking meerkat 0.8.22's exact helper contract):
   `spawnHelper` and `forkHelper` now take required `resultLabel: string` and
@@ -14,12 +22,16 @@
   Create durable schedules through Meerkat schedule tools or
   `ScheduleService`.
 
+## 0.8.9
+
 ### Gateway stderr passthrough
 
 - Gateway stderr (tracing lines, panic hooks, storage-migration progress) is
   piped to the host process's stderr by default; previously it was ignored
   entirely. Opt out with `MOBKIT_GATEWAY_STDERR=devnull`, or append to a file
   with `MOBKIT_GATEWAY_STDERR_FILE=<path>` — same shape as the Python SDK.
+
+## 0.8.6
 
 ### Durable detached jobs
 
@@ -31,6 +43,8 @@
   without minting authority on reopen.
 - Detached credentials are resolved from the runner's bound SDK profile for
   each committed attempt and never enter durable job state or reports.
+
+## 0.8.0
 
 ### Lease renewal authority
 
@@ -51,6 +65,8 @@
   deadline context; the host aborts at 125 seconds and suppresses late callback
   responses so a timed-out renewal cannot publish unnoticed authority.
 
+## 0.7.17
+
 ### Identity-first agent memory
 
 - Added `MobKit.builder().agentMemory(...)` for gateway-backed
@@ -62,11 +78,15 @@
 - Added strict exported types/parsers for `AgentMemoryRecord`,
   `AgentMemoryRecallResult`, and `AgentMemoryForgetResult`.
 
+## 0.6.29
+
 ### Console fetch policy
 
 - Added `MobKit.builder().consoleFetchTimeoutMs(ms)` for gateway-backed
   runtimes. The value is sent as `runtime_options.console_fetch_timeout_ms`
   and projected through `/console/experience` for the bundled console.
+
+## 0.6.28
 
 ### Runtime state builders
 
@@ -74,6 +94,8 @@
   Gateway-backed SDK runtimes keep mob storage in-memory while sessions,
   runtime state, metadata, console logs, and binary blobs remain under
   the configured state directory.
+
+## 0.6.6
 
 ### Multimodal attachments
 

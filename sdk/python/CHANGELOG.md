@@ -2,7 +2,19 @@
 
 All notable changes to the Python SDK are documented here.
 
-## Unreleased
+## 0.8.19
+
+- Added `MobKitBuilder.role_migrations([...])`, which authorizes member role
+  migrations for the life of one boot. A durable member whose role changed
+  refuses to resume until the host declares the migration, so an unintended role
+  edit cannot silently restamp that member's durable role, comms name and
+  binding. Accepts `RoleMigrationDeclaration` dataclasses or plain dicts and
+  validates both; declaring one identity twice with conflicting `from_role`
+  values raises `ValueError`, an identical repeat is accepted, and omitting the
+  call emits no `role_migrations` init parameter at all. Exports
+  `RoleMigrationDeclaration` from `meerkat_mobkit`.
+
+## 0.8.16
 
 - Breaking (mobkit 0.8.16, tracking meerkat 0.8.22's exact helper contract):
   `spawn_helper` and `fork_helper` now require keyword arguments
@@ -15,6 +27,8 @@ All notable changes to the Python SDK are documented here.
   discovery, and `MobHandle.scheduling_evaluate` / `scheduling_dispatch`.
   Create durable schedules through Meerkat schedule tools or
   `ScheduleService`; `host_runnables` and `callback/schedule_fire` remain.
+
+## 0.8.9
 
 - Gateway stderr is now INHERITED by default, so tracing lines, panic hooks,
   and storage-migration progress reach the host process's stderr. The old
@@ -45,6 +59,8 @@ All notable changes to the Python SDK are documented here.
   reconnect can start a replacement, including provider callback failures and
   cancellation while cleanup is in progress.
 
+## 0.8.0
+
 ### Identity bootstrap
 
 - Added `IdentityBootstrapMode` and
@@ -61,6 +77,8 @@ All notable changes to the Python SDK are documented here.
   pre-commit and must leave every input grant unchanged; returned renewed or
   lost results are committed per identity.
 
+## 0.7.17
+
 ### Identity-first agent memory
 
 - Added `.agent_memory(...)` on `MobKit.builder()` for gateway-backed
@@ -73,11 +91,15 @@ All notable changes to the Python SDK are documented here.
   `AgentMemoryRecallResult`, and `AgentMemoryForgetResult`, exported
   from `meerkat_mobkit`.
 
+## 0.6.29
+
 ### Console fetch policy
 
 - Added `MobKit.builder().console_fetch_timeout_ms(ms)` for gateway-backed
   runtimes. The value is sent as `runtime_options.console_fetch_timeout_ms`
   and projected through `/console/experience` for the bundled console.
+
+## 0.6.28
 
 ### Runtime state builders
 
@@ -85,6 +107,8 @@ All notable changes to the Python SDK are documented here.
   Gateway-backed SDK runtimes keep mob storage in-memory while sessions,
   runtime state, metadata, console logs, and binary blobs remain under
   the configured state directory.
+
+## 0.6.6
 
 ### Multimodal attachments
 

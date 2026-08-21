@@ -181,6 +181,12 @@ await luka.send_and_wait("What's happening today?", timeout=60)
 
 Use `respawn()` for non-destructive recovery that keeps continuity, and `reset()` only when the app intentionally wants a destructive new generation and session.
 
+If you change a durable identity's role in the roster, its resume fails closed
+until that boot declares the migration with `.role_migrations([...])`. See the
+[Python SDK](/sdks/python) page for the builder form and
+[Configuration](/reference/configuration#member-role-migrations) for the init
+parameter.
+
 ## What's next
 
 - [Modules](/concepts/modules) -- how the module system works
