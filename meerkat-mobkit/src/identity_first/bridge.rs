@@ -4758,6 +4758,41 @@ mod tests {
         }
     }
 
+    /// MobKit does NOT clear a declaration once its migration has run, and
+    /// this test exists to say so on purpose rather than by omission.
+    ///
+    /// The lookup is non-consuming: a second resume inside the same boot, for
+    /// example a rematerialization, gets the same declaration handed to Meerkat
+    /// again. That is safe only because Meerkat returns early when the stored
+    /// role already equals the requested role, so the repeat is inert. Safety
+    /// therefore rests on Meerkat's early return, NOT on MobKit withholding the
+    /// value, and whoever changes either side needs to know which half they are
+    /// standing on.
+    ///
+    /// Measured in production, HomeCore activation-89: the same declaration was
+    /// armed on two consecutive boots of one activation; the first performed the
+    /// restamp and the second did nothing. A host-side gate cannot catch a wrong
+    /// repeat, because after a successful migration the durable record agrees
+    /// with the roster and such a gate reports "no migration needed" while
+    /// passing an activation that still declares one.
+    #[test]
+    fn a_declaration_is_not_consumed_by_being_looked_up() {
+        let identity = AgentIdentity::parse("domain:home-automation").expect("identity");
+        let map = role_migration_declaration_map([RoleMigrationDeclaration {
+            identity: identity.clone(),
+            from_role: meerkat_mob::ProfileName::from("domain"),
+        }]);
+
+        for attempt in 1..=3 {
+            let armed = declared_role_migration_in(&map, &identity)
+                .unwrap_or_else(|| panic!("lookup {attempt} must still see the declaration"));
+            assert_eq!(
+                armed, "domain",
+                "lookup {attempt} must return the same predecessor role"
+            );
+        }
+    }
+
     /// The exact boot-payload shape the host sends, plus the failure that
     /// matters: a malformed identity refuses at ingress rather than arming a
     /// migration for something that is not an identity.
