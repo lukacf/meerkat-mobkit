@@ -28,7 +28,7 @@ impl std::error::Error for DesiredPeerEdgeError {}
 /// A canonical undirected peer edge. Endpoints are sorted at construction
 /// time and self-edges are rejected, so the invariant `a < b` always holds.
 ///
-/// Fields are private — use [`DesiredPeerEdge::new`] or [`endpoints`] to access.
+/// Fields are private - use [`DesiredPeerEdge::new`] or [`DesiredPeerEdge::endpoints`] to access.
 /// Deserialization validates the invariant, rejecting non-canonical inputs.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct DesiredPeerEdge {

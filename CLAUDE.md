@@ -1,31 +1,33 @@
 # MobKit
 
-Companion orchestration platform for the [Meerkat](https://github.com/lukacf/meerkat) multi-agent runtime. Handles startup orchestration, module routing, operational subsystems, session persistence, and admin console.
+Companion product and composition layer for the [Meerkat](https://github.com/lukacf/meerkat) multi-agent runtime. Meerkat owns agent and mob runtime authority. MobKit composes modules, identity continuity, operational policies, gateways, SDKs, projections, and the admin console around it.
 
 ## Key paths
 
 | Area | Path |
 |------|------|
 | Rust crate | `meerkat-mobkit/` |
-| Gateway binary | `meerkat-mobkit/src/bin/mobkit_gateway.rs` |
+| Console/admin gateway | `meerkat-mobkit/src/bin/mobkit_gateway.rs` |
+| SDK stdin-RPC gateway | `meerkat-mobkit/src/bin/rpc_gateway.rs` |
 | Python SDK | `sdk/python/meerkat_mobkit/` |
 | Python tests | `sdk/python/tests/` |
 | TypeScript SDK | `sdk/typescript/` |
 | Docs (Mintlify) | `docs/` |
 
-## Python SDK (v0.4.6)
+## Python SDK
 
 Package: `meerkat-mobkit` (import as `meerkat_mobkit`).
 
-Public surface — `__init__.py` exports:
-- **Builder/Runtime**: `MobKit`, `MobKitBuilder`, `MobKitRuntime`, `ToolCaller`
-- **Models**: `DiscoverySpec`, `PreSpawnData`, `SessionBuildOptions`, `SessionQuery`
-- **Protocol**: `SessionAgentBuilder`
-- **Errors**: `MobKitError`, `TransportError`, `RpcError`, `NotConnectedError`, `CapabilityUnavailableError`, `ContractMismatchError`, `WorkGraphUnavailableError`, `WorkGraphConflictError`
-- **Typed results**: `StatusResult`, `CapabilitiesResult`, `ReconcileResult`, `SpawnResult`, `SpawnMemberResult`, `SendMessageResult`, `SubscribeResult`, `KeepAliveConfig`, `EventEnvelope`, `RoutingResolution`, `DeliveryResult`, `DeliveryHistoryResult`, `MemoryQueryResult`, `MemoryStoreInfo`, `MemoryIndexResult`, `MemberSnapshot`, `RuntimeRouteResult`, `GatingEvaluateResult`, `GatingDecisionResult`, `GatingAuditEntry`, `GatingPendingEntry`, `CallToolResult`, `WorkGraphItem`, `WorkGraphEdge`, `WorkGraphAttentionBinding`, `WorkGraphSnapshotResult`, `WorkGraphItemsResult`, `WorkGraphGoalResult`, `WorkGraphAttentionReassignResult`, `WorkGraphEventEntry`
-- **Events**: `MobEvent`, `AgentEvent`, `EventStream`
-- **Config**: `auth`, `memory`, `session_store`
-- **Constants**: `MEMBER_STATE_ACTIVE`, `MEMBER_STATE_RETIRING`
+The SDK version follows the workspace version and is checked by
+`make verify-version-parity`. Treat `sdk/python/meerkat_mobkit/__init__.py` as
+the exact export inventory rather than copying a complete list here. Major
+families include builders and runtimes, identity-first providers and models,
+mob and member operations, jobs, WorkGraph, routing and delivery, memory,
+mobpack authoring, event streams, typed errors, and result models.
+
+The open member-state vocabulary currently exports `active`, `retiring`,
+`broken`, `completed`, and `unknown` constants. Callers must still tolerate
+future values.
 
 Module authoring helpers (`ModuleSpec`, `define_module`, etc.) live in `meerkat_mobkit.helpers` — not top-level.
 

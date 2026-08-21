@@ -30,7 +30,7 @@ pub struct ContactEntry {
     pub mob_id: String,
     pub transport: MobTransport,
     /// 32-byte Ed25519 signing pubkey. `None` is allowed for inproc; for
-    /// real transports, [`UnifiedRuntime::wire_local`] rejects when this
+    /// real transports, [`crate::UnifiedRuntime::wire_local`] rejects when this
     /// is `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pubkey: Option<[u8; 32]>,

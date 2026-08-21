@@ -1351,7 +1351,7 @@ impl MobKitConsoleAggregator {
     /// 1. An identity-scoped subscriber gets the SAME own-identity
     ///    allowance the query paths grant, so its frames flow immediately.
     /// 2. A frame whose identity is unknown to the read model triggers a
-    ///    debounced [`ConsoleIdentityReadModel::refresh_soon`] — the model
+    ///    debounced `ConsoleIdentityReadModel::refresh_soon` - the model
     ///    converges for UNSCOPED streams too (members spawned mid-run via
     ///    `ensure_member` previously stayed invisible until an unrelated
     ///    refresh).
@@ -3471,8 +3471,7 @@ fn spawn_session_history_discovery_loop(inner: Arc<AggregatorInner>, runtime_key
             let runtime_still_registered = inner
                 .runtimes
                 .read()
-                .ok()
-                .is_some_and(|entries| entries.contains_key(&runtime_key));
+                .is_ok_and(|entries| entries.contains_key(&runtime_key));
             if !runtime_still_registered {
                 break;
             }

@@ -10,7 +10,7 @@ use crate::auth::JwksCache;
 
 /// Axum middleware that validates Bearer tokens using a [`JwksCache`].
 ///
-/// On success the [`ValidatedJwt`] is inserted into request extensions so
+/// On success the [`crate::auth::ValidatedJwt`] is inserted into request extensions so
 /// downstream handlers can extract it via `Extension<ValidatedJwt>`.
 ///
 /// On failure the middleware short-circuits with `401 Unauthorized`.

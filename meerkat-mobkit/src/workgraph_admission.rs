@@ -73,7 +73,7 @@
 //!   `goal/create`, `attention/resume` and `attention/reassign`;
 //! - the AGENT TOOL plane: `ScopePinnedWorkGraphTools` intercepts
 //!   `workgraph_attention_reassign` through a late-bound
-//!   [`WorkGraphAdmissionSlot`] that [`MobRuntime::bootstrap`] fills (the
+//!   [`WorkGraphAdmissionSlot`] that `MobRuntime::bootstrap` fills (the
 //!   tool wrapper is constructed before the mob — and thus the roster —
 //!   exists). An unfilled slot (non-mob embedder) forwards without a mobkit
 //!   pre-check; since ask 25 that forward still meets the store's own
@@ -99,7 +99,7 @@
 //! the RPC arms, `workgraph_attention_reassign` on the tool plane) first
 //! lowers a session target that resolves to a member of THIS mob to its
 //! OWNER form (`mob/<mob>/agent/<identity>`) via
-//! [`WorkGraphAdmission::lower_member_session_target`]. Session→member
+//! `WorkGraphAdmission::lower_member_session_target`. Session→member
 //! resolution is roster-first with a SHARED-store fallback (round-5 S1): a
 //! mob member's session carries its durable identity on
 //! `session_metadata.mob_member_binding` (the exact seam meerkat's schedule
@@ -116,7 +116,7 @@
 //! for non-member sessions is raw-session-id equality — refuses duplicates
 //! without consulting any roster. The same roster-then-store resolution
 //! backs the session↔identity aliasing in
-//! [`WorkGraphAdmission::attention_target_alias_keys`], the EXTRA layer for
+//! `WorkGraphAdmission::attention_target_alias_keys`, the EXTRA layer for
 //! legacy or CLI-created session-form rows (bindings written by the meerkat
 //! CLI directly on a shared store bypass write normalization). The residual
 //! holes are CLI-written rows for sessions OUTSIDE this mob's session store
@@ -129,7 +129,7 @@
 //! `{kind:"owner"|"lowered_owner", owner_key:{kind:"session", id:<session>}}`
 //! (the store's own `Session`-arm rows canonicalize to exactly that owner
 //! key). Write-side lowering therefore keys on the resolved owner key, not
-//! on the target VARIANT: [`WorkGraphAdmission::lower_member_session_target`]
+//! on the target VARIANT: `WorkGraphAdmission::lower_member_session_target`
 //! canonicalizes a session-kind owner key into the same session resolution
 //! path — member sessions lower to owner form, non-member sessions come back
 //! in the canonical `{kind:"session"}` arm (identical occupancy key), an id

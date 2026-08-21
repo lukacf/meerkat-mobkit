@@ -1,0 +1,4 @@
+# Internal architecture records and research evidence are kept in the repository,
+# but they are not part of the published product documentation surface.
+design/
+proposals/

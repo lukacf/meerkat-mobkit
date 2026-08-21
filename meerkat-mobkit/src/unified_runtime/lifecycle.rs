@@ -130,7 +130,7 @@ impl UnifiedRuntime {
     }
 
     /// Spawn a detached task that periodically drains mob agent events and
-    /// projects them onto the ConsoleEventStore. Returns a [`JoinHandle`] —
+    /// projects them onto the ConsoleEventStore. Returns a [`tokio::task::JoinHandle`] -
     /// callers that manage graceful shutdown should abort it before stopping
     /// the runtime.
     ///

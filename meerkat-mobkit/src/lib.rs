@@ -1,4 +1,9 @@
-//! MobKit core — orchestration engine for the Meerkat multi-agent runtime.
+//! Application-facing companion layer for the Meerkat runtime.
+//!
+//! Meerkat owns individual-agent execution and multi-agent mob orchestration.
+//! MobKit packages gateway startup, module routing, operational policy,
+//! persistence projections, SDK transport, console projection, and operator
+//! surfaces.
 
 pub(crate) mod identity_control_target;
 pub mod identity_first;

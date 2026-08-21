@@ -61,6 +61,16 @@ For local and embedded deployments, `.persistent_state(...)` creates SQLite-back
 
 ## Quick Start
 
+The Python and TypeScript packages are clients and do not bundle a gateway
+executable. Download `mobkit-rpc-gateway-<version>-<target>.tar.gz` for Unix or
+macOS, or `mobkit-rpc-gateway-<version>-<target>.zip` for Windows, from
+[GitHub Releases](https://github.com/lukacf/meerkat-mobkit/releases) and extract
+its `rpc_gateway` binary (`rpc_gateway.exe` on Windows). To build from this
+checkout instead, run
+`./scripts/repo-cargo build -p meerkat-mobkit --bin rpc_gateway --locked`, then
+run `./scripts/repo-cargo --print-env`; the debug binary is at
+`<CARGO_TARGET_DIR>/debug/rpc_gateway`.
+
 ```python
 from meerkat_mobkit import MobKit
 from meerkat_mobkit.identity_first_models import DurableAgentSpec, ManagedPeerEdge
@@ -101,7 +111,7 @@ rt = await (
     .persistent_state(".mobkit/state")
     .roster(Roster())
     .topology_provider(Topology())
-    .gateway("./target/debug/mobkit_gateway")
+    .gateway("/path/to/rpc_gateway")
     .build()
 )
 
@@ -109,9 +119,8 @@ luka = rt.agent("identity:luka")
 triage = rt.agent("triage:main")
 
 await triage.dispatch_text("New calendar event needs triage", origin="connector")
-await luka.send("What needs my attention before lunch?")
-
-print(await luka.wait_for_output(timeout=60))
+answer = await luka.send_and_wait("What needs my attention before lunch?", timeout=60)
+print(answer)
 ```
 
 ## Console

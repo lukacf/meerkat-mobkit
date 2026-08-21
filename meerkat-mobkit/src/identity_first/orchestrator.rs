@@ -274,7 +274,7 @@ async fn acquire_roster_authority_guards(
 /// 1. Validate the roster and compute topology.
 /// 2. Resolve continuity for the complete roster and publish metadata.
 /// 3. For each non-Broken identity, independently acquire its lease, build,
-///    and create or resume through [`IdentityRuntime::embody_identity`].
+///    and create or resume through `IdentityRuntime::embody_identity`.
 /// 4. Park a member-attributable failure as a typed Broken outcome and keep
 ///    restoring the remaining identities.
 ///

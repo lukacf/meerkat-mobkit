@@ -731,7 +731,7 @@ impl ContinuitySessionStoreAdapter {
     }
 
     /// Whole-document passes this adapter has performed since construction
-    /// (see [`WholeDocumentPass`]).
+    /// (see `WholeDocumentPass`).
     ///
     /// The O(delta) continuity contract, made observable: a head-canonical
     /// STEADY-STATE save must not move this counter. Every value it can take

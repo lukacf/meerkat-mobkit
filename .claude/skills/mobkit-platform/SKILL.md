@@ -5,17 +5,19 @@ description: "MobKit platform architecture, SDK patterns, console/runtime surfac
 
 # MobKit Platform
 
-MobKit is the companion orchestration and product layer around the Meerkat multi-agent runtime. Meerkat owns agent construction, prompt assembly, tools, sessions, comms, and the core agent loop. MobKit owns bootstrapping mobs, routing work, exposing REST/JSON-RPC/SSE surfaces, projecting console state, enforcing operational policies, packaging SDKs, and shipping examples.
+MobKit is the companion composition and product layer around the Meerkat multi-agent runtime. Meerkat owns agent and mob construction, member identity and lifecycle, spawning, wiring, comms, sessions, tools, and the core agent loop. MobKit composes that authority with module supervision, routing and delivery, identity continuity bridges, REST/JSON-RPC/SSE gateways, console projections, operational policy, SDKs, and examples.
 
-Apps own policy: who exists, which identities are addressable, which peers are wired, and what operational subsystems are enabled. MobKit owns mechanism: spawn, wire, route, reconcile, persist, stream, inspect, and serve the console.
+Apps own desired roster and product policy. Meerkat machines admit member and session transitions. MobKit translates app intent into those authorities, supervises its own operational modules, and owns product-facing projection, streaming, inspection, and console composition.
 
 ## Current Baseline
 
 Primary repo: `/Users/luka/src/meerkat-mobkit`
 
-Current release line in the checked-out repo family: MobKit `0.6.55`.
+The authoritative MobKit release line is `[workspace.package].version` in the
+root `Cargo.toml`; `make verify-version-parity` checks every SDK and generated
+surface against it.
 
-Current direct Meerkat dependency family in `meerkat-mobkit/Cargo.toml`: `0.6.34` for `meerkat`, `meerkat-runtime`, `meerkat-session`, and `meerkat-store`. Verify the manifest before release or dependency work; do not rely on this note if the checkout has moved.
+Current direct Meerkat dependency family in `meerkat-mobkit/Cargo.toml`: `0.8.24`. Verify the manifest before release or dependency work; do not rely on this note if the checkout has moved.
 
 There should be no vendored `meerkat-comms` patch in this repo. Durable image forwarding belongs upstream in Meerkat; do not restore old vendoring.
 
@@ -71,7 +73,7 @@ Optional attribute-based access control for console and SSE surfaces lives in `m
 Key facts:
 
 - Opt-in via `config/access.toml` (mobkit_gateway conventional discovery), `UnifiedRuntimeBuilder::access_control_file`, `runtime.set_access_controller(...)`, or rpc_gateway `runtime_options.access_config_path` (TS SDK: `.accessControl(path)`, Python SDK: `.access_control(path)`; both auto-discover `config/access.toml`).
-- Actions vocabulary: `agent.view/send/spawn/respawn/retire/reset`, `gating.view/decide`, `mob.observe`, `runtime.admin`, `access.admin`.
+- The closed action vocabulary lives in `access/model.rs::ACCESS_ACTIONS`. It covers agent view/send/lifecycle, scoped memory, gating, WorkGraph, mob observation, topology, mobpack author/deploy, runtime administration, and access administration. Do not maintain a shorter shadow list in surface code.
 - Enforcement seams: experience filtering + affordance intersection in `runtime/console_ingress.rs` (`handle_console_rest_json_route_with_snapshot_and_access`), RPC gating + result filtering + `mobkit/access/*` admin methods in `http_console.rs` (`console_rpc_access_requirement`, `handle_access_admin_rpc`), SSE gating in `http_sse.rs` (`sse_access_context`).
 - `mob.observe` gates the whole-mob event surfaces (`/mob/events`, `/mobkit/mob_events/stream`, `mobkit/mob_events/query`/`subscribe`) but does NOT override per-agent `agent.view`: events are filtered per source/`agent_identity`, mob-level (unattributed) events flow on `mob.observe` alone. "Observe all" = `mob.observe` + `agent.view` on `*`.
 - Spawn-lineage inheritance: agent-spawned members carry a `spawned_by` console label (recorded by `src/console_spawn.rs`); agent checks walk the member plus its spawn ancestors (`evaluate_access_lineage`, depth 8, cycle-safe), so rules matching the parent also match its spawned members, with deny-overrides preserved across the chain. Lineage is runtime-derived ONLY: `spawned_by`/`via_tool` claims in caller-controlled labels (spawn specs, roster) are stripped at every enforcement seam (`sanitize_unverified_lineage_labels`) — only the in-memory spawn registry may assert them.
@@ -218,7 +220,13 @@ Image forwarding gotcha: the old failure was `image_ref_unavailable: current_tur
 
 Identity-first makes stable `AgentIdentity` strings the control-plane key and treats runtime member IDs as generated bindings. Prefer identity-scoped APIs for durable agents and member-scoped APIs for ephemeral workers at the mob layer.
 
-Gateway note: on an identity-first gateway (`mobkit_gateway` init `identity_first: true`, or any runtime with the `console_identity_roster` slot set) the console member RPCs re-dispatch to identity semantics — `ensure_member` upserts the `MutableRosterProvider` and reconciles via `restore_flow`, `retire_member` is a tolerant identity retire, `respawn_member` is an identity reset. The mob-plane disposal defect (retire/respawn of never-ran members strands them in `retiring` — upstream ask 20) is unreachable on that surface.
+Gateway note: on an identity-first gateway (`mobkit_gateway` init
+`identity_first: true`, or any runtime with the `console_identity_roster` slot
+set), console member RPCs default to identity semantics. `ensure_member`
+upserts the `MutableRosterProvider` and reconciles through `restore_flow`,
+`retire_member` is an identity retire, and `respawn_member` is an identity
+reset. Callers must select `plane: "worker"` explicitly for ephemeral
+mob-plane workers.
 
 Key files:
 
@@ -290,27 +298,39 @@ For UI behavior, use the Browser plugin against a live console after code change
 
 ## Release Workflow
 
-Version files normally move together:
-
-- `Cargo.toml`
-- `Cargo.lock`
-- `sdk/python/pyproject.toml`
-- `sdk/typescript/package.json`
-- `sdk/typescript/package-lock.json`
-
-Use:
+Inspect a release first with the repository wrapper:
 
 ```bash
-./scripts/bump-sdk-versions.sh <version>
-./scripts/verify-version-parity.sh
+./scripts/repo-cargo release <version>
 ```
+
+`--execute` creates the release commit and normally tags and pushes it. The
+release hook moves Cargo, Python, TypeScript, Bazel-module, generated BUILD,
+and install-documentation versions together. For a PR-reviewed cut, prepare
+without a tag or push, regenerate the Rust BUILD files, and run the release
+dry-run before opening the PR:
+
+```bash
+./scripts/repo-cargo release <version> --execute --no-tag --no-push
+node scripts/generate-bazel-rust-builds.mjs
+node scripts/generate-bazel-rust-builds.mjs --check
+make release-dry-run
+```
+
+The current hook does not regenerate `mobkit-store-conformance/BUILD.bazel`
+by itself, so keep the explicit generation step until that release-tooling
+gap is fixed. Tag the exact merged main commit only after the release PR is
+green.
 
 When updating Meerkat dependencies, edit `meerkat-mobkit/Cargo.toml`, then run `./scripts/repo-cargo update -p ...` for the Meerkat family and `meerkat-mobkit`.
 
-Release tags are `vX.Y.Z`. The GitHub release workflow validates version parity, builds binaries, and publishes registry packages. The job named `Publish crate + SDK packages` publishes crates.io, PyPI, and npm. When the user only cares about crates/packages, watch that job and verify registries directly:
+Release tags are `vX.Y.Z`. The GitHub workflow validates tag/version parity,
+builds the complete binary asset set, publishes crates.io, PyPI, and npm, and
+verifies those public artifacts. Only then does it dispatch the immutable
+MobKit documentation snapshot to Meerkat. Verify all three registries directly:
 
 ```bash
-cargo search meerkat-mobkit --limit 1
+./scripts/repo-cargo search meerkat-mobkit --limit 1
 npm view @rkat/mobkit-sdk version
 python -m pip index versions meerkat-mobkit
 ```

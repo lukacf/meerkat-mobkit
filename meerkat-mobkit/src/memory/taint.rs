@@ -17,7 +17,7 @@
 //!
 //! - **Comms taint join**: a peer message from a tracked sender whose
 //!   session is tainted taints the receiving session (the peer-laundering
-//!   close). See [`SessionTaintTracker::observe_inbound_peer_content`] for
+//!   close). See `SessionTaintTracker::observe_inbound_peer_content` for
 //!   what is — and honestly is not — observable.
 //! - **Evidence-range taint**: the write gate now sees a write's
 //!   `EvidenceRef`s; any LLM-authored write citing a tainted session

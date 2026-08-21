@@ -1,10 +1,10 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "name": "MobKit",
-  "description": "Companion orchestration platform for the Meerkat multi-agent runtime",
+  "description": "Companion product and composition layer for the Meerkat multi-agent runtime",
   "theme": "maple",
   "colors": {
-    "primary": "#6B8E5A",
+    "primary": "#607F51",
     "light": "#8AB576",
     "dark": "#4F6B43"
   },
@@ -17,6 +17,12 @@
       { "label": "GitHub", "href": "https://github.com/lukacf/meerkat-mobkit" }
     ]
   },
+  "redirects": [
+    {
+      "source": "/plans/storage-unification-plan",
+      "destination": "/archive/plans/storage-unification-plan-2026-07"
+    }
+  ],
   "navigation": {
     "tabs": [
       {
@@ -97,12 +103,6 @@
             "pages": [
               "reference/decisions",
               "reference/governance"
-            ]
-          },
-          {
-            "group": "Plans",
-            "pages": [
-              "plans/storage-unification-plan"
             ]
           }
         ]

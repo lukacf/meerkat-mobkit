@@ -355,7 +355,7 @@ pub(crate) async fn reserve_raw_member_targets<'a>(
 /// Project a mob runtime id (`{roster_member_id}:{generation}`) into the
 /// public alias space (`{alias}:{generation}`).
 ///
-/// Agent events leave meerkat-mob keyed by [`AgentRuntimeId`]s built from
+/// Agent events leave meerkat-mob keyed by [`meerkat_mob::ids::AgentRuntimeId`]s built from
 /// roster binding atoms; the member-id component is the comms-safe encoding,
 /// so it must be decoded before any console/SDK projection — console replay
 /// resolution, the `mobkit/events/subscribe` buffer, `/mob/events` SSE, and

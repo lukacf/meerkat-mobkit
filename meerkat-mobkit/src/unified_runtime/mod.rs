@@ -390,6 +390,11 @@ impl UnifiedRuntime {
         UnifiedRuntimeBuilder::default()
     }
 
+    #[allow(
+        unknown_lints,
+        clippy::unused_async_trait_impl,
+        reason = "preserve the async construction seam used by runtime bootstrap"
+    )]
     pub(crate) async fn from_parts(
         mob_runtime: MobRuntime,
         module_runtime: MobkitRuntimeHandle,

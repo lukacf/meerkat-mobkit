@@ -432,7 +432,7 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
-    /// Set an optional blob store in its raw-bytes [`BinaryBlobStore`] form
+    /// Set an optional blob store in its raw-bytes [`crate::blob_store::BinaryBlobStore`] form
     /// (M4). Like [`blob_store`](Self::blob_store) but without the base64
     /// adapter round-trip on the HTTP `/blobs/{id}` and `mobkit/blob/*`
     /// byte-serving paths; the meerkat `BlobStore` face is adapted from it.
@@ -1728,6 +1728,11 @@ impl UnifiedRuntimeBuilder {
 
     /// Resolve the mob spec from the definition-based path.
     /// Called only when `mob_spec` is not set (legacy path handled in `build()`).
+    #[allow(
+        unknown_lints,
+        clippy::unused_async_trait_impl,
+        reason = "preserve the awaitable builder resolution seam used throughout the build pipeline"
+    )]
     async fn resolve_mob_spec(&self) -> Result<MobBootstrapSpec, UnifiedRuntimeBuilderError> {
         let mut caps = self.capability_flags;
         // Resolved once for all three storage arms: the agent config every

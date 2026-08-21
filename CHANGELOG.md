@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrected the public documentation, crate rustdoc, and repository guidance
+  to match the shipping gateway handshake, event subscription and SSE names,
+  runtime-owned gating, delivery and module contracts, member roster
+  projections, gateway profiles, and the Meerkat/MobKit ownership boundary.
+  The obsolete storage-unification implementation plan is now retained only
+  as a dated historical record.
+
 ## [0.8.18] - 2026-08-19
 
 Pins meerkat `=0.8.24`.

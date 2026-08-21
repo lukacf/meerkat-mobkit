@@ -1775,7 +1775,7 @@ impl SessionSnapshotWriteEpochs {
 }
 
 /// Public handle to this process's per-session durable write-epoch witness
-/// (see [`SessionSnapshotWriteEpochs`]). Obtained from
+/// (see `SessionSnapshotWriteEpochs`). Obtained from
 /// [`epoch_tracking_runtime_store`]; hand it to
 /// [`MobBootstrapSpec::with_session_write_epochs`] so the console
 /// session-history discovery loop and whole-document read absorption can
@@ -6097,7 +6097,7 @@ impl MobBootstrapSpec {
     /// [`epoch_tracking_runtime_store`] and hand the witness here.
     ///
     /// Also wraps the session service with the
-    /// [`SessionDocumentReadAbsorber`] so repeated authoritative
+    /// `SessionDocumentReadAbsorber` so repeated authoritative
     /// whole-document loads are served from the last decoded document while
     /// the session's write epoch is unchanged.
     pub fn with_session_write_epochs(mut self, epochs: &SessionWriteEpochsHandle) -> Self {
