@@ -410,6 +410,38 @@ class DurableAgentSpec:
         )
 
 
+@dataclass
+class RoleMigrationDeclaration:
+    """A host assertion that one identity's durable member role changed.
+
+    A durable member whose role changed refuses to resume until the host names
+    it here, which is deliberate: an unintended role edit must not silently
+    restamp a member's durable role, comms name and binding.
+
+    Boot-scoped. It is read once into the gateway's session bridge, never
+    persisted, and gone the moment it is absent from the next boot payload.
+    Meerkat re-verifies ``from_role`` against durable state, so a mistyped
+    value refuses rather than restamps, and it ignores the declaration entirely
+    once the roles already agree - so leaving a completed migration in place is
+    inert, not a repeat restamp.
+    """
+
+    identity: str
+    from_role: str
+
+    def __post_init__(self) -> None:
+        self.identity = _validate_agent_identity(self.identity)
+        if not self.from_role or self.from_role.strip() != self.from_role:
+            raise ValueError(f"invalid predecessor role: {self.from_role}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"identity": self.identity, "from_role": self.from_role}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RoleMigrationDeclaration:
+        return cls(identity=data["identity"], from_role=data["from_role"])
+
+
 # ---------------------------------------------------------------------------
 # DispatchInput (REQ-43)
 # ---------------------------------------------------------------------------

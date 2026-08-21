@@ -2560,7 +2560,11 @@ pub(super) async fn handle_attach_existing_session(
             };
             let identity = crate::member_comms_id::mob_member_id(raw_reservation.alias());
             let spec = SpawnMemberSpec::new(ProfileName::from(role), identity.clone())
-                .with_launch_mode(MemberLaunchMode::Resume { bridge_session_id });
+                .with_launch_mode(MemberLaunchMode::Resume {
+                    // 0.8.25: no migration authority on this path.
+                    resume_from_role: None,
+                    bridge_session_id,
+                });
             let handle = runtime.mob_handle();
             let spawn_result = Box::pin(handle.spawn_spec(spec)).await;
             drop(raw_reservation);

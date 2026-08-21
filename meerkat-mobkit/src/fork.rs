@@ -407,6 +407,9 @@ mod tests {
     fn a_caller_supplied_launch_mode_is_refused_not_silently_overwritten() {
         let mut resume = spec("child");
         resume.launch_mode = MemberLaunchMode::Resume {
+            // 0.8.25: no migration authority on this path; a declaration is
+            // attached only where resume_session detects a genuine role divergence.
+            resume_from_role: None,
             bridge_session_id: meerkat_core::types::SessionId::new(),
         };
         let error = validate_fork_spec(&resume).expect_err("resume mode must be refused");

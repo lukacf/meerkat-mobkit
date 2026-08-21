@@ -598,6 +598,10 @@ class MobKitRuntime:
         # Identity-first provider flags
         if self._config.roster_provider is not None:
             params["has_roster_provider"] = True
+        if self._config.role_migrations:
+            params["role_migrations"] = [
+                dict(declaration) for declaration in self._config.role_migrations
+            ]
         if self._config.continuity_store is not None:
             params["has_continuity_store"] = True
         if self._config.lease_provider is not None:

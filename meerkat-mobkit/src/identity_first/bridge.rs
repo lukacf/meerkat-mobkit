@@ -27,7 +27,7 @@ use crate::mob_handle_runtime::{
 use super::adapters::{ContinuitySessionStoreAdapter, SessionRuntimeState};
 use super::types::{
     AgentBuildDraft, AgentIdentity, AgentRuntimeId, CheckpointVersion, ContinuityGeneration,
-    DurableAgentSpec, FencingToken, SessionSnapshot,
+    DurableAgentSpec, FencingToken, RoleMigrationDeclaration, SessionSnapshot,
 };
 
 fn is_missing_event_injector_error(error: &str) -> bool {
@@ -1613,6 +1613,14 @@ pub struct MobSessionBridge {
     /// boot (the bridge lives for one boot). See
     /// [`Self::log_unmasked_resume_divergence`].
     resume_divergence_logged: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// This activation's host-declared member role migrations, keyed by exact
+    /// identity. Empty means no identity may migrate its durable role on
+    /// resume.
+    ///
+    /// Lives for one boot alongside the bridge and is never persisted: MobKit
+    /// has no store that can reconstruct it, so a declaration dropped from the
+    /// next boot payload is simply gone. See [`RoleMigrationDeclaration`].
+    role_migration_declarations: HashMap<AgentIdentity, meerkat_mob::ProfileName>,
     /// Budget one delivery attempt may spend waiting on the mob actor.
     /// Resolved once at construction so the success path pays nothing per
     /// call. See [`BRIDGE_ACTOR_ADMISSION_BUDGET`].
@@ -1710,6 +1718,7 @@ impl MobSessionBridge {
             generated_external_owner_session: std::sync::OnceLock::new(),
             committed_boundary_recoverer: None,
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
+            role_migration_declarations: HashMap::new(),
             actor_admission_budget: bridge_actor_admission_budget(),
             runtime_ingress_authority: None,
             compaction_floors: Arc::new(CompactionFloorRegistry::default()),
@@ -1731,6 +1740,7 @@ impl MobSessionBridge {
             generated_external_owner_session: std::sync::OnceLock::new(),
             committed_boundary_recoverer: None,
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
+            role_migration_declarations: HashMap::new(),
             actor_admission_budget: bridge_actor_admission_budget(),
             runtime_ingress_authority: None,
             compaction_floors: Arc::new(CompactionFloorRegistry::default()),
@@ -1752,6 +1762,7 @@ impl MobSessionBridge {
             generated_external_owner_session: std::sync::OnceLock::new(),
             committed_boundary_recoverer: None,
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
+            role_migration_declarations: HashMap::new(),
             actor_admission_budget: bridge_actor_admission_budget(),
             runtime_ingress_authority: None,
             compaction_floors: Arc::new(CompactionFloorRegistry::default()),
@@ -1774,6 +1785,7 @@ impl MobSessionBridge {
             generated_external_owner_session: std::sync::OnceLock::new(),
             committed_boundary_recoverer: None,
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
+            role_migration_declarations: HashMap::new(),
             actor_admission_budget: bridge_actor_admission_budget(),
             runtime_ingress_authority: None,
             compaction_floors: Arc::new(CompactionFloorRegistry::default()),
@@ -1796,6 +1808,7 @@ impl MobSessionBridge {
             generated_external_owner_session: std::sync::OnceLock::new(),
             committed_boundary_recoverer: None,
             resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
+            role_migration_declarations: HashMap::new(),
             actor_admission_budget: bridge_actor_admission_budget(),
             runtime_ingress_authority: None,
             compaction_floors: Arc::new(CompactionFloorRegistry::default()),
@@ -1868,6 +1881,33 @@ impl MobSessionBridge {
     ) -> Self {
         self.committed_boundary_recoverer = Some(recoverer);
         self
+    }
+
+    /// Install this activation's host-declared role migrations.
+    ///
+    /// The resulting map lives for the life of this bridge, which is exactly
+    /// one boot, and is never persisted. MobKit only ever reads it; it never
+    /// adds to it, never infers an entry from durable state, and never retries
+    /// a resume that Meerkat refused.
+    #[must_use]
+    pub fn with_role_migration_declarations(
+        mut self,
+        declarations: impl IntoIterator<Item = RoleMigrationDeclaration>,
+    ) -> Self {
+        self.role_migration_declarations = role_migration_declaration_map(declarations);
+        self
+    }
+
+    /// The migration this activation's host declared for this exact identity.
+    ///
+    /// A pure lookup: no durable read, no divergence detection, no inference.
+    /// An identity the host did not name gets `None`, which carries zero
+    /// migration authority.
+    fn declared_role_migration(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Option<meerkat_mob::ProfileName> {
+        declared_role_migration_in(&self.role_migration_declarations, identity)
     }
 
     /// Inject the machine-level ingress authority the repair disposal paths
@@ -2741,6 +2781,8 @@ impl MobSessionBridge {
             spec = spec.with_labels(labels);
         }
         spec.launch_mode = MemberLaunchMode::Resume {
+            // 0.8.25: Resume gained `resume_from_role`; None = no migration authority.
+            resume_from_role: None,
             bridge_session_id: session_id.clone(),
         };
 
@@ -3199,13 +3241,48 @@ pub(crate) fn build_resume_spawn_spec(
     draft: &AgentBuildDraft,
     base_profile: Option<&meerkat_mob::Profile>,
     session_id: &meerkat_core::types::SessionId,
+    resume_from_role: Option<meerkat_mob::ProfileName>,
 ) -> Result<SpawnMemberSpec, BridgeError> {
     let mut spawn_spec = build_spawn_spec(runtime_id, spec, draft, base_profile)?;
     spawn_spec.launch_mode = MemberLaunchMode::Resume {
+        // 0.8.25: Resume gained `resume_from_role`. `None` means NO migration
+        // authority and is the default for every resume.
+        //
+        // Pass-through only. The value is whatever the host declared for this
+        // exact identity in the activation's boot payload
+        // ([`RoleMigrationDeclaration`]); MobKit never infers it, never reads
+        // durable role metadata to synthesize it, and never retries a resume
+        // that Meerkat refused. Meerkat re-verifies the declared predecessor
+        // against durable state and refuses on mismatch, and ignores the
+        // declaration entirely once the roles already agree - so a stale
+        // declaration is inert rather than a repeated restamp.
+        resume_from_role,
         bridge_session_id: session_id.clone(),
     };
     spawn_spec.system_prompt_override = None;
     Ok(spawn_spec)
+}
+
+/// Build a boot's declaration map.
+///
+/// Exact identities only. The map is keyed by [`AgentIdentity`], so a
+/// declaration can never match by prefix, suffix or case: an identity the host
+/// did not name exactly gets no authority.
+pub(crate) fn role_migration_declaration_map(
+    declarations: impl IntoIterator<Item = RoleMigrationDeclaration>,
+) -> HashMap<AgentIdentity, meerkat_mob::ProfileName> {
+    declarations
+        .into_iter()
+        .map(|declaration| (declaration.identity, declaration.from_role))
+        .collect()
+}
+
+/// The migration declared for this exact identity, if any.
+pub(crate) fn declared_role_migration_in(
+    declarations: &HashMap<AgentIdentity, meerkat_mob::ProfileName>,
+    identity: &AgentIdentity,
+) -> Option<meerkat_mob::ProfileName> {
+    declarations.get(identity).cloned()
 }
 
 fn runtime_binding_from_wire(
@@ -3320,6 +3397,7 @@ impl SessionBridge for MobSessionBridge {
                 draft,
                 self.base_profile_for_spec(spec).as_ref(),
                 session_id,
+                self.declared_role_migration(identity),
             )?;
             self.apply_compaction_floor(identity, spec, &mut spawn_spec)?;
             let mid = member_id_for_spawn_spec(runtime_id, spec);
@@ -3341,6 +3419,7 @@ impl SessionBridge for MobSessionBridge {
             draft,
             self.base_profile_for_spec(spec).as_ref(),
             session_id,
+            self.declared_role_migration(identity),
         )?;
         self.apply_compaction_floor(identity, spec, &mut spawn_spec)?;
 
@@ -4513,15 +4592,188 @@ mod tests {
                 .is_some_and(|actual| Arc::ptr_eq(actual, &curator))
         );
 
-        let resumed =
-            build_resume_spawn_spec(&runtime_id, &durable_spec(), &draft, None, &session_id)
-                .expect("resume spawn spec");
+        let resumed = build_resume_spawn_spec(
+            &runtime_id,
+            &durable_spec(),
+            &draft,
+            None,
+            &session_id,
+            None,
+        )
+        .expect("resume spawn spec");
         assert!(
             resumed
                 .compaction_curator_override
                 .as_ref()
                 .is_some_and(|actual| Arc::ptr_eq(actual, &curator))
         );
+    }
+
+    /// The host's declaration is what reaches Meerkat, unchanged, and absence
+    /// is what reaches it by default.
+    ///
+    /// That is the entire carrier contract: MobKit must not lose the value and
+    /// must not invent one. Meerkat owns the decision - it re-verifies the
+    /// declared predecessor against durable state and refuses on mismatch.
+    #[test]
+    fn declared_predecessor_role_rides_the_resume_launch_mode() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let session_id = meerkat_core::types::SessionId::new();
+        let draft = AgentBuildDraft {
+            compaction_curator: Default::default(),
+            model: None,
+            system_prompt: None,
+            additional_instructions: Vec::new(),
+            labels: Default::default(),
+            app_context: None,
+            external_tools: Vec::new(),
+            local_external_tools: Default::default(),
+            provider_params: None,
+        };
+
+        let undeclared = build_resume_spawn_spec(
+            &runtime_id,
+            &durable_spec(),
+            &draft,
+            None,
+            &session_id,
+            None,
+        )
+        .expect("resume spawn spec");
+        match &undeclared.launch_mode {
+            MemberLaunchMode::Resume {
+                resume_from_role, ..
+            } => assert!(
+                resume_from_role.is_none(),
+                "an undeclared resume must carry no migration authority"
+            ),
+            _ => panic!("expected a Resume launch mode"),
+        }
+
+        let declared = build_resume_spawn_spec(
+            &runtime_id,
+            &durable_spec(),
+            &draft,
+            None,
+            &session_id,
+            Some(meerkat_mob::ProfileName::from("domain")),
+        )
+        .expect("resume spawn spec");
+        match &declared.launch_mode {
+            MemberLaunchMode::Resume {
+                resume_from_role, ..
+            } => {
+                let role = resume_from_role
+                    .as_ref()
+                    .expect("the declared predecessor role must survive the pass-through");
+                assert_eq!(
+                    *role, "domain",
+                    "the declared predecessor role must reach Meerkat verbatim"
+                );
+            }
+            _ => panic!("expected a Resume launch mode"),
+        }
+    }
+
+    /// The Python SDK and this parser must agree on the wire key names.
+    ///
+    /// Both sides are pinned to ONE committed fixture, so renaming `from_role`
+    /// on either side goes red here or in its Python twin, instead of both
+    /// staying green while a host arms nothing.
+    #[test]
+    fn the_committed_wire_fixture_deserializes_into_declarations() {
+        const FIXTURE: &str = include_str!("../../tests/fixtures/role_migrations_init_params.json");
+        let params: serde_json::Value =
+            serde_json::from_str(FIXTURE).expect("fixture is valid JSON");
+        let declarations: Vec<RoleMigrationDeclaration> =
+            serde_json::from_value(params["role_migrations"].clone())
+                .expect("the fixture's role_migrations must deserialize");
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].identity.as_str(), "domain:home-automation");
+        assert_eq!(declarations[0].from_role, "domain");
+    }
+
+    /// A conflicting pair is refused; an identical repeat is not.
+    ///
+    /// Refusing the repeat would be the failure mode of treating every
+    /// irregularity as fatal: it is unambiguous, so it costs nothing to accept.
+    #[test]
+    fn conflicting_declarations_are_reported_and_identical_repeats_are_not() {
+        let identity = AgentIdentity::parse("agent:alice").expect("identity");
+        let declare = |role: &str| RoleMigrationDeclaration {
+            identity: identity.clone(),
+            from_role: meerkat_mob::ProfileName::from(role),
+        };
+
+        let conflicting = [declare("domain"), declare("other")];
+        let (found, first, second) =
+            super::super::types::conflicting_role_migration_declaration(&conflicting)
+                .expect("a conflicting pair must be reported");
+        assert_eq!(found, &identity);
+        assert_eq!(*first, "domain");
+        assert_eq!(*second, "other");
+
+        assert!(
+            super::super::types::conflicting_role_migration_declaration(&[
+                declare("domain"),
+                declare("domain")
+            ])
+            .is_none(),
+            "an identical repeat is unambiguous and must not fail the boot"
+        );
+    }
+
+    /// Exact identity only, in both directions: a declaration arms the
+    /// identity the host named and nothing adjacent to it.
+    ///
+    /// Prefix and case tolerance here would silently widen migration authority
+    /// from one member to a family of them, which is the failure the typed
+    /// refusal exists to prevent.
+    #[test]
+    fn a_declaration_arms_only_the_exact_identity() {
+        let declared = AgentIdentity::parse("agent:alice").expect("identity");
+        let map = role_migration_declaration_map([RoleMigrationDeclaration {
+            identity: declared.clone(),
+            from_role: meerkat_mob::ProfileName::from("domain"),
+        }]);
+
+        let armed = declared_role_migration_in(&map, &declared)
+            .expect("the exact declared identity must be armed");
+        assert_eq!(armed, "domain");
+
+        for adjacent in [
+            "agent:alice-2",
+            "agent:alic",
+            "agent:Alice",
+            "alice",
+            "agent:alice:child",
+            "AGENT:ALICE",
+        ] {
+            let identity = AgentIdentity::parse(adjacent).expect("identity");
+            assert!(
+                declared_role_migration_in(&map, &identity).is_none(),
+                "'{adjacent}' must carry no migration authority from a declaration for \
+                 '{declared}'"
+            );
+        }
+    }
+
+    /// The exact boot-payload shape the host sends, plus the failure that
+    /// matters: a malformed identity refuses at ingress rather than arming a
+    /// migration for something that is not an identity.
+    #[test]
+    fn role_migration_declaration_parses_from_the_boot_payload_shape() {
+        let declaration: RoleMigrationDeclaration = serde_json::from_str(
+            r#"{"identity": "domain:home-automation", "from_role": "domain"}"#,
+        )
+        .expect("declaration parses");
+        assert_eq!(declaration.identity.as_str(), "domain:home-automation");
+        assert_eq!(declaration.from_role, "domain");
+
+        serde_json::from_str::<RoleMigrationDeclaration>(
+            r#"{"identity": "has a space", "from_role": "domain"}"#,
+        )
+        .expect_err("a malformed identity must refuse at ingress");
     }
 
     /// A base profile that pins a provider (or self-hosted binding) keeps the
@@ -5161,9 +5413,15 @@ mod tests {
         };
         let session_id = meerkat_core::types::SessionId::new();
 
-        let spawn =
-            build_resume_spawn_spec(&runtime_id, &durable_spec(), &draft, None, &session_id)
-                .expect("resume spawn spec");
+        let spawn = build_resume_spawn_spec(
+            &runtime_id,
+            &durable_spec(),
+            &draft,
+            None,
+            &session_id,
+            None,
+        )
+        .expect("resume spawn spec");
 
         assert_eq!(
             spawn.system_prompt_override, None,
@@ -5171,7 +5429,9 @@ mod tests {
              authoring via a turn is the only mid-thread instruction change"
         );
         match &spawn.launch_mode {
-            MemberLaunchMode::Resume { bridge_session_id } => {
+            MemberLaunchMode::Resume {
+                bridge_session_id, ..
+            } => {
                 assert_eq!(bridge_session_id, &session_id);
             }
             other => panic!("expected Resume launch mode, got {other:?}"),

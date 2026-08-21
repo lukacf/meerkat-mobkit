@@ -756,6 +756,70 @@ impl fmt::Display for NotAddressable {
 impl std::error::Error for NotAddressable {}
 
 // ---------------------------------------------------------------------------
+// RoleMigrationDeclaration
+// ---------------------------------------------------------------------------
+
+/// A host assertion that one identity's durable member role changed, and that
+/// this activation is authorized to migrate it.
+///
+/// Activation-scoped by construction. It arrives in the gateway boot payload
+/// (`InitParams.role_migrations`), is held for the life of one
+/// [`crate::identity_first::bridge::MobSessionBridge`] - which lives for
+/// exactly one boot - and is never written to the continuity store. Omitting
+/// it from the next boot payload is how it goes away; there is no durable copy
+/// that could bring it back.
+///
+/// MobKit never infers a declaration. It does not compare the requested role
+/// against durable state, does not read stored role metadata to synthesize
+/// one, and does not retry a refused resume. If the host did not declare a
+/// migration for an exact identity, the resume carries no migration authority
+/// and Meerkat's typed refusal (`MobError::MemberRoleMigrationRequired`)
+/// stands - which is the point: an unintended role change must fail closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleMigrationDeclaration {
+    /// The exact identity being migrated. No wildcards, no prefix matching.
+    pub identity: AgentIdentity,
+    /// The role this identity is migrating FROM.
+    ///
+    /// Meerkat verifies this against the durable predecessor role and refuses
+    /// with `MobError::MemberRoleMigrationRejected` on mismatch, so a mistyped
+    /// value cannot authorize an unintended restamp.
+    pub from_role: meerkat_mob::ProfileName,
+}
+
+/// The first identity a payload declares twice with CONFLICTING predecessor
+/// roles, as `(identity, first_role, second_role)`.
+///
+/// Two identical declarations are redundant but unambiguous, so they are
+/// allowed: refusing them would turn a harmless repetition into a boot failure.
+/// Do NOT tighten this later. HomeCore's inertness witness works by deliberately
+/// carrying the SAME declaration into the next activation and showing nothing
+/// moves, so refusing an identical repeat would make that experiment
+/// impossible to run.
+/// Two conflicting declarations have no defensible resolution - collecting them
+/// into a map would let hash order decide which predecessor role becomes
+/// migration authority - so the payload must be fixed by its author.
+#[must_use]
+pub fn conflicting_role_migration_declaration(
+    declarations: &[RoleMigrationDeclaration],
+) -> Option<(
+    &AgentIdentity,
+    &meerkat_mob::ProfileName,
+    &meerkat_mob::ProfileName,
+)> {
+    let mut seen: std::collections::HashMap<&AgentIdentity, &meerkat_mob::ProfileName> =
+        std::collections::HashMap::new();
+    for declaration in declarations {
+        if let Some(existing) = seen.insert(&declaration.identity, &declaration.from_role)
+            && existing != &declaration.from_role
+        {
+            return Some((&declaration.identity, existing, &declaration.from_role));
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // DurableAgentSpec
 // ---------------------------------------------------------------------------
 

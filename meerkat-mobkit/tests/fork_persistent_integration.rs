@@ -496,6 +496,9 @@ async fn unified_runtime_fork_is_durable_typed_and_recoverable() {
         .expect("retire colliding exact member incarnation");
     let mut recovery_spec = worker_spec("recoverable");
     recovery_spec.launch_mode = MemberLaunchMode::Resume {
+        // 0.8.25: no migration authority on this path; a declaration is
+        // attached only where resume_session detects a genuine role divergence.
+        resume_from_role: None,
         bridge_session_id: committed_child_session_id.clone(),
     };
     runtime

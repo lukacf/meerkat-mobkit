@@ -146,9 +146,9 @@ fn mk001_discovery_spec_to_spawn_spec_handles_resume_session_id() {
 
     let spawn = discovery_spec_to_spawn_spec(&spec);
     let sid = match &spawn.launch_mode {
-        meerkat_mob::launch::MemberLaunchMode::Resume { bridge_session_id } => {
-            bridge_session_id.clone()
-        }
+        meerkat_mob::launch::MemberLaunchMode::Resume {
+            bridge_session_id, ..
+        } => bridge_session_id.clone(),
         other => panic!("expected Resume launch mode, got {other:?}"),
     };
     assert_eq!(sid.to_string(), session_uuid);

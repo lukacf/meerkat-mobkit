@@ -379,11 +379,20 @@ fn answer_host_callback(gateway: &mut Gateway, message: &Value) {
 /// Boot a gateway over `state`, complete the identity-first init handshake,
 /// and return the live child.
 fn boot(label: &str, state: &Path, disable_decode_memo: bool) -> Gateway {
+    boot_with_role_migrations(label, state, disable_decode_memo, None)
+}
+
+/// `boot`, plus the boot-scoped member role migrations this activation is
+/// authorized to perform. `None` is the ordinary case: no identity may migrate
+/// its durable role on resume.
+fn boot_with_role_migrations(
+    label: &str,
+    state: &Path,
+    disable_decode_memo: bool,
+    role_migrations: Option<Value>,
+) -> Gateway {
     let mut gateway = Gateway::start(label, disable_decode_memo);
-    let response = gateway.call(
-        "init",
-        "mobkit/init",
-        json!({
+    let mut init_params = json!({
             "persistent_state": state,
             "mob_config": MOB_CONFIG,
             // Identity-first WITHOUT has_continuity_store/has_lease_provider:
@@ -395,9 +404,11 @@ fn boot(label: &str, state: &Path, disable_decode_memo: bool) -> Gateway {
                 "demo_llm": true,
                 "identity_bootstrap_mode": { "mode": "eager_materialize" }
             }
-        }),
-        INIT_TIMEOUT,
-    );
+    });
+    if let Some(declarations) = role_migrations {
+        init_params["role_migrations"] = declarations;
+    }
+    let response = gateway.call("init", "mobkit/init", init_params, INIT_TIMEOUT);
     assert!(
         response["result"]["contract_version"].is_string(),
         "[{label}] identity-first init returned no contract version: {response}"
@@ -1055,4 +1066,68 @@ fn runtime_snapshot_message_count(state: &Path, session_id: &str) -> Option<i64>
         }
     }
     None
+}
+
+/// Wait for a stderr line: the reader thread pumps asynchronously, so a bare
+/// read races the boot that produced the line.
+fn wait_for_stderr(gateway: &Gateway, needle: &str, deadline: Duration) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < deadline {
+        if gateway.stderr_tail().contains(needle) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+/// A role migration declaration is BOOT-scoped: the next boot that declares
+/// nothing has no migration authority.
+///
+/// This is the property that makes a leftover declaration safe, and it can only
+/// fail on a LATER boot, so it is proved across two real OS processes sharing
+/// one durable state dir rather than by inspecting a map in-process.
+///
+/// Boot 1 also covers the inert case end to end: `from_role` names a
+/// predecessor this identity never had, and because the identity's stored role
+/// still equals its current role, Meerkat returns before the declaration is
+/// ever read. Materialization therefore proceeds exactly as it does without
+/// one, which is why boot 1 is expected to come up healthy.
+///
+/// The two assertions cannot both pass vacuously: if the gateway stopped
+/// recording declarations altogether, boot 1 fails. So a green boot-2 means
+/// absence, not silence.
+#[test]
+fn a_role_migration_declaration_does_not_survive_into_the_next_boot() {
+    const DECLARED: &str = "activation declares a member role migration";
+
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    std::fs::create_dir_all(&state).expect("create state dir");
+
+    let mut declaring = boot_with_role_migrations(
+        "role-migration/boot-1",
+        &state,
+        false,
+        Some(json!([{ "identity": IDENTITY, "from_role": "predecessor" }])),
+    );
+    assert!(
+        wait_for_stderr(&declaring, DECLARED, Duration::from_secs(30)),
+        "[boot-1] the gateway must record the declaration it was armed with: {}",
+        declaring.stderr_tail()
+    );
+    declaring.shutdown_and_reap();
+
+    let mut fresh = boot("role-migration/boot-2", &state, false);
+    // Boot 2 has completed its init handshake, which is the same phase that
+    // emitted the line on boot 1, so the line would already be here if it were
+    // coming. The settle window covers only the stderr reader thread.
+    thread::sleep(Duration::from_millis(500));
+    assert!(
+        !fresh.stderr_tail().contains(DECLARED),
+        "[boot-2] a boot that declared nothing must arm nothing, but the \
+         declaration came back from durable state: {}",
+        fresh.stderr_tail()
+    );
+    fresh.shutdown_and_reap();
 }

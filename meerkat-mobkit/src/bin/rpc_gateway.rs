@@ -7501,6 +7501,41 @@ external_addressable = true
             "runtime_options.agent_memory requires an identity-first roster provider".to_string(),
         );
     }
+    // Member role migrations this boot is authorized to perform, e.g.
+    // `[{"identity": "domain:home-automation", "from_role": "domain"}]`.
+    //
+    // A malformed declaration refuses the boot rather than arming nothing. An
+    // operator who wrote a declaration expects it to be in force, and silently
+    // dropping it would resurface as the original
+    // `MemberRoleMigrationRequired` refusal with nothing pointing at the
+    // payload as the cause.
+    let role_migration_declarations: Vec<meerkat_mobkit::identity_first::RoleMigrationDeclaration> =
+        params
+            .get("role_migrations")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    -32602,
+                    format!("role_migrations is malformed: {error}"),
+                )
+            })
+            .unwrap_or_default();
+    if let Some((identity, first, second)) =
+        meerkat_mobkit::identity_first::conflicting_role_migration_declaration(
+            &role_migration_declarations,
+        )
+    {
+        fail_init(
+            &request_id,
+            -32602,
+            format!(
+                "role_migrations declares '{identity}' twice with different predecessor roles \
+                 ('{first}' and '{second}'); migration authority cannot be resolved by order"
+            ),
+        );
+    }
     let default_llm_client: Option<Arc<dyn meerkat_client::LlmClient>> =
         match gateway_options.demo_llm {
             true => {
@@ -8491,6 +8526,17 @@ external_addressable = true
         if let Some(recoverer) = runtime.mob_runtime().committed_boundary_recoverer() {
             identity_bridge = identity_bridge.with_committed_boundary_recoverer(recoverer);
         }
+        // A declared migration restamps a member's durable role, comms name
+        // and binding, so the boot record must name every one the host armed.
+        for declaration in &role_migration_declarations {
+            tracing::info!(
+                identity = %declaration.identity,
+                from_role = %declaration.from_role,
+                "activation declares a member role migration"
+            );
+        }
+        identity_bridge =
+            identity_bridge.with_role_migration_declarations(role_migration_declarations);
         // Operator-verb seam: share the bridge's compaction-floor registry
         // with the RPC context BEFORE the bridge is erased, so
         // mobkit/compact_member arms floors on the same registry the

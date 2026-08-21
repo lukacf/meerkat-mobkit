@@ -34,6 +34,7 @@ from .identity_first_models import (
     IdentityBootstrapState,
     IdentityBootstrapStatus,
     MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY,
+    RoleMigrationDeclaration,
 )
 
 # Data models
@@ -210,6 +211,7 @@ __all__ = [
     "DetachedJobExecution",
     "DetachedJobResult",
     "IdentityBootstrapMode",
+    "RoleMigrationDeclaration",
     "IdentityBootstrapState",
     "IdentityBootstrapCounts",
     "IdentityBootstrapEntry",

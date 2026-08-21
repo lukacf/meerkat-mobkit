@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Sequence
+from typing import Any, Awaitable, Callable, Iterable, Sequence
 
-from .identity_first_models import IdentityBootstrapMode
+from .identity_first_models import IdentityBootstrapMode, RoleMigrationDeclaration
 
 
 @dataclass
@@ -41,6 +41,7 @@ class MobKitBuilderConfig:
     lease_provider: Any | None = None
     scratch_dir: str | None = None
     roster_provider: Any | None = None
+    role_migrations: list[dict[str, str]] | None = None
     topology_provider: Any | None = None
     agent_customizer: Any | None = None
     identity_bootstrap_mode: IdentityBootstrapMode | None = None
@@ -573,6 +574,49 @@ class MobKitBuilder:
     def scratch_dir(self, path: str) -> MobKitBuilder:
         """Set the scratch directory for non-authoritative local state."""
         self._config.scratch_dir = path
+        return self
+
+    def role_migrations(
+        self, declarations: Iterable[RoleMigrationDeclaration | dict[str, str]]
+    ) -> MobKitBuilder:
+        """Authorize member role migrations for THIS boot only.
+
+        A durable member whose role changed refuses to resume until it is named
+        here. Pass the exact identity and the role it is migrating FROM::
+
+            .role_migrations([
+                RoleMigrationDeclaration(
+                    identity="domain:home-automation", from_role="domain"
+                )
+            ])
+
+        Never persisted: drop it from the next boot and the authority is gone.
+        A malformed entry refuses the boot rather than silently arming nothing.
+        """
+        normalized = [
+            declaration
+            if isinstance(declaration, RoleMigrationDeclaration)
+            else RoleMigrationDeclaration.from_dict(declaration)
+            for declaration in declarations
+        ]
+        seen: dict[str, str] = {}
+        for declaration in normalized:
+            existing = seen.get(declaration.identity)
+            if existing is not None and existing != declaration.from_role:
+                # Two conflicting declarations for one identity have no
+                # defensible resolution, and the gateway would otherwise let
+                # dict order decide which predecessor role becomes migration
+                # authority. An identical repeat is unambiguous and allowed.
+                raise ValueError(
+                    f"role_migrations declares {declaration.identity!r} twice with "
+                    f"different predecessor roles ({existing!r} and "
+                    f"{declaration.from_role!r}); migration authority cannot be "
+                    "resolved by order"
+                )
+            seen[declaration.identity] = declaration.from_role
+        self._config.role_migrations = [
+            declaration.to_dict() for declaration in normalized
+        ]
         return self
 
     def roster(self, provider: Any) -> MobKitBuilder:

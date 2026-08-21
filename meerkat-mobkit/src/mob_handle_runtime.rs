@@ -13791,6 +13791,9 @@ comms = true
             .unwrap_or_else(|e| panic!("{e}"));
         let mut resume_spec = SpawnMemberSpec::new(ProfileName::from("worker"), mid.clone());
         resume_spec.launch_mode = meerkat_mob::MemberLaunchMode::Resume {
+            // 0.8.25: no migration authority on this path; a declaration is
+            // attached only where resume_session detects a genuine role divergence.
+            resume_from_role: None,
             bridge_session_id: session_id.clone(),
         };
         Box::pin(restarted.handle.spawn_spec(resume_spec))

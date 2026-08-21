@@ -8188,8 +8188,13 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Err(message) => return invalid_params(response_id, message),
             };
             let mid = crate::member_comms_id::mob_member_id(raw_reservation.alias());
-            let spec = SpawnMemberSpec::new(ProfileName::from(role), mid.clone())
-                .with_launch_mode(MemberLaunchMode::Resume { bridge_session_id });
+            let spec = SpawnMemberSpec::new(ProfileName::from(role), mid.clone()).with_launch_mode(
+                MemberLaunchMode::Resume {
+                    // 0.8.25: no migration authority on this path.
+                    resume_from_role: None,
+                    bridge_session_id,
+                },
+            );
             let handle = runtime.handle();
             let spawn_result = Box::pin(handle.spawn_spec(spec)).await;
             drop(raw_reservation);

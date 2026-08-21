@@ -90,6 +90,24 @@ struct InitParams {
     /// and reconciled thereafter. `mobkit/ensure_member` adds to it at
     /// runtime.
     identity_roster: Option<Vec<meerkat_mobkit::identity_first::DurableAgentSpec>>,
+    /// Member role migrations this activation is authorized to perform, e.g.
+    /// `[{"identity": "domain:home-automation", "from_role": "domain"}]`.
+    ///
+    /// A durable member whose role changed refuses to resume
+    /// (`MobError::MemberRoleMigrationRequired`) until the host names it here,
+    /// which is deliberate: an unintended role edit must not silently restamp
+    /// a member's durable role, comms name and binding. Declaring the
+    /// migration is the host asserting "yes, this identity moved, and it moved
+    /// FROM this role".
+    ///
+    /// Boot-scoped. It is read once into the session bridge, never persisted,
+    /// and gone the moment it is absent from the next boot payload. Meerkat
+    /// re-verifies the declared predecessor against durable state, so a
+    /// mistyped `from_role` refuses rather than restamps, and it ignores the
+    /// declaration entirely once the roles already agree - so leaving a
+    /// completed migration in the payload is inert, not a repeat restamp.
+    #[serde(default)]
+    role_migrations: Option<Vec<meerkat_mobkit::identity_first::RoleMigrationDeclaration>>,
     /// Host-level session-compaction policy for every agent this gateway
     /// builds (`{"auto_compact_threshold": 120000, ...}`). Absent, the
     /// gateway inherits meerkat's model-aware default —
@@ -1185,6 +1203,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
     // mob-plane console back (changelog-flagged).
     let identity_first = params.identity_first.unwrap_or(true);
     let identity_roster_seed = params.identity_roster.clone().unwrap_or_default();
+    let role_migration_declarations = params.role_migrations.clone().unwrap_or_default();
     let realm = params.realm.as_deref();
     let isolated = params.isolated.unwrap_or(false);
     let _surface = params.surface.unwrap_or_else(|| "tux".to_string());
@@ -1538,6 +1557,26 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         if let Some(recoverer) = runtime.mob_runtime().committed_boundary_recoverer() {
             bridge = bridge.with_committed_boundary_recoverer(recoverer);
         }
+        if let Some((identity, first, second)) =
+            meerkat_mobkit::identity_first::conflicting_role_migration_declaration(
+                &role_migration_declarations,
+            )
+        {
+            anyhow::bail!(
+                "role_migrations declares '{identity}' twice with different predecessor roles \
+                 ('{first}' and '{second}'); migration authority cannot be resolved by order"
+            );
+        }
+        // A declared migration restamps a member's durable role, comms name
+        // and binding, so the boot record must name every one the host armed.
+        for declaration in &role_migration_declarations {
+            tracing::info!(
+                identity = %declaration.identity,
+                from_role = %declaration.from_role,
+                "activation declares a member role migration"
+            );
+        }
+        bridge = bridge.with_role_migration_declarations(role_migration_declarations);
         let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = Arc::new(bridge);
 
         let irt = IdentityRuntime::new(IdentityRuntimeConfig {
