@@ -5,9 +5,91 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.8.19] - 2026-08-21
+
+Pins meerkat `=0.8.25`.
+
+### Added
+
+- **Boot-scoped member role migrations, so a role change is a decision the host
+  states out loud rather than a silent restamp.** A durable member whose role
+  changed refuses to resume (`MobError::MemberRoleMigrationRequired`) until this
+  activation's host declares the migration. That refusal is deliberate: a stray
+  role edit in a roster otherwise restamps the member's durable role, comms name
+  and binding, and nothing afterwards points at the edit as the cause. Declare it
+  in the gateway init payload as `"role_migrations": [{"identity":
+  "domain:home-automation", "from_role": "domain"}]`, or from the Python SDK as
+  `MobKitBuilder.role_migrations([...])`, which takes
+  `RoleMigrationDeclaration` dataclasses or plain dicts and validates both.
+- **The declaration is authority for one boot, not state.** It is installed on
+  `MobSessionBridge` - which lives for exactly one boot - via
+  `with_role_migration_declarations`, and `resume_session` passes it into
+  `MemberLaunchMode::Resume { resume_from_role, .. }` by EXACT identity lookup:
+  no durable read, no inference from stored role metadata, no retry of a resume
+  meerkat refused. Nothing persists it, so it is absent by default and dropping
+  it from the next boot payload is how the authority goes away. Meerkat decides;
+  MobKit only carries. It re-verifies the declared predecessor against durable
+  state and refuses on mismatch (`MobError::MemberRoleMigrationRejected`), so a
+  mistyped `from_role` cannot authorize an unintended restamp, and it ignores
+  the declaration entirely once the roles already agree - a declaration left in
+  place after a completed migration is inert, not a repeat restamp.
+- **Wired in BOTH gateway binaries, whose names differ by one word.**
+  `rpc_gateway` reads it from its untyped init params and installs it inside the
+  roster-provider branch (the identity-first path the SDKs drive);
+  `mobkit_gateway` takes it as a typed `InitParams.role_migrations` field and
+  installs it inside its identity-first block. Declarations that reach
+  `rpc_gateway` with no roster provider, or `mobkit_gateway` with
+  `identity_first: false`, arm nothing, because there is no identity plane to
+  migrate on. On both binaries the per-declaration log line sits immediately
+  before the install, inside that same branch, because a restamp of durable
+  role, comms name and binding belongs in the boot record; a payload that
+  reaches neither identity plane installs nothing and is not logged either.
+- **A malformed payload refuses the boot** rather than arming nothing and
+  leaving the operator to rediscover it as the original refusal. Both binaries
+  refuse it with `-32602`, and neither gates that refusal on having an identity
+  plane: `rpc_gateway` parses the key at init scope, outside its
+  roster-provider branch, and `mobkit_gateway`'s typed init params fail to
+  deserialize before any of the boot runs, so a host with no identity plane
+  still learns its payload is broken. Declaring one identity twice with CONFLICTING `from_role`
+  values is refused too, because collecting them into a map would let hash
+  order pick which predecessor role becomes authority - but the two binaries
+  place that check differently. `rpc_gateway` refuses with `-32602` alongside
+  the malformed case, ungated. `mobkit_gateway` checks only inside its
+  identity-first block, so it refuses from there as a `-32603` internal error
+  with a null `id` rather than the answered `-32602`, and under
+  `identity_first: false` a self-contradicting payload is not refused at all;
+  `identity_first` defaults to true, so a fresh boot on the default path does
+  refuse. The Python builder raises `ValueError` on the conflicting pair before
+  any of this reaches a gateway. An IDENTICAL repeat is accepted on purpose: a host proves
+  inertness by carrying the same declaration into a later activation and showing
+  that nothing moves. Unused, the Python builder emits no
+  `role_migrations` init-params key at all.
+- The wire key names are pinned by one shared fixture,
+  `meerkat-mobkit/tests/fixtures/role_migrations_init_params.json`, read by both
+  the Rust parser test and its Python twin, so a rename on either side goes red
+  instead of both staying green while a host arms nothing.
 
 ### Fixed
+
+- **A gating caller could claim its own risk tier and have the claim
+  honoured.** `apply_gateway_runtime_config_to_request` filled `risk_tier` only
+  when the caller had omitted it, so a client sending `risk_tier: "r0"` on
+  `mobkit/gating/evaluate` for an action the compiled `action_risk_tiers` table
+  declares `r3` kept its own claim. `evaluate_gating_action` branches on
+  whatever tier it is handed, so the table compiled from
+  `runtime_options.gating_config_path` was advisory against exactly the caller
+  it exists to constrain. A policy table a caller can override is not a policy,
+  it is a default - and the name says otherwise, which is the part that bites:
+  the next person wiring gating reads `action_risk_tiers` as authority. The
+  configured tier now wins whenever the action appears in the table. An
+  overridden caller claim is logged at WARN with both tiers rather than dropped
+  silently, because a caller that keeps sending an overridden tier must be able
+  to find out it is being overridden. An action absent from the table still
+  keeps the caller's value: the table binds what it declares and no more.
+  Reported by HomeCore's tools/grants fork with file:line, verified here before
+  fixing. The regression test is mutation-proven: restoring the
+  `!params.contains_key("risk_tier")` guard turns it red with left `"r0"`,
+  right `"r3"`.
 
 - Corrected the public documentation, crate rustdoc, and repository guidance
   to match the shipping gateway handshake, event subscription and SSE names,
