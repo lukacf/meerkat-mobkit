@@ -24,6 +24,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: scripts/repo-cargo fmt --all -- --check
       - run: scripts/verify-version-parity.sh
+      - run: python3 scripts/test_ci_workflow.py
       - run: python3 scripts/test_release_version_scripts.py
       - run: python3 scripts/test_release_workflow.py
       - run: python3 scripts/test_verify_published_registries.py
@@ -76,7 +77,7 @@ jobs:
       # elapsed-time bounds whose variable is CPU speed, retried 2x and still
       # consistently over on 2-vCPU runners; the long-term fix is asserting
       # interleaving evidence instead of elapsed time).
-      - run: scripts/repo-cargo nextest run --workspace -E 'not test(governance_contracts) and not test(converged_idle_gateway_consumes_near_zero_cpu) and not test(live_event_burst_reaches_store_while_slow_backfill_is_running) and not test(refresh_session_history_parallelizes_slow_member_backfills_at_scale)'
+      - run: scripts/repo-cargo nextest run --workspace -E 'not test(governance_contracts) and not test(converged_idle_gateway_consumes_near_zero_cpu) and not test(live_event_burst_reaches_store_while_slow_backfill_is_running) and not test(refresh_session_history_parallelizes_slow_member_backfills_at_scale)' --no-fail-fast
 
   test-python:
     name: test-python
