@@ -3371,10 +3371,10 @@ mod member_declaration_delegation_tests {
         serde_json::from_str(&raw).expect("router must answer with JSON")
     }
 
-    /// Both methods must be reachable. Before this change the router had no `mob/`
-    /// namespace at all, so every one of these returned method-not-found.
+    /// All THREE methods must be reachable. Before this change the router had no
+    /// `mob/` namespace at all, so every one of these returned method-not-found.
     #[tokio::test]
-    async fn both_declaration_methods_are_routed_not_method_not_found() {
+    async fn all_three_declaration_methods_are_routed_not_method_not_found() {
         // A DISTINCT mob per iteration: the comms participant name registry is
         // process-global, so reusing one id makes the second bootstrap fail with
         // ParticipantNameOccupied and the test reports a routing problem it never
