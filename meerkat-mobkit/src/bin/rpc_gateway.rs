@@ -41,6 +41,7 @@ use meerkat_mobkit::runtime::cross_mob_control::{
     ControlAuthorizer, ControlGrantTable, ControlListenAddr,
 };
 use meerkat_mobkit::unified_runtime::EventLogError;
+use meerkat_mobkit::unified_runtime::types::IdentityAuthorityReleaseOutcome;
 use meerkat_mobkit::{
     AuthPolicy, AuthProvider, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore,
     ConsolePolicy, ConsoleUiConfig, DiscoverySpec, EventLogConfig, EventLogStore, EventQuery,
@@ -2808,6 +2809,114 @@ actions = ["agent.view"]
             .expect("callback wrapper must preserve the inner factory's durable-memory seam");
     }
 
+    /// `cleanup_completed` is a four-way conjunction, and the response used to
+    /// carry only its result, so a blocked shutdown named no phase. These pin
+    /// that each blocking phase is now distinguishable ON THE WIRE, which is
+    /// what four undiagnosed CI occurrences actually needed.
+    #[test]
+    fn a_blocked_shutdown_names_which_phase_blocked() {
+        fn clean_report() -> UnifiedRuntimeShutdownReport {
+            UnifiedRuntimeShutdownReport {
+                drain: ShutdownDrainReport {
+                    drained_count: 1,
+                    timed_out: false,
+                    drain_duration_ms: 2,
+                },
+                module_shutdown: RuntimeShutdownReport {
+                    terminated_modules: vec!["router".to_string()],
+                    orphan_processes: 0,
+                },
+                mob_stop: Ok(()),
+                identity_authority_release: IdentityAuthorityReleaseOutcome::Released {
+                    grant_count: 1,
+                },
+            }
+        }
+        fn diagnostics(report: &UnifiedRuntimeShutdownReport) -> Value {
+            let response = gateway_shutdown_response(json!("shutdown"), Some(report));
+            assert_eq!(response["result"]["shutdown"], false);
+            assert_eq!(response["result"]["runtime_cleanup_completed"], false);
+            response["result"]["runtime_cleanup_diagnostics"].clone()
+        }
+
+        // 1. drain timed out
+        let mut report = clean_report();
+        report.drain.timed_out = true;
+        report.drain.drain_duration_ms = 4321;
+        let blocked = diagnostics(&report);
+        assert_eq!(blocked["drain"]["timed_out"], true);
+        assert_eq!(blocked["drain"]["drain_duration_ms"], 4321);
+        assert_eq!(blocked["mob_stop"], "ok");
+
+        // 2. mob stop failed
+        let mut report = clean_report();
+        report.mob_stop =
+            Err(meerkat_mobkit::mob_handle_runtime::MobRuntimeError::InvalidInput("stop refused"));
+        let blocked = diagnostics(&report);
+        assert_eq!(blocked["mob_stop"], "failed");
+        assert_eq!(blocked["drain"]["timed_out"], false);
+
+        // 3. identity authority not released
+        let mut report = clean_report();
+        report.identity_authority_release = IdentityAuthorityReleaseOutcome::SkippedMobStopFailed;
+        let blocked = diagnostics(&report);
+        assert_eq!(
+            blocked["identity_authority_release"]["outcome"],
+            "skipped_mob_stop_failed"
+        );
+
+        // 4. orphan processes remain
+        let mut report = clean_report();
+        report.module_shutdown.orphan_processes = 3;
+        let blocked = diagnostics(&report);
+        assert_eq!(blocked["module_shutdown"]["orphan_processes"], 3);
+
+        // Absent report is a DISTINCT case from any phase failing: nothing ran.
+        let response = gateway_shutdown_response(json!("shutdown"), None);
+        assert_eq!(response["result"]["shutdown"], false);
+        assert_eq!(
+            response["result"]["runtime_cleanup_diagnostics"]["runtime_shutdown_report"],
+            "absent"
+        );
+    }
+
+    /// The success response must stay byte-identical to what existing SDK
+    /// checks already validate: no diagnostics key at all.
+    #[test]
+    fn a_successful_shutdown_response_gains_no_new_keys() {
+        let report = UnifiedRuntimeShutdownReport {
+            drain: ShutdownDrainReport {
+                drained_count: 1,
+                timed_out: false,
+                drain_duration_ms: 2,
+            },
+            module_shutdown: RuntimeShutdownReport {
+                terminated_modules: vec!["router".to_string()],
+                orphan_processes: 0,
+            },
+            mob_stop: Ok(()),
+            identity_authority_release: IdentityAuthorityReleaseOutcome::NotConfigured,
+        };
+        let response = gateway_shutdown_response(json!("shutdown"), Some(&report));
+        assert_eq!(response["result"]["shutdown"], true);
+        assert_eq!(response["result"]["runtime_cleanup_completed"], true);
+        // Compare the key SET, not its order. JSON object order is not the
+        // contract, and serde_json's map ordering varies with the
+        // preserve_order feature, so an ordered assertion here would pin an
+        // incidental property and fail for a reason that is not a defect.
+        let keys: std::collections::BTreeSet<&str> = response["result"]
+            .as_object()
+            .expect("result is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            std::collections::BTreeSet::from(["shutdown", "runtime_cleanup_completed"]),
+            "a successful shutdown must gain no diagnostics key"
+        );
+    }
+
     #[test]
     fn advertised_shutdown_horizon_covers_every_bounded_gateway_phase() {
         fn completed_report() -> UnifiedRuntimeShutdownReport {
@@ -4472,22 +4581,83 @@ fn gateway_shutdown_request(message: &Value) -> Option<GatewayShutdownRequest> {
     })
 }
 
+/// Name WHICH cleanup phase blocked, for a failed shutdown only.
+///
+/// `cleanup_completed` is a four-way conjunction (drain not timed out, mob stop
+/// ok, identity authority released or unconfigured, zero orphan processes), and
+/// the wire response used to carry only its result. So a caller learned that
+/// cleanup failed and nothing about which of four unrelated phases failed,
+/// which left a recurring CI shutdown cluster undiagnosed across four
+/// occurrences: every test faithfully printed a response from which the cause
+/// had already been erased.
+///
+/// Typed rather than an encoded string list, so counts stay counts and a new
+/// phase can be added without re-parsing prose.
+fn gateway_shutdown_diagnostics(runtime_shutdown: Option<&UnifiedRuntimeShutdownReport>) -> Value {
+    let Some(report) = runtime_shutdown else {
+        // Distinct from any phase failing: there was no report at all, so
+        // nothing ran to completion or otherwise.
+        return json!({ "runtime_shutdown_report": "absent" });
+    };
+    json!({
+        "runtime_shutdown_report": "present",
+        "drain": {
+            "timed_out": report.drain.timed_out,
+            "drained_count": report.drain.drained_count,
+            "drain_duration_ms": report.drain.drain_duration_ms
+        },
+        // Typed phase status and numeric facts ONLY. No error Display and no
+        // provider message: those are unstable across versions and can carry
+        // paths or credentials, and this response crosses the SDK wire. The
+        // point is to name WHICH phase blocked, which the operator can then
+        // pair with the gateway's own logs.
+        "mob_stop": match &report.mob_stop {
+            Ok(()) => "ok",
+            Err(_) => "failed",
+        },
+        "identity_authority_release": match &report.identity_authority_release {
+            IdentityAuthorityReleaseOutcome::NotConfigured => {
+                json!({ "outcome": "not_configured" })
+            }
+            IdentityAuthorityReleaseOutcome::Released { grant_count } => {
+                json!({ "outcome": "released", "grant_count": grant_count })
+            }
+            IdentityAuthorityReleaseOutcome::Failed { .. } => {
+                json!({ "outcome": "failed" })
+            }
+            IdentityAuthorityReleaseOutcome::SkippedResetCleanupFailed { .. } => {
+                json!({ "outcome": "skipped_reset_cleanup_failed" })
+            }
+            IdentityAuthorityReleaseOutcome::SkippedMobStopFailed => {
+                json!({ "outcome": "skipped_mob_stop_failed" })
+            }
+        },
+        "module_shutdown": { "orphan_processes": report.module_shutdown.orphan_processes }
+    })
+}
+
 fn gateway_shutdown_response(
     response_id: Value,
     runtime_shutdown: Option<&UnifiedRuntimeShutdownReport>,
 ) -> Value {
     let runtime_cleanup_completed =
         runtime_shutdown.is_some_and(UnifiedRuntimeShutdownReport::cleanup_completed);
+    let mut result = json!({
+        // Future completion alone is not successful authority cleanup.
+        // SDKs validate these fields and surface failure only after
+        // reaping the gateway.
+        "shutdown": runtime_cleanup_completed,
+        "runtime_cleanup_completed": runtime_cleanup_completed
+    });
+    if !runtime_cleanup_completed {
+        // Failure only. A successful shutdown keeps the response byte-identical
+        // to what every existing SDK check already validates.
+        result["runtime_cleanup_diagnostics"] = gateway_shutdown_diagnostics(runtime_shutdown);
+    }
     json!({
         "jsonrpc": "2.0",
         "id": response_id,
-        "result": {
-            // Future completion alone is not successful authority cleanup.
-            // SDKs validate these fields and surface failure only after
-            // reaping the gateway.
-            "shutdown": runtime_cleanup_completed,
-            "runtime_cleanup_completed": runtime_cleanup_completed
-        }
+        "result": result
     })
 }
 
