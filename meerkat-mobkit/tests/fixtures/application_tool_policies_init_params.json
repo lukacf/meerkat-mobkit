@@ -1,0 +1,6 @@
+{
+  "application_tool_policies": [
+    "{\"schema_version\":1,\"provider_id\":\"homecore\",\"policy_id\":\"household-tools\",\"revision\":1,\"policy_digest\":\"sha256:da21b94d8f8d10a944054d464c72022c6a6264e84a50510792c82f0e93c09f40\",\"source\":{\"source_id\":\"mobkit-test-source\",\"source_digest\":\"sha256:2dcfe8ad3209481fa41efd07a3aef8a16da374e7768d20542ed0faa3fccd2bb7\"},\"default_deny\":true,\"members\":[{\"member_identity\":\"member-a\",\"grants\":[{\"tool_name\":\"shell\",\"action\":\"invoke\",\"consequence\":\"r2\"}]}]}\n"
+  ],
+  "has_roster_provider": true
+}

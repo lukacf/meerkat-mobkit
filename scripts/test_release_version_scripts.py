@@ -62,6 +62,16 @@ class ReleaseVersionScriptsTests(unittest.TestCase):
         (self.root / "meerkat-mobkit/BUILD.bazel").write_text(
             'rustc_env = {"CARGO_PKG_VERSION": "0.8.0"}\n'
         )
+        # A SECOND generated BUILD.bazel, because one is not a test of the
+        # defect. bump-sdk-versions.sh used to sed meerkat-mobkit's file by
+        # name and release-hook.sh used to stage it by name, so
+        # mobkit-store-conformance/BUILD.bazel drifted a release behind from
+        # the moment that crate existed. With a single-crate fixture both the
+        # broken and the fixed script pass.
+        (self.root / "mobkit-store-conformance").mkdir(parents=True, exist_ok=True)
+        (self.root / "mobkit-store-conformance/BUILD.bazel").write_text(
+            'rustc_env = {"CARGO_PKG_VERSION": "0.8.0"}\n'
+        )
         (self.root / "MODULE.bazel").write_text(
             'module(\n    name = "meerkat_mobkit",\n    version = "0.8.0",\n)\n'
         )
@@ -110,6 +120,26 @@ class ReleaseVersionScriptsTests(unittest.TestCase):
         self.assertIn("MODULE.bazel", staged)
         self.assertIn("docs/quickstart.mdx", staged)
         self.assertIn("docs/sdks/rust.mdx", staged)
+
+        # EVERY generated BUILD.bazel, bumped and staged. The conformance crate
+        # is the one the old hardcoded paths missed, so asserting it is what
+        # makes this a test of the defect rather than of the happy path.
+        for crate in ("meerkat-mobkit", "mobkit-store-conformance"):
+            build_file = f"{crate}/BUILD.bazel"
+            self.assertIn(
+                '"CARGO_PKG_VERSION": "0.8.1"',
+                (self.root / build_file).read_text(),
+                f"{build_file} was not bumped",
+            )
+            self.assertIn(build_file, staged, f"{build_file} was not staged")
+
+        # And nothing generated may be left dirty: a release commit that omits
+        # a regenerated file ships a version its build files disagree with.
+        dirty = self.run_command(
+            "git", "diff", "--name-only"
+        ).stdout.splitlines()
+        self.assertNotIn("mobkit-store-conformance/BUILD.bazel", dirty)
+        self.assertNotIn("meerkat-mobkit/BUILD.bazel", dirty)
         self.assertIn(
             'meerkat-mobkit = "0.8.1"',
             (self.root / "docs/quickstart.mdx").read_text(),

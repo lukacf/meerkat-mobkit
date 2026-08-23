@@ -42,6 +42,7 @@ class MobKitBuilderConfig:
     scratch_dir: str | None = None
     roster_provider: Any | None = None
     role_migrations: list[dict[str, str]] | None = None
+    application_tool_policies: list[str] | None = None
     topology_provider: Any | None = None
     agent_customizer: Any | None = None
     identity_bootstrap_mode: IdentityBootstrapMode | None = None
@@ -617,6 +618,56 @@ class MobKitBuilder:
         self._config.role_migrations = [
             declaration.to_dict() for declaration in normalized
         ]
+        return self
+
+    def application_tool_policies(
+        self, policies: Iterable[str | bytes]
+    ) -> MobKitBuilder:
+        """Serve compiled application tool policies to governed members.
+
+        Each entry is the EXACT canonical JSON of one compiled policy, as
+        produced by your policy compiler::
+
+            .application_tool_policies([compiled_household_tools_bytes])
+
+        Pass the compiler's bytes through unchanged. Parsing verifies the
+        policy digest against the bytes it is given, so re-serialising the
+        JSON here would have MobKit check a digest against bytes it had just
+        produced itself rather than the ones you compiled.
+
+        The provider identity comes from the artifact: each policy declares its
+        own author, and members bind to it by that carried id. MobKit registers
+        one provider per distinct author and names none itself.
+
+        A malformed entry, or one whose digest does not match its bytes,
+        refuses the boot rather than silently arming nothing.
+        """
+        normalized: list[str] = []
+        for index, policy in enumerate(policies):
+            if isinstance(policy, bytes):
+                try:
+                    decoded = policy.decode("utf-8")
+                except UnicodeDecodeError as error:
+                    raise ValueError(
+                        f"application_tool_policies[{index}] is not valid UTF-8: {error}"
+                    ) from error
+            elif isinstance(policy, str):
+                decoded = policy
+            else:
+                raise TypeError(
+                    f"application_tool_policies[{index}] must be str or bytes, "
+                    f"got {type(policy).__name__}"
+                )
+            if not decoded.strip():
+                # An empty entry cannot be a compiled policy, and passing it on
+                # would surface as a parse error at boot with nothing pointing
+                # at which entry was blank.
+                raise ValueError(
+                    f"application_tool_policies[{index}] is empty; each entry must be "
+                    "the canonical JSON of one compiled policy"
+                )
+            normalized.append(decoded)
+        self._config.application_tool_policies = normalized
         return self
 
     def roster(self, provider: Any) -> MobKitBuilder:
