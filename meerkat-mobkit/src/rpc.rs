@@ -1754,6 +1754,14 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/call_tool",
                 "mobkit/models/catalog",
                 "mobkit/blob/get",
+                // The member-declaration control plane. Namespaced `mob/` rather
+                // than `mobkit/` deliberately: these mirror meerkat's own
+                // catalog entries and wire types exactly, and a divergent name
+                // would defeat the parity that is the whole point of exposing
+                // them.
+                "mob/adopt_member_identity_declaration",
+                "mob/apply_member_tool_declaration",
+                "mob/member_tool_declaration",
                 "mobkit/send_message",
                 "mobkit/find_members",
                 "mobkit/ensure_member",
@@ -2970,6 +2978,21 @@ async fn handle_unified_rpc_json_inner(
         }
         "mobkit/blob/get" => {
             mob_methods::handle_blob_get(runtime, response_id, &request.params).await
+        }
+        "mob/adopt_member_identity_declaration" => {
+            mob_methods::handle_adopt_member_identity_declaration(
+                runtime,
+                response_id,
+                &request.params,
+            )
+            .await
+        }
+        "mob/apply_member_tool_declaration" => {
+            mob_methods::handle_apply_member_tool_declaration(runtime, response_id, &request.params)
+                .await
+        }
+        "mob/member_tool_declaration" => {
+            mob_methods::handle_member_tool_declaration(runtime, response_id, &request.params).await
         }
         "mobkit/send_message" => {
             // Pass the identity runtime so bare durable identities resolve

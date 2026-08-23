@@ -3261,6 +3261,414 @@ pub(super) async fn handle_peer_pubkey(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
+mod member_declaration_error_parity_tests {
+    //! The PR claims these methods classify a failure the same way rkat-rpc does.
+    //! That claim needs a test: meerkat's mapping lives behind a trait private to
+    //! its handler module, so this one is reproduced from `MobError`'s public
+    //! accessors and could silently diverge. Asserting the CODE and the typed
+    //! DATA is what makes the parity claim falsifiable rather than aspirational.
+
+    use meerkat_contracts::ErrorCode;
+
+    use super::mob_declaration_error;
+
+    fn error_for(error: &meerkat_mob::MobError) -> (i64, Option<serde_json::Value>) {
+        let response = mob_declaration_error(serde_json::json!("parity-test"), error);
+        let rendered = response.error.expect("a MobError must render as an error");
+        assert!(
+            response.result.is_none(),
+            "an error response must not also carry a result"
+        );
+        (rendered.code, rendered.data)
+    }
+
+    /// A classified error must carry meerkat's own jsonrpc code plus the typed
+    /// recovery facts, not a generic -32602 with a prose message.
+    #[test]
+    fn a_classified_error_keeps_its_code_and_typed_data() {
+        let (code, data) = error_for(&meerkat_mob::MobError::StaleEventCursor {
+            after_cursor: 40,
+            latest_cursor: 25,
+        });
+        assert_eq!(
+            code,
+            i64::from(ErrorCode::StaleCursor.jsonrpc_code()),
+            "the classified code must survive, or a caller cannot branch on it"
+        );
+        let data = data.expect("stale-cursor data is the recovery fact");
+        assert_eq!(data["watermark"], serde_json::json!(25));
+        assert_eq!(data["requested"], serde_json::json!(40));
+    }
+
+    #[test]
+    fn a_second_class_maps_to_its_own_code_rather_than_a_shared_one() {
+        let (code, data) = error_for(&meerkat_mob::MobError::StaleFenceToken {
+            runtime_id: meerkat_mob::AgentRuntimeId::initial(meerkat_mob::AgentIdentity::from(
+                "worker",
+            )),
+            expected: meerkat_mob::FenceToken::new(3),
+            actual: meerkat_mob::FenceToken::new(2),
+        });
+        assert_eq!(code, i64::from(ErrorCode::StaleFence.jsonrpc_code()));
+        let data = data.expect("stale-fence data carries the fence numbers");
+        assert_eq!(data["expected"], serde_json::json!(3));
+        assert_eq!(data["actual"], serde_json::json!(2));
+        // Distinctness is the point: if both classes collapsed to one code the
+        // two assertions above would still pass individually.
+        assert_ne!(
+            ErrorCode::StaleFence.jsonrpc_code(),
+            ErrorCode::StaleCursor.jsonrpc_code()
+        );
+    }
+
+    /// An UNCLASSIFIED error must still be an error, and must fall back to
+    /// invalid-params rather than inventing a classified code it does not have.
+    #[test]
+    fn an_unclassified_error_falls_back_without_fabricating_a_class() {
+        let (code, _) = error_for(&meerkat_mob::MobError::Internal(
+            "no wire classification for this one".to_string(),
+        ));
+        assert_eq!(
+            code, -32602,
+            "an unclassified MobError must not borrow a classified code"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod member_declaration_delegation_tests {
+    //! End-to-end through the REAL router with a REAL runtime.
+    //!
+    //! The defect these close is not a wrong answer, it is `method not found`:
+    //! meerkat shipped both handle operations and MobKit reached neither, so a
+    //! host could supply a compiled policy at init and never bind a member to it.
+    //! The assertion that matters is therefore that these methods are ROUTED and
+    //! land in a handler that talks to the mob handle.
+
+    use crate::unified_runtime::lifecycle::stop_degrade_tests::empty_runtime;
+
+    const METHOD_NOT_FOUND: i64 = -32601;
+
+    async fn route(mob: &str, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let runtime = empty_runtime(mob).await;
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "delegation-test",
+            "method": method,
+            "params": params,
+        })
+        .to_string();
+        let raw = crate::rpc::handle_unified_rpc_json(
+            &runtime,
+            &request,
+            std::time::Duration::from_secs(5),
+            None,
+            None,
+        )
+        .await;
+        serde_json::from_str(&raw).expect("router must answer with JSON")
+    }
+
+    /// All THREE methods must be reachable. Before this change the router had no
+    /// `mob/` namespace at all, so every one of these returned method-not-found.
+    #[tokio::test]
+    async fn all_three_declaration_methods_are_routed_not_method_not_found() {
+        // A DISTINCT mob per iteration: the comms participant name registry is
+        // process-global, so reusing one id makes the second bootstrap fail with
+        // ParticipantNameOccupied and the test reports a routing problem it never
+        // reached.
+        for (index, method) in [
+            "mob/adopt_member_identity_declaration",
+            "mob/apply_member_tool_declaration",
+            "mob/member_tool_declaration",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let response = route(
+                &format!("declaration-routing-{index}"),
+                method,
+                serde_json::json!({}),
+            )
+            .await;
+            let code = response
+                .get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(serde_json::Value::as_i64);
+            assert_ne!(
+                code,
+                Some(METHOD_NOT_FOUND),
+                "{method} is still unroutable, which is the entire defect"
+            );
+        }
+    }
+
+    /// Routing and refusal are not delegation. This proves the request actually
+    /// reaches the MOB HANDLE: the payload is well formed and targets this
+    /// gateway's own mob, so it passes parsing, conversion and the foreign-mob
+    /// guard, and the only thing left that can answer is the mob machine.
+    ///
+    /// An unknown identity is not an error on this path. The machine returns a
+    /// SUCCESSFUL `ApplyMemberToolDeclarationResult` whose commit outcome is
+    /// `MemberAbsent`, with a fresh convergence status. That is stronger evidence
+    /// than a refusal would be: a routing miss, a params error or the foreign-mob
+    /// guard would each have produced `error` instead of a typed domain result.
+    #[tokio::test]
+    async fn a_well_formed_request_reaches_the_mob_handle() {
+        let response = route(
+            "declaration-delegation",
+            "mob/apply_member_tool_declaration",
+            serde_json::json!({
+                "mob_id": "declaration-delegation",
+                "agent_identity": "identity:child-2",
+                "request_id": "hc-tp-apply-identity-child-2-rev109-0001",
+                "expected_intent_revision": 3,
+                "declaration": {
+                    "category_overrides": {},
+                    "callback_tools": { "kind": "inherit" },
+                    "execution": { "kind": "inherit" },
+                    "application_policy": {
+                        "kind": "provider",
+                        "provider_id": "homecore",
+                        "policy_id": "household-tools"
+                    }
+                },
+                "convergence": { "kind": "drain", "max_wait_ms": 120000 }
+            }),
+        )
+        .await;
+        // An unknown identity is NOT an error on this path: the mob machine
+        // answers Ok with commit MemberAbsent and a fresh convergence status. So
+        // this is a genuinely SUCCESSFUL call into the handle, which is stronger
+        // evidence of delegation than any refusal could be - a params error, a
+        // routing miss or the foreign-mob guard would all have produced `error`.
+        let result = response
+            .get("result")
+            .unwrap_or_else(|| panic!("a well-formed same-mob request must succeed: {response}"));
+        assert_eq!(
+            result
+                .get("commit")
+                .and_then(|commit| commit.get("outcome")),
+            Some(&serde_json::json!("member_absent")),
+            "the handle must report the absent member, proving the machine answered: {response}"
+        );
+        assert!(
+            result.get("convergence").is_some(),
+            "the canonical result carries a convergence status: {response}"
+        );
+    }
+
+    /// Reaching the handler is not enough: it must reach the handle's mob. A
+    /// payload aimed elsewhere is refused with a typed reason rather than being
+    /// silently retargeted at this gateway's mob and reported as success.
+    #[tokio::test]
+    async fn a_payload_for_another_mob_is_refused_with_a_typed_reason() {
+        let response = route(
+            "declaration-own-mob",
+            "mob/apply_member_tool_declaration",
+            serde_json::json!({
+                "mob_id": "some-other-mob",
+                "agent_identity": "identity:child-2",
+                "request_id": "hc-tp-apply-identity-child-2-rev109-0001",
+                "expected_intent_revision": 3,
+                "declaration": {
+                    "category_overrides": {},
+                    "callback_tools": { "kind": "inherit" },
+                    "execution": { "kind": "inherit" },
+                    "application_policy": {
+                        "kind": "provider",
+                        "provider_id": "homecore",
+                        "policy_id": "household-tools"
+                    }
+                },
+                "convergence": { "kind": "drain", "max_wait_ms": 120000 }
+            }),
+        )
+        .await;
+        let error = response
+            .get("error")
+            .expect("a foreign mob must be refused");
+        assert_eq!(
+            error.get("data").and_then(|data| data.get("kind")),
+            Some(&serde_json::json!("foreign_mob_target")),
+            "the refusal must say WHY, not just fail: {response}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod member_declaration_wire_tests {
+    //! Contract tests for the `mob/*` member-declaration surface.
+    //!
+    //! These assert against the EXACT payload HomeCore's Phase B sends, supplied
+    //! over bus with real production values from their state generation 90, rather
+    //! than against a shape inferred from the struct definitions. That distinction
+    //! is the point: the two previous gaps on this surface (#337's carrier and the
+    //! role-migration carrier) were both "the type existed and the caller could not
+    //! reach it", and a payload I invented myself would reproduce the same class of
+    //! mistake one level up.
+
+    /// The apply request HomeCore sends 17 times per rollout, verbatim.
+    const HOMECORE_APPLY_PARAMS: &str = r#"{
+      "mob_id": "homecore",
+      "agent_identity": "identity:child-2",
+      "request_id": "hc-tp-apply-identity-child-2-rev109-0001",
+      "expected_intent_revision": 3,
+      "declaration": {
+        "category_overrides": {
+          "builtins": "inherit",
+          "shell": "inherit",
+          "comms": "inherit",
+          "mob": "inherit",
+          "memory": "inherit",
+          "schedule": "inherit",
+          "workgraph": "inherit",
+          "image_generation": "inherit",
+          "web_search": "inherit"
+        },
+        "callback_tools": { "kind": "inherit" },
+        "execution": { "kind": "inherit" },
+        "application_policy": {
+          "kind": "provider",
+          "provider_id": "homecore",
+          "policy_id": "household-tools"
+        }
+      },
+      "convergence": { "kind": "drain", "max_wait_ms": 120000 }
+    }"#;
+
+    /// The adopt request, sent once per member before its first apply. Byte-what
+    /// HomeCore's runner sends (scripts/dev/tool_policy_adopt_apply.py at
+    /// acd642e); per-member variation is only agent_identity, request_id, the
+    /// session values and profile_name.
+    const HOMECORE_ADOPT_PARAMS: &str = r#"{
+      "mob_id": "homecore",
+      "agent_identity": "identity:child-2",
+      "request_id": "hc-tp-adopt-identity-child-2-0001",
+      "precondition": "expected_absent",
+      "declaration_scope": "homecore-tool-policy",
+      "declaration_revision": 1,
+      "session": {
+        "session_id": "01a02578-6294-7512-9489-0fb1f57bd9e6",
+        "lineage_id": "session:01a02578-6294-7512-9489-0fb1f57bd9e6",
+        "lineage_generation": 0,
+        "authority_policy": "require_existing"
+      },
+      "member": {
+        "profile_name": "identity",
+        "runtime_mode": "turn_driven",
+        "execution": { "execution": "controlling_session" }
+      },
+      "owned_wiring": [],
+      "convergence": { "kind": "drain", "max_wait_ms": 120000 }
+    }"#;
+
+    #[test]
+    fn the_adopt_payload_homecore_actually_sends_parses_and_converts() {
+        let params: meerkat_contracts::wire::MobAdoptMemberIdentityDeclarationParams =
+            serde_json::from_str(HOMECORE_ADOPT_PARAMS)
+                .expect("HomeCore's production adopt payload must deserialize");
+        assert_eq!(params.declaration_scope, "homecore-tool-policy");
+        assert_eq!(params.declaration_revision, 1);
+
+        // The whole payload converts in one step, which is why adoption inherits
+        // meerkat's validation exactly rather than being reassembled here. If this
+        // conversion ever tightens upstream, this fails on HomeCore's real payload
+        // instead of on their 17th member.
+        let request: meerkat_mob::AdoptMemberIdentityDeclaration = params
+            .try_into()
+            .expect("the production payload must convert to the domain request");
+        let _ = request;
+    }
+
+    /// `wiring_custody` is absent from HomeCore's payload and must therefore
+    /// default rather than being required: the field is `skip_serializing_if`
+    /// external-managed on the wire, so a caller that omits it is saying
+    /// "external managed", not "malformed".
+    #[test]
+    fn an_omitted_wiring_custody_defaults_instead_of_failing() {
+        assert!(
+            !HOMECORE_ADOPT_PARAMS.contains("wiring_custody"),
+            "fixture must keep exercising the omitted case"
+        );
+        let params: meerkat_contracts::wire::MobAdoptMemberIdentityDeclarationParams =
+            serde_json::from_str(HOMECORE_ADOPT_PARAMS).expect("payload parses without it");
+        assert!(params.wiring_custody.is_external_managed());
+    }
+
+    #[test]
+    fn the_apply_payload_homecore_actually_sends_parses() {
+        let params: meerkat_contracts::wire::MobApplyMemberToolDeclarationParams =
+            serde_json::from_str(HOMECORE_APPLY_PARAMS)
+                .expect("HomeCore's production apply payload must deserialize");
+        assert_eq!(params.mob_id, "homecore");
+        assert_eq!(params.agent_identity, "identity:child-2");
+        assert_eq!(params.expected_intent_revision, 3);
+
+        // And it must survive the conversions the handler performs, so a payload
+        // that parses but cannot become a domain request fails here rather than at
+        // HomeCore's 17th member.
+        let declaration: meerkat_mob::MemberToolDeclaration = params
+            .declaration
+            .try_into()
+            .expect("the carried declaration must convert to the domain type");
+        let _ = declaration;
+        meerkat_mob::MemberToolMutationId::new(params.request_id)
+            .expect("HomeCore's idempotency request_id scheme must be accepted");
+    }
+
+    /// `deny_unknown_fields` is what makes a typo fail loudly instead of arming
+    /// nothing, which is exactly how the #337 carrier gap stayed invisible.
+    #[test]
+    fn an_unknown_field_is_refused_rather_than_ignored() {
+        let with_typo = HOMECORE_APPLY_PARAMS.replace(
+            "\"expected_intent_revision\"",
+            "\"expected_intent_revison\"",
+        );
+        let parsed: Result<meerkat_contracts::wire::MobApplyMemberToolDeclarationParams, _> =
+            serde_json::from_str(&with_typo);
+        assert!(
+            parsed.is_err(),
+            "a misspelled field must be refused, not silently defaulted"
+        );
+    }
+
+    /// The category overrides are sent in full explicit form on purpose:
+    /// inherit, disable and set are different facts. A wire that accepted an
+    /// elided form would let a caller believe it had said something it had not.
+    #[test]
+    fn every_category_override_survives_the_round_trip() {
+        let params: meerkat_contracts::wire::MobApplyMemberToolDeclarationParams =
+            serde_json::from_str(HOMECORE_APPLY_PARAMS).expect("payload parses");
+        let reserialized = serde_json::to_value(&params).expect("wire params must reserialize");
+        let overrides = reserialized
+            .get("declaration")
+            .and_then(|declaration| declaration.get("category_overrides"))
+            .and_then(serde_json::Value::as_object)
+            .expect("category_overrides must survive as an object");
+        for category in [
+            "builtins",
+            "shell",
+            "comms",
+            "mob",
+            "memory",
+            "schedule",
+            "workgraph",
+            "image_generation",
+            "web_search",
+        ] {
+            assert!(
+                overrides.contains_key(category),
+                "category override {category} was dropped on the way through the wire type"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -3602,5 +4010,370 @@ comms = true
             session error: NotFound for registered runtime session";
 
         assert!(!lifecycle_archive_cleanup_completed(error));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Member declaration control plane (mob/*)
+//
+// Meerkat owns `adopt_member_identity_declaration` and
+// `apply_member_tool_declaration` on the Mob handle and exposes them over
+// rkat-rpc and rkat-rest. MobKit linked the TYPES but reached neither, so a host
+// composing through MobKit could supply a compiled policy at init and then never
+// bind a member to it: every member stayed Unmanaged and the installed provider
+// governed nothing.
+//
+// These delegate straight to the canonical handle. No semantic validation is
+// reimplemented here: adoption converts through meerkat-mob's own
+// `TryFrom<MobAdoptMemberIdentityDeclarationParams>`, and the tool path reuses
+// `MemberToolDeclaration`'s conversion and `MemberToolMutationId`'s constructor.
+// Adoption stays a one-shot CAS against live intent state rather than becoming an
+// init-time declaration list, because the precondition is the whole point.
+// ---------------------------------------------------------------------------
+
+/// Render a `MobError` with the same typed code and structured data that
+/// meerkat's own RPC surface produces.
+///
+/// meerkat-rpc reaches this through a `MobWireErrorSource` trait that is private
+/// to its handler module, so the mapping is reproduced from `MobError`'s public
+/// accessors rather than shared. Kept deliberately identical: a host that moves
+/// between rkat-rpc and the MobKit gateway must classify the same failure the
+/// same way, and these are the first typed-error responses in this module - the
+/// surrounding handlers hand-shape `-32000` with an ad-hoc `data.kind`.
+fn mob_declaration_error(response_id: Value, error: &meerkat_mob::MobError) -> JsonRpcResponse {
+    let (code, data): (i64, Option<Value>) = match error.wire_detail() {
+        Some(detail) => match detail.detail_value() {
+            Ok(data) => (i64::from(detail.code().jsonrpc_code()), Some(data)),
+            // Fail closed rather than downgrade to an untyped error: a caller
+            // that cannot see WHICH mob error this was is better served by an
+            // explicit internal error than by a plausible-looking -32602.
+            Err(serialize_error) => {
+                return JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32603,
+                        message: format!("failed to serialize mob error detail: {serialize_error}"),
+                        data: None,
+                    }),
+                };
+            }
+        },
+        None => (
+            error
+                .wire_error_code()
+                .map_or(-32602, |code| i64::from(code.jsonrpc_code())),
+            error.structured_data(),
+        ),
+    };
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: None,
+        error: Some(JsonRpcError {
+            code,
+            message: error.to_string(),
+            data,
+        }),
+    }
+}
+
+fn declaration_invalid_params(response_id: Value, message: String) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: None,
+        error: Some(JsonRpcError {
+            code: -32602,
+            message,
+            data: None,
+        }),
+    }
+}
+
+fn declaration_result_response(response_id: Value, result: Value) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: Some(result),
+        error: None,
+    }
+}
+
+/// Refuse a payload aimed at a different mob.
+///
+/// The handle overwrites `request.mob_id` with its own, so a mismatched value
+/// would otherwise be silently retargeted at THIS mob and reported as success.
+/// meerkat's RPC surface selects state by the supplied mob_id, so a mismatch
+/// there is a lookup; a gateway serves exactly one mob, so here it is a caller
+/// error and saying so is the only way the caller can find out.
+fn reject_foreign_mob(
+    runtime: &UnifiedRuntime,
+    response_id: &Value,
+    supplied: &str,
+) -> Option<JsonRpcResponse> {
+    let own = runtime.mob_handle().mob_id().to_string();
+    if supplied == own {
+        return None;
+    }
+    Some(JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id.clone(),
+        result: None,
+        error: Some(JsonRpcError {
+            code: -32602,
+            message: format!("request targets mob '{supplied}' but this gateway serves '{own}'"),
+            data: Some(serde_json::json!({
+                "kind": "foreign_mob_target",
+                "requested_mob_id": supplied,
+                "gateway_mob_id": own,
+            })),
+        }),
+    })
+}
+
+/// `mob/adopt_member_identity_declaration`
+///
+/// Establish revision 1 for an existing member under an explicit
+/// expected-absent precondition. The whole wire payload converts through
+/// meerkat-mob, so the precondition and every field constraint are enforced by
+/// the same code rkat-rpc uses.
+pub(super) async fn handle_adopt_member_identity_declaration(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let params: meerkat_contracts::wire::MobAdoptMemberIdentityDeclarationParams =
+        match serde_json::from_value(params.clone()) {
+            Ok(params) => params,
+            Err(error) => return declaration_invalid_params(response_id, error.to_string()),
+        };
+    if let Some(rejection) = reject_foreign_mob(runtime, &response_id, &params.mob_id) {
+        return rejection;
+    }
+    let request: meerkat_mob::AdoptMemberIdentityDeclaration = match params.try_into() {
+        Ok(request) => request,
+        Err(error) => return declaration_invalid_params(response_id, error.to_string()),
+    };
+    match runtime
+        .mob_handle()
+        .adopt_member_identity_declaration(request)
+        .await
+    {
+        Ok(result) => {
+            let wire = meerkat_contracts::wire::MobAdoptMemberIdentityDeclarationResult {
+                adoption: result.adoption.to_wire(),
+                convergence: result.convergence.to_wire(),
+            };
+            match serde_json::to_value(wire) {
+                Ok(value) => declaration_result_response(response_id, value),
+                Err(error) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32603,
+                        message: format!("failed to serialize adoption result: {error}"),
+                        data: None,
+                    }),
+                },
+            }
+        }
+        Err(error) => mob_declaration_error(response_id, &error),
+    }
+}
+
+/// `mob/member_tool_declaration`
+///
+/// Read the live member-tool declaration and its desired intent revision.
+///
+/// Included at HomeCore's request and on the lead's instruction: without it the
+/// apply CAS is guess-and-retry, because `expected_intent_revision` can only be
+/// learned by reading. Delegates to `identity_intent` and
+/// `identity_convergence_status` on the handle; the Missing-convergence fallback
+/// mirrors meerkat's own handler so a member with intent but no observed
+/// convergence yet reports the desired revision rather than failing.
+pub(super) async fn handle_member_tool_declaration(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let params: meerkat_contracts::wire::MobMemberToolDeclarationParams =
+        match serde_json::from_value(params.clone()) {
+            Ok(params) => params,
+            Err(error) => return declaration_invalid_params(response_id, error.to_string()),
+        };
+    if let Some(rejection) = reject_foreign_mob(runtime, &response_id, &params.mob_id) {
+        return rejection;
+    }
+    let identity = meerkat_mob::AgentIdentity::from(params.agent_identity.as_str());
+    let handle = runtime.mob_handle();
+    let record = match handle.identity_intent(&identity).await {
+        Ok(meerkat_mob::identity::IdentityStoredObservation::Valid(record)) => record,
+        Ok(meerkat_mob::identity::IdentityStoredObservation::Missing) => {
+            return declaration_invalid_params(
+                response_id,
+                "member has no durable identity intent".to_string(),
+            );
+        }
+        Ok(
+            meerkat_mob::identity::IdentityStoredObservation::Unsupported { detail, .. }
+            | meerkat_mob::identity::IdentityStoredObservation::Malformed { detail, .. },
+        ) => {
+            return JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32603,
+                    message: detail,
+                    data: None,
+                }),
+            };
+        }
+        Err(error) => return mob_declaration_error(response_id, &error),
+    };
+    let declaration = match &record.intent {
+        meerkat_mob::identity::IdentityIntent::Present { member, .. } => {
+            member.material.member_tool_declaration()
+        }
+        meerkat_mob::identity::IdentityIntent::Absent { .. } => {
+            return declaration_invalid_params(
+                response_id,
+                "member desired presence is absent".to_string(),
+            );
+        }
+    };
+    let convergence = match handle.identity_convergence_status(&identity).await {
+        Ok(meerkat_mob::identity::IdentityStoredObservation::Valid(status)) => status.to_wire(),
+        // A member can hold intent before any convergence has been observed.
+        // Reporting the desired revision is what meerkat does, and refusing here
+        // would make the read unusable in exactly the window that follows an
+        // adoption - which is when Phase B needs it.
+        Ok(meerkat_mob::identity::IdentityStoredObservation::Missing) => {
+            meerkat_mob::identity::IdentityConvergenceStatus {
+                identity: identity.clone(),
+                intent_revision: Some(record.intent_revision),
+                active_intent_revision: None,
+                lease_epoch: None,
+                decision: None,
+                observed_at_ms: 0,
+                detail: None,
+            }
+            .to_wire()
+        }
+        Ok(
+            meerkat_mob::identity::IdentityStoredObservation::Unsupported { detail, .. }
+            | meerkat_mob::identity::IdentityStoredObservation::Malformed { detail, .. },
+        ) => {
+            return JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32603,
+                    message: format!("identity convergence status is unavailable: {detail}"),
+                    data: None,
+                }),
+            };
+        }
+        Err(error) => return mob_declaration_error(response_id, &error),
+    };
+    let wire = meerkat_contracts::wire::MobMemberToolDeclarationResult {
+        mob_id: handle.mob_id().to_string(),
+        agent_identity: identity.to_string(),
+        desired_intent_revision: record.intent_revision,
+        declaration: declaration.to_wire(),
+        convergence,
+    };
+    match serde_json::to_value(wire) {
+        Ok(value) => declaration_result_response(response_id, value),
+        Err(error) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32603,
+                message: format!("failed to serialize member tool declaration: {error}"),
+                data: None,
+            }),
+        },
+    }
+}
+
+/// `mob/apply_member_tool_declaration`
+///
+/// Atomically update only the tool portion of an existing durable member intent.
+///
+/// Assembled field by field because meerkat-mob exposes no whole-params
+/// conversion for this one, so this mirrors meerkat-rpc's handler exactly. The
+/// semantic checks still live upstream (`MemberToolDeclaration`'s conversion and
+/// `MemberToolMutationId::new`); only the assembly is duplicated, which is worth
+/// replacing with a shared `TryFrom` in meerkat-mob.
+pub(super) async fn handle_apply_member_tool_declaration(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let params: meerkat_contracts::wire::MobApplyMemberToolDeclarationParams =
+        match serde_json::from_value(params.clone()) {
+            Ok(params) => params,
+            Err(error) => return declaration_invalid_params(response_id, error.to_string()),
+        };
+    if let Some(rejection) = reject_foreign_mob(runtime, &response_id, &params.mob_id) {
+        return rejection;
+    }
+    let declaration: meerkat_mob::MemberToolDeclaration = match params.declaration.try_into() {
+        Ok(declaration) => declaration,
+        Err(error) => {
+            return declaration_invalid_params(
+                response_id,
+                std::string::ToString::to_string(&error),
+            );
+        }
+    };
+    let request_id = match meerkat_mob::MemberToolMutationId::new(params.request_id) {
+        Ok(request_id) => request_id,
+        Err(error) => {
+            return declaration_invalid_params(
+                response_id,
+                std::string::ToString::to_string(&error),
+            );
+        }
+    };
+    let request = meerkat_mob::ApplyMemberToolDeclaration {
+        mob_id: runtime.mob_handle().mob_id().clone(),
+        agent_identity: meerkat_mob::AgentIdentity::from(params.agent_identity.as_str()),
+        request_id,
+        expected_intent_revision: params.expected_intent_revision,
+        declaration,
+        convergence: params.convergence.into(),
+    };
+    match runtime
+        .mob_handle()
+        .apply_member_tool_declaration(request)
+        .await
+    {
+        Ok(result) => {
+            let wire = meerkat_contracts::wire::MobApplyMemberToolDeclarationResult {
+                commit: result.commit.to_wire(),
+                convergence: result.convergence.to_wire(),
+            };
+            match serde_json::to_value(wire) {
+                Ok(value) => declaration_result_response(response_id, value),
+                Err(error) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32603,
+                        message: format!("failed to serialize tool declaration result: {error}"),
+                        data: None,
+                    }),
+                },
+            }
+        }
+        Err(error) => mob_declaration_error(response_id, &error),
     }
 }
