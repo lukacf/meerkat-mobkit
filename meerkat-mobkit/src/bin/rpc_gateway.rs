@@ -7563,29 +7563,27 @@ external_addressable = true
     let tool_consequence_policy_registry = if compiled_tool_policies.is_empty() {
         None
     } else {
-        let provider = std::sync::Arc::new(
-            meerkat_mobkit::member_tool_policy::CompiledPolicyProvider::new(
-                meerkat_core::PolicyProviderId::new("mobkit-gateway").unwrap_or_else(|error| {
-                    fail_init(
-                        &request_id,
-                        -32603,
-                        format!("gateway policy provider id is invalid: {error}"),
-                    )
-                }),
-                meerkat_core::PolicyProviderGeneration(1),
-            ),
-        );
-        for payload in &compiled_tool_policies {
-            if let Err(error) = provider.accept_canonical_json(payload.as_bytes()) {
-                fail_init(
-                    &request_id,
-                    -32602,
-                    format!("application_tool_policies entry rejected: {error}"),
-                );
-            }
-        }
+        // One provider per provider id CARRIED by the artifacts. The gateway
+        // deliberately names none: see providers_from_canonical_payloads.
+        let providers = meerkat_mobkit::member_tool_policy::providers_from_canonical_payloads(
+            &compiled_tool_policies,
+        )
+        .unwrap_or_else(|error| {
+            fail_init(
+                &request_id,
+                -32602,
+                format!("application_tool_policies entry rejected: {error}"),
+            )
+        });
+        let providers: Vec<std::sync::Arc<dyn meerkat_core::ToolConsequenceNarrowingPolicy>> =
+            providers
+                .into_iter()
+                .map(|provider| {
+                    provider as std::sync::Arc<dyn meerkat_core::ToolConsequenceNarrowingPolicy>
+                })
+                .collect();
         let registry = meerkat_core::ToolConsequencePolicyRegistry::new(
-            vec![provider as std::sync::Arc<dyn meerkat_core::ToolConsequenceNarrowingPolicy>],
+            providers,
             meerkat_core::PolicyEvaluationSupervisorConfig::default(),
             None,
         )

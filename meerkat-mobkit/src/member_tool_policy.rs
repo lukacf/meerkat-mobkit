@@ -209,6 +209,43 @@ impl CompiledPolicyProvider {
     }
 }
 
+/// Build one provider per distinct provider id CARRIED by the supplied
+/// canonical payloads.
+///
+/// The host must not name the provider. A compiled policy declares its own
+/// author, a member's `ApplicationToolPolicyBinding::Provider { provider_id, .. }`
+/// is resolved by that same carried id, and
+/// `ToolConsequencePolicyRegistry::new` takes a vec precisely so one host can
+/// serve several. Naming a provider here would refuse every policy compiled by
+/// anyone else, which is not a narrower feature but a dead one.
+///
+/// Returns providers ordered by id, so a boot is deterministic in what it
+/// registers.
+pub fn providers_from_canonical_payloads<I, S>(
+    payloads: I,
+) -> Result<Vec<Arc<CompiledPolicyProvider>>, ToolConsequenceFailure>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<[u8]>,
+{
+    let mut by_provider: BTreeMap<PolicyProviderId, Arc<CompiledPolicyProvider>> = BTreeMap::new();
+    for payload in payloads {
+        let policy = CompiledApplicationToolPolicy::parse_canonical_json(payload.as_ref())
+            .map_err(|error| ToolConsequenceFailure::EvaluationFailed {
+                reason: format!("compiled application tool policy rejected: {error}"),
+            })?;
+        let provider_id = policy.provider_id.clone();
+        let provider = by_provider.entry(provider_id.clone()).or_insert_with(|| {
+            Arc::new(CompiledPolicyProvider::new(
+                provider_id,
+                PolicyProviderGeneration(1),
+            ))
+        });
+        provider.accept(policy)?;
+    }
+    Ok(by_provider.into_values().collect())
+}
+
 impl ToolConsequenceNarrowingPolicy for CompiledPolicyProvider {
     fn provider_id(&self) -> &PolicyProviderId {
         &self.provider_id
@@ -242,7 +279,8 @@ mod tests {
     use super::*;
     use meerkat_core::{
         CompiledMemberToolGrant, CompiledMemberToolGrants, CompiledPolicySourceProvenance,
-        CompiledToolConsequence, MobMemberBinding, PolicyRevision, ToolName,
+        CompiledToolConsequence, MobMemberBinding, PolicyEvaluationSupervisorConfig,
+        PolicyRevision, ToolConsequencePolicyRegistry, ToolName,
     };
 
     fn provider_id() -> PolicyProviderId {
@@ -437,6 +475,132 @@ mod tests {
         assert!(
             matches!(error, ToolConsequenceFailure::PolicyMissing { .. }),
             "expected PolicyMissing, got {error:?}"
+        );
+    }
+
+    fn policy_for(provider: &str, policy: &str, member: &str, tool: &str) -> Vec<u8> {
+        CompiledApplicationToolPolicy::new(
+            PolicyProviderId::new(provider).expect("provider id"),
+            PolicyId::new(policy).expect("policy id"),
+            PolicyRevision(1),
+            source(),
+            grants_for(member, tool),
+        )
+        .expect("compiled policy should validate")
+        .canonical_json()
+        .expect("canonical json")
+    }
+
+    #[test]
+    fn providers_are_derived_from_the_ids_the_artifacts_carry() {
+        // HomeCore compiles provider_id "homecore"; nothing in MobKit names it.
+        let payloads = vec![
+            policy_for("homecore", "household-tools", "member-a", "shell"),
+            policy_for("some-other-author", "fleet-baseline", "member-b", "network"),
+        ];
+        let providers =
+            providers_from_canonical_payloads(&payloads).expect("both artifacts install");
+        let ids: Vec<&str> = providers
+            .iter()
+            .map(|provider| provider.provider_id().as_str())
+            .collect();
+        assert_eq!(ids, vec!["homecore", "some-other-author"]);
+    }
+
+    #[test]
+    fn a_foreign_provider_id_is_served_rather_than_refused() {
+        // This is the bug this function exists to prevent: a gateway that named
+        // its own provider refused every policy compiled by anyone else.
+        let payloads = vec![policy_for(
+            "homecore",
+            "household-tools",
+            "member-a",
+            "shell",
+        )];
+        let providers = providers_from_canonical_payloads(&payloads).expect("artifact installs");
+        assert_eq!(providers.len(), 1);
+        let snapshot = providers[0]
+            .snapshot(&PolicyId::new("household-tools").expect("policy id"))
+            .expect("the carried policy id resolves");
+        let mut request = request("member-a", "shell");
+        request.provider_id = PolicyProviderId::new("homecore").expect("provider id");
+        request.policy_id = PolicyId::new("household-tools").expect("policy id");
+        assert!(matches!(
+            snapshot.evaluate(&request),
+            ToolConsequenceVerdict::Allow
+        ));
+    }
+
+    #[test]
+    fn two_policies_from_one_author_share_a_single_provider() {
+        let payloads = vec![
+            policy_for("homecore", "household-tools", "member-a", "shell"),
+            policy_for("homecore", "guest-tools", "member-b", "network"),
+        ];
+        let providers = providers_from_canonical_payloads(&payloads).expect("both install");
+        assert_eq!(providers.len(), 1, "one author means one provider");
+        for policy_id in ["household-tools", "guest-tools"] {
+            providers[0]
+                .snapshot(&PolicyId::new(policy_id).expect("policy id"))
+                .unwrap_or_else(|error| panic!("{policy_id} should resolve: {error}"));
+        }
+    }
+
+    #[test]
+    fn a_registry_built_from_the_derived_providers_binds_the_carried_identity() {
+        // The end-to-end path the gateway performs: artifact -> provider ->
+        // registry -> bind. bind() additionally validates provenance and
+        // consults the supervisor, so passing here proves the composition and
+        // not just the pieces.
+        let payloads = vec![policy_for(
+            "homecore",
+            "household-tools",
+            "member-a",
+            "shell",
+        )];
+        let derived = providers_from_canonical_payloads(&payloads).expect("artifact installs");
+        let providers: Vec<Arc<dyn ToolConsequenceNarrowingPolicy>> = derived
+            .into_iter()
+            .map(|provider| provider as Arc<dyn ToolConsequenceNarrowingPolicy>)
+            .collect();
+        let registry = Arc::new(
+            ToolConsequencePolicyRegistry::new(
+                providers,
+                PolicyEvaluationSupervisorConfig::default(),
+                None,
+            )
+            .expect("registry builds from the derived providers"),
+        );
+
+        let member = MobMemberBinding {
+            mob_id: "mob".to_string(),
+            role: "worker".to_string(),
+            member: "member-a".to_string(),
+        };
+        registry
+            .bind(
+                member.clone(),
+                PolicyProviderId::new("homecore").expect("provider id"),
+                PolicyId::new("household-tools").expect("policy id"),
+            )
+            .expect("the carried provider and policy identity must bind");
+
+        // The negative half, which is the shape of the bug this replaces: the
+        // registry resolves the CARRIED identity, so a name the artifacts never
+        // declared must miss rather than silently bind to whatever is present.
+        // `BoundToolConsequencePolicy` is not `Debug`, so match rather than
+        // `expect_err`, as elsewhere in this module.
+        let error = match registry.bind(
+            member,
+            PolicyProviderId::new("mobkit-gateway").expect("provider id"),
+            PolicyId::new("household-tools").expect("policy id"),
+        ) {
+            Ok(_) => panic!("a provider no artifact declared must not bind"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, ToolConsequenceFailure::ProviderMissing { .. }),
+            "expected ProviderMissing, got {error:?}"
         );
     }
 
