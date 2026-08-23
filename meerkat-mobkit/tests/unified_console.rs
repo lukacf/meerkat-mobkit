@@ -1254,7 +1254,7 @@ async fn post_console_rpc(app: &Router, payload: &Value) -> Value {
 fn assert_no_reserved_member_identity(value: &Value, path: &str) {
     match value {
         Value::String(text) => assert!(
-            !text.starts_with("mk--"),
+            !text.contains("mk--"),
             "{path} leaks the reserved roster namespace: {text}"
         ),
         Value::Array(values) => {

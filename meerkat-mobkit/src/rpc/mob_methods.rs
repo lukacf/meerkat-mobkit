@@ -3476,7 +3476,7 @@ mod member_declaration_surface_tests {
             .chain(rest.find("\npub fn "))
             .chain(rest.find("\npub async fn "))
             .min()
-            .map_or(rest.len(), |offset| offset);
+            .unwrap_or(rest.len());
         text[start..start + needle.len() + end].to_string()
     }
 
