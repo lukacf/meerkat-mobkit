@@ -293,7 +293,7 @@ def test_init_negotiates_explicit_gateway_shutdown_horizon():
 
 @pytest.mark.parametrize("invalid_horizon", [None, True, 0, -1, 1.5, "335000"])
 def test_init_uses_safe_shutdown_horizon_for_invalid_capability(invalid_horizon):
-    assert _GATEWAY_SHUTDOWN_GRACE_SECONDS == 335.0
+    assert _GATEWAY_SHUTDOWN_GRACE_SECONDS == 337.0
     transport = PersistentTransport("unused")
     transport._ensure_running = lambda: None
     transport._send_sync_running = MagicMock(

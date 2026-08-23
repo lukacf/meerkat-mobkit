@@ -243,6 +243,14 @@ pub struct UnifiedRuntime {
         tokio::sync::Mutex<Option<crate::identity_first::runtime::TrackedLeaseRenewalTask>>,
     identity_continuity_repair_task:
         tokio::sync::Mutex<Option<crate::identity_first::runtime::TrackedContinuityRepairTask>>,
+    /// Cleanups for supervisors displaced by `start_identity_first_supervisors`.
+    ///
+    /// Replacement previously did `tokio::spawn(previous.cancel_and_join())` and
+    /// dropped the handle, and a `JoinHandle` detaches on drop, so the cleanup
+    /// could outlive `shutdown()` while still holding the authority it was
+    /// releasing. Owning them here makes them joinable at shutdown.
+    retired_supervisor_cleanups:
+        tokio::sync::Mutex<tokio::task::JoinSet<types::RetiredSupervisorKind>>,
     agent_memory_observer_task:
         tokio::sync::Mutex<Option<crate::memory::taint::TaintObserverGuard>>,
     agent_memory_steward_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
@@ -478,6 +486,7 @@ impl UnifiedRuntime {
             implicit_delegate_identity_runtime: identity_runtime_authority,
             identity_lease_renewal_task: tokio::sync::Mutex::new(None),
             identity_continuity_repair_task: tokio::sync::Mutex::new(None),
+            retired_supervisor_cleanups: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
             agent_memory_observer_task: tokio::sync::Mutex::new(None),
             agent_memory_steward_task: tokio::sync::Mutex::new(None),
             contact_directory: None,
@@ -987,7 +996,10 @@ impl UnifiedRuntime {
             .replace(lease_task)
         {
             previous.cancel();
-            tokio::spawn(previous.cancel_and_join());
+            self.retain_retired_supervisor_cleanup(
+                types::RetiredSupervisorKind::LeaseRenewal,
+                previous.cancel_and_join(),
+            );
         }
         // Broken identities must self-heal: a rejected resume parks the
         // identity "pending reconcile retry", and this task is what runs
@@ -1000,8 +1012,36 @@ impl UnifiedRuntime {
             .replace(repair_task)
         {
             previous.cancel();
-            tokio::spawn(previous.cancel_and_join());
+            self.retain_retired_supervisor_cleanup(
+                types::RetiredSupervisorKind::ContinuityRepair,
+                previous.cancel_and_join(),
+            );
         }
+    }
+
+    /// Retain a replacement cleanup so `shutdown()` can join it.
+    ///
+    /// Stays synchronous on purpose: `attach_identity_first_context` is a sync
+    /// public API, so this uses `Mutex::get_mut` (the same `&mut self` idiom the
+    /// supervisor slots above use) rather than becoming async. `JoinSet::spawn`
+    /// needs a runtime context exactly as the previous `tokio::spawn` did, so
+    /// this adds no new requirement on callers.
+    fn retain_retired_supervisor_cleanup(
+        &mut self,
+        kind: types::RetiredSupervisorKind,
+        cleanup: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        let retired = self.retired_supervisor_cleanups.get_mut();
+        // A JoinSet does not reap on its own: finished tasks sit in it until
+        // something polls them. Without this, a process that re-attaches
+        // repeatedly accumulates completed entries for its whole lifetime, and
+        // the shutdown count would measure total replacements instead of
+        // outstanding work. Non-blocking, so the sync API is preserved.
+        while retired.try_join_next().is_some() {}
+        retired.spawn(async move {
+            cleanup.await;
+            kind
+        });
     }
 
     pub async fn refresh_desired_topology(

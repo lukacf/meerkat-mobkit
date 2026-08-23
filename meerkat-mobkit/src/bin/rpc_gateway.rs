@@ -42,6 +42,7 @@ use meerkat_mobkit::runtime::cross_mob_control::{
 };
 use meerkat_mobkit::unified_runtime::EventLogError;
 use meerkat_mobkit::unified_runtime::types::IdentityAuthorityReleaseOutcome;
+use meerkat_mobkit::unified_runtime::types::RetiredSupervisorCleanupOutcome;
 use meerkat_mobkit::{
     AuthPolicy, AuthProvider, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore,
     ConsolePolicy, ConsoleUiConfig, DiscoverySpec, EventLogConfig, EventLogStore, EventQuery,
@@ -515,6 +516,7 @@ mod tests {
     use super::*;
     use meerkat_mobkit::mob_handle_runtime::MobRuntimeError;
     use meerkat_mobkit::unified_runtime::types::IdentityAuthorityReleaseOutcome;
+    use meerkat_mobkit::unified_runtime::types::RetiredSupervisorCleanupOutcome;
     use meerkat_mobkit::{RuntimeShutdownReport, ShutdownDrainReport};
 
     /// The compiled `action_risk_tiers` table must BIND a caller, not merely
@@ -2830,6 +2832,7 @@ actions = ["agent.view"]
                 identity_authority_release: IdentityAuthorityReleaseOutcome::Released {
                     grant_count: 1,
                 },
+                retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingPending,
             }
         }
         fn diagnostics(report: &UnifiedRuntimeShutdownReport) -> Value {
@@ -2871,6 +2874,57 @@ actions = ["agent.view"]
         let blocked = diagnostics(&report);
         assert_eq!(blocked["module_shutdown"]["orphan_processes"], 3);
 
+        // 5. a retired supervisor cleanup was still running when its join budget
+        // expired. `diagnostics()` asserts shutdown=false and
+        // runtime_cleanup_completed=false, so this also pins that this phase
+        // ALONE is enough to withhold the attestation. It has to be: the
+        // diagnostics block is attached only when cleanup did not complete, so
+        // if this outcome did not gate, it could never be reported in the case
+        // it exists for.
+        let mut report = clean_report();
+        report.retired_supervisor_cleanup = RetiredSupervisorCleanupOutcome::Incomplete {
+            joined: 2,
+            join_failed: 0,
+            pending: 1,
+        };
+        let blocked = diagnostics(&report);
+        assert_eq!(
+            blocked["retired_supervisor_cleanup"]["outcome"],
+            "incomplete"
+        );
+        assert_eq!(blocked["retired_supervisor_cleanup"]["pending"], 1);
+        assert_eq!(blocked["retired_supervisor_cleanup"]["join_failed"], 0);
+
+        // 6. a retired cleanup did not return normally. Distinct from case 5 on
+        // the wire even though both are Incomplete: `join_failed` means a
+        // cleanup whose release boundary cannot be attested, `pending` means a
+        // task that may still be holding the authority.
+        let mut report = clean_report();
+        report.retired_supervisor_cleanup = RetiredSupervisorCleanupOutcome::Incomplete {
+            joined: 0,
+            join_failed: 1,
+            pending: 0,
+        };
+        let blocked = diagnostics(&report);
+        assert_eq!(
+            blocked["retired_supervisor_cleanup"]["outcome"],
+            "incomplete"
+        );
+        assert_eq!(blocked["retired_supervisor_cleanup"]["join_failed"], 1);
+        assert_eq!(blocked["retired_supervisor_cleanup"]["pending"], 0);
+
+        // A fully joined cleanup is NOT a blocking phase, so it must not be able
+        // to withhold the attestation on its own.
+        let mut report = clean_report();
+        report.retired_supervisor_cleanup = RetiredSupervisorCleanupOutcome::Joined {
+            lease_renewal: 1,
+            continuity_repair: 2,
+        };
+        assert!(
+            report.cleanup_completed(),
+            "joining every retired cleanup is a completed phase, not a blocked one"
+        );
+
         // Absent report is a DISTINCT case from any phase failing: nothing ran.
         let response = gateway_shutdown_response(json!("shutdown"), None);
         assert_eq!(response["result"]["shutdown"], false);
@@ -2896,6 +2950,7 @@ actions = ["agent.view"]
             },
             mob_stop: Ok(()),
             identity_authority_release: IdentityAuthorityReleaseOutcome::NotConfigured,
+            retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingPending,
         };
         let response = gateway_shutdown_response(json!("shutdown"), Some(&report));
         assert_eq!(response["result"]["shutdown"], true);
@@ -2934,6 +2989,7 @@ actions = ["agent.view"]
                 identity_authority_release: IdentityAuthorityReleaseOutcome::Released {
                     grant_count: 1,
                 },
+                retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingPending,
             }
         }
 
@@ -2952,17 +3008,23 @@ actions = ["agent.view"]
                 + PROVIDER_CALLBACK_TIMEOUT
                 + GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT
                 + mob_quiesce_window
-                + scheduler_overhead,
-            "runtime budget must exactly cover both provider callbacks, event drain, mob quiesce, and scheduler overhead"
+                + scheduler_overhead
+                // A bounded phase inside runtime.shutdown(). It was added
+                // without this term and the gate did not notice, because the
+                // sum is a hand-written enumeration of phases rather than
+                // anything derived from them. Whoever adds the next phase pays
+                // the same tax: state it here, or silently overrun the horizon.
+                + meerkat_mobkit::unified_runtime::lifecycle::RETIRED_SUPERVISOR_JOIN_BUDGET,
+            "runtime budget must exactly cover both provider callbacks, event drain, mob quiesce, scheduler overhead, and the retired-supervisor join"
         );
         let gateway_phase_budget = GATEWAY_RPC_DRAIN_TIMEOUT
             + meerkat_mobkit::gateway_composition::GATEWAY_HTTP_DRAIN_TIMEOUT
             + meerkat_mobkit::gateway_composition::GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT
             + GATEWAY_STDOUT_DRAIN_TIMEOUT;
-        assert_eq!(gateway_phase_budget, Duration::from_secs(325));
+        assert_eq!(gateway_phase_budget, Duration::from_secs(327));
         assert_eq!(
             Duration::from_millis(GATEWAY_SHUTDOWN_HORIZON_MS),
-            Duration::from_secs(335)
+            Duration::from_secs(337)
         );
         assert_eq!(
             Duration::from_millis(GATEWAY_SHUTDOWN_HORIZON_MS).saturating_sub(gateway_phase_budget),
@@ -4551,18 +4613,19 @@ const GATEWAY_SHUTDOWN_METHOD: &str = "mobkit/shutdown";
 // open while identity-owned cleanup runs. The runtime budget deliberately
 // covers two complete callback windows: one for an already-admitted identity
 // operation which shutdown must join, and one for the final batched lease
-// release. The 310-second runtime budget is exactly two 130-second provider
+// release. The 312-second runtime budget is exactly two 130-second provider
 // callback windows, the runtime's 30-second event drain, its 10-second mob
-// quiesce window, and 10 seconds of scheduler overhead.
+// quiesce window, 10 seconds of scheduler overhead, and the 2-second
+// retired-supervisor join.
 const PROVIDER_CALLBACK_TIMEOUT: Duration = Duration::from_secs(130);
 const GATEWAY_RPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const GATEWAY_STDOUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
-// The bounded gateway phases total at most 325 seconds (5 + 5 + 310 + 5).
+// The bounded gateway phases total at most 327 seconds (5 + 5 + 312 + 5).
 // Advertise another 10 seconds for response delivery and process reaping so
 // an SDK never races the gateway's own deadline and preempts a valid callback.
-const GATEWAY_SHUTDOWN_HORIZON_MS: u64 = 335_000;
+const GATEWAY_SHUTDOWN_HORIZON_MS: u64 = 337_000;
 
 #[derive(Debug)]
 struct GatewayShutdownRequest {
@@ -4632,7 +4695,35 @@ fn gateway_shutdown_diagnostics(runtime_shutdown: Option<&UnifiedRuntimeShutdown
                 json!({ "outcome": "skipped_mob_stop_failed" })
             }
         },
-        "module_shutdown": { "orphan_processes": report.module_shutdown.orphan_processes }
+        "module_shutdown": { "orphan_processes": report.module_shutdown.orphan_processes },
+        // This phase gates cleanup_completed(), so it CAN be the sole reason
+        // this response exists. That is why it must appear here: diagnostics
+        // attach only when cleanup did not complete, so a gating phase absent
+        // from them would be unreportable in exactly its own failure case.
+        "retired_supervisor_cleanup": match &report.retired_supervisor_cleanup {
+            RetiredSupervisorCleanupOutcome::NothingPending => {
+                json!({ "outcome": "nothing_pending" })
+            }
+            RetiredSupervisorCleanupOutcome::Joined {
+                lease_renewal,
+                continuity_repair,
+            } => json!({
+                "outcome": "joined",
+                "lease_renewal": lease_renewal,
+                "continuity_repair": continuity_repair
+            }),
+            RetiredSupervisorCleanupOutcome::Incomplete {
+                joined,
+                join_failed,
+                pending,
+            } => json!({
+                "outcome": "incomplete",
+                "joined": joined,
+                "join_failed": join_failed,
+                "pending": pending
+            }),
+            _ => json!({ "outcome": "unclassified" }),
+        }
     })
 }
 

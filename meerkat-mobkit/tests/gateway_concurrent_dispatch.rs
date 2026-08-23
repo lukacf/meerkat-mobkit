@@ -196,7 +196,7 @@ fn initialize_for_shutdown(gateway: &mut Gateway, state_dir: &tempfile::TempDir)
         "init failed: {init}"
     );
     assert_eq!(init["result"]["stdio_shutdown_handshake"], true);
-    assert_eq!(init["result"]["stdio_shutdown_horizon_ms"], 335_000);
+    assert_eq!(init["result"]["stdio_shutdown_horizon_ms"], 337_000);
 }
 
 fn answer_identity_provider_callback(
@@ -335,7 +335,7 @@ fn explicit_shutdown_keeps_callbacks_open_until_external_leases_are_released() {
         "identity-first init failed: {init}"
     );
     assert_eq!(init["result"]["stdio_shutdown_handshake"], true);
-    assert_eq!(init["result"]["stdio_shutdown_horizon_ms"], 335_000);
+    assert_eq!(init["result"]["stdio_shutdown_horizon_ms"], 337_000);
     assert!(
         !release_seen.get(),
         "bootstrap must retain its acquired lease"
