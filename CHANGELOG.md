@@ -28,6 +28,13 @@ Pins meerkat `=0.8.26`.
   a malformed `role_migrations` does - an operator who supplied a policy expects
   it in force, and arming nothing would resurface later as an unexplained access
   denial with nothing pointing at the payload.
+- **The provider identity comes from the artifact, never from MobKit.** A
+  compiled policy declares its own author, and a member's
+  `ApplicationToolPolicyBinding::Provider { provider_id, policy_id }` is
+  resolved by that carried id, so the gateway registers one provider per
+  distinct author it was given and names none itself. An earlier draft
+  hardcoded a single provider id, which would have refused every policy
+  compiled by anyone else - not a narrower feature but a dead one.
 - **Rollback refusal is MobKit's, by Meerkat's design.** The provider trait
   documents that the provider owns the snapshot pointer and must reject a
   revision below one already accepted, because Meerkat "deliberately keeps no
