@@ -602,6 +602,11 @@ class MobKitRuntime:
             params["role_migrations"] = [
                 dict(declaration) for declaration in self._config.role_migrations
             ]
+        if self._config.application_tool_policies:
+            # Canonical bytes travel verbatim as strings; see the builder docstring.
+            params["application_tool_policies"] = list(
+                self._config.application_tool_policies
+            )
         if self._config.continuity_store is not None:
             params["has_continuity_store"] = True
         if self._config.lease_provider is not None:

@@ -209,6 +209,35 @@ impl CompiledPolicyProvider {
     }
 }
 
+/// Read the `application_tool_policies` init parameter.
+///
+/// Absent means an empty list: a boot that declared nothing arms nothing. A
+/// present value that is not an array of strings is an error rather than a
+/// silent empty, because a host that supplied policies in the wrong shape
+/// expects them in force and would otherwise see the refusal much later as an
+/// unexplained access denial.
+///
+/// Lives here rather than inline in the gateway so the gateway, the wire
+/// fixture test, and the Python SDK are all exercising ONE extraction. The
+/// hardcoded-provider defect shipped precisely because this logic was
+/// unreachable from a test while it sat in a binary.
+pub fn compiled_policy_payloads_from_init_params(
+    params: &serde_json::Value,
+) -> Result<Vec<String>, ToolConsequenceFailure> {
+    match params.get("application_tool_policies") {
+        // ABSENT means empty. An explicit `null` is PRESENT and not an array of
+        // strings, so it is malformed: a host that wrote the key expects it in
+        // force, and treating null as absent would arm nothing while looking
+        // like it had worked. This distinction is the whole fail-closed claim.
+        None => Ok(Vec::new()),
+        Some(value) => serde_json::from_value(value.clone()).map_err(|error| {
+            ToolConsequenceFailure::EvaluationFailed {
+                reason: format!("application_tool_policies is malformed: {error}"),
+            }
+        }),
+    }
+}
+
 /// Build one provider per distinct provider id CARRIED by the supplied
 /// canonical payloads.
 ///
@@ -602,6 +631,89 @@ mod tests {
             matches!(error, ToolConsequenceFailure::ProviderMissing { .. }),
             "expected ProviderMissing, got {error:?}"
         );
+    }
+
+    /// One wire fixture, read by BOTH this test and
+    /// sdk/python/tests/test_application_tool_policies.py.
+    ///
+    /// A Rust test and a Python test that each build their own payload can both
+    /// pass while disagreeing about the wire, which is how the role-migration
+    /// carrier shipped unreachable from the SDK that composes it. Sharing the
+    /// bytes is what makes the two sides testable against one another.
+    ///
+    /// Regenerate with MOBKIT_WRITE_FIXTURE=1; a digest is computed from the
+    /// canonical bytes, so the fixture cannot be hand-edited into validity.
+    #[test]
+    fn the_committed_wire_fixture_installs_its_carried_provider() {
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/application_tool_policies_init_params.json");
+        let canonical = String::from_utf8(policy_for(
+            "homecore",
+            "household-tools",
+            "member-a",
+            "shell",
+        ))
+        .expect("canonical json is utf-8");
+
+        if std::env::var_os("MOBKIT_WRITE_FIXTURE").is_some() {
+            let params = serde_json::json!({
+                "has_roster_provider": true,
+                "application_tool_policies": [canonical],
+            });
+            let mut rendered = serde_json::to_string_pretty(&params).expect("render fixture");
+            rendered.push('\n');
+            std::fs::write(&fixture_path, rendered).expect("write fixture");
+        }
+
+        let raw = std::fs::read_to_string(&fixture_path).unwrap_or_else(|error| {
+            panic!(
+                "missing {}: regenerate with MOBKIT_WRITE_FIXTURE=1 ({error})",
+                fixture_path.display()
+            )
+        });
+        let params: serde_json::Value = serde_json::from_str(&raw).expect("fixture is valid JSON");
+        // Go through the SAME extraction the gateway uses. Reading the key here
+        // would test a re-implementation of the parser rather than the parser.
+        let payloads = compiled_policy_payloads_from_init_params(&params)
+            .expect("the committed wire payload parses through the gateway's own extraction");
+        assert_eq!(
+            payloads,
+            vec![canonical],
+            "the committed fixture must carry the canonical bytes this build produces"
+        );
+
+        // The point of the fixture is that these exact bytes install and bind.
+        let providers = providers_from_canonical_payloads(&payloads)
+            .expect("the committed wire payload installs");
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].provider_id().as_str(), "homecore");
+        providers[0]
+            .snapshot(&PolicyId::new("household-tools").expect("policy id"))
+            .expect("the carried policy id resolves");
+    }
+
+    #[test]
+    fn an_absent_parameter_arms_nothing_but_an_explicit_null_is_refused() {
+        let absent = serde_json::json!({ "has_roster_provider": true });
+        assert!(
+            compiled_policy_payloads_from_init_params(&absent)
+                .expect("absent is not an error")
+                .is_empty()
+        );
+
+        for malformed in [
+            serde_json::json!({ "application_tool_policies": serde_json::Value::Null }),
+            serde_json::json!({ "application_tool_policies": "not-an-array" }),
+            serde_json::json!({ "application_tool_policies": [1, 2] }),
+            serde_json::json!({ "application_tool_policies": { "a": "b" } }),
+        ] {
+            let error = compiled_policy_payloads_from_init_params(&malformed)
+                .expect_err("a present non-array value must be refused");
+            assert!(
+                matches!(error, ToolConsequenceFailure::EvaluationFailed { .. }),
+                "expected EvaluationFailed, got {error:?}"
+            );
+        }
     }
 
     #[test]

@@ -7548,18 +7548,9 @@ external_addressable = true
     // `role_migrations` does: an operator who supplied a policy expects it in
     // force, and arming nothing would resurface later as an unexplained
     // access denial.
-    let compiled_tool_policies: Vec<String> = params
-        .get("application_tool_policies")
-        .map(|value| serde_json::from_value(value.clone()))
-        .transpose()
-        .unwrap_or_else(|error| {
-            fail_init(
-                &request_id,
-                -32602,
-                format!("application_tool_policies is malformed: {error}"),
-            )
-        })
-        .unwrap_or_default();
+    let compiled_tool_policies =
+        meerkat_mobkit::member_tool_policy::compiled_policy_payloads_from_init_params(&params)
+            .unwrap_or_else(|error| fail_init(&request_id, -32602, format!("{error}")));
     let tool_consequence_policy_registry = if compiled_tool_policies.is_empty() {
         None
     } else {

@@ -28,6 +28,16 @@ Pins meerkat `=0.8.26`.
   a malformed `role_migrations` does - an operator who supplied a policy expects
   it in force, and arming nothing would resurface later as an unexplained access
   denial with nothing pointing at the payload.
+- **Declarable from the Python SDK, which is how the only consumer composes.**
+  `MobKitBuilder.application_tool_policies([...])` takes the compiler's canonical
+  JSON as `str` or `bytes` and passes it through unchanged into the gateway's
+  init params. An earlier draft parsed the parameter in the gateway while no SDK
+  could send it, so the feature was reachable only by hand-writing raw
+  InitParams JSON. The role-migration carrier shipped with the same gap and was
+  caught the same way; one shared wire fixture is now read by both the Rust
+  parser test and the Python builder test, so renaming the key goes red on one
+  side instead of both staying green while a host arms nothing. TypeScript is
+  deliberately not given this surface: no deployment composes through it.
 - **The provider identity comes from the artifact, never from MobKit.** A
   compiled policy declares its own author, and a member's
   `ApplicationToolPolicyBinding::Provider { provider_id, policy_id }` is
