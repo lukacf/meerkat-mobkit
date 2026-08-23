@@ -298,17 +298,28 @@ jobs:
 
   publish_sdk_packages:
     name: Publish SDK packages
-    # Deliberately NOT gated on build_binaries or publish_github_release. The
-    # Python wheel and the npm package are pure-language artifacts that contain
-    # no gateway binary, and downstream hosts block on them, so making them wait
-    # on five cross-compiles they do not depend on delays exactly the artifact
-    # people are waiting for. The Rust crate keeps the stricter gate below.
+    # Gated on build_binaries and publish_github_release for the same reason the
+    # crate is: a PyPI upload cannot be taken back and an npm unpublish is
+    # 72h-limited, while the binaries can still fail after them. This repo has
+    # already shipped that half-release once - the v0.6.43 tag dispatch published
+    # registries, then x86_64-pc-windows-msvc failed and the release assets were
+    # skipped - and the split that separated this job from publish_registries
+    # re-opened the same hole for PyPI and npm alone.
+    #
+    # The wheel and the npm package do contain no gateway binary, but their
+    # versions are lockstepped to the gateway by scripts/bump-sdk-versions.sh, so
+    # an SDK at version X published while gateway X does not exist is not a
+    # usable artifact. Unblocking a downstream host with something that cannot
+    # work is not unblocking it; the cost of waiting is the cross-compile
+    # latency, and the cost of not waiting is unrepairable.
     if: >-
       always() &&
       needs.release_validate.result == 'success' &&
       (startsWith(github.ref, 'refs/tags/v') ||
-       (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release_packages == 'true'))
-    needs: [release_validate]
+       (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release_packages == 'true')) &&
+      ((github.event_name == 'workflow_dispatch' && github.event.inputs.registry_dry_run == 'true') ||
+       (needs.build_binaries.result == 'success' && needs.publish_github_release.result == 'success'))
+    needs: [release_validate, build_binaries, publish_github_release]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
