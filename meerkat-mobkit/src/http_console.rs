@@ -1501,6 +1501,12 @@ fn console_json_error(status: StatusCode, error: &str, message: &str) -> axum::r
 }
 
 fn is_console_mutating_rpc_method(method: &str) -> bool {
+    // Delegated, not duplicated: the member-declaration family owns its own
+    // read/mutate classification, so this surface cannot disagree with the stdin
+    // surface about whether an adopt is a write.
+    if crate::rpc::mob_methods::is_member_declaration_mutating_method(method) {
+        return true;
+    }
     if crate::rpc::topology_methods::is_topology_mutating_method(method) {
         return true;
     }
@@ -1743,9 +1749,25 @@ fn console_rpc_access_requirements(
     let target = identity
         .clone()
         .or_else(|| normalized_console_rpc_string_param(params, "member_id"))
-        .or_else(|| normalized_console_rpc_string_param(params, "agent_id"));
+        .or_else(|| normalized_console_rpc_string_param(params, "agent_id"))
+        // The member-declaration family names its subject `agent_identity`.
+        // Without this the target was None, and a None target does not fail
+        // closed - it gates the ACTION while leaving the SUBJECT unscoped.
+        .or_else(|| normalized_console_rpc_string_param(params, "agent_identity"));
     let one = |action: &'static str, target: Option<String>| Some(vec![(action, target)]);
     match method {
+        // Unmapped would mean ABAC NO-OP: a durable tool-policy mutation
+        // reachable with only console auth. The read is scoped to its subject;
+        // the mutations are gated conservatively on runtime.admin because no
+        // narrower existing action owns durable identity or tool-policy mutation
+        // (agent.* own lifecycle transitions, not policy).
+        crate::rpc::mob_methods::MEMBER_TOOL_DECLARATION => {
+            one(ACTION_AGENT_VIEW, target)
+        }
+        crate::rpc::mob_methods::ADOPT_MEMBER_IDENTITY_DECLARATION
+        | crate::rpc::mob_methods::APPLY_MEMBER_TOOL_DECLARATION => {
+            one(ACTION_RUNTIME_ADMIN, None)
+        }
         "mobkit/console/send" => one(ACTION_AGENT_SEND, identity),
         "mobkit/agent_memory/remember" => one(ACTION_AGENT_MEMORY_WRITE, identity),
         // Update is a supersede — a write within the record's lineage.
@@ -5133,6 +5155,24 @@ async fn handle_console_runtime_rpc_with_visibility(
         return response_value(response_id, None, Some(error));
     }
 
+    // The member-declaration family, served by the SAME canonical handlers as the
+    // stdin surface. After auth, read_only and ABAC gating so this plane adds no
+    // privilege, and one family arm reading the registry rather than three
+    // literals - three literals per surface is how 0.8.21 shipped these dead here.
+    if crate::rpc::mob_methods::is_member_declaration_method(request.method.as_str()) {
+        let handle = runtime.handle();
+        if let Some(response) = crate::rpc::mob_methods::handle_member_declaration_rpc(
+            &handle,
+            request.method.as_str(),
+            response_id.clone(),
+            &request.params,
+        )
+        .await
+        {
+            return response_value(response_id, response.result, response.error);
+        }
+    }
+
     match request.method.as_str() {
         "mobkit/capabilities" => {
             let mut methods = vec![
@@ -5158,6 +5198,21 @@ async fn handle_console_runtime_rpc_with_visibility(
                 "mobkit/peer_pubkey",
                 "mobkit/storage/doctor",
             ];
+            // DERIVED from the canonical registry, on the plane that SERVES these.
+            // Split by the family's own classifier: on a read_only console the
+            // dispatch refuses adopt/apply with -32010, so advertising them
+            // unconditionally would be capability/dispatch disagreement.
+            methods.extend(
+                crate::rpc::mob_methods::MEMBER_DECLARATION_METHODS
+                    .iter()
+                    .copied()
+                    .filter(|method| {
+                        can_mutate
+                            || !crate::rpc::mob_methods::is_member_declaration_mutating_method(
+                                method,
+                            )
+                    }),
+            );
             if identity_runtime.is_some() {
                 methods.extend_from_slice(&["mobkit/status_identity", "mobkit/inspect_identity"]);
                 if let Some(identity_runtime) = &identity_runtime
@@ -10111,7 +10166,7 @@ mod tests {
     use crate::access::{
         ACTION_AGENT_MEMORY_DELETE, ACTION_AGENT_MEMORY_READ, ACTION_AGENT_MEMORY_WRITE,
         ACTION_AGENT_SEND, ACTION_AGENT_VIEW, ACTION_MOB_MEMORY_READ, ACTION_OPERATOR_MEMORY_READ,
-        AccessController,
+        ACTION_RUNTIME_ADMIN, AccessController,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
     use crate::console_aggregator::{
@@ -10572,6 +10627,29 @@ comms = true
         assert!(super::is_console_mutating_rpc_method(
             "mobkit/collect_completed"
         ));
+    }
+
+    #[test]
+    fn member_declaration_access_requirements_keep_reads_scoped_and_writes_administrative() {
+        let alias = "rt:gate:main:0";
+        let params = json!({ "agent_identity": alias });
+        assert_eq!(
+            super::console_rpc_access_requirements(
+                crate::rpc::mob_methods::MEMBER_TOOL_DECLARATION,
+                &params,
+            ),
+            Some(vec![(ACTION_AGENT_VIEW, Some(alias.to_string()))])
+        );
+        for method in [
+            crate::rpc::mob_methods::ADOPT_MEMBER_IDENTITY_DECLARATION,
+            crate::rpc::mob_methods::APPLY_MEMBER_TOOL_DECLARATION,
+        ] {
+            assert_eq!(
+                super::console_rpc_access_requirements(method, &params),
+                Some(vec![(ACTION_RUNTIME_ADMIN, None)]),
+                "{method} must not become an unmapped console write"
+            );
+        }
     }
 
     #[test]

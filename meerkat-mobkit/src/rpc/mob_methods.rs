@@ -3405,61 +3405,6 @@ mod member_declaration_delegation_tests {
         }
     }
 
-    /// Routing and refusal are not delegation. This proves the request actually
-    /// reaches the MOB HANDLE: the payload is well formed and targets this
-    /// gateway's own mob, so it passes parsing, conversion and the foreign-mob
-    /// guard, and the only thing left that can answer is the mob machine.
-    ///
-    /// An unknown identity is not an error on this path. The machine returns a
-    /// SUCCESSFUL `ApplyMemberToolDeclarationResult` whose commit outcome is
-    /// `MemberAbsent`, with a fresh convergence status. That is stronger evidence
-    /// than a refusal would be: a routing miss, a params error or the foreign-mob
-    /// guard would each have produced `error` instead of a typed domain result.
-    #[tokio::test]
-    async fn a_well_formed_request_reaches_the_mob_handle() {
-        let response = route(
-            "declaration-delegation",
-            "mob/apply_member_tool_declaration",
-            serde_json::json!({
-                "mob_id": "declaration-delegation",
-                "agent_identity": "identity:child-2",
-                "request_id": "hc-tp-apply-identity-child-2-rev109-0001",
-                "expected_intent_revision": 3,
-                "declaration": {
-                    "category_overrides": {},
-                    "callback_tools": { "kind": "inherit" },
-                    "execution": { "kind": "inherit" },
-                    "application_policy": {
-                        "kind": "provider",
-                        "provider_id": "homecore",
-                        "policy_id": "household-tools"
-                    }
-                },
-                "convergence": { "kind": "drain", "max_wait_ms": 120000 }
-            }),
-        )
-        .await;
-        // An unknown identity is NOT an error on this path: the mob machine
-        // answers Ok with commit MemberAbsent and a fresh convergence status. So
-        // this is a genuinely SUCCESSFUL call into the handle, which is stronger
-        // evidence of delegation than any refusal could be - a params error, a
-        // routing miss or the foreign-mob guard would all have produced `error`.
-        let result = response
-            .get("result")
-            .unwrap_or_else(|| panic!("a well-formed same-mob request must succeed: {response}"));
-        assert_eq!(
-            result
-                .get("commit")
-                .and_then(|commit| commit.get("outcome")),
-            Some(&serde_json::json!("member_absent")),
-            "the handle must report the absent member, proving the machine answered: {response}"
-        );
-        assert!(
-            result.get("convergence").is_some(),
-            "the canonical result carries a convergence status: {response}"
-        );
-    }
-
     /// Reaching the handler is not enough: it must reach the handle's mob. A
     /// payload aimed elsewhere is refused with a typed reason rather than being
     /// silently retargeted at this gateway's mob and reported as success.
@@ -3494,6 +3439,244 @@ mod member_declaration_delegation_tests {
             error.get("data").and_then(|data| data.get("kind")),
             Some(&serde_json::json!("foreign_mob_target")),
             "the refusal must say WHY, not just fail: {response}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod member_declaration_surface_tests {
+    //! The four-surface serve-or-omit split.
+    //!
+    //! #343 registered TWO of four surfaces and 0.8.21 shipped the methods dead
+    //! on the console plane. My first correction said "three sites", which was
+    //! also wrong: there are FOUR dispatch/advertising surfaces and the correct
+    //! answer DIFFERS per surface, because two of them cannot serve the family at
+    //! all. A registry guarantees they cannot disagree about MEMBERSHIP; only an
+    //! explicit per-surface decision covers serve-or-omit, and only a test pins
+    //! that decision.
+
+    /// Source of one function, bounded by the next top-level `fn`.
+    ///
+    /// Slicing to end-of-file would make every assertion below pass on any file
+    /// that mentions the registry ANYWHERE - which is exactly how a whole-file
+    /// grep would have called 0.8.21 correct.
+    fn function_source(file: &str, needle: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        let start = text
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} not found in {file}"));
+        let rest = &text[start + needle.len()..];
+        let end = rest
+            .find("\nasync fn ")
+            .into_iter()
+            .chain(rest.find("\nfn "))
+            .chain(rest.find("\npub fn "))
+            .chain(rest.find("\npub async fn "))
+            .min()
+            .map_or(rest.len(), |offset| offset);
+        text[start..start + needle.len() + end].to_string()
+    }
+
+    const REGISTRY: &str = "MEMBER_DECLARATION_METHODS";
+
+    #[test]
+    fn the_two_serving_surfaces_advertise_from_the_registry() {
+        for (file, needle) in [
+            ("src/rpc.rs", "async fn handle_unified_rpc_json_inner("),
+            (
+                "src/http_console.rs",
+                "async fn handle_console_runtime_rpc_with_visibility(",
+            ),
+        ] {
+            let body = function_source(file, needle);
+            assert!(
+                body.contains(REGISTRY),
+                "{needle} serves the family but does not advertise from the registry"
+            );
+        }
+    }
+
+    /// The half a registry cannot enforce. Both of these lack a `MobHandle`, so
+    /// they cannot serve the family; advertising what a surface cannot serve is
+    /// the same defect as serving what it does not advertise, and I shipped BOTH
+    /// halves of that in one edit earlier by matching the wrong function.
+    #[test]
+    fn the_two_non_serving_surfaces_advertise_nothing_from_it() {
+        for (file, needle, why) in [
+            (
+                "src/rpc.rs",
+                "pub fn handle_mobkit_rpc_json(",
+                "takes MobkitRuntimeHandle: module runtime, no MobHandle",
+            ),
+            (
+                "src/http_console.rs",
+                "async fn handle_console_aggregator_rpc(",
+                "aggregator-only: no single MobRuntime authority",
+            ),
+        ] {
+            let body = function_source(file, needle);
+            assert!(
+                !body.contains(REGISTRY),
+                "{needle} cannot serve the family ({why}) yet advertises it"
+            );
+        }
+    }
+
+    /// The registry is the single source, so a surface cannot hand-list a member.
+    #[test]
+    fn no_surface_hand_lists_a_family_method() {
+        for file in ["src/rpc.rs", "src/http_console.rs"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+            let text = std::fs::read_to_string(&path).expect("read surface");
+            for method in super::MEMBER_DECLARATION_METHODS {
+                assert!(
+                    !text.contains(&format!("\"{method}\"")),
+                    "{file} hand-lists {method} as a literal instead of deriving it"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod member_declaration_alias_tests {
+    //! The alias boundary, asserted in BOTH directions.
+    //!
+    //! 0.8.21 shipped these methods live and unable to name anything: the roster
+    //! is keyed by the comms-safe encoded id, public surfaces speak aliases, and
+    //! the handlers used the alias verbatim. Fixing only the inbound half then
+    //! leaked the reserved encoded spelling outbound - which the public input
+    //! validator REFUSES, so a caller could not feed our own response back to us.
+
+    use super::*;
+
+    /// Reserved-namespace rejection, asserted RECURSIVELY rather than field by
+    /// field.
+    ///
+    /// A per-field assertion can only cover the fields I remembered, and
+    /// forgetting one is precisely the defect: I fixed the read's own
+    /// `agent_identity` and missed the `agent_identity` nested inside every
+    /// `WireIdentityConvergenceStatus`. Walking the whole response means a field
+    /// added later, or one I never knew about, still fails here.
+    fn assert_no_reserved_namespace(value: &serde_json::Value, path: &str) {
+        match value {
+            serde_json::Value::String(text) => assert!(
+                !text.contains("mk--"),
+                "{path} leaks the reserved roster namespace: {text}"
+            ),
+            serde_json::Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    assert_no_reserved_namespace(item, &format!("{path}[{index}]"));
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for (key, item) in fields {
+                    assert_no_reserved_namespace(item, &format!("{path}.{key}"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The encoding is real: an identity-first alias does NOT survive as itself.
+    /// If this ever passes trivially, the fixture has stopped exercising the case
+    /// that broke, and the mirroring tests below would be vacuous.
+    #[test]
+    fn the_alias_encoding_is_actually_lossy_in_spelling() {
+        let alias = "rt:gate:main:0";
+        let roster = crate::member_comms_id::mob_member_id_str(alias);
+        assert_ne!(
+            roster.as_ref(),
+            alias,
+            "an identity-first alias must encode to a different roster key, or \
+             these tests prove nothing"
+        );
+        assert!(roster.starts_with("mk--"), "roster key: {roster}");
+    }
+
+    /// Both directions, composed: alias in, alias out.
+    #[test]
+    fn an_alias_round_trips_through_the_boundary() {
+        for alias in [
+            "rt:gate:main:0",
+            "identity:child-2",
+            "gate:main",
+            "plainname",
+        ] {
+            let roster = crate::member_comms_id::mob_member_id_str(alias);
+            let back = public_member_alias(roster.as_ref());
+            assert_eq!(back, alias, "alias {alias} did not survive the round trip");
+        }
+    }
+
+    /// The exact leak that shipped: a convergence status carrying the roster key
+    /// must be mirrored back to the alias before it goes out.
+    #[test]
+    fn a_convergence_status_is_mirrored_before_it_leaves() {
+        let roster = crate::member_comms_id::mob_member_id_str("rt:gate:main:0").into_owned();
+        let leaked = meerkat_contracts::wire::WireIdentityConvergenceStatus {
+            agent_identity: roster,
+            desired_intent_revision: Some(3),
+            active_intent_revision: None,
+            decision: None,
+            condition: meerkat_contracts::wire::WireIdentityConvergenceCondition::Converged,
+            observed_at_ms: 0,
+            detail: None,
+        };
+        assert!(
+            leaked.agent_identity.contains("mk--"),
+            "fixture must start leaked"
+        );
+
+        let mirrored = mirror_convergence(leaked);
+        assert_eq!(mirrored.agent_identity, "rt:gate:main:0");
+        let json = serde_json::to_value(&mirrored).expect("serializes");
+        assert_no_reserved_namespace(&json, "convergence");
+    }
+
+    /// Same assertion over the whole read result, recursively, because that is the
+    /// shape that catches a field nobody enumerated.
+    #[test]
+    fn no_field_of_a_read_result_carries_the_reserved_namespace() {
+        let roster = crate::member_comms_id::mob_member_id_str("identity:child-2").into_owned();
+        let result = meerkat_contracts::wire::MobMemberToolDeclarationResult {
+            mob_id: "homecore".to_string(),
+            agent_identity: public_member_alias(&roster),
+            desired_intent_revision: 3,
+            // Real declaration shape rather than a synthetic default, so the
+            // recursive walk covers the nested fields a caller actually receives.
+            declaration: serde_json::from_value(serde_json::json!({
+                "category_overrides": {},
+                "callback_tools": { "kind": "inherit" },
+                "execution": { "kind": "inherit" },
+                "application_policy": {
+                    "kind": "provider",
+                    "provider_id": "homecore",
+                    "policy_id": "household-tools"
+                }
+            }))
+            .expect("declaration fixture must deserialize"),
+            convergence: mirror_convergence(
+                meerkat_contracts::wire::WireIdentityConvergenceStatus {
+                    agent_identity: roster,
+                    desired_intent_revision: Some(3),
+                    active_intent_revision: None,
+                    decision: None,
+                    condition: meerkat_contracts::wire::WireIdentityConvergenceCondition::Converged,
+                    observed_at_ms: 0,
+                    detail: None,
+                },
+            ),
+        };
+        let json = serde_json::to_value(&result).expect("serializes");
+        assert_no_reserved_namespace(&json, "read_result");
+        assert_eq!(
+            json["agent_identity"],
+            serde_json::json!("identity:child-2")
         );
     }
 }
@@ -4031,6 +4214,98 @@ comms = true
 // init-time declaration list, because the precondition is the whole point.
 // ---------------------------------------------------------------------------
 
+/// Every method in the member-declaration control plane.
+///
+/// #343 registered these in two places and 0.8.21 shipped them DEAD on a third:
+/// `http_console.rs` owns its own dispatch and its own `-32601`, so the methods
+/// were reachable over stdin-RPC and unreachable over the console listener.
+/// HomeCore hit that within an hour of release.
+///
+/// The lesson was not "there were three tables" but that a checklist assembled
+/// from the sites one happens to find reads as exhaustive and is not. So the
+/// family is a single registry every surface DERIVES from rather than a literal
+/// pasted per surface. A fourth doorway can still forget to consult it, but it
+/// can no longer disagree about the membership once it does.
+pub(crate) const ADOPT_MEMBER_IDENTITY_DECLARATION: &str = "mob/adopt_member_identity_declaration";
+pub(crate) const APPLY_MEMBER_TOOL_DECLARATION: &str = "mob/apply_member_tool_declaration";
+pub(crate) const MEMBER_TOOL_DECLARATION: &str = "mob/member_tool_declaration";
+
+pub(crate) const MEMBER_DECLARATION_METHODS: &[&str] = &[
+    ADOPT_MEMBER_IDENTITY_DECLARATION,
+    APPLY_MEMBER_TOOL_DECLARATION,
+    MEMBER_TOOL_DECLARATION,
+];
+
+/// Whether a method belongs to this family.
+#[must_use]
+pub(crate) fn is_member_declaration_method(method: &str) -> bool {
+    MEMBER_DECLARATION_METHODS.contains(&method)
+}
+
+/// Whether the method MUTATES durable member intent.
+///
+/// The read is not a mutation; adoption and apply both are. The console plane's
+/// read_only refusal and its ABAC action mapping both hang off this, so getting it
+/// wrong would either block a read or admit a write.
+#[must_use]
+pub(crate) fn is_member_declaration_mutating_method(method: &str) -> bool {
+    matches!(
+        method,
+        ADOPT_MEMBER_IDENTITY_DECLARATION | APPLY_MEMBER_TOOL_DECLARATION
+    )
+}
+
+/// One dispatcher for the whole family, so each surface has ONE arm instead of
+/// three that can drift apart.
+///
+/// Takes `&MobHandle` because that is all these handlers ever used and it is the
+/// one thing both planes can supply: `rpc.rs` passes `runtime.mob_handle()`, the
+/// full-runtime console passes `runtime.handle()`. One implementation, two
+/// doorways. Returns `None` for a method outside the family so a caller can fall
+/// through to its own dispatch.
+pub(crate) async fn handle_member_declaration_rpc(
+    handle: &meerkat_mob::MobHandle,
+    method: &str,
+    response_id: Value,
+    params: &Value,
+) -> Option<JsonRpcResponse> {
+    match method {
+        ADOPT_MEMBER_IDENTITY_DECLARATION => {
+            Some(handle_adopt_member_identity_declaration(handle, response_id, params).await)
+        }
+        APPLY_MEMBER_TOOL_DECLARATION => {
+            Some(handle_apply_member_tool_declaration(handle, response_id, params).await)
+        }
+        MEMBER_TOOL_DECLARATION => {
+            Some(handle_member_tool_declaration(handle, response_id, params).await)
+        }
+        _ => None,
+    }
+}
+
+/// Mirror a domain identity back to the PUBLIC alias on the way out.
+///
+/// Input translation alone was half a fix. The roster is keyed by the comms-safe
+/// encoded id, so every outbound identity - the read's own `agent_identity` AND
+/// the `agent_identity` inside every `WireIdentityConvergenceStatus` - would
+/// otherwise carry `mk--rt_c...`. That is the RESERVED namespace which
+/// `validate_public_rpc_member_aliases` refuses as INPUT, so a caller could not
+/// even feed our own output back to us, and it exposes an internal spelling that
+/// exists to keep ABAC unbypassable.
+fn public_member_alias(identity: &str) -> String {
+    crate::member_comms_id::runtime_alias_str(identity).into_owned()
+}
+
+/// Decode the identity inside an outbound convergence status.
+///
+/// Applied on ALL THREE methods, because all three return one.
+fn mirror_convergence(
+    mut wire: meerkat_contracts::wire::WireIdentityConvergenceStatus,
+) -> meerkat_contracts::wire::WireIdentityConvergenceStatus {
+    wire.agent_identity = public_member_alias(&wire.agent_identity);
+    wire
+}
+
 /// Render a `MobError` with the same typed code and structured data that
 /// meerkat's own RPC surface produces.
 ///
@@ -4109,11 +4384,11 @@ fn declaration_result_response(response_id: Value, result: Value) -> JsonRpcResp
 /// there is a lookup; a gateway serves exactly one mob, so here it is a caller
 /// error and saying so is the only way the caller can find out.
 fn reject_foreign_mob(
-    runtime: &UnifiedRuntime,
+    handle: &meerkat_mob::MobHandle,
     response_id: &Value,
     supplied: &str,
 ) -> Option<JsonRpcResponse> {
-    let own = runtime.mob_handle().mob_id().to_string();
+    let own = handle.mob_id().to_string();
     if supplied == own {
         return None;
     }
@@ -4140,7 +4415,7 @@ fn reject_foreign_mob(
 /// meerkat-mob, so the precondition and every field constraint are enforced by
 /// the same code rkat-rpc uses.
 pub(super) async fn handle_adopt_member_identity_declaration(
-    runtime: &UnifiedRuntime,
+    handle: &meerkat_mob::MobHandle,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
@@ -4149,22 +4424,25 @@ pub(super) async fn handle_adopt_member_identity_declaration(
             Ok(params) => params,
             Err(error) => return declaration_invalid_params(response_id, error.to_string()),
         };
-    if let Some(rejection) = reject_foreign_mob(runtime, &response_id, &params.mob_id) {
+    if let Some(rejection) = reject_foreign_mob(handle, &response_id, &params.mob_id) {
         return rejection;
     }
+    // Same translation for adoption. Done on the wire struct BEFORE meerkat's
+    // whole-params conversion, because that conversion takes the field as given -
+    // pre-translating keeps one boundary rule for all three methods instead of
+    // needing an upstream change.
+    let mut params = params;
+    params.agent_identity =
+        crate::member_comms_id::mob_member_id_str(&params.agent_identity).into_owned();
     let request: meerkat_mob::AdoptMemberIdentityDeclaration = match params.try_into() {
         Ok(request) => request,
         Err(error) => return declaration_invalid_params(response_id, error.to_string()),
     };
-    match runtime
-        .mob_handle()
-        .adopt_member_identity_declaration(request)
-        .await
-    {
+    match handle.adopt_member_identity_declaration(request).await {
         Ok(result) => {
             let wire = meerkat_contracts::wire::MobAdoptMemberIdentityDeclarationResult {
                 adoption: result.adoption.to_wire(),
-                convergence: result.convergence.to_wire(),
+                convergence: mirror_convergence(result.convergence.to_wire()),
             };
             match serde_json::to_value(wire) {
                 Ok(value) => declaration_result_response(response_id, value),
@@ -4195,7 +4473,7 @@ pub(super) async fn handle_adopt_member_identity_declaration(
 /// mirrors meerkat's own handler so a member with intent but no observed
 /// convergence yet reports the desired revision rather than failing.
 pub(super) async fn handle_member_tool_declaration(
-    runtime: &UnifiedRuntime,
+    handle: &meerkat_mob::MobHandle,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
@@ -4204,11 +4482,18 @@ pub(super) async fn handle_member_tool_declaration(
             Ok(params) => params,
             Err(error) => return declaration_invalid_params(response_id, error.to_string()),
         };
-    if let Some(rejection) = reject_foreign_mob(runtime, &response_id, &params.mob_id) {
+    if let Some(rejection) = reject_foreign_mob(handle, &response_id, &params.mob_id) {
         return rejection;
     }
-    let identity = meerkat_mob::AgentIdentity::from(params.agent_identity.as_str());
-    let handle = runtime.mob_handle();
+    // The wire carries a public member ALIAS; the roster is keyed by the comms-safe
+    // ENCODED id. `member_comms_id::mob_member_id` is the public translation and
+    // exists precisely for this boundary. #343 skipped it and used
+    // `AgentIdentity::from(alias)` directly, so on a live identity-first mob every
+    // call answered "mob member not found": the alias missed, the runtime alias
+    // missed, and the encoded spelling is refused outright by
+    // `validate_public_rpc_member_aliases` so ABAC cannot be bypassed by it. The
+    // methods were reachable and unable to name anything.
+    let identity = crate::member_comms_id::mob_member_id(&params.agent_identity);
     let record = match handle.identity_intent(&identity).await {
         Ok(meerkat_mob::identity::IdentityStoredObservation::Valid(record)) => record,
         Ok(meerkat_mob::identity::IdentityStoredObservation::Missing) => {
@@ -4282,10 +4567,10 @@ pub(super) async fn handle_member_tool_declaration(
     };
     let wire = meerkat_contracts::wire::MobMemberToolDeclarationResult {
         mob_id: handle.mob_id().to_string(),
-        agent_identity: identity.to_string(),
+        agent_identity: public_member_alias(identity.as_ref()),
         desired_intent_revision: record.intent_revision,
         declaration: declaration.to_wire(),
-        convergence,
+        convergence: mirror_convergence(convergence),
     };
     match serde_json::to_value(wire) {
         Ok(value) => declaration_result_response(response_id, value),
@@ -4312,7 +4597,7 @@ pub(super) async fn handle_member_tool_declaration(
 /// `MemberToolMutationId::new`); only the assembly is duplicated, which is worth
 /// replacing with a shared `TryFrom` in meerkat-mob.
 pub(super) async fn handle_apply_member_tool_declaration(
-    runtime: &UnifiedRuntime,
+    handle: &meerkat_mob::MobHandle,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
@@ -4321,7 +4606,7 @@ pub(super) async fn handle_apply_member_tool_declaration(
             Ok(params) => params,
             Err(error) => return declaration_invalid_params(response_id, error.to_string()),
         };
-    if let Some(rejection) = reject_foreign_mob(runtime, &response_id, &params.mob_id) {
+    if let Some(rejection) = reject_foreign_mob(handle, &response_id, &params.mob_id) {
         return rejection;
     }
     let declaration: meerkat_mob::MemberToolDeclaration = match params.declaration.try_into() {
@@ -4343,22 +4628,18 @@ pub(super) async fn handle_apply_member_tool_declaration(
         }
     };
     let request = meerkat_mob::ApplyMemberToolDeclaration {
-        mob_id: runtime.mob_handle().mob_id().clone(),
-        agent_identity: meerkat_mob::AgentIdentity::from(params.agent_identity.as_str()),
+        mob_id: handle.mob_id().clone(),
+        agent_identity: crate::member_comms_id::mob_member_id(&params.agent_identity),
         request_id,
         expected_intent_revision: params.expected_intent_revision,
         declaration,
         convergence: params.convergence.into(),
     };
-    match runtime
-        .mob_handle()
-        .apply_member_tool_declaration(request)
-        .await
-    {
+    match handle.apply_member_tool_declaration(request).await {
         Ok(result) => {
             let wire = meerkat_contracts::wire::MobApplyMemberToolDeclarationResult {
                 commit: result.commit.to_wire(),
-                convergence: result.convergence.to_wire(),
+                convergence: mirror_convergence(result.convergence.to_wire()),
             };
             match serde_json::to_value(wire) {
                 Ok(value) => declaration_result_response(response_id, value),
