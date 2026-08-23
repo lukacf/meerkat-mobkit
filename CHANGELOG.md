@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.21] - 2026-08-23
+
+Pins meerkat `=0.8.26`.
+
+### Added
+
+- **Member declaration control plane on the gateway.** Three typed stdin-RPC
+  methods, mirroring meerkat's own catalog names and wire types exactly:
+  - `mob/adopt_member_identity_declaration` - bring a live member under
+    declarative management (one-shot CAS against live intent state).
+  - `mob/apply_member_tool_declaration` - atomically update only the tool
+    portion of an existing durable member intent.
+  - `mob/member_tool_declaration` - read the live declaration and its desired
+    intent revision, so the apply CAS is not guess-and-retry.
+
+  Previously the gateway linked these types but reached none of them, so a host
+  composing through MobKit could supply a compiled tool policy at init and never
+  bind a member to it: every member stayed `Unmanaged` and the installed provider
+  governed nothing. Requests are delegated straight to the canonical Meerkat Mob
+  handle; no validation is reimplemented. Errors carry meerkat's typed jsonrpc
+  codes and structured data rather than a generic failure. A request naming a
+  different mob is refused with `foreign_mob_target` instead of being silently
+  retargeted at the gateway's own mob.
+
+  No SDK change is needed to call them: `MobKitRuntime._rpc_sync` takes an
+  arbitrary method string. Note that `_rpc_error_from_payload` maps only MobKit's
+  own codes to typed exceptions, so a typed Meerkat mob error arrives as a generic
+  `RpcError` carrying `code` and `data`.
+
+### Fixed
+
+- **Supervisor cleanups retired by replacement are now owned and joined.**
+  `start_identity_first_supervisors` cancelled the displaced lease-renewal and
+  continuity-repair supervisors, then spawned their cleanup detached and dropped
+  the handle, so a cleanup could outlive `shutdown()` while still holding the
+  authority it was releasing. They are now retained and joined at shutdown, and a
+  cleanup that does not reach its release boundary makes
+  `runtime_cleanup_completed` false instead of being reported as a clean stop.
+
+- **Shutdown responses name which phase blocked.** A failed runtime cleanup now
+  carries typed per-phase diagnostics (drain timeout, mob stop, identity-authority
+  release, orphan module processes, retired-supervisor cleanup) with numeric
+  counts, rather than a single boolean. Successful responses are unchanged.
+
+### Changed
+
+- The advertised stdio shutdown horizon is 337s (was 335s), covering the new
+  bounded retired-supervisor join. The Python and TypeScript SDK shutdown grace
+  constants follow it.
+
 ## [0.8.20] - 2026-08-23
 
 Pins meerkat `=0.8.26`.
