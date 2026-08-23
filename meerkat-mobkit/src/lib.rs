@@ -31,6 +31,7 @@ pub mod http_flow_editor;
 pub mod http_sse;
 pub mod live_wiring;
 pub mod member_comms_id;
+pub mod member_tool_policy;
 pub mod memory;
 pub mod memory_wiring;
 pub mod mob_handle_runtime;

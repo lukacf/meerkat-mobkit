@@ -5818,6 +5818,14 @@ pub struct MobBootstrapSpec {
     /// agent memory rides here — see `crate::memory::spawn_customizer`).
     /// Forwarded to `MobBuilder::with_spawn_member_customizer`.
     pub(crate) spawn_member_customizer: Option<Arc<dyn meerkat_mob::SpawnMemberCustomizer>>,
+    /// Process-local registry resolving exact application consequence-policy
+    /// identities for member builds, forwarded to
+    /// `MobBuilder::with_tool_consequence_policy_registry`.
+    ///
+    /// `None` leaves member builds on Meerkat's unmanaged/inherited default,
+    /// which is the behaviour before this seam existed.
+    pub(crate) tool_consequence_policy_registry:
+        Option<Arc<meerkat_core::ToolConsequencePolicyRegistry>>,
     /// Mob-wide external-tools provider, forwarded to
     /// `MobBuilder::with_default_external_tools_provider`. Called at EVERY
     /// member spawn — including revival — so tools attached here survive
@@ -5909,6 +5917,7 @@ impl MobBootstrapSpec {
             },
             runtime_adapter: None,
             spawn_member_customizer: None,
+            tool_consequence_policy_registry: None,
             default_external_tools_provider: None,
             workgraph_service: None,
             workgraph_admission_slots: Vec::new(),
@@ -6045,6 +6054,27 @@ impl MobBootstrapSpec {
         provider: meerkat_mob::ExternalToolsProvider,
     ) -> Self {
         self.default_external_tools_provider = Some(provider);
+        self
+    }
+
+    /// Install the process-local application consequence-policy registry.
+    pub fn with_tool_consequence_policy_registry(
+        mut self,
+        registry: Arc<meerkat_core::ToolConsequencePolicyRegistry>,
+    ) -> Self {
+        self.tool_consequence_policy_registry = Some(registry);
+        self
+    }
+
+    /// Install the registry only when one was configured, so a caller that
+    /// parsed no policies does not have to branch.
+    pub fn with_optional_tool_consequence_policy_registry(
+        mut self,
+        registry: Option<Arc<meerkat_core::ToolConsequencePolicyRegistry>>,
+    ) -> Self {
+        if registry.is_some() {
+            self.tool_consequence_policy_registry = registry;
+        }
         self
     }
 
@@ -7390,6 +7420,9 @@ impl MobRuntime {
 
         if let Some(customizer) = spec.spawn_member_customizer.clone() {
             builder = builder.with_spawn_member_customizer(customizer);
+        }
+        if let Some(registry) = spec.tool_consequence_policy_registry.clone() {
+            builder = builder.with_tool_consequence_policy_registry(registry);
         }
 
         if let Some(provider) = spec.default_external_tools_provider.clone() {
