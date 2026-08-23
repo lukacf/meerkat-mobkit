@@ -3261,6 +3261,82 @@ pub(super) async fn handle_peer_pubkey(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
+mod member_declaration_error_parity_tests {
+    //! The PR claims these methods classify a failure the same way rkat-rpc does.
+    //! That claim needs a test: meerkat's mapping lives behind a trait private to
+    //! its handler module, so this one is reproduced from `MobError`'s public
+    //! accessors and could silently diverge. Asserting the CODE and the typed
+    //! DATA is what makes the parity claim falsifiable rather than aspirational.
+
+    use meerkat_contracts::ErrorCode;
+
+    use super::mob_declaration_error;
+
+    fn error_for(error: &meerkat_mob::MobError) -> (i64, Option<serde_json::Value>) {
+        let response = mob_declaration_error(serde_json::json!("parity-test"), error);
+        let rendered = response.error.expect("a MobError must render as an error");
+        assert!(
+            response.result.is_none(),
+            "an error response must not also carry a result"
+        );
+        (rendered.code, rendered.data)
+    }
+
+    /// A classified error must carry meerkat's own jsonrpc code plus the typed
+    /// recovery facts, not a generic -32602 with a prose message.
+    #[test]
+    fn a_classified_error_keeps_its_code_and_typed_data() {
+        let (code, data) = error_for(&meerkat_mob::MobError::StaleEventCursor {
+            after_cursor: 40,
+            latest_cursor: 25,
+        });
+        assert_eq!(
+            code,
+            i64::from(ErrorCode::StaleCursor.jsonrpc_code()),
+            "the classified code must survive, or a caller cannot branch on it"
+        );
+        let data = data.expect("stale-cursor data is the recovery fact");
+        assert_eq!(data["watermark"], serde_json::json!(25));
+        assert_eq!(data["requested"], serde_json::json!(40));
+    }
+
+    #[test]
+    fn a_second_class_maps_to_its_own_code_rather_than_a_shared_one() {
+        let (code, data) = error_for(&meerkat_mob::MobError::StaleFenceToken {
+            runtime_id: meerkat_mob::AgentRuntimeId::initial(meerkat_mob::AgentIdentity::from(
+                "worker",
+            )),
+            expected: meerkat_mob::FenceToken::new(3),
+            actual: meerkat_mob::FenceToken::new(2),
+        });
+        assert_eq!(code, i64::from(ErrorCode::StaleFence.jsonrpc_code()));
+        let data = data.expect("stale-fence data carries the fence numbers");
+        assert_eq!(data["expected"], serde_json::json!(3));
+        assert_eq!(data["actual"], serde_json::json!(2));
+        // Distinctness is the point: if both classes collapsed to one code the
+        // two assertions above would still pass individually.
+        assert_ne!(
+            ErrorCode::StaleFence.jsonrpc_code(),
+            ErrorCode::StaleCursor.jsonrpc_code()
+        );
+    }
+
+    /// An UNCLASSIFIED error must still be an error, and must fall back to
+    /// invalid-params rather than inventing a classified code it does not have.
+    #[test]
+    fn an_unclassified_error_falls_back_without_fabricating_a_class() {
+        let (code, _) = error_for(&meerkat_mob::MobError::Internal(
+            "no wire classification for this one".to_string(),
+        ));
+        assert_eq!(
+            code, -32602,
+            "an unclassified MobError must not borrow a classified code"
+        );
+    }
+}
+
+#[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod member_declaration_delegation_tests {
     //! End-to-end through the REAL router with a REAL runtime.
@@ -3463,6 +3539,65 @@ mod member_declaration_wire_tests {
       },
       "convergence": { "kind": "drain", "max_wait_ms": 120000 }
     }"#;
+
+    /// The adopt request, sent once per member before its first apply. Byte-what
+    /// HomeCore's runner sends (scripts/dev/tool_policy_adopt_apply.py at
+    /// acd642e); per-member variation is only agent_identity, request_id, the
+    /// session values and profile_name.
+    const HOMECORE_ADOPT_PARAMS: &str = r#"{
+      "mob_id": "homecore",
+      "agent_identity": "identity:child-2",
+      "request_id": "hc-tp-adopt-identity-child-2-0001",
+      "precondition": "expected_absent",
+      "declaration_scope": "homecore-tool-policy",
+      "declaration_revision": 1,
+      "session": {
+        "session_id": "01a02578-6294-7512-9489-0fb1f57bd9e6",
+        "lineage_id": "session:01a02578-6294-7512-9489-0fb1f57bd9e6",
+        "lineage_generation": 0,
+        "authority_policy": "require_existing"
+      },
+      "member": {
+        "profile_name": "identity",
+        "runtime_mode": "turn_driven",
+        "execution": { "execution": "controlling_session" }
+      },
+      "owned_wiring": [],
+      "convergence": { "kind": "drain", "max_wait_ms": 120000 }
+    }"#;
+
+    #[test]
+    fn the_adopt_payload_homecore_actually_sends_parses_and_converts() {
+        let params: meerkat_contracts::wire::MobAdoptMemberIdentityDeclarationParams =
+            serde_json::from_str(HOMECORE_ADOPT_PARAMS)
+                .expect("HomeCore's production adopt payload must deserialize");
+        assert_eq!(params.declaration_scope, "homecore-tool-policy");
+        assert_eq!(params.declaration_revision, 1);
+
+        // The whole payload converts in one step, which is why adoption inherits
+        // meerkat's validation exactly rather than being reassembled here. If this
+        // conversion ever tightens upstream, this fails on HomeCore's real payload
+        // instead of on their 17th member.
+        let request: meerkat_mob::AdoptMemberIdentityDeclaration = params
+            .try_into()
+            .expect("the production payload must convert to the domain request");
+        let _ = request;
+    }
+
+    /// `wiring_custody` is absent from HomeCore's payload and must therefore
+    /// default rather than being required: the field is `skip_serializing_if`
+    /// external-managed on the wire, so a caller that omits it is saying
+    /// "external managed", not "malformed".
+    #[test]
+    fn an_omitted_wiring_custody_defaults_instead_of_failing() {
+        assert!(
+            !HOMECORE_ADOPT_PARAMS.contains("wiring_custody"),
+            "fixture must keep exercising the omitted case"
+        );
+        let params: meerkat_contracts::wire::MobAdoptMemberIdentityDeclarationParams =
+            serde_json::from_str(HOMECORE_ADOPT_PARAMS).expect("payload parses without it");
+        assert!(params.wiring_custody.is_external_managed());
+    }
 
     #[test]
     fn the_apply_payload_homecore_actually_sends_parses() {
