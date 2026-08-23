@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Pins meerkat `=0.8.26`.
+
+### Added
+
+- **MobKit now serves compiled application tool policies, because Meerkat
+  defines that contract but ships no implementation of it.** Meerkat 0.8.26
+  owns the compiled artifact, the provider and snapshot traits, and the registry
+  that binds a member to a policy; the only implementations of those traits in
+  the published crate live inside its own test module. `member_tool_policy`
+  supplies the production pair: `CompiledPolicyProvider` serves the policies a
+  boot was configured with, and `CompiledPolicySnapshot` evaluates one.
+- **Declared in the gateway init payload as `"application_tool_policies":
+  ["<canonical json>", ...]`.** Each entry is the exact canonical bytes of one
+  compiled policy, carried as a string rather than a nested object on purpose:
+  parsing verifies the digest against the bytes it is given, so re-serialising a
+  nested object would check a digest against bytes MobKit had just manufactured
+  instead of the ones the operator compiled. A malformed entry, a rejected
+  policy or a registry that will not build refuses the boot, for the same reason
+  a malformed `role_migrations` does - an operator who supplied a policy expects
+  it in force, and arming nothing would resurface later as an unexplained access
+  denial with nothing pointing at the payload.
+- **Rollback refusal is MobKit's, by Meerkat's design.** The provider trait
+  documents that the provider owns the snapshot pointer and must reject a
+  revision below one already accepted, because Meerkat "deliberately keeps no
+  second accepted-revision store". So the fence lives here, and it refuses in
+  Meerkat's own vocabulary: a lower revision is `RevisionRollback`, and a repeat
+  of an accepted revision whose bytes differ is `RevisionDigestConflict`. The
+  second half matters because a content swap under a stable revision would leave
+  the digest as the only evidence and nothing downstream re-checks it.
+- **Execution authority is the grant, not the consequence class.** In v1 a grant
+  is one exact allow entry with no wildcards and no deny entries, its only
+  action is `Invoke`, and neither the request nor the verdict carries a
+  threshold. So an exact member/tool grant allows, a miss defers to the
+  artifact's own `default_deny`, and the `R0`-`R3` consequence class is reported
+  without gating execution. Choosing a threshold here would have made MobKit the
+  authority on what `R2` means, which is Meerkat's to define if it is ever
+  wanted.
+
 ## [0.8.19] - 2026-08-21
 
 Pins meerkat `=0.8.25`.

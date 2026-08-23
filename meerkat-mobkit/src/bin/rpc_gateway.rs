@@ -7536,6 +7536,68 @@ external_addressable = true
             ),
         );
     }
+    // Compiled application tool policies this boot serves, each the EXACT
+    // canonical JSON bytes of one compiled policy:
+    // `["{\"schema_version\":1,...}\n", ...]`.
+    //
+    // They arrive as strings rather than nested objects on purpose. Parsing
+    // verifies the digest against the bytes it was given, so re-serialising a
+    // nested object would check a digest against bytes MobKit just
+    // manufactured instead of the ones the operator compiled. A malformed or
+    // digest-mismatched payload refuses the boot, for the same reason
+    // `role_migrations` does: an operator who supplied a policy expects it in
+    // force, and arming nothing would resurface later as an unexplained
+    // access denial.
+    let compiled_tool_policies: Vec<String> = params
+        .get("application_tool_policies")
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .unwrap_or_else(|error| {
+            fail_init(
+                &request_id,
+                -32602,
+                format!("application_tool_policies is malformed: {error}"),
+            )
+        })
+        .unwrap_or_default();
+    let tool_consequence_policy_registry = if compiled_tool_policies.is_empty() {
+        None
+    } else {
+        let provider = std::sync::Arc::new(
+            meerkat_mobkit::member_tool_policy::CompiledPolicyProvider::new(
+                meerkat_core::PolicyProviderId::new("mobkit-gateway").unwrap_or_else(|error| {
+                    fail_init(
+                        &request_id,
+                        -32603,
+                        format!("gateway policy provider id is invalid: {error}"),
+                    )
+                }),
+                meerkat_core::PolicyProviderGeneration(1),
+            ),
+        );
+        for payload in &compiled_tool_policies {
+            if let Err(error) = provider.accept_canonical_json(payload.as_bytes()) {
+                fail_init(
+                    &request_id,
+                    -32602,
+                    format!("application_tool_policies entry rejected: {error}"),
+                );
+            }
+        }
+        let registry = meerkat_core::ToolConsequencePolicyRegistry::new(
+            vec![provider as std::sync::Arc<dyn meerkat_core::ToolConsequenceNarrowingPolicy>],
+            meerkat_core::PolicyEvaluationSupervisorConfig::default(),
+            None,
+        )
+        .unwrap_or_else(|error| {
+            fail_init(
+                &request_id,
+                -32603,
+                format!("application tool policy registry could not be built: {error}"),
+            )
+        });
+        Some(std::sync::Arc::new(registry))
+    };
     let default_llm_client: Option<Arc<dyn meerkat_client::LlmClient>> =
         match gateway_options.demo_llm {
             true => {
@@ -7942,6 +8004,9 @@ external_addressable = true
         gateway_transcript_edit_service = Some(Arc::clone(&concrete_service) as _);
         let session_service: Arc<dyn meerkat_mob::MobSessionService> = concrete_service;
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
+            .with_optional_tool_consequence_policy_registry(
+                tool_consequence_policy_registry.clone(),
+            )
             .with_session_write_epochs(&session_write_epochs)
             // Resume-seam reads must carry the runtime store's archived
             // terminal (at 0.8.11 archive stamps the catalog/lifecycle row,
@@ -8244,6 +8309,9 @@ external_addressable = true
             };
 
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+            .with_optional_tool_consequence_policy_registry(
+                tool_consequence_policy_registry.clone(),
+            )
             .with_session_write_epochs(&session_write_epochs)
             .with_session_runtime_adapter(adapter.clone())
             .with_workgraph_service(workgraph_service.clone())

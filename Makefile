@@ -99,6 +99,16 @@ bright-line: ## Enforce the memory bright line (agent-memory-architecture.md §1
 
 memory-evals: ## Validate memory calibration profiles/fixtures + gate mock-lane invariants (agent-memory-architecture.md §11)
 	@echo "$(YELLOW)Checking memory calibration harness…$(NC)"
+# Build the calibration binaries BEFORE the harness runs them. Each stage
+# shells out to `repo-cargo run --bin <stage>-eval` under a fixed 600s
+# subprocess budget, and those bins live in the mobkit crate, so a cold link
+# pulls the whole meerkat graph. Without this the budget covers COMPILATION and
+# the first run after any dependency bump reports a calibration timeout for a
+# build that had not finished, a gate failing for a reason other than the one
+# it names. Pre-building costs nothing on a warm tree and makes the 600s
+# measure the eval. A build failure still fails this target, with a compiler
+# error instead of a misattributed timeout.
+	$(CARGO) build --quiet --bins
 	@scripts/memory-evals --check
 	@scripts/memory-evals --stage distiller --mode mock
 	@scripts/memory-evals --stage steward --mode mock
