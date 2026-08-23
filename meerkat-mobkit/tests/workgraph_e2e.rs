@@ -304,8 +304,14 @@ async fn member_tools_and_attention_overlay_reach_live_turns() {
     // `Runtime not ready: attached` while a member's runtime session is still
     // mid-kickoff). The raw path is still exercised deliberately, in
     // `unified_runtime::lifecycle::stop_degrade_tests`; do not convert that one.
+    // Bind the outcome so a refusal PRINTS the error it carries.
+    // `MobStopOutcome::Failed` holds the underlying error, and asserting on the
+    // bare predicate discarded it: an exact-main failure here reported only
+    // "teardown must not be blocked", which names the expectation and not the
+    // cause, so the next occurrence starts from nothing.
+    let teardown = runtime.stop_mob_for_teardown().await;
     assert!(
-        runtime.stop_mob_for_teardown().await.teardown_may_proceed(),
-        "teardown must not be blocked by a member's runtime readiness"
+        teardown.teardown_may_proceed(),
+        "teardown must not be blocked by a member's runtime readiness: {teardown:?}"
     );
 }
