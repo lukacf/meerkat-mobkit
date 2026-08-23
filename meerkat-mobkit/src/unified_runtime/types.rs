@@ -240,6 +240,12 @@ pub struct UnifiedRuntimeShutdownReport {
     pub module_shutdown: RuntimeShutdownReport,
     pub mob_stop: Result<(), MobRuntimeError>,
     pub identity_authority_release: IdentityAuthorityReleaseOutcome,
+    /// Deliberately NOT part of `cleanup_completed()`. A retired cleanup that
+    /// did not finish is real incompleteness, but folding it in would change
+    /// when the `runtime_cleanup_completed` wire field goes false, in the same
+    /// change that moves task ownership. Reported here; gating is a separate
+    /// decision with a separate blast radius.
+    pub retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome,
 }
 
 impl UnifiedRuntimeShutdownReport {
@@ -395,6 +401,43 @@ impl Display for UnifiedRuntimeReconcileError {
 }
 
 impl std::error::Error for UnifiedRuntimeReconcileError {}
+
+/// Which supervisor a replacement cleanup was joining.
+///
+/// Replacement retires the previous supervisor, and the two are cancelled and
+/// joined through different authority boundaries (a lease fencing-token
+/// publication versus a restore pass's commit/rollback), so a cleanup that
+/// fails to finish is worth naming rather than counting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RetiredSupervisorKind {
+    LeaseRenewal,
+    ContinuityRepair,
+}
+
+/// Outcome of joining the supervisor cleanups that replacement retired.
+///
+/// `start_identity_first_supervisors` may displace a running lease-renewal or
+/// continuity-repair supervisor. Both are cancelled cooperatively, so the
+/// process must still join them: their own doc comments make raw-aborting a
+/// correctness error, because a lease renewal is joined through publication of
+/// the provider's fencing token and a repair pass through its explicit
+/// commit/rollback boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RetiredSupervisorCleanupOutcome {
+    /// No supervisor was ever replaced, so nothing was retired.
+    NothingRetired,
+    /// Every retired cleanup was joined, counted by which supervisor it was.
+    Joined {
+        lease_renewal: usize,
+        continuity_repair: usize,
+    },
+    /// The join budget expired with cleanups still running. Reported rather
+    /// than waited out: an unbounded join here would be the very shutdown
+    /// stall this field exists to make visible.
+    TimedOut { joined: usize, pending: usize },
+}
 
 #[derive(Debug)]
 pub struct ShutdownDrainReport {
@@ -674,6 +717,7 @@ mod tests {
             },
             mob_stop: Ok(()),
             identity_authority_release: IdentityAuthorityReleaseOutcome::NotConfigured,
+            retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingRetired,
         }
     }
 

@@ -42,6 +42,7 @@ use meerkat_mobkit::runtime::cross_mob_control::{
 };
 use meerkat_mobkit::unified_runtime::EventLogError;
 use meerkat_mobkit::unified_runtime::types::IdentityAuthorityReleaseOutcome;
+use meerkat_mobkit::unified_runtime::types::RetiredSupervisorCleanupOutcome;
 use meerkat_mobkit::{
     AuthPolicy, AuthProvider, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore,
     ConsolePolicy, ConsoleUiConfig, DiscoverySpec, EventLogConfig, EventLogStore, EventQuery,
@@ -515,6 +516,7 @@ mod tests {
     use super::*;
     use meerkat_mobkit::mob_handle_runtime::MobRuntimeError;
     use meerkat_mobkit::unified_runtime::types::IdentityAuthorityReleaseOutcome;
+    use meerkat_mobkit::unified_runtime::types::RetiredSupervisorCleanupOutcome;
     use meerkat_mobkit::{RuntimeShutdownReport, ShutdownDrainReport};
 
     /// The compiled `action_risk_tiers` table must BIND a caller, not merely
@@ -2830,6 +2832,7 @@ actions = ["agent.view"]
                 identity_authority_release: IdentityAuthorityReleaseOutcome::Released {
                     grant_count: 1,
                 },
+                retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingRetired,
             }
         }
         fn diagnostics(report: &UnifiedRuntimeShutdownReport) -> Value {
@@ -2896,6 +2899,7 @@ actions = ["agent.view"]
             },
             mob_stop: Ok(()),
             identity_authority_release: IdentityAuthorityReleaseOutcome::NotConfigured,
+            retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingRetired,
         };
         let response = gateway_shutdown_response(json!("shutdown"), Some(&report));
         assert_eq!(response["result"]["shutdown"], true);
@@ -2934,6 +2938,7 @@ actions = ["agent.view"]
                 identity_authority_release: IdentityAuthorityReleaseOutcome::Released {
                     grant_count: 1,
                 },
+                retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingRetired,
             }
         }
 
@@ -4632,7 +4637,32 @@ fn gateway_shutdown_diagnostics(runtime_shutdown: Option<&UnifiedRuntimeShutdown
                 json!({ "outcome": "skipped_mob_stop_failed" })
             }
         },
-        "module_shutdown": { "orphan_processes": report.module_shutdown.orphan_processes }
+        "module_shutdown": { "orphan_processes": report.module_shutdown.orphan_processes },
+        // A retired supervisor cleanup that did not finish is not currently part
+        // of cleanup_completed(), so it cannot be the reason this response
+        // exists. It is reported anyway: when some other phase blocks, "a lease
+        // renewal cleanup is still running" is often the context that explains
+        // it, and a phase that can expire silently is the defect class these
+        // diagnostics were added for.
+        "retired_supervisor_cleanup": match &report.retired_supervisor_cleanup {
+            RetiredSupervisorCleanupOutcome::NothingRetired => {
+                json!({ "outcome": "nothing_retired" })
+            }
+            RetiredSupervisorCleanupOutcome::Joined {
+                lease_renewal,
+                continuity_repair,
+            } => json!({
+                "outcome": "joined",
+                "lease_renewal": lease_renewal,
+                "continuity_repair": continuity_repair
+            }),
+            RetiredSupervisorCleanupOutcome::TimedOut { joined, pending } => json!({
+                "outcome": "timed_out",
+                "joined": joined,
+                "pending": pending
+            }),
+            _ => json!({ "outcome": "unclassified" }),
+        }
     })
 }
 

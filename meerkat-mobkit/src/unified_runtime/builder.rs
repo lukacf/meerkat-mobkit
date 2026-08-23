@@ -1280,6 +1280,7 @@ impl UnifiedRuntimeBuilder {
             identity_first_context,
             identity_lease_renewal_task: tokio::sync::Mutex::new(None),
             identity_continuity_repair_task: tokio::sync::Mutex::new(None),
+            retired_supervisor_cleanups: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
             console_log_store,
             ..runtime
         };

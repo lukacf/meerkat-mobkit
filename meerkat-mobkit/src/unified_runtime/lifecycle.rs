@@ -5,6 +5,11 @@ use std::future::IntoFuture;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+/// Budget for joining supervisor cleanups retired by replacement. See
+/// [`UnifiedRuntime::join_retired_supervisor_cleanups`] for why this is its own
+/// value rather than a second spend of `drain_timeout`.
+const RETIRED_SUPERVISOR_JOIN_BUDGET: Duration = Duration::from_secs(2);
+
 use meerkat_mob::SpawnMemberSpec;
 use tokio::sync::mpsc::error::TryRecvError;
 
@@ -15,8 +20,8 @@ use crate::runtime::RuntimeDecisionState;
 
 use super::types::{
     ErrorEvent, IdentityAuthorityReleaseOutcome, MobStopOutcome, RediscoverReport,
-    ShutdownDrainReport, UnifiedRuntimeError, UnifiedRuntimeRunReport,
-    UnifiedRuntimeShutdownReport,
+    RetiredSupervisorCleanupOutcome, RetiredSupervisorKind, ShutdownDrainReport,
+    UnifiedRuntimeError, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
 };
 use super::{MobEventIngress, UnifiedRuntime, discovery_spec_to_spawn_spec};
 
@@ -407,11 +412,69 @@ impl UnifiedRuntime {
 
         // Phase 4: Shutdown modules
         let module_shutdown = self.module_runtime.lock().await.shutdown();
+        let retired_supervisor_cleanup = self.join_retired_supervisor_cleanups().await;
         UnifiedRuntimeShutdownReport {
             drain,
             module_shutdown,
             mob_stop,
             identity_authority_release,
+            retired_supervisor_cleanup,
+        }
+    }
+
+    /// Join the supervisor cleanups that replacement retired.
+    ///
+    /// These are joined, never aborted. `TrackedLeaseRenewalTask` and
+    /// `TrackedContinuityRepairTask` cancel cooperatively and document why:
+    /// a renewal is joined through publication of the provider's fencing token,
+    /// and a repair pass through its explicit commit/rollback boundary, so
+    /// raw-aborting is a correctness error rather than a faster shutdown.
+    /// Aborting the wrapper future would also drop the inner `JoinHandle` and
+    /// re-detach the supervisor, which is the leak this exists to close.
+    ///
+    /// Because the join is therefore unbounded in the bad case, it gets its own
+    /// small explicit budget. Deliberately NOT `self.drain_timeout`: that value
+    /// is already spent by the event drain above, so reusing it would silently
+    /// double shutdown's worst case, and hosts that SIGKILL at a fixed grace
+    /// period would pay for that without being told. Every task here was
+    /// cancelled when it was replaced, so this is a fail-fast confirmation
+    /// rather than a wait, and expiry is reported instead of absorbed.
+    async fn join_retired_supervisor_cleanups(&self) -> RetiredSupervisorCleanupOutcome {
+        let mut retired = self.retired_supervisor_cleanups.lock().await;
+        if retired.is_empty() {
+            return RetiredSupervisorCleanupOutcome::NothingRetired;
+        }
+        let mut lease_renewal = 0usize;
+        let mut continuity_repair = 0usize;
+        let joined_all = tokio::time::timeout(RETIRED_SUPERVISOR_JOIN_BUDGET, async {
+            while let Some(joined) = retired.join_next().await {
+                match joined {
+                    Ok(RetiredSupervisorKind::LeaseRenewal) => lease_renewal += 1,
+                    Ok(RetiredSupervisorKind::ContinuityRepair) => continuity_repair += 1,
+                    // A cleanup that panicked is finished, not outstanding, and
+                    // its own task already logged. Counting it as pending would
+                    // report a leak that is not there.
+                    //
+                    // Matched exhaustively on purpose: `RetiredSupervisorKind`
+                    // is `#[non_exhaustive]` only to downstream crates, so a new
+                    // supervisor added here fails to compile until it is counted
+                    // rather than silently landing in a catch-all.
+                    Err(_) => {}
+                }
+            }
+        })
+        .await
+        .is_ok();
+        if joined_all {
+            RetiredSupervisorCleanupOutcome::Joined {
+                lease_renewal,
+                continuity_repair,
+            }
+        } else {
+            RetiredSupervisorCleanupOutcome::TimedOut {
+                joined: lease_renewal + continuity_repair,
+                pending: retired.len(),
+            }
         }
     }
 
@@ -672,7 +735,7 @@ mod stop_degrade_tests {
     use crate::unified_runtime::ErrorEvent;
     use std::sync::Arc;
 
-    async fn empty_runtime(mob_id: &str) -> UnifiedRuntime {
+    pub(super) async fn empty_runtime(mob_id: &str) -> UnifiedRuntime {
         let definition = meerkat_mob::MobDefinition::from_toml(&format!(
             r#"
 [mob]
@@ -908,6 +971,131 @@ comms = true
             ),
             None,
             "an unnamed refusal must report no subject rather than invent one"
+        );
+    }
+}
+
+#[cfg(test)]
+mod retired_supervisor_cleanup_tests {
+    use super::stop_degrade_tests::empty_runtime;
+    use super::{RETIRED_SUPERVISOR_JOIN_BUDGET, RetiredSupervisorCleanupOutcome};
+    use crate::unified_runtime::types::RetiredSupervisorKind;
+
+    /// Replacement used to `tokio::spawn(previous.cancel_and_join())` and drop
+    /// the handle. A dropped `JoinHandle` detaches, so the cleanup could outlive
+    /// shutdown while still holding the authority it was releasing.
+    #[tokio::test]
+    async fn a_retired_cleanup_is_joined_at_shutdown_rather_than_detached() {
+        let mut runtime = empty_runtime("retired-cleanup-joined").await;
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        runtime.retain_retired_supervisor_cleanup(
+            RetiredSupervisorKind::LeaseRenewal,
+            async move {
+                let _ = rx.await;
+            },
+        );
+
+        // Still outstanding: the drain must actually wait for it, so releasing
+        // it only after the drain has begun proves the join is real.
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let _ = tx.send(());
+        });
+
+        assert_eq!(
+            runtime.join_retired_supervisor_cleanups().await,
+            RetiredSupervisorCleanupOutcome::Joined {
+                lease_renewal: 1,
+                continuity_repair: 0
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn each_retired_supervisor_is_counted_as_the_one_it_was() {
+        let mut runtime = empty_runtime("retired-cleanup-kinds").await;
+        runtime.retain_retired_supervisor_cleanup(RetiredSupervisorKind::LeaseRenewal, async {});
+        runtime
+            .retain_retired_supervisor_cleanup(RetiredSupervisorKind::ContinuityRepair, async {});
+        runtime
+            .retain_retired_supervisor_cleanup(RetiredSupervisorKind::ContinuityRepair, async {});
+
+        // Not a single total: a lease renewal is joined through fencing-token
+        // publication and a repair pass through its commit/rollback boundary,
+        // so which one failed to finish is the actionable fact.
+        assert_eq!(
+            runtime.join_retired_supervisor_cleanups().await,
+            RetiredSupervisorCleanupOutcome::Joined {
+                lease_renewal: 1,
+                continuity_repair: 2
+            }
+        );
+    }
+
+    /// The budget must be reported, not absorbed. An unbounded join here would
+    /// be the exact silent shutdown stall this reporting exists to surface.
+    #[tokio::test]
+    async fn an_unfinished_cleanup_is_reported_instead_of_hanging_shutdown() {
+        let mut runtime = empty_runtime("retired-cleanup-timeout").await;
+        runtime.retain_retired_supervisor_cleanup(
+            RetiredSupervisorKind::LeaseRenewal,
+            std::future::pending::<()>(),
+        );
+
+        let started = std::time::Instant::now();
+        let outcome = runtime.join_retired_supervisor_cleanups().await;
+        let waited = started.elapsed();
+
+        assert_eq!(
+            outcome,
+            RetiredSupervisorCleanupOutcome::TimedOut {
+                joined: 0,
+                pending: 1
+            }
+        );
+        // Bounded by its own budget, and NOT by a second spend of drain_timeout:
+        // reusing that value would silently double shutdown's worst case for
+        // hosts that SIGKILL at a fixed grace period.
+        assert!(
+            waited < RETIRED_SUPERVISOR_JOIN_BUDGET * 3,
+            "the join must be bounded by its own budget, waited {waited:?}"
+        );
+    }
+
+    /// A `JoinSet` does not reap on its own. Without the non-blocking reap in
+    /// `retain_retired_supervisor_cleanup`, a process that re-attaches
+    /// identity-first repeatedly accumulates finished entries for its whole
+    /// lifetime, and the shutdown count would measure total replacements rather
+    /// than outstanding work.
+    #[tokio::test]
+    async fn finished_cleanups_are_reaped_so_the_count_tracks_outstanding_work() {
+        let mut runtime = empty_runtime("retired-cleanup-reaped").await;
+        runtime.retain_retired_supervisor_cleanup(RetiredSupervisorKind::LeaseRenewal, async {});
+        // Let the first cleanup actually finish before the next replacement.
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        runtime
+            .retain_retired_supervisor_cleanup(RetiredSupervisorKind::ContinuityRepair, async {});
+
+        assert_eq!(
+            runtime.join_retired_supervisor_cleanups().await,
+            RetiredSupervisorCleanupOutcome::Joined {
+                lease_renewal: 0,
+                continuity_repair: 1
+            },
+            "the finished lease cleanup should have been reaped at the next retain"
+        );
+    }
+
+    /// `NothingRetired` and joining zero are different facts: the first means no
+    /// supervisor was ever replaced, the second that replacements happened and
+    /// all their cleanups were already reaped.
+    #[tokio::test]
+    async fn nothing_retired_is_distinct_from_joining_zero() {
+        let runtime = empty_runtime("retired-cleanup-none").await;
+        assert_eq!(
+            runtime.join_retired_supervisor_cleanups().await,
+            RetiredSupervisorCleanupOutcome::NothingRetired
         );
     }
 }
