@@ -743,12 +743,12 @@ mod remote_host_task_tests {
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
-mod stop_degrade_tests {
+pub(crate) mod stop_degrade_tests {
     use super::*;
     use crate::unified_runtime::ErrorEvent;
     use std::sync::Arc;
 
-    pub(super) async fn empty_runtime(mob_id: &str) -> UnifiedRuntime {
+    pub(crate) async fn empty_runtime(mob_id: &str) -> UnifiedRuntime {
         let definition = meerkat_mob::MobDefinition::from_toml(&format!(
             r#"
 [mob]
