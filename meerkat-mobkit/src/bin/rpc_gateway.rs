@@ -2999,24 +2999,27 @@ actions = ["agent.view"]
             assert_eq!(response["result"]["runtime_cleanup_completed"], false);
         }
 
-        assert_eq!(PROVIDER_CALLBACK_TIMEOUT, Duration::from_secs(130));
-        let mob_quiesce_window = Duration::from_secs(10);
-        let scheduler_overhead = Duration::from_secs(10);
+        // The runtime timeout is no longer hand-summed here. It is DERIVED in
+        // unified_runtime::shutdown_budget from phase declarations, and adding a
+        // phase there is a compile error until it declares a budget. This test
+        // therefore checks the derivation and the advertised anchors, not a second
+        // copy of the arithmetic - a hand-written sum compared against a
+        // hand-written constant is two hands, and #342 proved it cannot see a new
+        // phase.
+        use meerkat_mobkit::unified_runtime::shutdown_budget::{
+            BOUNDED_PHASE_TOTAL, RUNTIME_SHUTDOWN_BUDGET, SCHEDULER_MARGIN,
+        };
         assert_eq!(
             meerkat_mobkit::gateway_composition::GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT,
-            PROVIDER_CALLBACK_TIMEOUT
-                + PROVIDER_CALLBACK_TIMEOUT
-                + GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT
-                + mob_quiesce_window
-                + scheduler_overhead
-                // A bounded phase inside runtime.shutdown(). It was added
-                // without this term and the gate did not notice, because the
-                // sum is a hand-written enumeration of phases rather than
-                // anything derived from them. Whoever adds the next phase pays
-                // the same tax: state it here, or silently overrun the horizon.
-                + meerkat_mobkit::unified_runtime::lifecycle::RETIRED_SUPERVISOR_JOIN_BUDGET,
-            "runtime budget must exactly cover both provider callbacks, event drain, mob quiesce, scheduler overhead, and the retired-supervisor join"
+            RUNTIME_SHUTDOWN_BUDGET,
+            "the gateway must derive its runtime timeout, never restate it"
         );
+        assert_eq!(
+            RUNTIME_SHUTDOWN_BUDGET,
+            BOUNDED_PHASE_TOTAL + SCHEDULER_MARGIN
+        );
+        assert_eq!(PROVIDER_CALLBACK_TIMEOUT, Duration::from_secs(130));
+
         let gateway_phase_budget = GATEWAY_RPC_DRAIN_TIMEOUT
             + meerkat_mobkit::gateway_composition::GATEWAY_HTTP_DRAIN_TIMEOUT
             + meerkat_mobkit::gateway_composition::GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT
@@ -3028,8 +3031,8 @@ actions = ["agent.view"]
         );
         assert_eq!(
             Duration::from_millis(GATEWAY_SHUTDOWN_HORIZON_MS).saturating_sub(gateway_phase_budget),
-            Duration::from_secs(10),
-            "advertised horizon must leave response/reaping margin"
+            GATEWAY_SHUTDOWN_RESPONSE_MARGIN,
+            "advertised horizon must leave exactly the declared response margin"
         );
 
         assert_not_attested(None);
@@ -4617,7 +4620,11 @@ const GATEWAY_SHUTDOWN_METHOD: &str = "mobkit/shutdown";
 // callback windows, the runtime's 30-second event drain, its 10-second mob
 // quiesce window, 10 seconds of scheduler overhead, and the 2-second
 // retired-supervisor join.
-const PROVIDER_CALLBACK_TIMEOUT: Duration = Duration::from_secs(130);
+/// Derived: this bound is spent twice inside runtime shutdown, and the authority
+/// models it as two phases so the horizon covers both.
+const PROVIDER_CALLBACK_TIMEOUT: Duration =
+    meerkat_mobkit::unified_runtime::shutdown_budget::ShutdownPhase::ProviderCallbackAdmittedOperation
+        .budget();
 const GATEWAY_RPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const GATEWAY_STDOUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -4625,7 +4632,18 @@ const GATEWAY_STDOUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 // The bounded gateway phases total at most 327 seconds (5 + 5 + 312 + 5).
 // Advertise another 10 seconds for response delivery and process reaping so
 // an SDK never races the gateway's own deadline and preempts a valid callback.
-const GATEWAY_SHUTDOWN_HORIZON_MS: u64 = 337_000;
+/// Slack between the last bounded phase and the horizon we advertise, so a client is
+/// not told to give up while the response is still being written. Margin, not a phase.
+const GATEWAY_SHUTDOWN_RESPONSE_MARGIN: Duration = Duration::from_secs(10);
+
+/// DERIVED from the gateway's own bounded phases plus the runtime authority. Was a
+/// literal, which is why adding a runtime phase could overrun it silently.
+const GATEWAY_SHUTDOWN_HORIZON_MS: u64 = (GATEWAY_RPC_DRAIN_TIMEOUT.as_secs()
+    + meerkat_mobkit::gateway_composition::GATEWAY_HTTP_DRAIN_TIMEOUT.as_secs()
+    + meerkat_mobkit::gateway_composition::GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT.as_secs()
+    + GATEWAY_STDOUT_DRAIN_TIMEOUT.as_secs()
+    + GATEWAY_SHUTDOWN_RESPONSE_MARGIN.as_secs())
+    * 1_000;
 
 #[derive(Debug)]
 struct GatewayShutdownRequest {

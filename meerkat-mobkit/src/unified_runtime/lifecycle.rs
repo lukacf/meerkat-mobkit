@@ -9,10 +9,11 @@ use std::time::Duration;
 /// [`UnifiedRuntime::join_retired_supervisor_cleanups`] for why this is its own
 /// value rather than a second spend of `drain_timeout`.
 ///
-/// Public because it is a bounded phase INSIDE `UnifiedRuntime::shutdown`, and
-/// the gateway advertises a shutdown horizon that must cover every such phase.
-/// A budget the horizon gate cannot see is a budget that silently overruns it.
-pub const RETIRED_SUPERVISOR_JOIN_BUDGET: Duration = Duration::from_secs(2);
+/// Derived from the shutdown-budget authority rather than declared here, so this
+/// phase is inside the advertised horizon by construction. It was a standalone
+/// constant when it was introduced, and the horizon gate did not notice it.
+pub const RETIRED_SUPERVISOR_JOIN_BUDGET: Duration =
+    super::shutdown_budget::ShutdownPhase::RetiredSupervisorJoin.budget();
 
 use meerkat_mob::SpawnMemberSpec;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -571,7 +572,10 @@ impl UnifiedRuntime {
     /// Any other error, or exhaustion of the window, reports the machine's
     /// last refusal untouched.
     async fn stop_mob_quiescing(&self) -> Result<(), MobRuntimeError> {
-        const STOP_QUIESCE_WINDOW: Duration = Duration::from_secs(10);
+        // Derived: a function-local constant is invisible to any sum, which is
+        // how this phase stayed outside the horizon accounting.
+        const STOP_QUIESCE_WINDOW: Duration =
+            super::shutdown_budget::ShutdownPhase::MobQuiesce.budget();
         let handle = self.mob_handle();
         let deadline = tokio::time::Instant::now() + STOP_QUIESCE_WINDOW;
         let mut last = handle.stop().await;

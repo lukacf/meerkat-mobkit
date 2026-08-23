@@ -17,6 +17,9 @@ workspace = true
 
 [dependencies]
 anyhow = "1"
+# Variant enumeration for the shutdown-budget authority: a hand-written phase list
+# cannot be checked for completeness without it, and 0.28 is already in Cargo.lock.
+strum = { version = "0.28", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = "1"

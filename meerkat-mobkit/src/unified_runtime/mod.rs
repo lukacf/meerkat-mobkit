@@ -41,6 +41,7 @@ pub mod lifecycle;
 pub mod mob_events;
 pub mod mob_ops;
 pub mod module_ops;
+pub mod shutdown_budget;
 pub mod types;
 
 pub use crate::identity_first::IdentityBootstrapMode;
@@ -166,7 +167,9 @@ const ROSTER_ROUTE_CHANNEL: &str = "notification";
 const ROSTER_ROUTE_SINK: &str = "mob_member";
 const ROSTER_ROUTE_TARGET_MODULE: &str = "delivery";
 
-const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+/// Derived from the shutdown-budget authority, so the event drain cannot be retuned
+/// without the advertised horizon following it.
+const DEFAULT_DRAIN_TIMEOUT: Duration = shutdown_budget::ShutdownPhase::EventDrain.budget();
 
 /// Map an [`AgentDiscoverySpec`] to a [`SpawnMemberSpec`] for spawning.
 ///
