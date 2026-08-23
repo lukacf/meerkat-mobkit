@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.20] - 2026-08-23
+
 Pins meerkat `=0.8.26`.
 
 ### Added
