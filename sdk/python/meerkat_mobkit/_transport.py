@@ -26,7 +26,7 @@ _PROVIDER_CALLBACK_COMPLETION_SECONDS = 125.0
 # RPC/HTTP/stdout phases, and response-delivery/process-reap margin.
 # It is also the safe fallback for handshake-capable custom gateways which do
 # not yet advertise an explicit horizon.
-_GATEWAY_SHUTDOWN_GRACE_SECONDS = 335.0
+_GATEWAY_SHUTDOWN_GRACE_SECONDS = 337.0
 _MAX_GATEWAY_SHUTDOWN_HORIZON_MS = 2_147_483_647
 _PROCESS_TERMINATE_GRACE_SECONDS = 5.0
 _PROCESS_KILL_GRACE_SECONDS = 5.0

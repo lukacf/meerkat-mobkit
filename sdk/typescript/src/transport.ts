@@ -82,7 +82,7 @@ export type FetchLike = (
  * response-delivery/process-reap margin. The same value is the safe fallback
  * for handshake-capable gateways without the newer explicit capability.
  */
-export const PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS = 335_000;
+export const PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS = 337_000;
 export const PROVIDER_CALLBACK_COMPLETION_MS = 125_000;
 
 const PERSISTENT_TRANSPORT_SIGTERM_GRACE_MS = 5_000;

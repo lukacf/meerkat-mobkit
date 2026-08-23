@@ -280,9 +280,9 @@ describe("persistent transport shutdown", () => {
       return true;
     });
 
-    assert.equal(PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS, 335_000);
+    assert.equal(PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS, 337_000);
     assert.equal(fake.stdinEnded, 1);
-    assert.deepEqual(waits, [335_000]);
+    assert.deepEqual(waits, [337_000]);
     assert.deepEqual(fake.signals, []);
   });
 
@@ -297,7 +297,7 @@ describe("persistent transport shutdown", () => {
     });
 
     assert.equal(fake.stdinEnded, 1);
-    assert.deepEqual(waits, [335_000, 5_000, 5_000]);
+    assert.deepEqual(waits, [337_000, 5_000, 5_000]);
     assert.deepEqual(fake.signals, ["SIGTERM", "SIGKILL"]);
   });
 
@@ -314,7 +314,7 @@ describe("persistent transport shutdown", () => {
     );
 
     assert.equal(fake.stdinEnded, 1);
-    assert.deepEqual(waits, [335_000, 5_000, 5_000]);
+    assert.deepEqual(waits, [337_000, 5_000, 5_000]);
     assert.deepEqual(fake.signals, ["SIGTERM", "SIGKILL"]);
   });
 
@@ -328,7 +328,7 @@ describe("persistent transport shutdown", () => {
       return outcomes.shift() ?? true;
     });
 
-    assert.deepEqual(waits, [335_000, 5_000]);
+    assert.deepEqual(waits, [337_000, 5_000]);
     assert.deepEqual(fake.signals, ["SIGTERM"]);
   });
 });

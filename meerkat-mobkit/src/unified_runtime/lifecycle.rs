@@ -8,7 +8,11 @@ use std::time::Duration;
 /// Budget for joining supervisor cleanups retired by replacement. See
 /// [`UnifiedRuntime::join_retired_supervisor_cleanups`] for why this is its own
 /// value rather than a second spend of `drain_timeout`.
-const RETIRED_SUPERVISOR_JOIN_BUDGET: Duration = Duration::from_secs(2);
+///
+/// Public because it is a bounded phase INSIDE `UnifiedRuntime::shutdown`, and
+/// the gateway advertises a shutdown horizon that must cover every such phase.
+/// A budget the horizon gate cannot see is a budget that silently overruns it.
+pub const RETIRED_SUPERVISOR_JOIN_BUDGET: Duration = Duration::from_secs(2);
 
 use meerkat_mob::SpawnMemberSpec;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -442,38 +446,47 @@ impl UnifiedRuntime {
     async fn join_retired_supervisor_cleanups(&self) -> RetiredSupervisorCleanupOutcome {
         let mut retired = self.retired_supervisor_cleanups.lock().await;
         if retired.is_empty() {
-            return RetiredSupervisorCleanupOutcome::NothingRetired;
+            return RetiredSupervisorCleanupOutcome::NothingPending;
         }
         let mut lease_renewal = 0usize;
         let mut continuity_repair = 0usize;
+        let mut join_failed = 0usize;
         let joined_all = tokio::time::timeout(RETIRED_SUPERVISOR_JOIN_BUDGET, async {
             while let Some(joined) = retired.join_next().await {
                 match joined {
-                    Ok(RetiredSupervisorKind::LeaseRenewal) => lease_renewal += 1,
-                    Ok(RetiredSupervisorKind::ContinuityRepair) => continuity_repair += 1,
-                    // A cleanup that panicked is finished, not outstanding, and
-                    // its own task already logged. Counting it as pending would
-                    // report a leak that is not there.
-                    //
                     // Matched exhaustively on purpose: `RetiredSupervisorKind`
                     // is `#[non_exhaustive]` only to downstream crates, so a new
                     // supervisor added here fails to compile until it is counted
                     // rather than silently landing in a catch-all.
-                    Err(_) => {}
+                    Ok(RetiredSupervisorKind::LeaseRenewal) => lease_renewal += 1,
+                    Ok(RetiredSupervisorKind::ContinuityRepair) => continuity_repair += 1,
+                    // A cleanup that did not return normally leaves no
+                    // attestation that it reached its release boundary. Not
+                    // claimed to prove the fencing token was never published:
+                    // `JoinError` also covers cancellation, and a panic can
+                    // land after the side effect but before the return. The
+                    // absent attestation is the fact, and it is enough to
+                    // withhold one. Nothing is aborted to learn this; the task
+                    // is already over.
+                    Err(_) => join_failed += 1,
                 }
             }
         })
         .await
         .is_ok();
-        if joined_all {
+        // `len()` is the tasks still running, so it is 0 whenever the budget did
+        // not expire.
+        let pending = retired.len();
+        if joined_all && join_failed == 0 {
             RetiredSupervisorCleanupOutcome::Joined {
                 lease_renewal,
                 continuity_repair,
             }
         } else {
-            RetiredSupervisorCleanupOutcome::TimedOut {
+            RetiredSupervisorCleanupOutcome::Incomplete {
                 joined: lease_renewal + continuity_repair,
-                pending: retired.len(),
+                join_failed,
+                pending,
             }
         }
     }
@@ -976,6 +989,10 @@ comms = true
 }
 
 #[cfg(test)]
+// A cleanup that dies before its release boundary is one of the two failure
+// modes under test, and the only way to produce a real `JoinError` is to let a
+// task actually panic.
+#[allow(clippy::panic)]
 mod retired_supervisor_cleanup_tests {
     use super::stop_degrade_tests::empty_runtime;
     use super::{RETIRED_SUPERVISOR_JOIN_BUDGET, RetiredSupervisorCleanupOutcome};
@@ -1048,8 +1065,9 @@ mod retired_supervisor_cleanup_tests {
 
         assert_eq!(
             outcome,
-            RetiredSupervisorCleanupOutcome::TimedOut {
+            RetiredSupervisorCleanupOutcome::Incomplete {
                 joined: 0,
+                join_failed: 0,
                 pending: 1
             }
         );
@@ -1087,15 +1105,53 @@ mod retired_supervisor_cleanup_tests {
         );
     }
 
-    /// `NothingRetired` and joining zero are different facts: the first means no
-    /// supervisor was ever replaced, the second that replacements happened and
-    /// all their cleanups were already reaped.
+    /// An empty set reports `NothingPending`, and the name has to stay that
+    /// modest: because finished cleanups are reaped at the next replacement, a
+    /// runtime that retired several cleanups which all completed is
+    /// indistinguishable here from one that never replaced a supervisor. The
+    /// earlier name `NothingRetired` asserted the second, which this value
+    /// cannot support.
     #[tokio::test]
-    async fn nothing_retired_is_distinct_from_joining_zero() {
+    async fn an_empty_set_reports_nothing_pending_and_claims_no_history() {
         let runtime = empty_runtime("retired-cleanup-none").await;
         assert_eq!(
             runtime.join_retired_supervisor_cleanups().await,
-            RetiredSupervisorCleanupOutcome::NothingRetired
+            RetiredSupervisorCleanupOutcome::NothingPending
+        );
+
+        // Same value after a real replacement whose cleanup finished and was
+        // reaped, which is exactly why the variant cannot claim history.
+        let mut reaped = empty_runtime("retired-cleanup-reaped-then-empty").await;
+        reaped.retain_retired_supervisor_cleanup(RetiredSupervisorKind::LeaseRenewal, async {});
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        reaped.retain_retired_supervisor_cleanup(RetiredSupervisorKind::LeaseRenewal, async {});
+        // The second retain reaped the first; joining the second empties the set.
+        let _ = reaped.join_retired_supervisor_cleanups().await;
+        assert_eq!(
+            reaped.join_retired_supervisor_cleanups().await,
+            RetiredSupervisorCleanupOutcome::NothingPending
+        );
+    }
+
+    /// A cleanup that does not return normally leaves no attestation that it
+    /// reached its release boundary. Reporting it as `Joined` would attest a
+    /// release the process cannot evidence.
+    #[tokio::test]
+    async fn a_cleanup_that_did_not_return_is_not_reported_as_released() {
+        let mut runtime = empty_runtime("retired-cleanup-panic").await;
+        runtime.retain_retired_supervisor_cleanup(RetiredSupervisorKind::LeaseRenewal, async {
+            panic!("cleanup did not return normally");
+        });
+        runtime
+            .retain_retired_supervisor_cleanup(RetiredSupervisorKind::ContinuityRepair, async {});
+
+        assert_eq!(
+            runtime.join_retired_supervisor_cleanups().await,
+            RetiredSupervisorCleanupOutcome::Incomplete {
+                joined: 1,
+                join_failed: 1,
+                pending: 0
+            }
         );
     }
 }

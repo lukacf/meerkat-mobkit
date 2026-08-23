@@ -339,7 +339,10 @@ impl GatewayComposition<ActiveGateway> {
 // ---------------------------------------------------------------------------
 
 pub const GATEWAY_HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
-pub const GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(310);
+/// Covers every bounded phase inside `UnifiedRuntime::shutdown`, including
+/// `RETIRED_SUPERVISOR_JOIN_BUDGET`. Asserted component-by-component in
+/// `advertised_shutdown_horizon_covers_every_bounded_gateway_phase`.
+pub const GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(312);
 
 pub struct GatewayHttpBinding {
     listener: tokio::net::TcpListener,

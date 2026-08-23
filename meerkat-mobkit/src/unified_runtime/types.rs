@@ -240,17 +240,23 @@ pub struct UnifiedRuntimeShutdownReport {
     pub module_shutdown: RuntimeShutdownReport,
     pub mob_stop: Result<(), MobRuntimeError>,
     pub identity_authority_release: IdentityAuthorityReleaseOutcome,
-    /// Deliberately NOT part of `cleanup_completed()`. A retired cleanup that
-    /// did not finish is real incompleteness, but folding it in would change
-    /// when the `runtime_cleanup_completed` wire field goes false, in the same
-    /// change that moves task ownership. Reported here; gating is a separate
-    /// decision with a separate blast radius.
+    /// Part of `cleanup_completed()`: see that method for why an unreleased
+    /// supervisor is incompleteness rather than a detail. It is also the reason
+    /// the gateway attaches diagnostics at all, and those attach only when
+    /// cleanup did not complete, so excluding this outcome would have made it
+    /// unreportable in exactly the case it exists for.
     pub retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome,
 }
 
 impl UnifiedRuntimeShutdownReport {
     /// True only when every shutdown phase that owns external authority or
     /// child-process state completed successfully.
+    ///
+    /// A retired supervisor cleanup counts: a lease renewal or repair pass that
+    /// the process cannot attest reached its release boundary is an
+    /// authority-owning phase that did not demonstrably complete. Reporting
+    /// `shutdown=true` while one is still running, or ended without returning,
+    /// would make this method's own contract false.
     pub fn cleanup_completed(&self) -> bool {
         !self.drain.timed_out
             && self.mob_stop.is_ok()
@@ -260,6 +266,11 @@ impl UnifiedRuntimeShutdownReport {
                     | IdentityAuthorityReleaseOutcome::Released { .. }
             )
             && self.module_shutdown.orphan_processes == 0
+            && matches!(
+                &self.retired_supervisor_cleanup,
+                RetiredSupervisorCleanupOutcome::NothingPending
+                    | RetiredSupervisorCleanupOutcome::Joined { .. }
+            )
     }
 }
 
@@ -426,17 +437,42 @@ pub enum RetiredSupervisorKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RetiredSupervisorCleanupOutcome {
-    /// No supervisor was ever replaced, so nothing was retired.
-    NothingRetired,
-    /// Every retired cleanup was joined, counted by which supervisor it was.
+    /// Nothing was outstanding to join.
+    ///
+    /// Deliberately NOT called `NothingRetired`: finished cleanups are reaped at
+    /// the next replacement, so an empty set means nothing remains pending, not
+    /// that no supervisor was ever replaced. Claiming the latter would be
+    /// unfalsifiable from this value.
+    NothingPending,
+    /// Every outstanding cleanup reached its release boundary, counted by which
+    /// supervisor it was.
     Joined {
         lease_renewal: usize,
         continuity_repair: usize,
     },
-    /// The join budget expired with cleanups still running. Reported rather
-    /// than waited out: an unbounded join here would be the very shutdown
-    /// stall this field exists to make visible.
-    TimedOut { joined: usize, pending: usize },
+    /// At least one cleanup did not reach its release boundary.
+    ///
+    /// One variant rather than separate failure and timeout cases so a run that
+    /// hits both cannot report only one.
+    ///
+    /// `join_failed > 0` means a cleanup did not return normally, so the process
+    /// cannot ATTEST that it reached its release boundary. Deliberately not
+    /// called `panicked`: `JoinError` covers cancellation as well as panic, and
+    /// even a panic can happen after the side effect but before returning, so
+    /// "the fencing token was never published" would be a stronger causal claim
+    /// than the evidence supports. What is certain is the absence of an
+    /// attestation, which is enough to withhold one.
+    ///
+    /// `pending > 0` means the join budget expired with cleanups still running.
+    ///
+    /// Either count makes [`UnifiedRuntimeShutdownReport::cleanup_completed`]
+    /// false. `join_failed` is a bare count because `JoinError` cannot recover
+    /// which supervisor the task was carrying.
+    Incomplete {
+        joined: usize,
+        join_failed: usize,
+        pending: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -717,7 +753,7 @@ mod tests {
             },
             mob_stop: Ok(()),
             identity_authority_release: IdentityAuthorityReleaseOutcome::NotConfigured,
-            retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingRetired,
+            retired_supervisor_cleanup: RetiredSupervisorCleanupOutcome::NothingPending,
         }
     }
 
