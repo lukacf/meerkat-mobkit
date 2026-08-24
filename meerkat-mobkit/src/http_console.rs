@@ -13433,26 +13433,29 @@ comms = true
         let (_temp_dir, runtime) =
             build_empty_console_test_runtime("console-current-generation-peer-info").await?;
         let durable_identity = "review:peer-info-current";
-        let stale_alias = "rt:review:peer-info-current:0";
-        let current_alias = "rt:review:peer-info-current:1";
-        for runtime_alias in [stale_alias, current_alias] {
-            runtime
-                .handle()
-                .spawn_spec(
-                    SpawnMemberSpec::from_wire(
-                        "worker".to_string(),
-                        crate::member_comms_id::mob_member_id_str(runtime_alias).into_owned(),
-                        None,
-                        None,
-                        None,
-                    )
-                    .with_labels(BTreeMap::from([(
-                        "agent_identity".to_string(),
-                        durable_identity.to_string(),
-                    )])),
+        // ONE stable roster row. This used to seat rt:...:0 and rt:...:1 so a
+        // stale generation row would remain for peer info to skip. Under the
+        // durable-roster contract there is one row per identity and a reset
+        // replaces its binding, so a leftover generation row cannot exist. What
+        // still matters, and what this now asserts, is that peer info names the
+        // stable row and refuses a binding that disagrees with it.
+        let successor_alias = "rt:review:peer-info-current:1";
+        runtime
+            .handle()
+            .spawn_spec(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    crate::member_comms_id::mob_member_id_str(durable_identity).into_owned(),
+                    None,
+                    None,
+                    None,
                 )
-                .await?;
-        }
+                .with_labels(BTreeMap::from([(
+                    "agent_identity".to_string(),
+                    durable_identity.to_string(),
+                )])),
+            )
+            .await?;
 
         let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
@@ -13483,8 +13486,17 @@ comms = true
                 IdentityLifecycleState::Active,
                 Some(ContinuityRecord {
                     identity,
-                    agent_runtime_id: AgentRuntimeId::parse(current_alias)?,
-                    session_id: meerkat_core::types::SessionId::new(),
+                    agent_runtime_id: AgentRuntimeId::parse(successor_alias)?,
+                    // The row's ACTUAL session. The old fixture used a fresh
+                    // random SessionId, which only went unnoticed because
+                    // nothing compared it against the live binding.
+                    session_id: runtime
+                        .handle()
+                        .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id(
+                            durable_identity,
+                        ))
+                        .await
+                        .ok_or("the stable roster row must have a bridge session")?,
                     generation: ContinuityGeneration::new(1),
                     checkpoint_version: CheckpointVersion::new(0),
                 }),
@@ -13514,33 +13526,22 @@ comms = true
             .as_str()
             .ok_or("peer info must return comms_name")?;
         assert!(
-            comms_name.ends_with(crate::member_comms_id::mob_member_id_str(current_alias).as_ref()),
-            "console peer info selected the stale generation: {response:#?}"
+            comms_name
+                .ends_with(crate::member_comms_id::mob_member_id_str(durable_identity).as_ref()),
+            "console peer info must name the stable roster row: {response:#?}"
         );
 
-        let ambiguous = Box::pin(handle_console_runtime_rpc(
-            &runtime,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            rpc_request_with_params(
-                "mobkit/cross_mob/peer_info",
-                json!({"member_id": durable_identity}),
-            ),
-            true,
-        ))
-        .await;
-        assert!(
-            ambiguous["error"]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("ambiguous durable member alias")),
-            "classic fallback must fail closed when both reset generations remain: {ambiguous:#?}"
-        );
+        // The label-disambiguation fallback is NOT reachable for a durable
+        // identity any more, and that is worth stating rather than asserting
+        // around. It existed because the bare identity was not a roster id, so a
+        // classic lookup had to match rows by their agent_identity LABEL and
+        // could find several. The durable identity is now the roster id itself,
+        // so the exact-member-id path always wins - I verified this by seeding
+        // two rows labelled for one identity and watching peer info resolve the
+        // exact row cleanly rather than reporting ambiguity.
+        //
+        // The fallback still guards callers that pass something which is not a
+        // roster id; it simply cannot be provoked through this identity.
 
         let _ = runtime.handle().stop().await;
         Ok(())
