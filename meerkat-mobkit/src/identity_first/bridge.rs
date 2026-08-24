@@ -3940,10 +3940,9 @@ impl SessionBridge for MobSessionBridge {
                                 session_id,
                                 &meerkat_mob::MobError::Internal(format!(
                                     "roster collision on {session_id} with no identity intent \
-                                     row, and the legacy authority cannot prove the occupant {} \
-                                     belongs to {identity} (retryable: refusing to retire an \
-                                     occupant whose custody is unproven)",
-                                    mid
+                                     row, and the legacy authority cannot prove the occupant \
+                                     {mid} belongs to {identity} (retryable: refusing to retire \
+                                     an occupant whose custody is unproven)"
                                 )),
                                 "legacy custody unproven",
                             ));
@@ -5759,7 +5758,6 @@ mod tests {
         assert!(spawn.override_profile.is_none());
     }
 
-    #[test]
     /// Why `member_id_for_runtime_id` and the wire projection return errors
     /// instead of deriving an id when the runtime_members mapping is missing.
     ///
@@ -5796,6 +5794,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn fresh_fallback_collision_classifier_matches_member_already_exists() {
         let error = meerkat_mob::MobError::MemberAlreadyExists(meerkat_mob::AgentIdentity::from(
             "rt-agent-alpha-0",

@@ -11582,10 +11582,10 @@ mod reset_reprofile_tests {
         // that reports nothing; bounded, it names itself.
         tokio::time::timeout(Duration::from_secs(10), store.wait_for_failure())
             .await
-            .expect(
+            .map_err(|_| {
                 "reset never reached the final continuity upsert, so the injected failure could \
-                 not fire; reset refused earlier in the flow",
-            );
+                 not fire; reset refused earlier in the flow"
+            })?;
         outer.abort();
         match outer.await {
             Err(error) => assert!(error.is_cancelled()),
