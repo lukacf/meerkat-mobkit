@@ -500,18 +500,28 @@ async fn repair_carries_queued_inputs_to_the_healed_successor() {
     );
 }
 
-// NOT ADDED HERE: a genuinely-indeterminate-custody test.
+// STILL UNCOVERED: genuinely-indeterminate custody. Two obstacles found, in
+// order, and the second is the one that stops it.
 //
-// Indeterminate is reachable in principle through the public writer - a Valid
-// Present intent naming a DIFFERENT session than the one being resumed
-// (bridge.rs:2664) - so it does NOT require the Valid Absent intent the old
-// comment on the test below assumed. But adoption has its own precondition:
-// resolve_portable_system_prompt needs inline SKILLS or a system-prompt
-// override, and failing both it needs a SpawnBasePromptSource, which MobKit
-// wires NOWHERE. So adopting in this harness refuses before custody is ever
-// consulted, and reaching the verdict here costs more fixture machinery than a
-// test-only intent seam would. Left uncovered deliberately and reported, rather
-// than papered over with an #[ignore] or a weakened assertion.
+// 1. Adoption could not resolve a system prompt at all: it needs inline skills
+//    or an explicit prompt override, and failing both a SpawnBasePromptSource,
+//    which MobKit wires nowhere. Solved by giving the profile a minimal inline
+//    skill - and note this is not test-only trivia: HomeCore confirmed 9 of
+//    their 17 production members declare neither.
+//
+// 2. The resume target cannot be a fresh SessionId. Resuming a never-persisted
+//    session races the fresh-spawn fallback against the collision arm, so the
+//    call returns FreshSpawned { NeverPersisted } instead of reaching custody -
+//    intermittently, which is why a first attempt at this test was flaky rather
+//    than simply wrong. Reaching custody deterministically needs a resume target
+//    that IS persisted but bound to a different member, which this harness does
+//    not produce today.
+//
+// So the Present-A/resume-B fixture is valid in principle - a Present intent
+// naming a different session than the one being resumed does map to
+// Indeterminate (bridge.rs:2664) - but not reachable deterministically here. A
+// Valid Absent seam would NOT help: the custody map classifies Valid Absent as
+// IdentityFirstOwns. Left uncovered and reported rather than shipped flaky.
 
 /// Preconditions-first (task #48 (a)): when the session the resume retry
 /// would need is CONFIRMED absent from the composition's authoritative read
