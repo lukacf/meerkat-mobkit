@@ -3894,6 +3894,127 @@ impl IdentityRuntime {
     /// Cancellation-safe compatibility restore used by embedders that pass
     /// an RPC identity context without attaching an
     /// [`IdentityFirstRuntimeContext`] to the unified runtime.
+    /// Register the owning identity of every persisted session on the roster,
+    /// without materializing anything.
+    ///
+    /// This exists for exactly one ordering problem. Lifting a resumed mob from
+    /// `Stopped` to `Running` makes MobMachine revive its persisted sessions,
+    /// and a revived session whose owner has no authoritative registration is
+    /// correctly refused by the continuity adapter - so every restored member
+    /// comes back Broken. `embody_identity` already registers from the
+    /// authoritative record, but it registers and then SPAWNS, and spawning
+    /// needs a mob that is already Running. Hence a registration-only pass that
+    /// can run while the mob is still Stopped.
+    ///
+    /// The facts come from the continuity substrate's own
+    /// `resolve_record_by_session`, whose contract is that it returns "the same
+    /// facts registration would carry": the record, its fencing token, and the
+    /// substrate's fence-current version. Nothing is minted here, and this runs
+    /// inside the lifecycle owner rather than seeding durable identity state
+    /// from outside it.
+    ///
+    /// Best-effort per identity BY DESIGN. An identity with no durable record
+    /// has nothing to register and is not an error - it has never persisted a
+    /// session, so the ordinary create path owns it. Returns how many owners
+    /// were registered so a caller can log a boot that registered none.
+    pub async fn register_persisted_continuity_owners(
+        &self,
+        roster: &[DurableAgentSpec],
+    ) -> Result<usize, IdentityRuntimeError> {
+        let Some(bridge) = self.bridge.as_ref() else {
+            return Ok(0);
+        };
+        let mut registered = 0usize;
+        for spec in roster {
+            let identity = &spec.identity;
+            // A substrate that cannot answer is not a boot failure. This pass
+            // only ever ADDS a registration that would otherwise happen later;
+            // when the facts are unavailable the pre-existing behaviour stands,
+            // including the downstream registration-required refusal. Failing
+            // the boot here would make an optional capability mandatory.
+            let resolved = match self
+                .continuity_store
+                .resolve_many(std::slice::from_ref(identity))
+                .await
+            {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    tracing::warn!(
+                        %identity,
+                        %error,
+                        "continuity resolution unavailable before activation; skipping owner \
+                         pre-registration for this identity"
+                    );
+                    continue;
+                }
+            };
+            let Some(super::types::ContinuityResolveState::Ready { record }) =
+                resolved.get(identity)
+            else {
+                continue;
+            };
+            let session_id = record.session_id.clone();
+            // The substrate is the authority for the fence, not the record: the
+            // record's own checkpoint version is a checkpoint-time stamp and may
+            // trail the substrate's write counter, and registering a trailing
+            // version makes the next write present a stale one.
+            // Explicitly optional: the trait documents `None` both for "no
+            // record binds this session" AND for "the substrate does not
+            // support the lookup", with callers told to keep their
+            // registration-required refusal. A substrate without the fence
+            // table returns an ERROR rather than None, which is the same
+            // condition, so treat it the same way instead of failing the boot.
+            let bound = match self
+                .continuity_store
+                .resolve_record_by_session(&session_id)
+                .await
+            {
+                Ok(bound) => bound,
+                Err(error) => {
+                    tracing::warn!(
+                        %identity,
+                        %session_id,
+                        %error,
+                        "continuity fence lookup unavailable before activation; skipping owner \
+                         pre-registration for this session"
+                    );
+                    continue;
+                }
+            };
+            let Some((bound_record, fencing_token, fence_current)) = bound else {
+                continue;
+            };
+            if bound_record.session_id != session_id || bound_record.identity != *identity {
+                // The substrate binds this session to something other than what
+                // the roster resolution said. Registering either spelling would
+                // publish an authority neither source agrees on.
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "continuity for {identity} resolves to session {session_id} but the substrate \
+                     binds that session to {}/{}, so no owner registration can be published \
+                     before activation",
+                    bound_record.identity, bound_record.session_id
+                )));
+            }
+            bridge
+                .register_session_runtime_state(
+                    &session_id,
+                    identity,
+                    bound_record.generation,
+                    fence_current,
+                    fencing_token,
+                )
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!(
+                        "registering the persisted owner of {identity} session {session_id} \
+                         before activation: {error}"
+                    ))
+                })?;
+            registered += 1;
+        }
+        Ok(registered)
+    }
+
     /// Discharge the attach postcondition, converting an attached occupant into
     /// a genuinely resumed one.
     ///

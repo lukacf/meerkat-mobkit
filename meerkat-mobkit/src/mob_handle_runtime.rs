@@ -7411,8 +7411,70 @@ pub struct MobRuntime {
     _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
 }
 
+/// The right to lift a prepared mob from `Stopped` to `Running`, once.
+///
+/// A resumed persistent log replays the prior graceful shutdown, so the handle
+/// comes back `Stopped`. Lifting it is what makes MobMachine revive persisted
+/// sessions - and revival needs the owning identity already registered, which
+/// only an installed `IdentityRuntime` can do. So for an identity-first
+/// composition the lift cannot happen where the mob is built; it has to wait
+/// until the identity context exists.
+///
+/// This is that obligation made typed rather than left to a convention. It is
+/// only produced when a lift is genuinely owed, it is consumed by value so it
+/// cannot be discharged twice, and there is no boolean anywhere that says
+/// "skip the lift".
+#[must_use = "a prepared mob stays Stopped until this activation is consumed, and a Stopped mob cannot spawn"]
+pub(crate) struct PendingMobActivation {
+    handle: MobHandle,
+}
+
+impl PendingMobActivation {
+    /// Perform the deferred `Stopped` -> `Running` transition.
+    ///
+    /// Call only after the identity context is installed and current continuity
+    /// records are registered; that ordering is the whole reason this is
+    /// deferred.
+    pub(crate) async fn activate(self) -> Result<(), MobRuntimeError> {
+        match self.handle.status().await? {
+            // The only transition MobHandle::resume performs.
+            meerkat_mob::MobState::Stopped => {
+                self.handle.resume().await?;
+                Ok(())
+            }
+            // Something else already lifted it; the obligation is discharged.
+            meerkat_mob::MobState::Running => Ok(()),
+            state => Err(MobRuntimeError::InvalidConfig(format!(
+                "a prepared mob reported state {} at activation, so it can no longer be lifted \
+                 to Running",
+                state.as_str()
+            ))),
+        }
+    }
+}
+
 impl MobRuntime {
-    pub async fn bootstrap(mut spec: MobBootstrapSpec) -> Result<Self, MobRuntimeError> {
+    /// Bootstrap a mob that is `Running` on return.
+    ///
+    /// The honest wrapper: any caller that gets a `MobRuntime` from here can
+    /// spawn into it. Identity-first composition uses [`Self::prepare`] instead,
+    /// because it must interpose registration before the lift.
+    pub async fn bootstrap(spec: MobBootstrapSpec) -> Result<Self, MobRuntimeError> {
+        let (runtime, pending) = Self::prepare(spec).await?;
+        if let Some(pending) = pending {
+            pending.activate().await?;
+        }
+        Ok(runtime)
+    }
+
+    /// Build the mob without committing to `Running`.
+    ///
+    /// Returns the runtime plus, when a lift is owed and an identity runtime
+    /// slot says identity-first composition is coming, the typed activation that
+    /// must be consumed once continuity is registered.
+    pub(crate) async fn prepare(
+        mut spec: MobBootstrapSpec,
+    ) -> Result<(Self, Option<PendingMobActivation>), MobRuntimeError> {
         // Every mobkit surface funnels its definition through here, so this
         // is the one ingress where declared-field resume overrides are
         // marked before the definition reaches meerkat-mob.
@@ -7529,6 +7591,7 @@ impl MobRuntime {
             builder = builder.with_default_llm_client(client);
         }
 
+        let mut pending_activation: Option<PendingMobActivation> = None;
         let handle = if event_log_empty {
             builder.create().await?
         } else {
@@ -7544,6 +7607,18 @@ impl MobRuntime {
             // downstream actuator to discover a stopped mob and interpret it
             // for itself. Any failure stays typed.
             match handle.status().await? {
+                // Defer the lift for identity-first composition. Lifting here
+                // is what triggers machine-authorized revival of the persisted
+                // sessions, and revival is refused unless the owning identity
+                // is already registered - which cannot have happened yet,
+                // because the IdentityRuntime arrives later, via
+                // install_and_bootstrap_identity_first_context. Lifting anyway
+                // is what left every restored member Broken.
+                meerkat_mob::MobState::Stopped if identity_runtime_slot.is_some() => {
+                    pending_activation = Some(PendingMobActivation {
+                        handle: handle.clone(),
+                    });
+                }
                 // The only transition MobHandle::resume performs.
                 meerkat_mob::MobState::Stopped => handle.resume().await?,
                 meerkat_mob::MobState::Running => {}
@@ -7593,22 +7668,25 @@ impl MobRuntime {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                 Some(Arc::clone(&workgraph_admission));
         }
-        Ok(Self {
-            handle,
-            session_service: Some(session_service),
-            agent_mob_mcp_state,
-            implicit_delegate_retirement_overrides,
-            binary_blob_store,
-            baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
-            console_spawn_sink_slot,
-            identity_runtime_slot,
-            workgraph_service: spec.workgraph_service,
-            workgraph_admission,
-            resolved_storage: spec.resolved_storage,
-            session_write_epochs: spec.session_write_epochs,
-            committed_boundary_recoverer: spec.committed_boundary_recoverer,
-            _ephemeral_dir: ephemeral_dir,
-        })
+        Ok((
+            Self {
+                handle,
+                session_service: Some(session_service),
+                agent_mob_mcp_state,
+                implicit_delegate_retirement_overrides,
+                binary_blob_store,
+                baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+                console_spawn_sink_slot,
+                identity_runtime_slot,
+                workgraph_service: spec.workgraph_service,
+                workgraph_admission,
+                resolved_storage: spec.resolved_storage,
+                session_write_epochs: spec.session_write_epochs,
+                committed_boundary_recoverer: spec.committed_boundary_recoverer,
+                _ephemeral_dir: ephemeral_dir,
+            },
+            pending_activation,
+        ))
     }
 
     pub fn from_handle(handle: MobHandle) -> Self {

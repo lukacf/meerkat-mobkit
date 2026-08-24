@@ -8049,7 +8049,8 @@ mod tests {
         let text = refused.to_string();
         assert!(
             text.contains("refusing to park")
-                || text.contains("refusing to degrade a head-canonical session"),
+                || (text.contains("refusing to degrade head-canonical session")
+                    && text.contains("whole-document persistence")),
             "the refusal must speak a fail-closed guard's vocabulary: {refused}"
         );
         assert_eq!(
@@ -8348,11 +8349,15 @@ mod tests {
         let refused = meerkat::SessionStore::save(adapter.as_ref(), &session)
             .await
             .expect_err("a head-canonical save with no registered owner must refuse");
+        // Both SIDES of the degradation, not one phrase. The refusal is only
+        // actionable if it says what representation is being left and what it
+        // would be replaced by, and asserting the pair keeps this test
+        // discriminating if either half is ever dropped.
+        let refused_text = refused.to_string();
         assert!(
-            refused
-                .to_string()
-                .contains("refusing to degrade a head-canonical session"),
-            "the refusal must name the degradation it is preventing: {refused}"
+            refused_text.contains("refusing to degrade head-canonical session")
+                && refused_text.contains("whole-document persistence"),
+            "the refusal must name the degradation it is preventing, both sides of it: {refused}"
         );
         assert_eq!(
             adapter.whole_document_passes(),
