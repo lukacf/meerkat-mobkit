@@ -199,9 +199,19 @@ async fn changed_definition_refuses_instead_of_booting_stale() {
             fields,
             ..
         })) => {
+            // The FIELD PATH, not the table it lives in. An operator who is
+            // about to declare through this refusal has to be able to see what
+            // moved, and "profiles diverged" on one changed pin is the message
+            // that gets declared through unread.
             assert!(
-                fields.iter().any(|field| field == "profiles"),
-                "the refusal must name the diverged field so the operator can act: {fields:?}"
+                fields.iter().any(|field| field.starts_with("profiles.")),
+                "the refusal must name the diverged field PATH so the operator can act: \
+                 {fields:?}"
+            );
+            assert!(
+                !fields.iter().any(|field| field == "profiles"),
+                "reporting the bare table instead of the path is the regression this asserts \
+                 against: {fields:?}"
             );
         }
         Err(other) => panic!("expected a composition divergence refusal, got: {other}"),
