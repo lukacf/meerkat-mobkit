@@ -7975,7 +7975,28 @@ external_addressable = true
                 &session_store,
                 session_store_kind,
             );
-        let mob_storage = MobStorage::in_memory();
+        // This is the persistent launch branch: the runtime store 25 lines
+        // below is fail-closed persistent for exactly this reason ("must be
+        // persistent so resume works across gateway restart"), and mob storage
+        // was never given the same treatment. In-memory here means every
+        // adopted identity declaration is gone on restart while sessions
+        // survive.
+        let (mob_storage, mob_storage_provenance) =
+            match meerkat_mobkit::mob_composition_manifest::persistent_mob_storage(
+                storage_layout.event_log_db(),
+            ) {
+                Ok(pair) => pair,
+                Err(err) => fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!(
+                        "failed to open the persistent mob storage at {}: {err} (adopted \
+                         identity declarations and mob events would not survive gateway \
+                         restart)",
+                        storage_layout.event_log_db().display()
+                    ),
+                ),
+            };
         let binary_blob_store: Arc<dyn BinaryBlobStore> =
             match ObjectStoreBlobStore::local(storage_layout.blob_root()) {
                 Ok(store) => Arc::new(store),
@@ -8254,6 +8275,7 @@ external_addressable = true
         gateway_transcript_edit_service = Some(Arc::clone(&concrete_service) as _);
         let session_service: Arc<dyn meerkat_mob::MobSessionService> = concrete_service;
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
+            .with_mob_storage_provenance(mob_storage_provenance)
             .with_optional_tool_consequence_policy_registry(
                 tool_consequence_policy_registry.clone(),
             )
@@ -8341,6 +8363,15 @@ external_addressable = true
             });
         }
         slots.extend(meerkat_mobkit::storage_health::scratch_ring_buffer_slots());
+        // The M4 census had no mob slot at all, which is why an in-memory mob
+        // storage on this persistent launch was invisible to healthz and the
+        // storage doctor while sessions correctly reported persistent.
+        slots.push(
+            meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                "mob",
+                "MobStorage(sqlite)",
+            ),
+        );
         spec.resolved_storage = Some(
             meerkat_mobkit::storage_health::ResolvedStorageSummary::new(
                 meerkat_mobkit::storage_health::BlobDurability::PersistentDisk,
@@ -8641,6 +8672,16 @@ external_addressable = true
             });
         }
         slots.extend(meerkat_mobkit::storage_health::scratch_ring_buffer_slots());
+        // Declared, not omitted: this launch has no persistent_state dir, so
+        // mob state is in memory by design and the census now says so.
+        slots.push(
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "mob",
+                "MobStorage(in-memory)",
+                "no persistent_state directory was supplied: mob events and adopted \
+                 identity declarations do not survive gateway restart",
+            ),
+        );
         spec.resolved_storage = Some(
             meerkat_mobkit::storage_health::ResolvedStorageSummary::new(
                 meerkat_mobkit::storage_health::BlobDurability::DeclaredEphemeral,

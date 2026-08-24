@@ -1303,7 +1303,17 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         // service (mirrors rpc_gateway.rs). This branch already shared via the
         // runtime_store handed to PersistentSessionService, so this is defensive;
         // the default ephemeral branch below is the one that was actually broken.
-        let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
+        // Persistent sessions require persistent mob state. An in-memory mob
+        // storage here drops every adopted identity declaration on restart
+        // while the session store faithfully survives, which presents as a
+        // healthy boot with the right member count and an empty roster of
+        // adoptions - the failure announces nothing.
+        let (mob_storage, mob_storage_provenance) =
+            meerkat_mobkit::mob_composition_manifest::persistent_mob_storage(
+                layout.event_log_db(),
+            )?;
+        let mut spec = MobBootstrapSpec::new(definition, mob_storage, service)
+            .with_mob_storage_provenance(mob_storage_provenance)
             .with_session_write_epochs(&session_write_epochs)
             // Resume-seam reads must carry the runtime store's archived
             // terminal (at 0.8.11 archive stamps the catalog/lifecycle row,
@@ -1321,6 +1331,16 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         }
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
+        let mut resolved_storage = resolved_storage;
+        // The M4 census covered nine slots and not this one, which is why an
+        // in-memory mob storage on a persistent launch was invisible to
+        // healthz and the storage doctor.
+        resolved_storage.slots.push(
+            meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                "mob",
+                "MobStorage(sqlite)",
+            ),
+        );
         spec.resolved_storage = Some(resolved_storage);
         (spec, schedule_host_inputs, workgraph_service)
     } else {
@@ -1420,6 +1440,16 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
             ),
         ];
         slots.extend(meerkat_mobkit::storage_health::scratch_ring_buffer_slots());
+        // Declared, not silent: this launch keeps mob state in memory by
+        // design, and the census now says so rather than omitting the slot.
+        slots.push(
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "mob",
+                "MobStorage(in-memory)",
+                "declared by the ephemeral launch mode: mob events and adopted identity \
+                 declarations do not survive gateway restart",
+            ),
+        );
         spec.resolved_storage = Some(
             meerkat_mobkit::storage_health::ResolvedStorageSummary::new(
                 meerkat_mobkit::storage_health::BlobDurability::DeclaredEphemeral,

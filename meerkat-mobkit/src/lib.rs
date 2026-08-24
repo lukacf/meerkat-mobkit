@@ -34,6 +34,7 @@ pub mod member_comms_id;
 pub mod member_tool_policy;
 pub mod memory;
 pub mod memory_wiring;
+pub mod mob_composition_manifest;
 pub mod mob_handle_runtime;
 pub mod mobpack;
 pub mod mocks;

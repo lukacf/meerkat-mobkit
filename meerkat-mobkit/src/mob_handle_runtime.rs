@@ -5799,6 +5799,13 @@ impl MobSessionService for AfterCreateMobSessionService {
 pub struct MobBootstrapSpec {
     pub definition: MobDefinition,
     pub storage: MobStorage,
+    /// Whether `storage` carries a composition that outlives the process.
+    ///
+    /// Declared by the launch path, because `MobStorage` does not report its
+    /// own durability. `bootstrap` uses it to decide whether the composition
+    /// needs a provenance record at all: an ephemeral storage has no
+    /// cross-restart composition to judge.
+    pub mob_storage_provenance: crate::mob_composition_manifest::MobStorageProvenance,
     pub session_service: Arc<dyn MobSessionService>,
     pub binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
     pub(crate) agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
@@ -5903,6 +5910,8 @@ impl MobBootstrapSpec {
         Self {
             definition,
             storage,
+            mob_storage_provenance:
+                crate::mob_composition_manifest::MobStorageProvenance::DeclaredEphemeral,
             session_service,
             binary_blob_store: None,
             agent_mob_mcp_state: None,
@@ -6068,6 +6077,20 @@ impl MobBootstrapSpec {
 
     /// Install the registry only when one was configured, so a caller that
     /// parsed no policies does not have to branch.
+    /// Carry the provenance returned alongside a composed mob storage.
+    ///
+    /// Takes the provenance rather than a bare path so the pair produced by
+    /// [`crate::mob_composition_manifest::persistent_mob_storage`] threads
+    /// through intact: a launch path cannot compose persistent mob storage and
+    /// then forget to declare it.
+    pub fn with_mob_storage_provenance(
+        mut self,
+        provenance: crate::mob_composition_manifest::MobStorageProvenance,
+    ) -> Self {
+        self.mob_storage_provenance = provenance;
+        self
+    }
+
     pub fn with_optional_tool_consequence_policy_registry(
         mut self,
         registry: Option<Arc<meerkat_core::ToolConsequencePolicyRegistry>>,
@@ -7159,6 +7182,9 @@ pub enum MobRuntimeError {
     Mob(MobError),
     InvalidInput(&'static str),
     InvalidConfig(String),
+    /// A persistent mob storage path could not be proven to match the supplied
+    /// composition. Raised before the mob actuates.
+    CompositionProvenance(crate::mob_composition_manifest::MobCompositionProvenanceError),
 }
 
 impl std::fmt::Display for MobRuntimeError {
@@ -7167,6 +7193,7 @@ impl std::fmt::Display for MobRuntimeError {
             Self::Mob(err) => write!(f, "{err}"),
             Self::InvalidInput(message) => write!(f, "{message}"),
             Self::InvalidConfig(message) => write!(f, "{message}"),
+            Self::CompositionProvenance(err) => write!(f, "{err}"),
         }
     }
 }
@@ -7401,7 +7428,53 @@ impl MobRuntime {
             .clone()
             .or_else(|| session_service.runtime_adapter());
 
-        let mut builder = MobBuilder::new(spec.definition, spec.storage);
+        // Create-vs-resume selection, in ONE place. An in-memory storage is
+        // always empty at boot, so this single read serves both modes:
+        // ephemeral launches always create, and only a persistent path that
+        // already holds events resumes. No launch site needs to decide, which
+        // is what stops the three launch paths from drifting apart again.
+        //
+        // `spec.definition` is already normalized here:
+        // `auto_mark_declared_resume_overrides` ran above, so the composition
+        // recorded on create and the one compared on resume are the same form.
+        // Recording a pre-normalization definition would mismatch its own
+        // first boot.
+        let event_log_empty = spec
+            .storage
+            .is_event_log_empty()
+            .await
+            .map_err(|err| MobRuntimeError::Mob(MobError::from(err)))?;
+        let persistent_mob_path = spec.mob_storage_provenance.persistent_path();
+        // Fail closed on unproven storage. `DeclaredEphemeral` is a claim, not
+        // evidence: a caller can hand `bootstrap` a persistent or pre-seeded
+        // storage through the public API and omit the declaration, and without
+        // this check that storage would resume with no composition
+        // verification at all. An in-memory storage is empty at bootstrap, so
+        // a non-empty log under an ephemeral claim is exactly that case.
+        if !event_log_empty && persistent_mob_path.is_none() {
+            return Err(MobRuntimeError::CompositionProvenance(
+                crate::mob_composition_manifest::MobCompositionProvenanceError::UnprovenStorage,
+            ));
+        }
+        let mut builder = if event_log_empty {
+            if let Some(path) = persistent_mob_path {
+                // Refuse rather than leave behind a path whose composition the
+                // next restart cannot judge.
+                crate::mob_composition_manifest::record_on_create(path, &spec.definition)
+                    .map_err(MobRuntimeError::CompositionProvenance)?;
+            }
+            MobBuilder::new(spec.definition, spec.storage)
+        } else {
+            // The event log's `MobCreated` definition is authoritative and
+            // `for_resume` structurally cannot accept a new one, so the
+            // supplied composition is verified BEFORE the builder exists:
+            // every refusal lands before the mob can actuate.
+            if let Some(path) = persistent_mob_path {
+                crate::mob_composition_manifest::verify_before_resume(path, &spec.definition)
+                    .map_err(MobRuntimeError::CompositionProvenance)?;
+            }
+            MobBuilder::for_resume(spec.storage)
+        };
 
         // MobActor's autonomous readiness/comms-drain path consults the
         // builder-published runtime adapter directly. For session services
@@ -7439,7 +7512,11 @@ impl MobRuntime {
             builder = builder.with_default_llm_client(client);
         }
 
-        let handle = builder.create().await?;
+        let handle = if event_log_empty {
+            builder.create().await?
+        } else {
+            builder.resume().await?
+        };
         if let Some(state) = agent_mob_mcp_state.as_ref() {
             state.mob_insert_handle(mob_id, handle.clone()).await;
         }
