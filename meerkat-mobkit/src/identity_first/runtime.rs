@@ -8349,7 +8349,13 @@ impl IdentityRuntime {
             }
         }
 
-        // Bridge: retire old mob member and create fresh session for the new identity.
+        // Bridge: ONE authoritative successor transition. This used to retire the
+        // old mob member and then create a fresh one, which the durable-roster
+        // contract makes impossible - the successor occupies the same roster row,
+        // so the create collided with its own predecessor. Respawn is the single
+        // primitive that retires terminally and spawns the exact successor, and
+        // splitting it back into retire + create would reopen the compensation
+        // races it exists to close.
         if let Some(bridge) = &self.bridge {
             if let Err(err) = self
                 .continuity_store
@@ -8371,27 +8377,20 @@ impl IdentityRuntime {
                 .as_ref()
                 .map(|c| c.session_id.clone());
 
-            let session_id = bridge
-                .create_session(
-                    identity,
-                    &new_record.agent_runtime_id,
-                    &spec,
-                    &draft,
-                    &new_record.session_id,
-                )
+            let successor = bridge
+                .reset_member_to_successor(identity, &spec, &draft)
                 .await
                 .map_err(|e| {
-                    IdentityRuntimeError::Internal(format!(
-                        "bridge create_session after reset: {e}"
-                    ))
+                    IdentityRuntimeError::Internal(format!("bridge reset successor: {e}"))
                 });
-            let session_id = match session_id {
-                Ok(session_id) => session_id,
+            let successor = match successor {
+                Ok(successor) => successor,
                 Err(err) => {
-                    let cleanup_error = bridge
-                        .retire_member(&new_record.agent_runtime_id)
-                        .await
-                        .err();
+                    // No cleanup retire here. The provisional runtime id was
+                    // never created as a roster row - respawn either committed
+                    // its own successor or did not - so retiring it would report
+                    // a spurious cleanup failure on top of the real error.
+                    let cleanup_error: Option<BridgeError> = None;
                     let delete_error = self
                         .restore_entry_after_reset_bridge_failure(
                             identity,
@@ -8417,8 +8416,13 @@ impl IdentityRuntime {
                     return Err(err);
                 }
             };
-            // Update the record with the actual session ID
+            // Commit continuity from what the machine actually committed. Both
+            // atoms come from the successor binding: the generation is
+            // MobMachine's to mint, so a pre-computed runtime id would be a
+            // guess that happened to be right until it was not.
             let mut new_record = new_record;
+            new_record.agent_runtime_id = successor.agent_runtime_id.clone();
+            let session_id = successor.session_id;
             new_record.session_id = session_id;
             tracing::debug!(
                 identity = %identity,
@@ -8646,10 +8650,23 @@ impl IdentityRuntime {
             // yield points here, so scheduling cleanup before the final
             // upsert can unregister the old session while rollback is still
             // possible.
-            let cleanup_old_runtime_id = old_runtime_id
-                .as_ref()
-                .filter(|old_id| *old_id != &new_record.agent_runtime_id)
-                .cloned();
+            // NO old-member retire debt. The authoritative successor transition
+            // (respawn) terminally retired the predecessor row inside the same
+            // operation, so scheduling a retire here would manufacture debt for
+            // work another authority already committed - and because respawn
+            // always advances the generation, the old/new filter below would
+            // never skip it. Reset would return success while the runtime
+            // accumulated retryable cleanup it could never discharge.
+            //
+            // `retire_reset_superseded_member` is deliberately NOT made tolerant
+            // of an absent member: that would hide wrong ownership here and mask
+            // genuinely missing members everywhere else it is used.
+            let cleanup_old_runtime_id: Option<AgentRuntimeId> = None;
+            let _ = &old_runtime_id;
+            // The old SESSION is still MobKit's to unregister: it is a
+            // continuity concern rather than a roster row, so respawn does not
+            // touch it. If that unregistration fails it stays exact and
+            // retryable, unchanged.
             let cleanup_old_session_id = old_session_id
                 .as_ref()
                 .filter(|old_session_id| *old_session_id != &new_record.session_id)
@@ -11493,7 +11510,17 @@ mod reset_reprofile_tests {
             let identity = identity.clone();
             async move { runtime.reset_tracked(&identity).await }
         });
-        store.wait_for_failure().await;
+        // Bounded. This waits for an injected failure at the FINAL continuity
+        // upsert, which is unreachable whenever reset refuses earlier - for
+        // example the reprofile guard refusing a drifted spec before the
+        // destructive step. Unbounded, that turns into a suite-blocking hang
+        // that reports nothing; bounded, it names itself.
+        tokio::time::timeout(Duration::from_secs(10), store.wait_for_failure())
+            .await
+            .expect(
+                "reset never reached the final continuity upsert, so the injected failure could \
+                 not fire; reset refused earlier in the flow",
+            );
         outer.abort();
         match outer.await {
             Err(error) => assert!(error.is_cancelled()),

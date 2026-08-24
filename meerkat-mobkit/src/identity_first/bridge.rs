@@ -1194,6 +1194,20 @@ impl BridgeTurnReceipt {
     }
 }
 
+/// The concrete successor binding a destructive reset committed.
+///
+/// Returned by [`SessionBridge::reset_member_to_successor`] rather than
+/// pre-computed by the caller: under the durable-roster contract the successor
+/// generation is minted by MobMachine, so only the bridge learns what it
+/// actually is.
+#[derive(Debug, Clone)]
+pub struct ResetSuccessorBinding {
+    /// The successor incarnation MobMachine minted.
+    pub agent_runtime_id: AgentRuntimeId,
+    /// The bridge session bound to the successor.
+    pub session_id: meerkat_core::types::SessionId,
+}
+
 /// Bridge between the identity-first control plane and the Meerkat session
 /// pipeline. Each method maps an identity-layer operation to its concrete
 /// mob-level counterpart.
@@ -1216,6 +1230,42 @@ pub trait SessionBridge: Send + Sync {
         draft: &AgentBuildDraft,
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<meerkat_core::types::SessionId, BridgeError>;
+
+    /// Replace a member with its successor as ONE authoritative transition.
+    ///
+    /// MobKit reset is destructive: it advances the continuity generation and
+    /// creates fresh continuity and session. Under the durable-roster contract
+    /// the successor occupies the SAME roster row, so this cannot be a create
+    /// (it would collide with its own predecessor) and must not be composed
+    /// from `retire_member` plus `create_session` either - splitting the
+    /// transition reopens the compensation races that a single authority
+    /// operation avoids.
+    ///
+    /// Meerkat's respawn is that single operation: it snapshots the stable
+    /// identity, computes the machine-owned successor generation, terminally
+    /// retires the old row, and spawns the exact successor under the same
+    /// roster identity.
+    ///
+    /// Implementations return the CONCRETE binding they committed. The caller
+    /// records its continuity from that value instead of pre-computing a
+    /// runtime id and session id and telling the bridge what they will be.
+    ///
+    /// The default fails closed on purpose. A custom bridge has to implement
+    /// this deliberately, because quietly composing retire and create would
+    /// look like it worked while reintroducing exactly the race this exists to
+    /// remove.
+    async fn reset_member_to_successor(
+        &self,
+        identity: &AgentIdentity,
+        _spec: &DurableAgentSpec,
+        _draft: &AgentBuildDraft,
+    ) -> Result<ResetSuccessorBinding, BridgeError> {
+        Err(BridgeError::InvalidInput(format!(
+            "this SessionBridge does not implement destructive reset successors, so identity \
+             {identity} cannot be reset: the transition must be one authoritative respawn and \
+             must not be composed from retire plus create"
+        )))
+    }
 
     /// Whether `resume_session` consumes the continuity-store snapshot payload.
     ///
@@ -3557,6 +3607,106 @@ impl SessionBridge for MobSessionBridge {
             // honest rather than pretending the head was checked.
             None => Ok(CommittedBoundaryRepair::Unsupported),
         }
+    }
+
+    async fn reset_member_to_successor(
+        &self,
+        identity: &AgentIdentity,
+        spec: &DurableAgentSpec,
+        draft: &AgentBuildDraft,
+    ) -> Result<ResetSuccessorBinding, BridgeError> {
+        // The successor occupies the SAME roster row, so this is respawn - one
+        // authority transition that snapshots the stable identity, mints the
+        // successor generation, terminally retires the old row, and spawns the
+        // exact successor. It is deliberately not retire + create: splitting it
+        // reopens the compensation races a single transition avoids.
+        //
+        let _ = draft;
+        let roster_id = crate::member_comms_id::roster_member_id_for_identity(identity.as_str());
+
+        // REPROFILE IS PART OF THE RESET CONTRACT, and respawn cannot deliver it.
+        //
+        // `adopt_current_roster_spec_for_reset` means the rebuilt session uses
+        // the CURRENT roster spec, so a reset after the host reprofiles a member
+        // is supposed to come back under the new profile. Meerkat's respawn
+        // promises the same profile, labels, wiring and mode as the row it
+        // replaces. So when the requested spec has drifted from the committed
+        // row, this transition would silently rebuild under the OLD profile and
+        // report success - a reset that did not reset.
+        //
+        // Refuse BEFORE the destructive step rather than after: discovering this
+        // post-respawn would mean the predecessor is already terminally retired.
+        let committed = self.handle.get_member(&roster_id).await.map_err(|error| {
+            BridgeError::Mob(format!(
+                "reading the roster entry for {identity} before reset: {error}"
+            ))
+        })?;
+        if let Some(entry) = committed.as_ref()
+            && entry.role != spec.profile
+        {
+            return Err(BridgeError::InvalidInput(format!(
+                "destructive reset of {identity} requires reprofiling from {} to {}, and the \
+                 authoritative successor transition (respawn) preserves the existing profile; \
+                 refusing rather than reporting a reset that kept the old profile",
+                entry.role.as_str(),
+                spec.profile.as_str()
+            )));
+        }
+
+        self.handle
+            .respawn(roster_id.clone(), None)
+            .await
+            .map_err(|error| {
+                BridgeError::Mob(format!(
+                    "respawn for destructive reset of {identity}: {error}"
+                ))
+            })?;
+
+        // Read what the machine actually committed rather than predicting it:
+        // the successor generation is MobMachine's to mint.
+        let entry = self
+            .handle
+            .get_member(&roster_id)
+            .await
+            .map_err(|error| {
+                BridgeError::Mob(format!(
+                    "reading the committed successor roster entry for {identity}: {error}"
+                ))
+            })?
+            .ok_or_else(|| {
+                BridgeError::Mob(format!(
+                    "respawn for {identity} reported success but left no roster entry under \
+                     {roster_id}"
+                ))
+            })?;
+        let committed_runtime_id = entry.agent_runtime_id.to_string();
+        let agent_runtime_id = AgentRuntimeId::parse(&committed_runtime_id).map_err(|error| {
+            BridgeError::Mob(format!(
+                "committed successor for {identity} carries an unusable runtime id \
+                     {}: {error}",
+                entry.agent_runtime_id
+            ))
+        })?;
+        let session_id = self
+            .handle
+            .resolve_bridge_session_id(&roster_id)
+            .await
+            .ok_or_else(|| {
+                BridgeError::Mob(format!(
+                    "committed successor for {identity} has no bridge session yet; reset cannot \
+                     commit continuity against an unbound successor"
+                ))
+            })?;
+
+        // Both mappings, so nothing downstream has to derive an incarnation.
+        self.remember_runtime_member(&agent_runtime_id, &roster_id)
+            .await;
+        self.remember_runtime_session(&agent_runtime_id, &session_id)
+            .await;
+        Ok(ResetSuccessorBinding {
+            agent_runtime_id,
+            session_id,
+        })
     }
 
     async fn create_session(

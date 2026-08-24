@@ -8177,25 +8177,30 @@ shell = true
         )
         .await?;
         let durable_identity = "review:current-generation";
-        let stale_alias = "rt:review:current-generation:0";
-        let current_alias = "rt:review:current-generation:1";
-        for runtime_id in [stale_alias, current_alias] {
-            spawn_identity_projection_fixture(
-                &runtime,
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    runtime_id.to_string(),
-                    None,
-                    None,
-                    None,
-                )
-                .with_labels(BTreeMap::from([(
-                    "agent_identity".to_string(),
-                    durable_identity.to_string(),
-                )])),
+        // ONE stable roster row. This used to seat two, rt:...:0 and rt:...:1,
+        // because the generation was part of the roster id and a reset left the
+        // predecessor behind for resolvers to skip. Under the durable-roster
+        // contract there is exactly one row per identity and a reset REPLACES
+        // its binding, so two live generations cannot coexist as rows. The
+        // property still worth guarding is that the resolver follows the
+        // replacement and refuses a stale binding projection, which is what this
+        // test now asserts.
+        let successor_alias = "rt:review:current-generation:1";
+        spawn_identity_projection_fixture(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                durable_identity.to_string(),
+                None,
+                None,
+                None,
             )
-            .await?;
-        }
+            .with_labels(BTreeMap::from([(
+                "agent_identity".to_string(),
+                durable_identity.to_string(),
+            )])),
+        )
+        .await?;
 
         let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
@@ -8207,26 +8212,31 @@ shell = true
             default_timeout: None,
         }));
         let identity = AgentIdentity::parse(durable_identity)?;
+        // The row's ACTUAL bridge session. The old fixture registered a fresh
+        // random SessionId here, which only went unnoticed because nothing
+        // compared it; a real registered binding names the session its member is
+        // actually bound to.
+        let expected_session = runtime
+            .mob_handle()
+            .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id(durable_identity))
+            .await
+            .ok_or("the stable roster row must have a bridge session")?;
+        let successor_binding = |session_id: meerkat_core::types::SessionId| ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse(successor_alias)
+                .expect("successor alias parses"),
+            session_id,
+            generation: ContinuityGeneration::new(1),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
         identity_runtime
             .register(
                 rpc_durable_spec(durable_identity, "worker"),
                 IdentityLifecycleState::Active,
-                Some(ContinuityRecord {
-                    identity: identity.clone(),
-                    agent_runtime_id: AgentRuntimeId::parse(current_alias)?,
-                    session_id: meerkat_core::types::SessionId::new(),
-                    generation: ContinuityGeneration::new(1),
-                    checkpoint_version: CheckpointVersion::new(0),
-                }),
+                Some(successor_binding(expected_session.clone())),
                 None,
             )
             .await;
-
-        let expected_session = runtime
-            .mob_handle()
-            .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id(current_alias))
-            .await
-            .ok_or("current member must have a bridge session")?;
         let params = json!({"identity": durable_identity});
         let target = identity_runtime
             .member_alias_lifecycle_target(durable_identity)
@@ -8241,30 +8251,51 @@ shell = true
             },
         )
         .await?;
-        assert_eq!(resolved_session, Some(expected_session));
+        assert_eq!(resolved_session, Some(expected_session.clone()));
 
-        let fallback_error = resolve_live_target(
-            &runtime.mob_handle(),
-            None,
-            false,
-            &json!({"identity": durable_identity}),
+        // A STALE BINDING PROJECTION must not be adopted. Re-register the same
+        // identity with a binding that names a session the row is not bound to -
+        // the shape a resolver would see if it read a projection left behind by a
+        // superseded incarnation - and require the resolver to refuse rather than
+        // hand back a session that does not belong to the live member.
+        identity_runtime
+            .register(
+                rpc_durable_spec(durable_identity, "worker"),
+                IdentityLifecycleState::Active,
+                Some(successor_binding(meerkat_core::types::SessionId::new())),
+                None,
+            )
+            .await;
+        let stale_target = identity_runtime
+            .member_alias_lifecycle_target(durable_identity)
+            .await?
+            .ok_or("durable identity must resolve to lifecycle authority")?;
+        let stale_runtime = Arc::clone(&identity_runtime);
+        let stale_handle = runtime.mob_handle();
+        let stale_params = json!({"identity": durable_identity});
+        let stale_result = IdentityRuntime::run_member_alias_targets_operation_tracked(
+            vec![stale_target],
+            move || async move {
+                resolve_live_target(&stale_handle, Some(&stale_runtime), true, &stale_params).await
+            },
         )
-        .await
-        .expect_err("two live generations without identity authority must be ambiguous");
+        .await;
+        let stale_error = stale_result
+            .expect_err("a binding naming a session the live row is not bound to must be refused");
         assert!(
-            fallback_error.contains("ambiguous live member alias"),
-            "unexpected fallback error: {fallback_error}"
+            stale_error.to_string().contains("registered for"),
+            "the refusal must name the disagreeing registered session: {stale_error}"
         );
-        let cross_mob_fallback = runtime
-            .local_member_peer_info(durable_identity)
-            .await
-            .expect_err("cross-mob fallback without identity authority must be ambiguous");
-        assert!(
-            cross_mob_fallback
-                .to_string()
-                .contains("ambiguous durable member alias"),
-            "unexpected cross-mob fallback error: {cross_mob_fallback}"
-        );
+
+        // Restore the truthful binding for the remainder of the test.
+        identity_runtime
+            .register(
+                rpc_durable_spec(durable_identity, "worker"),
+                IdentityLifecycleState::Active,
+                Some(successor_binding(expected_session)),
+                None,
+            )
+            .await;
 
         runtime.attach_identity_first_context(Arc::new(
             crate::identity_first::IdentityFirstRuntimeContext::new(
@@ -8277,8 +8308,9 @@ shell = true
         ));
         let (_, comms_name, _) = runtime.local_member_peer_info(durable_identity).await?;
         assert!(
-            comms_name.ends_with(crate::member_comms_id::mob_member_id_str(current_alias).as_ref()),
-            "peer info must use the current generation: {comms_name}"
+            comms_name
+                .ends_with(crate::member_comms_id::mob_member_id_str(durable_identity).as_ref()),
+            "peer info must name the stable roster row: {comms_name}"
         );
 
         let remote_comms_name = "remote-mob/worker/peer";
@@ -8294,29 +8326,33 @@ shell = true
                 Some(remote_pubkey),
             )
             .await?;
+        // The wire lands on the stable row. The companion half of this - that a
+        // STALE generation's row does not receive it - is unrepresentable now
+        // that there is one row per identity; the wire cannot be delivered to a
+        // predecessor that no longer exists as a row.
         let current = runtime
             .mob_handle()
-            .get_member(&crate::member_comms_id::mob_member_id(current_alias))
+            .get_member(&crate::member_comms_id::mob_member_id(durable_identity))
             .await?
-            .ok_or("current member missing")?;
-        let stale = runtime
-            .mob_handle()
-            .get_member(&crate::member_comms_id::mob_member_id(stale_alias))
-            .await?
-            .ok_or("stale member missing")?;
+            .ok_or("the stable roster row must exist")?;
         assert!(
             current
                 .wired_to
                 .iter()
                 .any(|peer| peer.as_str() == remote_comms_name),
-            "current generation must receive the wire"
+            "the stable roster row must receive the wire"
         );
-        assert!(
-            stale
-                .wired_to
-                .iter()
-                .all(|peer| peer.as_str() != remote_comms_name),
-            "stale generation must not receive the wire"
+        let rows = runtime.mob_handle().list_members_including_retiring().await;
+        let matching = rows
+            .iter()
+            .filter(|row| {
+                crate::member_comms_id::runtime_alias_str(row.agent_identity.as_str())
+                    == durable_identity
+            })
+            .count();
+        assert_eq!(
+            matching, 1,
+            "exactly one roster row may exist for a durable identity: {rows:#?}"
         );
 
         runtime.shutdown().await;
