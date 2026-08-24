@@ -615,6 +615,24 @@ pub enum ResumeSessionOutcome {
     Resumed {
         session_id: meerkat_core::types::SessionId,
     },
+    /// Custody and bookkeeping are reconciled, but the session is NOT yet
+    /// usable or resumed.
+    ///
+    /// Returned when an occupant is proven to be ours and already bound to this
+    /// session, but its owning identity has no authoritative registration - the
+    /// legacy no-intent case. The bridge cannot establish that registration: it
+    /// requires the generation, checkpoint version and fencing token that live
+    /// in the caller's continuity record, and manufacturing them here would be a
+    /// second source of truth.
+    ///
+    /// The caller MUST call `register_session_runtime_state` from its
+    /// authoritative record and only then treat the session as resumed. Nothing
+    /// may commit a runtime boundary before that: the continuity adapter refuses
+    /// a head-canonical session whose owner was never registered, and it is
+    /// right to.
+    AttachedPendingRegistration {
+        session_id: meerkat_core::types::SessionId,
+    },
     /// Resume was rejected for a typed compatibility reason and a fresh member
     /// was spawned instead.
     FreshSpawned {
@@ -627,16 +645,29 @@ impl ResumeSessionOutcome {
     #[must_use]
     pub fn session_id(&self) -> &meerkat_core::types::SessionId {
         match self {
-            Self::Resumed { session_id } | Self::FreshSpawned { session_id, .. } => session_id,
+            Self::Resumed { session_id }
+            | Self::AttachedPendingRegistration { session_id }
+            | Self::FreshSpawned { session_id, .. } => session_id,
         }
     }
 
     #[must_use]
     pub fn fallback_reason(&self) -> Option<&ResumeFallbackReason> {
         match self {
-            Self::Resumed { .. } => None,
+            Self::Resumed { .. } | Self::AttachedPendingRegistration { .. } => None,
             Self::FreshSpawned { reason, .. } => Some(reason),
         }
+    }
+
+    /// Whether this outcome still needs authoritative registration before the
+    /// session may be treated as resumed or a runtime boundary committed.
+    ///
+    /// Deliberately explicit rather than inferred from `session_id`: a caller
+    /// that forgets this hands a head-canonical session to a continuity adapter
+    /// that will refuse it, and the refusal surfaces far from the cause.
+    #[must_use]
+    pub fn needs_owner_registration(&self) -> bool {
+        matches!(self, Self::AttachedPendingRegistration { .. })
     }
 }
 
@@ -3893,7 +3924,13 @@ impl SessionBridge for MobSessionBridge {
                         {
                             self.remember_runtime_member(runtime_id, &mid).await;
                             self.remember_runtime_session(runtime_id, session_id).await;
-                            return Ok(ResumeSessionOutcome::Resumed {
+                            // NOT Resumed. Custody and bookkeeping are
+                            // reconciled, but this identity has no
+                            // authoritative registration, and the continuity
+                            // adapter will refuse a head-canonical session whose
+                            // owner was never registered. Only the caller holds
+                            // the record needed to register.
+                            return Ok(ResumeSessionOutcome::AttachedPendingRegistration {
                                 session_id: session_id.clone(),
                             });
                         }

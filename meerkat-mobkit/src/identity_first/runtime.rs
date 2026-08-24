@@ -4535,7 +4535,39 @@ impl IdentityRuntime {
                         snapshot,
                     )
                     .await;
+                // An attach that reconciled custody is NOT yet resumed. Register
+                // the owning identity from THIS record - the only authoritative
+                // source of the generation, checkpoint version and fencing token
+                // - before anything can commit a runtime boundary. Without it a
+                // head-canonical session reaches the continuity adapter with an
+                // unregistered owner and is correctly refused, far from here.
+                //
+                // Registration failure leaves a retryable pending state: no
+                // retire, no replacement, and never a Resumed report.
                 let outcome = match outcome {
+                    Ok(super::bridge::ResumeSessionOutcome::AttachedPendingRegistration {
+                        session_id,
+                    }) => {
+                        if let Some(bridge) = self.bridge.as_ref() {
+                            bridge
+                                .register_session_runtime_state(
+                                    &session_id,
+                                    identity,
+                                    record.generation,
+                                    record.checkpoint_version,
+                                    grant.fencing_token,
+                                )
+                                .await
+                                .map_err(|err| {
+                                    IdentityRuntimeError::Internal(format!(
+                                        "owner registration after attach of {session_id} failed, \
+                                         so the session is not resumable yet (retryable: the \
+                                         occupant is untouched and retry is idempotent): {err}"
+                                    ))
+                                })?;
+                        }
+                        super::bridge::ResumeSessionOutcome::Resumed { session_id }
+                    }
                     Ok(outcome) => outcome,
                     Err(err) => {
                         // A rejected resume must NEVER abandon the durable
