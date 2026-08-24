@@ -1771,6 +1771,68 @@ struct CarriedMemberInput {
 }
 
 /// Pre-disposal capture of one member session's pending machine ingress.
+/// What repair may do with ONE pending input, decided purely by its class.
+///
+/// Extracted from `capture_pending_member_ingress` so the decision can be
+/// tested without a live runtime authority. The inline version could only be
+/// checked through a full repair, where the only observable was prompt text, and
+/// that cannot distinguish an input that was RE-ADMITTED from one that merely
+/// sits in the successor's transcript history.
+enum PendingInputCarry {
+    /// Boxed: `Input` is ~950 bytes and would otherwise make every
+    /// `Uncarryable` classification pay for the carried payload it does not
+    /// have.
+    Carry(Box<meerkat_runtime::Input>),
+    Uncarryable {
+        class: &'static str,
+        reason: String,
+    },
+}
+
+/// The carry lane for a pending input, or the named reason there is none.
+///
+/// This is the single owner of "what may cross a repair". A class with no carry
+/// lane is NAMED rather than silently dropped, because the disposal that follows
+/// destroys it and an unnamed loss is unreviewable.
+fn classify_pending_input_for_carry(
+    persisted_input: Option<meerkat_runtime::Input>,
+) -> PendingInputCarry {
+    match persisted_input {
+        // User-originated work: the whole point of the carry.
+        Some(
+            input @ (meerkat_runtime::Input::Prompt(_)
+            | meerkat_runtime::Input::Peer(_)
+            | meerkat_runtime::Input::ExternalEvent(_)),
+        ) => PendingInputCarry::Carry(Box::new(input)),
+        Some(meerkat_runtime::Input::FlowStep(_)) => PendingInputCarry::Uncarryable {
+            class: "flow-step",
+            reason: "flow-step correlation is owned by the flow engine and cannot be \
+                     re-admitted raw; the loss is bounded to the interrupted flow, \
+                     which observes its step's terminal and owns the retry"
+                .to_string(),
+        },
+        Some(meerkat_runtime::Input::Continuation(_) | meerkat_runtime::Input::Operation(_)) => {
+            PendingInputCarry::Uncarryable {
+                class: "runtime-internal",
+                reason: "continuation/operation inputs are machine-internal and cannot be \
+                         re-admitted raw; the successor runtime re-derives its own; the \
+                         loss is bounded to the disposed runtime's in-flight bookkeeping"
+                    .to_string(),
+            }
+        }
+        Some(_) => PendingInputCarry::Uncarryable {
+            class: "unrecognized-class",
+            reason: "the pending input's class is unknown to this build; no carry \
+                     lane exists for it"
+                .to_string(),
+        },
+        None => PendingInputCarry::Uncarryable {
+            class: "payload-unavailable",
+            reason: "the runtime retained no payload for this pending input".to_string(),
+        },
+    }
+}
+
 struct PendingIngressCapture {
     /// Inputs whose payload survives re-admission (Prompt / Peer /
     /// ExternalEvent classes), in admission order.
@@ -2270,55 +2332,16 @@ impl MobSessionBridge {
                     continue;
                 }
             }
-            match stored.state.persisted_input {
-                Some(
-                    input @ (meerkat_runtime::Input::Prompt(_)
-                    | meerkat_runtime::Input::Peer(_)
-                    | meerkat_runtime::Input::ExternalEvent(_)),
-                ) => {
+            match classify_pending_input_for_carry(stored.state.persisted_input) {
+                PendingInputCarry::Carry(input) => {
                     capture.carryable.push(CarriedMemberInput {
                         original_input_id: input_id,
                         admission_sequence: stored.seed.admission_sequence,
-                        input,
+                        input: *input,
                     });
                 }
-                Some(meerkat_runtime::Input::FlowStep(_)) => {
-                    capture.uncarryable.push((
-                        input_id,
-                        "flow-step",
-                        "flow-step correlation is owned by the flow engine and cannot be \
-                         re-admitted raw; the loss is bounded to the interrupted flow, \
-                         which observes its step's terminal and owns the retry"
-                            .to_string(),
-                    ));
-                }
-                Some(
-                    meerkat_runtime::Input::Continuation(_) | meerkat_runtime::Input::Operation(_),
-                ) => {
-                    capture.uncarryable.push((
-                        input_id,
-                        "runtime-internal",
-                        "continuation/operation inputs are machine-internal and cannot be \
-                         re-admitted raw; the successor runtime re-derives its own; the \
-                         loss is bounded to the disposed runtime's in-flight bookkeeping"
-                            .to_string(),
-                    ));
-                }
-                Some(_) => {
-                    capture.uncarryable.push((
-                        input_id,
-                        "unrecognized-class",
-                        "the pending input's class is unknown to this build; no carry \
-                         lane exists for it"
-                            .to_string(),
-                    ));
-                }
-                None => {
-                    capture.uncarryable.push((
-                        input_id,
-                        "payload-unavailable",
-                        "the runtime retained no payload for this pending input".to_string(),
-                    ));
+                PendingInputCarry::Uncarryable { class, reason } => {
+                    capture.uncarryable.push((input_id, class, reason));
                 }
             }
         }
@@ -4549,6 +4572,126 @@ impl MobSessionBridge {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::sync::Arc;
+
+    fn probe_input_header() -> meerkat_runtime::InputHeader {
+        meerkat_runtime::InputHeader {
+            id: meerkat_core::lifecycle::InputId::new(),
+            timestamp: chrono::Utc::now(),
+            source: meerkat_runtime::InputOrigin::External {
+                source_name: "carry-classification-probe".to_string(),
+            },
+            durability: meerkat_runtime::InputDurability::Durable,
+            visibility: meerkat_runtime::InputVisibility::default(),
+            idempotency_key: None,
+            supersession_key: None,
+            correlation_id: None,
+        }
+    }
+
+    /// What a repair may carry across a member disposal, asserted at the owner.
+    ///
+    /// The integration-level version of this could only observe prompt TEXT,
+    /// and the recording double there flattens the whole transcript - so a flow
+    /// step legitimately sitting in the successor's history was
+    /// indistinguishable from one re-admitted as a new input. That made the
+    /// assertion unable to fail for the right reason. This asserts the decision
+    /// itself, where it is made.
+    ///
+    /// The property that matters: user-originated work crosses the repair, and a
+    /// flow-owned occurrence NEVER does, because its correlation belongs to the
+    /// flow engine which observes its own step's terminal and owns the retry.
+    #[test]
+    fn repair_carries_user_input_and_never_a_flow_owned_occurrence() {
+        // Carried: the three user-originated classes. Asserted individually,
+        // not as a group - they share one match arm today, and a test that only
+        // covered Prompt would not notice Peer or ExternalEvent being moved out
+        // of it.
+        for (label, input) in [
+            (
+                "prompt",
+                meerkat_runtime::Input::Prompt(meerkat_runtime::PromptInput::new("p", None)),
+            ),
+            (
+                "peer",
+                meerkat_runtime::Input::Peer(meerkat_runtime::PeerInput {
+                    header: probe_input_header(),
+                    directed_interaction_id: None,
+                    convention: None,
+                    content: meerkat_core::ContentInput::Text("peer".to_string()),
+                    payload: None,
+                    handling_mode: None,
+                    sender_taint: None,
+                    objective_id: None,
+                    system_prompts: Vec::new(),
+                    injected_context: Vec::new(),
+                }),
+            ),
+            (
+                "external-event",
+                meerkat_runtime::Input::ExternalEvent(meerkat_runtime::ExternalEventInput {
+                    header: probe_input_header(),
+                    event_type: "probe".to_string(),
+                    payload: serde_json::Value::Null,
+                    blocks: None,
+                    handling_mode: meerkat_core::types::HandlingMode::default(),
+                    render_metadata: None,
+                    objective_id: None,
+                }),
+            ),
+        ] {
+            match super::classify_pending_input_for_carry(Some(input)) {
+                super::PendingInputCarry::Carry(_) => {}
+                super::PendingInputCarry::Uncarryable { class, reason } => panic!(
+                    "{label} is user-originated work and must cross the repair, but it was \
+                     classified {class}: {reason}"
+                ),
+            }
+        }
+
+        // NOT carried, and this is the invariant the integration test could not
+        // observe.
+        let flow_step = meerkat_runtime::Input::FlowStep(meerkat_runtime::FlowStepInput {
+            header: probe_input_header(),
+            step_id: "probe-step".to_string(),
+            content: meerkat_core::ContentInput::Text("flow".to_string()),
+            directed_interaction_id: None,
+            turn_metadata: None,
+        });
+        match super::classify_pending_input_for_carry(Some(flow_step)) {
+            super::PendingInputCarry::Uncarryable { class, reason } => {
+                assert_eq!(
+                    class, "flow-step",
+                    "a flow step must be named as such, so the disposal it precedes is reviewable"
+                );
+                assert!(
+                    reason.contains("owned by the flow engine"),
+                    "the reason must say WHO owns the correlation, not merely that it cannot be \
+                     carried: {reason}"
+                );
+            }
+            super::PendingInputCarry::Carry(_) => panic!(
+                "a flow-owned occurrence must NEVER cross a repair: its correlation belongs to \
+                 the flow engine, which owns the retry"
+            ),
+        }
+
+        // A pending input the runtime kept no payload for is named too, rather
+        // than vanishing into the disposal.
+        match super::classify_pending_input_for_carry(None) {
+            super::PendingInputCarry::Uncarryable { class, .. } => {
+                assert_eq!(class, "payload-unavailable");
+            }
+            super::PendingInputCarry::Carry(_) => {
+                panic!("a pending input with no retained payload cannot be carried")
+            }
+        }
+
+        // NOTE: Continuation and Operation are deliberately not constructed
+        // here - their payloads need OperationId/OpEvent/ContinuationKind
+        // fixtures that would dominate this test. Their lane
+        // ("runtime-internal") is therefore unasserted, and said so rather than
+        // implied by the cases above.
+    }
 
     /// The ordering property, proven by direct poll rather than by timing.
     ///
