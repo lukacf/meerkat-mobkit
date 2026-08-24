@@ -92,8 +92,17 @@ pub(crate) enum CollisionCustody {
     /// present, so the occupant really is stale and identity-first keeps its
     /// existing repair ownership.
     IdentityFirstOwns,
-    /// Missing, Malformed, Unsupported, unreadable, or a Present intent naming
-    /// a different session. Not permission to destroy anything.
+    /// Authoritative NotFound: no intent row exists for this identity at all.
+    ///
+    /// This is ABSENCE, not an unknown. A realm predating identity intent has no
+    /// rows and never will, so treating it as unknown produced a permanently
+    /// unretryable "retryable" refusal. It lifts the identity-first veto, but it
+    /// is NOT permission to retire: the legacy repair authority must
+    /// independently prove exact custody of the occupant from persisted evidence
+    /// before any destructive step, and remains Indeterminate if it cannot.
+    LegacyRepairMayProveCustody,
+    /// Malformed, Unsupported, unreadable, a read error, or a Present intent
+    /// naming a different session. Not permission to destroy anything.
     Indeterminate,
 }
 
@@ -2601,9 +2610,18 @@ pub(crate) async fn identity_actuation_custody(
     let key = crate::member_comms_id::mob_member_id(alias.as_ref());
     let record = match handle.identity_intent(&key).await {
         Ok(meerkat_mob::identity::IdentityStoredObservation::Valid(record)) => record,
-        // Missing / Malformed / Unsupported / transport failure. None of
-        // these is evidence about ownership, so none of them may be read
-        // as clearance to retire an occupant.
+        // Authoritative absence is not an unknown. No row at all means
+        // nothing is managing this identity - a realm predating identity
+        // intent has no rows and never will - so calling it unknown produced
+        // a permanently unretryable 'retryable' refusal. It lifts the veto
+        // without granting anything: the legacy authority must still prove
+        // exact custody before any destructive step.
+        Ok(meerkat_mob::identity::IdentityStoredObservation::Missing) => {
+            return CollisionCustody::LegacyRepairMayProveCustody;
+        }
+        // Malformed, Unsupported, or a transport failure. Something IS
+        // managing this identity and we cannot read it, which is genuinely
+        // ambiguous and may not be read as clearance to retire.
         Ok(_) | Err(_) => return CollisionCustody::Indeterminate,
     };
     match &record.intent {
@@ -3842,6 +3860,58 @@ impl SessionBridge for MobSessionBridge {
                     // identity present, so identity-first keeps its existing
                     // repair ownership and the preconditioned path below runs.
                     CollisionCustody::IdentityFirstOwns => {}
+                    // Authoritative absence lifts the veto but grants nothing.
+                    // The legacy authority must prove EXACT custody of the
+                    // occupant from persisted evidence first: the colliding
+                    // member's own bridge session must be the session this
+                    // resume is for. Without that proof this stays
+                    // indeterminate, so a realm with no intent rows can boot
+                    // while an ambiguous collision still cannot destroy
+                    // anything.
+                    CollisionCustody::LegacyRepairMayProveCustody => {
+                        // Custody means the occupant BELONGS to this identity,
+                        // not that it is the same session. A stale predecessor
+                        // incarnation is exactly what the preconditioned retire
+                        // exists to clear, so requiring session equality here
+                        // was inverted: equality would mean the occupant is the
+                        // member we want and must be attached, not destroyed.
+                        let occupant_is_ours =
+                            crate::member_comms_id::live_member_names_identity_or_incarnation(
+                                crate::member_comms_id::runtime_alias_str(mid.as_str()).as_ref(),
+                                identity.as_str(),
+                                Some(runtime_id.as_str()),
+                            );
+                        // If the occupant is ours AND already bound to the very
+                        // session being resumed, it is not a stale predecessor -
+                        // it IS the member. Retiring it and re-resuming the same
+                        // session is what produced "session already has a
+                        // different operation": the destructive path was aimed
+                        // at the thing it was trying to recover.
+                        if occupant_is_ours
+                            && self.handle.resolve_bridge_session_id(&mid).await.as_ref()
+                                == Some(session_id)
+                        {
+                            self.remember_runtime_member(runtime_id, &mid).await;
+                            self.remember_runtime_session(runtime_id, session_id).await;
+                            return Ok(ResumeSessionOutcome::Resumed {
+                                session_id: session_id.clone(),
+                            });
+                        }
+                        if !occupant_is_ours {
+                            return Err(resume_rejected(
+                                identity,
+                                session_id,
+                                &meerkat_mob::MobError::Internal(format!(
+                                    "roster collision on {session_id} with no identity intent \
+                                     row, and the legacy authority cannot prove the occupant {} \
+                                     belongs to {identity} (retryable: refusing to retire an \
+                                     occupant whose custody is unproven)",
+                                    mid
+                                )),
+                                "legacy custody unproven",
+                            ));
+                        }
+                    }
                 }
                 // Genuine roster collision: an in-process restart where the
                 // previous member actor hasn't fully terminated, or a Broken

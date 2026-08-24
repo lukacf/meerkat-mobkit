@@ -1774,7 +1774,11 @@ async fn trigger_identity_stream_repair(
     match crate::identity_first::bridge::identity_actuation_custody(handle, durable_identity, None)
         .await
     {
-        crate::identity_first::bridge::CollisionCustody::IdentityFirstOwns => {}
+        // Absence lifts the veto: with no intent row, identity-first is not
+        // being second-guessed by another authority and its existing repair
+        // behaviour stands.
+        crate::identity_first::bridge::CollisionCustody::IdentityFirstOwns
+        | crate::identity_first::bridge::CollisionCustody::LegacyRepairMayProveCustody => {}
         crate::identity_first::bridge::CollisionCustody::MobMachineOwns => {
             tracing::info!(
                 identity = %identity,
