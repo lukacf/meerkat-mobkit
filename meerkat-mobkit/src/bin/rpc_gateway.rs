@@ -131,6 +131,16 @@ struct GatewayRuntimeOptions {
     /// storage pins the definition, because Meerkat refuses a definition that
     /// disagrees with the persisted spec store.
     mob_storage_ephemeral: bool,
+    /// `runtime_options.declare_spec_update = {"expected_revision": N}`: an
+    /// explicit operator declaration that the persisted mob spec now matches the
+    /// definition this launch supplies.
+    ///
+    /// The door through the pinned-`mob_config` refusal. Present only on the
+    /// activation that intends to move the pin - it is a declared transition, not
+    /// a mode. Compare-and-swapped on `expected_revision`, so an activation that
+    /// names a revision the store has moved past is refused rather than
+    /// overwriting a spec the operator never saw.
+    declare_spec_update: Option<u64>,
     /// `runtime_options.compaction = {"auto_compact_threshold": 120000, ...}`:
     /// the host-level session-compaction policy for every agent this gateway
     /// builds. Absent, the gateway inherits meerkat's model-aware default
@@ -309,6 +319,7 @@ impl Default for GatewayRuntimeOptions {
             host_runnables: Vec::new(),
             runtime_store_ephemeral: false,
             mob_storage_ephemeral: false,
+            declare_spec_update: None,
             compaction: None,
         }
     }
@@ -3441,6 +3452,9 @@ fn parse_gateway_runtime_options(
     if let Some(mob_storage) = runtime_options.get("mob_storage") {
         parsed.mob_storage_ephemeral = parse_gateway_mob_storage_config(mob_storage)?;
     }
+    if let Some(declare) = runtime_options.get("declare_spec_update") {
+        parsed.declare_spec_update = Some(parse_gateway_declare_spec_update(declare)?);
+    }
     if let Some(compaction) = runtime_options.get("compaction") {
         parsed.compaction = Some(
             meerkat_mobkit::parse_compaction_policy(compaction)
@@ -3670,6 +3684,30 @@ fn parse_gateway_runtime_store_config(value: &Value) -> Result<bool, String> {
         ));
     }
     Ok(true)
+}
+
+fn parse_gateway_declare_spec_update(value: &Value) -> Result<u64, String> {
+    let object = value.as_object().ok_or_else(|| {
+        "runtime_options.declare_spec_update must be a JSON object with an expected_revision"
+            .to_string()
+    })?;
+    // Required, not defaulted. A declaration without the revision it was made
+    // against is not a declaration - it is "accept whatever is there", which is
+    // indistinguishable from having no pin.
+    let revision = object
+        .get("expected_revision")
+        .ok_or_else(|| {
+            "runtime_options.declare_spec_update.expected_revision is required: it is the \
+             revision the divergence was observed at, and declaring without it would accept a \
+             spec the operator has not seen"
+                .to_string()
+        })?
+        .as_u64()
+        .ok_or_else(|| {
+            "runtime_options.declare_spec_update.expected_revision must be a non-negative integer"
+                .to_string()
+        })?;
+    Ok(revision)
 }
 
 fn parse_gateway_mob_storage_config(value: &Value) -> Result<bool, String> {
@@ -8015,13 +8053,26 @@ external_addressable = true
             // though it has a persistent state dir, which is the only way to
             // keep editing mob_config across restarts: a persistent mob
             // storage pins the definition.
+            if gateway_options.declare_spec_update.is_some() {
+                // Nothing is pinned on in-memory mob storage, so there is no
+                // spec to move. Silently ignoring the declaration would let an
+                // activation log "spec updated" against a store that has none.
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    "runtime_options.declare_spec_update was supplied alongside an in-memory \
+                     mob_storage declaration; in-memory mob storage pins no definition, so \
+                     there is no persisted spec to declare an update against"
+                        .to_string(),
+                );
+            }
             (
                 MobStorage::in_memory(),
                 meerkat_mobkit::mob_composition_manifest::MobStorageProvenance::declared_ephemeral(
                 ),
             )
         } else {
-            match meerkat_mobkit::mob_composition_manifest::persistent_mob_storage(
+            let pair = match meerkat_mobkit::mob_composition_manifest::persistent_mob_storage(
                 storage_layout.event_log_db(),
             ) {
                 Ok(pair) => pair,
@@ -8035,7 +8086,41 @@ external_addressable = true
                         storage_layout.event_log_db().display()
                     ),
                 ),
+            };
+            // The door through the pinned-mob_config refusal, taken only when
+            // THIS activation declares it. Runs before the mob is built, so the
+            // upstream definition/spec-store sync sees the declared spec rather
+            // than refusing and leaving the operator to discover the door from
+            // an error message.
+            if let Some(expected_revision) = gateway_options.declare_spec_update {
+                match meerkat_mobkit::spec_update_ceremony::declare_spec_update(
+                    &storage_layout.event_log_db(),
+                    definition.id.as_str(),
+                    &definition,
+                    expected_revision,
+                )
+                .await
+                {
+                    Ok(receipt) => {
+                        // Evidence, at warn: moving a pinned spec is a declared
+                        // operator transition and should be legible in an
+                        // activation log without raising the log level to find it.
+                        tracing::warn!(
+                            mob_id = %receipt.mob_id,
+                            previous_revision = receipt.previous_revision,
+                            committed_revision = receipt.committed_revision,
+                            declared_fields = ?receipt.declared_fields,
+                            "operator-declared mob spec update committed"
+                        );
+                    }
+                    Err(err) => fail_init(
+                        &request_id,
+                        STORAGE_RESOLUTION_CODE,
+                        format!("declared mob spec update refused: {err}"),
+                    ),
+                }
             }
+            pair
         };
         let binary_blob_store: Arc<dyn BinaryBlobStore> =
             match ObjectStoreBlobStore::local(storage_layout.blob_root()) {
