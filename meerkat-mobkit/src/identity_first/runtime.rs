@@ -12757,48 +12757,59 @@ mod reset_reprofile_tests {
         )
         .await?;
 
+        // The old incarnation's retire is rigged to HANG. Nothing should ever
+        // attempt it: the authoritative successor transition retires the
+        // predecessor itself, so MobKit must not schedule that work again. If it
+        // did, this reset would either block on the hung retire or leave debt
+        // behind, and both are observable below.
         let old_runtime_id = AgentRuntimeId::parse("rt:domain:security:0")?;
         bridge.hang_retire_for(&old_runtime_id).await;
+        // Spec deliberately NOT drifted. Reprofile capability is covered by its
+        // own tests, which are red until the upstream successor-spec operation
+        // lands; this one is about phantom cleanup debt.
         roster
-            .set(vec![durable_spec(identity.clone(), "security")])
+            .set(vec![durable_spec(identity.clone(), "domain")])
             .await;
 
         let record = tokio::time::timeout(Duration::from_secs(1), runtime.reset(&identity))
             .await
-            .map_err(|_| "reset timed out waiting for old generation retirement")??;
+            .map_err(|_| "reset blocked, which means it attempted the hung old-member retire")??;
 
         assert_eq!(record.generation.get(), 1);
-        assert_eq!(
-            bridge.create_profiles().await,
-            vec!["domain".to_string(), "security".to_string()]
-        );
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                if bridge
-                    .retired_runtime_ids()
-                    .await
-                    .contains(&old_runtime_id.to_string())
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .map_err(|_| "reset cleanup task never attempted the old generation")?;
+        // Positive: the successor transition happened.
         assert!(
-            runtime
-                .pending_reset_bridge_cleanups
-                .read()
-                .await
-                .values()
-                .any(|cleanup| cleanup.runtime_id.as_ref() == Some(&old_runtime_id)),
-            "hung cleanup must retain the exact old runtime/session debt for shutdown"
+            !bridge.successor_generations().await.is_empty(),
+            "reset must go through the authoritative successor transition"
         );
+        // And it manufactured NO member-retire debt. Respawn already retired the
+        // predecessor inside the same transition, so any runtime_id debt here is
+        // work scheduled against a row another authority destroyed - debt that
+        // can never discharge, on every reset, while reset reports success.
+        let member_retire_debt: Vec<String> = runtime
+            .pending_reset_bridge_cleanups
+            .read()
+            .await
+            .values()
+            .filter_map(|cleanup| cleanup.runtime_id.as_ref().map(ToString::to_string))
+            .collect();
+        assert!(
+            member_retire_debt.is_empty(),
+            "reset must not record old-member retire debt for work the successor transition \
+             already committed: {member_retire_debt:?}"
+        );
+        assert!(
+            !bridge
+                .retired_runtime_ids()
+                .await
+                .contains(&old_runtime_id.to_string()),
+            "the predecessor must not be retired through the bridge a second time"
+        );
+        // The successor keeps the predecessor's profile, which is what respawn
+        // promises. The reprofile case is deliberately not exercised here.
         let status = runtime.status(&identity).await?;
         assert_eq!(
             status.profile.map(|profile| profile.to_string()).as_deref(),
-            Some("security")
+            Some("domain")
         );
         Ok(())
     }
@@ -12843,8 +12854,13 @@ mod reset_reprofile_tests {
             return Err("initial session id missing".into());
         };
         bridge.fail_unregister_for(&old_session_id).await;
+        // Spec deliberately NOT drifted: this test is about the old SESSION
+        // unregistration staying exact and retryable after the successor
+        // generation commits. Session cleanup remains MobKit's concern - the
+        // successor transition does not touch it - so it is unaffected by the
+        // reprofile capability gap that keeps its sibling tests red.
         roster
-            .set(vec![durable_spec(identity.clone(), "security")])
+            .set(vec![durable_spec(identity.clone(), "domain")])
             .await;
 
         let record = tokio::time::timeout(Duration::from_secs(1), runtime.reset(&identity))
@@ -12852,9 +12868,9 @@ mod reset_reprofile_tests {
             .map_err(|_| "reset timed out waiting for old session unregister cleanup")??;
 
         assert_eq!(record.generation.get(), 1);
-        assert_eq!(
-            bridge.create_profiles().await,
-            vec!["domain".to_string(), "security".to_string()]
+        assert!(
+            !bridge.successor_generations().await.is_empty(),
+            "the successor generation must have committed before cleanup is judged"
         );
         runtime.join_reset_bridge_cleanup_tasks().await;
         assert_eq!(
@@ -12874,7 +12890,7 @@ mod reset_reprofile_tests {
         let status = runtime.status(&identity).await?;
         assert_eq!(
             status.profile.map(|profile| profile.to_string()).as_deref(),
-            Some("security")
+            Some("domain")
         );
         Ok(())
     }
