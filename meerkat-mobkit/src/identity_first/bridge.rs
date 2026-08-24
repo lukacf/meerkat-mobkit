@@ -2006,14 +2006,24 @@ impl MobSessionBridge {
         runtime_id: &AgentRuntimeId,
     ) -> Result<MobAgentIdentity, BridgeError> {
         let members = self.runtime_members.read().await;
-        members
-            .get(runtime_id.as_str())
-            .map(|member| MobAgentIdentity::from(member.as_str()))
+        if let Some(member) = members.get(runtime_id.as_str()) {
+            return Ok(MobAgentIdentity::from(member.as_str()));
+        }
+        // Bookkeeping first, then STRICT derivation. `durable_identity_from_runtime_alias`
+        // requires the full `rt:{identity}:{generation}` production and a numeric
+        // generation, so a malformed or unexpected id cannot manufacture a roster
+        // identity the way `logical_memory_identity` could - that one falls back to
+        // returning its input unchanged, which is how a bare string became a
+        // "durable identity". Anything that is not a well-formed runtime alias is a
+        // typed error rather than a guess.
+        crate::member_comms_id::durable_identity_from_runtime_alias(runtime_id.as_str())
+            .map(|identity| crate::member_comms_id::mob_member_id(&identity))
             .ok_or_else(|| {
                 BridgeError::Mob(format!(
-                    "no roster member recorded for runtime binding {runtime_id}; refusing to \
-                     derive one from the runtime id (retryable: the mapping is populated at \
-                     create/resume materialization)"
+                    "no roster member recorded for runtime binding {runtime_id} and it is not a \
+                     well-formed rt:{{identity}}:{{generation}} alias, so its durable identity \
+                     cannot be derived (retryable: the mapping is populated at create/resume \
+                     materialization)"
                 ))
             })
     }
@@ -2393,6 +2403,9 @@ impl MobSessionBridge {
         // and mints a runtime id that names no incarnation at all. A missing
         // mapping is a bookkeeping gap, and the honest answer is to say so.
         let resolve = |member_id: &str| -> Result<AgentRuntimeId, BridgeError> {
+            // Wires report incarnations, and an incarnation cannot be derived from a
+            // stable roster id - the generation simply is not in it. So this one has
+            // no strict-derivation fallback available: bookkeeping or nothing.
             let runtime_id = member_runtimes.get(member_id).ok_or_else(|| {
                 BridgeError::Mob(format!(
                     "no live runtime binding recorded for roster member {member_id}; the wire \
