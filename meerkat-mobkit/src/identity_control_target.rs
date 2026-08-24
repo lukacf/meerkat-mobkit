@@ -131,10 +131,23 @@ where
             .find(|alias| alias.runtime_member_id == runtime_member_id)
     };
     let candidates = |identity: &str| {
-        aliases
+        let matched = aliases
             .iter()
             .filter(|alias| live_alias_matches_request(alias, identity))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        // An EXACT roster-id match wins outright. Since the stable-identity
+        // lowering a durable identity usually IS a roster id, so any row that
+        // merely carries the same agent_identity label would otherwise sit
+        // alongside the identity's own row and make the set read as ambiguous
+        // while that row is right there. Rows matched only by label remain the
+        // answer when the request is not itself a roster id.
+        if let Some(exact) = matched
+            .iter()
+            .find(|alias| alias.runtime_member_id == identity)
+        {
+            return vec![*exact];
+        }
+        matched
     };
     let visible_candidates = |identity: &str| {
         candidates(identity)

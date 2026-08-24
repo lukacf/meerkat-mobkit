@@ -3995,8 +3995,19 @@ async fn lookup_member_alias_candidates_with_session(
         })
         .cloned()
         .collect::<Vec<_>>();
-    let mut matches = exact_matches;
-    matches.extend(label_matches);
+    // An EXACT roster-id match wins outright; label matches are only a fallback.
+    //
+    // These used to be unioned, which was harmless while a durable identity was
+    // never itself a roster id. Since the stable-identity lowering it usually
+    // is, so unioning drags in every row that merely carries the same
+    // agent_identity LABEL and the result reads as ambiguous even though the
+    // identity's own row is sitting right there. The label path still serves
+    // callers whose requested identity is not a roster id.
+    let mut matches = if exact_matches.is_empty() {
+        label_matches
+    } else {
+        exact_matches
+    };
     let mut seen_member_ids = BTreeSet::new();
     matches.retain(|entry| seen_member_ids.insert(entry.agent_identity.to_string()));
     let mut aliases = Vec::with_capacity(matches.len());
@@ -9116,6 +9127,27 @@ async fn reset_all_live_console_agents(
         raw_live_alias_by_runtime_member_id
             .insert(member.agent_identity, (identity, member.session_id));
     }
+    // Prefer the identity's OWN row over rows that merely carry its label.
+    //
+    // Buckets are keyed by the agent_identity LABEL, so a row named for
+    // something else but labelled for this identity lands in the same bucket and
+    // the set then looks ambiguous. Since the stable-identity lowering the
+    // identity's roster row is the one whose id decodes to the identity, so when
+    // that row is present it IS the live alias and the label matches are not.
+    // Without this, a duplicate label makes reset_all report a stale-alias
+    // conflict against a perfectly healthy member.
+    for (identity, aliases) in raw_runtime_member_ids_by_identity.iter_mut() {
+        let own_row = aliases
+            .iter()
+            .find(|alias| {
+                crate::member_comms_id::runtime_alias_str(alias).as_ref() == identity.as_str()
+            })
+            .cloned();
+        if let Some(own_row) = own_row {
+            aliases.clear();
+            aliases.insert(own_row);
+        }
+    }
     durable_identity_runtime_identities.retain(|identity| {
         identity_runtime_statuses
             .iter()
@@ -11284,7 +11316,11 @@ comms = true
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let (_temp_dir, runtime) =
             build_empty_console_test_runtime("console-durable-wins-duplicate-live-labels").await?;
-        for runtime_id in ["rt:review:singleton:0", "rt:review:singleton:1"] {
+        // The REGISTERED row is the durable identity itself now; the generated
+        // alias beside it is a decoy carrying the same agent_identity label,
+        // which is what preserves this test's subject - a registered live
+        // binding must win over label matches.
+        for runtime_id in ["review:singleton", "rt:review:singleton:1"] {
             let mut labels = BTreeMap::new();
             labels.insert("agent_identity".to_string(), "review:singleton".to_string());
             runtime
@@ -11319,7 +11355,7 @@ comms = true
         let registered_session_id = runtime
             .handle()
             .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
-                "rt:review:singleton:0",
+                "review:singleton",
             ))
             .await
             .unwrap_or_else(meerkat_core::types::SessionId::new);
