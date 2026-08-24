@@ -4973,6 +4973,10 @@ fn rpc_live_alias_matches_status_runtime(
         alias.session_id.as_deref(),
         status.identity.as_str(),
         registered_session.as_deref(),
+        status
+            .agent_runtime_id
+            .as_ref()
+            .map(crate::identity_first::AgentRuntimeId::as_str),
     ) && alias.identity == status.identity
 }
 

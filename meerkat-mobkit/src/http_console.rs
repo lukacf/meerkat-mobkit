@@ -4210,6 +4210,10 @@ fn live_alias_matches_status_runtime(
         alias.session_id.as_deref(),
         status.identity.as_str(),
         registered_session.as_deref(),
+        status
+            .agent_runtime_id
+            .as_ref()
+            .map(crate::identity_first::AgentRuntimeId::as_str),
     ) && alias.identity == status.identity.as_str()
 }
 
@@ -8532,6 +8536,10 @@ async fn console_member_peer_info(
                 .as_ref()
                 .map(ToString::to_string)
                 .as_deref(),
+            status
+                .agent_runtime_id
+                .as_ref()
+                .map(crate::identity_first::AgentRuntimeId::as_str),
         ) {
             return Err(format!(
                 "identity {identity} live member does not match its registered binding session"

@@ -237,8 +237,20 @@ pub(crate) fn live_binding_matches_identity(
     live_session_id: Option<&str>,
     identity: &str,
     registered_session_id: Option<&str>,
+    registered_runtime_id: Option<&str>,
 ) -> bool {
-    live_member_is_identity(live_member_id, identity) && live_session_id == registered_session_id
+    // Two ways a live member id can be the right one, and only two.
+    //
+    // Either it decodes to the durable identity - the stable roster row - or it
+    // is EXACTLY the runtime id this binding is registered for, which is a
+    // caller naming the current incarnation. The second is exact equality, not
+    // generation-stripping: a STALE generated alias does not equal the
+    // registered one, so it is still refused. Accepting any rt:{id}:{gen} whose
+    // identity part matched would be the hole worth avoiding.
+    let names_identity = live_member_is_identity(live_member_id, identity);
+    let is_registered_incarnation = registered_runtime_id
+        .is_some_and(|registered| runtime_alias_str(live_member_id).as_ref() == registered);
+    (names_identity || is_registered_incarnation) && live_session_id == registered_session_id
 }
 
 /// Whether a caller supplied the comms-safe roster marker directly.
