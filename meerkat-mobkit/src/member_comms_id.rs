@@ -189,6 +189,36 @@ pub(crate) fn logical_memory_identity(member_id_or_alias: &str) -> String {
     durable_identity_from_runtime_alias(&alias).unwrap_or_else(|| alias.into_owned())
 }
 
+/// The PUBLIC runtime alias for one incarnation: `rt:{identity}:{generation}`.
+///
+/// ONE owner for "what does this incarnation look like to a console, an SDK, an
+/// RPC surface, or a persisted continuity record". The module contract above
+/// pins that space to the `rt:` shape and states it is PERSISTED, so it must
+/// not drift with whatever the roster happens to be keyed by.
+///
+/// Before the stable-identity lowering the roster identity WAS the runtime
+/// alias, so `meerkat_mob::ids::AgentRuntimeId`'s own Display - which writes
+/// `{identity}:{generation}` - already produced the `rt:` shape for free. Now
+/// the roster identity is the bare durable identity, so that same Display
+/// silently drops the marker and emits `reviewer:1` where every consumer, and
+/// every already-persisted record, expects `rt:reviewer:1`. Nothing fails at
+/// the mint: it surfaces later as a status field that no longer round-trips
+/// through `durable_identity_from_runtime_alias`, which requires the prefix.
+///
+/// Idempotent by construction: a legacy binding whose roster identity still
+/// carries the marker is not prefixed twice. That is the same
+/// non-idempotency hazard `mob_member_id_str` carries, and the reason this is
+/// a function rather than a `format!` at each call site.
+pub(crate) fn public_runtime_alias(runtime_id: &meerkat_mob::ids::AgentRuntimeId) -> String {
+    let identity = runtime_alias_str(runtime_id.identity.as_str());
+    let generation = runtime_id.generation.get();
+    if identity.starts_with("rt:") {
+        format!("{identity}:{generation}")
+    } else {
+        format!("rt:{identity}:{generation}")
+    }
+}
+
 /// The stable roster member id for a durable identity.
 ///
 /// ONE spelling for "which roster row is this identity". Every site that used

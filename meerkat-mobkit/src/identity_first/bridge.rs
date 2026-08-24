@@ -3728,7 +3728,12 @@ impl SessionBridge for MobSessionBridge {
                      {roster_id}"
                 ))
             })?;
-        let committed_runtime_id = entry.agent_runtime_id.to_string();
+        // NOT `entry.agent_runtime_id.to_string()`: that Display emits
+        // `{identity}:{generation}`, which only carried the public `rt:` marker
+        // while the roster identity WAS the runtime alias. Post-lowering it
+        // drops the marker silently.
+        let committed_runtime_id =
+            crate::member_comms_id::public_runtime_alias(&entry.agent_runtime_id);
         let agent_runtime_id = AgentRuntimeId::parse(&committed_runtime_id).map_err(|error| {
             BridgeError::Mob(format!(
                 "committed successor for {identity} carries an unusable runtime id \
