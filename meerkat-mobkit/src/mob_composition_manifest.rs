@@ -248,7 +248,7 @@ pub fn verify_before_resume(
             message: err.to_string(),
         }
     })?;
-    let fields = diverged_fields(&record.definition, supplied);
+    let fields = diverged_definition_fields(&record.definition, supplied);
     if fields.is_empty() {
         Ok(())
     } else {
@@ -267,7 +267,36 @@ struct ManifestVersionProbe {
 ///
 /// Falls back to a whole-definition marker if either side will not serialize,
 /// so a serialization failure cannot be read as "no divergence".
-fn diverged_fields(recorded: &MobDefinition, supplied: &MobDefinition) -> Vec<String> {
+/// Which definition fields differ, as dotted PATHS rather than top-level keys.
+///
+/// Reported at the deepest point where both sides are still objects, so a single
+/// changed model pin reads `profiles.security.model` instead of `profiles`.
+/// That granularity is the difference between an operator reading the diff and
+/// declaring through it unread - HomeCore named this directly, and they are the
+/// party who would be clicking past it on every activation.
+///
+/// Stops descending when either side is a non-object (a list, a scalar, or
+/// absent) and reports the path itself: below that point "which element changed"
+/// needs a keying rule this does not have, and inventing one would name fields
+/// that do not exist.
+/// Rewrite the manifest after an operator declared a spec update.
+///
+/// Separate from [`record_on_create`] on purpose, even though the write is the
+/// same shape: this one runs against a manifest that ALREADY EXISTS and is being
+/// deliberately superseded, which is a different authorization story from
+/// recording a fresh composition. Keeping them apart means a create path can
+/// never silently overwrite an existing manifest by calling the wrong function.
+pub(crate) fn record_declared_update(
+    mob_storage_path: &Path,
+    declared: &MobDefinition,
+) -> Result<(), MobCompositionProvenanceError> {
+    record_on_create(mob_storage_path, declared)
+}
+
+pub(crate) fn diverged_definition_fields(
+    recorded: &MobDefinition,
+    supplied: &MobDefinition,
+) -> Vec<String> {
     let (Ok(recorded_value), Ok(supplied_value)) = (
         serde_json::to_value(recorded),
         serde_json::to_value(supplied),
@@ -278,18 +307,58 @@ fn diverged_fields(recorded: &MobDefinition, supplied: &MobDefinition) -> Vec<St
             vec!["<whole definition>".to_string()]
         };
     };
-    match (recorded_value.as_object(), supplied_value.as_object()) {
+    let mut paths = Vec::new();
+    collect_diverged_paths("", &recorded_value, &supplied_value, &mut paths);
+    if paths.is_empty() && recorded_value != supplied_value {
+        // Equality disagreed with the walk: report something rather than
+        // claiming agreement.
+        return vec!["<whole definition>".to_string()];
+    }
+    paths.sort_unstable();
+    paths.dedup();
+    paths
+}
+
+fn collect_diverged_paths(
+    prefix: &str,
+    recorded: &serde_json::Value,
+    supplied: &serde_json::Value,
+    out: &mut Vec<String>,
+) {
+    if recorded == supplied {
+        return;
+    }
+    match (recorded.as_object(), supplied.as_object()) {
         (Some(recorded_map), Some(supplied_map)) => {
             let mut keys: Vec<&String> = recorded_map.keys().chain(supplied_map.keys()).collect();
             keys.sort_unstable();
             keys.dedup();
-            keys.into_iter()
-                .filter(|key| recorded_map.get(*key) != supplied_map.get(*key))
-                .cloned()
-                .collect()
+            for key in keys {
+                let recorded_child = recorded_map.get(key);
+                let supplied_child = supplied_map.get(key);
+                if recorded_child == supplied_child {
+                    continue;
+                }
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                match (recorded_child, supplied_child) {
+                    (Some(left), Some(right)) => {
+                        collect_diverged_paths(&path, left, right, out);
+                    }
+                    // Present on one side only: the path IS the difference.
+                    _ => out.push(path),
+                }
+            }
         }
-        _ if recorded_value == supplied_value => Vec::new(),
-        _ => vec!["<whole definition>".to_string()],
+        // Not both objects, so this is as deep as a path can honestly go.
+        _ => out.push(if prefix.is_empty() {
+            "<whole definition>".to_string()
+        } else {
+            prefix.to_string()
+        }),
     }
 }
 

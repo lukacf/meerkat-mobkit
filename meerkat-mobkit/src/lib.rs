@@ -44,6 +44,7 @@ pub mod rpc;
 pub mod runtime;
 pub mod schedule_wiring;
 pub mod shutdown_signal;
+pub mod spec_update_ceremony;
 pub mod storage_doctor;
 pub mod storage_health;
 pub mod storage_layout;
