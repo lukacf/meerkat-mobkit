@@ -3713,26 +3713,61 @@ impl SessionBridge for MobSessionBridge {
                 "reading the roster entry for {identity} before reset: {error}"
             ))
         })?;
-        if let Some(entry) = committed.as_ref()
-            && entry.role != spec.profile
-        {
-            return Err(BridgeError::InvalidInput(format!(
-                "destructive reset of {identity} requires reprofiling from {} to {}, and the \
-                 authoritative successor transition (respawn) preserves the existing profile; \
-                 refusing rather than reporting a reset that kept the old profile",
-                entry.role.as_str(),
-                spec.profile.as_str()
-            )));
-        }
+        // The predecessor's runtime id, purely to satisfy `build_spawn_spec`'s
+        // signature: since the stable-identity lowering it derives the member id
+        // from the DURABLE identity and no longer reads this argument. Passing
+        // the committed predecessor keeps the value truthful rather than
+        // fabricated, and the successor's own id is Meerkat's to mint.
+        let predecessor_runtime_id = committed
+            .as_ref()
+            .map(|entry| {
+                AgentRuntimeId::parse(&crate::member_comms_id::public_runtime_alias(
+                    &entry.agent_runtime_id,
+                ))
+            })
+            .transpose()
+            .map_err(|error| {
+                BridgeError::Mob(format!(
+                    "the committed predecessor of {identity} carries an unusable runtime id: \
+                     {error}"
+                ))
+            })?
+            .unwrap_or_else(|| {
+                AgentRuntimeId::parse(&format!("rt:{}:0", identity.as_str()))
+                    .unwrap_or_else(|_| unreachable!("a validated identity yields a valid alias"))
+            });
 
-        self.handle
-            .respawn(roster_id.clone(), None)
+        // ONE authoritative transition, carrying the successor's spec. Meerkat
+        // owns predecessor retirement, successor generation and fence minting,
+        // fresh session creation, and topology restoration; the spec's identity
+        // is the already-encoded roster key and is consumed exactly once.
+        //
+        // This replaces a plain `respawn` plus a refusal for any profile change:
+        // respawn preserves the predecessor's profile, so reprofiling through it
+        // was impossible and had to be refused rather than silently kept.
+        let mut successor =
+            build_spawn_spec(&predecessor_runtime_id, spec, draft, None).map_err(|error| {
+                BridgeError::Mob(format!(
+                    "lowering the successor spec for destructive reset of {identity}: {error}"
+                ))
+            })?;
+        successor.identity = roster_id.clone();
+        // Required by the operation: a successor always receives a newly minted
+        // session, so Resume and Fork are rejected upstream. Parent auto-wiring
+        // is likewise rejected - existing topology is restored, not re-derived.
+        successor.launch_mode = meerkat_mob::launch::MemberLaunchMode::Fresh;
+        successor.auto_wire_parent = false;
+
+        let receipt = self
+            .handle
+            .respawn_with_successor_spec(successor)
             .await
             .map_err(|error| {
                 BridgeError::Mob(format!(
-                    "respawn for destructive reset of {identity}: {error}"
+                    "atomic successor respawn for destructive reset of {identity}: {error}"
                 ))
             })?;
+        let _ = &receipt;
 
         // Read what the machine actually committed rather than predicting it:
         // the successor generation is MobMachine's to mint.
