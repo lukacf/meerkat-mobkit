@@ -774,7 +774,7 @@ impl MobKitConsoleAggregator {
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
-                "ambiguous live identity alias {identity}: candidates [{candidates}]"
+                "ambiguous live identity alias [via aggregator-inspect] {identity}: candidates [{candidates}]"
             )
             .into());
         }
@@ -995,7 +995,7 @@ impl MobKitConsoleAggregator {
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
-                "ambiguous live identity alias {identity}: candidates [{candidates}]"
+                "ambiguous live identity alias [via aggregator-retire] {identity}: candidates [{candidates}]"
             )
             .into());
         }
@@ -2521,8 +2521,13 @@ fn live_record_realizes_durable_binding(
     if live.runtime_member_id == durable.runtime_member_id {
         return true;
     }
-    crate::member_comms_id::durable_identity_label(&live.labels)
-        .is_some_and(|identity| live.runtime_member_id == identity)
+    // The row named by the identity realizes the binding. This already intended
+    // that, but compared an ENCODED roster member id against a decoded label
+    // value, so it never matched once the roster row became the encoded durable
+    // identity. Decode before comparing.
+    crate::member_comms_id::durable_identity_label(&live.labels).is_some_and(|identity| {
+        crate::member_comms_id::live_member_is_identity(&live.runtime_member_id, identity)
+    })
 }
 
 fn stale_durable_record_error(
@@ -2578,6 +2583,23 @@ fn ambiguous_live_alias_error(
     if live_records.len() <= 1 {
         return None;
     }
+    // The identity's OWN row disambiguates. Since the stable-identity lowering a
+    // durable identity has exactly one roster row of its own, so when that row is
+    // among the candidates it IS the answer and rows that merely carry the same
+    // agent_identity label are not competitors. Without this, any labelled decoy
+    // made a healthy identity unresolvable through every aggregator control.
+    let own_rows = live_records
+        .iter()
+        .filter(|record| {
+            crate::member_comms_id::live_member_is_identity(
+                &record.runtime_member_id,
+                requested_identity,
+            )
+        })
+        .count();
+    if own_rows == 1 {
+        return None;
+    }
     let candidates = live_records
         .iter()
         .map(|record| {
@@ -2594,7 +2616,7 @@ fn ambiguous_live_alias_error(
         .collect::<Vec<_>>()
         .join(", ");
     Some(format!(
-        "ambiguous live identity alias {requested_identity}: candidates [{candidates}]"
+        "ambiguous live identity alias [via aggregator-resolve] {requested_identity}: candidates [{candidates}]"
     ))
 }
 
@@ -3156,7 +3178,7 @@ impl std::fmt::Display for ConsoleSendError {
                 candidates,
             } => write!(
                 f,
-                "ambiguous live identity alias {identity}: candidates [{candidates}]"
+                "ambiguous live identity alias [via aggregator-list] {identity}: candidates [{candidates}]"
             ),
             Self::NotAddressable(identity) => write!(f, "not addressable: {identity}"),
             Self::Retired(identity) => write!(f, "identity retired: {identity}"),
@@ -7377,11 +7399,16 @@ comms = true
         let runtime = build_empty_runtime("identity-member-hidden-policy-test").await;
         let mut labels = BTreeMap::new();
         labels.insert("agent_identity".to_string(), "review:singleton".to_string());
+        // The REAL row is the durable identity's roster row now. The policy
+        // below hides by ConsoleMember::agent_identity, which is the DECODED
+        // roster member id, so its authoritative spelling for this row is the
+        // durable identity itself - traced rather than assumed, because hiding
+        // the wrong spelling would silently stop this test hiding anything.
         spawn_trusted_identity_projected_member(
             &runtime,
             SpawnMemberSpec::from_wire(
                 "worker".to_string(),
-                "rt:review:singleton:0".to_string(),
+                crate::member_comms_id::mob_member_id_str("review:singleton").into_owned(),
                 Some("You are the Review Agent.".into()),
                 None,
                 None,
@@ -7391,8 +7418,8 @@ comms = true
         .await;
         let hidden_session_id = runtime
             .mob_handle()
-            .resolve_bridge_session_id_observation(&meerkat_mob::ids::AgentIdentity::from(
-                "rt:review:singleton:0",
+            .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
+                "review:singleton",
             ))
             .await
             .map(|sid| sid.to_string());
@@ -7419,7 +7446,7 @@ comms = true
             runtime.mob_runtime().clone(),
             Some(identity_runtime),
             runtime.console_events(),
-            Arc::new(HideRuntimeMemberOnly("rt:review:singleton:0")),
+            Arc::new(HideRuntimeMemberOnly("review:singleton")),
         );
 
         assert!(
