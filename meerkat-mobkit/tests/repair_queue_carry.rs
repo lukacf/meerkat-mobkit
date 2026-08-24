@@ -418,6 +418,14 @@ async fn repair_carries_queued_inputs_to_the_healed_successor() {
         pending.len()
     );
 
+    // Everything the ORIGINAL member already recorded. The double records a
+    // request's messages BEFORE it blocks on the gate, so a turn that merely
+    // STARTED leaves its prompt behind - which means "flow-step content appears
+    // in prompts" cannot by itself distinguish the original member beginning
+    // that turn from the repair resurrecting it. Only the suffix added after
+    // this point is evidence about the repair.
+    let prompts_before_repair = harness.prompts.lock().expect("prompt record lock").len();
+
     // The repair: a resume over the live (wedged) member takes the roster-
     // collision arm — capture, retire, resume retry, carry.
     let outcome = harness
@@ -491,8 +499,24 @@ async fn repair_carries_queued_inputs_to_the_healed_successor() {
         prompts.iter().any(|prompt| prompt.contains("carried-two")),
         "the successor must run the second carried input; ran: {prompts:?}"
     );
+    // Judged on the POST-REPAIR suffix only, for the reason recorded above.
+    //
+    // KNOWN-UNSOUND, and left red rather than weakened. This double records
+    // EVERY message of every request, i.e. the whole transcript, so a flow step
+    // that legitimately sits in the successor's HISTORY is indistinguishable
+    // here from one that was re-admitted as a new input. Recording only the
+    // answered input instead was tried and is too narrow - it drops the
+    // carried-input evidence the positive assertions above depend on.
+    //
+    // The production classification is correct and traced:
+    // bridge.rs:2285 puts Input::FlowStep on `capture.uncarryable` with the
+    // reason that flow-step correlation is owned by the flow engine and cannot
+    // be re-admitted raw. So the invariant holds in the code; it is this
+    // assertion that cannot currently observe it. The sound observable is the
+    // carry capture's own classification, which needs a test-visible hook.
+    let after_repair = &prompts[prompts_before_repair.min(prompts.len())..];
     assert!(
-        !prompts
+        !after_repair
             .iter()
             .any(|prompt| prompt.contains("flow-step-content")),
         "the flow-step must NOT be resurrected by the repair (its correlation \
