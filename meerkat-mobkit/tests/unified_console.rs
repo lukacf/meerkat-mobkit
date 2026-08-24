@@ -31,12 +31,13 @@ use meerkat_core::SessionId;
 use meerkat_core::{Message, Provider, StopReason};
 // meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
 use meerkat_mob::ids::AgentIdentity as MobMemberId;
-use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
+use meerkat_mob::{MobDefinition, MobRuntimeMode, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::{
-    AuthPolicy, BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec,
-    MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, MobRuntimeError, RuntimeDecisionInputs,
-    RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime, build_runtime_decision_state,
-    console_json_router, handle_console_rest_json_route,
+    AccessControlConfig, AccessController, AccessRule, AuthPolicy, BigQueryNaming, ConsolePolicy,
+    ConsoleRestJsonRequest, DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
+    MobRuntimeError, RuntimeDecisionInputs, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
+    UnifiedRuntime, build_runtime_decision_state, console_json_router,
+    handle_console_rest_json_route,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -1248,6 +1249,340 @@ async fn post_console_rpc(app: &Router, payload: &Value) -> Value {
         .await
         .expect("rpc body");
     serde_json::from_slice(&body).expect("rpc json")
+}
+
+fn assert_no_reserved_member_identity(value: &Value, path: &str) {
+    match value {
+        Value::String(text) => assert!(
+            !text.contains("mk--"),
+            "{path} leaks the reserved roster namespace: {text}"
+        ),
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                assert_no_reserved_member_identity(value, &format!("{path}[{index}]"));
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                assert_no_reserved_member_identity(value, &format!("{path}.{key}"));
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+#[tokio::test]
+async fn member_declarations_round_trip_public_aliases_over_the_http_console()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut fixture = build_runtime_fixture().await;
+    let alias = "rt:gate:main:0";
+    let encoded = meerkat_mobkit::member_comms_id::mob_member_id(alias);
+    assert!(
+        encoded.as_str().starts_with("mk--"),
+        "the fixture must use a genuinely encoded roster identity: {encoded}"
+    );
+
+    let handle = fixture.runtime.mob_handle();
+    let mut spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        encoded.to_string(),
+        Some("Identity-first member declaration fixture.".into()),
+        None,
+        None,
+    );
+    spec.runtime_mode = Some(MobRuntimeMode::TurnDriven);
+    handle.spawn_spec(spec).await?;
+
+    let mob_id = handle.mob_id().to_string();
+    let session_id = handle
+        .resolve_bridge_session_id(&encoded)
+        .await
+        .ok_or("spawned member must have a bridge session")?;
+    let app = fixture
+        .runtime
+        .build_reference_app_router(decision_state(false));
+
+    let rpc = |id: &str, method: &str, params: Value| {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        })
+    };
+
+    let capabilities = post_console_rpc(&app, &rpc("caps", "mobkit/capabilities", json!({}))).await;
+    let methods = capabilities["result"]["methods"]
+        .as_array()
+        .ok_or("capability methods must be an array")?;
+    for method in [
+        "mob/adopt_member_identity_declaration",
+        "mob/apply_member_tool_declaration",
+        "mob/member_tool_declaration",
+    ] {
+        assert!(
+            methods.iter().any(|candidate| candidate == method),
+            "the full-runtime HTTP console must advertise {method}: {methods:#?}"
+        );
+    }
+
+    let adoption = post_console_rpc(
+        &app,
+        &rpc(
+            "adopt",
+            "mob/adopt_member_identity_declaration",
+            json!({
+                "mob_id": mob_id,
+                "agent_identity": alias,
+                "request_id": "adopt-http-public-alias-1",
+                "precondition": "expected_absent",
+                "declaration_scope": "http-public-alias-test",
+                "declaration_revision": 1,
+                "session": {
+                    "session_id": session_id.to_string(),
+                    "lineage_id": format!("session:{session_id}"),
+                    "lineage_generation": 0,
+                    "authority_policy": "require_existing"
+                },
+                "member": {
+                    "profile_name": "lead",
+                    "runtime_mode": "turn_driven",
+                    "system_prompt_override": {
+                        "prompt": "set",
+                        "text": "Identity-first member declaration fixture."
+                    },
+                    "execution": { "execution": "controlling_session" }
+                },
+                "owned_wiring": [],
+                "convergence": { "kind": "drain", "max_wait_ms": 5000 }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(adoption["error"], Value::Null, "{adoption:#?}");
+    assert_eq!(adoption["result"]["adoption"]["outcome"], json!("adopted"));
+    assert_eq!(adoption["result"]["adoption"]["desired_revision"], json!(1));
+    assert_eq!(
+        adoption["result"]["convergence"]["agent_identity"],
+        json!(alias)
+    );
+    assert_no_reserved_member_identity(&adoption, "adoption");
+
+    let read_revision_one = post_console_rpc(
+        &app,
+        &rpc(
+            "read-1",
+            "mob/member_tool_declaration",
+            json!({ "mob_id": mob_id, "agent_identity": alias }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        read_revision_one["error"],
+        Value::Null,
+        "{read_revision_one:#?}"
+    );
+    assert_eq!(read_revision_one["result"]["agent_identity"], json!(alias));
+    assert_eq!(
+        read_revision_one["result"]["desired_intent_revision"],
+        json!(1)
+    );
+    assert!(
+        read_revision_one["result"]["declaration"].is_object(),
+        "adoption must create a readable declaration: {read_revision_one:#?}"
+    );
+    assert_no_reserved_member_identity(&read_revision_one, "read_revision_one");
+
+    let declaration = json!({
+        "category_overrides": {
+            "builtins": "inherit",
+            "shell": "enable",
+            "comms": "inherit",
+            "mob": "inherit",
+            "memory": "inherit",
+            "schedule": "inherit",
+            "workgraph": "inherit",
+            "image_generation": "inherit",
+            "web_search": "inherit"
+        },
+        "callback_tools": { "kind": "set", "tools": [] },
+        "execution": { "kind": "unrestricted" },
+        "application_policy": { "kind": "unmanaged" }
+    });
+    let apply = post_console_rpc(
+        &app,
+        &rpc(
+            "apply",
+            "mob/apply_member_tool_declaration",
+            json!({
+                "mob_id": mob_id,
+                "agent_identity": alias,
+                "request_id": "apply-http-public-alias-1",
+                "expected_intent_revision": 1,
+                "declaration": declaration,
+                "convergence": { "kind": "drain", "max_wait_ms": 5000 }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(apply["error"], Value::Null, "{apply:#?}");
+    assert_eq!(apply["result"]["commit"]["outcome"], json!("committed"));
+    assert_eq!(apply["result"]["commit"]["desired_revision"], json!(2));
+    assert_eq!(
+        apply["result"]["convergence"]["agent_identity"],
+        json!(alias)
+    );
+    assert_no_reserved_member_identity(&apply, "apply");
+
+    let read_revision_two_request = rpc(
+        "read-2",
+        "mob/member_tool_declaration",
+        json!({ "mob_id": mob_id, "agent_identity": alias }),
+    );
+    let read_revision_two = post_console_rpc(&app, &read_revision_two_request).await;
+    assert_eq!(
+        read_revision_two["error"],
+        Value::Null,
+        "{read_revision_two:#?}"
+    );
+    assert_eq!(read_revision_two["result"]["agent_identity"], json!(alias));
+    assert_eq!(
+        read_revision_two["result"]["desired_intent_revision"],
+        json!(2)
+    );
+    assert_eq!(read_revision_two["result"]["declaration"], declaration);
+    assert_no_reserved_member_identity(&read_revision_two, "read_revision_two");
+
+    let stdin_raw = meerkat_mobkit::rpc::handle_unified_rpc_json(
+        &fixture.runtime,
+        &read_revision_two_request.to_string(),
+        Duration::from_secs(5),
+        None,
+        None,
+    )
+    .await;
+    let stdin: Value = serde_json::from_str(&stdin_raw)?;
+    assert_eq!(
+        stdin["result"], read_revision_two["result"],
+        "stdin and HTTP must project the shared handler identically"
+    );
+
+    let reserved = post_console_rpc(
+        &app,
+        &rpc(
+            "reserved",
+            "mob/member_tool_declaration",
+            json!({ "mob_id": mob_id, "agent_identity": encoded.as_str() }),
+        ),
+    )
+    .await;
+    assert_eq!(reserved["error"]["code"], json!(-32602), "{reserved:#?}");
+
+    let mut read_only_decisions = decision_state(false);
+    read_only_decisions.console.read_only = true;
+    let read_only_app = fixture
+        .runtime
+        .build_reference_app_router(read_only_decisions);
+    let read_only_capabilities = post_console_rpc(
+        &read_only_app,
+        &rpc("read-only-caps", "mobkit/capabilities", json!({})),
+    )
+    .await;
+    let read_only_methods = read_only_capabilities["result"]["methods"]
+        .as_array()
+        .ok_or("read-only capability methods must be an array")?;
+    assert!(
+        read_only_methods
+            .iter()
+            .any(|method| method == "mob/member_tool_declaration")
+    );
+    for method in [
+        "mob/adopt_member_identity_declaration",
+        "mob/apply_member_tool_declaration",
+    ] {
+        assert!(
+            read_only_methods
+                .iter()
+                .all(|candidate| candidate != method),
+            "read-only capabilities must omit {method}: {read_only_methods:#?}"
+        );
+    }
+    let read_only_read = post_console_rpc(&read_only_app, &read_revision_two_request).await;
+    assert_eq!(
+        read_only_read["result"], read_revision_two["result"],
+        "read-only mode must retain declaration reads"
+    );
+    let read_only_apply = post_console_rpc(
+        &read_only_app,
+        &rpc(
+            "read-only-apply",
+            "mob/apply_member_tool_declaration",
+            json!({
+                "mob_id": mob_id,
+                "agent_identity": alias,
+                "request_id": "apply-http-public-alias-read-only",
+                "expected_intent_revision": 2,
+                "declaration": declaration,
+                "convergence": { "kind": "drain", "max_wait_ms": 5000 }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(read_only_apply["error"]["code"], json!(-32010));
+    assert_eq!(read_only_apply["error"]["data"]["kind"], json!("read_only"));
+
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![AccessRule {
+            id: "anonymous-views-declaration-member".to_string(),
+            actions: vec!["agent.view".to_string()],
+            agents: vec![alias.to_string()],
+            ..AccessRule::default()
+        }],
+        ..AccessControlConfig::default()
+    })?;
+    fixture.runtime.set_access_controller(controller);
+    let scoped_app = fixture
+        .runtime
+        .build_reference_app_router(decision_state(false));
+    let allowed_read = post_console_rpc(&scoped_app, &read_revision_two_request).await;
+    assert_eq!(allowed_read["result"], read_revision_two["result"]);
+    let denied_other_read = post_console_rpc(
+        &scoped_app,
+        &rpc(
+            "denied-other-read",
+            "mob/member_tool_declaration",
+            json!({ "mob_id": mob_id, "agent_identity": "rt:other:0" }),
+        ),
+    )
+    .await;
+    assert_eq!(denied_other_read["error"]["code"], json!(-32030));
+    let denied_apply = post_console_rpc(
+        &scoped_app,
+        &rpc(
+            "denied-apply",
+            "mob/apply_member_tool_declaration",
+            json!({
+                "mob_id": mob_id,
+                "agent_identity": alias,
+                "request_id": "apply-http-public-alias-abac",
+                "expected_intent_revision": 2,
+                "declaration": declaration,
+                "convergence": { "kind": "drain", "max_wait_ms": 5000 }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(denied_apply["error"]["code"], json!(-32030));
+    assert_eq!(
+        denied_apply["error"]["data"]["kind"],
+        json!("access_denied")
+    );
+
+    let shutdown = fixture.runtime.shutdown().await;
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
+    Ok(())
 }
 
 /// Query an identity's conversation timeline the way the console front-end

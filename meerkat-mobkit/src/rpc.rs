@@ -1754,14 +1754,6 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/call_tool",
                 "mobkit/models/catalog",
                 "mobkit/blob/get",
-                // The member-declaration control plane. Namespaced `mob/` rather
-                // than `mobkit/` deliberately: these mirror meerkat's own
-                // catalog entries and wire types exactly, and a divergent name
-                // would defeat the parity that is the whole point of exposing
-                // them.
-                "mob/adopt_member_identity_declaration",
-                "mob/apply_member_tool_declaration",
-                "mob/member_tool_declaration",
                 "mobkit/send_message",
                 "mobkit/find_members",
                 "mobkit/ensure_member",
@@ -1800,6 +1792,16 @@ async fn handle_unified_rpc_json_inner(
                 storage_methods::STORAGE_DOCTOR_METHOD,
             ];
             methods.extend_from_slice(MOBPACK_AUTHORING_METHODS);
+            // DERIVED from the canonical registry, never listed. #343 listed these
+            // literally here and in the dispatch; 0.8.21 then shipped them dead on
+            // the console plane. A derived list cannot disagree with the dispatcher
+            // about membership.
+            //
+            // NOT added to `handle_mobkit_rpc_json`'s list: that surface takes a
+            // `MobkitRuntimeHandle` (the module runtime) and has no `MobHandle`, so
+            // it cannot SERVE these. Advertising what a surface cannot serve is the
+            // same defect as serving what it does not advertise.
+            methods.extend_from_slice(mob_methods::MEMBER_DECLARATION_METHODS);
             // Workgraph methods are advertised only when the service is
             // configured (`runtime_options.workgraph = false` or a failed
             // store open leave them off).
@@ -2979,20 +2981,37 @@ async fn handle_unified_rpc_json_inner(
         "mobkit/blob/get" => {
             mob_methods::handle_blob_get(runtime, response_id, &request.params).await
         }
-        "mob/adopt_member_identity_declaration" => {
-            mob_methods::handle_adopt_member_identity_declaration(
-                runtime,
-                response_id,
+        // ONE arm for the whole member-declaration family, dispatched from the
+        // canonical registry. Three separate arms is what let the console plane
+        // drift out of sync and ship dead methods in 0.8.21.
+        method if mob_methods::is_member_declaration_method(method) => {
+            let handle = runtime.mob_handle();
+            match mob_methods::handle_member_declaration_rpc(
+                &handle,
+                method,
+                response_id.clone(),
                 &request.params,
             )
             .await
-        }
-        "mob/apply_member_tool_declaration" => {
-            mob_methods::handle_apply_member_tool_declaration(runtime, response_id, &request.params)
-                .await
-        }
-        "mob/member_tool_declaration" => {
-            mob_methods::handle_member_tool_declaration(runtime, response_id, &request.params).await
+            {
+                Some(response) => response,
+                // Unreachable while the guard and the dispatcher read the SAME
+                // registry. Kept as a loud fallthrough rather than unreachable!()
+                // so a future divergence between them surfaces as a method error
+                // instead of a panic.
+                None => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32601,
+                        message: format!(
+                            "{method} is registered in the member-declaration family but has no dispatcher arm"
+                        ),
+                        data: None,
+                    }),
+                },
+            }
         }
         "mobkit/send_message" => {
             // Pass the identity runtime so bare durable identities resolve
