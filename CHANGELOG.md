@@ -37,10 +37,17 @@ durable-roster contract without any migration on the MobKit side.
 
 - **`runtime_options.mob_storage`.** Declares mob storage in-memory on an
   otherwise persistent launch, mirroring `runtime_options.runtime_store`. The
-  storage census now reports the mob slot on every launch path; it previously
-  declared nine slots and omitted this one, which is why an in-memory mob
-  storage on a persistent launch was invisible to healthz and the storage
-  doctor.
+  storage census now reports the mob slot on both GATEWAY launch paths
+  (`mobkit_gateway`, `rpc_gateway`); it previously declared nine slots and
+  omitted this one, which is why an in-memory mob storage on a persistent launch
+  was invisible to healthz and the storage doctor.
+
+  Scope, stated because it is narrower than it first reads: the embedder path
+  (`UnifiedRuntime::builder()` with no mob storage argument) is unchanged. It
+  still composes `MobStorage::in_memory()`, so it declares no mob census slot
+  and its `mob_config` stays editable - and its mob state is NOT durable, so an
+  embedder that adopts identity declarations still loses them on restart. The
+  durability fix below covers the two gateway paths only.
 
 ### Fixed
 
@@ -62,10 +69,11 @@ durable-roster contract without any migration on the MobKit side.
   lifts `Stopped` to `Running` once, and refuses `Completed`, `Destroyed`, and
   an unsettled `Creating` with typed errors, instead of handing identity restore
   a mob it can never spawn into.
-- **Adopted identity declarations and mob events now survive a restart.** Two
-  launch paths composed in-memory mob storage while persisting sessions, so
-  every restart presented as a healthy boot with the right member count and no
-  durable mob state. Storage mode is now attributed per launch branch: the
+- **Adopted identity declarations and mob events now survive a restart, on the
+  two gateway launch paths.** `mobkit_gateway` and `rpc_gateway` composed
+  in-memory mob storage while persisting sessions, so every restart presented as
+  a healthy boot with the right member count and no durable mob state. The
+  embedder path is NOT covered - see the scope note under Added. Storage mode is now attributed per launch branch: the
   ephemeral branches are unchanged and declare themselves in the census.
   Create-versus-resume is decided in one place from the event log rather than
   at each launch site, and storage supplied through the public bootstrap API
