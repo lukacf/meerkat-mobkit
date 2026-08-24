@@ -492,7 +492,7 @@ async fn repair_carries_queued_inputs_to_the_healed_successor() {
 /// any destructive step — the stale member (holding the only live copy of
 /// its state, queue included) survives untouched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repair_refuses_disposal_when_the_resume_source_is_confirmed_absent() {
+async fn repair_refuses_disposal_when_identity_custody_is_indeterminate() {
     // Gate closed: the member's queued work must stay pending through the
     // refused repair.
     let (gate_tx, gate_rx) = watch::channel(false);
@@ -533,9 +533,20 @@ async fn repair_refuses_disposal_when_the_resume_source_is_confirmed_absent() {
         .expect_err("repair must refuse disposal without a resume source");
     match &error {
         BridgeError::ResumeRejected { detail, .. } => {
+            // This fixture writes no identity intent, so custody is
+            // INDETERMINATE and the refusal lands at the custody gate, before
+            // the resume-source precondition is ever consulted. That ordering
+            // is deliberate: an intent that cannot be read is not permission to
+            // destroy an occupant, so the gate has to refuse first.
+            //
+            // The precondition itself is only reachable with a Valid Absent
+            // intent (the one state that grants identity-first the destructive
+            // path), and this harness has no public way to seed one: the
+            // MobIdentityStore trait's only intent writer is
+            // adopt_member_identity_declaration, which writes Present.
             assert!(
-                detail.contains("collision retire precondition"),
-                "the refusal must name the failed precondition: {detail}"
+                detail.contains("collision custody indeterminate"),
+                "the refusal must name the custody verdict that stopped it: {detail}"
             );
         }
         other => panic!("expected a typed ResumeRejected, got {other:?}"),

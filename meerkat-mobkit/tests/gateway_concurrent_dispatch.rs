@@ -1529,17 +1529,42 @@ fn adopted_and_applied_declaration_survives_a_real_process_restart() {
     // Adoption must state the EXACT existing baseline. `mobkit/status_identity`
     // does not project runtime_mode, so read it from the member surface, which
     // does, rather than guessing a default that would be rejected as a change.
-    // BLOCKER, documented so the next reader does not re-derive it: upstream
-    // `actor.rs` compares the declaration's MATERIALIZED runtime mode AND its
-    // labels against the live roster entry
-    // (`material_runtime_mode != entry.runtime_mode || material.overlay.labels
-    // .unwrap_or_default() != entry.labels`), so an omitted field is not
-    // "unchanged" - it materializes to a default and is rejected as a change.
-    // Both spellings of runtime_mode were refused, which points at labels:
-    // identity-first materialization attaches its own (the durable-identity
-    // label the roster is filtered on), and no gateway surface here projects a
-    // roster entry's labels for a declaration to reproduce.
-    let baseline_runtime_mode = json!("autonomous_host");
+    // Adoption is for an ALREADY-realized member, and upstream compares the
+    // declaration's MATERIALIZED runtime mode AND labels against the live roster
+    // entry (`material_runtime_mode != entry.runtime_mode ||
+    // material.overlay.labels.unwrap_or_default() != entry.labels`). An omitted
+    // field is therefore not "unchanged": it materializes to a default and is
+    // rejected as a change. So echo the live entry exactly rather than guessing
+    // a mode, and take labels from the ROSTER entry, not from
+    // status_identity (whose labels are the identity's and are empty here).
+    let members = rpc_result(
+        &mut gateway,
+        "members1",
+        "mobkit/list_members",
+        json!({}),
+        101,
+    );
+    let entry = members
+        .as_array()
+        .unwrap_or_else(|| panic!("list_members must return an array: {members}"))
+        .iter()
+        .find(|entry| {
+            entry["agent_identity"]
+                .as_str()
+                .is_some_and(|id| meerkat_mobkit::member_comms_id::runtime_alias_str(id) == ALIAS)
+        })
+        .unwrap_or_else(|| panic!("{ALIAS} must be on the roster: {members}"))
+        .clone();
+    // A missing field here is a surface regression, not something to paper over.
+    let baseline_runtime_mode = entry
+        .get("runtime_mode")
+        .filter(|value| !value.is_null())
+        .unwrap_or_else(|| panic!("list_members entry must project runtime_mode: {entry}"))
+        .clone();
+    let baseline_labels = entry
+        .get("labels")
+        .unwrap_or_else(|| panic!("list_members entry must project labels: {entry}"))
+        .clone();
 
     gateway.send(json!({
         "jsonrpc": "2.0",
@@ -1568,6 +1593,7 @@ fn adopted_and_applied_declaration_survives_a_real_process_restart() {
                     "text": "Restart-durability declaration fixture."
                 },
                 "runtime_mode": baseline_runtime_mode,
+                "labels": baseline_labels,
                 "execution": { "execution": "controlling_session" }
             },
             "owned_wiring": [],
@@ -1685,9 +1711,11 @@ fn adopted_and_applied_declaration_survives_a_real_process_restart() {
         "phase-2 init failed: {init}"
     );
 
-    // The incarnation MUST differ: a new process acquiring the same durable
-    // identity is a successive incarnation. If these ever matched, the test
-    // would prove nothing about surviving a binding change.
+    // A plain restart RESUMES the same incarnation: the generation is minted
+    // per identity by Meerkat and is preserved across process replacement, so
+    // this is the same runtime id, not a new one. Asserted rather than assumed,
+    // because the incarnation-change property is exercised by the respawn
+    // below and this pins down which of the two is which.
     let phase2_runtime = runtime_identity(&rpc_result(
         &mut gateway,
         "status2pre",
@@ -1695,10 +1723,10 @@ fn adopted_and_applied_declaration_survives_a_real_process_restart() {
         json!({ "identity": ALIAS }),
         102,
     ));
-    assert_ne!(
+    assert_eq!(
         phase1_runtime, phase2_runtime,
-        "phase 2 must be a NEW incarnation, else this test cannot show that durable \
-         declaration state outlives a binding"
+        "a restart resumes the same incarnation; a changed runtime id here would mean the \
+         process replacement rotated the binding instead of resuming it"
     );
 
     gateway.send(json!({
@@ -1765,4 +1793,12 @@ fn adopted_and_applied_declaration_survives_a_real_process_restart() {
         Some(session_id.as_str()),
         "the restarted process must keep the phase-1 session, not create a new one: {status}"
     );
+
+    // NOTE for whoever extends this: the incarnation-change property (durable
+    // declaration state outliving a NEW generation) is NOT covered here. A
+    // restart resumes the same incarnation, as asserted above, so forcing a
+    // successor needs a respawn - and `mobkit/respawn_member` does not return
+    // within the wedge backstop in this callback-hosted fixture, so wiring it
+    // in would trade coverage for a 60-second hang. Covering it needs either a
+    // respawn-capable fixture or a separate lane.
 }

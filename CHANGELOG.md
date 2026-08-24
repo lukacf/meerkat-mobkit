@@ -39,6 +39,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Mob roster identity is now the durable identity, for every binding.** MobKit
+  lowered its own `AgentRuntimeId` into `SpawnMemberSpec.identity` for local and
+  session-backed members, and the durable identity only for external ones.
+  Meerkat defines `AgentRuntimeId` as a stable identity plus a
+  machine-owned generation, where different generations are successive
+  incarnations of the same member, and `SpawnMemberSpec.identity` is the roster
+  identity. Nesting one inside the other made the roster id per-incarnation, so
+  durable state keyed on it belonged to a single binding and could not survive a
+  respawn or a restart. MobKit's `AgentRuntimeId` remains binding and
+  incarnation detail; it is no longer a roster spelling, and every surface that
+  used to convert it into a roster key now resolves through the durable
+  identity with exact-session agreement.
+- **A resumed mob is lifted out of the prior graceful stop before identity
+  restore runs.** A replayed event log ends at the `MobStopped` of the last
+  clean shutdown, so a resumed handle can come back `Stopped`. Bootstrap now
+  lifts `Stopped` to `Running` once, and refuses `Completed`, `Destroyed`, and
+  an unsettled `Creating` with typed errors, instead of handing identity restore
+  a mob it can never spawn into.
 - **Adopted identity declarations and mob events now survive a restart.** Two
   launch paths composed in-memory mob storage while persisting sessions, so
   every restart presented as a healthy boot with the right member count and no
