@@ -827,9 +827,13 @@ impl MobKitConsoleAggregator {
                 // `rt:{identity}:{generation}` spelling was never equal and this
                 // gate skipped every healthy member.
                 if status.agent_runtime_id.is_some()
-                    && !crate::member_comms_id::live_member_is_identity(
+                    && !crate::member_comms_id::live_member_names_identity_or_incarnation(
                         &resolved.runtime_identity,
                         status.identity.as_str(),
+                        status
+                            .agent_runtime_id
+                            .as_ref()
+                            .map(crate::identity_first::AgentRuntimeId::as_str),
                     )
                 {
                     return Ok(None);
@@ -1060,9 +1064,13 @@ impl MobKitConsoleAggregator {
                 // `rt:{identity}:{generation}` spelling was never equal and this
                 // gate skipped every healthy member.
                 if status.agent_runtime_id.is_some()
-                    && !crate::member_comms_id::live_member_is_identity(
+                    && !crate::member_comms_id::live_member_names_identity_or_incarnation(
                         &resolved.runtime_identity,
                         status.identity.as_str(),
+                        status
+                            .agent_runtime_id
+                            .as_ref()
+                            .map(crate::identity_first::AgentRuntimeId::as_str),
                     )
                 {
                     continue;

@@ -212,6 +212,25 @@ pub(crate) fn live_member_is_identity(live_member_id: &str, identity: &str) -> b
     runtime_alias_str(live_member_id) == identity
 }
 
+/// Whether a live roster member id names an identity OR its currently
+/// registered incarnation.
+///
+/// The session-less form of [`live_binding_matches_identity`], for control gates
+/// that have no session to compare. Same two admissible spellings: the id
+/// decodes to the durable identity, or it is EXACTLY the registered
+/// `AgentRuntimeId`. A caller legitimately holding a current runtime alias must
+/// still be able to name its member; a STALE alias does not equal the registered
+/// one and is still refused.
+pub(crate) fn live_member_names_identity_or_incarnation(
+    live_member_id: &str,
+    identity: &str,
+    registered_runtime_id: Option<&str>,
+) -> bool {
+    live_member_is_identity(live_member_id, identity)
+        || registered_runtime_id
+            .is_some_and(|registered| runtime_alias_str(live_member_id).as_ref() == registered)
+}
+
 /// Whether a live roster member and session are the binding that a given
 /// identity is registered for.
 ///
