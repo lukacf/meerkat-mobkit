@@ -1135,10 +1135,14 @@ comms = true
         // `agent_identity` label is what the identity health monitor uses to
         // map this member's RunCompleted events onto the durable identity's
         // completion cursor.
+        // `member` is the DURABLE identity now, not a generated `rt:{id}:{gen}`
+        // alias: the roster identity is the durable identity's comms-safe
+        // encoding, and AgentRuntimeId is incarnation detail. This used to
+        // receive an alias and derive the durable identity back out of it.
         let roster_id = crate::member_comms_id::mob_member_id_str(member).into_owned();
         let roster_identity = meerkat_mob::ids::AgentIdentity::from(roster_id.clone());
-        let durable_identity = IdentityRuntime::identity_for_generated_member_alias(member)
-            .expect("generated alias identity");
+        let durable_identity = crate::identity_first::AgentIdentity::parse(member)
+            .expect("member argument must be a durable identity");
         let mut member_labels = std::collections::BTreeMap::new();
         member_labels.insert(
             "agent_identity".to_string(),
@@ -1171,6 +1175,11 @@ comms = true
         let public_member_alias =
             crate::member_comms_id::runtime_alias_str(&roster_id).into_owned();
         let identity = durable_identity;
+        // The roster identity and the runtime BINDING are different things now.
+        // The roster row is the durable identity's encoding; the binding is a
+        // generated `rt:{identity}:{generation}` incarnation. This harness needs
+        // both, and used to conflate them because they were the same string.
+        let runtime_alias = format!("rt:{}:0", identity.as_str());
         let continuity_store =
             Arc::new(LocalContinuityStore::in_memory().expect("continuity store"));
         let lease_provider = Arc::new(LocalLeaseProvider::new());
@@ -1187,7 +1196,7 @@ comms = true
         };
         let record = ContinuityRecord {
             identity: identity.clone(),
-            agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(&public_member_alias)
+            agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(&runtime_alias)
                 .expect("runtime alias"),
             session_id: member_session,
             generation: ContinuityGeneration::new(0),
@@ -1281,7 +1290,7 @@ comms = true
     /// prove real-model summary quality.
     #[tokio::test(flavor = "multi_thread")]
     async fn compact_member_forces_one_compaction_and_restores_the_profile() {
-        let harness = operator_verb_harness("rt:worker:main:0", "operator-compact-verb").await;
+        let harness = operator_verb_harness("worker:main", "operator-compact-verb").await;
 
         // Seed past both the floor and the recent-turn budget (4 turns) so
         // compaction has an older region to summarize away.
@@ -1392,7 +1401,7 @@ comms = true
     /// own bounded read cannot answer.
     #[tokio::test(flavor = "multi_thread")]
     async fn compact_member_timeout_names_the_turn_fate_and_restores_the_member() {
-        let harness = operator_verb_harness("rt:worker:main:0", "operator-compact-timeout").await;
+        let harness = operator_verb_harness("worker:main", "operator-compact-timeout").await;
         let fat = "seeded transcript ballast ".repeat(160);
         for turn in 0..4 {
             harness.run_turn(format!("turn {turn}: {fat}")).await;
@@ -1463,7 +1472,7 @@ comms = true
     /// operator marker followed by the intact pair.
     #[tokio::test(flavor = "multi_thread")]
     async fn bound_member_transcript_commits_a_pair_safe_cut() {
-        let harness = operator_verb_harness("rt:worker:main:0", "operator-bound-verb").await;
+        let harness = operator_verb_harness("worker:main", "operator-bound-verb").await;
         let service: Arc<dyn crate::memory::hygienist::TranscriptEditSessionService> =
             Arc::clone(&harness.concrete) as _;
 
@@ -1594,7 +1603,7 @@ comms = true
     /// service's `SessionError::Busy` surfaces as the verb's typed refusal.
     #[tokio::test(flavor = "multi_thread")]
     async fn bound_member_transcript_refuses_running_sessions_typed() {
-        let harness = operator_verb_harness("rt:worker:main:0", "operator-bound-busy").await;
+        let harness = operator_verb_harness("worker:main", "operator-bound-busy").await;
 
         // Commit one ordinary turn first so the transcript has messages past
         // keep_last = 1 (a zero-length transcript would no-op before ever

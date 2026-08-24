@@ -8619,17 +8619,19 @@ shell = true
         )
         .await?;
 
-        // Identity-first roster shape: each durable identity is seated as
-        // runtime member rt:{identity}:0; the bare identity is NOT a roster id.
-        for (runtime_id, durable) in [
-            ("rt:atlas-base-001:0", "atlas-base-001"),
-            ("rt:draco-base-001:0", "draco-base-001"),
-        ] {
+        // Identity-first roster shape: each durable identity IS the roster
+        // identity, seated under its comms-safe encoding. This changed
+        // deliberately - it used to seat `rt:{identity}:0` and this comment used
+        // to say the bare identity was not a roster id. Meerkat's adoption takes
+        // ONE identity for both the roster lookup and the durable intent key, so
+        // a per-incarnation roster id could not carry intent across a respawn.
+        // `AgentRuntimeId` is now incarnation detail only.
+        for durable in ["atlas-base-001", "draco-base-001"] {
             spawn_identity_projection_fixture(
                 &runtime,
                 SpawnMemberSpec::from_wire(
                     "worker".to_string(),
-                    runtime_id.to_string(),
+                    durable.to_string(),
                     Some("You are a swarm base agent.".into()),
                     None,
                     None,
@@ -8641,12 +8643,19 @@ shell = true
             )
             .await?;
         }
-        // Precedence probe: a bare roster member whose id collides with a
-        // registered durable identity.
+        // Raw roster member, on an id that is NOT a durable identity.
+        //
+        // This used to be a PRECEDENCE probe: a raw member seated under the same
+        // name as a durable identity, asserting an exact roster-id match wins
+        // over identity resolution. That collision is now unrepresentable - the
+        // durable identity IS the roster id, so the two would be one row and the
+        // second spawn would collide. The precedence rule still exists in the
+        // resolver and still applies wherever a raw id and an identity differ;
+        // what is gone is the case where they are the same string.
         runtime
             .spawn(SpawnMemberSpec::from_wire(
                 "worker".to_string(),
-                "draco-base-001".to_string(),
+                "raw-worker-001".to_string(),
                 Some("You are the raw roster member.".into()),
                 None,
                 None,
@@ -8751,8 +8760,8 @@ shell = true
             }
         };
 
-        // 1. Bare durable identity bridges to the rt:{identity}:{generation}
-        //    member and reports the bridge session that took the delivery.
+        // 1. A bare durable identity reaches its roster member and reports the
+        //    bridge session that took the delivery.
         let response = send(
             1,
             json!({ "member_id": "atlas-base-001", "message": "status check" }),
@@ -8766,11 +8775,9 @@ shell = true
         assert_eq!(response["result"]["member_id"], json!("atlas-base-001"));
         let atlas_session = runtime
             .mob_handle()
-            .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id(
-                "rt:atlas-base-001:0",
-            ))
+            .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id("atlas-base-001"))
             .await
-            .expect("atlas runtime member has a bridge session after send")
+            .expect("atlas member has a bridge session after send")
             .to_string();
         assert_eq!(response["result"]["session_id"], json!(atlas_session));
 
@@ -8790,12 +8797,11 @@ shell = true
         );
         assert_eq!(response["result"]["accepted"], json!(true));
 
-        // 3. Precedence: an exact roster member id wins over identity
-        //    resolution — the bare member takes the delivery, not the
-        //    identity's rt:draco-base-001:0 binding.
+        // 3. A raw roster member id keeps raw semantics: it takes the delivery
+        //    directly, with no identity resolution involved.
         let response = send(
             3,
-            json!({ "member_id": "draco-base-001", "message": "raw roster delivery" }),
+            json!({ "member_id": "raw-worker-001", "message": "raw roster delivery" }),
         )
         .await?;
         assert!(
@@ -8803,26 +8809,25 @@ shell = true
             "exact roster member send must keep raw semantics: {response:#?}"
         );
         assert_eq!(response["result"]["accepted"], json!(true));
-        let draco_raw_session = runtime
+        let raw_session = runtime
+            .mob_handle()
+            .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id("raw-worker-001"))
+            .await
+            .expect("raw roster member has a bridge session after send")
+            .to_string();
+        assert_eq!(response["result"]["session_id"], json!(raw_session));
+        // And it is not the durable identity's session: a raw member id must not
+        // be resolved through the identity plane.
+        let draco_session = runtime
             .mob_handle()
             .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id("draco-base-001"))
             .await
-            .expect("bare draco member has a bridge session after send")
-            .to_string();
-        assert_eq!(response["result"]["session_id"], json!(draco_raw_session));
-        if let Some(draco_rt_session) = runtime
-            .mob_handle()
-            .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id(
-                "rt:draco-base-001:0",
-            ))
-            .await
-        {
-            assert_ne!(
-                response["result"]["session_id"],
-                json!(draco_rt_session.to_string()),
-                "exact member id match must not be shadowed by identity resolution"
-            );
-        }
+            .map(|session| session.to_string());
+        assert_ne!(
+            Some(raw_session),
+            draco_session,
+            "a raw roster member must not share a durable identity's bridge session"
+        );
 
         // 4. Unknown ids keep raw member-not-found semantics.
         let response = send(
