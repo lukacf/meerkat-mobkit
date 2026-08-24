@@ -189,6 +189,48 @@ pub(crate) fn logical_memory_identity(member_id_or_alias: &str) -> String {
     durable_identity_from_runtime_alias(&alias).unwrap_or_else(|| alias.into_owned())
 }
 
+/// The stable roster member id for a durable identity.
+///
+/// ONE spelling for "which roster row is this identity". Every site that used
+/// to turn `IdentityStatus::agent_runtime_id` into a roster key must come here
+/// instead: since the stable-identity lowering the roster is keyed by the
+/// encoded DURABLE identity, and an `AgentRuntimeId` is binding detail that no
+/// longer names a roster row at all. A site that keeps the old conversion does
+/// not fail loudly - it silently misses and its surface reports "not found" for
+/// a healthy member.
+pub(crate) fn roster_member_id_for_identity(identity: &str) -> meerkat_mob::ids::AgentIdentity {
+    mob_member_id(identity)
+}
+
+/// Whether a live roster member and session are the binding that a given
+/// identity is registered for.
+///
+/// ONE rule, used by every surface that guards an identity-control call, so a
+/// stale binding cannot be accepted on one plane and refused on another.
+///
+/// Identity side: the live roster id is DECODED ONLY - the comms-safe `mk--`
+/// encoding is undone and nothing else. It deliberately does not strip an
+/// `rt:{identity}:{generation}` shape. After the stable-identity lowering a
+/// live roster id decodes exactly to the durable identity, so tolerating a
+/// generated runtime spelling here would re-admit the very stale binding this
+/// check exists to catch.
+///
+/// Session side: EXACT equality. `Some`/`Some` must carry the same value and
+/// `None`/`None` matches, but a one-sided `None` fails closed - a missing
+/// session on either side is an unknown, and an unknown is not a match.
+///
+/// `AgentRuntimeId` is not consulted. It remains binding bookkeeping and
+/// presence detail; it is not the roster spelling and Meerkat owns its
+/// generation.
+pub(crate) fn live_binding_matches_identity(
+    live_member_id: &str,
+    live_session_id: Option<&str>,
+    identity: &str,
+    registered_session_id: Option<&str>,
+) -> bool {
+    runtime_alias_str(live_member_id) == identity && live_session_id == registered_session_id
+}
+
 /// Whether a caller supplied the comms-safe roster marker directly.
 /// Public surfaces speak aliases, never encoded roster ids; accepting this
 /// spelling at a raw lower-plane creation boundary can collide with the

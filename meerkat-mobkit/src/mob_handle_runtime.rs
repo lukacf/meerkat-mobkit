@@ -5910,8 +5910,12 @@ impl MobBootstrapSpec {
         Self {
             definition,
             storage,
-            mob_storage_provenance:
-                crate::mob_composition_manifest::MobStorageProvenance::DeclaredEphemeral,
+            // Unspecified, not DeclaredEphemeral: this constructor accepts
+            // arbitrary storage and cannot know what it was handed. Claiming
+            // ephemerality on the caller's behalf is what would let an
+            // external embedder's durable storage resume unverified.
+            mob_storage_provenance: crate::mob_composition_manifest::MobStorageProvenance::default(
+            ),
             session_service,
             binary_blob_store: None,
             agent_mob_mcp_state: None,
@@ -6075,8 +6079,18 @@ impl MobBootstrapSpec {
         self
     }
 
-    /// Install the registry only when one was configured, so a caller that
-    /// parsed no policies does not have to branch.
+    /// Declare that `storage` lives only for this process.
+    ///
+    /// The named form exists so in-process callers can say so explicitly
+    /// instead of relying on a default claim. It permits resuming a pre-seeded
+    /// in-memory storage, which carries no cross-restart composition risk
+    /// because the storage was built in this same process.
+    pub fn with_declared_ephemeral_mob_storage(mut self) -> Self {
+        self.mob_storage_provenance =
+            crate::mob_composition_manifest::MobStorageProvenance::declared_ephemeral();
+        self
+    }
+
     /// Carry the provenance returned alongside a composed mob storage.
     ///
     /// Takes the provenance rather than a bare path so the pair produced by
@@ -6091,6 +6105,8 @@ impl MobBootstrapSpec {
         self
     }
 
+    /// Install the registry only when one was configured, so a caller that
+    /// parsed no policies does not have to branch.
     pub fn with_optional_tool_consequence_policy_registry(
         mut self,
         registry: Option<Arc<meerkat_core::ToolConsequencePolicyRegistry>>,
@@ -7445,13 +7461,14 @@ impl MobRuntime {
             .await
             .map_err(|err| MobRuntimeError::Mob(MobError::from(err)))?;
         let persistent_mob_path = spec.mob_storage_provenance.persistent_path();
-        // Fail closed on unproven storage. `DeclaredEphemeral` is a claim, not
-        // evidence: a caller can hand `bootstrap` a persistent or pre-seeded
-        // storage through the public API and omit the declaration, and without
-        // this check that storage would resume with no composition
-        // verification at all. An in-memory storage is empty at bootstrap, so
-        // a non-empty log under an ephemeral claim is exactly that case.
-        if !event_log_empty && persistent_mob_path.is_none() {
+        // Fail closed on undeclared storage. `MobBootstrapSpec::new` accepts
+        // arbitrary storage from any caller including external embedders, so a
+        // non-empty log with nothing declared about it could be a durable
+        // database opened directly, and resuming it would skip composition
+        // verification entirely. An explicit in-process declaration is
+        // permitted: a pre-seeded in-memory storage has no composition that
+        // outlives the process to disagree with.
+        if !event_log_empty && !spec.mob_storage_provenance.permits_unverified_resume() {
             return Err(MobRuntimeError::CompositionProvenance(
                 crate::mob_composition_manifest::MobCompositionProvenanceError::UnprovenStorage,
             ));
@@ -7515,7 +7532,45 @@ impl MobRuntime {
         let handle = if event_log_empty {
             builder.create().await?
         } else {
-            builder.resume().await?
+            let handle = builder.resume().await?;
+            // A persistent event log replays the PRIOR GRACEFUL SHUTDOWN. The
+            // last event of a clean stop is `MobStopped`, so replaying it
+            // faithfully hands back a handle in `Stopped`, and the identity
+            // restore below then tries to spawn into a stopped mob and leaves
+            // the identity broken.
+            //
+            // `bootstrap` is an operational bootstrap: the caller asked for a
+            // running mob. So lift it here, once, rather than leaving every
+            // downstream actuator to discover a stopped mob and interpret it
+            // for itself. Any failure stays typed.
+            match handle.status().await? {
+                // The only transition MobHandle::resume performs.
+                meerkat_mob::MobState::Stopped => handle.resume().await?,
+                meerkat_mob::MobState::Running => {}
+                // Terminal upstream. Returning Ok here would hand identity
+                // restore a mob it can never spawn into, which is the obscure
+                // failure class this whole branch exists to remove: the comment
+                // claiming a refusal has to BE the refusal.
+                state @ (meerkat_mob::MobState::Completed | meerkat_mob::MobState::Destroyed) => {
+                    return Err(MobRuntimeError::InvalidConfig(format!(
+                        "the mob storage at this path holds a mob in terminal state {} and \
+                         cannot be resumed into a running runtime (MobHandle::resume only \
+                         lifts Stopped to Running); use a new mob storage path",
+                        state.as_str()
+                    )));
+                }
+                // Not a state a just-resumed handle should report. Say so
+                // rather than succeeding quietly into a half-built runtime.
+                meerkat_mob::MobState::Creating => {
+                    return Err(MobRuntimeError::InvalidConfig(
+                        "a resumed mob reported state Creating, which a replayed event log \
+                         should never produce; refusing rather than installing an identity \
+                         runtime against an unsettled mob"
+                            .to_string(),
+                    ));
+                }
+            }
+            handle
         };
         if let Some(state) = agent_mob_mcp_state.as_ref() {
             state.mob_insert_handle(mob_id, handle.clone()).await;

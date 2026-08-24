@@ -2072,14 +2072,18 @@ impl IdentityRuntime {
             .identities
             .keys()
             .filter_map(|identity| {
+                // The roster is keyed by the encoded DURABLE identity for every
+                // binding. This used to mirror the old spawn-side lowering
+                // (identity for external, runtime id for local); keeping that
+                // split would report member ids no roster row answers to, and
+                // the bootstrap status would look healthy while naming nothing.
                 let entry = entries.get(identity)?;
-                let runtime_id = entry.continuity.as_ref()?.agent_runtime_id.as_str();
-                let alias = if durable_spec_uses_external_binding(&entry.spec) {
-                    identity.as_str()
-                } else {
-                    runtime_id
-                };
-                Some(crate::member_comms_id::mob_member_id(alias))
+                // A continuity row still gates inclusion: an identity with no
+                // binding is not a bootstrapped member.
+                entry.continuity.as_ref()?;
+                Some(crate::member_comms_id::roster_member_id_for_identity(
+                    identity.as_str(),
+                ))
             })
             .collect()
     }

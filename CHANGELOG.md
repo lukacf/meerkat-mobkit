@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **BEHAVIOR CHANGE: a persistent launch now pins `mob_config`.** Mob storage is
+  persistent on launches that already persist everything else, which is what
+  makes adopted identity declarations survive a restart. The cost is that the
+  mob definition is pinned once the storage exists: meerkat 0.8.26 refuses a
+  definition that disagrees with the persisted spec store, on create and on
+  resume alike, so durable mob state and an editable `mob_config` cannot both
+  hold on one storage path.
+
+  Editing `mob_config` and restarting against the same state directory is now
+  refused with a typed error that names the diverged fields and states the
+  remedy, instead of failing later as an internal store mismatch. Today the
+  remedies are a new state directory (and re-adoption), or declaring mob state
+  ephemeral with `runtime_options.mob_storage = {"storage": "memory"}`, which
+  keeps `mob_config` editable at the cost of durable adoptions. A future
+  upstream definition-migration path would update the authoritative event-log
+  definition; rewriting the recorded provenance is deliberately NOT offered,
+  because certifying a definition the event log does not hold would boot stale
+  config silently.
+
+### Added
+
+- **`runtime_options.mob_storage`.** Declares mob storage in-memory on an
+  otherwise persistent launch, mirroring `runtime_options.runtime_store`. The
+  storage census now reports the mob slot on every launch path; it previously
+  declared nine slots and omitted this one, which is why an in-memory mob
+  storage on a persistent launch was invisible to healthz and the storage
+  doctor.
+
+### Fixed
+
+- **Adopted identity declarations and mob events now survive a restart.** Two
+  launch paths composed in-memory mob storage while persisting sessions, so
+  every restart presented as a healthy boot with the right member count and no
+  durable mob state. Storage mode is now attributed per launch branch: the
+  ephemeral branches are unchanged and declare themselves in the census.
+  Create-versus-resume is decided in one place from the event log rather than
+  at each launch site, and storage supplied through the public bootstrap API
+  with a non-empty log and no provenance declaration fails closed rather than
+  resuming unverified.
+- **A closing member event stream no longer races MobMachine for actuation.**
+  When the identity store holds a valid `Present` intent, MobMachine is the
+  sole actuator: the stream-health monitor no longer marks the identity-first
+  runtime broken, and the resume path's roster-collision handler no longer
+  retires the occupant. Both now read the same authoritative intent, and an
+  unreadable or ambiguous intent fails closed and retryable instead of being
+  treated as permission to destroy a live member. Only a valid `Absent` intent
+  leaves identity-first its existing repair ownership.
+
+
 ## [0.8.22] - 2026-08-24
 
 Pins meerkat `=0.8.26`.

@@ -77,6 +77,35 @@ fn is_member_already_exists_error(error: &meerkat_mob::MobError) -> bool {
     matches!(error, meerkat_mob::MobError::MemberAlreadyExists(_))
 }
 
+/// Who owns actuation for a member this bridge just collided with.
+///
+/// Derived only from `IdentityIntent`, the sole authoritative desired state.
+/// Kept as three states rather than a boolean because "not MobMachine's" and
+/// "nobody could tell" must not behave the same way: only the first licenses
+/// the destructive path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CollisionCustody {
+    /// Valid Present intent naming this exact session. MobMachine is the sole
+    /// actuator, on ordinary death and on rotation alike.
+    MobMachineOwns,
+    /// Valid Absent intent: the identity store does not want this identity
+    /// present, so the occupant really is stale and identity-first keeps its
+    /// existing repair ownership.
+    IdentityFirstOwns,
+    /// Missing, Malformed, Unsupported, unreadable, or a Present intent naming
+    /// a different session. Not permission to destroy anything.
+    Indeterminate,
+}
+
+/// Bounded wait for MobMachine to finish converging an occupant this bridge
+/// must not destroy.
+///
+/// Declared rather than ambient: an unbounded wait here would trade a
+/// destructive race for a hang, and a hang in resume is indistinguishable from
+/// a wedged member.
+const CONVERGENCE_HANDOFF_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+const CONVERGENCE_HANDOFF_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Delete and tombstone reset's superseded session projection before asking
 /// Meerkat to retire the physical member.
 ///
@@ -1969,8 +1998,15 @@ impl MobSessionBridge {
             .get(runtime_id.as_str())
             .map(|member| MobAgentIdentity::from(member.as_str()))
             // The recompute fallback must mint the same comms-safe roster id
-            // as the spawn path (meerkat 0.7 MemberCommsName rejects `:`).
-            .unwrap_or_else(|| crate::member_comms_id::mob_member_id(runtime_id.as_str()))
+            // as the spawn path, which is the encoded DURABLE identity. An
+            // `AgentRuntimeId` is `rt:{identity}:{generation}`, so the durable
+            // identity is derivable from it directly - no lookup table and no
+            // second identity authority.
+            .unwrap_or_else(|| {
+                crate::member_comms_id::mob_member_id(
+                    &crate::member_comms_id::logical_memory_identity(runtime_id.as_str()),
+                )
+            })
     }
 
     /// Retire one session-owned member through the MobMachine's retained
@@ -2423,6 +2459,140 @@ impl MobSessionBridge {
     /// durable authority was consulted and none of them knows the session.
     /// A probe fault means absence cannot be CONFIRMED, so repair proceeds
     /// exactly as it did before this guard existed.
+    /// Who may actuate on the member this resume just collided with.
+    ///
+    /// Thin wrapper over [`identity_actuation_custody`] that supplies the
+    /// session this resume is holding, so a Present intent bound to some other
+    /// session reads as `Indeterminate` rather than as clearance.
+    async fn collision_custody(
+        &self,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> CollisionCustody {
+        identity_actuation_custody(&self.handle, identity.as_str(), Some(session_id)).await
+    }
+}
+
+/// Who may actuate on one identity, read from the only authoritative desired
+/// state there is.
+///
+/// Shared by the two actuators that previously fired independently: the resume
+/// path's roster-collision handler and the event-stream health monitor. They
+/// asked different questions of different state and both concluded they were
+/// entitled to act, which is how one applied declaration took a live member
+/// down. One read, one vocabulary.
+///
+/// `expected_session` is `Some` when the caller already holds the session it
+/// intends to resume, and `None` at stream closure where no session is in
+/// hand and any Present intent means MobMachine owns materialization.
+pub(crate) async fn identity_actuation_custody(
+    handle: &MobHandle,
+    identity_alias: &str,
+    expected_session: Option<&meerkat_core::types::SessionId>,
+) -> CollisionCustody {
+    // The identity store is keyed by the comms-safe ENCODED member id, not
+    // the public alias. `member_comms_id::mob_member_id` is the public
+    // translation for this boundary; skipping it makes every read miss and
+    // would leave this guard permanently inert.
+    // The identity store is keyed by the comms-safe ENCODED member id, not the
+    // public alias, so this read has to translate or it misses every time and
+    // leaves both guards inert while looking implemented.
+    //
+    // `identity_alias` must be a DURABLE identity. Both callers pass one, and
+    // since the stable-identity lowering the roster and intent key is the
+    // encoded durable identity, so this is the whole translation.
+    //
+    // `runtime_alias_str` first because `mob_member_id_str` is not idempotent:
+    // handed an already-encoded id it escapes the marker a second time and the
+    // double-encoded key can never match. That would fail silently in the
+    // worst direction, since a missing intent reads as Indeterminate and
+    // Indeterminate declines to repair. Note this only removes the comms
+    // marker; it does NOT lower `rt:{identity}:{generation}` to its identity,
+    // so handing this function a runtime id would produce a runtime-shaped key
+    // and miss. Callers pass durable identities.
+    let alias = crate::member_comms_id::runtime_alias_str(identity_alias);
+    let key = crate::member_comms_id::mob_member_id(alias.as_ref());
+    let record = match handle.identity_intent(&key).await {
+        Ok(meerkat_mob::identity::IdentityStoredObservation::Valid(record)) => record,
+        // Missing / Malformed / Unsupported / transport failure. None of
+        // these is evidence about ownership, so none of them may be read
+        // as clearance to retire an occupant.
+        Ok(_) | Err(_) => return CollisionCustody::Indeterminate,
+    };
+    match &record.intent {
+        meerkat_mob::identity::IdentityIntent::Present { session, .. } => {
+            match expected_session {
+                // Present, but bound to a different session than the one being
+                // resumed. That disagreement is not something an actuator can
+                // resolve by destroying either side.
+                Some(expected) if session.session_id != *expected => {
+                    CollisionCustody::Indeterminate
+                }
+                _ => CollisionCustody::MobMachineOwns,
+            }
+        }
+        meerkat_mob::identity::IdentityIntent::Absent { .. } => CollisionCustody::IdentityFirstOwns,
+    }
+}
+
+impl MobSessionBridge {
+    /// Wait, bounded, for MobMachine's materialization to become visible, then
+    /// adopt it instead of replacing it.
+    ///
+    /// Attaches only this bridge's own bookkeeping. It never spawns, retires,
+    /// or mutates mob state: the whole point is that another authority owns
+    /// that. Timing out is a typed failure the caller may retry, not a licence
+    /// to fall through to the destructive path.
+    async fn await_convergence_and_attach(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        member_id: &MobAgentIdentity,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<ResumeSessionOutcome, BridgeError> {
+        let deadline = tokio::time::Instant::now() + CONVERGENCE_HANDOFF_BUDGET;
+        loop {
+            // The machine-state projection is what has to agree: it is the
+            // read the rest of this bridge already trusts to name a member's
+            // bridge session.
+            if self
+                .handle
+                .resolve_bridge_session_id(member_id)
+                .await
+                .as_ref()
+                == Some(session_id)
+            {
+                tracing::info!(
+                    identity = %identity,
+                    member_id = %member_id,
+                    session_id = %session_id,
+                    "resume_session yielded a roster collision to MobMachine: durable intent \
+                     names this session, so the occupant was adopted rather than retired"
+                );
+                self.remember_runtime_member(runtime_id, member_id).await;
+                self.remember_runtime_session(runtime_id, session_id).await;
+                return Ok(ResumeSessionOutcome::Resumed {
+                    session_id: session_id.clone(),
+                });
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(resume_rejected(
+                    identity,
+                    session_id,
+                    &meerkat_mob::MobError::Internal(format!(
+                        "durable identity intent names session {session_id} for this member, so \
+                         MobMachine owns its materialization and this resume must not retire the \
+                         occupant, but convergence did not surface that session within {}s; \
+                         retry once convergence settles",
+                        CONVERGENCE_HANDOFF_BUDGET.as_secs()
+                    )),
+                    "convergence handoff",
+                ));
+            }
+            tokio::time::sleep(CONVERGENCE_HANDOFF_POLL).await;
+        }
+    }
+
     async fn resume_source_confirmed_absent(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -2920,16 +3090,27 @@ fn member_id_for_spawn_spec(
     runtime_id: &AgentRuntimeId,
     spec: &DurableAgentSpec,
 ) -> MobAgentIdentity {
-    // meerkat 0.7's `MemberCommsName` is fail-closed: roster member ids must
-    // be identifier-safe (no `:`). MobKit's public alias space — durable
-    // identities like `review:singleton` and runtime ids like
-    // `rt:review:singleton:0` — is unchanged; the roster id is the comms-safe
-    // encoding (identity for already-safe names).
-    if spec_uses_external_binding(spec) {
-        crate::member_comms_id::mob_member_id(spec.identity.as_str())
-    } else {
-        crate::member_comms_id::mob_member_id(runtime_id.as_str())
-    }
+    // The roster id is the comms-safe encoding of the DURABLE identity, for
+    // every binding. `MemberCommsName` is fail-closed on identifier-unsafe
+    // names (no `:`), so the encoding is required; MobKit's public alias space
+    // is unchanged.
+    //
+    // It must be the durable identity and not the runtime id. Meerkat defines
+    // `AgentRuntimeId` as a stable identity plus a monotonically increasing
+    // generation, where different generations are successive incarnations of
+    // the SAME member, and `SpawnMemberSpec.identity` is the roster identity
+    // whose per-identity generation counter Meerkat itself owns
+    // (`MobActor::mint_spawn_generation`). Lowering a MobKit runtime id into
+    // that slot nested one identity inside another and made the roster id
+    // per-incarnation: durable mob state keyed on it belonged to a single
+    // binding, so it could not survive a respawn or a restart, and a resumed
+    // event log replayed a previous incarnation's roster against a freshly
+    // minted generation.
+    //
+    // `runtime_id` stays what it is: live binding detail. It is deliberately
+    // not consulted here.
+    let _ = runtime_id;
+    crate::member_comms_id::mob_member_id(spec.identity.as_str())
 }
 
 /// Default OpenAI prompt-cache routing key for `identity`.
@@ -3434,6 +3615,47 @@ impl SessionBridge for MobSessionBridge {
                 })
             }
             Err(error) if is_member_already_exists_error(&error) => {
+                // CUSTODY FIRST. A roster collision is not by itself evidence
+                // that the occupant is stale. If the identity store - the only
+                // authoritative desired state - holds a valid Present intent
+                // naming this exact session, then MobMachine owns
+                // materialization of this member and this bridge does not.
+                // Retiring here destroys an occupant another authority is
+                // actively converging, which is how an applied declaration
+                // took a live member down mid-rotation.
+                //
+                // Permission comes from the intent alone.
+                // `identity_convergence_status` is documented output-only and
+                // "never grants an actuator permission", so it is not consulted
+                // here; convergence is observed through the machine-state
+                // projection below, which is what actually has to agree.
+                match self.collision_custody(identity, session_id).await {
+                    CollisionCustody::MobMachineOwns => {
+                        return self
+                            .await_convergence_and_attach(runtime_id, &mid, identity, session_id)
+                            .await;
+                    }
+                    CollisionCustody::Indeterminate => {
+                        // Fail closed and retryable. Falling through here is
+                        // what turned an unreadable intent into a destroyed
+                        // live member.
+                        return Err(resume_rejected(
+                            identity,
+                            session_id,
+                            &meerkat_mob::MobError::Internal(format!(
+                                "roster collision on {session_id} with no authoritative durable \
+                                 intent naming it, so ownership of this member cannot be \
+                                 established; refusing to retire the occupant (retryable: \
+                                 retry once identity intent is readable and names a session)"
+                            )),
+                            "collision custody indeterminate",
+                        ));
+                    }
+                    // Valid Absent: the identity store does not want this
+                    // identity present, so identity-first keeps its existing
+                    // repair ownership and the preconditioned path below runs.
+                    CollisionCustody::IdentityFirstOwns => {}
+                }
                 // Genuine roster collision: an in-process restart where the
                 // previous member actor hasn't fully terminated, or a Broken
                 // roster entry left by an earlier rejected resume. Retire the

@@ -4195,19 +4195,22 @@ fn live_alias_matches_status_runtime(
     let Some(alias) = alias else {
         return true;
     };
-    let session_matches = match (
-        status.session_id.as_ref().map(ToString::to_string),
+    // A registered binding must exist. A control call naming a live member for
+    // an identity that has no runtime binding at all is not a match.
+    if status.agent_runtime_id.is_none() {
+        return false;
+    }
+    let registered_session = status.session_id.as_ref().map(ToString::to_string);
+    // One centralized rule: live roster id decoded exactly to the durable
+    // identity, plus EXACT session equality (a one-sided missing session fails
+    // closed). `agent_runtime_id` stays binding bookkeeping and is not the
+    // roster spelling.
+    crate::member_comms_id::live_binding_matches_identity(
+        &alias.runtime_member_id,
         alias.session_id.as_deref(),
-    ) {
-        (Some(status_session), Some(live_session)) => status_session == live_session,
-        _ => true,
-    };
-    status
-        .agent_runtime_id
-        .as_ref()
-        .is_some_and(|runtime_id| runtime_id.as_str() == alias.runtime_member_id)
-        && alias.identity == status.identity.as_str()
-        && session_matches
+        status.identity.as_str(),
+        registered_session.as_deref(),
+    ) && alias.identity == status.identity.as_str()
 }
 
 async fn stale_live_alias_json_rpc_error(
@@ -8503,13 +8506,17 @@ async fn console_member_peer_info(
         )
         .or_else(|| crate::identity_first::AgentIdentity::parse(&member_alias).ok())
         .ok_or_else(|| format!("invalid durable member alias {member_alias:?}"))?;
-        identity_runtime
+        let status = identity_runtime
             .status(&identity)
             .await
-            .map_err(|error| error.to_string())?
-            .agent_runtime_id
-            .map(|runtime_id| runtime_id.to_string())
-            .ok_or_else(|| format!("identity {identity} has no current runtime member"))?
+            .map_err(|error| error.to_string())?;
+        // Presence of a runtime binding, not its spelling: the roster is keyed
+        // by the encoded durable identity since the stable-identity lowering,
+        // and this value is encoded and handed to handle.get_member below.
+        if status.agent_runtime_id.is_none() {
+            return Err(format!("identity {identity} has no current runtime member"));
+        }
+        identity.as_str().to_string()
     } else {
         let direct = crate::member_comms_id::mob_member_id(&member_alias);
         if handle

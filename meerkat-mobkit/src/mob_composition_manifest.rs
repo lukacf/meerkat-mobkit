@@ -74,15 +74,14 @@ pub enum MobCompositionProvenanceError {
     },
     /// The provenance record could not be written at create time.
     NotRecorded { manifest: PathBuf, message: String },
-    /// A storage claiming to be ephemeral arrived already holding events.
+    /// A storage arrived already holding events with nothing declared about
+    /// what it is.
     ///
-    /// A genuinely in-memory storage is constructed fresh and is therefore
-    /// empty at bootstrap. A non-empty event log under a
-    /// [`MobStorageProvenance::DeclaredEphemeral`] claim means the claim is
-    /// unproven: something composed durable or pre-seeded storage and did not
-    /// declare it. Without this check `DeclaredEphemeral` would be a third
-    /// silent state - asserted rather than evidenced - and such a storage
-    /// would resume with no composition verification at all.
+    /// `MobBootstrapSpec::new` takes arbitrary storage, so an undeclared
+    /// non-empty log could be a durable database an external embedder opened
+    /// directly. Resuming it would skip composition verification entirely, and
+    /// no default claim can be safely inferred here: the constructor cannot
+    /// know what the caller handed it.
     UnprovenStorage,
 }
 
@@ -141,13 +140,14 @@ impl std::fmt::Display for MobCompositionProvenanceError {
             ),
             Self::UnprovenStorage => write!(
                 f,
-                "a mob storage supplied to bootstrap already holds events but was not \
-                 declared persistent, so this build cannot verify that resuming it would \
-                 boot the composition supplied (an in-memory storage is empty at \
-                 bootstrap, so a non-empty one is either durable or pre-seeded); compose \
-                 it through mob_composition_manifest::persistent_mob_storage and pass the \
-                 returned provenance to MobBootstrapSpec::with_mob_storage_provenance, or \
-                 supply an empty storage"
+                "a mob storage supplied to bootstrap already holds events but nothing \
+                 was declared about what that storage is, so this build cannot verify \
+                 that resuming it would boot the composition supplied rather than an \
+                 older one; if it is durable, compose it through \
+                 mob_composition_manifest::persistent_mob_storage and pass the returned \
+                 provenance to MobBootstrapSpec::with_mob_storage_provenance, and if it \
+                 is in-process only, declare that with \
+                 MobBootstrapSpec::with_declared_ephemeral_mob_storage"
             ),
             Self::NotRecorded { manifest, message } => write!(
                 f,
@@ -165,9 +165,14 @@ impl std::error::Error for MobCompositionProvenanceError {}
 
 /// Record the composition a fresh persistent storage path was created for.
 ///
+/// Crate-internal, and called on the create branch ONLY. Exposing it would let
+/// a caller stamp a new composition onto a non-empty store, which makes
+/// [`verify_before_resume`] pass while `MobBuilder::for_resume` still boots the
+/// definition the event log actually holds - a certified lie.
+///
 /// Called on the create branch only. Overwrites any stale record, since an
 /// empty event log means no prior mob survives on this path.
-pub fn record_on_create(
+pub(crate) fn record_on_create(
     mob_storage_path: &Path,
     definition: &MobDefinition,
 ) -> Result<(), MobCompositionProvenanceError> {
@@ -288,17 +293,35 @@ fn diverged_fields(recorded: &MobDefinition, supplied: &MobDefinition) -> Vec<St
     }
 }
 
-/// Whether a composed mob storage carries a composition that outlives the
-/// process, and if so where.
+/// What a composed mob storage is, as declared by whoever composed it.
 ///
-/// This is an explicit two-state declaration rather than an `Option<PathBuf>`
-/// so that "ephemeral by declaration" and "persistent at a path" are distinct
-/// states with no third, silent one. An undeclared persistent path would be
-/// exactly the silence this repair exists to remove.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MobStorageProvenance {
+/// `MobStorage` does not report its own durability, so this cannot be derived
+/// and has to be declared. The default is "unspecified" rather than an
+/// ephemeral claim deliberately: `MobBootstrapSpec::new` accepts arbitrary
+/// storage, so claiming ephemerality would assert a fact the constructor
+/// cannot know, and an external embedder passing durable storage would
+/// silently inherit that claim.
+///
+/// Opaque on purpose. The persistent form is only constructible inside this
+/// crate, by [`persistent_mob_storage`], which returns it paired with the
+/// storage it describes. A public `Persistent { path }` would let a caller
+/// pair storage A with storage B's manifest path and have bootstrap verify the
+/// wrong composition, which is exactly the guarantee the paired constructor
+/// exists to provide.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MobStorageProvenance(Provenance);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum Provenance {
+    /// Nothing was declared. Safe while the event log is empty (a create needs
+    /// no provenance), and fails closed the moment a non-empty log would be
+    /// resumed unverified.
+    #[default]
+    Unspecified,
     /// In-memory by declaration: nothing survives the process, so there is no
-    /// cross-restart composition to judge.
+    /// cross-restart composition to judge. A pre-seeded in-memory storage may
+    /// resume without composition verification, because the composition it
+    /// would be checked against was built in this same process.
     DeclaredEphemeral,
     /// Persistent at this path: provenance is recorded on create and verified
     /// before any resume.
@@ -306,12 +329,36 @@ pub enum MobStorageProvenance {
 }
 
 impl MobStorageProvenance {
+    /// Declare that the storage lives only for this process.
+    ///
+    /// This is a claim the caller is making about storage this crate cannot
+    /// inspect. It is the deliberate escape for in-process callers and for
+    /// launches that would rather keep an editable definition than durable mob
+    /// state; it is never a default.
+    pub fn declared_ephemeral() -> Self {
+        Self(Provenance::DeclaredEphemeral)
+    }
+
+    /// Crate-internal: only [`persistent_mob_storage`] may say a storage is
+    /// persistent, and only about the path it just opened.
+    fn persistent(path: PathBuf) -> Self {
+        Self(Provenance::Persistent { path })
+    }
+
     /// The path when this storage is persistent.
     pub fn persistent_path(&self) -> Option<&Path> {
-        match self {
-            Self::DeclaredEphemeral => None,
-            Self::Persistent { path } => Some(path),
+        match &self.0 {
+            Provenance::Unspecified | Provenance::DeclaredEphemeral => None,
+            Provenance::Persistent { path } => Some(path),
         }
+    }
+
+    /// Whether a non-empty event log may be resumed under this declaration.
+    ///
+    /// Only the unspecified form is refused: an undeclared storage could be
+    /// durable, and resuming it would skip composition verification entirely.
+    pub fn permits_unverified_resume(&self) -> bool {
+        !matches!(self.0, Provenance::Unspecified)
     }
 }
 
@@ -326,5 +373,5 @@ pub fn persistent_mob_storage(
     path: PathBuf,
 ) -> Result<(meerkat_mob::MobStorage, MobStorageProvenance), meerkat_mob::MobError> {
     let storage = meerkat_mob::MobStorage::persistent(&path)?;
-    Ok((storage, MobStorageProvenance::Persistent { path }))
+    Ok((storage, MobStorageProvenance::persistent(path)))
 }

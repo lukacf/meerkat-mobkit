@@ -212,12 +212,15 @@ async fn changed_definition_refuses_instead_of_booting_stale() {
     }
 }
 
-/// Storage supplied through the public bootstrap API with a non-empty event log
-/// and no provenance declaration must fail closed, not resume unverified.
+/// Durable storage supplied through the PUBLIC bootstrap API with a non-empty
+/// event log and no provenance declaration must fail closed, not resume
+/// unverified.
 ///
-/// `DeclaredEphemeral` is a claim, not evidence: without this the enum has a
-/// third silent state and arbitrary durable storage can masquerade as
-/// ephemeral.
+/// This is the external-embedder case. `MobBootstrapSpec::new` accepts
+/// arbitrary `MobStorage`, so the default provenance cannot be an ephemeral
+/// claim: that would assert a fact the constructor cannot know and let a
+/// caller's durable database resume with no composition verification. Scanning
+/// MobKit's own callers does not close this - the crate is a library.
 #[tokio::test]
 async fn nonempty_storage_without_provenance_fails_closed() {
     const MOB_ID: &str = "persistence-unproven";
@@ -263,7 +266,7 @@ async fn declared_ephemeral_storage_still_boots() {
             MobStorage::in_memory(),
             session_service(&session_root).await,
         )
-        .with_mob_storage_provenance(MobStorageProvenance::DeclaredEphemeral)
+        .with_mob_storage_provenance(MobStorageProvenance::declared_ephemeral())
         .with_options(options()),
     )
     .await
@@ -275,4 +278,55 @@ async fn declared_ephemeral_storage_still_boots() {
             .await
             .is_empty()
     );
+}
+
+/// A pre-seeded in-memory storage may resume when the caller declares what it
+/// is. The refusal above targets silence, not in-process reuse: a storage built
+/// in this same process has no composition outliving it to disagree with.
+#[tokio::test]
+async fn declared_ephemeral_storage_may_resume_in_process() {
+    const MOB_ID: &str = "persistence-inproc-resume";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let session_root = temp.path().join("sessions");
+
+    let storage = MobStorage::in_memory();
+    let first = MobRuntime::bootstrap(
+        MobBootstrapSpec::new(
+            base_definition_for(MOB_ID),
+            storage.clone(),
+            session_service(&session_root).await,
+        )
+        .with_declared_ephemeral_mob_storage()
+        .with_options(options()),
+    )
+    .await
+    .expect("first ephemeral bootstrap");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown first runtime");
+    drop(first);
+
+    assert!(
+        !storage
+            .is_event_log_empty()
+            .await
+            .expect("read event log emptiness"),
+        "the in-memory log must be non-empty for this test to exercise the resume path"
+    );
+
+    // Same storage, now non-empty, declared for what it is: permitted.
+    let second = MobRuntime::bootstrap(
+        MobBootstrapSpec::new(
+            base_definition_for(MOB_ID),
+            storage,
+            session_service(&session_root).await,
+        )
+        .with_declared_ephemeral_mob_storage()
+        .with_options(options()),
+    )
+    .await
+    .expect("a declared in-process storage must be allowed to resume");
+    drop(second);
 }

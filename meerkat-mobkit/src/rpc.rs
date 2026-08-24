@@ -4958,19 +4958,22 @@ fn rpc_live_alias_matches_status_runtime(
     let Some(alias) = alias else {
         return true;
     };
-    let session_matches = match (
-        status.session_id.as_ref().map(ToString::to_string),
+    // A registered binding must exist. A control call naming a live member for
+    // an identity that has no runtime binding at all is not a match.
+    if status.agent_runtime_id.is_none() {
+        return false;
+    }
+    let registered_session = status.session_id.as_ref().map(ToString::to_string);
+    // One centralized rule: live roster id decoded exactly to the durable
+    // identity, plus EXACT session equality (a one-sided missing session fails
+    // closed). `agent_runtime_id` stays binding bookkeeping and is not the
+    // roster spelling.
+    crate::member_comms_id::live_binding_matches_identity(
+        &alias.runtime_member_id,
         alias.session_id.as_deref(),
-    ) {
-        (Some(status_session), Some(live_session)) => status_session == live_session,
-        _ => true,
-    };
-    status
-        .agent_runtime_id
-        .as_ref()
-        .is_some_and(|runtime_id| runtime_id.as_str() == alias.runtime_member_id)
-        && alias.identity == status.identity
-        && session_matches
+        status.identity.as_str(),
+        registered_session.as_deref(),
+    ) && alias.identity == status.identity
 }
 
 async fn rpc_stale_live_alias_error_response(
@@ -5416,6 +5419,7 @@ async fn resolve_live_target(
     let Some(raw) = live_member_alias(params) else {
         return Ok(None);
     };
+    let mut registered_session: Option<meerkat_core::types::SessionId> = None;
     let current_alias = if identity_authoritative {
         let identity_runtime = identity_runtime
             .ok_or_else(|| "durable live target lost its IdentityRuntime authority".to_string())?;
@@ -5423,13 +5427,19 @@ async fn resolve_live_target(
             crate::identity_first::IdentityRuntime::identity_for_generated_member_alias(&raw)
                 .or_else(|| crate::identity_first::AgentIdentity::parse(&raw).ok())
                 .ok_or_else(|| format!("invalid durable live target {raw:?}"))?;
-        identity_runtime
+        let status = identity_runtime
             .status(&identity)
             .await
-            .map_err(|error| error.to_string())?
-            .agent_runtime_id
-            .map(|runtime_id| runtime_id.to_string())
-            .ok_or_else(|| format!("identity {identity} has no current runtime member"))?
+            .map_err(|error| error.to_string())?;
+        // A runtime binding must EXIST for this to be a live target, but it is
+        // not the roster spelling. Since the stable-identity lowering the
+        // roster is keyed by the encoded durable identity, so returning the
+        // AgentRuntimeId here resolved a member id no roster row answers to.
+        if status.agent_runtime_id.is_none() {
+            return Err(format!("identity {identity} has no current runtime member"));
+        }
+        registered_session = status.session_id;
+        identity.as_str().to_string()
     } else {
         let direct = crate::member_comms_id::mob_member_id(&raw);
         if handle
@@ -5469,7 +5479,24 @@ async fn resolve_live_target(
         }
     };
     let member_id = crate::member_comms_id::mob_member_id(&current_alias);
-    Ok(handle.resolve_bridge_session_id(&member_id).await)
+    let resolved = handle.resolve_bridge_session_id(&member_id).await;
+    // When the identity runtime is authoritative, the session the machine
+    // resolves for that roster member must be the session the binding is
+    // registered for. Disagreement means we resolved a live target that
+    // belongs to a different session, which is the shape that let a control
+    // call act on the wrong member.
+    //
+    // A registered session with nothing resolved yet is NOT a disagreement:
+    // that is an unmaterialized bridge, and the caller already handles `None`.
+    if let (Some(registered), Some(resolved_id)) = (registered_session.as_ref(), resolved.as_ref())
+        && registered != resolved_id
+    {
+        return Err(format!(
+            "identity live target resolved session {resolved_id} but its runtime binding is \
+             registered for {registered}"
+        ));
+    }
+    Ok(resolved)
 }
 
 fn maybe_error_response(

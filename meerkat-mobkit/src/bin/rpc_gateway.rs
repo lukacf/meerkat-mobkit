@@ -125,6 +125,12 @@ struct GatewayRuntimeOptions {
     /// launch (M4). Without it, a failed `runtime.sqlite` open is a startup
     /// error — the former silent `InMemoryRuntimeStore` fallback is gone.
     runtime_store_ephemeral: bool,
+    /// Declared in-memory mob storage. Persistent SQLite is the default on a
+    /// persistent_state launch, so this exists for launches that would rather
+    /// keep an editable mob_config than durable mob state: a persistent mob
+    /// storage pins the definition, because Meerkat refuses a definition that
+    /// disagrees with the persisted spec store.
+    mob_storage_ephemeral: bool,
     /// `runtime_options.compaction = {"auto_compact_threshold": 120000, ...}`:
     /// the host-level session-compaction policy for every agent this gateway
     /// builds. Absent, the gateway inherits meerkat's model-aware default
@@ -302,6 +308,7 @@ impl Default for GatewayRuntimeOptions {
             live: GatewayLiveOption::Disabled,
             host_runnables: Vec::new(),
             runtime_store_ephemeral: false,
+            mob_storage_ephemeral: false,
             compaction: None,
         }
     }
@@ -3206,6 +3213,7 @@ fn parse_gateway_runtime_options(
         "live",
         "host_runnables",
         "runtime_store",
+        "mob_storage",
         "compaction",
     ];
     let unsupported = runtime_options
@@ -3429,6 +3437,9 @@ fn parse_gateway_runtime_options(
     }
     if let Some(runtime_store) = runtime_options.get("runtime_store") {
         parsed.runtime_store_ephemeral = parse_gateway_runtime_store_config(runtime_store)?;
+    }
+    if let Some(mob_storage) = runtime_options.get("mob_storage") {
+        parsed.mob_storage_ephemeral = parse_gateway_mob_storage_config(mob_storage)?;
     }
     if let Some(compaction) = runtime_options.get("compaction") {
         parsed.compaction = Some(
@@ -3656,6 +3667,24 @@ fn parse_gateway_runtime_store_config(value: &Value) -> Result<bool, String> {
         return Err(format!(
             "unsupported runtime_options.runtime_store.storage '{storage}' (persistent SQLite \
              is the default; the only declaration is 'memory')"
+        ));
+    }
+    Ok(true)
+}
+
+fn parse_gateway_mob_storage_config(value: &Value) -> Result<bool, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "runtime_options.mob_storage must be a JSON object".to_string())?;
+    let storage = object
+        .get("storage")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "runtime_options.mob_storage.storage must be 'memory'".to_string())?;
+    if !matches!(storage, "memory" | "in_memory") {
+        return Err(format!(
+            "unsupported runtime_options.mob_storage.storage '{storage}' (persistent SQLite \
+             is the default on a persistent_state launch; the only declaration is 'memory', \
+             which trades durable adopted identity declarations for an editable mob_config)"
         ));
     }
     Ok(true)
@@ -7981,7 +8010,17 @@ external_addressable = true
         // was never given the same treatment. In-memory here means every
         // adopted identity declaration is gone on restart while sessions
         // survive.
-        let (mob_storage, mob_storage_provenance) =
+        let (mob_storage, mob_storage_provenance) = if gateway_options.mob_storage_ephemeral {
+            // Declared, not silent. This launch keeps mob state in memory even
+            // though it has a persistent state dir, which is the only way to
+            // keep editing mob_config across restarts: a persistent mob
+            // storage pins the definition.
+            (
+                MobStorage::in_memory(),
+                meerkat_mobkit::mob_composition_manifest::MobStorageProvenance::declared_ephemeral(
+                ),
+            )
+        } else {
             match meerkat_mobkit::mob_composition_manifest::persistent_mob_storage(
                 storage_layout.event_log_db(),
             ) {
@@ -7996,7 +8035,8 @@ external_addressable = true
                         storage_layout.event_log_db().display()
                     ),
                 ),
-            };
+            }
+        };
         let binary_blob_store: Arc<dyn BinaryBlobStore> =
             match ObjectStoreBlobStore::local(storage_layout.blob_root()) {
                 Ok(store) => Arc::new(store),
@@ -8365,13 +8405,22 @@ external_addressable = true
         slots.extend(meerkat_mobkit::storage_health::scratch_ring_buffer_slots());
         // The M4 census had no mob slot at all, which is why an in-memory mob
         // storage on this persistent launch was invisible to healthz and the
-        // storage doctor while sessions correctly reported persistent.
-        slots.push(
+        // storage doctor while sessions correctly reported persistent. It now
+        // reports whichever this launch actually composed.
+        slots.push(if gateway_options.mob_storage_ephemeral {
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "mob",
+                "MobStorage(in-memory)",
+                "declared via runtime_options.mob_storage: mob events and adopted identity \
+                 declarations do not survive gateway restart, in exchange for a mob_config \
+                 that can still be edited across restarts",
+            )
+        } else {
             meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
                 "mob",
                 "MobStorage(sqlite)",
-            ),
-        );
+            )
+        });
         spec.resolved_storage = Some(
             meerkat_mobkit::storage_health::ResolvedStorageSummary::new(
                 meerkat_mobkit::storage_health::BlobDurability::PersistentDisk,

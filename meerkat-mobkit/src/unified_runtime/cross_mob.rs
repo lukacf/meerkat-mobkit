@@ -323,14 +323,19 @@ async fn resolve_member_alias_under_authority(
                     mob_id: mob_id.to_string(),
                     message: error.to_string(),
                 })?;
-        return status
-            .agent_runtime_id
-            .map(|runtime_id| runtime_id.to_string())
-            .ok_or_else(|| CrossMobError::IdentityAuthority {
+        // A runtime binding must EXIST for this target to be live, but it is
+        // not the roster spelling. Callers encode this return value as the Mob
+        // roster key for peer-info/wire/unwire, and since the stable-identity
+        // lowering that key is the encoded durable identity; returning the
+        // AgentRuntimeId named a row no roster has.
+        if status.agent_runtime_id.is_none() {
+            return Err(CrossMobError::IdentityAuthority {
                 member_id: member_alias,
                 mob_id: mob_id.to_string(),
                 message: format!("identity {identity} has no current runtime member"),
             });
+        }
+        return Ok(identity.as_str().to_string());
     }
 
     let direct = crate::member_comms_id::mob_member_id(&member_alias);

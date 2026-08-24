@@ -1722,6 +1722,7 @@ async fn record_identity_turn_completion(
 }
 
 async fn trigger_identity_stream_repair(
+    handle: &MobHandle,
     primary_mob_id: &str,
     tracked_key: &TrackedAgentEventStream,
     identity_runtime: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
@@ -1757,6 +1758,47 @@ async fn trigger_identity_stream_repair(
             return;
         }
     };
+    // CUSTODY GATE. A closed stream is not evidence that identity-first may
+    // repair. When the identity store holds a valid Present intent for this
+    // identity, MobMachine is the sole actuator - on an ordinary death and on
+    // a rotation alike - and marking the runtime Broken here starts a second
+    // actuator that races it. That race is how a stream closing during an
+    // applied declaration turned into a retired live member.
+    //
+    // Only a valid Absent intent leaves identity-first its repair ownership.
+    // An unreadable or malformed intent is fail-closed: it says nothing about
+    // ownership, so it cannot authorize repair either. Not marking Broken is
+    // safe to retry, because the reconcile loop below re-attaches streams on
+    // its own cadence and a genuinely dead member stays Present until
+    // MobMachine resolves it.
+    match crate::identity_first::bridge::identity_actuation_custody(handle, durable_identity, None)
+        .await
+    {
+        crate::identity_first::bridge::CollisionCustody::IdentityFirstOwns => {}
+        crate::identity_first::bridge::CollisionCustody::MobMachineOwns => {
+            tracing::info!(
+                identity = %identity,
+                runtime_id = %tracked_key.runtime_id,
+                detail,
+                "mobkit agent event forwarder: durable intent wants this identity present, so \
+                 MobMachine owns its materialization; not marking identity-first broken and \
+                 leaving reattachment to the reconcile loop"
+            );
+            return;
+        }
+        crate::identity_first::bridge::CollisionCustody::Indeterminate => {
+            tracing::warn!(
+                identity = %identity,
+                runtime_id = %tracked_key.runtime_id,
+                detail,
+                "mobkit agent event forwarder: identity intent is unreadable or does not name \
+                 this identity, so repair ownership cannot be established; declining to mark \
+                 identity-first broken (degraded, retried on the next closure)"
+            );
+            return;
+        }
+    }
+
     if let Err(error) = authority
         .mark_active_runtime_broken(&identity, &runtime_alias, identity_fencing_token, detail)
         .await
@@ -1877,6 +1919,7 @@ async fn run_identity_stream_health_monitor(
                         tracked.remove(&tracked_key);
                         subscribe_failures.remove(&tracked_key);
                         trigger_identity_stream_repair(
+                            &handle,
                             handle.mob_id().as_str(),
                             &tracked_key,
                             &identity_runtime,
@@ -2099,6 +2142,7 @@ async fn reconcile_agent_event_streams(
                         backoff.consecutive_failures >= PERMANENT_STREAM_FAILURE_THRESHOLD;
                     if stream_is_permanently_lost && let Some(identity_runtime) = identity_runtime {
                         trigger_identity_stream_repair(
+                            handle,
                             &primary_mob_id,
                             &repair_key,
                             identity_runtime,
