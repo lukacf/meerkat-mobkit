@@ -2186,7 +2186,17 @@ async fn console_identity_record_visible(
     let mut bound_live_member_seen = false;
     let mut wrong_live_projection_seen = false;
     for resolved in Box::pin(member_sources_for_entry(entry)).await {
-        if resolved.runtime_identity != record.runtime_member_id {
+        // Associate the live row with this durable record by the approved
+        // predicate, not by exact equality with the record's runtime_member_id.
+        // That field holds the BINDING (an incarnation), while the row is now the
+        // encoded durable identity, so exact equality never matched and a hidden
+        // row stopped affecting its own record's visibility - which is how a
+        // hidden member stayed inspectable.
+        if !crate::member_comms_id::live_member_names_identity_or_incarnation(
+            &resolved.runtime_identity,
+            &record.identity,
+            Some(record.runtime_member_id.as_str()),
+        ) {
             continue;
         }
         bound_live_member_seen = true;
@@ -7518,12 +7528,11 @@ comms = true
             Arc::new(HideRuntimeMemberOnly("review:singleton")),
         );
 
+        let inspection = aggregator.inspect_identity("review:singleton").await?;
         assert!(
-            aggregator
-                .inspect_identity("review:singleton")
-                .await?
-                .is_none(),
-            "member-hidden live alias must not inspect through aggregator"
+            inspection.is_none(),
+            "member-hidden live alias must not inspect through aggregator; it answered with \
+             {inspection:#?}"
         );
         let records = aggregator.list_identities_fresh().await?;
         assert!(
