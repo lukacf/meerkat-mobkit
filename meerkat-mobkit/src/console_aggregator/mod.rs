@@ -821,10 +821,16 @@ impl MobKitConsoleAggregator {
                 {
                     return Err(stale_error.into());
                 }
-                if status
-                    .agent_runtime_id
-                    .as_ref()
-                    .is_some_and(|runtime_id| runtime_id.as_str() != resolved.runtime_identity)
+                // Identity-level. `resolved.runtime_identity` is the DECODED
+                // roster member id, which since the stable-identity lowering is
+                // the bare durable identity, so comparing it against an
+                // `rt:{identity}:{generation}` spelling was never equal and this
+                // gate skipped every healthy member.
+                if status.agent_runtime_id.is_some()
+                    && !crate::member_comms_id::live_member_is_identity(
+                        &resolved.runtime_identity,
+                        status.identity.as_str(),
+                    )
                 {
                     return Ok(None);
                 }
@@ -1048,10 +1054,16 @@ impl MobKitConsoleAggregator {
                 {
                     return Err(stale_error.into());
                 }
-                if status
-                    .agent_runtime_id
-                    .as_ref()
-                    .is_some_and(|runtime_id| runtime_id.as_str() != resolved.runtime_identity)
+                // Identity-level. `resolved.runtime_identity` is the DECODED
+                // roster member id, which since the stable-identity lowering is
+                // the bare durable identity, so comparing it against an
+                // `rt:{identity}:{generation}` spelling was never equal and this
+                // gate skipped every healthy member.
+                if status.agent_runtime_id.is_some()
+                    && !crate::member_comms_id::live_member_is_identity(
+                        &resolved.runtime_identity,
+                        status.identity.as_str(),
+                    )
                 {
                     continue;
                 }
@@ -2200,14 +2212,27 @@ async fn live_record_shadowed_by_hidden_durable_binding(
     let Ok(status) = identity_runtime.status(&identity).await else {
         return false;
     };
-    let Some(bound_runtime_id) = status.agent_runtime_id.as_ref() else {
+    // A binding must exist for this status to shadow anything.
+    if status.agent_runtime_id.is_none() {
         return false;
-    };
-    if bound_runtime_id.as_str() == resolved.runtime_identity {
+    }
+    // Identity-level: `resolved.runtime_identity` is the DECODED roster member
+    // id, which since the stable-identity lowering is the bare durable
+    // identity.
+    if crate::member_comms_id::live_member_is_identity(
+        &resolved.runtime_identity,
+        status.identity.as_str(),
+    ) {
         return false;
     }
     for candidate in Box::pin(member_sources_for_entry(&resolved.entry)).await {
-        if candidate.runtime_identity != bound_runtime_id.as_str() {
+        // Same identity-level rule: find the candidate whose roster identity IS
+        // this status's durable identity, not one whose spelling matches an
+        // AgentRuntimeId.
+        if !crate::member_comms_id::live_member_is_identity(
+            &candidate.runtime_identity,
+            status.identity.as_str(),
+        ) {
             continue;
         }
         let Some(bound_record) = identity_record_for_resolved_member(&candidate).await else {
@@ -2298,10 +2323,15 @@ async fn stale_live_record_binding_error(
 ) -> Option<String> {
     let identity_runtime = entry.identity_runtime.as_ref()?;
     for status in identity_runtime.statuses().await {
-        let matches_runtime = status
-            .agent_runtime_id
-            .as_ref()
-            .is_some_and(|runtime_id| runtime_id.as_str() == live_record.runtime_member_id);
+        // Identity-level, and a binding must exist. Comparing an
+        // AgentRuntimeId spelling against a stable roster id never matched, so
+        // this loop skipped every record and the stale-binding paths went
+        // silent.
+        let matches_runtime = status.agent_runtime_id.is_some()
+            && crate::member_comms_id::live_member_is_identity(
+                &live_record.runtime_member_id,
+                status.identity.as_str(),
+            );
         if !matches_runtime {
             continue;
         }
@@ -2331,10 +2361,15 @@ async fn reconcile_stale_live_record_binding(
 ) -> Option<String> {
     let identity_runtime = entry.identity_runtime.as_ref()?;
     for status in identity_runtime.statuses().await {
-        let matches_runtime = status
-            .agent_runtime_id
-            .as_ref()
-            .is_some_and(|runtime_id| runtime_id.as_str() == live_record.runtime_member_id);
+        // Identity-level, and a binding must exist. Comparing an
+        // AgentRuntimeId spelling against a stable roster id never matched, so
+        // this loop skipped every record and the stale-binding paths went
+        // silent.
+        let matches_runtime = status.agent_runtime_id.is_some()
+            && crate::member_comms_id::live_member_is_identity(
+                &live_record.runtime_member_id,
+                status.identity.as_str(),
+            );
         if !matches_runtime {
             continue;
         }

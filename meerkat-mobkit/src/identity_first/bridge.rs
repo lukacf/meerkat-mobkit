@@ -1992,20 +1992,29 @@ impl MobSessionBridge {
             .remove(runtime_id.as_str());
     }
 
-    async fn member_id_for_runtime_id(&self, runtime_id: &AgentRuntimeId) -> MobAgentIdentity {
+    /// The roster member id bound to a live runtime id.
+    ///
+    /// Read from bookkeeping, never derived. The old fallback re-derived a
+    /// roster id from the runtime id's spelling, but `AgentRuntimeId` is an
+    /// opaque newtype here - it validates only non-empty/no-space/no-slash, not
+    /// `rt:{identity}:{generation}` - so a malformed or unexpected id would
+    /// manufacture a roster identity that names nothing. The mapping is
+    /// populated at every create/resume materialization; its absence is a
+    /// bookkeeping gap and retryable, not something to paper over.
+    async fn member_id_for_runtime_id(
+        &self,
+        runtime_id: &AgentRuntimeId,
+    ) -> Result<MobAgentIdentity, BridgeError> {
         let members = self.runtime_members.read().await;
         members
             .get(runtime_id.as_str())
             .map(|member| MobAgentIdentity::from(member.as_str()))
-            // The recompute fallback must mint the same comms-safe roster id
-            // as the spawn path, which is the encoded DURABLE identity. An
-            // `AgentRuntimeId` is `rt:{identity}:{generation}`, so the durable
-            // identity is derivable from it directly - no lookup table and no
-            // second identity authority.
-            .unwrap_or_else(|| {
-                crate::member_comms_id::mob_member_id(
-                    &crate::member_comms_id::logical_memory_identity(runtime_id.as_str()),
-                )
+            .ok_or_else(|| {
+                BridgeError::Mob(format!(
+                    "no roster member recorded for runtime binding {runtime_id}; refusing to \
+                     derive one from the runtime id (retryable: the mapping is populated at \
+                     create/resume materialization)"
+                ))
             })
     }
 
@@ -2374,23 +2383,34 @@ impl MobSessionBridge {
                 }
             })
             .collect::<std::collections::BTreeSet<_>>();
-        Ok(edges
-            .into_iter()
-            .filter_map(|(a, b)| {
-                let a = member_runtimes
-                    .get(&a)
-                    .cloned()
-                    .unwrap_or_else(|| crate::member_comms_id::runtime_alias_str(&a).into_owned());
-                let b = member_runtimes
-                    .get(&b)
-                    .cloned()
-                    .unwrap_or_else(|| crate::member_comms_id::runtime_alias_str(&b).into_owned());
-                Some((
-                    AgentRuntimeId::parse(&a).ok()?,
-                    AgentRuntimeId::parse(&b).ok()?,
+        // Wires are reported as runtime ids, so each roster member id has to be
+        // looked up in the live bookkeeping. It must NOT be derived.
+        //
+        // The old fallback decoded the roster id and parsed the result as an
+        // AgentRuntimeId. Since the stable-identity lowering a roster id decodes
+        // to a bare durable identity like `agent:alpha`, and `AgentRuntimeId`
+        // validates only non-empty/no-space/no-slash - so that parse SUCCEEDS
+        // and mints a runtime id that names no incarnation at all. A missing
+        // mapping is a bookkeeping gap, and the honest answer is to say so.
+        let resolve = |member_id: &str| -> Result<AgentRuntimeId, BridgeError> {
+            let runtime_id = member_runtimes.get(member_id).ok_or_else(|| {
+                BridgeError::Mob(format!(
+                    "no live runtime binding recorded for roster member {member_id}; the wire \
+                     projection cannot name its incarnation (retryable: the mapping is \
+                     populated at create/resume materialization)"
+                ))
+            })?;
+            AgentRuntimeId::parse(runtime_id).map_err(|error| {
+                BridgeError::Mob(format!(
+                    "recorded runtime binding {runtime_id} for roster member {member_id} is not \
+                     a valid runtime id: {error}"
                 ))
             })
-            .collect())
+        };
+        edges
+            .into_iter()
+            .map(|(a, b)| Ok((resolve(&a)?, resolve(&b)?)))
+            .collect()
     }
 
     async fn runtime_session_id(
@@ -3884,7 +3904,7 @@ impl SessionBridge for MobSessionBridge {
     }
 
     async fn retire_member(&self, runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
-        let mid = self.member_id_for_runtime_id(runtime_id).await;
+        let mid = self.member_id_for_runtime_id(runtime_id).await?;
         self.retire_session_owned_member_to_absence(&mid)
             .await
             .map_err(|error| BridgeError::Mob(error.to_string()))?;
@@ -3897,7 +3917,7 @@ impl SessionBridge for MobSessionBridge {
         runtime_id: &AgentRuntimeId,
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<(), BridgeError> {
-        let mid = self.member_id_for_runtime_id(runtime_id).await;
+        let mid = self.member_id_for_runtime_id(runtime_id).await?;
         let adapter = self.continuity_session_store.as_ref().ok_or_else(|| {
             BridgeError::Mob(format!(
                 "reset retire cannot abandon superseded member {mid}: the bridge has no continuity session-store authority"
@@ -3928,8 +3948,8 @@ impl SessionBridge for MobSessionBridge {
     }
 
     async fn wire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {
-        let member_a = self.member_id_for_runtime_id(a).await;
-        let member_b = self.member_id_for_runtime_id(b).await;
+        let member_a = self.member_id_for_runtime_id(a).await?;
+        let member_b = self.member_id_for_runtime_id(b).await?;
         self.handle
             .wire(
                 meerkat_mob::AgentIdentity::from(member_a.as_str()),
@@ -3945,8 +3965,8 @@ impl SessionBridge for MobSessionBridge {
     ) -> Result<(), BridgeError> {
         let mut member_edges = Vec::with_capacity(edges.len());
         for (a, b) in edges {
-            let member_a = self.member_id_for_runtime_id(a).await;
-            let member_b = self.member_id_for_runtime_id(b).await;
+            let member_a = self.member_id_for_runtime_id(a).await?;
+            let member_b = self.member_id_for_runtime_id(b).await?;
             member_edges.push((
                 meerkat_mob::AgentIdentity::from(member_a.as_str()),
                 meerkat_mob::AgentIdentity::from(member_b.as_str()),
@@ -3989,8 +4009,8 @@ impl SessionBridge for MobSessionBridge {
     }
 
     async fn unwire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {
-        let member_a = self.member_id_for_runtime_id(a).await;
-        let member_b = self.member_id_for_runtime_id(b).await;
+        let member_a = self.member_id_for_runtime_id(a).await?;
+        let member_b = self.member_id_for_runtime_id(b).await?;
         match self
             .handle
             .unwire(
@@ -4015,7 +4035,7 @@ impl SessionBridge for MobSessionBridge {
         &self,
         runtime_id: &AgentRuntimeId,
     ) -> Result<MemberInspection, BridgeError> {
-        let mid = self.member_id_for_runtime_id(runtime_id).await;
+        let mid = self.member_id_for_runtime_id(runtime_id).await?;
         let snap = self
             .handle
             .member_status(&mid)
@@ -4110,7 +4130,7 @@ impl MobSessionBridge {
         let injected_context = delivery.injected_context.as_slice();
         let interaction_id = delivery.interaction_id.as_deref();
         let delivery_identity = delivery.delivery_identity.as_ref();
-        let mid = self.member_id_for_runtime_id(runtime_id).await;
+        let mid = self.member_id_for_runtime_id(runtime_id).await?;
         // One admission budget for the whole attempt, shared by every actor
         // round trip below: the serialized hops must not each cost a budget.
         let mut deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
@@ -5466,6 +5486,42 @@ mod tests {
     }
 
     #[test]
+    /// Why `member_id_for_runtime_id` and the wire projection return errors
+    /// instead of deriving an id when the runtime_members mapping is missing.
+    ///
+    /// This covers the HAZARD rather than the full missing-map path, which needs
+    /// a live bridge and therefore a whole mob. What it pins down is the pair of
+    /// facts that made the old fallback unsafe, and either one changing should
+    /// break this test rather than silently re-permit derivation.
+    #[test]
+    fn a_stable_roster_id_would_parse_as_a_fake_runtime_id() {
+        // After the stable-identity lowering, a roster member id decodes to a
+        // BARE durable identity.
+        let roster_id = crate::member_comms_id::mob_member_id_str("agent:alpha").into_owned();
+        let decoded = crate::member_comms_id::runtime_alias_str(&roster_id).into_owned();
+        assert_eq!(
+            decoded, "agent:alpha",
+            "a stable roster id must decode to the bare durable identity"
+        );
+
+        // And `AgentRuntimeId` accepts it. That is the whole danger: the old
+        // fallback fed exactly this string to `parse`, which succeeded and
+        // minted a runtime id naming no incarnation, so a missing mapping
+        // produced a plausible-looking lie instead of an error.
+        let parsed = AgentRuntimeId::parse(&decoded);
+        assert!(
+            parsed.is_ok(),
+            "if AgentRuntimeId ever rejects a bare identity this test's premise is stale, but \
+             today it accepts it, which is why derivation had to be removed rather than \
+             guarded: {parsed:?}"
+        );
+        assert!(
+            crate::member_comms_id::durable_identity_from_runtime_alias(&decoded).is_none(),
+            "the accepted string is not a generated runtime alias at all, so nothing \
+             downstream could have detected the manufactured id"
+        );
+    }
+
     fn fresh_fallback_collision_classifier_matches_member_already_exists() {
         let error = meerkat_mob::MobError::MemberAlreadyExists(meerkat_mob::AgentIdentity::from(
             "rt-agent-alpha-0",

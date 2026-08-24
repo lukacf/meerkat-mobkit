@@ -393,10 +393,17 @@ pub(super) async fn handle_send_message(
             let image_guard_member_id = match &target {
                 SendMessageTarget::MobMember => Some(member_id.as_str()),
                 SendMessageTarget::AuthorityUnavailable { .. } => None,
+                // Key the capability guard on the DURABLE identity: the roster
+                // is keyed by its encoded form now, so the AgentRuntimeId would
+                // resolve no member and the guard would silently pass. The
+                // `runtime_member_id: Some(_)` requirement is retained, because
+                // it is what limits the guard to an already-materialized
+                // member; only the key changes.
                 SendMessageTarget::Identity {
-                    runtime_member_id: Some(runtime_member_id),
+                    identity,
+                    runtime_member_id: Some(_),
                     ..
-                } => Some(runtime_member_id.as_str()),
+                } => Some(identity.as_str()),
                 SendMessageTarget::Identity { .. } => None,
             };
             if let Some(guard_member_id) = image_guard_member_id

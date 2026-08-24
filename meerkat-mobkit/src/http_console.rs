@@ -8516,6 +8516,27 @@ async fn console_member_peer_info(
         if status.agent_runtime_id.is_none() {
             return Err(format!("identity {identity} has no current runtime member"));
         }
+        // And the live member must be the one this binding is registered for,
+        // session included. Without the session check a peer-info call could
+        // report on a member bound to a different session than the identity
+        // runtime believes is current.
+        let roster_member =
+            crate::member_comms_id::roster_member_id_for_identity(identity.as_str());
+        let live_session = handle.resolve_bridge_session_id(&roster_member).await;
+        if !crate::member_comms_id::live_binding_matches_identity(
+            roster_member.as_str(),
+            live_session.as_ref().map(ToString::to_string).as_deref(),
+            identity.as_str(),
+            status
+                .session_id
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+        ) {
+            return Err(format!(
+                "identity {identity} live member does not match its registered binding session"
+            ));
+        }
         identity.as_str().to_string()
     } else {
         let direct = crate::member_comms_id::mob_member_id(&member_alias);
@@ -9027,7 +9048,10 @@ async fn reset_all_live_console_agents(
                 .map(str::to_owned)
                 .or_else(|| {
                     identity_by_runtime_member_id
-                        .get(&member.agent_identity)
+                        .get(
+                            crate::member_comms_id::runtime_alias_str(&member.agent_identity)
+                                .as_ref(),
+                        )
                         .cloned()
                 })
                 .unwrap_or_else(|| member.agent_identity.clone());
@@ -9069,7 +9093,7 @@ async fn reset_all_live_console_agents(
             .map(str::to_owned)
             .or_else(|| {
                 identity_by_runtime_member_id
-                    .get(&member.agent_identity)
+                    .get(crate::member_comms_id::runtime_alias_str(&member.agent_identity).as_ref())
                     .cloned()
             })
             .unwrap_or_else(|| member.agent_identity.clone());
@@ -9164,8 +9188,13 @@ async fn reset_all_live_console_agents(
                 continue;
             }
             if let Some(live_runtime_ids) = raw_runtime_member_ids_by_identity.get(identity) {
-                if !registered_runtime_id
-                    .is_some_and(|runtime_id| live_runtime_ids.contains(runtime_id))
+                // The registered binding must exist AND this identity must have a
+                // live roster member. Roster ids are the encoded durable identity
+                // now, so `contains` against an AgentRuntimeId never matched.
+                if !(registered_runtime_id.is_some()
+                    && live_runtime_ids.iter().any(|live| {
+                        crate::member_comms_id::live_member_is_identity(live, identity)
+                    }))
                 {
                     failures.push(json!({
                         "identity": identity,
@@ -9212,7 +9241,8 @@ async fn reset_all_live_console_agents(
             .get(identity)
             .map(String::as_str)
             .unwrap_or(identity.as_str());
-        if let Some(bound_identity) = identity_by_runtime_member_id.get(runtime_member_id)
+        if let Some(bound_identity) = identity_by_runtime_member_id
+            .get(crate::member_comms_id::runtime_alias_str(runtime_member_id).as_ref())
             && bound_identity != identity
         {
             failures.push(json!({
@@ -9393,8 +9423,13 @@ async fn reset_all_live_console_agents(
                     continue;
                 }
                 if let Some(live_runtime_ids) = raw_runtime_member_ids_by_identity.get(&identity) {
-                    if !registered_runtime_id
-                        .is_some_and(|runtime_id| live_runtime_ids.contains(runtime_id))
+                    // The registered binding must exist AND this identity must have a
+                    // live roster member. Roster ids are the encoded durable identity
+                    // now, so `contains` against an AgentRuntimeId never matched.
+                    if !(registered_runtime_id.is_some()
+                        && live_runtime_ids.iter().any(|live| {
+                            crate::member_comms_id::live_member_is_identity(live, identity.as_str())
+                        }))
                     {
                         failures.push(json!({
                             "identity": identity,
@@ -9472,7 +9507,8 @@ async fn reset_all_live_console_agents(
                 .get(&identity)
                 .map(String::as_str)
                 .unwrap_or(identity.as_str());
-            if let Some(bound_identity) = identity_by_runtime_member_id.get(runtime_member_id)
+            if let Some(bound_identity) = identity_by_runtime_member_id
+                .get(crate::member_comms_id::runtime_alias_str(runtime_member_id).as_ref())
                 && bound_identity != &identity
             {
                 failures.push(json!({
@@ -9548,8 +9584,13 @@ async fn reset_all_live_console_agents(
                     continue;
                 }
                 if let Some(live_runtime_ids) = raw_runtime_member_ids_by_identity.get(&identity) {
-                    if !registered_runtime_id
-                        .is_some_and(|runtime_id| live_runtime_ids.contains(runtime_id))
+                    // The registered binding must exist AND this identity must have a
+                    // live roster member. Roster ids are the encoded durable identity
+                    // now, so `contains` against an AgentRuntimeId never matched.
+                    if !(registered_runtime_id.is_some()
+                        && live_runtime_ids.iter().any(|live| {
+                            crate::member_comms_id::live_member_is_identity(live, identity.as_str())
+                        }))
                     {
                         failures.push(json!({
                             "identity": identity,
@@ -9650,7 +9691,8 @@ async fn reset_all_live_console_agents(
                 .get(&identity)
                 .map(String::as_str)
                 .unwrap_or(identity.as_str());
-            if let Some(bound_identity) = identity_by_runtime_member_id.get(runtime_member_id)
+            if let Some(bound_identity) = identity_by_runtime_member_id
+                .get(crate::member_comms_id::runtime_alias_str(runtime_member_id).as_ref())
                 && bound_identity != &identity
             {
                 failures.push(json!({

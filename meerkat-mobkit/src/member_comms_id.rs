@@ -202,6 +202,16 @@ pub(crate) fn roster_member_id_for_identity(identity: &str) -> meerkat_mob::ids:
     mob_member_id(identity)
 }
 
+/// Whether a live roster member id names a given durable identity.
+///
+/// The identity half of [`live_binding_matches_identity`], for call sites that
+/// have no session to compare. Decodes the comms-safe encoding and nothing
+/// else: it must not strip an `rt:{identity}:{generation}` shape, or a stale
+/// generated alias would be accepted as the stable roster identity.
+pub(crate) fn live_member_is_identity(live_member_id: &str, identity: &str) -> bool {
+    runtime_alias_str(live_member_id) == identity
+}
+
 /// Whether a live roster member and session are the binding that a given
 /// identity is registered for.
 ///
@@ -228,7 +238,7 @@ pub(crate) fn live_binding_matches_identity(
     identity: &str,
     registered_session_id: Option<&str>,
 ) -> bool {
-    runtime_alias_str(live_member_id) == identity && live_session_id == registered_session_id
+    live_member_is_identity(live_member_id, identity) && live_session_id == registered_session_id
 }
 
 /// Whether a caller supplied the comms-safe roster marker directly.
