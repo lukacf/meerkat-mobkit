@@ -10297,11 +10297,19 @@ mod reset_reprofile_tests {
         failing_unregister_session_ids: AsyncMutex<BTreeSet<String>>,
         registered_fencing_tokens: AsyncMutex<Vec<FencingToken>>,
         authority_transitions: AsyncMutex<Vec<String>>,
+        /// Successor generations minted by `reset_member_to_successor`, so a
+        /// test can observe that the transition happened and under which
+        /// incarnation.
+        successor_generations: AsyncMutex<Vec<String>>,
     }
 
     impl RecordingBridge {
         async fn create_profiles(&self) -> Vec<String> {
             self.create_profiles.lock().await.clone()
+        }
+
+        async fn successor_generations(&self) -> Vec<String> {
+            self.successor_generations.lock().await.clone()
         }
 
         fn max_creates_in_flight(&self) -> usize {
@@ -10351,6 +10359,31 @@ mod reset_reprofile_tests {
 
     #[async_trait::async_trait]
     impl SessionBridge for RecordingBridge {
+        /// Mirrors respawn, INCLUDING its limitation.
+        ///
+        /// A successor keeps the predecessor's profile, so this deliberately
+        /// does NOT record `spec.profile` into `create_profiles`. Recording it
+        /// would make this double able to reprofile when Meerkat cannot, and the
+        /// reprofile capability tests would go green against a capability that
+        /// does not exist.
+        async fn reset_member_to_successor(
+            &self,
+            identity: &AgentIdentity,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+        ) -> Result<crate::identity_first::bridge::ResetSuccessorBinding, BridgeError> {
+            let generation = self.successor_generations.lock().await.len() as u64 + 1;
+            let alias = format!("rt:{}:{generation}", identity.as_str());
+            self.successor_generations.lock().await.push(alias.clone());
+            let agent_runtime_id = AgentRuntimeId::parse(&alias).map_err(|error| {
+                BridgeError::Mob(format!("test double minted an unusable successor: {error}"))
+            })?;
+            Ok(crate::identity_first::bridge::ResetSuccessorBinding {
+                agent_runtime_id,
+                session_id: SessionId::new(),
+            })
+        }
+
         async fn create_session(
             &self,
             _identity: &AgentIdentity,
