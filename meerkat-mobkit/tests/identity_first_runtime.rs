@@ -4027,7 +4027,20 @@ async fn identity_first_runtime_reset_final_upsert_failure_restores_old_continui
         let id = id.clone();
         async move { runtime.reset(&id).await }
     });
-    store.wait_for_gated_upsert_failure().await;
+    // Bounded. This waits for an injected failure at the FINAL continuity
+    // upsert, which is unreachable whenever reset refuses earlier - for
+    // example a SessionBridge double that cannot perform the destructive
+    // reset successor transition. Unbounded, that is a suite-blocking hang
+    // that reports nothing at all; bounded, it names its own cause.
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        store.wait_for_gated_upsert_failure(),
+    )
+    .await
+    .expect(
+        "reset never reached the final continuity upsert, so the injected failure could not \
+         fire; reset refused earlier in the flow",
+    );
     tokio::task::yield_now().await;
     assert_eq!(
         bridge.unregister_calls.load(Ordering::SeqCst),

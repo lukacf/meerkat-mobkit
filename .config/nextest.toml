@@ -22,6 +22,19 @@
 # "triage the list_runs/contract_009/run_flow/projected_cursor flake by running
 # it standalone" ritual with a structural fix.
 
+# A test that waits on a condition its fixture can no longer produce does not
+# fail - it wedges. One such wait (an unbounded `wait_for_gated_upsert_failure`
+# on a reset that now refuses earlier) held the whole suite at 2150/2463 with no
+# verdict at all, indefinitely, because nothing here bounded it. There are ~10
+# unbounded `wait_for_*` calls across the suite and bounding each one by hand
+# only covers the ones that have already bitten, so the ceiling is structural:
+# any test still alive after 5 x 60s is killed and reported as a timeout.
+# This is deliberately far above every legitimate test, including the
+# heavy-runtime family under peak load, so it cannot mask a slow test - it only
+# converts "hangs forever, reports nothing" into "names itself".
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 5 }
+
 [test-groups]
 heavy-runtime = { max-threads = 2 }
 

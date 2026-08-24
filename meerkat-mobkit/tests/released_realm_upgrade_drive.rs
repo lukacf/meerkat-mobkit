@@ -572,23 +572,27 @@ fn assert_identity_bound(gateway: &mut Gateway, identity: &str, session_id: &str
         RPC_TIMEOUT,
     );
     let result = &response["result"];
-    if result["state"] != json!("active") {
-        // A non-active identity here is almost always a typed restore failure,
-        // and `mobkit/status_identity` does not carry the reason. Surface the
-        // bootstrap status so the failure names itself instead of leaving the
-        // next reader to guess from a bare "broken".
-        let boot = gateway.call(
-            "bootdiag",
-            "mobkit/status_identity_bootstrap",
-            json!({}),
-            RPC_TIMEOUT,
-        );
-        eprintln!("BOOTSTRAP DIAGNOSTIC: {boot}");
-    }
+    // A non-active identity here is almost always a typed restore failure, and
+    // `mobkit/status_identity` does not carry the reason. Fold the bootstrap
+    // status into the assertion message so the failure names itself, rather
+    // than leaving the next reader to guess from a bare "broken".
+    let boot_diagnostic = if result["state"] == json!("active") {
+        String::new()
+    } else {
+        format!(
+            " bootstrap status: {}",
+            gateway.call(
+                "bootdiag",
+                "mobkit/status_identity_bootstrap",
+                json!({}),
+                RPC_TIMEOUT,
+            )
+        )
+    };
     assert_eq!(
         result["state"],
         json!("active"),
-        "[{}] released-realm resume left the identity non-active: {response}",
+        "[{}] released-realm resume left the identity non-active: {response}{boot_diagnostic}",
         gateway.label
     );
     assert_eq!(

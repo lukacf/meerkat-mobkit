@@ -17,10 +17,10 @@ durable-roster contract without any migration on the MobKit side.
 - **BEHAVIOR CHANGE: a persistent launch now pins `mob_config`.** Mob storage is
   persistent on launches that already persist everything else, which is what
   makes adopted identity declarations survive a restart. The cost is that the
-  mob definition is pinned once the storage exists: meerkat 0.8.26 refuses a
-  definition that disagrees with the persisted spec store, on create and on
-  resume alike, so durable mob state and an editable `mob_config` cannot both
-  hold on one storage path.
+  mob definition is pinned once the storage exists: meerkat refuses a definition
+  that disagrees with the persisted spec store, on create and on resume alike
+  (verified against 0.8.26 and unchanged in the pinned 0.8.27), so durable mob
+  state and an editable `mob_config` cannot both hold on one storage path.
 
   Editing `mob_config` and restarting against the same state directory is now
   refused with a typed error that names the diverged fields and states the
