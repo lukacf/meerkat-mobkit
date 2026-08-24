@@ -3894,6 +3894,69 @@ impl IdentityRuntime {
     /// Cancellation-safe compatibility restore used by embedders that pass
     /// an RPC identity context without attaching an
     /// [`IdentityFirstRuntimeContext`] to the unified runtime.
+    /// Discharge the attach postcondition, converting an attached occupant into
+    /// a genuinely resumed one.
+    ///
+    /// A successful ATTACH is not yet a resume. The occupant must carry an
+    /// authoritative owning-identity registration before anything can commit a
+    /// runtime boundary, and only the continuity record holds the generation,
+    /// checkpoint version and fencing token that registration needs - which is
+    /// why the bridge cannot discharge this itself and reports
+    /// `AttachedPendingRegistration` instead of guessing.
+    ///
+    /// This is the ONE place that converts that variant into `Resumed`, because
+    /// forgetting the postcondition does not fail here: it surfaces far away, as
+    /// a head-canonical session refused for an unregistered owner during an
+    /// unrelated boundary commit. A caller that reimplements this can omit the
+    /// registration and still compile, still pass, and still break a later boot.
+    ///
+    /// Registration failure is retryable by construction: the occupant is
+    /// untouched, nothing is retired or replaced, and no `Resumed` is reported.
+    async fn complete_attach_postcondition(
+        &self,
+        outcome: super::bridge::ResumeSessionOutcome,
+        identity: &AgentIdentity,
+        record: &ContinuityRecord,
+        fencing_token: FencingToken,
+    ) -> Result<super::bridge::ResumeSessionOutcome, IdentityRuntimeError> {
+        let super::bridge::ResumeSessionOutcome::AttachedPendingRegistration { session_id } =
+            outcome
+        else {
+            return Ok(outcome);
+        };
+        // The record's generation, checkpoint version and fence are being
+        // published as the authority for THIS session. If the bridge attached a
+        // different one, registering would bind this identity's fence to a
+        // session its record does not name, so refuse instead.
+        if session_id != record.session_id {
+            return Err(IdentityRuntimeError::Internal(format!(
+                "attach reported session {session_id} but the continuity record for {identity} \
+                 binds {}, so registering this record's authority against it would publish a \
+                 binding the record does not name",
+                record.session_id
+            )));
+        }
+        if let Some(bridge) = self.bridge.as_ref() {
+            bridge
+                .register_session_runtime_state(
+                    &session_id,
+                    identity,
+                    record.generation,
+                    record.checkpoint_version,
+                    fencing_token,
+                )
+                .await
+                .map_err(|err| {
+                    IdentityRuntimeError::Internal(format!(
+                        "owner registration after attach of {session_id} failed, so the session \
+                         is not resumable yet (retryable: the occupant is untouched and retry is \
+                         idempotent): {err}"
+                    ))
+                })?;
+        }
+        Ok(super::bridge::ResumeSessionOutcome::Resumed { session_id })
+    }
+
     pub(crate) async fn restore_flow_tracked(
         self: &Arc<Self>,
         roster: Vec<DurableAgentSpec>,
@@ -4545,28 +4608,19 @@ impl IdentityRuntime {
                 // Registration failure leaves a retryable pending state: no
                 // retire, no replacement, and never a Resumed report.
                 let outcome = match outcome {
-                    Ok(super::bridge::ResumeSessionOutcome::AttachedPendingRegistration {
-                        session_id,
-                    }) => {
-                        if let Some(bridge) = self.bridge.as_ref() {
-                            bridge
-                                .register_session_runtime_state(
-                                    &session_id,
-                                    identity,
-                                    record.generation,
-                                    record.checkpoint_version,
-                                    grant.fencing_token,
-                                )
-                                .await
-                                .map_err(|err| {
-                                    IdentityRuntimeError::Internal(format!(
-                                        "owner registration after attach of {session_id} failed, \
-                                         so the session is not resumable yet (retryable: the \
-                                         occupant is untouched and retry is idempotent): {err}"
-                                    ))
-                                })?;
-                        }
-                        super::bridge::ResumeSessionOutcome::Resumed { session_id }
+                    Ok(
+                        outcome
+                        @ super::bridge::ResumeSessionOutcome::AttachedPendingRegistration {
+                            ..
+                        },
+                    ) => {
+                        self.complete_attach_postcondition(
+                            outcome,
+                            identity,
+                            &record,
+                            grant.fencing_token,
+                        )
+                        .await?
                     }
                     Ok(outcome) => outcome,
                     Err(err) => {
