@@ -74,7 +74,10 @@ impl std::fmt::Display for IdentityControlResolutionError {
                 candidates,
             } => write!(
                 formatter,
-                "ambiguous live identity alias {requested_identity}: candidates [{}]",
+                // Producer marker: three sites emitted this identical string, so a
+                // failure named the candidate SET without naming who built it.
+                "ambiguous live identity alias {requested_identity} \
+                 [via identity-control-target resolver]: candidates [{}]",
                 candidates.join(", ")
             ),
             Self::StaleProjectedBinding {

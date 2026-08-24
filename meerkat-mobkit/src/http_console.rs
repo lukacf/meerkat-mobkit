@@ -4124,7 +4124,8 @@ fn ambiguous_live_identity_alias_error(
     JsonRpcError {
         code: -32602,
         message: format!(
-            "ambiguous live identity alias {requested_identity}: candidates [{}]",
+            "ambiguous live identity alias {requested_identity} \
+             [via console candidate lookup]: candidates [{}]",
             candidates.join(", ")
         ),
         data: Some(json!({
@@ -9196,8 +9197,19 @@ async fn reset_all_live_console_agents(
             .as_ref()
             .and_then(|status| status.agent_runtime_id.as_ref())
             .map(crate::identity_first::AgentRuntimeId::as_str);
-        let registered_visible = registered_runtime_id
-            .is_some_and(|runtime_id| visible_runtime_member_ids.contains(runtime_id));
+        // Visibility of the identity's ROSTER ROW, not of its incarnation.
+        //
+        // This used to ask whether the registered AgentRuntimeId was among
+        // the visible roster member ids. Since the stable-identity lowering
+        // the roster row is the encoded durable identity and the runtime id
+        // names an incarnation, so that question can never be true - which
+        // made every identity carrying a duplicate label read as ambiguous
+        // even with its own row visible and healthy. The binding must still
+        // EXIST, which registered_runtime_id covers.
+        let registered_visible = registered_runtime_id.is_some()
+            && visible_runtime_member_ids.iter().any(|member_id| {
+                crate::member_comms_id::live_member_is_identity(member_id, identity)
+            });
         let registered_hidden = registered_runtime_id.is_some_and(|runtime_id| {
             raw_live_alias_by_runtime_member_id.contains_key(runtime_id)
                 && !visible_runtime_member_ids.contains(runtime_id)
@@ -9208,7 +9220,7 @@ async fn reset_all_live_console_agents(
         if duplicate_live_identities.contains(identity) && !registered_visible {
             failures.push(json!({
                 "identity": identity,
-                "error": "ambiguous live identity alias",
+                "error": "ambiguous live identity alias [via reset-all preflight]",
             }));
             continue;
         }
@@ -9423,8 +9435,19 @@ async fn reset_all_live_console_agents(
             .as_ref()
             .and_then(|status| status.agent_runtime_id.as_ref())
             .map(crate::identity_first::AgentRuntimeId::as_str);
-        let registered_visible = registered_runtime_id
-            .is_some_and(|runtime_id| visible_runtime_member_ids.contains(runtime_id));
+        // Visibility of the identity's ROSTER ROW, not of its incarnation.
+        //
+        // This used to ask whether the registered AgentRuntimeId was among
+        // the visible roster member ids. Since the stable-identity lowering
+        // the roster row is the encoded durable identity and the runtime id
+        // names an incarnation, so that question can never be true - which
+        // made every identity carrying a duplicate label read as ambiguous
+        // even with its own row visible and healthy. The binding must still
+        // EXIST, which registered_runtime_id covers.
+        let registered_visible = registered_runtime_id.is_some()
+            && visible_runtime_member_ids.iter().any(|member_id| {
+                crate::member_comms_id::live_member_is_identity(member_id, identity.as_str())
+            });
         let registered_hidden = registered_runtime_id.is_some_and(|runtime_id| {
             raw_live_alias_by_runtime_member_id.contains_key(runtime_id)
                 && !visible_runtime_member_ids.contains(runtime_id)
@@ -9435,7 +9458,7 @@ async fn reset_all_live_console_agents(
         if duplicate_live_identities.contains(&identity) && !registered_visible {
             failures.push(json!({
                 "identity": identity,
-                "error": "ambiguous live identity alias",
+                "error": "ambiguous live identity alias [via reset-all execution]",
             }));
             continue;
         }
@@ -9600,12 +9623,26 @@ async fn reset_all_live_console_agents(
                     .agent_runtime_id
                     .as_ref()
                     .map(crate::identity_first::AgentRuntimeId::as_str);
-                let registered_visible = registered_runtime_id
-                    .is_some_and(|runtime_id| visible_runtime_member_ids.contains(runtime_id));
+                // Visibility of the identity's ROSTER ROW, not of its incarnation.
+                //
+                // This used to ask whether the registered AgentRuntimeId was among
+                // the visible roster member ids. Since the stable-identity lowering
+                // the roster row is the encoded durable identity and the runtime id
+                // names an incarnation, so that question can never be true - which
+                // made every identity carrying a duplicate label read as ambiguous
+                // even with its own row visible and healthy. The binding must still
+                // EXIST, which registered_runtime_id covers.
+                let registered_visible = registered_runtime_id.is_some()
+                    && visible_runtime_member_ids.iter().any(|member_id| {
+                        crate::member_comms_id::live_member_is_identity(
+                            member_id,
+                            identity.as_str(),
+                        )
+                    });
                 if duplicate_live_identities.contains(&identity) && !registered_visible {
                     failures.push(json!({
                         "identity": identity,
-                        "error": "ambiguous live identity alias",
+                        "error": "ambiguous live identity alias [via reset-all execution-retire]",
                     }));
                     continue;
                 }
@@ -10939,7 +10976,8 @@ comms = true
         .expect_err("stdio adapter must fail closed on a visible duplicate");
         assert_eq!(
             rpc_ambiguous,
-            "ambiguous live identity alias review:golden: candidates [rt:review:golden:0, rt:review:golden:1]"
+            "ambiguous live identity alias review:golden [via identity-control-target \
+             resolver]: candidates [rt:review:golden:0, rt:review:golden:1]"
         );
         let console_ambiguous = resolve_console_identity_control_target(
             &ambiguous_handle,
