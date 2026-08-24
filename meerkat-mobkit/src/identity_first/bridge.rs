@@ -1567,10 +1567,14 @@ fn unmasked_resume_divergence(
 
 /// Concrete `SessionBridge` backed by a `MobHandle`.
 ///
-/// `AgentRuntimeId` is usually used as the `MobAgentIdentity` at the mob layer. Real
-/// external bindings are the exception: Meerkat's external peer names require
-/// identifier-safe `<mob>/<profile>/<member>` segments, so the bridge maps the
-/// runtime ID to the durable identity for those members.
+/// The mob-layer `MobAgentIdentity` is the DURABLE identity's comms-safe
+/// encoding, for every binding. `AgentRuntimeId` is incarnation detail and is
+/// not a roster spelling: Meerkat defines it as a stable identity plus a
+/// machine-owned generation, and `SpawnMemberSpec.identity` is the roster
+/// identity whose generation Meerkat mints itself. This used to be the other way
+/// round, with the runtime id lowered into the roster slot and the durable
+/// identity used only for external bindings, which made the roster id
+/// per-incarnation and durable state keyed on it die with the binding.
 /// Per-identity temporary auto-compaction floors for the `compact_member`
 /// operator verb.
 ///

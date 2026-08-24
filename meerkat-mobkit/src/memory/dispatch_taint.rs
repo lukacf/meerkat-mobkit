@@ -96,8 +96,10 @@ impl std::fmt::Debug for DispatchTaintSlot {
 /// every member build, and it also overwrites the `agent_identity` label
 /// with the encoded roster id, so labels carry no extra information here.
 /// Decoding the roster id yields the public alias; identity-first internal
-/// members roster under their generated runtime alias
-/// (`rt:{identity}:{generation}`), which normalizes to the durable identity.
+/// members roster under the encoded DURABLE identity, so decoding lands on that
+/// identity directly. A generated `rt:{identity}:{generation}` alias still
+/// normalizes to the same durable identity, but it is incarnation detail and no
+/// longer names a roster row.
 fn member_taint_identity(req: &CreateSessionRequest) -> Option<String> {
     let binding = req.build.as_ref()?.mob_member_binding.as_ref()?;
     Some(member_comms_id::logical_memory_identity(&binding.member))

@@ -8591,14 +8591,13 @@ shell = true
         Ok(())
     }
 
-    /// Regression: under the meerkat 0.7.1 identity-first roster the runtime
-    /// members are keyed `rt:{identity}:{generation}`, so a gateway-plane
-    /// `mobkit/send_message` addressed to the bare durable identity (the
-    /// only id the SDK hands out pre-burst) used to fail with
-    /// `mob member not found`. Bare identities must bridge-resolve through
-    /// the identity runtime — like console send — while an exact roster
-    /// member id match keeps raw member-id semantics and wins over identity
-    /// resolution.
+    /// Regression: a gateway-plane `mobkit/send_message` addressed to the bare
+    /// durable identity (the only id the SDK hands out pre-burst) used to fail
+    /// with `mob member not found`, because identity-first roster members were
+    /// keyed `rt:{identity}:{generation}`. Roster members are now keyed by the
+    /// durable identity itself, so the bare id resolves directly. Bridge
+    /// resolution stays in place for callers that hand over a generated alias,
+    /// and an exact roster member id match still keeps raw member-id semantics.
     #[tokio::test]
     async fn send_message_resolves_bare_durable_identity_through_identity_bridge()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
