@@ -2699,7 +2699,7 @@ comms = true
         // An identity-first member: the roster id is the mk--encoded
         // generated runtime alias, exactly the shape HomeCore schedules
         // address (the binding stores the roster id).
-        let roster_id = crate::member_comms_id::mob_member_id_str("rt:digest:main:0").into_owned();
+        let roster_id = crate::member_comms_id::mob_member_id_str("digest:main").into_owned();
         assert!(
             roster_id.starts_with("mk--"),
             "precondition: identity-first roster ids are marker-encoded"
@@ -2729,12 +2729,16 @@ comms = true
 
         // Durable identity authority over that member, bridged to the mob by
         // the PRODUCTION MobSessionBridge (the gateway wiring).
+        // The decoded roster id IS the durable identity now; it used to be a
+        // generated `rt:{identity}:{generation}` alias that the identity was
+        // derived back out of.
         let public_member_alias =
             crate::member_comms_id::runtime_alias_str(&roster_id).into_owned();
-        let identity = crate::identity_first::IdentityRuntime::identity_for_generated_member_alias(
-            &public_member_alias,
-        )
-        .expect("generated alias identity");
+        let identity = crate::identity_first::AgentIdentity::parse(&public_member_alias)
+            .expect("roster id must decode to a durable identity");
+        // The roster row and the incarnation are distinct: the row is the
+        // durable identity's encoding, the binding is a generated alias.
+        let runtime_alias = format!("rt:{}:0", identity.as_str());
         let continuity_store = Arc::new(
             crate::identity_first::LocalContinuityStore::in_memory().expect("identity store"),
         );
@@ -2752,7 +2756,7 @@ comms = true
         };
         let record = crate::identity_first::ContinuityRecord {
             identity: identity.clone(),
-            agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(&public_member_alias)
+            agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(&runtime_alias)
                 .expect("runtime alias"),
             session_id: member_session,
             generation: crate::identity_first::ContinuityGeneration::new(0),
@@ -3471,8 +3475,8 @@ schedule = true
     }
 
     /// HomeCore 0.7.28 field case: identity-first bridge members' ROSTER ids
-    /// are the comms-ENCODED runtime id (`mk--rt_cdomain_chome_c0` for
-    /// `rt:domain:home:0` — bridge.rs member_id_for_spawn_spec), and the
+    /// are comms-ENCODED (`mk--domain_chome` for the durable identity
+    /// `domain:home` - bridge.rs member_id_for_spawn_spec), and the
     /// authoring rewrite stores that roster id in the binding. The internal
     /// lane must resolve it WITHOUT re-encoding (the codec re-encodes
     /// marker-prefixed input by design); before the canonicalization fix the
@@ -3480,7 +3484,7 @@ schedule = true
     /// "mob member is not externally addressable: mk--rt_cdomain_chome_c0".
     #[tokio::test(flavor = "multi_thread")]
     async fn agent_authored_one_shot_delivers_to_internal_only_identity_bridge_member() {
-        let roster_id = crate::member_comms_id::mob_member_id_str("rt:domain:home:0").into_owned();
+        let roster_id = crate::member_comms_id::mob_member_id_str("domain:home").into_owned();
         assert!(
             roster_id.starts_with("mk--"),
             "repro precondition: the roster id must be marker-encoded"
