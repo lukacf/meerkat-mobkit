@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Pins meerkat `=0.8.27`, which carries the upstream fix accepting an encoded
+stable roster identity as the successor of a legacy generation-zero runtime
+binding. That fix is what lets already-persisted sessions resume under the
+durable-roster contract without any migration on the MobKit side.
+
 ### Changed
 
 - **BEHAVIOR CHANGE: a persistent launch now pins `mob_config`.** Mob storage is

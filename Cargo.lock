@@ -1811,9 +1811,9 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "meerkat"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efcb0f6451753f5d39336acd6acb44463664ac8ee876b46d0ad7303ab5e2b6d1"
+checksum = "aa5ab4600fbd899f486e089518f5480a18078f2ed17590dfbf706c2152721e1c"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1855,9 +1855,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-anthropic"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fb7fecbd362c0feb95531f57252488149617403edef903aeca1714877eda144"
+checksum = "0ecccab98e788bcf0cc2355a8d55ff907167ba5936330c48cbc87e0c6e3c2215"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1879,9 +1879,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-auth-core"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "109fc42a41cb97f278e3ed7592c5d2a34b79c942f527db5ebffdeed10df510b0"
+checksum = "1e41f590155b8c5c5e403b3ddd885bf7faa9f41744deba97632b79473c8d8121"
 dependencies = [
  "async-trait",
  "axum",
@@ -1912,9 +1912,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-capabilities"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fffe21542ad26516cc35febd7bcbcff69d29ec8de11d086ef297d11772520bc6"
+checksum = "8b5a0dabe6af540f4efb823659c86be311a302f6b883fc243e3b8d041cb347cd"
 dependencies = [
  "inventory",
  "meerkat-core",
@@ -1925,9 +1925,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-client"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "168eb0bdada69baa6c911a35dbe9472645bbbf4639de7218c47d77f5e7ec7899"
+checksum = "aee9f97529d2e48a923047a0aa1edef4d6726ade910b08fdd2aedf524ce76937"
 dependencies = [
  "meerkat-anthropic",
  "meerkat-core",
@@ -1938,9 +1938,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-comms"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59621c578955cf085633d42882a975644f9bf0b733d174970a9092bf8e5c4d9d"
+checksum = "c098d0d0eecdafd859113cf6003c97d97f370c219032d38fb5f13753c9691ffa"
 dependencies = [
  "async-trait",
  "base64",
@@ -1974,9 +1974,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-contracts"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72a325c3d6c82e013b21e462b63dc5cdc12c5d7b4be5c402e65e5ff776cf6562"
+checksum = "e409767606cf937dd87b6a7b0cdf975a86c4d8549e7e2a53b82abb4a2076443d"
 dependencies = [
  "base64",
  "chrono",
@@ -1996,9 +1996,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-core"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0363ddc576cfc129b06c12779716a20edb63ea404da5c07efb32192405db0cb3"
+checksum = "1f131c7f4780ce2bcc46d15cfc0b8749ed517669bb492aa1689c28d6bf41a227"
 dependencies = [
  "async-trait",
  "base64",
@@ -2029,9 +2029,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-gemini"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2897fdbac3d4e8fcd0800da753f5dedb8cc99463d8ec2086f6146d8fec94263"
+checksum = "dd087ccf154643ee0e1dc1ecf24f6953a21a38b0ec5314ec7f3ff9ecbaec5a84"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2054,9 +2054,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-hooks"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1764a4340905584c942d196f9ac105688d6666dd0c68aa614a93a6d858712f6c"
+checksum = "6f70a9f1dbea73fc2dcbee075fb98b5b0205461ee1e7259caa56b79a05cfe81c"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2077,9 +2077,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-jobs"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3472eda2377ac9a255af4556eb2eca7155d8ec381eaa72583187bf47abe2d512"
+checksum = "5022a0898cbf32e2c9227dd5c029c7f10ce8fe413146f317ab12a2ce0bc93b8b"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2097,9 +2097,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-live"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db535982d3f7028c33e8a1c60b45181bc1e6fb1f7a2d589afd15a1eaeede0e9b"
+checksum = "35bf53145c62ad257fdd9edae6817e6ec03acca94cec664041125732c0b1e073"
 dependencies = [
  "async-trait",
  "axum",
@@ -2117,9 +2117,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-llm-core"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a5b80d7993e8e88d8a2dd16ea0eee0e59a8289fe48c2e0ad68bd54f26d1809c"
+checksum = "4da03df8707fcc8422774f6788634daebf357272a476772f10d46011a001c949"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2143,9 +2143,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-machine-derive"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c43b075660c111f19a68e03ff03e782b3390c29b5f79b75934def3e73e984e4"
+checksum = "68ff3a29d1875d549eea7f104933098d188d47ad88f5156c17cd499115c6cea2"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -2153,18 +2153,18 @@ dependencies = [
 
 [[package]]
 name = "meerkat-machine-dsl"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69d57b2acca4f2775cf295d19972aff913f716d1a3b69e8d0639393c5f13fe02"
+checksum = "89bc8ba7803c938791dccb404fec825e99dc728c7df34af0627c9329ce4345fb"
 dependencies = [
  "meerkat-machine-dsl-core",
 ]
 
 [[package]]
 name = "meerkat-machine-dsl-core"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "627766be7ffc8d76842d1999f866d4ba372e7b041185b4f14f84a97cbdca7417"
+checksum = "f77614483179f81f50cd31a4b7ff961ffebade7033e01ff01fa41838309b7d74"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2173,9 +2173,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-machine-kernels"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adf8a3643ec01cd39a2491b71ca699b8cb3796b4efd8f60f537e4f7f005d8de2"
+checksum = "052d4e99cc5c23b2a0cfdc79bd2808c6d7c1fe0be03d0ff06054b9d4ea449643"
 dependencies = [
  "indexmap",
  "meerkat-core",
@@ -2186,9 +2186,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-machine-schema"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23513b7830f2745d5111eaafee114e49970f8cd2ae9a7ec181555831031c428c"
+checksum = "a85dda3c755b34dd5e1cf7ea758db8078640e46f9233c90b55b360ad3cc8f752"
 dependencies = [
  "indexmap",
  "meerkat-core",
@@ -2200,9 +2200,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-mcp"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d492edede4592e835fcba37b35198b92f8afd429d75b93751b479b7166fbf7bf"
+checksum = "7b25911b98e7adc6f4e724ae24937bfe33f9f31ab64d907f4e6721ef1a67b89c"
 dependencies = [
  "async-trait",
  "futures",
@@ -2225,9 +2225,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-memory"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d35ea99f7f7505912f5858dacde879daff5d7981ade64d0cf8a32a9cc345a4fc"
+checksum = "d0a94141aefc90359698b0f931b4bb30639a4a7eb66284e4351f33fc889b2283"
 dependencies = [
  "async-trait",
  "hnsw_rs",
@@ -2248,9 +2248,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-mob"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ed75cbe3ce8434f5801d4e15d8da0e513135f9bf16c9ef3e21bde26415251f7"
+checksum = "ba4115b7c4f8d5aad94f17c3b7a04b8097f9ca26cce1e539f10047cf184adc63"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2289,9 +2289,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-mob-mcp"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "279e4b37454d5f8a065a2c9b8bb1a861b67233c2bb7e5d1a903056930d50d043"
+checksum = "95b304c3adc5693627b5b78860cc4404fe81f2899533b6011a45759ed4b335eb"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2372,18 +2372,18 @@ dependencies = [
 
 [[package]]
 name = "meerkat-models"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "957ea0a492b364b1c77dea993c6a95464ef7816f5d8e4796f66ba8ea1e8a1799"
+checksum = "6d739fcea41a9ad378610e8627779e6f66f84e8cc171db168b4e038dcc766bb7"
 dependencies = [
  "meerkat-core",
 ]
 
 [[package]]
 name = "meerkat-openai"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce373eb84bdf08105857c5de94c80e2988febd2a2bb99f05763fcb28bea8a577"
+checksum = "9094a0a06a1334e6161a8fe91006b0136082dd9da0d5625dd54f59b8bdc08e4e"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2411,9 +2411,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-providers"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "253e374aed15e20ef89ecc6e501019eaf6b2aaf4206dd1de2d3cca049e604866"
+checksum = "50a5e1b8b1d8aee76e5e7f76ee1f103302988a00290dd328314445ce65225ceb"
 dependencies = [
  "meerkat-auth-core",
  "meerkat-llm-core",
@@ -2421,9 +2421,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-runtime"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4de01f4b0c70d15caf2b51ea140bd73b89bff7dd90ef9b5f98ff897439a7e1b9"
+checksum = "87f22ced0fb3392c2ffa8bd1e8490af345a47c3c8000be7ec146f5a1dad5c436"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2452,9 +2452,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-schedule"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc1e027e39b6527a7f7ad940328c8e2a00e0407d790b8f43ef287a58db86fc20"
+checksum = "746b9cae74ea71a7219c4befee1eca55a87a4dd26a895254f1b6a851d07aeb6d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2478,9 +2478,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-session"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a4d8c1f004b77debb535e19cc5cf54875d0cc4b68a6df59c27cfc0034278deb"
+checksum = "4496736450565740854e6eebbee95266aa17d1c6c3176b5460a16e4fad8cae7c"
 dependencies = [
  "async-trait",
  "futures",
@@ -2504,9 +2504,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-skills"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d85551de40b3e211439347645096d738201f32a0c9319a604ef71ba960fb9f1b"
+checksum = "ed7996db2526ddfbd5a570a6179fdc984cccda031ebe1a8c9b9e918458cc0c2b"
 dependencies = [
  "async-trait",
  "indexmap",
@@ -2527,9 +2527,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-sqlite"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03efdac0de0023e0765e1578608cad12b9141de22d2d0f736cc140791740b2c7"
+checksum = "9a03ddfe5adefc09afab60d52346153438a7a19a0d80ee084ab73df420b9b2cb"
 dependencies = [
  "rusqlite",
  "thiserror 2.0.19",
@@ -2537,9 +2537,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-store"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f92cde20b13f90816a66da1c48c83126ccf5dac116c6c73b8533c3eeb36787b"
+checksum = "6194df944f062d5f797554e227cd95034519f3d21c252702879206185413262a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2562,9 +2562,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-store-conformance"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ffa0ac265e97350a2bb380d21ea5fc3fb8b8f123c3e85d9a6861c88d671198a"
+checksum = "1f554b460d9a000b71ed31ec464b65b6061b73cf1a77175cbf97eb1641f375ab"
 dependencies = [
  "async-trait",
  "meerkat-core",
@@ -2575,9 +2575,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-tools"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38564d5dfe56c95ebbb7671263d7138ee5e36e8423db0f052be88efe0b56204c"
+checksum = "4f2a1a97b2fbe8f193d0eaa5e25ef6528abb97530720cd230afc5e2128951b84"
 dependencies = [
  "async-trait",
  "base64",
@@ -2616,9 +2616,9 @@ dependencies = [
 
 [[package]]
 name = "meerkat-workgraph"
-version = "0.8.26"
+version = "0.8.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f74799d32694809b664bae5e80f25e44a7a38ea0774b59e084ac9d595b174b9"
+checksum = "6fe100d2d1ee2a1dfecaa8e112d7f65320b130fe1609b9de4bc812582f84aec6"
 dependencies = [
  "async-trait",
  "chrono",
