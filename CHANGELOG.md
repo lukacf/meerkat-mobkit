@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.22] - 2026-08-24
+
+Pins meerkat `=0.8.26`.
+
+### Fixed
+
+- **Member declaration RPCs now have parity across stdin and the HTTP console.**
+  Full-runtime console clients can adopt, read, and apply member tool declarations
+  through the same canonical handler as stdin. Capabilities advertise only the
+  methods the active console policy can serve, and read-only consoles expose the
+  read method without exposing mutation methods.
+- **Identity-first member aliases now resolve at the declaration boundary.**
+  Public aliases are translated to the reserved roster identity internally and
+  mirrored back on output, so callers never need to discover or submit an
+  internal `mk--` identity. Scoped reads retain member-view ABAC checks, while
+  adopt and apply remain guarded by runtime administration authority.
+
 ## [0.8.21] - 2026-08-23
 
 Pins meerkat `=0.8.26`.
