@@ -6912,6 +6912,55 @@ comms = true
         assert!(error.contains("session-live"));
     }
 
+    /// Register bindings whose session is the LIVE row's session.
+    ///
+    /// `identity_runtime_for_test` mints a random SessionId, which is fine while
+    /// nothing compares it, but a binding whose session does not match its live
+    /// row is a genuine split-brain and the aggregator is right to classify it as
+    /// stale (see stable_external_member_alias_still_fences_session_split_brain).
+    /// Tests that assert on a healthy identity need a truthful binding.
+    async fn identity_runtime_for_test_with_sessions(
+        identities: &[(&str, SessionId)],
+    ) -> Result<Arc<crate::identity_first::IdentityRuntime>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let runtime = identity_runtime_for_test(&[]).await?;
+        for (identity, session_id) in identities {
+            let identity = crate::identity_first::AgentIdentity::parse(identity)?;
+            let record = crate::identity_first::ContinuityRecord {
+                identity: identity.clone(),
+                agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(&format!(
+                    "rt:{}:0",
+                    identity.as_str()
+                ))?,
+                session_id: session_id.clone(),
+                generation: crate::identity_first::ContinuityGeneration::new(0),
+                checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+            };
+            runtime
+                .register(
+                    crate::identity_first::DurableAgentSpec {
+                        identity: identity.clone(),
+                        profile: meerkat_mob::ProfileName::from("worker"),
+                        addressability: crate::identity_first::AgentAddressability::Addressable,
+                        display_name: None,
+                        labels: BTreeMap::new(),
+                        context: None,
+                        additional_instructions: Vec::new(),
+                        initial_message: None,
+                        runtime_mode_override: None,
+                        backend: None,
+                        binding: None,
+                        placement: None,
+                    },
+                    crate::identity_first::IdentityLifecycleState::Active,
+                    Some(record),
+                    None,
+                )
+                .await;
+        }
+        Ok(runtime)
+    }
+
     async fn identity_runtime_for_test(
         identities: &[&str],
     ) -> Result<Arc<crate::identity_first::IdentityRuntime>, Box<dyn std::error::Error + Send + Sync>>
@@ -7408,7 +7457,13 @@ comms = true
             &runtime,
             SpawnMemberSpec::from_wire(
                 "worker".to_string(),
-                crate::member_comms_id::mob_member_id_str("review:singleton").into_owned(),
+                // RAW public alias. spawn_trusted_identity_projected_member
+                // applies mob_member_id itself, and mob_member_id_str is NOT
+                // idempotent - pre-encoding here produced a double-encoded
+                // roster key, which is why the single-encoded observation query
+                // correctly returned None and the aggregator's own projection
+                // then looked like a session disagreement.
+                "review:singleton".to_string(),
                 Some("You are the Review Agent.".into()),
                 None,
                 None,
@@ -7416,13 +7471,17 @@ comms = true
             .with_labels(labels),
         )
         .await;
-        let hidden_session_id = runtime
+        // Asserted, not tolerated: if this ever returns None again the binding
+        // below would fall back to a random session and manufacture the very
+        // split-brain this test is not about.
+        let hidden_live_session = runtime
             .mob_handle()
             .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
                 "review:singleton",
             ))
             .await
-            .map(|sid| sid.to_string());
+            .ok_or("the hidden roster row must have an observable bridge session")?;
+        let hidden_session_id = Some(hidden_live_session.to_string());
         let mut duplicate_labels = BTreeMap::new();
         duplicate_labels.insert("agent_identity".to_string(), "review:singleton".to_string());
         spawn_trusted_identity_projected_member(
@@ -7438,7 +7497,17 @@ comms = true
         )
         .await;
 
-        let identity_runtime = identity_runtime_for_test(&["review:singleton"]).await?;
+        // Truthful binding: the registered session IS the live row's session, so
+        // the aggregator is exercising a healthy identity rather than a
+        // split-brain it would rightly classify as stale.
+        // Register the binding against whatever session the live row actually has.
+        // When the row has none, fall back to the plain helper: a binding whose
+        // session disagrees with its live row is a genuine split-brain and the
+        // aggregator is right to classify it stale, so inventing one here would
+        // manufacture the very condition this test is not about.
+        let identity_runtime =
+            identity_runtime_for_test_with_sessions(&[("review:singleton", hidden_live_session)])
+                .await?;
         let aggregator = MobKitConsoleAggregator::in_memory();
         aggregator.register_runtime_handles_with_policy(
             "runtime-a",
