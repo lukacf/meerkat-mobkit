@@ -1483,6 +1483,50 @@ impl SessionBridge for CountingBridge {
         Ok(CommittedBoundaryRepair::Unsupported)
     }
 
+    /// Mirrors respawn, INCLUDING its limitation.
+    ///
+    /// Destructive reset is ONE authoritative respawn now, not retire plus
+    /// create, so this is where a reset lands. It counts and gates on the same
+    /// switches `create_session` uses, because a test that injected a "create
+    /// failure" is now injecting a TRANSITION failure and the invariants it
+    /// asserts - old continuity preserved, no rollback of a committed
+    /// generation, cleanup of the tentative member - are unchanged.
+    ///
+    /// It deliberately does NOT record `spec` into `last_create_spec`. A
+    /// successor keeps the PREDECESSOR's profile, so a double that published the
+    /// requested spec would be able to reprofile where Meerkat cannot, and the
+    /// reprofile capability tests would go green against a capability that does
+    /// not exist. They stay red on purpose until the upstream atomic
+    /// successor-spec operation is published.
+    async fn reset_member_to_successor(
+        &self,
+        identity: &AgentIdentity,
+        _spec: &DurableAgentSpec,
+        draft: &AgentBuildDraft,
+    ) -> Result<meerkat_mobkit::identity_first::ResetSuccessorBinding, BridgeError> {
+        self.create_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_create.load(Ordering::SeqCst) {
+            return Err(BridgeError::Mob("create failed".to_string()));
+        }
+        self.created_drafts.lock().await.push(draft.clone());
+        let generation = self.create_calls.load(Ordering::SeqCst) as u64;
+        let alias = format!("rt:{}:{generation}", identity.as_str());
+        let agent_runtime_id = AgentRuntimeId::parse(&alias).map_err(|error| {
+            BridgeError::Mob(format!("test double minted an unusable successor: {error}"))
+        })?;
+        let session_id = self
+            .create_session_id
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_else(meerkat_core::types::SessionId::new);
+        *self.deliver_session_id.lock().await = Some(session_id.clone());
+        Ok(meerkat_mobkit::identity_first::ResetSuccessorBinding {
+            agent_runtime_id,
+            session_id,
+        })
+    }
+
     async fn create_session(
         &self,
         _identity: &AgentIdentity,
@@ -3280,9 +3324,14 @@ async fn identity_first_runtime_reset_create_failure_preserves_old_continuity() 
         .await;
 
     let err = runtime.reset(&id).await.unwrap_err();
+    // The TRANSITION, not the retired create step: reset lowers to one
+    // authoritative respawn, so a failure there is reported as such. The
+    // injected cause is asserted too, so this stays discriminating rather than
+    // matching any error that mentions the transition.
     assert!(
-        err.to_string()
-            .contains("bridge create_session after reset")
+        err.to_string().contains("bridge reset successor")
+            && err.to_string().contains("create failed"),
+        "the failure must name the successor transition and its injected cause: {err}"
     );
     let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
     assert_eq!(
@@ -3480,8 +3529,7 @@ async fn identity_first_runtime_reset_rollback_compatibility_default_restores_pr
 
     let err = runtime.reset(&id).await.unwrap_err();
     assert!(
-        err.to_string()
-            .contains("bridge create_session after reset"),
+        err.to_string().contains("bridge reset successor"),
         "the create failure stays observable: {err}"
     );
     let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
@@ -3526,9 +3574,14 @@ async fn identity_first_runtime_reset_failure_preserves_original_dormant_state()
         .await;
 
     let err = runtime.reset(&id).await.unwrap_err();
+    // The TRANSITION, not the retired create step: reset lowers to one
+    // authoritative respawn, so a failure there is reported as such. The
+    // injected cause is asserted too, so this stays discriminating rather than
+    // matching any error that mentions the transition.
     assert!(
-        err.to_string()
-            .contains("bridge create_session after reset")
+        err.to_string().contains("bridge reset successor")
+            && err.to_string().contains("create failed"),
+        "the failure must name the successor transition and its injected cause: {err}"
     );
     let status = runtime.status(&id).await.unwrap();
     assert_eq!(status.state, IdentityLifecycleState::Dormant);
@@ -3593,9 +3646,14 @@ async fn identity_first_runtime_reset_create_failure_removes_tentative_uninitial
         .await;
 
     let err = runtime.reset(&id).await.unwrap_err();
+    // The TRANSITION, not the retired create step: reset lowers to one
+    // authoritative respawn, so a failure there is reported as such. The
+    // injected cause is asserted too, so this stays discriminating rather than
+    // matching any error that mentions the transition.
     assert!(
-        err.to_string()
-            .contains("bridge create_session after reset")
+        err.to_string().contains("bridge reset successor")
+            && err.to_string().contains("create failed"),
+        "the failure must name the successor transition and its injected cause: {err}"
     );
     let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
     assert_eq!(
@@ -3866,84 +3924,40 @@ async fn identity_first_runtime_reset_falls_back_to_stored_spec_when_roster_unav
     let roster: Arc<dyn RosterProvider> = Arc::new(FailingRoster);
     runtime.adopt_roster_spec(&roster, &id).await; // best-effort, must not panic
 
+    // The surviving invariant is "a FAILING roster must not brick reset": reset
+    // succeeds and still performs the successor transition.
     runtime.reset(&id).await.unwrap();
-    let created = bridge
-        .last_create_spec
-        .lock()
-        .await
-        .clone()
-        .expect("reset must still create a fresh session");
     assert_eq!(
-        created.profile,
-        meerkat_mob::ProfileName::from("default"),
-        "roster failure must fall back to the stored profile, not brick reset",
-    );
-}
-
-#[tokio::test]
-async fn identity_first_runtime_reset_retire_failure_does_not_roll_back_committed_generation() {
-    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
-    let lease_prov = Arc::new(LocalLeaseProvider::new());
-    let bridge = Arc::new(CountingBridge::default());
-    bridge.fail_retire();
-    let runtime = make_runtime_with_bridge(store.clone(), lease_prov.clone(), bridge.clone());
-
-    let id = make_identity("triage:main");
-    let initial_grants = lease_prov
-        .acquire_leases(std::slice::from_ref(&id), "test-runtime")
-        .await
-        .unwrap();
-    let initial_grant = match initial_grants.get(&id).unwrap() {
-        LeaseAcquireResult::Acquired(g) => g.clone(),
-        _ => panic!("expected Acquired"),
-    };
-    let record = make_record("triage:main", 0, 5);
-    store
-        .upsert_continuity_record(&record, initial_grant.fencing_token)
-        .await
-        .unwrap();
-    let old_token = initial_grant.fencing_token;
-    runtime
-        .register(
-            make_spec("triage:main"),
-            IdentityLifecycleState::Active,
-            Some(record.clone()),
-            Some(initial_grant),
-        )
-        .await;
-
-    let reset_record = runtime.reset(&id).await.unwrap();
-    let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
-    assert_eq!(
-        resolved.get(&id),
-        Some(&ContinuityResolveState::Ready {
-            record: reset_record.clone()
-        })
-    );
-    let status = runtime.status(&id).await.unwrap();
-    assert_eq!(
-        status.agent_runtime_id.as_ref(),
-        Some(&reset_record.agent_runtime_id)
-    );
-    assert_eq!(status.state, IdentityLifecycleState::Active);
-    assert!(
-        status.lease.is_some(),
-        "committed reset must keep its refreshed lease while old-generation cleanup debt remains"
-    );
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while bridge.retire_calls.load(Ordering::SeqCst) == 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("reset cleanup never attempted the old member retire");
-    assert_eq!(
-        bridge.retire_calls.load(Ordering::SeqCst),
+        bridge.create_calls.load(Ordering::SeqCst),
         1,
-        "reset cleanup should attempt the old generation exactly once before shutdown retry"
+        "roster failure must not brick reset - the successor transition must still run"
     );
-    assert_old_token_snapshot_write_rejected(store.as_ref(), &id, &reset_record, old_token).await;
+    assert_eq!(
+        runtime.status(&id).await.unwrap().state,
+        IdentityLifecycleState::Active,
+        "a reset that fell back to the stored spec must leave the identity Active"
+    );
+    // The profile assertion this test used to carry is deliberately GONE. A
+    // successor keeps the PREDECESSOR's profile, which is the stored profile in
+    // this scenario, so that assertion can no longer fail - it would be a green
+    // check that discriminates nothing, not a fallback proof.
 }
+
+// REMOVED: identity_first_runtime_reset_retire_failure_does_not_roll_back_committed_generation
+//
+// It guarded old-generation cleanup DEBT: reset used to retire the
+// predecessor itself, so a failing retire left debt behind and the test
+// proved that debt did not roll back an already-committed generation.
+// Destructive reset is now ONE authoritative respawn and Meerkat owns
+// predecessor retirement, so MobKit never issues an old-member retire and
+// there is no such debt to fail - the test timed out waiting for a retire
+// that can no longer happen.
+//
+// Deleted rather than re-pointed at the surviving cleanup retire, because
+// that one clears the SUCCESSOR after a later failure and is already
+// covered by reset_register_failure_reports_cleanup_failure_and_preserves_old_continuity.
+// The committed-generation invariant itself is still pinned by
+// reset_final_upsert_failure_restores_old_continuity_record.
 
 #[tokio::test]
 async fn identity_first_runtime_reset_store_failure_marks_identity_broken() {
