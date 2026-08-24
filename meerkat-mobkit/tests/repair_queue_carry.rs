@@ -433,13 +433,28 @@ async fn repair_carries_queued_inputs_to_the_healed_successor() {
         .await
         .expect("collision repair resumes");
     eprintln!("PHASE: repair resumed");
+    // The invariant is the DURABLE SESSION, and it holds across both arms: the
+    // repair must land on the session it was recovering, never a fresh one.
+    assert_eq!(
+        outcome.session_id(),
+        &harness.session_id,
+        "repair must land on the SAME durable session, got {outcome:?}"
+    );
     assert!(
-        matches!(
-            outcome,
-            meerkat_mobkit::identity_first::ResumeSessionOutcome::Resumed { ref session_id }
-                if *session_id == harness.session_id
-        ),
-        "repair must resume the SAME durable session, got {outcome:?}"
+        outcome.fallback_reason().is_none(),
+        "the repair must not have degraded to a fresh spawn: {outcome:?}"
+    );
+    // And it is deliberately the PENDING arm here. This calls the bridge
+    // directly, and the bridge cannot discharge the attach postcondition: only
+    // the holder of the continuity record has the generation, checkpoint version
+    // and fence that owner registration needs. Production reaches this through
+    // IdentityRuntime, which converts it to Resumed via one contract helper.
+    // Asserting the arm keeps that boundary honest - if the bridge ever starts
+    // reporting Resumed from here, it is registering facts it does not own.
+    assert!(
+        outcome.needs_owner_registration(),
+        "a direct bridge resume must report the attach as pending owner \
+         registration, not as resumed: {outcome:?}"
     );
 
     // The healed successor drains the carried inputs once the gate opens.
@@ -485,14 +500,31 @@ async fn repair_carries_queued_inputs_to_the_healed_successor() {
     );
 }
 
+// NOT ADDED HERE: a genuinely-indeterminate-custody test.
+//
+// Indeterminate is reachable in principle through the public writer - a Valid
+// Present intent naming a DIFFERENT session than the one being resumed
+// (bridge.rs:2664) - so it does NOT require the Valid Absent intent the old
+// comment on the test below assumed. But adoption has its own precondition:
+// resolve_portable_system_prompt needs inline SKILLS or a system-prompt
+// override, and failing both it needs a SpawnBasePromptSource, which MobKit
+// wires NOWHERE. So adopting in this harness refuses before custody is ever
+// consulted, and reaching the verdict here costs more fixture machinery than a
+// test-only intent seam would. Left uncovered deliberately and reported, rather
+// than papered over with an #[ignore] or a weakened assertion.
+
 /// Preconditions-first (task #48 (a)): when the session the resume retry
 /// would need is CONFIRMED absent from the composition's authoritative read
 /// view (a continuity record pointing at a vanished session — the external-
 /// row-deletion / lost-store shape), the collision arm refuses typed BEFORE
 /// any destructive step — the stale member (holding the only live copy of
 /// its state, queue included) survives untouched.
+///
+/// Renamed: this pins the SOURCE-AVAILABILITY refusal, which owns the case
+/// where custody is proven ours. Genuinely indeterminate custody is its
+/// sibling above, and used to carry this name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repair_refuses_disposal_when_identity_custody_is_indeterminate() {
+async fn repair_refuses_disposal_when_the_resume_source_is_absent() {
     // Gate closed: the member's queued work must stay pending through the
     // refused repair.
     let (gate_tx, gate_rx) = watch::channel(false);
@@ -544,9 +576,13 @@ async fn repair_refuses_disposal_when_identity_custody_is_indeterminate() {
             // path), and this harness has no public way to seed one: the
             // MobIdentityStore trait's only intent writer is
             // adopt_member_identity_declaration, which writes Present.
+            // BOTH halves: which precondition failed, and what destroying the
+            // occupant would cost. Either alone leaves the refusal unactionable.
             assert!(
-                detail.contains("collision custody indeterminate"),
-                "the refusal must name the custody verdict that stopped it: {detail}"
+                detail.contains("is confirmed absent")
+                    && detail.contains("only live copy of the session"),
+                "the refusal must name the missing resume source AND what retiring the \
+                 occupant would destroy: {detail}"
             );
         }
         other => panic!("expected a typed ResumeRejected, got {other:?}"),
