@@ -10566,19 +10566,33 @@ mod reset_reprofile_tests {
 
     #[async_trait::async_trait]
     impl SessionBridge for RecordingBridge {
-        /// Mirrors respawn, INCLUDING its limitation.
+        /// Mirrors respawn, including the profile the successor is built on.
         ///
-        /// A successor keeps the predecessor's profile, so this deliberately
-        /// does NOT record `spec.profile` into `create_profiles`. Recording it
-        /// would make this double able to reprofile when Meerkat cannot, and the
-        /// reprofile capability tests would go green against a capability that
-        /// does not exist.
+        /// This used to deliberately DROP `spec.profile`, because respawn
+        /// preserved the predecessor's profile and a double that applied the
+        /// requested one could reprofile where Meerkat could not - the capability
+        /// tests would then have gone green against a capability that did not
+        /// exist.
+        ///
+        /// It exists now. `respawn_with_successor_spec` applies the successor
+        /// spec atomically, proven end to end on the real mob handle by
+        /// identity_first_builder_reset_reprofiles_{from_current_roster_provider,
+        /// with_roster_context}, which assert status().profile through no double
+        /// at all. So recording the profile now mirrors production rather than
+        /// overstating it - and the ORDER mattered: the production path was
+        /// proven first, and only then was this unlocked.
         async fn reset_member_to_successor(
             &self,
             identity: &AgentIdentity,
-            _spec: &DurableAgentSpec,
+            spec: &DurableAgentSpec,
             _draft: &AgentBuildDraft,
         ) -> Result<crate::identity_first::bridge::ResetSuccessorBinding, BridgeError> {
+            // The successor IS built on the requested spec now, so the double
+            // publishes the profile the same way create does.
+            self.create_profiles
+                .lock()
+                .await
+                .push(spec.profile.as_str().to_string());
             let generation = self.successor_generations.lock().await.len() as u64 + 1;
             let alias = format!("rt:{}:{generation}", identity.as_str());
             self.successor_generations.lock().await.push(alias.clone());

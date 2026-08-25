@@ -5764,6 +5764,38 @@ mod tests {
 
     #[async_trait]
     impl SessionBridge for RpcResetTestBridge {
+        /// The single authoritative successor transition.
+        ///
+        /// Unlocked only after the production path was proven: destructive reset
+        /// lowers to one respawn carrying the successor spec, and
+        /// `respawn_with_successor_spec` applies that spec atomically - verified
+        /// end to end on a real mob handle, with no double in the path, by the
+        /// identity_first_builder reprofile pair. Before that landed, this double
+        /// had no implementation at all and the reset refused, which is what kept
+        /// this test honestly red rather than green against nothing.
+        async fn reset_member_to_successor(
+            &self,
+            identity: &AgentIdentity,
+            spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+        ) -> Result<crate::identity_first::ResetSuccessorBinding, BridgeError> {
+            self.create_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *self.last_create_spec.lock().await = Some(spec.clone());
+            let generation = self
+                .create_calls
+                .load(std::sync::atomic::Ordering::SeqCst) as u64;
+            let alias = format!("rt:{}:{generation}", identity.as_str());
+            let agent_runtime_id =
+                crate::identity_first::AgentRuntimeId::parse(&alias).map_err(|error| {
+                    BridgeError::Mob(format!("test double minted an unusable successor: {error}"))
+                })?;
+            Ok(crate::identity_first::ResetSuccessorBinding {
+                agent_runtime_id,
+                session_id: meerkat_core::types::SessionId::new(),
+            })
+        }
+
         async fn create_session(
             &self,
             _identity: &AgentIdentity,

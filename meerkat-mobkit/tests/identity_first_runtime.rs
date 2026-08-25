@@ -1492,19 +1492,25 @@ impl SessionBridge for CountingBridge {
     /// asserts - old continuity preserved, no rollback of a committed
     /// generation, cleanup of the tentative member - are unchanged.
     ///
-    /// It deliberately does NOT record `spec` into `last_create_spec`. A
-    /// successor keeps the PREDECESSOR's profile, so a double that published the
-    /// requested spec would be able to reprofile where Meerkat cannot, and the
-    /// reprofile capability tests would go green against a capability that does
-    /// not exist. They stay red on purpose until the upstream atomic
-    /// successor-spec operation is published.
+    /// It records `spec` into `last_create_spec`, because the successor IS built
+    /// on the requested spec now. That was deliberately dropped while respawn
+    /// preserved the predecessor's profile - a double that published the
+    /// requested spec then could reprofile where Meerkat could not, and the
+    /// capability tests would have gone green against nothing.
+    ///
+    /// `respawn_with_successor_spec` applies the successor spec atomically, and
+    /// that was proven on the REAL mob handle before this was unlocked: the
+    /// identity_first_builder reprofile pair asserts status().profile with no
+    /// double in the path. The order is the point - production first, doubles
+    /// second, never the reverse.
     async fn reset_member_to_successor(
         &self,
         identity: &AgentIdentity,
-        _spec: &DurableAgentSpec,
+        spec: &DurableAgentSpec,
         draft: &AgentBuildDraft,
     ) -> Result<meerkat_mobkit::identity_first::ResetSuccessorBinding, BridgeError> {
         self.create_calls.fetch_add(1, Ordering::SeqCst);
+        *self.last_create_spec.lock().await = Some(spec.clone());
         if self.fail_create.load(Ordering::SeqCst) {
             return Err(BridgeError::Mob("create failed".to_string()));
         }
