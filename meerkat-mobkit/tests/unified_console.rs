@@ -1271,6 +1271,92 @@ fn assert_no_reserved_member_identity(value: &Value, path: &str) {
     }
 }
 
+/// mobkit/member_status must accept the runtime alias our OWN surfaces hand out.
+///
+/// This is the console sibling of the mobkit/get_member defect fixed in 0.8.23:
+/// that one decoded the comms marker but never reduced an
+/// rt:{identity}:{generation} alias to the durable identity before encoding it
+/// into a roster key, producing a well-formed key for an identity that does not
+/// exist - "not found" about a healthy member.
+///
+/// The exposure here is an operator, not a program: status and identities
+/// responses hand out the alias, and the obvious next move is to paste it into
+/// member_status. That path had NO alias coverage at all, which is the condition
+/// under which the get_member defect survived a full green suite. It also reaches
+/// further than a gateway binary - any embedder merging mobkit_console_router
+/// exposes this method, which OB3 pointed out after measuring their own tree.
+#[tokio::test]
+async fn member_status_accepts_the_runtime_alias_its_own_surfaces_hand_out()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let fixture = build_runtime_fixture().await;
+    // A POST-LOWERING member: the roster is keyed by the DURABLE identity.
+    let durable = "gate:main";
+    let encoded = meerkat_mobkit::member_comms_id::mob_member_id(durable);
+
+    let handle = fixture.runtime.mob_handle();
+    let mut spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        encoded.to_string(),
+        Some("Alias-input fixture.".into()),
+        None,
+        None,
+    );
+    spec.runtime_mode = Some(MobRuntimeMode::TurnDriven);
+    handle.spawn_spec(spec).await?;
+
+    let app = fixture
+        .runtime
+        .build_reference_app_router(decision_state(false));
+    let rpc = |id: &str, method: &str, params: Value| json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+
+    // Control: the durable spelling resolves. If this fails the fixture is
+    // wrong and the alias result below would mean nothing.
+    let by_identity = post_console_rpc(
+        &app,
+        &rpc(
+            "by-identity",
+            "mobkit/member_status",
+            json!({ "member_id": durable }),
+        ),
+    )
+    .await;
+    assert!(
+        by_identity["error"].is_null(),
+        "control failed - the durable identity must resolve, so the alias case below is \
+         interpretable: {by_identity:#?}"
+    );
+
+    // The actual property: the alias our own surfaces emit must reach the same
+    // member. Generation is incarnation detail and must not decide the answer.
+    let by_alias = post_console_rpc(
+        &app,
+        &rpc(
+            "by-alias",
+            "mobkit/member_status",
+            json!({ "member_id": format!("rt:{durable}:0") }),
+        ),
+    )
+    .await;
+    // NOT `error.is_null()`. The failure mode here is not a refusal - it is a
+    // WELL-FORMED status for a member that was never found: is_final true,
+    // status "unknown", no session. An error would at least tell the operator
+    // something was wrong; this reports a healthy live member as finished. So
+    // the assertion has to compare the ANSWER, not the absence of an error.
+    assert_eq!(
+        by_alias["result"]["current_session_id"], by_identity["result"]["current_session_id"],
+        "the alias must resolve to the SAME member's session. A null session here means the \
+         alias was encoded into a roster key nothing owns, and the operator is handed a \
+         plausible status for a member that was never looked up: {by_alias:#?}"
+    );
+    assert_eq!(
+        by_alias["result"]["is_final"], by_identity["result"]["is_final"],
+        "a live member must not report is_final through one spelling and not the other: \
+         {by_alias:#?}"
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn member_declarations_round_trip_public_aliases_over_the_http_console()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

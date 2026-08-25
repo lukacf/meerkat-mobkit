@@ -7718,7 +7718,14 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
             match runtime
                 .handle()
-                .member_status(&crate::member_comms_id::mob_member_id(&member_id))
+                // Decode before encoding. A caller may hand back the runtime
+                // alias our own status responses emit, and encoding that
+                // directly keys a roster row nothing owns - which here returns a
+                // WELL-FORMED "unknown/final" status rather than an error, so a
+                // live member reads as finished.
+                .member_status(&crate::member_comms_id::roster_member_id_for_supplied_id(
+                    &member_id,
+                ))
                 .await
             {
                 Ok(snapshot) => response_value(
@@ -7802,7 +7809,13 @@ async fn handle_console_runtime_rpc_with_visibility(
                     .await
             {
                 let handle = runtime.handle();
-                let member_id_value = crate::member_comms_id::mob_member_id(&member_id);
+                // Decode before encoding. This branch has ALREADY resolved an
+                // identity from `member_id` and runs under
+                // run_member_alias_operation_tracked, so it knows an alias is
+                // possible - keying the destructive call off the un-decoded form
+                // would cancel a roster row nothing owns while reporting success.
+                let member_id_value =
+                    crate::member_comms_id::roster_member_id_for_supplied_id(&member_id);
                 identity_runtime_ref
                     .run_member_alias_operation_tracked(&identity, &member_id, move || async move {
                         handle
