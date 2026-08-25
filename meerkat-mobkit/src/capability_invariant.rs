@@ -104,6 +104,7 @@ impl DeclaredToolCategory {
                         | "list_members"
                         | "member_status"
                         | "force_cancel_member"
+                        | "fork_off"
                 ) || name.starts_with("mob_")
             }),
             Self::ImageGeneration => contains("generate_image"),
@@ -441,6 +442,12 @@ mod tests {
             declared.iter().collect::<Vec<_>>(),
             DeclaredToolCategory::ALL
         );
+    }
+
+    #[test]
+    fn fork_off_is_a_mob_capability_marker() {
+        let names = BTreeSet::from(["fork_off".to_string()]);
+        assert!(DeclaredToolCategory::Mob.is_present_in(&names));
     }
 
     #[test]

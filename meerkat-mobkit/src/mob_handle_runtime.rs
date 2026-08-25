@@ -921,6 +921,7 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
                 | "member_status"
                 | "wire_members"
                 | "unwire_members"
+                | "fork_off"
         ) {
             let args = serde_json::from_str::<Value>(call.args.get()).map_err(|error| {
                 meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
@@ -1051,7 +1052,8 @@ fn raw_member_tool_arguments(tool_name: &str, args: &Value) -> Vec<(&'static str
         | "spawn_member"
         | "retire_member"
         | "force_cancel_member"
-        | "member_status" => {
+        | "member_status"
+        | "fork_off" => {
             candidates.push(("member_id", args.get("member_id").and_then(Value::as_str)));
         }
         "spawn_many_members" => {
@@ -8488,6 +8490,13 @@ mod tests {
         );
         assert_eq!(
             reserved_raw_member_tool_argument(
+                "fork_off",
+                &serde_json::json!({"member_id": "rt:worker:0"}),
+            ),
+            Some(("member_id", "rt:worker:0".to_string()))
+        );
+        assert_eq!(
+            reserved_raw_member_tool_argument(
                 "spawn_many_members",
                 &serde_json::json!({
                     "specs": [
@@ -8601,6 +8610,27 @@ mod tests {
             error
                 .to_string()
                 .contains("owned by the attached IdentityRuntime")
+        );
+
+        let child_collision = serde_json::value::RawValue::from_string(
+            serde_json::json!({
+                "member_id": "lead"
+            })
+            .to_string(),
+        )
+        .expect("raw args");
+        let error = dispatcher
+            .dispatch(meerkat_core::types::ToolCallView {
+                id: "fork-off-child-collision",
+                name: "fork_off",
+                args: &child_collision,
+            })
+            .await
+            .expect_err("registered child identity must fail before lower-plane dispatch");
+        assert!(
+            error
+                .to_string()
+                .contains("member_id 'lead' is owned by the attached IdentityRuntime")
         );
     }
 

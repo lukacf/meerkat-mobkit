@@ -231,6 +231,7 @@ function explicitHostId(a: ConsoleAgent): string | null {
   return a.labels?.delegate_host_identity
     || a.labels?.host_identity
     || a.labels?.parent_identity
+    || a.labels?.spawned_by
     || null;
 }
 
