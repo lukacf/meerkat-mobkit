@@ -235,27 +235,18 @@ async fn a_rehearsal_created_store_is_refused_by_name_not_silently_adopted() {
         boot_non_authoritative(&mob_path, &session_root, diverged_definition_for(MOB_ID))
             .await
             .expect("a candidate launch must boot on a fresh store");
-    // Shutdown AND an explicit drop, and the drop is the load-bearing half. The
-    // comms participant registry is process-global and the supervisor name derives
-    // from the mob id, so an in-process rebootstrap of the SAME mob collides on the
-    // supervisor endpoint unless the name is released first.
+    // shutdown, not just drop: the comms participant registry is process-global
+    // and the supervisor name derives from the mob id, so an in-process
+    // rebootstrap of the SAME mob otherwise collides on the supervisor endpoint.
     //
-    // `shutdown().await` does NOT release it. Per meerkat's own inproc registry
-    // contract, a name is unbound only by `CommsRuntime::retire_inproc_route` or by
-    // the incumbent's `Drop`, and registration is refused fail-closed WITHOUT
-    // mutation while a live route holds the name - so a retry cannot clear it. This
-    // sequence works because the explicit drop below runs that `Drop`, not because
-    // shutdown released anything.
+    // Awaiting shutdown IS what frees the name, and meerkat guarantees that
+    // deliberately: the actor teardown calls `MobSupervisorBridge::shutdown`,
+    // which calls `retire_inproc_route` generation-exactly. Its own comment says
+    // release happens there "not at `Arc` drop", because binding route lifetime
+    // to the last surviving bridge reference - typically an actor task's - is
+    // itself the race. So the explicit drop below is tidiness, not the mechanism.
     //
-    // KNOWN LIMITATION: that makes it depend on this handle being the last
-    // reference. Meerkat hit the racy version of exactly this in its own
-    // host_bind_ceremony suite, intermittently and only under full-suite load. The
-    // deterministic form is to retire the route explicitly and prove succession
-    // rather than wait for a drop; doing that here needs the retire API threaded to
-    // this test and is deferred rather than claimed.
-    //
-    // A real candidate/promote deploy is separate processes and never sees any of
-    // this.
+    // A real candidate/promote deploy is separate processes and never sees this.
     candidate
         .handle()
         .shutdown()
