@@ -1868,7 +1868,7 @@ impl LiveCapabilityProvider {
     pub fn feature_capabilities(&self) -> Vec<crate::live_contracts::FeatureCapability> {
         #[cfg(not(feature = "experimental-gpt-live"))]
         {
-            return Vec::new();
+            Vec::new()
         }
         #[cfg(feature = "experimental-gpt-live")]
         {
@@ -2217,6 +2217,10 @@ fn parse_live_params<T: DeserializeOwned>(
 /// [`GatewayLiveContext`] because open/refresh must re-project the member
 /// session and every handler resolves results through machine authority.
 #[cfg(feature = "experimental-gpt-live")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "published live RPC boundary keeps each authority input explicit"
+)]
 pub async fn handle_live_method<B: SessionAgentBuilder + 'static>(
     ctx: &GatewayLiveContext,
     service: &Arc<PersistentSessionService<B>>,
@@ -2249,6 +2253,10 @@ pub async fn handle_live_method<B: SessionAgentBuilder + 'static>(
 /// newer generic Meerkat host facade. Surface authority remains enforced
 /// before the original handler sequence runs.
 #[cfg(not(feature = "experimental-gpt-live"))]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "published live RPC boundary keeps each authority input explicit"
+)]
 pub async fn handle_live_method<B: SessionAgentBuilder + 'static>(
     ctx: &GatewayLiveContext,
     service: &Arc<PersistentSessionService<B>>,
@@ -6276,7 +6284,7 @@ mod tests {
         assert_eq!(credential_policy.calls.load(Ordering::SeqCst), 1);
     }
 
-    #[cfg(feature = "experimental-gpt-live-test-support")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     async fn stage_receipt_answer_on_machine(
         machine: Arc<MeerkatMachine>,
         token: &str,
@@ -6335,7 +6343,7 @@ mod tests {
         (session_id, channel_id, readiness)
     }
 
-    #[cfg(feature = "experimental-gpt-live-test-support")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     async fn staged_receipt_answer_machine(
         token: &str,
     ) -> (
@@ -6350,7 +6358,7 @@ mod tests {
         (machine, session_id, channel_id, readiness)
     }
 
-    #[cfg(feature = "experimental-gpt-live-test-support")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     async fn coordinated_receipt_answer_fixture(
         token: &str,
     ) -> (
@@ -6407,7 +6415,7 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "experimental-gpt-live-test-support")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     #[tokio::test]
     async fn receipt_answer_activates_after_atomic_bind_and_commits_after_delivery() {
         let (
@@ -6440,7 +6448,7 @@ mod tests {
         assert!(!rolled_back.load(Ordering::SeqCst));
     }
 
-    #[cfg(feature = "experimental-gpt-live-test-support")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     #[tokio::test]
     async fn failed_outer_publication_rejects_transport_and_rolls_back_bound_custody() {
         let (
@@ -6469,7 +6477,7 @@ mod tests {
         assert!(rolled_back.load(Ordering::SeqCst));
     }
 
-    #[cfg(feature = "experimental-gpt-live-test-support")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     #[tokio::test]
     async fn playback_owner_loss_rpc_revokes_active_receipt_authority() {
         let persistence = meerkat::PersistenceBundle::new(
