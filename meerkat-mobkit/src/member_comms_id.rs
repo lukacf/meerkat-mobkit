@@ -245,7 +245,19 @@ pub(crate) fn public_runtime_alias(runtime_id: &meerkat_mob::ids::AgentRuntimeId
 /// the shape of the defect this function exists to remove, found when a caller
 /// round-tripped `agent_runtime_id` from a status call straight back into a
 /// member lookup, which is the obvious thing to do.
-pub(crate) fn roster_member_id_for_supplied_id(supplied: &str) -> meerkat_mob::ids::AgentIdentity {
+///
+/// PUBLIC, and the difference from [`roster_member_id_for_identity`] is which
+/// spelling the caller HAS, not which is preferred. An embedder that already
+/// holds the durable identity should call that one and say so. An embedder
+/// holding a value it read back from a surface - `status_identity`, a console
+/// projection, a persisted binding - has no way to know which of the three
+/// shapes it is holding, and should call this.
+///
+/// It was `pub(crate)` while being the only correct answer for an embedder that
+/// only has an alias, which left the obvious mistake as the only reachable
+/// option. OB3 asked which function to call and there was no right answer to
+/// give them.
+pub fn roster_member_id_for_supplied_id(supplied: &str) -> meerkat_mob::ids::AgentIdentity {
     let decoded = runtime_alias_str(supplied);
     let durable = durable_identity_from_runtime_alias(decoded.as_ref())
         .unwrap_or_else(|| decoded.into_owned());
