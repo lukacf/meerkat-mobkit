@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import Any, Awaitable, Callable, Literal, Protocol
 
 LIVE_EXECUTION_IDENTITY_V1 = "live.execution_identity.v1"
 LIVE_EXECUTION_FUNCTION_BRIDGE_V1 = "live.execution.function_bridge.v1"
@@ -566,6 +566,60 @@ class ExperimentalLiveChannelStatus:
         raise ValueError("experimental live channel status is incomplete")
 
 
+class ActiveLiveChannelConnection(ActiveLiveChannelHandle):
+    """Active handle plus exact playback-owner revocation custody.
+
+    Use this as an async context manager or call :meth:`owner_lost` when the
+    local media transport disappears. Both paths revoke active provider
+    authority without retiring the durable member.
+    """
+
+    def __init__(
+        self,
+        active: ActiveLiveChannelHandle,
+        pending_receipt: str,
+        readiness_receipt: str,
+        owner_lost: Callable[[], Awaitable[ExperimentalLiveChannelStatus]],
+    ) -> None:
+        super().__init__(
+            channel_id=active.channel_id,
+            target_identity=active.target_identity,
+            execution_mode=active.execution_mode,
+            activation_receipt=active.activation_receipt,
+        )
+        object.__setattr__(
+            self, "pending_receipt", _non_empty(pending_receipt, "pending receipt")
+        )
+        object.__setattr__(
+            self,
+            "readiness_receipt",
+            _non_empty(readiness_receipt, "readiness receipt"),
+        )
+        object.__setattr__(self, "_owner_lost", owner_lost)
+
+    pending_receipt: str
+    readiness_receipt: str
+    _owner_lost: Callable[[], Awaitable[ExperimentalLiveChannelStatus]]
+
+    @property
+    def active_handle(self) -> ActiveLiveChannelHandle:
+        return ActiveLiveChannelHandle(
+            channel_id=self.channel_id,
+            target_identity=self.target_identity,
+            execution_mode=self.execution_mode,
+            activation_receipt=self.activation_receipt,
+        )
+
+    async def owner_lost(self) -> ExperimentalLiveChannelStatus:
+        return await self._owner_lost()
+
+    async def __aenter__(self) -> ActiveLiveChannelConnection:
+        return self
+
+    async def __aexit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
+        await self.owner_lost()
+
+
 class LivePlaybackOwner(Protocol):
     """Local media owner used by the high-level experimental connector.
 
@@ -581,6 +635,10 @@ class LivePlaybackOwner(Protocol):
     async def activate(self, active: ActiveLiveChannelHandle) -> None: ...
 
     async def abort(self) -> None: ...
+
+    # Implementations may additionally expose `wait_for_loss()`. The runtime
+    # detects it dynamically and revokes machine authority when it completes
+    # or fails.
 
 
 @dataclass(frozen=True)

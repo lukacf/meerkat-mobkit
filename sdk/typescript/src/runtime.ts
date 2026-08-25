@@ -57,6 +57,7 @@ import { discoverySpecToDict, type DiscoverySpec } from "./models.js";
 import {
   LIVE_EXECUTION_IDENTITY_V1,
   activeLiveChannelHandleToWire,
+  type ActiveLiveChannelConnection,
   type ActiveLiveChannelHandle,
   type ExperimentalLiveChannelStatus,
   experimentalLiveGatewayConfigToWire,
@@ -2555,6 +2556,11 @@ export class MobHandle {
     identity: string,
     options?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
+    if (Object.prototype.hasOwnProperty.call(options ?? {}, "instructions")) {
+      throw new TypeError(
+        "experimental live/open does not accept instructions; instructions are catalog-owned",
+      );
+    }
     const raw = await this._runtime._rpc("mobkit/live/open", {
       identity,
       ...(options ?? {}),
@@ -2568,6 +2574,11 @@ export class MobHandle {
     executionIdentity?: LiveExecutionIdentityV1,
     options?: Record<string, unknown>,
   ): Promise<LiveChannelHandle | PendingLiveChannelHandle> {
+    if (Object.prototype.hasOwnProperty.call(options ?? {}, "instructions")) {
+      throw new TypeError(
+        "experimental live/open does not accept instructions; instructions are catalog-owned",
+      );
+    }
     let advertisedFeatureCapabilities: readonly string[] = [];
     if (executionIdentity !== undefined) {
       const forbidden = [
@@ -2672,6 +2683,40 @@ export class MobHandle {
     return readiness;
   }
 
+  async livePlaybackOwnerRevoke(
+    pending: PendingLiveChannelHandle,
+    readiness: LivePlaybackOwnerReadiness,
+    active?: ActiveLiveChannelHandle,
+  ): Promise<ExperimentalLiveChannelStatus> {
+    if (readiness.channelId !== pending.channelId) {
+      throw new TypeError("playback owner readiness channel mismatch");
+    }
+    const params: Record<string, unknown> = {
+      identity: pending.targetIdentity,
+      channel_id: pending.channelId,
+      pending_receipt: pending.pendingReceipt,
+      readiness_receipt: readiness.readinessReceipt,
+    };
+    if (active !== undefined) {
+      activeLiveChannelHandleToWire(active);
+      if (
+        active.channelId !== pending.channelId ||
+        active.targetIdentity !== pending.targetIdentity ||
+        active.executionMode !== pending.executionMode
+      ) {
+        throw new TypeError("active playback owner does not match pending custody");
+      }
+      params.activation_receipt = active.activationReceipt;
+    }
+    const status = parseExperimentalLiveChannelStatus(
+      await this._runtime._rpc("mobkit/live/playback_owner/revoke", params),
+    );
+    if (status.phase !== "revoked") {
+      throw new TypeError("playback owner revoke did not return revoked custody");
+    }
+    return status;
+  }
+
   async liveExperimentalStatus(
     handle: PendingLiveChannelHandle | ActiveLiveChannelHandle,
   ): Promise<ExperimentalLiveChannelStatus> {
@@ -2706,7 +2751,7 @@ export class MobHandle {
       readonly activationPollIntervalMs?: number;
       readonly activationAttempts?: number;
     },
-  ): Promise<ActiveLiveChannelHandle> {
+  ): Promise<ActiveLiveChannelConnection> {
     const activationPollIntervalMs = options?.activationPollIntervalMs ?? 50;
     const activationAttempts = options?.activationAttempts ?? 200;
     if (!Number.isFinite(activationPollIntervalMs) || activationPollIntervalMs < 0) {
@@ -2747,7 +2792,38 @@ export class MobHandle {
         const status = await this.liveExperimentalStatus(pending);
         if (status.phase === "active") {
           await playbackOwner.activate(status.handle);
-          return status.handle;
+          const active = status.handle;
+          const ownerPending = pending;
+          let revocation: Promise<ExperimentalLiveChannelStatus> | undefined;
+          const ownerLost = (): Promise<ExperimentalLiveChannelStatus> => {
+            revocation ??= (async () => {
+              const revoked = await this.livePlaybackOwnerRevoke(
+                ownerPending,
+                readiness,
+                active,
+              );
+              try {
+                await playbackOwner.abort();
+              } catch {
+                // Machine revocation has already removed active authority.
+              }
+              return revoked;
+            })();
+            return revocation;
+          };
+          const connection: ActiveLiveChannelConnection = {
+            ...active,
+            pendingReceipt: ownerPending.pendingReceipt,
+            readinessReceipt: readiness.readinessReceipt,
+            ownerLost,
+            dispose: ownerLost,
+          };
+          if (playbackOwner.waitForLoss !== undefined) {
+            void playbackOwner.waitForLoss().then(ownerLost, ownerLost).catch(() => {
+              // The explicit connection lifecycle remains available for retry.
+            });
+          }
+          return connection;
         }
         if (status.phase === "revoked" || status.phase === "closed") {
           throw new Error(

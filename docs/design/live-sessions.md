@@ -170,14 +170,10 @@ explicit GPT-5.5 pins stay honored) — realtime capability is unchanged.
 
 ## Field-reported additions (mobkit 0.7.32)
 
-- **Per-open instruction overlay**: `mobkit/live/open` accepts
-  `instructions` (string or array of strings). The overlay rides the
-  runtime system-context lane of the open projection
-  (`with_runtime_system_context`), NOT the typed `system_prompt` — the
-  prompt field is the projection of durable prompt truth (R10) and must not
-  be contaminated by per-open ephemera. The overlay never persists into the
-  durable transcript and is dropped by `live/refresh` (which re-projects
-  from the durable session) and on reopen.
+- **Catalog-owned instructions**: `mobkit/live/open` rejects caller-supplied
+  `instructions`. Experimental function-bridge instructions are selected by
+  Meerkat's qualified profile and are not configurable through MobKit RPC or
+  gateway startup options.
 - **Seed clamp (upstream ask 30 STOPGAP)**: providers cap live instructions
   at 65,536 tokens, so long member transcripts overflow the projected seed
   at open. `runtime_options.live.seed_max_chars` (object form) sets a

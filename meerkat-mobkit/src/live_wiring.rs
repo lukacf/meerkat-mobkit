@@ -53,7 +53,7 @@ use meerkat_core::live_adapter::{LiveAdapterCommand, LiveProjectionSnapshot};
 use meerkat_core::live_adapter::{
     LiveAudioConfig, LiveChannelCapabilities, LiveContinuityMode, LiveTransportBootstrap,
 };
-use meerkat_core::types::{Message, SessionId};
+use meerkat_core::types::SessionId;
 use meerkat_core::{Config, ConfigError, Provider, SessionLlmIdentity};
 #[cfg(not(feature = "experimental-gpt-live"))]
 use meerkat_live::LiveChannelCloseObservation;
@@ -878,6 +878,8 @@ pub(crate) enum LiveOperation {
     ReplacementRequired,
     #[cfg(feature = "experimental-gpt-live")]
     PlaybackOwnerRegister,
+    #[cfg(feature = "experimental-gpt-live")]
+    PlaybackOwnerRevoke,
     Status,
     Close,
     Refresh,
@@ -899,6 +901,8 @@ impl LiveOperation {
             "mobkit/live/replacement_required" => Some(Self::ReplacementRequired),
             #[cfg(feature = "experimental-gpt-live")]
             "mobkit/live/playback_owner/register" => Some(Self::PlaybackOwnerRegister),
+            #[cfg(feature = "experimental-gpt-live")]
+            "mobkit/live/playback_owner/revoke" => Some(Self::PlaybackOwnerRevoke),
             "mobkit/live/status" => Some(Self::Status),
             "mobkit/live/close" => Some(Self::Close),
             "mobkit/live/refresh" => Some(Self::Refresh),
@@ -1288,24 +1292,6 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
 // channel verbs retain their existing MobKit surface projection.
 // ---------------------------------------------------------------------------
 
-/// `instructions` on `mobkit/live/open` accepts a single string or an array
-/// of strings — both spell the same per-open overlay.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum LiveOpenInstructions {
-    One(String),
-    Many(Vec<String>),
-}
-
-impl LiveOpenInstructions {
-    fn into_vec(self) -> Vec<String> {
-        match self {
-            Self::One(text) => vec![text],
-            Self::Many(items) => items,
-        }
-    }
-}
-
 /// The gateway-side params for `mobkit/live/open`. The member target
 /// (`identity` / `member_id` / `session_id`) is resolved by the CALLER
 /// before `handle_live_method`; unknown fields are ignored here so the
@@ -1336,13 +1322,6 @@ struct GatewayLiveOpenParams {
     /// configured default credential resolution applies.
     #[serde(default)]
     provider: Option<String>,
-    /// Per-open ephemeral instruction overlay. Rides the runtime
-    /// system-context lane of the open projection, so it reaches the
-    /// provider's instructions channel without ever touching the member's
-    /// durable transcript or prompt truth. Dropped on `live/refresh` (the
-    /// refresh path re-projects from the durable session) and on reopen.
-    #[serde(default)]
-    instructions: Option<LiveOpenInstructions>,
     /// Per-open override of the gateway-wide seed clamp
     /// (`runtime_options.live.seed_max_chars`).
     #[serde(default)]
@@ -1383,6 +1362,18 @@ struct StrictLivePlaybackOwnerRegisterParams {
     identity: String,
     channel_id: String,
     pending_receipt: String,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictLivePlaybackOwnerRevokeParams {
+    identity: String,
+    channel_id: String,
+    pending_receipt: String,
+    readiness_receipt: String,
+    #[serde(default)]
+    activation_receipt: Option<String>,
 }
 
 #[cfg(feature = "experimental-gpt-live")]
@@ -2472,6 +2463,7 @@ async fn reject_missing_receipt_for_strict_channel<B: SessionAgentBuilder + 'sta
 ) -> Option<JsonRpcResponse> {
     if method == "mobkit/live/open"
         || method == "mobkit/live/playback_owner/register"
+        || method == "mobkit/live/playback_owner/revoke"
         || params.get("pending_receipt").is_some()
         || params.get("activation_receipt").is_some()
     {
@@ -2511,6 +2503,7 @@ async fn handle_strict_experimental_live_method<B: SessionAgentBuilder + 'static
     rpc_id: Value,
 ) -> Option<JsonRpcResponse> {
     let strict = method == "mobkit/live/playback_owner/register"
+        || method == "mobkit/live/playback_owner/revoke"
         || params.get("pending_receipt").is_some()
         || params.get("activation_receipt").is_some()
         || params.get("readiness_receipt").is_some();
@@ -2572,6 +2565,104 @@ async fn handle_strict_experimental_live_method<B: SessionAgentBuilder + 'static
                 Ok(value) => live_success(rpc_id, value),
                 Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
             })
+        }
+        "mobkit/live/playback_owner/revoke" => {
+            let parsed: StrictLivePlaybackOwnerRevokeParams =
+                match parse_live_params(params, &rpc_id) {
+                    Ok(parsed) => parsed,
+                    Err(response) => return Some(*response),
+                };
+            let _ = parsed.identity;
+            let channel_id = LiveChannelId::new(parsed.channel_id);
+            let pending_custody = match shared_live_host
+                .validate_experimental_live_channel_custody(&channel_id, &parsed.pending_receipt)
+                .await
+            {
+                Ok(custody) => custody,
+                Err(error) => {
+                    return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()));
+                }
+            };
+            if let Err(error) =
+                validate_strict_custody_target(&pending_custody, resolved_session, &channel_id)
+            {
+                return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+            }
+            match (&parsed.activation_receipt, pending_custody.phase()) {
+                (None, meerkat::surface::ExperimentalLiveChannelPhaseStatus::Pending) => {}
+                (
+                    Some(activation_receipt),
+                    meerkat::surface::ExperimentalLiveChannelPhaseStatus::Active { .. },
+                ) => {
+                    if let Err(error) = strict_custody_by_activation(
+                        shared_live_host,
+                        &channel_id,
+                        activation_receipt,
+                        resolved_session,
+                    )
+                    .await
+                    {
+                        return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+                    }
+                }
+                (None, _) => {
+                    return Some(live_error(
+                        rpc_id,
+                        INVALID_PARAMS_CODE,
+                        "active playback-owner loss requires the exact activation receipt",
+                    ));
+                }
+                (Some(_), _) => {
+                    return Some(live_error(
+                        rpc_id,
+                        INVALID_PARAMS_CODE,
+                        "activation receipt is valid only for an active playback owner",
+                    ));
+                }
+            }
+            if let Err(error) = shared_live_host
+                .revoke_experimental_live_playback_owner(
+                    &channel_id,
+                    &parsed.pending_receipt,
+                    &parsed.readiness_receipt,
+                    parsed.activation_receipt.as_deref(),
+                )
+                .await
+            {
+                return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()));
+            }
+            let revoked = match shared_live_host
+                .validate_experimental_live_channel_custody(&channel_id, &parsed.pending_receipt)
+                .await
+            {
+                Ok(custody) => custody,
+                Err(error) => {
+                    return Some(live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()));
+                }
+            };
+            if let Err(error) =
+                validate_strict_custody_target(&revoked, resolved_session, &channel_id)
+            {
+                return Some(live_error(rpc_id, INTERNAL_ERROR_CODE, error));
+            }
+            if !matches!(
+                revoked.phase(),
+                meerkat::surface::ExperimentalLiveChannelPhaseStatus::Revoked
+            ) {
+                return Some(live_error(
+                    rpc_id,
+                    INTERNAL_ERROR_CODE,
+                    "playback-owner revoke did not project revoked custody",
+                ));
+            }
+            Some(
+                match serde_json::to_value(
+                    crate::live_contracts::ExperimentalLiveChannelStatus::Revoked,
+                ) {
+                    Ok(value) => live_success(rpc_id, value),
+                    Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+                },
+            )
         }
         "mobkit/live/status" => {
             let parsed: StrictLiveReceiptParams = match parse_live_params(params, &rpc_id) {
@@ -3190,7 +3281,6 @@ async fn live_open_config_for_session<B: SessionAgentBuilder + 'static>(
     session_id: &SessionId,
     turning_mode: RealtimeTurningMode,
     seed_max_chars: Option<usize>,
-    instruction_overlay: Option<Message>,
 ) -> Result<RealtimeSessionOpenConfig, meerkat_core::SessionError> {
     // Mirror of the facade orchestrator: process-wide open-projection custody
     // is acquired BEFORE the persistent service can hydrate blob-backed image
@@ -3256,16 +3346,6 @@ async fn live_open_config_for_session<B: SessionAgentBuilder + 'static>(
         }
         None => realtime_projection_messages(&session)?,
     };
-    // Per-open ephemeral instruction overlay: appended to the replay seed as
-    // an ordinary System row (adapters replay System seed rows natively in
-    // their transcript positions), while the canonical System drift witness
-    // is derived from the durable session only. The overlay therefore reaches
-    // the provider for exactly this open, never persists, and never trips the
-    // refresh drift check that compares the durable canonical sequence.
-    let mut seed_projection = seed_projection;
-    if let Some(overlay) = instruction_overlay {
-        seed_projection.push(overlay);
-    }
     let open_config = RealtimeSessionOpenConfig::for_open_from_messages(
         turning_mode,
         llm_identity,
@@ -3284,36 +3364,6 @@ async fn live_open_config_for_session<B: SessionAgentBuilder + 'static>(
         .with_user_content_tombstones(session.realtime_user_content_tombstones())
         .with_canonical_user_image_decoded_bytes(canonical_user_image_decoded_bytes)
         .with_transcript_rewrite_generation(transcript_rewrite_generation))
-}
-
-/// Build the per-open instruction overlay from `mobkit/live/open`
-/// `instructions` as one System seed row.
-///
-/// Lane choice (0.8.11 ordered-System world): the retired
-/// `runtime_system_context` lane is gone; provider adapters replay System
-/// rows from the replay seed natively, and the provider `instructions`
-/// channel is reserved for provider-owned configuration. Appending the
-/// overlay to the per-open seed (NOT to the canonical drift witness, which
-/// stays derived from the durable session) keeps the original semantics:
-/// authoritative for exactly this open, never persisted, never misreported
-/// as the member's durable prompt, never a refresh-drift trigger.
-#[cfg(any(test, not(feature = "experimental-gpt-live")))]
-fn live_open_instruction_overlay_message(instructions: Vec<String>) -> Option<Message> {
-    live_open_instruction_overlay(instructions)
-        .map(|joined| Message::System(meerkat_core::types::SystemMessage::new(joined)))
-}
-
-fn live_open_instruction_overlay(instructions: Vec<String>) -> Option<String> {
-    let joined = instructions
-        .iter()
-        .map(|instruction| instruction.trim())
-        .filter(|instruction| !instruction.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if joined.is_empty() {
-        return None;
-    }
-    Some(joined)
 }
 
 /// Fold the per-open `(provider, model)` selection into the projected
@@ -3595,6 +3645,13 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     params: &Value,
     rpc_id: Value,
 ) -> JsonRpcResponse {
+    if params.get("instructions").is_some() {
+        return live_error(
+            rpc_id,
+            INVALID_PARAMS_CODE,
+            "live/open instructions are catalog-owned and cannot be supplied by callers",
+        );
+    }
     let parsed: GatewayLiveOpenParams = match parse_live_params(params, &rpc_id) {
         Ok(p) => p,
         Err(resp) => return *resp,
@@ -3654,37 +3711,25 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     // `runtime_options.live.seed_max_chars`; windowing is upstream-owned
     // (0.7.28, ask 30 SHIPPED).
     let seed_max_chars = parsed.seed_max_chars.or(ctx.seed_max_chars);
-    // Per-open ephemeral instruction overlay rides the replay seed (see
-    // live_open_instruction_overlay_message for the lane rationale), so it
-    // is woven in at config construction time.
-    let instruction_overlay = parsed
-        .instructions
-        .and_then(|instructions| live_open_instruction_overlay_message(instructions.into_vec()));
-    let mut open_config = match live_open_config_for_session(
-        service,
-        session_id,
-        turning_mode,
-        seed_max_chars,
-        instruction_overlay,
-    )
-    .await
-    {
-        Ok(config) => config,
-        Err(meerkat_core::SessionError::NotFound { .. }) => {
-            return live_error(
-                rpc_id,
-                INVALID_PARAMS_CODE,
-                format!("session {session_id} not found"),
-            );
-        }
-        Err(err) => {
-            return live_error(
-                rpc_id,
-                INTERNAL_ERROR_CODE,
-                format!("failed to build session config: {err}"),
-            );
-        }
-    };
+    let mut open_config =
+        match live_open_config_for_session(service, session_id, turning_mode, seed_max_chars).await
+        {
+            Ok(config) => config,
+            Err(meerkat_core::SessionError::NotFound { .. }) => {
+                return live_error(
+                    rpc_id,
+                    INVALID_PARAMS_CODE,
+                    format!("session {session_id} not found"),
+                );
+            }
+            Err(err) => {
+                return live_error(
+                    rpc_id,
+                    INTERNAL_ERROR_CODE,
+                    format!("failed to build session config: {err}"),
+                );
+            }
+        };
     // Design §6: the member session's model decides; an explicit `model`
     // override swaps the realtime model for this channel without touching
     // the member's text identity, and an explicit `provider` re-pairs the
@@ -3946,6 +3991,13 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map_or_else(|| session_id.to_string(), ToString::to_string);
+    if params.get("instructions").is_some() {
+        return live_error(
+            rpc_id,
+            INVALID_PARAMS_CODE,
+            "live/open instructions are catalog-owned and cannot be supplied by callers",
+        );
+    }
     let parsed: GatewayLiveOpenParams = match parse_live_params(params, &rpc_id) {
         Ok(p) => p,
         Err(resp) => return *resp,
@@ -3966,13 +4018,6 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
                 rpc_id,
                 INVALID_PARAMS_CODE,
                 "execution_identity conflicts with legacy top-level model/provider",
-            );
-        }
-        if parsed.instructions.is_some() {
-            return live_error(
-                rpc_id,
-                INVALID_PARAMS_CODE,
-                "execution_identity does not accept the legacy instructions overlay",
             );
         }
         let Some(open_authority) = capability_provider.open_authority_arc() else {
@@ -4141,12 +4186,6 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
             return live_open_error_response(rpc_id, LiveOpenError::OpenConfig(error));
         }
     };
-    if let Some(overlay) = parsed
-        .instructions
-        .and_then(|instructions| live_open_instruction_overlay(instructions.into_vec()))
-    {
-        projection.append_ephemeral_system_overlay(overlay);
-    }
     // Design §6: the member session's model decides; an explicit `model`
     // override swaps the realtime model for this channel without touching
     // the member's text identity, and an explicit `provider` re-pairs the
@@ -4874,7 +4913,6 @@ async fn handle_live_refresh<B: SessionAgentBuilder + 'static>(
         &session_id,
         RealtimeTurningMode::ProviderManaged,
         ctx.seed_max_chars,
-        None,
     )
     .await
     {
@@ -6131,15 +6169,14 @@ mod tests {
     }
 
     #[cfg(feature = "experimental-gpt-live-test-support")]
-    async fn staged_receipt_answer_machine(
+    async fn stage_receipt_answer_on_machine(
+        machine: Arc<MeerkatMachine>,
         token: &str,
     ) -> (
-        Arc<MeerkatMachine>,
         SessionId,
         LiveChannelId,
         meerkat_runtime::meerkat_machine::LivePlaybackOwnerReadinessAuthority,
     ) {
-        let machine = Arc::new(MeerkatMachine::ephemeral());
         let session_id = SessionId::new();
         machine
             .prepare_bindings(session_id.clone())
@@ -6187,6 +6224,21 @@ mod tests {
             .record_live_webrtc_token_issued(&session_id, &channel_id, token, now, 60_000)
             .await
             .expect("issue exact answer token");
+        (session_id, channel_id, readiness)
+    }
+
+    #[cfg(feature = "experimental-gpt-live-test-support")]
+    async fn staged_receipt_answer_machine(
+        token: &str,
+    ) -> (
+        Arc<MeerkatMachine>,
+        SessionId,
+        LiveChannelId,
+        meerkat_runtime::meerkat_machine::LivePlaybackOwnerReadinessAuthority,
+    ) {
+        let machine = Arc::new(MeerkatMachine::ephemeral());
+        let (session_id, channel_id, readiness) =
+            stage_receipt_answer_on_machine(Arc::clone(&machine), token).await;
         (machine, session_id, channel_id, readiness)
     }
 
@@ -6311,18 +6363,59 @@ mod tests {
 
     #[cfg(feature = "experimental-gpt-live-test-support")]
     #[tokio::test]
-    async fn playback_owner_loss_revokes_active_receipt_authority() {
-        let (
-            answer,
-            _transport,
-            _activator,
-            _committed,
-            _rolled_back,
-            machine,
-            session_id,
-            channel_id,
-            readiness,
-        ) = coordinated_receipt_answer_fixture("receipt-owner-loss-token").await;
+    async fn playback_owner_loss_rpc_revokes_active_receipt_authority() {
+        let persistence = meerkat::PersistenceBundle::new(
+            Arc::new(meerkat::MemoryStore::new()),
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
+            Arc::new(meerkat_store::MemoryBlobStore::new()),
+        );
+        let temp = tempfile::tempdir().expect("owner-loss fixture state");
+        let factory = AgentFactory::new(temp.path()).builtins(false);
+        let mut builder = meerkat::FactoryAgentBuilder::new(factory.clone(), Config::default());
+        builder.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+        let (service, machine) =
+            meerkat::surface::build_runtime_backed_service(builder, 4, persistence);
+        let service = Arc::new(service);
+        let ctx = Arc::new(attach_live(
+            Arc::clone(&service),
+            Arc::clone(&machine),
+            &factory,
+            Config::default(),
+            "ws://127.0.0.1/owner-loss".to_string(),
+            None,
+        ));
+        let handler = live_rpc_handler(ctx, service, Arc::clone(&machine));
+        let token = "receipt-owner-loss-token";
+        let (session_id, channel_id, readiness) =
+            stage_receipt_answer_on_machine(Arc::clone(&machine), token).await;
+        let machine_bound = Arc::new(AtomicBool::new(false));
+        let committed = Arc::new(AtomicBool::new(false));
+        let rolled_back = Arc::new(AtomicBool::new(false));
+        let activator = Arc::new(OrderingActivator {
+            machine_bound: Arc::clone(&machine_bound),
+            calls: AtomicUsize::new(0),
+        });
+        let binder: Arc<dyn meerkat::surface::LiveWebrtcBoundReadyBinder> =
+            Arc::new(OrderingBinder {
+                activator,
+                machine_bound,
+                committed,
+                rolled_back,
+            });
+        let transport = Arc::new(ReceiptAnswerTransport {
+            accepted: AtomicUsize::new(0),
+            rejected: AtomicUsize::new(0),
+        });
+        let answer = meerkat::surface::coordinate_live_webrtc_answer(
+            Arc::clone(&machine),
+            transport as Arc<dyn meerkat_live::LiveWebrtcAnswerTransport>,
+            Some(binder),
+            channel_id.clone(),
+            token.to_string(),
+            "receipt-offer".to_string(),
+        )
+        .await
+        .expect("coordinate active owner fixture");
         answer
             .delivery_custody
             .delivered()
@@ -6342,11 +6435,30 @@ mod tests {
             }
             phase => panic!("expected active custody, got {phase:?}"),
         };
-
-        machine
-            .revoke_live_playback_owner(&readiness)
-            .await
-            .expect("owner loss revokes channel");
+        let response = handler
+            .dispatch(
+                LiveSurfaceAuthority::host_trusted_stdio(),
+                Some(session_id.clone()),
+                Some("identity:reachy".to_string()),
+                "mobkit/live/playback_owner/revoke".to_string(),
+                serde_json::json!({
+                    "identity": "identity:reachy",
+                    "channel_id": channel_id.as_str(),
+                    "pending_receipt": readiness.pending_receipt(),
+                    "readiness_receipt": readiness.readiness_id(),
+                    "activation_receipt": activation_receipt,
+                }),
+                serde_json::json!("owner-loss"),
+            )
+            .await;
+        assert!(
+            response.error.is_none(),
+            "owner-loss RPC failed: {response:?}"
+        );
+        assert_eq!(
+            response.result,
+            Some(serde_json::json!({"phase": "revoked"}))
+        );
         assert!(
             machine
                 .validate_live_channel_activation_receipt(
@@ -6370,6 +6482,21 @@ mod tests {
             revoked.state(),
             meerkat_runtime::meerkat_machine::LiveChannelCustodyState::Revoked
         ));
+        let status = handler
+            .dispatch(
+                LiveSurfaceAuthority::host_trusted_stdio(),
+                Some(session_id),
+                Some("identity:reachy".to_string()),
+                "mobkit/live/status".to_string(),
+                serde_json::json!({
+                    "identity": "identity:reachy",
+                    "channel_id": channel_id.as_str(),
+                    "pending_receipt": readiness.pending_receipt(),
+                }),
+                serde_json::json!("status-after-owner-loss"),
+            )
+            .await;
+        assert_eq!(status.result, Some(serde_json::json!({"phase": "revoked"})));
     }
 
     #[cfg(feature = "experimental-gpt-live")]
@@ -6447,69 +6574,6 @@ mod tests {
     #[cfg(feature = "experimental-gpt-live")]
     fn test_session_id() -> SessionId {
         SessionId::parse("00000000-0000-0000-0000-000000000001").unwrap()
-    }
-
-    fn user_message(text: &str) -> Message {
-        Message::User(meerkat_core::types::UserMessage::text(text))
-    }
-
-    fn system_message(text: &str) -> Message {
-        Message::System(meerkat_core::types::SystemMessage::new(text))
-    }
-
-    /// Fix 2 lane assertion (0.8.11 ordered-System shape): the per-open
-    /// overlay lands ONLY on the replay seed as a trailing System row — the
-    /// canonical System drift witness stays derived from the durable session,
-    /// and the projected seed history ahead of the overlay is untouched.
-    #[test]
-    fn instruction_overlay_rides_the_replay_seed_not_the_drift_witness() {
-        let canonical = vec![system_message("You are the member."), user_message("hello")];
-        let overlay = live_open_instruction_overlay_message(vec![
-            "Speak Swedish.".to_string(),
-            "   ".to_string(),
-            "Keep replies short.".to_string(),
-        ])
-        .expect("non-empty instructions produce an overlay row");
-        let mut seed = canonical.clone();
-        seed.push(overlay);
-
-        let config = RealtimeSessionOpenConfig::for_open_from_messages(
-            RealtimeTurningMode::ProviderManaged,
-            meerkat_core::SessionLlmIdentity {
-                model: "gpt-realtime-2".to_string(),
-                provider: meerkat_core::Provider::OpenAI,
-                self_hosted_server_id: None,
-                provider_params: None,
-                auth_binding: None,
-            },
-            Vec::new(),
-            seed.clone(),
-            &canonical,
-        )
-        .expect("open config construction");
-
-        let Some(Message::System(overlay_row)) = config.seed_messages().last() else {
-            panic!("overlay must be the trailing System seed row");
-        };
-        assert_eq!(overlay_row.content, "Speak Swedish.\n\nKeep replies short.");
-        assert_eq!(
-            config.canonical_system_messages_ref(),
-            ["You are the member.".to_string()],
-            "the drift witness stays derived from the durable session only"
-        );
-        assert_eq!(
-            config.seed_messages()[..seed.len() - 1],
-            canonical[..],
-            "seed history ahead of the overlay untouched"
-        );
-    }
-
-    #[test]
-    fn empty_or_whitespace_instructions_append_nothing() {
-        assert!(live_open_instruction_overlay_message(Vec::new()).is_none());
-        assert!(
-            live_open_instruction_overlay_message(vec!["  ".to_string(), String::new()]).is_none()
-        );
     }
 
     /// An Anthropic-profile text identity carrying a realm-scoped auth

@@ -3058,6 +3058,9 @@ describe("MobHandle live methods", () => {
           activation_receipt: "active-receipt",
         },
       };
+      if (method === "mobkit/live/playback_owner/revoke") return {
+        phase: "revoked",
+      };
       throw new Error(`unexpected method ${method}`);
     });
 
@@ -3083,6 +3086,8 @@ describe("MobHandle live methods", () => {
     );
 
     assert.equal(active.activationReceipt, "active-receipt");
+    assert.equal(active.pendingReceipt, "pending-receipt");
+    assert.equal(active.readinessReceipt, "ready-receipt");
     assert.deepEqual(events, [
       "prepare:pending-receipt",
       "answer:v=0\r\nanswer",
@@ -3105,6 +3110,18 @@ describe("MobHandle live methods", () => {
       identity: "identity:reachy",
       channel_id: "chan-1",
       pending_receipt: "pending-receipt",
+    });
+    assert.equal((await active.ownerLost()).phase, "revoked");
+    assert.equal(events.at(-1), "abort");
+    assert.deepEqual(calls.at(-1), {
+      method: "mobkit/live/playback_owner/revoke",
+      params: {
+        identity: "identity:reachy",
+        channel_id: "chan-1",
+        pending_receipt: "pending-receipt",
+        readiness_receipt: "ready-receipt",
+        activation_receipt: "active-receipt",
+      },
     });
   });
 

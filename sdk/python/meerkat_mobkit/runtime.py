@@ -50,6 +50,7 @@ from .identity_first_models import (
 )
 from .live import (
     LIVE_EXECUTION_IDENTITY_V1,
+    ActiveLiveChannelConnection,
     ActiveLiveChannelHandle,
     ExperimentalLiveChannelStatus,
     LiveAssistantOutputAddress,
@@ -2507,6 +2508,10 @@ class MobHandle:
         forwarded (e.g. ``model=`` to override the realtime model,
         ``turning_mode=``).
         """
+        if "instructions" in kwargs:
+            raise ValueError(
+                "experimental live/open does not accept instructions; instructions are catalog-owned"
+            )
         params: dict[str, Any] = {"identity": identity, **kwargs}
         raw = await self._runtime._rpc("mobkit/live/open", params)
         return raw if isinstance(raw, dict) else {}
@@ -2524,6 +2529,10 @@ class MobHandle:
         projecting the already-authorized caller target into an absent
         ``target_identity`` response field.
         """
+        if "instructions" in kwargs:
+            raise ValueError(
+                "experimental live/open does not accept instructions; instructions are catalog-owned"
+            )
         params: dict[str, Any] = {"identity": identity, **kwargs}
         advertised_feature_capabilities: list[str] | None = None
         if execution_identity is not None:
@@ -2610,6 +2619,41 @@ class MobHandle:
             raise ValueError("playback owner readiness channel mismatch")
         return readiness
 
+    async def live_playback_owner_revoke(
+        self,
+        pending: PendingLiveChannelHandle,
+        readiness: LivePlaybackOwnerReadiness,
+        active: ActiveLiveChannelHandle | None = None,
+    ) -> ExperimentalLiveChannelStatus:
+        """Revoke one exact pending or active local playback owner."""
+        if readiness.channel_id != pending.channel_id:
+            raise ValueError("playback owner readiness channel mismatch")
+        params: dict[str, Any] = {
+            "identity": pending.target_identity,
+            "channel_id": pending.channel_id,
+            "pending_receipt": pending.pending_receipt,
+            "readiness_receipt": readiness.readiness_receipt,
+        }
+        if active is not None:
+            active = _require_active_live_handle(active)
+            if (
+                active.channel_id != pending.channel_id
+                or active.target_identity != pending.target_identity
+                or active.execution_mode != pending.execution_mode
+            ):
+                raise ValueError("active playback owner does not match pending custody")
+            params["activation_receipt"] = active.activation_receipt
+        raw = await self._runtime._rpc(
+            "mobkit/live/playback_owner/revoke",
+            params,
+        )
+        if not isinstance(raw, dict):
+            raise ValueError("playback owner revoke returned a non-object phase")
+        status = ExperimentalLiveChannelStatus.from_dict(raw)
+        if status.phase != "revoked":
+            raise ValueError("playback owner revoke did not return revoked custody")
+        return status
+
     async def live_experimental_status(
         self,
         handle: PendingLiveChannelHandle | ActiveLiveChannelHandle,
@@ -2644,7 +2688,7 @@ class MobHandle:
         activation_poll_interval: float = 0.05,
         activation_attempts: int = 200,
         **kwargs: Any,
-    ) -> ActiveLiveChannelHandle:
+    ) -> ActiveLiveChannelConnection:
         """Open and activate one experimental channel in custody order.
 
         The method returns only after generated active authority exists and the
@@ -2674,7 +2718,50 @@ class MobHandle:
                 status = await self.live_experimental_status(pending)
                 if status.phase == "active" and status.handle is not None:
                     await playback_owner.activate(status.handle)
-                    return status.handle
+                    active = status.handle
+                    revocation_task: asyncio.Task[ExperimentalLiveChannelStatus] | None = None
+
+                    async def owner_lost() -> ExperimentalLiveChannelStatus:
+                        nonlocal revocation_task
+                        if revocation_task is None:
+                            revocation_task = asyncio.create_task(
+                                self.live_playback_owner_revoke(
+                                    pending, readiness, active
+                                )
+                            )
+                        revoked = await asyncio.shield(revocation_task)
+                        try:
+                            await playback_owner.abort()
+                        except Exception as error:
+                            _log.warning(
+                                "local playback owner cleanup failed after revoke: %s",
+                                error,
+                            )
+                        return revoked
+
+                    connection = ActiveLiveChannelConnection(
+                        active,
+                        pending.pending_receipt,
+                        readiness.readiness_receipt,
+                        owner_lost,
+                    )
+                    wait_for_loss = getattr(playback_owner, "wait_for_loss", None)
+                    if callable(wait_for_loss):
+                        async def supervise_owner_loss() -> None:
+                            try:
+                                await wait_for_loss()
+                            except BaseException:
+                                pass
+                            try:
+                                await connection.owner_lost()
+                            except Exception as error:
+                                _log.error(
+                                    "failed to revoke lost playback owner: %s",
+                                    error,
+                                )
+
+                        asyncio.create_task(supervise_owner_loss())
+                    return connection
                 if status.phase in {"revoked", "closed"}:
                     raise RuntimeError(
                         f"experimental live channel {status.phase} before activation"

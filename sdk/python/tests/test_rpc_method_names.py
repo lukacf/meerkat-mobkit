@@ -1832,6 +1832,7 @@ async def test_live_connect_orders_owner_readiness_answer_and_activation():
                 "activation_receipt": "active-receipt",
             },
         },
+        "mobkit/live/playback_owner/revoke": {"phase": "revoked"},
     })
 
     active = await handle.live_connect(
@@ -1841,6 +1842,8 @@ async def test_live_connect_orders_owner_readiness_answer_and_activation():
         activation_poll_interval=0,
     )
     assert active.activation_receipt == "active-receipt"
+    assert active.pending_receipt == "pending-receipt"
+    assert active.readiness_receipt == "ready-receipt"
     assert events == [
         "prepare:pending-receipt",
         "answer:v=0\r\nanswer",
@@ -1864,6 +1867,19 @@ async def test_live_connect_orders_owner_readiness_answer_and_activation():
         "channel_id": "chan-1",
         "pending_receipt": "pending-receipt",
     }
+    revoked = await active.owner_lost()
+    assert revoked.phase == "revoked"
+    assert events[-1] == "abort"
+    assert calls[-1] == (
+        "mobkit/live/playback_owner/revoke",
+        {
+            "identity": "identity:reachy",
+            "channel_id": "chan-1",
+            "pending_receipt": "pending-receipt",
+            "readiness_receipt": "ready-receipt",
+            "activation_receipt": "active-receipt",
+        },
+    )
 
 
 @pytest.mark.asyncio

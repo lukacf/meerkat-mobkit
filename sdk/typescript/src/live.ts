@@ -39,6 +39,19 @@ export interface ExperimentalLiveGatewayConfig {
 export function experimentalLiveGatewayConfigToWire(
   config: ExperimentalLiveGatewayConfig,
 ): Record<string, unknown> {
+  assertExactKeys(
+    asRecord(config, "experimental live config"),
+    [
+      "principal",
+      "realm",
+      "factoryKind",
+      "factoryVersion",
+      "gate0Qualification",
+      "authBinding",
+      "voice",
+    ],
+    "experimental live config",
+  );
   const principal = requireString(config.principal, "experimental live principal");
   const realm = requireString(config.realm, "experimental live realm");
   const factoryKind = requireString(
@@ -159,6 +172,15 @@ export interface ActiveLiveChannelHandle {
   readonly activationReceipt: string;
 }
 
+export interface ActiveLiveChannelConnection extends ActiveLiveChannelHandle {
+  readonly pendingReceipt: string;
+  readonly readinessReceipt: string;
+  /** Revoke active authority after local media-owner loss. Idempotent locally. */
+  ownerLost(): Promise<ExperimentalLiveChannelStatus>;
+  /** Explicit lifecycle teardown, equivalent to ownerLost. */
+  dispose(): Promise<ExperimentalLiveChannelStatus>;
+}
+
 export interface LivePlaybackOwnerReadiness {
   readonly channelId: string;
   readonly readinessReceipt: string;
@@ -179,6 +201,8 @@ export interface LivePlaybackOwner {
   activate(active: ActiveLiveChannelHandle): Promise<void>;
   /** Tear down the local peer and all gates after any failed activation. */
   abort(): Promise<void>;
+  /** Optional transport-loss signal supervised by the returned connection. */
+  waitForLoss?(): Promise<void>;
 }
 
 export type LiveReplacementRequired =

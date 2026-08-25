@@ -20,6 +20,7 @@ from .builder import MobKit, MobKitBuilder
 from .runtime import JobsHandle, MobKitRuntime, MonitorsHandle, ToolCaller
 from .live import (
     ActiveLiveChannelHandle,
+    ActiveLiveChannelConnection,
     ExperimentalLiveChannelStatus,
     ExperimentalLiveGatewayConfig,
     LIVE_EXECUTION_CLIENT_CONTEXT_V1,
@@ -291,6 +292,7 @@ __all__ = [
     "LIVE_EXECUTION_FUNCTION_BRIDGE_V1",
     "LIVE_EXECUTION_CLIENT_CONTEXT_V1",
     "ActiveLiveChannelHandle",
+    "ActiveLiveChannelConnection",
     "PendingLiveChannelHandle",
     "ExperimentalLiveChannelStatus",
     "LiveAssistantOutputAddress",

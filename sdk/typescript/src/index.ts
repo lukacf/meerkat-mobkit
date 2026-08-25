@@ -53,6 +53,7 @@ export {
 } from "./live.js";
 export type {
   ActiveLiveChannelHandle,
+  ActiveLiveChannelConnection,
   ExperimentalLiveChannelStatus,
   ExperimentalLiveGatewayConfig,
   LiveAuthBindingOverride,

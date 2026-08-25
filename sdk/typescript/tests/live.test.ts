@@ -77,6 +77,21 @@ describe("experimental live gateway registration", () => {
       }),
     );
   });
+
+  it("rejects caller-owned instructions in gateway config", () => {
+    assert.throws(() =>
+      experimentalLiveGatewayConfigToWire({
+        principal: "user:luka",
+        realm: "family",
+        factoryKind: "openai-gpt-live",
+        factoryVersion: "v1",
+        gate0Qualification: "gate0-v1",
+        authBinding: { realm: "family", binding: "chatgpt-oauth" },
+        voice: "marin",
+        instructions: "caller-owned prompt",
+      } as unknown as import("../src/live.js").ExperimentalLiveGatewayConfig),
+    );
+  });
 });
 
 describe("live execution identity v1", () => {

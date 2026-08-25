@@ -1552,6 +1552,7 @@ fn is_console_mutating_rpc_method(method: &str) -> bool {
             | "mobkit/live/open"
             | "mobkit/live/replacement_required"
             | "mobkit/live/playback_owner/register"
+            | "mobkit/live/playback_owner/revoke"
             | "mobkit/live/close"
             | "mobkit/live/refresh"
             | "mobkit/live/send_input"
@@ -10756,6 +10757,7 @@ comms = true
             "mobkit/live/open",
             "mobkit/live/replacement_required",
             "mobkit/live/playback_owner/register",
+            "mobkit/live/playback_owner/revoke",
             "mobkit/live/close",
             "mobkit/live/refresh",
             "mobkit/live/send_input",
@@ -10796,6 +10798,7 @@ comms = true
             "mobkit/live/open",
             "mobkit/live/replacement_required",
             "mobkit/live/playback_owner/register",
+            "mobkit/live/playback_owner/revoke",
             "mobkit/live/status",
             "mobkit/live/close",
             "mobkit/live/refresh",
