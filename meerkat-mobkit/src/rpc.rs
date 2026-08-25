@@ -2988,6 +2988,7 @@ async fn handle_unified_rpc_json_inner(
             let handle = runtime.mob_handle();
             match mob_methods::handle_member_declaration_rpc(
                 &handle,
+                runtime.speaks_for_composition(),
                 method,
                 response_id.clone(),
                 &request.params,

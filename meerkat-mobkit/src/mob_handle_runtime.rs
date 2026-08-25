@@ -7426,6 +7426,10 @@ pub struct MobRuntime {
     /// Keeps the ephemeral temp directory alive for the lifetime of the runtime.
     /// Dropped when the runtime is dropped, cleaning up the temp dir.
     _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
+    /// Whether this launch speaks for the durable composition. Retained past
+    /// bootstrap because it gates more than the pin: a launch that does not
+    /// speak for the composition must not AUTHOR durable state either.
+    composition_authority: crate::mob_composition_manifest::CompositionAuthority,
 }
 
 /// The right to lift a prepared mob from `Stopped` to `Running`, once.
@@ -7730,6 +7734,7 @@ impl MobRuntime {
                 session_write_epochs: spec.session_write_epochs,
                 committed_boundary_recoverer: spec.committed_boundary_recoverer,
                 _ephemeral_dir: ephemeral_dir,
+                composition_authority: spec.composition_authority,
             },
             pending_activation,
         ))
@@ -7742,6 +7747,11 @@ impl MobRuntime {
             None,
         ));
         Self {
+            // A runtime adopted from a bare handle made no declaration, so it
+            // keeps the safe default: it speaks for the composition unless told
+            // otherwise. A candidate must say so explicitly.
+            composition_authority:
+                crate::mob_composition_manifest::CompositionAuthority::Authoritative,
             handle,
             session_service: None,
             agent_mob_mcp_state: None,
@@ -7757,6 +7767,18 @@ impl MobRuntime {
             committed_boundary_recoverer: None,
             _ephemeral_dir: None,
         }
+    }
+
+    /// Whether this launch speaks for the durable composition.
+    ///
+    /// Gates two things, and the second is the one that is easy to forget: the
+    /// composition pin, and whether this launch may AUTHOR durable state. A
+    /// certification pass that adopted declarations would write them under a
+    /// composition no pin will ever cover, which is the hole the pin exemption
+    /// would otherwise open.
+    #[must_use]
+    pub fn speaks_for_composition(&self) -> bool {
+        self.composition_authority.speaks_for_composition()
     }
 
     pub fn handle(&self) -> MobHandle {

@@ -5171,6 +5171,7 @@ async fn handle_console_runtime_rpc_with_visibility(
         let handle = runtime.handle();
         if let Some(response) = crate::rpc::mob_methods::handle_member_declaration_rpc(
             &handle,
+            runtime.speaks_for_composition(),
             request.method.as_str(),
             response_id.clone(),
             &request.params,
