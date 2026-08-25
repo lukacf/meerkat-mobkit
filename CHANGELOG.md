@@ -7,10 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Pins meerkat `=0.8.27`, which carries the upstream fix accepting an encoded
-stable roster identity as the successor of a legacy generation-zero runtime
-binding. That fix is what lets already-persisted sessions resume under the
-durable-roster contract without any migration on the MobKit side.
+Pins meerkat `=0.8.28`, which carries three upstream fixes this release depends
+on. First, accepting an encoded stable roster identity as the successor of a
+legacy generation-zero runtime binding - that is what lets already-persisted
+sessions resume under the durable-roster contract with no migration on the
+MobKit side. Second, `respawn_with_successor_spec`, the atomic successor-spec
+respawn that restores reprofile-via-reset (see below). Third, treating an
+omitted binding on a successor spec as "preserve the current one" rather than
+"clear it"; without that, a successor respawn was refused for any locally-bound
+member, because the roster does not expose a binding for the caller to restate.
 
 ### Changed
 
@@ -19,8 +24,10 @@ durable-roster contract without any migration on the MobKit side.
   makes adopted identity declarations survive a restart. The cost is that the
   mob definition is pinned once the storage exists: meerkat refuses a definition
   that disagrees with the persisted spec store, on create and on resume alike
-  (verified against 0.8.26 and unchanged in the pinned 0.8.27), so durable mob
-  state and an editable `mob_config` cannot both hold on one storage path.
+  (verified against 0.8.26 and unchanged in the pinned 0.8.28), so durable mob
+  state and an editable `mob_config` cannot both hold on one storage path
+  WITHOUT the declared spec update described under Added - which is the
+  sanctioned way through this refusal, not around it.
 
   Editing `mob_config` and restarting against the same state directory is now
   refused with a typed error that names the diverged fields and states the
@@ -34,6 +41,43 @@ durable-roster contract without any migration on the MobKit side.
   config silently.
 
 ### Added
+
+- **A declared spec update, so the `mob_config` pin has a door.** A persistent
+  launch pins the mob definition, and the typed refusal for a diverged definition
+  is the right default - booting stale config silently is worse. But a refusal
+  with no sanctioned way through it is a dead end, and it refuses the standard
+  operating mode of any deployment that edits `mob.toml` between activations and
+  clones its state directory (the persisted spec rides through every clone, so
+  the next config-touching activation is refused).
+
+  `runtime_options.declare_spec_update = {"expected_revision": N}` is an explicit
+  operator declaration that the persisted spec now matches this definition,
+  compare-and-swapped on the revision the divergence was observed at. Present
+  only on the activation that intends to move the pin: a declared transition, not
+  a mode. `expected_revision` is required rather than defaulted, because a
+  declaration without the revision it was made against is not a declaration - it
+  is "accept whatever is there", which is indistinguishable from having no pin.
+
+  It refuses, fail-closed, when the revision moved between observation and
+  declaration, when the payload names a different mob than its definition
+  carries, when nothing is pinned, when the definition already matches, and when
+  declared alongside an in-memory `mob_storage` (which pins nothing, so there
+  would be no spec to move). Each of those would otherwise be a silent lie in an
+  activation log. The receipt is logged with the previous revision, the committed
+  revision and the declared fields.
+
+  Divergence is reported as dotted field paths - `profiles.security.model` rather
+  than `profiles` - because an operator about to declare through a refusal has to
+  see what actually moved.
+
+- **Reprofile-via-reset is restored.** Lowering destructive reset to one
+  authoritative respawn removed it: a respawn preserves the predecessor's
+  profile, so reset with a changed roster profile returned a typed refusal rather
+  than silently keeping the old profile. meerkat 0.8.28 adds
+  `respawn_with_successor_spec`, which applies the successor spec atomically, and
+  reset now binds to it - so a reset that changes profile reprofiles again. The
+  typed refusal remains for any case the successor transition cannot satisfy;
+  what it will never do is report a reset that kept the old profile.
 
 - **`runtime_options.mob_storage`.** Declares mob storage in-memory on an
   otherwise persistent launch, mirroring `runtime_options.runtime_store`. The
