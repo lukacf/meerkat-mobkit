@@ -3284,6 +3284,50 @@ actions = ["agent.view"]
         }
     }
 
+    #[cfg(feature = "experimental-gpt-live")]
+    #[test]
+    fn production_experimental_live_operator_advertises_only_client_context() {
+        let canonical = meerkat::ExperimentalLiveOperatorConfig::gpt_live_client_context();
+        let selected_factory = canonical.factory().clone();
+        let realm = meerkat_core::RealmId::parse("family").expect("realm");
+        let experimental = GatewayExperimentalLiveOption {
+            principal: "user:luka".to_string(),
+            realm: realm.clone(),
+            factory: selected_factory.clone(),
+            qualification: canonical.required_gate0().clone(),
+            binding: meerkat_core::AuthBindingRef {
+                realm: realm.clone(),
+                binding: meerkat_core::BindingId::parse("chatgpt-oauth").expect("binding"),
+                profile: None,
+                origin: meerkat_core::BindingOrigin::Configured,
+            },
+            voice: "marin".to_string(),
+        };
+        let operator =
+            gateway_experimental_live_operator(&experimental).expect("production operator profile");
+        let factory =
+            AgentFactory::minimal().with_experimental_live_admission(operator, [realm.clone()]);
+        let capabilities = factory
+            .experimental_live_execution_feature_capabilities(
+                &realm,
+                &selected_factory,
+                meerkat::GPT_LIVE_CLIENT_CONTEXT_PROFILE_ID,
+            )
+            .expect("current build client-context qualification");
+
+        assert_eq!(
+            capabilities,
+            vec![
+                meerkat_contracts::LIVE_EXECUTION_IDENTITY_V1_CAPABILITY,
+                meerkat_contracts::LIVE_CLIENT_CONTEXT_V1_CAPABILITY,
+            ]
+        );
+        assert!(
+            !capabilities.contains(&meerkat_contracts::LIVE_FUNCTION_BRIDGE_V1_CAPABILITY),
+            "the production gateway must not advertise unqualified FunctionBridge",
+        );
+    }
+
     #[tokio::test]
     async fn callback_close_wakes_pending_call_and_rejects_late_admission() {
         let (stdout_tx, mut stdout_rx) = mpsc::channel(4);
@@ -3826,6 +3870,17 @@ fn parse_gateway_experimental_live_option(
         },
         voice: required_string("voice")?,
     })
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+fn gateway_experimental_live_operator(
+    experimental: &GatewayExperimentalLiveOption,
+) -> Result<meerkat::ExperimentalLiveOperatorConfig, meerkat::ExperimentalLiveAdmissionError> {
+    meerkat::ExperimentalLiveOperatorConfig::new(
+        experimental.factory.clone(),
+        experimental.qualification.clone(),
+    )
+    .with_gpt_live_client_context_profile()
 }
 
 fn parse_gateway_runtime_options(
@@ -9290,27 +9345,24 @@ external_addressable = true
         // credential-resolving realtime session factory; clone before
         // the builder consumes it.
         #[cfg(feature = "experimental-gpt-live")]
-        let live_agent_factory = if let Some(experimental) =
-            gateway_options.experimental_live.as_ref()
-        {
-            let operator = meerkat::ExperimentalLiveOperatorConfig::new(
-                experimental.factory.clone(),
-                experimental.qualification.clone(),
-            )
-            .with_gpt_live_function_bridge_profile()
-            .unwrap_or_else(|error| {
-                fail_init(
-                    &request_id,
-                    -32602,
-                    format!("runtime_options.experimental_live execution profile failed: {error}"),
-                )
-            });
-            factory
-                .clone()
-                .with_experimental_live_admission(operator, [experimental.realm.clone()])
-        } else {
-            factory.clone()
-        };
+        let live_agent_factory =
+            if let Some(experimental) = gateway_options.experimental_live.as_ref() {
+                let operator =
+                gateway_experimental_live_operator(experimental).unwrap_or_else(|error| {
+                    fail_init(
+                        &request_id,
+                        -32602,
+                        format!(
+                            "runtime_options.experimental_live execution profile failed: {error}"
+                        ),
+                    )
+                });
+                factory
+                    .clone()
+                    .with_experimental_live_admission(operator, [experimental.realm.clone()])
+            } else {
+                factory.clone()
+            };
         #[cfg(not(feature = "experimental-gpt-live"))]
         let live_agent_factory = factory.clone();
         let live_machine = Arc::clone(&adapter);
