@@ -37,6 +37,15 @@ pub struct MobCompositionManifest {
     pub created_by_mobkit: String,
     /// The composition the storage path was created for.
     pub definition: MobDefinition,
+    /// Whether the launch that created this storage spoke for the durable
+    /// composition.
+    ///
+    /// Defaulted rather than version-gated: manifests written before this field
+    /// existed were all written by authoritative launches, because a
+    /// non-authoritative launch did not record at all, so `Authoritative` is
+    /// the accurate reading of an absent field rather than a fallback.
+    #[serde(default)]
+    pub created_by_authority: CompositionAuthority,
 }
 
 /// Where the manifest lives for a given mob storage path: beside it, with the
@@ -74,6 +83,9 @@ pub enum MobCompositionProvenanceError {
     },
     /// The provenance record could not be written at create time.
     NotRecorded { manifest: PathBuf, message: String },
+    /// The storage was created by a launch that did not speak for the durable
+    /// composition, so no authoritative composition can take effect on it.
+    CreatedByRehearsal { manifest: PathBuf, storage: PathBuf },
     /// A storage arrived already holding events with nothing declared about
     /// what it is.
     ///
@@ -157,6 +169,18 @@ impl std::fmt::Display for MobCompositionProvenanceError {
                 manifest.display(),
                 message
             ),
+            Self::CreatedByRehearsal { manifest, storage } => write!(
+                f,
+                "the mob storage at {} was created by a launch that declared it does \
+                 not speak for the durable composition (a candidate or certification \
+                 pass), recorded at {}, so the composition you supplied can never take \
+                 effect on it: a resume cannot apply a new definition, and the event \
+                 log's MobCreated definition is the rehearsal one. Create the durable \
+                 store from an authoritative launch and run the candidate against a \
+                 separate rehearsal path",
+                storage.display(),
+                manifest.display()
+            ),
         }
     }
 }
@@ -175,12 +199,14 @@ impl std::error::Error for MobCompositionProvenanceError {}
 pub(crate) fn record_on_create(
     mob_storage_path: &Path,
     definition: &MobDefinition,
+    created_by_authority: CompositionAuthority,
 ) -> Result<(), MobCompositionProvenanceError> {
     let manifest = manifest_path(mob_storage_path);
     let record = MobCompositionManifest {
         manifest_version: MANIFEST_VERSION,
         created_by_mobkit: env!("CARGO_PKG_VERSION").to_string(),
         definition: definition.clone(),
+        created_by_authority,
     };
     let bytes = serde_json::to_vec_pretty(&record).map_err(|err| {
         MobCompositionProvenanceError::NotRecorded {
@@ -248,6 +274,16 @@ pub fn verify_before_resume(
             message: err.to_string(),
         }
     })?;
+    // Before any field comparison. A rehearsal-created store cannot host an
+    // authoritative composition at all, so reporting which fields differ would
+    // name a fixable-looking cause for something no edit to the definition can
+    // fix.
+    if !record.created_by_authority.speaks_for_composition() {
+        return Err(MobCompositionProvenanceError::CreatedByRehearsal {
+            manifest,
+            storage: mob_storage_path.to_path_buf(),
+        });
+    }
     let fields = diverged_definition_fields(&record.definition, supplied);
     if fields.is_empty() {
         Ok(())
@@ -263,10 +299,45 @@ struct ManifestVersionProbe {
     manifest_version: u32,
 }
 
-/// Top-level definition fields that differ, for an actionable refusal.
+/// Rewrite the manifest after an operator declared a spec update.
 ///
-/// Falls back to a whole-definition marker if either side will not serialize,
-/// so a serialization failure cannot be read as "no divergence".
+/// Separate from [`record_on_create`] on purpose, even though the write is the
+/// same shape: this one runs against a manifest that ALREADY EXISTS and is being
+/// deliberately superseded, which is a different authorization story from
+/// recording a fresh composition. Keeping them apart means a create path can
+/// never silently overwrite an existing manifest by calling the wrong function.
+/// The creating authority is PRESERVED, not reset. A declared update supersedes
+/// the composition, never the provenance: if a rehearsal launch created this
+/// store, no operator declaration can make the promoted composition take effect
+/// on it, because a resume still replays the rehearsal `MobCreated`. Defaulting
+/// to authoritative here would launder exactly that store into one that
+/// verifies clean.
+pub(crate) fn record_declared_update(
+    mob_storage_path: &Path,
+    declared: &MobDefinition,
+) -> Result<(), MobCompositionProvenanceError> {
+    let created_by_authority = read_recorded_authority(mob_storage_path);
+    record_on_create(mob_storage_path, declared, created_by_authority)
+}
+
+/// The authority recorded beside this storage, for callers that must not reset
+/// it.
+///
+/// An unreadable or absent manifest reads as `Authoritative`. That is the safe
+/// direction here and only here: this is called on the declared-update path,
+/// which already refused unless a manifest was pinned, so the fallback is
+/// unreachable in practice, and treating an unreadable manifest as a rehearsal
+/// would refuse every future boot of a store whose provenance is merely
+/// damaged.
+fn read_recorded_authority(mob_storage_path: &Path) -> CompositionAuthority {
+    let manifest = manifest_path(mob_storage_path);
+    std::fs::read(&manifest)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<MobCompositionManifest>(&bytes).ok())
+        .map(|record| record.created_by_authority)
+        .unwrap_or_default()
+}
+
 /// Which definition fields differ, as dotted PATHS rather than top-level keys.
 ///
 /// Reported at the deepest point where both sides are still objects, so a single
@@ -279,20 +350,9 @@ struct ManifestVersionProbe {
 /// absent) and reports the path itself: below that point "which element changed"
 /// needs a keying rule this does not have, and inventing one would name fields
 /// that do not exist.
-/// Rewrite the manifest after an operator declared a spec update.
 ///
-/// Separate from [`record_on_create`] on purpose, even though the write is the
-/// same shape: this one runs against a manifest that ALREADY EXISTS and is being
-/// deliberately superseded, which is a different authorization story from
-/// recording a fresh composition. Keeping them apart means a create path can
-/// never silently overwrite an existing manifest by calling the wrong function.
-pub(crate) fn record_declared_update(
-    mob_storage_path: &Path,
-    declared: &MobDefinition,
-) -> Result<(), MobCompositionProvenanceError> {
-    record_on_create(mob_storage_path, declared)
-}
-
+/// Falls back to a whole-definition marker if either side will not serialize, so
+/// a serialization failure cannot be read as "no divergence".
 pub(crate) fn diverged_definition_fields(
     recorded: &MobDefinition,
     supplied: &MobDefinition,
@@ -378,10 +438,19 @@ fn collect_diverged_paths(
 /// never existed in the store to begin with.
 ///
 /// So a launch may say it does not speak for the durable composition. Such a
-/// launch takes no part in pin semantics: it neither creates the pin nor is
-/// refused by one. It is not claiming to be the durable composition, and a
-/// deliberately-restricted certification pass is exactly that claim's opposite.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// launch is not VERIFIED against the pin: it is not claiming to be the durable
+/// composition, and a deliberately-restricted certification pass is exactly
+/// that claim's opposite.
+///
+/// It still records provenance when it creates a store, tagged with the
+/// authority that created it. Skipping the record instead would leave a store
+/// whose composition nobody has spoken for, and the next authoritative resume
+/// would then adopt ITS OWN definition as the record while
+/// `MobBuilder::for_resume` boots the definition the event log actually holds.
+/// That is the certified lie [`record_on_create`] warns about, reached by
+/// omission rather than by a bad write.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CompositionAuthority {
     /// This launch speaks for the durable composition: it creates the pin when
     /// absent and is verified against it when present. The default, so a launch
@@ -393,10 +462,15 @@ pub enum CompositionAuthority {
     /// probe, or certification pass whose composition is intentionally not the
     /// one that should be pinned.
     ///
-    /// Exempt from BOTH halves on purpose. Exempting creation alone would wedge
+    /// Exempt from VERIFICATION on purpose. Verifying such a launch would wedge
     /// the pipeline in the other direction: the next candidate boot against an
     /// existing pin would be refused for precisely the fields it is meant to
     /// differ in.
+    ///
+    /// Not exempt from RECORDING. A store this launch created is tagged as
+    /// rehearsal-created, and an authoritative resume of it is refused
+    /// ([`MobCompositionProvenanceError::CreatedByRehearsal`]) because a resume
+    /// structurally cannot apply the promoted composition.
     NonAuthoritative,
 }
 

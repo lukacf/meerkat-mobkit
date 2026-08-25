@@ -586,6 +586,41 @@ mod tests {
         );
     }
 
+    /// The STACKED form: a comms encoding wrapped around a runtime ALIAS rather
+    /// than around a durable identity. Two encodings deep, alias innermost.
+    ///
+    /// Its own test, not another assertion appended to the spelling test. A
+    /// single test function stops at its first failing assert, so a mutation
+    /// that breaks an EARLIER case masks whether these two discriminate at all -
+    /// which is exactly what happened when this was written inline: reversing
+    /// the decode order failed the plain encoded-identity case first and these
+    /// never ran.
+    #[test]
+    fn a_comms_encoded_runtime_alias_reaches_the_durable_roster_row() {
+        let expected = roster_member_id_for_identity("review:singleton");
+
+        let stacked = mob_member_id_str("rt:review:singleton:2").into_owned();
+        assert_eq!(
+            roster_member_id_for_supplied_id(&stacked),
+            expected,
+            "a comms encoding of a runtime alias must reach the durable row: {stacked}"
+        );
+
+        // OB3's exact production value, verbatim from their store rather than
+        // constructed here. Their typed MobMemberBinding.member and comms_name
+        // both carry this, and theirs is the only store known to hold the
+        // stacked shape - so a helper that agrees with itself about how to build
+        // the input cannot stand in for it. If their encoding differs from what
+        // this crate would produce, that difference IS the bug and constructing
+        // the input would hide it.
+        let ob3_persisted = "mk--rt_cperson_cfederico_x2e_gomez_x40_king_x2e_com_c2";
+        assert_eq!(
+            roster_member_id_for_supplied_id(ob3_persisted),
+            roster_member_id_for_identity("person:federico.gomez@king.com"),
+            "OB3's persisted stacked alias must reach the durable person row"
+        );
+    }
+
     #[test]
     fn canonical_correlation_id_passes_canonical_uuids_and_canonicalizes_the_rest() {
         // A canonical UUID rides through byte-identical (the schedule

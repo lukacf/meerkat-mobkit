@@ -199,8 +199,8 @@ async fn boot_non_authoritative(
     .await
 }
 
-/// HomeCore's production rollback, reproduced: a candidate/promote pipeline
-/// against ONE state directory.
+/// HomeCore's production rollback, reproduced - and the answer it actually
+/// deserves.
 ///
 /// Their deploy boots a deliberately RESTRICTED candidate first to certify it,
 /// then promotes. On a fresh store the candidate boot was the first persistent
@@ -209,18 +209,28 @@ async fn boot_non_authoritative(
 /// on every field the two modes differ in. launchd respawned the refused boot
 /// 929 times.
 ///
-/// The door cannot reach that state - the refusal is at boot, before any operator
-/// ceremony can run, and the composition worth declaring never existed in the
-/// store. So a candidate must take no part in pin semantics at all.
+/// The first fix exempted the candidate from BOTH halves of pin semantics, and
+/// that was wrong in a way the refusal had been concealing. A resume cannot
+/// apply a new definition - `MobBuilder::for_resume` takes only the storage - so
+/// the promoted composition can NEVER take effect on a store the candidate
+/// created. Letting the promoted boot succeed did not fix the pipeline; it made
+/// the mob run the rehearsal composition silently while the manifest recorded
+/// the promoted one.
+///
+/// So the store records WHICH authority created it, and the promoted boot is
+/// refused with that as the reason. The pipeline is still refused, because it is
+/// genuinely unapplicable, but for a cause that points at the fix: create the
+/// durable store from an authoritative launch, rehearse on a separate path.
 #[tokio::test]
-async fn a_candidate_launch_neither_creates_the_pin_nor_is_refused_by_it() {
+async fn a_rehearsal_created_store_is_refused_by_name_not_silently_adopted() {
     const MOB_ID: &str = "candidate-promote";
     let temp = tempfile::tempdir().expect("temp dir");
     let mob_path = temp.path().join("mob.sqlite");
     let session_root = temp.path().join("sessions");
 
     // 1. The CANDIDATE boots first, with the restricted composition, on a fresh
-    //    store. It must NOT create the pin.
+    //    store. It must boot: it is not refused by pin semantics it does not
+    //    speak for.
     let candidate =
         boot_non_authoritative(&mob_path, &session_root, diverged_definition_for(MOB_ID))
             .await
@@ -236,14 +246,48 @@ async fn a_candidate_launch_neither_creates_the_pin_nor_is_refused_by_it() {
         .expect("shutdown the candidate runtime");
     drop(candidate);
 
-    // 2. The PROMOTED boot supplies the real composition. Before the fix this
-    //    was refused, because step 1 had pinned the candidate's composition.
+    // 2. The PROMOTED boot supplies the real composition, and must be refused
+    //    for the REAL reason. Ok here is the certified lie: the manifest would
+    //    record the promoted composition while the event log boots the rehearsal
+    //    one, and every later restart would verify clean.
+    match boot(&mob_path, &session_root, base_definition_for(MOB_ID)).await {
+        Err(MobRuntimeError::CompositionProvenance(
+            MobCompositionProvenanceError::CreatedByRehearsal { .. },
+        )) => {}
+        Err(MobRuntimeError::CompositionProvenance(MobCompositionProvenanceError::Divergent {
+            fields,
+            ..
+        })) => panic!(
+            "refused for diverged fields {fields:?}, which names a cause an operator can \
+             try to fix by editing the definition - but no edit makes a rehearsal-created \
+             store host the promoted composition, so that message sends them to change \
+             the one thing that cannot help"
+        ),
+        Err(other) => panic!("expected a rehearsal-origin refusal, got: {other}"),
+        Ok(_) => panic!(
+            "the promoted boot succeeded on a store the CANDIDATE created: the manifest \
+             now certifies the promoted composition while the event log runs the \
+             rehearsal one - a silent wrong composition in place of a loud refusal"
+        ),
+    }
+}
+
+/// The other direction, which exempting creation alone would have wedged: a
+/// candidate rehearsing against a store an AUTHORITATIVE launch created must
+/// not be refused for the fields candidate mode exists to differ in.
+///
+/// This is the legitimate rehearsal shape - real durable state, restricted
+/// composition, nothing durable authored.
+#[tokio::test]
+async fn a_candidate_is_not_refused_by_a_pin_it_does_not_speak_for() {
+    const MOB_ID: &str = "candidate-vs-real-pin";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite");
+    let session_root = temp.path().join("sessions");
+
     let promoted = boot(&mob_path, &session_root, base_definition_for(MOB_ID))
         .await
-        .expect(
-            "the promoted boot must not be refused for a pin the candidate created - this is \
-             the 929-respawn production failure",
-        );
+        .expect("an authoritative launch creates the store and its pin");
     promoted
         .handle()
         .shutdown()
@@ -251,19 +295,64 @@ async fn a_candidate_launch_neither_creates_the_pin_nor_is_refused_by_it() {
         .expect("shutdown the promoted runtime");
     drop(promoted);
 
-    // 3. And the other direction: a candidate booting against a store the
-    //    promoted launch HAS pinned must not be refused for the fields it exists
-    //    to differ in. Exempting creation alone would wedge this way instead.
-    let candidate_again =
+    let candidate =
         boot_non_authoritative(&mob_path, &session_root, diverged_definition_for(MOB_ID)).await;
     assert!(
-        candidate_again.is_ok(),
+        candidate.is_ok(),
         "a candidate must not be refused by a pin it does not speak for: {:?}",
-        candidate_again.err()
+        candidate.err()
     );
-    if let Ok(runtime) = candidate_again {
+    if let Ok(runtime) = candidate {
         let _ = runtime.handle().shutdown().await;
     }
+}
+
+/// A store with an event log and NO manifest must be adopted by an
+/// authoritative resume, not refused.
+///
+/// Two reachable ways in, both HomeCore's: a store created before the manifest
+/// existed, and recovery surgery that removed the manifest deliberately.
+/// Refusing would report a conflict with a claim nobody made, and would turn
+/// their recovery into a second refusal.
+///
+/// This is the path the rehearsal tag exists to keep narrow. Without the tag,
+/// a rehearsal-created store would arrive here too and be adopted.
+#[tokio::test]
+async fn an_authoritative_resume_adopts_a_store_with_no_manifest() {
+    const MOB_ID: &str = "manifest-adoption";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite");
+    let session_root = temp.path().join("sessions");
+
+    let first = boot(&mob_path, &session_root, base_definition_for(MOB_ID))
+        .await
+        .expect("first bootstrap");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown the first runtime");
+    drop(first);
+
+    // Recovery surgery: the manifest is gone, the event log is not.
+    let manifest = meerkat_mobkit::mob_composition_manifest::manifest_path(&mob_path);
+    std::fs::remove_file(&manifest).expect("remove the manifest");
+
+    let resumed = boot(&mob_path, &session_root, base_definition_for(MOB_ID)).await;
+    assert!(
+        resumed.is_ok(),
+        "an authoritative resume must adopt a store with no manifest rather than refuse \
+         a claim nobody made: {:?}",
+        resumed.err()
+    );
+    if let Ok(runtime) = resumed {
+        let _ = runtime.handle().shutdown().await;
+    }
+    assert!(
+        manifest.exists(),
+        "adoption must leave a manifest behind, or the next restart faces the same \
+         unjudgeable store"
+    );
 }
 
 #[tokio::test]
