@@ -5782,9 +5782,7 @@ mod tests {
             self.create_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             *self.last_create_spec.lock().await = Some(spec.clone());
-            let generation = self
-                .create_calls
-                .load(std::sync::atomic::Ordering::SeqCst) as u64;
+            let generation = self.create_calls.load(std::sync::atomic::Ordering::SeqCst) as u64;
             let alias = format!("rt:{}:{generation}", identity.as_str());
             let agent_runtime_id =
                 crate::identity_first::AgentRuntimeId::parse(&alias).map_err(|error| {
