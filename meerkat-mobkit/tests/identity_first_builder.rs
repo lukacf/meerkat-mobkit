@@ -3570,11 +3570,13 @@ async fn identity_first_builder_lazy_run_flow_materializes_ob3_shaped_roster_bef
         3,
         "flow entrypoint must materialize the full review roster, got {member_ids:?}"
     );
-    for expected in [
-        "rt:review:singleton:0",
-        "rt:initiative:alpha:0",
-        "rt:initiative:beta:0",
-    ] {
+    // The DURABLE identities, not the old rt:{identity}:{generation} aliases.
+    // Since the stable-identity lowering the roster is keyed by the durable
+    // identity and an AgentRuntimeId is per-incarnation binding detail, so a
+    // roster keyed by the alias could not survive a respawn - which is the
+    // defect this branch exists to fix. A fixture still naming the alias
+    // asserts the contract that was replaced.
+    for expected in ["review:singleton", "initiative:alpha", "initiative:beta"] {
         assert!(
             member_ids.iter().any(|member_id| member_id == expected),
             "expected materialized member {expected}, got {member_ids:?}"

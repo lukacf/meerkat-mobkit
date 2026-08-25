@@ -774,7 +774,7 @@ impl MobKitConsoleAggregator {
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
-                "ambiguous live identity alias {identity}: candidates [{candidates}]"
+                "ambiguous live identity alias [via aggregator-inspect] {identity}: candidates [{candidates}]"
             )
             .into());
         }
@@ -821,10 +821,20 @@ impl MobKitConsoleAggregator {
                 {
                     return Err(stale_error.into());
                 }
-                if status
-                    .agent_runtime_id
-                    .as_ref()
-                    .is_some_and(|runtime_id| runtime_id.as_str() != resolved.runtime_identity)
+                // Identity-level. `resolved.runtime_identity` is the DECODED
+                // roster member id, which since the stable-identity lowering is
+                // the bare durable identity, so comparing it against an
+                // `rt:{identity}:{generation}` spelling was never equal and this
+                // gate skipped every healthy member.
+                if status.agent_runtime_id.is_some()
+                    && !crate::member_comms_id::live_member_names_identity_or_incarnation(
+                        &resolved.runtime_identity,
+                        status.identity.as_str(),
+                        status
+                            .agent_runtime_id
+                            .as_ref()
+                            .map(crate::identity_first::AgentRuntimeId::as_str),
+                    )
                 {
                     return Ok(None);
                 }
@@ -985,7 +995,7 @@ impl MobKitConsoleAggregator {
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
-                "ambiguous live identity alias {identity}: candidates [{candidates}]"
+                "ambiguous live identity alias [via aggregator-retire] {identity}: candidates [{candidates}]"
             )
             .into());
         }
@@ -1048,10 +1058,20 @@ impl MobKitConsoleAggregator {
                 {
                     return Err(stale_error.into());
                 }
-                if status
-                    .agent_runtime_id
-                    .as_ref()
-                    .is_some_and(|runtime_id| runtime_id.as_str() != resolved.runtime_identity)
+                // Identity-level. `resolved.runtime_identity` is the DECODED
+                // roster member id, which since the stable-identity lowering is
+                // the bare durable identity, so comparing it against an
+                // `rt:{identity}:{generation}` spelling was never equal and this
+                // gate skipped every healthy member.
+                if status.agent_runtime_id.is_some()
+                    && !crate::member_comms_id::live_member_names_identity_or_incarnation(
+                        &resolved.runtime_identity,
+                        status.identity.as_str(),
+                        status
+                            .agent_runtime_id
+                            .as_ref()
+                            .map(crate::identity_first::AgentRuntimeId::as_str),
+                    )
                 {
                     continue;
                 }
@@ -2166,7 +2186,17 @@ async fn console_identity_record_visible(
     let mut bound_live_member_seen = false;
     let mut wrong_live_projection_seen = false;
     for resolved in Box::pin(member_sources_for_entry(entry)).await {
-        if resolved.runtime_identity != record.runtime_member_id {
+        // Associate the live row with this durable record by the approved
+        // predicate, not by exact equality with the record's runtime_member_id.
+        // That field holds the BINDING (an incarnation), while the row is now the
+        // encoded durable identity, so exact equality never matched and a hidden
+        // row stopped affecting its own record's visibility - which is how a
+        // hidden member stayed inspectable.
+        if !crate::member_comms_id::live_member_names_identity_or_incarnation(
+            &resolved.runtime_identity,
+            &record.identity,
+            Some(record.runtime_member_id.as_str()),
+        ) {
             continue;
         }
         bound_live_member_seen = true;
@@ -2200,14 +2230,27 @@ async fn live_record_shadowed_by_hidden_durable_binding(
     let Ok(status) = identity_runtime.status(&identity).await else {
         return false;
     };
-    let Some(bound_runtime_id) = status.agent_runtime_id.as_ref() else {
+    // A binding must exist for this status to shadow anything.
+    if status.agent_runtime_id.is_none() {
         return false;
-    };
-    if bound_runtime_id.as_str() == resolved.runtime_identity {
+    }
+    // Identity-level: `resolved.runtime_identity` is the DECODED roster member
+    // id, which since the stable-identity lowering is the bare durable
+    // identity.
+    if crate::member_comms_id::live_member_is_identity(
+        &resolved.runtime_identity,
+        status.identity.as_str(),
+    ) {
         return false;
     }
     for candidate in Box::pin(member_sources_for_entry(&resolved.entry)).await {
-        if candidate.runtime_identity != bound_runtime_id.as_str() {
+        // Same identity-level rule: find the candidate whose roster identity IS
+        // this status's durable identity, not one whose spelling matches an
+        // AgentRuntimeId.
+        if !crate::member_comms_id::live_member_is_identity(
+            &candidate.runtime_identity,
+            status.identity.as_str(),
+        ) {
             continue;
         }
         let Some(bound_record) = identity_record_for_resolved_member(&candidate).await else {
@@ -2298,10 +2341,15 @@ async fn stale_live_record_binding_error(
 ) -> Option<String> {
     let identity_runtime = entry.identity_runtime.as_ref()?;
     for status in identity_runtime.statuses().await {
-        let matches_runtime = status
-            .agent_runtime_id
-            .as_ref()
-            .is_some_and(|runtime_id| runtime_id.as_str() == live_record.runtime_member_id);
+        // Identity-level, and a binding must exist. Comparing an
+        // AgentRuntimeId spelling against a stable roster id never matched, so
+        // this loop skipped every record and the stale-binding paths went
+        // silent.
+        let matches_runtime = status.agent_runtime_id.is_some()
+            && crate::member_comms_id::live_member_is_identity(
+                &live_record.runtime_member_id,
+                status.identity.as_str(),
+            );
         if !matches_runtime {
             continue;
         }
@@ -2331,10 +2379,15 @@ async fn reconcile_stale_live_record_binding(
 ) -> Option<String> {
     let identity_runtime = entry.identity_runtime.as_ref()?;
     for status in identity_runtime.statuses().await {
-        let matches_runtime = status
-            .agent_runtime_id
-            .as_ref()
-            .is_some_and(|runtime_id| runtime_id.as_str() == live_record.runtime_member_id);
+        // Identity-level, and a binding must exist. Comparing an
+        // AgentRuntimeId spelling against a stable roster id never matched, so
+        // this loop skipped every record and the stale-binding paths went
+        // silent.
+        let matches_runtime = status.agent_runtime_id.is_some()
+            && crate::member_comms_id::live_member_is_identity(
+                &live_record.runtime_member_id,
+                status.identity.as_str(),
+            );
         if !matches_runtime {
             continue;
         }
@@ -2478,8 +2531,13 @@ fn live_record_realizes_durable_binding(
     if live.runtime_member_id == durable.runtime_member_id {
         return true;
     }
-    crate::member_comms_id::durable_identity_label(&live.labels)
-        .is_some_and(|identity| live.runtime_member_id == identity)
+    // The row named by the identity realizes the binding. This already intended
+    // that, but compared an ENCODED roster member id against a decoded label
+    // value, so it never matched once the roster row became the encoded durable
+    // identity. Decode before comparing.
+    crate::member_comms_id::durable_identity_label(&live.labels).is_some_and(|identity| {
+        crate::member_comms_id::live_member_is_identity(&live.runtime_member_id, identity)
+    })
 }
 
 fn stale_durable_record_error(
@@ -2535,6 +2593,23 @@ fn ambiguous_live_alias_error(
     if live_records.len() <= 1 {
         return None;
     }
+    // The identity's OWN row disambiguates. Since the stable-identity lowering a
+    // durable identity has exactly one roster row of its own, so when that row is
+    // among the candidates it IS the answer and rows that merely carry the same
+    // agent_identity label are not competitors. Without this, any labelled decoy
+    // made a healthy identity unresolvable through every aggregator control.
+    let own_rows = live_records
+        .iter()
+        .filter(|record| {
+            crate::member_comms_id::live_member_is_identity(
+                &record.runtime_member_id,
+                requested_identity,
+            )
+        })
+        .count();
+    if own_rows == 1 {
+        return None;
+    }
     let candidates = live_records
         .iter()
         .map(|record| {
@@ -2551,7 +2626,7 @@ fn ambiguous_live_alias_error(
         .collect::<Vec<_>>()
         .join(", ");
     Some(format!(
-        "ambiguous live identity alias {requested_identity}: candidates [{candidates}]"
+        "ambiguous live identity alias [via aggregator-resolve] {requested_identity}: candidates [{candidates}]"
     ))
 }
 
@@ -3113,7 +3188,7 @@ impl std::fmt::Display for ConsoleSendError {
                 candidates,
             } => write!(
                 f,
-                "ambiguous live identity alias {identity}: candidates [{candidates}]"
+                "ambiguous live identity alias [via aggregator-list] {identity}: candidates [{candidates}]"
             ),
             Self::NotAddressable(identity) => write!(f, "not addressable: {identity}"),
             Self::Retired(identity) => write!(f, "identity retired: {identity}"),
@@ -6847,6 +6922,55 @@ comms = true
         assert!(error.contains("session-live"));
     }
 
+    /// Register bindings whose session is the LIVE row's session.
+    ///
+    /// `identity_runtime_for_test` mints a random SessionId, which is fine while
+    /// nothing compares it, but a binding whose session does not match its live
+    /// row is a genuine split-brain and the aggregator is right to classify it as
+    /// stale (see stable_external_member_alias_still_fences_session_split_brain).
+    /// Tests that assert on a healthy identity need a truthful binding.
+    async fn identity_runtime_for_test_with_sessions(
+        identities: &[(&str, SessionId)],
+    ) -> Result<Arc<crate::identity_first::IdentityRuntime>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let runtime = identity_runtime_for_test(&[]).await?;
+        for (identity, session_id) in identities {
+            let identity = crate::identity_first::AgentIdentity::parse(identity)?;
+            let record = crate::identity_first::ContinuityRecord {
+                identity: identity.clone(),
+                agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(&format!(
+                    "rt:{}:0",
+                    identity.as_str()
+                ))?,
+                session_id: session_id.clone(),
+                generation: crate::identity_first::ContinuityGeneration::new(0),
+                checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+            };
+            runtime
+                .register(
+                    crate::identity_first::DurableAgentSpec {
+                        identity: identity.clone(),
+                        profile: meerkat_mob::ProfileName::from("worker"),
+                        addressability: crate::identity_first::AgentAddressability::Addressable,
+                        display_name: None,
+                        labels: BTreeMap::new(),
+                        context: None,
+                        additional_instructions: Vec::new(),
+                        initial_message: None,
+                        runtime_mode_override: None,
+                        backend: None,
+                        binding: None,
+                        placement: None,
+                    },
+                    crate::identity_first::IdentityLifecycleState::Active,
+                    Some(record),
+                    None,
+                )
+                .await;
+        }
+        Ok(runtime)
+    }
+
     async fn identity_runtime_for_test(
         identities: &[&str],
     ) -> Result<Arc<crate::identity_first::IdentityRuntime>, Box<dyn std::error::Error + Send + Sync>>
@@ -7334,11 +7458,22 @@ comms = true
         let runtime = build_empty_runtime("identity-member-hidden-policy-test").await;
         let mut labels = BTreeMap::new();
         labels.insert("agent_identity".to_string(), "review:singleton".to_string());
+        // The REAL row is the durable identity's roster row now. The policy
+        // below hides by ConsoleMember::agent_identity, which is the DECODED
+        // roster member id, so its authoritative spelling for this row is the
+        // durable identity itself - traced rather than assumed, because hiding
+        // the wrong spelling would silently stop this test hiding anything.
         spawn_trusted_identity_projected_member(
             &runtime,
             SpawnMemberSpec::from_wire(
                 "worker".to_string(),
-                "rt:review:singleton:0".to_string(),
+                // RAW public alias. spawn_trusted_identity_projected_member
+                // applies mob_member_id itself, and mob_member_id_str is NOT
+                // idempotent - pre-encoding here produced a double-encoded
+                // roster key, which is why the single-encoded observation query
+                // correctly returned None and the aggregator's own projection
+                // then looked like a session disagreement.
+                "review:singleton".to_string(),
                 Some("You are the Review Agent.".into()),
                 None,
                 None,
@@ -7346,13 +7481,17 @@ comms = true
             .with_labels(labels),
         )
         .await;
-        let hidden_session_id = runtime
+        // Asserted, not tolerated: if this ever returns None again the binding
+        // below would fall back to a random session and manufacture the very
+        // split-brain this test is not about.
+        let hidden_live_session = runtime
             .mob_handle()
-            .resolve_bridge_session_id_observation(&meerkat_mob::ids::AgentIdentity::from(
-                "rt:review:singleton:0",
+            .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
+                "review:singleton",
             ))
             .await
-            .map(|sid| sid.to_string());
+            .ok_or("the hidden roster row must have an observable bridge session")?;
+        let hidden_session_id = Some(hidden_live_session.to_string());
         let mut duplicate_labels = BTreeMap::new();
         duplicate_labels.insert("agent_identity".to_string(), "review:singleton".to_string());
         spawn_trusted_identity_projected_member(
@@ -7368,7 +7507,17 @@ comms = true
         )
         .await;
 
-        let identity_runtime = identity_runtime_for_test(&["review:singleton"]).await?;
+        // Truthful binding: the registered session IS the live row's session, so
+        // the aggregator is exercising a healthy identity rather than a
+        // split-brain it would rightly classify as stale.
+        // Register the binding against whatever session the live row actually has.
+        // When the row has none, fall back to the plain helper: a binding whose
+        // session disagrees with its live row is a genuine split-brain and the
+        // aggregator is right to classify it stale, so inventing one here would
+        // manufacture the very condition this test is not about.
+        let identity_runtime =
+            identity_runtime_for_test_with_sessions(&[("review:singleton", hidden_live_session)])
+                .await?;
         let aggregator = MobKitConsoleAggregator::in_memory();
         aggregator.register_runtime_handles_with_policy(
             "runtime-a",
@@ -7376,15 +7525,14 @@ comms = true
             runtime.mob_runtime().clone(),
             Some(identity_runtime),
             runtime.console_events(),
-            Arc::new(HideRuntimeMemberOnly("rt:review:singleton:0")),
+            Arc::new(HideRuntimeMemberOnly("review:singleton")),
         );
 
+        let inspection = aggregator.inspect_identity("review:singleton").await?;
         assert!(
-            aggregator
-                .inspect_identity("review:singleton")
-                .await?
-                .is_none(),
-            "member-hidden live alias must not inspect through aggregator"
+            inspection.is_none(),
+            "member-hidden live alias must not inspect through aggregator; it answered with \
+             {inspection:#?}"
         );
         let records = aggregator.list_identities_fresh().await?;
         assert!(

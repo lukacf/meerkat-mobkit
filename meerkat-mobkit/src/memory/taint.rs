@@ -983,9 +983,11 @@ async fn run_member_event_observer(
                     }
                     // Sinks receive the LOGICAL identity (task #53): the
                     // roster id is the comms-safe encoding of the member's
-                    // alias, and identity-first internal members roster
-                    // under their generated runtime alias
-                    // (rt:{identity}:{generation}) - both decode/strip to
+                    // alias, and identity-first internal members now
+                    // roster under the encoded DURABLE identity (a
+                    // generated rt:{identity}:{generation} alias is
+                    // incarnation detail, not a roster spelling) - both
+                    // decode/strip to
                     // the durable identity the memory scopes, the write
                     // gate, and the SDK surface key on. Keying sinks by the
                     // roster id is what split distiller scopes per

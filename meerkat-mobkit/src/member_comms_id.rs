@@ -189,6 +189,141 @@ pub(crate) fn logical_memory_identity(member_id_or_alias: &str) -> String {
     durable_identity_from_runtime_alias(&alias).unwrap_or_else(|| alias.into_owned())
 }
 
+/// The PUBLIC runtime alias for one incarnation: `rt:{identity}:{generation}`.
+///
+/// ONE owner for "what does this incarnation look like to a console, an SDK, an
+/// RPC surface, or a persisted continuity record". The module contract above
+/// pins that space to the `rt:` shape and states it is PERSISTED, so it must
+/// not drift with whatever the roster happens to be keyed by.
+///
+/// Before the stable-identity lowering the roster identity WAS the runtime
+/// alias, so `meerkat_mob::ids::AgentRuntimeId`'s own Display - which writes
+/// `{identity}:{generation}` - already produced the `rt:` shape for free. Now
+/// the roster identity is the bare durable identity, so that same Display
+/// silently drops the marker and emits `reviewer:1` where every consumer, and
+/// every already-persisted record, expects `rt:reviewer:1`. Nothing fails at
+/// the mint: it surfaces later as a status field that no longer round-trips
+/// through `durable_identity_from_runtime_alias`, which requires the prefix.
+///
+/// Idempotent by construction: a legacy binding whose roster identity still
+/// carries the marker is not prefixed twice. That is the same
+/// non-idempotency hazard `mob_member_id_str` carries, and the reason this is
+/// a function rather than a `format!` at each call site.
+pub(crate) fn public_runtime_alias(runtime_id: &meerkat_mob::ids::AgentRuntimeId) -> String {
+    let identity = runtime_alias_str(runtime_id.identity.as_str());
+    let generation = runtime_id.generation.get();
+    if identity.starts_with("rt:") {
+        format!("{identity}:{generation}")
+    } else {
+        format!("rt:{identity}:{generation}")
+    }
+}
+
+/// The roster member id for WHATEVER SPELLING A CALLER SUPPLIED.
+///
+/// Callers hand us three shapes and all of them are legitimate, because our own
+/// surfaces hand them out: the bare durable identity (`review:singleton`), the
+/// public runtime alias (`rt:review:singleton:0`, which `status_identity`
+/// RETURNS), and the comms-safe roster encoding (`mk--...`, which mob-plane
+/// projections carry). The roster is keyed by exactly one of those.
+///
+/// So decode before encoding: strip the comms marker, then reduce a runtime
+/// alias to the durable identity it names, then encode. Skipping the middle step
+/// is silent - it produces a well-formed roster id for an identity that does not
+/// exist, and the caller gets "member not found" for a healthy member. That is
+/// the shape of the defect this function exists to remove, found when a caller
+/// round-tripped `agent_runtime_id` from a status call straight back into a
+/// member lookup, which is the obvious thing to do.
+pub(crate) fn roster_member_id_for_supplied_id(supplied: &str) -> meerkat_mob::ids::AgentIdentity {
+    let decoded = runtime_alias_str(supplied);
+    let durable = durable_identity_from_runtime_alias(decoded.as_ref())
+        .unwrap_or_else(|| decoded.into_owned());
+    mob_member_id(&durable)
+}
+
+/// The stable roster member id for a durable identity.
+///
+/// ONE spelling for "which roster row is this identity". Every site that used
+/// to turn `IdentityStatus::agent_runtime_id` into a roster key must come here
+/// instead: since the stable-identity lowering the roster is keyed by the
+/// encoded DURABLE identity, and an `AgentRuntimeId` is binding detail that no
+/// longer names a roster row at all. A site that keeps the old conversion does
+/// not fail loudly - it silently misses and its surface reports "not found" for
+/// a healthy member.
+pub(crate) fn roster_member_id_for_identity(identity: &str) -> meerkat_mob::ids::AgentIdentity {
+    mob_member_id(identity)
+}
+
+/// Whether a live roster member id names a given durable identity.
+///
+/// The identity half of [`live_binding_matches_identity`], for call sites that
+/// have no session to compare. Decodes the comms-safe encoding and nothing
+/// else: it must not strip an `rt:{identity}:{generation}` shape, or a stale
+/// generated alias would be accepted as the stable roster identity.
+pub(crate) fn live_member_is_identity(live_member_id: &str, identity: &str) -> bool {
+    runtime_alias_str(live_member_id) == identity
+}
+
+/// Whether a live roster member id names an identity OR its currently
+/// registered incarnation.
+///
+/// The session-less form of [`live_binding_matches_identity`], for control gates
+/// that have no session to compare. Same two admissible spellings: the id
+/// decodes to the durable identity, or it is EXACTLY the registered
+/// `AgentRuntimeId`. A caller legitimately holding a current runtime alias must
+/// still be able to name its member; a STALE alias does not equal the registered
+/// one and is still refused.
+pub(crate) fn live_member_names_identity_or_incarnation(
+    live_member_id: &str,
+    identity: &str,
+    registered_runtime_id: Option<&str>,
+) -> bool {
+    live_member_is_identity(live_member_id, identity)
+        || registered_runtime_id
+            .is_some_and(|registered| runtime_alias_str(live_member_id).as_ref() == registered)
+}
+
+/// Whether a live roster member and session are the binding that a given
+/// identity is registered for.
+///
+/// ONE rule, used by every surface that guards an identity-control call, so a
+/// stale binding cannot be accepted on one plane and refused on another.
+///
+/// Identity side: the live roster id is DECODED ONLY - the comms-safe `mk--`
+/// encoding is undone and nothing else. It deliberately does not strip an
+/// `rt:{identity}:{generation}` shape. After the stable-identity lowering a
+/// live roster id decodes exactly to the durable identity, so tolerating a
+/// generated runtime spelling here would re-admit the very stale binding this
+/// check exists to catch.
+///
+/// Session side: EXACT equality. `Some`/`Some` must carry the same value and
+/// `None`/`None` matches, but a one-sided `None` fails closed - a missing
+/// session on either side is an unknown, and an unknown is not a match.
+///
+/// `AgentRuntimeId` is not consulted. It remains binding bookkeeping and
+/// presence detail; it is not the roster spelling and Meerkat owns its
+/// generation.
+pub(crate) fn live_binding_matches_identity(
+    live_member_id: &str,
+    live_session_id: Option<&str>,
+    identity: &str,
+    registered_session_id: Option<&str>,
+    registered_runtime_id: Option<&str>,
+) -> bool {
+    // Two ways a live member id can be the right one, and only two.
+    //
+    // Either it decodes to the durable identity - the stable roster row - or it
+    // is EXACTLY the runtime id this binding is registered for, which is a
+    // caller naming the current incarnation. The second is exact equality, not
+    // generation-stripping: a STALE generated alias does not equal the
+    // registered one, so it is still refused. Accepting any rt:{id}:{gen} whose
+    // identity part matched would be the hole worth avoiding.
+    let names_identity = live_member_is_identity(live_member_id, identity);
+    let is_registered_incarnation = registered_runtime_id
+        .is_some_and(|registered| runtime_alias_str(live_member_id).as_ref() == registered);
+    (names_identity || is_registered_incarnation) && live_session_id == registered_session_id
+}
+
 /// Whether a caller supplied the comms-safe roster marker directly.
 /// Public surfaces speak aliases, never encoded roster ids; accepting this
 /// spelling at a raw lower-plane creation boundary can collide with the
@@ -399,6 +534,46 @@ pub(crate) fn canonical_correlation_id(correlation_id: &str) -> std::borrow::Cow
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// A caller may hand back any spelling our own surfaces emit, and all three
+    /// must reach the same roster row.
+    ///
+    /// This is the defect that shipped past a full green suite and was caught by
+    /// a Python SDK test doing the obvious thing: take `agent_runtime_id` out of
+    /// a status response and pass it to `get_member`. Encoding an alias without
+    /// decoding it first produces a well-formed roster id for an identity that
+    /// does not exist, so the caller is told "member not found" about a healthy
+    /// member - a lie with no diagnostic in it.
+    #[test]
+    fn every_spelling_a_caller_can_supply_reaches_one_roster_row() {
+        let durable = "review:singleton";
+        let expected = roster_member_id_for_identity(durable);
+
+        // 1. the bare durable identity
+        assert_eq!(
+            roster_member_id_for_supplied_id(durable),
+            expected,
+            "a bare durable identity must resolve to its own roster row"
+        );
+        // 2. the PUBLIC RUNTIME ALIAS, which status_identity returns
+        assert_eq!(
+            roster_member_id_for_supplied_id("rt:review:singleton:0"),
+            expected,
+            "the alias status_identity hands out must resolve to the same row"
+        );
+        assert_eq!(
+            roster_member_id_for_supplied_id("rt:review:singleton:7"),
+            expected,
+            "generation is incarnation detail and must not change which row is named"
+        );
+        // 3. the comms-safe roster encoding, which mob-plane projections carry
+        let encoded = mob_member_id_str(durable).into_owned();
+        assert_eq!(
+            roster_member_id_for_supplied_id(&encoded),
+            expected,
+            "the encoded roster id must round-trip to its own row"
+        );
+    }
 
     #[test]
     fn canonical_correlation_id_passes_canonical_uuids_and_canonicalizes_the_rest() {

@@ -77,6 +77,44 @@ fn is_member_already_exists_error(error: &meerkat_mob::MobError) -> bool {
     matches!(error, meerkat_mob::MobError::MemberAlreadyExists(_))
 }
 
+/// Who owns actuation for a member this bridge just collided with.
+///
+/// Derived only from `IdentityIntent`, the sole authoritative desired state.
+/// Kept as three states rather than a boolean because "not MobMachine's" and
+/// "nobody could tell" must not behave the same way: only the first licenses
+/// the destructive path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CollisionCustody {
+    /// Valid Present intent naming this exact session. MobMachine is the sole
+    /// actuator, on ordinary death and on rotation alike.
+    MobMachineOwns,
+    /// Valid Absent intent: the identity store does not want this identity
+    /// present, so the occupant really is stale and identity-first keeps its
+    /// existing repair ownership.
+    IdentityFirstOwns,
+    /// Authoritative NotFound: no intent row exists for this identity at all.
+    ///
+    /// This is ABSENCE, not an unknown. A realm predating identity intent has no
+    /// rows and never will, so treating it as unknown produced a permanently
+    /// unretryable "retryable" refusal. It lifts the identity-first veto, but it
+    /// is NOT permission to retire: the legacy repair authority must
+    /// independently prove exact custody of the occupant from persisted evidence
+    /// before any destructive step, and remains Indeterminate if it cannot.
+    LegacyRepairMayProveCustody,
+    /// Malformed, Unsupported, unreadable, a read error, or a Present intent
+    /// naming a different session. Not permission to destroy anything.
+    Indeterminate,
+}
+
+/// Bounded wait for MobMachine to finish converging an occupant this bridge
+/// must not destroy.
+///
+/// Declared rather than ambient: an unbounded wait here would trade a
+/// destructive race for a hang, and a hang in resume is indistinguishable from
+/// a wedged member.
+const CONVERGENCE_HANDOFF_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+const CONVERGENCE_HANDOFF_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Delete and tombstone reset's superseded session projection before asking
 /// Meerkat to retire the physical member.
 ///
@@ -577,6 +615,24 @@ pub enum ResumeSessionOutcome {
     Resumed {
         session_id: meerkat_core::types::SessionId,
     },
+    /// Custody and bookkeeping are reconciled, but the session is NOT yet
+    /// usable or resumed.
+    ///
+    /// Returned when an occupant is proven to be ours and already bound to this
+    /// session, but its owning identity has no authoritative registration - the
+    /// legacy no-intent case. The bridge cannot establish that registration: it
+    /// requires the generation, checkpoint version and fencing token that live
+    /// in the caller's continuity record, and manufacturing them here would be a
+    /// second source of truth.
+    ///
+    /// The caller MUST call `register_session_runtime_state` from its
+    /// authoritative record and only then treat the session as resumed. Nothing
+    /// may commit a runtime boundary before that: the continuity adapter refuses
+    /// a head-canonical session whose owner was never registered, and it is
+    /// right to.
+    AttachedPendingRegistration {
+        session_id: meerkat_core::types::SessionId,
+    },
     /// Resume was rejected for a typed compatibility reason and a fresh member
     /// was spawned instead.
     FreshSpawned {
@@ -589,16 +645,29 @@ impl ResumeSessionOutcome {
     #[must_use]
     pub fn session_id(&self) -> &meerkat_core::types::SessionId {
         match self {
-            Self::Resumed { session_id } | Self::FreshSpawned { session_id, .. } => session_id,
+            Self::Resumed { session_id }
+            | Self::AttachedPendingRegistration { session_id }
+            | Self::FreshSpawned { session_id, .. } => session_id,
         }
     }
 
     #[must_use]
     pub fn fallback_reason(&self) -> Option<&ResumeFallbackReason> {
         match self {
-            Self::Resumed { .. } => None,
+            Self::Resumed { .. } | Self::AttachedPendingRegistration { .. } => None,
             Self::FreshSpawned { reason, .. } => Some(reason),
         }
+    }
+
+    /// Whether this outcome still needs authoritative registration before the
+    /// session may be treated as resumed or a runtime boundary committed.
+    ///
+    /// Deliberately explicit rather than inferred from `session_id`: a caller
+    /// that forgets this hands a head-canonical session to a continuity adapter
+    /// that will refuse it, and the refusal surfaces far from the cause.
+    #[must_use]
+    pub fn needs_owner_registration(&self) -> bool {
+        matches!(self, Self::AttachedPendingRegistration { .. })
     }
 }
 
@@ -1165,6 +1234,20 @@ impl BridgeTurnReceipt {
     }
 }
 
+/// The concrete successor binding a destructive reset committed.
+///
+/// Returned by [`SessionBridge::reset_member_to_successor`] rather than
+/// pre-computed by the caller: under the durable-roster contract the successor
+/// generation is minted by MobMachine, so only the bridge learns what it
+/// actually is.
+#[derive(Debug, Clone)]
+pub struct ResetSuccessorBinding {
+    /// The successor incarnation MobMachine minted.
+    pub agent_runtime_id: AgentRuntimeId,
+    /// The bridge session bound to the successor.
+    pub session_id: meerkat_core::types::SessionId,
+}
+
 /// Bridge between the identity-first control plane and the Meerkat session
 /// pipeline. Each method maps an identity-layer operation to its concrete
 /// mob-level counterpart.
@@ -1187,6 +1270,42 @@ pub trait SessionBridge: Send + Sync {
         draft: &AgentBuildDraft,
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<meerkat_core::types::SessionId, BridgeError>;
+
+    /// Replace a member with its successor as ONE authoritative transition.
+    ///
+    /// MobKit reset is destructive: it advances the continuity generation and
+    /// creates fresh continuity and session. Under the durable-roster contract
+    /// the successor occupies the SAME roster row, so this cannot be a create
+    /// (it would collide with its own predecessor) and must not be composed
+    /// from `retire_member` plus `create_session` either - splitting the
+    /// transition reopens the compensation races that a single authority
+    /// operation avoids.
+    ///
+    /// Meerkat's respawn is that single operation: it snapshots the stable
+    /// identity, computes the machine-owned successor generation, terminally
+    /// retires the old row, and spawns the exact successor under the same
+    /// roster identity.
+    ///
+    /// Implementations return the CONCRETE binding they committed. The caller
+    /// records its continuity from that value instead of pre-computing a
+    /// runtime id and session id and telling the bridge what they will be.
+    ///
+    /// The default fails closed on purpose. A custom bridge has to implement
+    /// this deliberately, because quietly composing retire and create would
+    /// look like it worked while reintroducing exactly the race this exists to
+    /// remove.
+    async fn reset_member_to_successor(
+        &self,
+        identity: &AgentIdentity,
+        _spec: &DurableAgentSpec,
+        _draft: &AgentBuildDraft,
+    ) -> Result<ResetSuccessorBinding, BridgeError> {
+        Err(BridgeError::InvalidInput(format!(
+            "this SessionBridge does not implement destructive reset successors, so identity \
+             {identity} cannot be reset: the transition must be one authoritative respawn and \
+             must not be composed from retire plus create"
+        )))
+    }
 
     /// Whether `resume_session` consumes the continuity-store snapshot payload.
     ///
@@ -1538,10 +1657,14 @@ fn unmasked_resume_divergence(
 
 /// Concrete `SessionBridge` backed by a `MobHandle`.
 ///
-/// `AgentRuntimeId` is usually used as the `MobAgentIdentity` at the mob layer. Real
-/// external bindings are the exception: Meerkat's external peer names require
-/// identifier-safe `<mob>/<profile>/<member>` segments, so the bridge maps the
-/// runtime ID to the durable identity for those members.
+/// The mob-layer `MobAgentIdentity` is the DURABLE identity's comms-safe
+/// encoding, for every binding. `AgentRuntimeId` is incarnation detail and is
+/// not a roster spelling: Meerkat defines it as a stable identity plus a
+/// machine-owned generation, and `SpawnMemberSpec.identity` is the roster
+/// identity whose generation Meerkat mints itself. This used to be the other way
+/// round, with the runtime id lowered into the roster slot and the durable
+/// identity used only for external bindings, which made the roster id
+/// per-incarnation and durable state keyed on it die with the binding.
 /// Per-identity temporary auto-compaction floors for the `compact_member`
 /// operator verb.
 ///
@@ -1648,6 +1771,68 @@ struct CarriedMemberInput {
 }
 
 /// Pre-disposal capture of one member session's pending machine ingress.
+/// What repair may do with ONE pending input, decided purely by its class.
+///
+/// Extracted from `capture_pending_member_ingress` so the decision can be
+/// tested without a live runtime authority. The inline version could only be
+/// checked through a full repair, where the only observable was prompt text, and
+/// that cannot distinguish an input that was RE-ADMITTED from one that merely
+/// sits in the successor's transcript history.
+enum PendingInputCarry {
+    /// Boxed: `Input` is ~950 bytes and would otherwise make every
+    /// `Uncarryable` classification pay for the carried payload it does not
+    /// have.
+    Carry(Box<meerkat_runtime::Input>),
+    Uncarryable {
+        class: &'static str,
+        reason: String,
+    },
+}
+
+/// The carry lane for a pending input, or the named reason there is none.
+///
+/// This is the single owner of "what may cross a repair". A class with no carry
+/// lane is NAMED rather than silently dropped, because the disposal that follows
+/// destroys it and an unnamed loss is unreviewable.
+fn classify_pending_input_for_carry(
+    persisted_input: Option<meerkat_runtime::Input>,
+) -> PendingInputCarry {
+    match persisted_input {
+        // User-originated work: the whole point of the carry.
+        Some(
+            input @ (meerkat_runtime::Input::Prompt(_)
+            | meerkat_runtime::Input::Peer(_)
+            | meerkat_runtime::Input::ExternalEvent(_)),
+        ) => PendingInputCarry::Carry(Box::new(input)),
+        Some(meerkat_runtime::Input::FlowStep(_)) => PendingInputCarry::Uncarryable {
+            class: "flow-step",
+            reason: "flow-step correlation is owned by the flow engine and cannot be \
+                     re-admitted raw; the loss is bounded to the interrupted flow, \
+                     which observes its step's terminal and owns the retry"
+                .to_string(),
+        },
+        Some(meerkat_runtime::Input::Continuation(_) | meerkat_runtime::Input::Operation(_)) => {
+            PendingInputCarry::Uncarryable {
+                class: "runtime-internal",
+                reason: "continuation/operation inputs are machine-internal and cannot be \
+                         re-admitted raw; the successor runtime re-derives its own; the \
+                         loss is bounded to the disposed runtime's in-flight bookkeeping"
+                    .to_string(),
+            }
+        }
+        Some(_) => PendingInputCarry::Uncarryable {
+            class: "unrecognized-class",
+            reason: "the pending input's class is unknown to this build; no carry \
+                     lane exists for it"
+                .to_string(),
+        },
+        None => PendingInputCarry::Uncarryable {
+            class: "payload-unavailable",
+            reason: "the runtime retained no payload for this pending input".to_string(),
+        },
+    }
+}
+
 struct PendingIngressCapture {
     /// Inputs whose payload survives re-admission (Prompt / Peer /
     /// ExternalEvent classes), in admission order.
@@ -1963,14 +2148,40 @@ impl MobSessionBridge {
             .remove(runtime_id.as_str());
     }
 
-    async fn member_id_for_runtime_id(&self, runtime_id: &AgentRuntimeId) -> MobAgentIdentity {
+    /// The roster member id bound to a live runtime id.
+    ///
+    /// Read from bookkeeping, never derived. The old fallback re-derived a
+    /// roster id from the runtime id's spelling, but `AgentRuntimeId` is an
+    /// opaque newtype here - it validates only non-empty/no-space/no-slash, not
+    /// `rt:{identity}:{generation}` - so a malformed or unexpected id would
+    /// manufacture a roster identity that names nothing. The mapping is
+    /// populated at every create/resume materialization; its absence is a
+    /// bookkeeping gap and retryable, not something to paper over.
+    async fn member_id_for_runtime_id(
+        &self,
+        runtime_id: &AgentRuntimeId,
+    ) -> Result<MobAgentIdentity, BridgeError> {
         let members = self.runtime_members.read().await;
-        members
-            .get(runtime_id.as_str())
-            .map(|member| MobAgentIdentity::from(member.as_str()))
-            // The recompute fallback must mint the same comms-safe roster id
-            // as the spawn path (meerkat 0.7 MemberCommsName rejects `:`).
-            .unwrap_or_else(|| crate::member_comms_id::mob_member_id(runtime_id.as_str()))
+        if let Some(member) = members.get(runtime_id.as_str()) {
+            return Ok(MobAgentIdentity::from(member.as_str()));
+        }
+        // Bookkeeping first, then STRICT derivation. `durable_identity_from_runtime_alias`
+        // requires the full `rt:{identity}:{generation}` production and a numeric
+        // generation, so a malformed or unexpected id cannot manufacture a roster
+        // identity the way `logical_memory_identity` could - that one falls back to
+        // returning its input unchanged, which is how a bare string became a
+        // "durable identity". Anything that is not a well-formed runtime alias is a
+        // typed error rather than a guess.
+        crate::member_comms_id::durable_identity_from_runtime_alias(runtime_id.as_str())
+            .map(|identity| crate::member_comms_id::mob_member_id(&identity))
+            .ok_or_else(|| {
+                BridgeError::Mob(format!(
+                    "no roster member recorded for runtime binding {runtime_id} and it is not a \
+                     well-formed rt:{{identity}}:{{generation}} alias, so its durable identity \
+                     cannot be derived (retryable: the mapping is populated at create/resume \
+                     materialization)"
+                ))
+            })
     }
 
     /// Retire one session-owned member through the MobMachine's retained
@@ -2121,55 +2332,16 @@ impl MobSessionBridge {
                     continue;
                 }
             }
-            match stored.state.persisted_input {
-                Some(
-                    input @ (meerkat_runtime::Input::Prompt(_)
-                    | meerkat_runtime::Input::Peer(_)
-                    | meerkat_runtime::Input::ExternalEvent(_)),
-                ) => {
+            match classify_pending_input_for_carry(stored.state.persisted_input) {
+                PendingInputCarry::Carry(input) => {
                     capture.carryable.push(CarriedMemberInput {
                         original_input_id: input_id,
                         admission_sequence: stored.seed.admission_sequence,
-                        input,
+                        input: *input,
                     });
                 }
-                Some(meerkat_runtime::Input::FlowStep(_)) => {
-                    capture.uncarryable.push((
-                        input_id,
-                        "flow-step",
-                        "flow-step correlation is owned by the flow engine and cannot be \
-                         re-admitted raw; the loss is bounded to the interrupted flow, \
-                         which observes its step's terminal and owns the retry"
-                            .to_string(),
-                    ));
-                }
-                Some(
-                    meerkat_runtime::Input::Continuation(_) | meerkat_runtime::Input::Operation(_),
-                ) => {
-                    capture.uncarryable.push((
-                        input_id,
-                        "runtime-internal",
-                        "continuation/operation inputs are machine-internal and cannot be \
-                         re-admitted raw; the successor runtime re-derives its own; the \
-                         loss is bounded to the disposed runtime's in-flight bookkeeping"
-                            .to_string(),
-                    ));
-                }
-                Some(_) => {
-                    capture.uncarryable.push((
-                        input_id,
-                        "unrecognized-class",
-                        "the pending input's class is unknown to this build; no carry \
-                         lane exists for it"
-                            .to_string(),
-                    ));
-                }
-                None => {
-                    capture.uncarryable.push((
-                        input_id,
-                        "payload-unavailable",
-                        "the runtime retained no payload for this pending input".to_string(),
-                    ));
+                PendingInputCarry::Uncarryable { class, reason } => {
+                    capture.uncarryable.push((input_id, class, reason));
                 }
             }
         }
@@ -2338,23 +2510,37 @@ impl MobSessionBridge {
                 }
             })
             .collect::<std::collections::BTreeSet<_>>();
-        Ok(edges
-            .into_iter()
-            .filter_map(|(a, b)| {
-                let a = member_runtimes
-                    .get(&a)
-                    .cloned()
-                    .unwrap_or_else(|| crate::member_comms_id::runtime_alias_str(&a).into_owned());
-                let b = member_runtimes
-                    .get(&b)
-                    .cloned()
-                    .unwrap_or_else(|| crate::member_comms_id::runtime_alias_str(&b).into_owned());
-                Some((
-                    AgentRuntimeId::parse(&a).ok()?,
-                    AgentRuntimeId::parse(&b).ok()?,
+        // Wires are reported as runtime ids, so each roster member id has to be
+        // looked up in the live bookkeeping. It must NOT be derived.
+        //
+        // The old fallback decoded the roster id and parsed the result as an
+        // AgentRuntimeId. Since the stable-identity lowering a roster id decodes
+        // to a bare durable identity like `agent:alpha`, and `AgentRuntimeId`
+        // validates only non-empty/no-space/no-slash - so that parse SUCCEEDS
+        // and mints a runtime id that names no incarnation at all. A missing
+        // mapping is a bookkeeping gap, and the honest answer is to say so.
+        let resolve = |member_id: &str| -> Result<AgentRuntimeId, BridgeError> {
+            // Wires report incarnations, and an incarnation cannot be derived from a
+            // stable roster id - the generation simply is not in it. So this one has
+            // no strict-derivation fallback available: bookkeeping or nothing.
+            let runtime_id = member_runtimes.get(member_id).ok_or_else(|| {
+                BridgeError::Mob(format!(
+                    "no live runtime binding recorded for roster member {member_id}; the wire \
+                     projection cannot name its incarnation (retryable: the mapping is \
+                     populated at create/resume materialization)"
+                ))
+            })?;
+            AgentRuntimeId::parse(runtime_id).map_err(|error| {
+                BridgeError::Mob(format!(
+                    "recorded runtime binding {runtime_id} for roster member {member_id} is not \
+                     a valid runtime id: {error}"
                 ))
             })
-            .collect())
+        };
+        edges
+            .into_iter()
+            .map(|(a, b)| Ok((resolve(&a)?, resolve(&b)?)))
+            .collect()
     }
 
     async fn runtime_session_id(
@@ -2423,6 +2609,149 @@ impl MobSessionBridge {
     /// durable authority was consulted and none of them knows the session.
     /// A probe fault means absence cannot be CONFIRMED, so repair proceeds
     /// exactly as it did before this guard existed.
+    /// Who may actuate on the member this resume just collided with.
+    ///
+    /// Thin wrapper over [`identity_actuation_custody`] that supplies the
+    /// session this resume is holding, so a Present intent bound to some other
+    /// session reads as `Indeterminate` rather than as clearance.
+    async fn collision_custody(
+        &self,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> CollisionCustody {
+        identity_actuation_custody(&self.handle, identity.as_str(), Some(session_id)).await
+    }
+}
+
+/// Who may actuate on one identity, read from the only authoritative desired
+/// state there is.
+///
+/// Shared by the two actuators that previously fired independently: the resume
+/// path's roster-collision handler and the event-stream health monitor. They
+/// asked different questions of different state and both concluded they were
+/// entitled to act, which is how one applied declaration took a live member
+/// down. One read, one vocabulary.
+///
+/// `expected_session` is `Some` when the caller already holds the session it
+/// intends to resume, and `None` at stream closure where no session is in
+/// hand and any Present intent means MobMachine owns materialization.
+pub(crate) async fn identity_actuation_custody(
+    handle: &MobHandle,
+    identity_alias: &str,
+    expected_session: Option<&meerkat_core::types::SessionId>,
+) -> CollisionCustody {
+    // The identity store is keyed by the comms-safe ENCODED member id, not
+    // the public alias. `member_comms_id::mob_member_id` is the public
+    // translation for this boundary; skipping it makes every read miss and
+    // would leave this guard permanently inert.
+    // The identity store is keyed by the comms-safe ENCODED member id, not the
+    // public alias, so this read has to translate or it misses every time and
+    // leaves both guards inert while looking implemented.
+    //
+    // `identity_alias` must be a DURABLE identity. Both callers pass one, and
+    // since the stable-identity lowering the roster and intent key is the
+    // encoded durable identity, so this is the whole translation.
+    //
+    // `runtime_alias_str` first because `mob_member_id_str` is not idempotent:
+    // handed an already-encoded id it escapes the marker a second time and the
+    // double-encoded key can never match. That would fail silently in the
+    // worst direction, since a missing intent reads as Indeterminate and
+    // Indeterminate declines to repair. Note this only removes the comms
+    // marker; it does NOT lower `rt:{identity}:{generation}` to its identity,
+    // so handing this function a runtime id would produce a runtime-shaped key
+    // and miss. Callers pass durable identities.
+    let alias = crate::member_comms_id::runtime_alias_str(identity_alias);
+    let key = crate::member_comms_id::mob_member_id(alias.as_ref());
+    let record = match handle.identity_intent(&key).await {
+        Ok(meerkat_mob::identity::IdentityStoredObservation::Valid(record)) => record,
+        // Authoritative absence is not an unknown. No row at all means
+        // nothing is managing this identity - a realm predating identity
+        // intent has no rows and never will - so calling it unknown produced
+        // a permanently unretryable 'retryable' refusal. It lifts the veto
+        // without granting anything: the legacy authority must still prove
+        // exact custody before any destructive step.
+        Ok(meerkat_mob::identity::IdentityStoredObservation::Missing) => {
+            return CollisionCustody::LegacyRepairMayProveCustody;
+        }
+        // Malformed, Unsupported, or a transport failure. Something IS
+        // managing this identity and we cannot read it, which is genuinely
+        // ambiguous and may not be read as clearance to retire.
+        Ok(_) | Err(_) => return CollisionCustody::Indeterminate,
+    };
+    match &record.intent {
+        meerkat_mob::identity::IdentityIntent::Present { session, .. } => {
+            match expected_session {
+                // Present, but bound to a different session than the one being
+                // resumed. That disagreement is not something an actuator can
+                // resolve by destroying either side.
+                Some(expected) if session.session_id != *expected => {
+                    CollisionCustody::Indeterminate
+                }
+                _ => CollisionCustody::MobMachineOwns,
+            }
+        }
+        meerkat_mob::identity::IdentityIntent::Absent { .. } => CollisionCustody::IdentityFirstOwns,
+    }
+}
+
+impl MobSessionBridge {
+    /// Wait, bounded, for MobMachine's materialization to become visible, then
+    /// adopt it instead of replacing it.
+    ///
+    /// Attaches only this bridge's own bookkeeping. It never spawns, retires,
+    /// or mutates mob state: the whole point is that another authority owns
+    /// that. Timing out is a typed failure the caller may retry, not a licence
+    /// to fall through to the destructive path.
+    async fn await_convergence_and_attach(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        member_id: &MobAgentIdentity,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<ResumeSessionOutcome, BridgeError> {
+        let deadline = tokio::time::Instant::now() + CONVERGENCE_HANDOFF_BUDGET;
+        loop {
+            // The machine-state projection is what has to agree: it is the
+            // read the rest of this bridge already trusts to name a member's
+            // bridge session.
+            if self
+                .handle
+                .resolve_bridge_session_id(member_id)
+                .await
+                .as_ref()
+                == Some(session_id)
+            {
+                tracing::info!(
+                    identity = %identity,
+                    member_id = %member_id,
+                    session_id = %session_id,
+                    "resume_session yielded a roster collision to MobMachine: durable intent \
+                     names this session, so the occupant was adopted rather than retired"
+                );
+                self.remember_runtime_member(runtime_id, member_id).await;
+                self.remember_runtime_session(runtime_id, session_id).await;
+                return Ok(ResumeSessionOutcome::Resumed {
+                    session_id: session_id.clone(),
+                });
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(resume_rejected(
+                    identity,
+                    session_id,
+                    &meerkat_mob::MobError::Internal(format!(
+                        "durable identity intent names session {session_id} for this member, so \
+                         MobMachine owns its materialization and this resume must not retire the \
+                         occupant, but convergence did not surface that session within {}s; \
+                         retry once convergence settles",
+                        CONVERGENCE_HANDOFF_BUDGET.as_secs()
+                    )),
+                    "convergence handoff",
+                ));
+            }
+            tokio::time::sleep(CONVERGENCE_HANDOFF_POLL).await;
+        }
+    }
+
     async fn resume_source_confirmed_absent(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -2920,16 +3249,27 @@ fn member_id_for_spawn_spec(
     runtime_id: &AgentRuntimeId,
     spec: &DurableAgentSpec,
 ) -> MobAgentIdentity {
-    // meerkat 0.7's `MemberCommsName` is fail-closed: roster member ids must
-    // be identifier-safe (no `:`). MobKit's public alias space — durable
-    // identities like `review:singleton` and runtime ids like
-    // `rt:review:singleton:0` — is unchanged; the roster id is the comms-safe
-    // encoding (identity for already-safe names).
-    if spec_uses_external_binding(spec) {
-        crate::member_comms_id::mob_member_id(spec.identity.as_str())
-    } else {
-        crate::member_comms_id::mob_member_id(runtime_id.as_str())
-    }
+    // The roster id is the comms-safe encoding of the DURABLE identity, for
+    // every binding. `MemberCommsName` is fail-closed on identifier-unsafe
+    // names (no `:`), so the encoding is required; MobKit's public alias space
+    // is unchanged.
+    //
+    // It must be the durable identity and not the runtime id. Meerkat defines
+    // `AgentRuntimeId` as a stable identity plus a monotonically increasing
+    // generation, where different generations are successive incarnations of
+    // the SAME member, and `SpawnMemberSpec.identity` is the roster identity
+    // whose per-identity generation counter Meerkat itself owns
+    // (`MobActor::mint_spawn_generation`). Lowering a MobKit runtime id into
+    // that slot nested one identity inside another and made the roster id
+    // per-incarnation: durable mob state keyed on it belonged to a single
+    // binding, so it could not survive a respawn or a restart, and a resumed
+    // event log replayed a previous incarnation's roster against a freshly
+    // minted generation.
+    //
+    // `runtime_id` stays what it is: live binding detail. It is deliberately
+    // not consulted here.
+    let _ = runtime_id;
+    crate::member_comms_id::mob_member_id(spec.identity.as_str())
 }
 
 /// Default OpenAI prompt-cache routing key for `identity`.
@@ -3341,6 +3681,146 @@ impl SessionBridge for MobSessionBridge {
         }
     }
 
+    async fn reset_member_to_successor(
+        &self,
+        identity: &AgentIdentity,
+        spec: &DurableAgentSpec,
+        draft: &AgentBuildDraft,
+    ) -> Result<ResetSuccessorBinding, BridgeError> {
+        // The successor occupies the SAME roster row, so this is respawn - one
+        // authority transition that snapshots the stable identity, mints the
+        // successor generation, terminally retires the old row, and spawns the
+        // exact successor. It is deliberately not retire + create: splitting it
+        // reopens the compensation races a single transition avoids.
+        //
+        let _ = draft;
+        let roster_id = crate::member_comms_id::roster_member_id_for_identity(identity.as_str());
+
+        // REPROFILE IS PART OF THE RESET CONTRACT, and respawn cannot deliver it.
+        //
+        // `adopt_current_roster_spec_for_reset` means the rebuilt session uses
+        // the CURRENT roster spec, so a reset after the host reprofiles a member
+        // is supposed to come back under the new profile. Meerkat's respawn
+        // promises the same profile, labels, wiring and mode as the row it
+        // replaces. So when the requested spec has drifted from the committed
+        // row, this transition would silently rebuild under the OLD profile and
+        // report success - a reset that did not reset.
+        //
+        // Refuse BEFORE the destructive step rather than after: discovering this
+        // post-respawn would mean the predecessor is already terminally retired.
+        let committed = self.handle.get_member(&roster_id).await.map_err(|error| {
+            BridgeError::Mob(format!(
+                "reading the roster entry for {identity} before reset: {error}"
+            ))
+        })?;
+        // The predecessor's runtime id, purely to satisfy `build_spawn_spec`'s
+        // signature: since the stable-identity lowering it derives the member id
+        // from the DURABLE identity and no longer reads this argument. Passing
+        // the committed predecessor keeps the value truthful rather than
+        // fabricated, and the successor's own id is Meerkat's to mint.
+        let predecessor_runtime_id = committed
+            .as_ref()
+            .map(|entry| {
+                AgentRuntimeId::parse(&crate::member_comms_id::public_runtime_alias(
+                    &entry.agent_runtime_id,
+                ))
+            })
+            .transpose()
+            .map_err(|error| {
+                BridgeError::Mob(format!(
+                    "the committed predecessor of {identity} carries an unusable runtime id: \
+                     {error}"
+                ))
+            })?
+            .unwrap_or_else(|| {
+                AgentRuntimeId::parse(&format!("rt:{}:0", identity.as_str()))
+                    .unwrap_or_else(|_| unreachable!("a validated identity yields a valid alias"))
+            });
+
+        // ONE authoritative transition, carrying the successor's spec. Meerkat
+        // owns predecessor retirement, successor generation and fence minting,
+        // fresh session creation, and topology restoration; the spec's identity
+        // is the already-encoded roster key and is consumed exactly once.
+        //
+        // This replaces a plain `respawn` plus a refusal for any profile change:
+        // respawn preserves the predecessor's profile, so reprofiling through it
+        // was impossible and had to be refused rather than silently kept.
+        let mut successor =
+            build_spawn_spec(&predecessor_runtime_id, spec, draft, None).map_err(|error| {
+                BridgeError::Mob(format!(
+                    "lowering the successor spec for destructive reset of {identity}: {error}"
+                ))
+            })?;
+        successor.identity = roster_id.clone();
+        // Required by the operation: a successor always receives a newly minted
+        // session, so Resume and Fork are rejected upstream. Parent auto-wiring
+        // is likewise rejected - existing topology is restored, not re-derived.
+        successor.launch_mode = meerkat_mob::launch::MemberLaunchMode::Fresh;
+        successor.auto_wire_parent = false;
+
+        let receipt = self
+            .handle
+            .respawn_with_successor_spec(successor)
+            .await
+            .map_err(|error| {
+                BridgeError::Mob(format!(
+                    "atomic successor respawn for destructive reset of {identity}: {error}"
+                ))
+            })?;
+        let _ = &receipt;
+
+        // Read what the machine actually committed rather than predicting it:
+        // the successor generation is MobMachine's to mint.
+        let entry = self
+            .handle
+            .get_member(&roster_id)
+            .await
+            .map_err(|error| {
+                BridgeError::Mob(format!(
+                    "reading the committed successor roster entry for {identity}: {error}"
+                ))
+            })?
+            .ok_or_else(|| {
+                BridgeError::Mob(format!(
+                    "respawn for {identity} reported success but left no roster entry under \
+                     {roster_id}"
+                ))
+            })?;
+        // NOT `entry.agent_runtime_id.to_string()`: that Display emits
+        // `{identity}:{generation}`, which only carried the public `rt:` marker
+        // while the roster identity WAS the runtime alias. Post-lowering it
+        // drops the marker silently.
+        let committed_runtime_id =
+            crate::member_comms_id::public_runtime_alias(&entry.agent_runtime_id);
+        let agent_runtime_id = AgentRuntimeId::parse(&committed_runtime_id).map_err(|error| {
+            BridgeError::Mob(format!(
+                "committed successor for {identity} carries an unusable runtime id \
+                     {}: {error}",
+                entry.agent_runtime_id
+            ))
+        })?;
+        let session_id = self
+            .handle
+            .resolve_bridge_session_id(&roster_id)
+            .await
+            .ok_or_else(|| {
+                BridgeError::Mob(format!(
+                    "committed successor for {identity} has no bridge session yet; reset cannot \
+                     commit continuity against an unbound successor"
+                ))
+            })?;
+
+        // Both mappings, so nothing downstream has to derive an incarnation.
+        self.remember_runtime_member(&agent_runtime_id, &roster_id)
+            .await;
+        self.remember_runtime_session(&agent_runtime_id, &session_id)
+            .await;
+        Ok(ResetSuccessorBinding {
+            agent_runtime_id,
+            session_id,
+        })
+    }
+
     async fn create_session(
         &self,
         identity: &AgentIdentity,
@@ -3434,6 +3914,104 @@ impl SessionBridge for MobSessionBridge {
                 })
             }
             Err(error) if is_member_already_exists_error(&error) => {
+                // CUSTODY FIRST. A roster collision is not by itself evidence
+                // that the occupant is stale. If the identity store - the only
+                // authoritative desired state - holds a valid Present intent
+                // naming this exact session, then MobMachine owns
+                // materialization of this member and this bridge does not.
+                // Retiring here destroys an occupant another authority is
+                // actively converging, which is how an applied declaration
+                // took a live member down mid-rotation.
+                //
+                // Permission comes from the intent alone.
+                // `identity_convergence_status` is documented output-only and
+                // "never grants an actuator permission", so it is not consulted
+                // here; convergence is observed through the machine-state
+                // projection below, which is what actually has to agree.
+                match self.collision_custody(identity, session_id).await {
+                    CollisionCustody::MobMachineOwns => {
+                        return self
+                            .await_convergence_and_attach(runtime_id, &mid, identity, session_id)
+                            .await;
+                    }
+                    CollisionCustody::Indeterminate => {
+                        // Fail closed and retryable. Falling through here is
+                        // what turned an unreadable intent into a destroyed
+                        // live member.
+                        return Err(resume_rejected(
+                            identity,
+                            session_id,
+                            &meerkat_mob::MobError::Internal(format!(
+                                "roster collision on {session_id} with no authoritative durable \
+                                 intent naming it, so ownership of this member cannot be \
+                                 established; refusing to retire the occupant (retryable: \
+                                 retry once identity intent is readable and names a session)"
+                            )),
+                            "collision custody indeterminate",
+                        ));
+                    }
+                    // Valid Absent: the identity store does not want this
+                    // identity present, so identity-first keeps its existing
+                    // repair ownership and the preconditioned path below runs.
+                    CollisionCustody::IdentityFirstOwns => {}
+                    // Authoritative absence lifts the veto but grants nothing.
+                    // The legacy authority must prove EXACT custody of the
+                    // occupant from persisted evidence first: the colliding
+                    // member's own bridge session must be the session this
+                    // resume is for. Without that proof this stays
+                    // indeterminate, so a realm with no intent rows can boot
+                    // while an ambiguous collision still cannot destroy
+                    // anything.
+                    CollisionCustody::LegacyRepairMayProveCustody => {
+                        // Custody means the occupant BELONGS to this identity,
+                        // not that it is the same session. A stale predecessor
+                        // incarnation is exactly what the preconditioned retire
+                        // exists to clear, so requiring session equality here
+                        // was inverted: equality would mean the occupant is the
+                        // member we want and must be attached, not destroyed.
+                        let occupant_is_ours =
+                            crate::member_comms_id::live_member_names_identity_or_incarnation(
+                                crate::member_comms_id::runtime_alias_str(mid.as_str()).as_ref(),
+                                identity.as_str(),
+                                Some(runtime_id.as_str()),
+                            );
+                        // If the occupant is ours AND already bound to the very
+                        // session being resumed, it is not a stale predecessor -
+                        // it IS the member. Retiring it and re-resuming the same
+                        // session is what produced "session already has a
+                        // different operation": the destructive path was aimed
+                        // at the thing it was trying to recover.
+                        if occupant_is_ours
+                            && self.handle.resolve_bridge_session_id(&mid).await.as_ref()
+                                == Some(session_id)
+                        {
+                            self.remember_runtime_member(runtime_id, &mid).await;
+                            self.remember_runtime_session(runtime_id, session_id).await;
+                            // NOT Resumed. Custody and bookkeeping are
+                            // reconciled, but this identity has no
+                            // authoritative registration, and the continuity
+                            // adapter will refuse a head-canonical session whose
+                            // owner was never registered. Only the caller holds
+                            // the record needed to register.
+                            return Ok(ResumeSessionOutcome::AttachedPendingRegistration {
+                                session_id: session_id.clone(),
+                            });
+                        }
+                        if !occupant_is_ours {
+                            return Err(resume_rejected(
+                                identity,
+                                session_id,
+                                &meerkat_mob::MobError::Internal(format!(
+                                    "roster collision on {session_id} with no identity intent \
+                                     row, and the legacy authority cannot prove the occupant \
+                                     {mid} belongs to {identity} (retryable: refusing to retire \
+                                     an occupant whose custody is unproven)"
+                                )),
+                                "legacy custody unproven",
+                            ));
+                        }
+                    }
+                }
                 // Genuine roster collision: an in-process restart where the
                 // previous member actor hasn't fully terminated, or a Broken
                 // roster entry left by an earlier rejected resume. Retire the
@@ -3662,7 +4240,7 @@ impl SessionBridge for MobSessionBridge {
     }
 
     async fn retire_member(&self, runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
-        let mid = self.member_id_for_runtime_id(runtime_id).await;
+        let mid = self.member_id_for_runtime_id(runtime_id).await?;
         self.retire_session_owned_member_to_absence(&mid)
             .await
             .map_err(|error| BridgeError::Mob(error.to_string()))?;
@@ -3675,7 +4253,7 @@ impl SessionBridge for MobSessionBridge {
         runtime_id: &AgentRuntimeId,
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<(), BridgeError> {
-        let mid = self.member_id_for_runtime_id(runtime_id).await;
+        let mid = self.member_id_for_runtime_id(runtime_id).await?;
         let adapter = self.continuity_session_store.as_ref().ok_or_else(|| {
             BridgeError::Mob(format!(
                 "reset retire cannot abandon superseded member {mid}: the bridge has no continuity session-store authority"
@@ -3706,8 +4284,8 @@ impl SessionBridge for MobSessionBridge {
     }
 
     async fn wire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {
-        let member_a = self.member_id_for_runtime_id(a).await;
-        let member_b = self.member_id_for_runtime_id(b).await;
+        let member_a = self.member_id_for_runtime_id(a).await?;
+        let member_b = self.member_id_for_runtime_id(b).await?;
         self.handle
             .wire(
                 meerkat_mob::AgentIdentity::from(member_a.as_str()),
@@ -3723,8 +4301,8 @@ impl SessionBridge for MobSessionBridge {
     ) -> Result<(), BridgeError> {
         let mut member_edges = Vec::with_capacity(edges.len());
         for (a, b) in edges {
-            let member_a = self.member_id_for_runtime_id(a).await;
-            let member_b = self.member_id_for_runtime_id(b).await;
+            let member_a = self.member_id_for_runtime_id(a).await?;
+            let member_b = self.member_id_for_runtime_id(b).await?;
             member_edges.push((
                 meerkat_mob::AgentIdentity::from(member_a.as_str()),
                 meerkat_mob::AgentIdentity::from(member_b.as_str()),
@@ -3767,8 +4345,8 @@ impl SessionBridge for MobSessionBridge {
     }
 
     async fn unwire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {
-        let member_a = self.member_id_for_runtime_id(a).await;
-        let member_b = self.member_id_for_runtime_id(b).await;
+        let member_a = self.member_id_for_runtime_id(a).await?;
+        let member_b = self.member_id_for_runtime_id(b).await?;
         match self
             .handle
             .unwire(
@@ -3793,7 +4371,7 @@ impl SessionBridge for MobSessionBridge {
         &self,
         runtime_id: &AgentRuntimeId,
     ) -> Result<MemberInspection, BridgeError> {
-        let mid = self.member_id_for_runtime_id(runtime_id).await;
+        let mid = self.member_id_for_runtime_id(runtime_id).await?;
         let snap = self
             .handle
             .member_status(&mid)
@@ -3888,7 +4466,7 @@ impl MobSessionBridge {
         let injected_context = delivery.injected_context.as_slice();
         let interaction_id = delivery.interaction_id.as_deref();
         let delivery_identity = delivery.delivery_identity.as_ref();
-        let mid = self.member_id_for_runtime_id(runtime_id).await;
+        let mid = self.member_id_for_runtime_id(runtime_id).await?;
         // One admission budget for the whole attempt, shared by every actor
         // round trip below: the serialized hops must not each cost a budget.
         let mut deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
@@ -4029,6 +4607,126 @@ impl MobSessionBridge {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::sync::Arc;
+
+    fn probe_input_header() -> meerkat_runtime::InputHeader {
+        meerkat_runtime::InputHeader {
+            id: meerkat_core::lifecycle::InputId::new(),
+            timestamp: chrono::Utc::now(),
+            source: meerkat_runtime::InputOrigin::External {
+                source_name: "carry-classification-probe".to_string(),
+            },
+            durability: meerkat_runtime::InputDurability::Durable,
+            visibility: meerkat_runtime::InputVisibility::default(),
+            idempotency_key: None,
+            supersession_key: None,
+            correlation_id: None,
+        }
+    }
+
+    /// What a repair may carry across a member disposal, asserted at the owner.
+    ///
+    /// The integration-level version of this could only observe prompt TEXT,
+    /// and the recording double there flattens the whole transcript - so a flow
+    /// step legitimately sitting in the successor's history was
+    /// indistinguishable from one re-admitted as a new input. That made the
+    /// assertion unable to fail for the right reason. This asserts the decision
+    /// itself, where it is made.
+    ///
+    /// The property that matters: user-originated work crosses the repair, and a
+    /// flow-owned occurrence NEVER does, because its correlation belongs to the
+    /// flow engine which observes its own step's terminal and owns the retry.
+    #[test]
+    fn repair_carries_user_input_and_never_a_flow_owned_occurrence() {
+        // Carried: the three user-originated classes. Asserted individually,
+        // not as a group - they share one match arm today, and a test that only
+        // covered Prompt would not notice Peer or ExternalEvent being moved out
+        // of it.
+        for (label, input) in [
+            (
+                "prompt",
+                meerkat_runtime::Input::Prompt(meerkat_runtime::PromptInput::new("p", None)),
+            ),
+            (
+                "peer",
+                meerkat_runtime::Input::Peer(meerkat_runtime::PeerInput {
+                    header: probe_input_header(),
+                    directed_interaction_id: None,
+                    convention: None,
+                    content: meerkat_core::ContentInput::Text("peer".to_string()),
+                    payload: None,
+                    handling_mode: None,
+                    sender_taint: None,
+                    objective_id: None,
+                    system_prompts: Vec::new(),
+                    injected_context: Vec::new(),
+                }),
+            ),
+            (
+                "external-event",
+                meerkat_runtime::Input::ExternalEvent(meerkat_runtime::ExternalEventInput {
+                    header: probe_input_header(),
+                    event_type: "probe".to_string(),
+                    payload: serde_json::Value::Null,
+                    blocks: None,
+                    handling_mode: meerkat_core::types::HandlingMode::default(),
+                    render_metadata: None,
+                    objective_id: None,
+                }),
+            ),
+        ] {
+            match super::classify_pending_input_for_carry(Some(input)) {
+                super::PendingInputCarry::Carry(_) => {}
+                super::PendingInputCarry::Uncarryable { class, reason } => panic!(
+                    "{label} is user-originated work and must cross the repair, but it was \
+                     classified {class}: {reason}"
+                ),
+            }
+        }
+
+        // NOT carried, and this is the invariant the integration test could not
+        // observe.
+        let flow_step = meerkat_runtime::Input::FlowStep(meerkat_runtime::FlowStepInput {
+            header: probe_input_header(),
+            step_id: "probe-step".to_string(),
+            content: meerkat_core::ContentInput::Text("flow".to_string()),
+            directed_interaction_id: None,
+            turn_metadata: None,
+        });
+        match super::classify_pending_input_for_carry(Some(flow_step)) {
+            super::PendingInputCarry::Uncarryable { class, reason } => {
+                assert_eq!(
+                    class, "flow-step",
+                    "a flow step must be named as such, so the disposal it precedes is reviewable"
+                );
+                assert!(
+                    reason.contains("owned by the flow engine"),
+                    "the reason must say WHO owns the correlation, not merely that it cannot be \
+                     carried: {reason}"
+                );
+            }
+            super::PendingInputCarry::Carry(_) => panic!(
+                "a flow-owned occurrence must NEVER cross a repair: its correlation belongs to \
+                 the flow engine, which owns the retry"
+            ),
+        }
+
+        // A pending input the runtime kept no payload for is named too, rather
+        // than vanishing into the disposal.
+        match super::classify_pending_input_for_carry(None) {
+            super::PendingInputCarry::Uncarryable { class, .. } => {
+                assert_eq!(class, "payload-unavailable");
+            }
+            super::PendingInputCarry::Carry(_) => {
+                panic!("a pending input with no retained payload cannot be carried")
+            }
+        }
+
+        // NOTE: Continuation and Operation are deliberately not constructed
+        // here - their payloads need OperationId/OpEvent/ContinuationKind
+        // fixtures that would dominate this test. Their lane
+        // ("runtime-internal") is therefore unasserted, and said so rather than
+        // implied by the cases above.
+    }
 
     /// The ordering property, proven by direct poll rather than by timing.
     ///
@@ -5241,6 +5939,42 @@ mod tests {
 
         assert_eq!(spawn.model_override.as_deref(), Some("gpt-test"));
         assert!(spawn.override_profile.is_none());
+    }
+
+    /// Why `member_id_for_runtime_id` and the wire projection return errors
+    /// instead of deriving an id when the runtime_members mapping is missing.
+    ///
+    /// This covers the HAZARD rather than the full missing-map path, which needs
+    /// a live bridge and therefore a whole mob. What it pins down is the pair of
+    /// facts that made the old fallback unsafe, and either one changing should
+    /// break this test rather than silently re-permit derivation.
+    #[test]
+    fn a_stable_roster_id_would_parse_as_a_fake_runtime_id() {
+        // After the stable-identity lowering, a roster member id decodes to a
+        // BARE durable identity.
+        let roster_id = crate::member_comms_id::mob_member_id_str("agent:alpha").into_owned();
+        let decoded = crate::member_comms_id::runtime_alias_str(&roster_id).into_owned();
+        assert_eq!(
+            decoded, "agent:alpha",
+            "a stable roster id must decode to the bare durable identity"
+        );
+
+        // And `AgentRuntimeId` accepts it. That is the whole danger: the old
+        // fallback fed exactly this string to `parse`, which succeeded and
+        // minted a runtime id naming no incarnation, so a missing mapping
+        // produced a plausible-looking lie instead of an error.
+        let parsed = AgentRuntimeId::parse(&decoded);
+        assert!(
+            parsed.is_ok(),
+            "if AgentRuntimeId ever rejects a bare identity this test's premise is stale, but \
+             today it accepts it, which is why derivation had to be removed rather than \
+             guarded: {parsed:?}"
+        );
+        assert!(
+            crate::member_comms_id::durable_identity_from_runtime_alias(&decoded).is_none(),
+            "the accepted string is not a generated runtime alias at all, so nothing \
+             downstream could have detected the manufactured id"
+        );
     }
 
     #[test]

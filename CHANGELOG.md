@@ -7,6 +7,132 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Pins meerkat `=0.8.28`, which carries three upstream fixes this release depends
+on. First, accepting an encoded stable roster identity as the successor of a
+legacy generation-zero runtime binding - that is what lets already-persisted
+sessions resume under the durable-roster contract with no migration on the
+MobKit side. Second, `respawn_with_successor_spec`, the atomic successor-spec
+respawn that restores reprofile-via-reset (see below). Third, treating an
+omitted binding on a successor spec as "preserve the current one" rather than
+"clear it"; without that, a successor respawn was refused for any locally-bound
+member, because the roster does not expose a binding for the caller to restate.
+
+### Changed
+
+- **BEHAVIOR CHANGE: a persistent launch now pins `mob_config`.** Mob storage is
+  persistent on launches that already persist everything else, which is what
+  makes adopted identity declarations survive a restart. The cost is that the
+  mob definition is pinned once the storage exists: meerkat refuses a definition
+  that disagrees with the persisted spec store, on create and on resume alike
+  (verified against 0.8.26 and unchanged in the pinned 0.8.28), so durable mob
+  state and an editable `mob_config` cannot both hold on one storage path
+  WITHOUT the declared spec update described under Added - which is the
+  sanctioned way through this refusal, not around it.
+
+  Editing `mob_config` and restarting against the same state directory is now
+  refused with a typed error that names the diverged fields and states the
+  remedy, instead of failing later as an internal store mismatch. Today the
+  remedies are a new state directory (and re-adoption), or declaring mob state
+  ephemeral with `runtime_options.mob_storage = {"storage": "memory"}`, which
+  keeps `mob_config` editable at the cost of durable adoptions. A future
+  upstream definition-migration path would update the authoritative event-log
+  definition; rewriting the recorded provenance is deliberately NOT offered,
+  because certifying a definition the event log does not hold would boot stale
+  config silently.
+
+### Added
+
+- **A declared spec update, so the `mob_config` pin has a door.** A persistent
+  launch pins the mob definition, and the typed refusal for a diverged definition
+  is the right default - booting stale config silently is worse. But a refusal
+  with no sanctioned way through it is a dead end, and it refuses the standard
+  operating mode of any deployment that edits `mob.toml` between activations and
+  clones its state directory (the persisted spec rides through every clone, so
+  the next config-touching activation is refused).
+
+  `runtime_options.declare_spec_update = {"expected_revision": N}` is an explicit
+  operator declaration that the persisted spec now matches this definition,
+  compare-and-swapped on the revision the divergence was observed at. Present
+  only on the activation that intends to move the pin: a declared transition, not
+  a mode. `expected_revision` is required rather than defaulted, because a
+  declaration without the revision it was made against is not a declaration - it
+  is "accept whatever is there", which is indistinguishable from having no pin.
+
+  It refuses, fail-closed, when the revision moved between observation and
+  declaration, when the payload names a different mob than its definition
+  carries, when nothing is pinned, when the definition already matches, and when
+  declared alongside an in-memory `mob_storage` (which pins nothing, so there
+  would be no spec to move). Each of those would otherwise be a silent lie in an
+  activation log. The receipt is logged with the previous revision, the committed
+  revision and the declared fields.
+
+  Divergence is reported as dotted field paths - `profiles.security.model` rather
+  than `profiles` - because an operator about to declare through a refusal has to
+  see what actually moved.
+
+- **Reprofile-via-reset is restored.** Lowering destructive reset to one
+  authoritative respawn removed it: a respawn preserves the predecessor's
+  profile, so reset with a changed roster profile returned a typed refusal rather
+  than silently keeping the old profile. meerkat 0.8.28 adds
+  `respawn_with_successor_spec`, which applies the successor spec atomically, and
+  reset now binds to it - so a reset that changes profile reprofiles again. The
+  typed refusal remains for any case the successor transition cannot satisfy;
+  what it will never do is report a reset that kept the old profile.
+
+- **`runtime_options.mob_storage`.** Declares mob storage in-memory on an
+  otherwise persistent launch, mirroring `runtime_options.runtime_store`. The
+  storage census now reports the mob slot on both GATEWAY launch paths
+  (`mobkit_gateway`, `rpc_gateway`); it previously declared nine slots and
+  omitted this one, which is why an in-memory mob storage on a persistent launch
+  was invisible to healthz and the storage doctor.
+
+  Scope, stated because it is narrower than it first reads: the embedder path
+  (`UnifiedRuntime::builder()` with no mob storage argument) is unchanged. It
+  still composes `MobStorage::in_memory()`, so it declares no mob census slot
+  and its `mob_config` stays editable - and its mob state is NOT durable, so an
+  embedder that adopts identity declarations still loses them on restart. The
+  durability fix below covers the two gateway paths only.
+
+### Fixed
+
+- **Mob roster identity is now the durable identity, for every binding.** MobKit
+  lowered its own `AgentRuntimeId` into `SpawnMemberSpec.identity` for local and
+  session-backed members, and the durable identity only for external ones.
+  Meerkat defines `AgentRuntimeId` as a stable identity plus a
+  machine-owned generation, where different generations are successive
+  incarnations of the same member, and `SpawnMemberSpec.identity` is the roster
+  identity. Nesting one inside the other made the roster id per-incarnation, so
+  durable state keyed on it belonged to a single binding and could not survive a
+  respawn or a restart. MobKit's `AgentRuntimeId` remains binding and
+  incarnation detail; it is no longer a roster spelling, and every surface that
+  used to convert it into a roster key now resolves through the durable
+  identity with exact-session agreement.
+- **A resumed mob is lifted out of the prior graceful stop before identity
+  restore runs.** A replayed event log ends at the `MobStopped` of the last
+  clean shutdown, so a resumed handle can come back `Stopped`. Bootstrap now
+  lifts `Stopped` to `Running` once, and refuses `Completed`, `Destroyed`, and
+  an unsettled `Creating` with typed errors, instead of handing identity restore
+  a mob it can never spawn into.
+- **Adopted identity declarations and mob events now survive a restart, on the
+  two gateway launch paths.** `mobkit_gateway` and `rpc_gateway` composed
+  in-memory mob storage while persisting sessions, so every restart presented as
+  a healthy boot with the right member count and no durable mob state. The
+  embedder path is NOT covered - see the scope note under Added. Storage mode is now attributed per launch branch: the
+  ephemeral branches are unchanged and declare themselves in the census.
+  Create-versus-resume is decided in one place from the event log rather than
+  at each launch site, and storage supplied through the public bootstrap API
+  with a non-empty log and no provenance declaration fails closed rather than
+  resuming unverified.
+- **A closing member event stream no longer races MobMachine for actuation.**
+  When the identity store holds a valid `Present` intent, MobMachine is the
+  sole actuator: the stream-health monitor no longer marks the identity-first
+  runtime broken, and the resume path's roster-collision handler no longer
+  retires the occupant. Both now read the same authoritative intent, and an
+  unreadable or ambiguous intent fails closed and retryable instead of being
+  treated as permission to destroy a live member. Only a valid `Absent` intent
+  leaves identity-first its existing repair ownership.
+
+
 ## [0.8.22] - 2026-08-24
 
 Pins meerkat `=0.8.26`.

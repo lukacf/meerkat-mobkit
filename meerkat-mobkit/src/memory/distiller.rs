@@ -2991,11 +2991,15 @@ mod tests {
     }
 
     // Task #53 regression: the trigger sink keys the distiller by the
-    // LOGICAL identity, not the mob-plane roster id it is observed under.
-    // Identity-first members roster as encoded generated runtime aliases
-    // (mk--rt_c...), one per respawn generation - before the fix every
-    // generation's extraction landed in its own scope, disjoint from the
-    // scope the SDK, injection, and the recorder key on.
+    // LOGICAL identity, not the mob-plane id it is observed under.
+    //
+    // Identity-first members now roster under the encoded DURABLE identity, so
+    // the roster id itself no longer varies per generation. The normalization
+    // this test guards still matters, because generated runtime aliases
+    // (mk--rt_c..., one per incarnation) remain a real observed shape in
+    // BINDING and EVENT detail - and that is what the seeds below feed. Before
+    // the fix every generation's extraction landed in its own scope, disjoint
+    // from the scope the SDK, injection, and the recorder key on.
     #[tokio::test]
     async fn trigger_sink_normalizes_roster_ids_to_the_logical_identity_across_generations() {
         let provider = Arc::new(CapturingProvider::default());

@@ -1241,10 +1241,32 @@ impl ContinuitySessionStoreAdapter {
                     // later probe could reinterpret the same durable
                     // document as a creation window.
                     self.mark_session_durably_observed(id);
+                    // BACKSTOP, not the primary contract. The actionable
+                    // refusal for a recoverable owner now happens earlier, as an
+                    // attach postcondition: a reconciled occupant is registered
+                    // from the caller's authoritative continuity record before
+                    // anything commits a runtime boundary, and a registration
+                    // failure surfaces there as a typed retryable outcome.
+                    //
+                    // Reaching HERE means the owner is not merely unregistered
+                    // but unrecoverable from this side - a foreign writer, the
+                    // supervisor plane, or a record that rotated away - so there
+                    // is no caller action that would make the write legal. The
+                    // message says which, because "Store write failed" sent me
+                    // chasing a persistence bug for three edits.
+                    //
+                    // The variant stays Internal because SessionStoreError is
+                    // Meerkat-owned and MobKit cannot add an
+                    // unregistered-owner/incompatible-continuity variant to it.
                     return Err(meerkat_store::SessionStoreError::Internal(format!(
-                        "session {id} is head-canonical on the continuity substrate but its \
-                         owning identity is not registered; refusing to degrade a head-canonical \
-                         session to whole-document persistence"
+                        "refusing to degrade head-canonical session {id} to whole-document \
+                         persistence: its owning identity has no authoritative registration and \
+                         none can be reconciled from here (the session was never registered in \
+                         this process, rather than explicitly unregistered for parked repair, so \
+                         this is a foreign or rotated-away writer). This is a deliberate refusal, \
+                         not a store failure: no retry of the write will succeed. The owner must \
+                         be registered by the authority holding its continuity record before any \
+                         runtime boundary commit."
                     )));
                 };
                 Ok(PersistenceCapability::HeadCanonical(Box::new(
@@ -8027,7 +8049,8 @@ mod tests {
         let text = refused.to_string();
         assert!(
             text.contains("refusing to park")
-                || text.contains("refusing to degrade a head-canonical session"),
+                || (text.contains("refusing to degrade head-canonical session")
+                    && text.contains("whole-document persistence")),
             "the refusal must speak a fail-closed guard's vocabulary: {refused}"
         );
         assert_eq!(
@@ -8326,11 +8349,15 @@ mod tests {
         let refused = meerkat::SessionStore::save(adapter.as_ref(), &session)
             .await
             .expect_err("a head-canonical save with no registered owner must refuse");
+        // Both SIDES of the degradation, not one phrase. The refusal is only
+        // actionable if it says what representation is being left and what it
+        // would be replaced by, and asserting the pair keeps this test
+        // discriminating if either half is ever dropped.
+        let refused_text = refused.to_string();
         assert!(
-            refused
-                .to_string()
-                .contains("refusing to degrade a head-canonical session"),
-            "the refusal must name the degradation it is preventing: {refused}"
+            refused_text.contains("refusing to degrade head-canonical session")
+                && refused_text.contains("whole-document persistence"),
+            "the refusal must name the degradation it is preventing, both sides of it: {refused}"
         );
         assert_eq!(
             adapter.whole_document_passes(),

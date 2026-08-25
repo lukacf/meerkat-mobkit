@@ -4113,7 +4113,8 @@ fn ambiguous_live_identity_alias_error(
     JsonRpcError {
         code: -32602,
         message: format!(
-            "ambiguous live identity alias {requested_identity}: candidates [{}]",
+            "ambiguous live identity alias {requested_identity} \
+             [via console candidate lookup]: candidates [{}]",
             candidates.join(", ")
         ),
         data: Some(json!({
@@ -4195,19 +4196,26 @@ fn live_alias_matches_status_runtime(
     let Some(alias) = alias else {
         return true;
     };
-    let session_matches = match (
-        status.session_id.as_ref().map(ToString::to_string),
+    // A registered binding must exist. A control call naming a live member for
+    // an identity that has no runtime binding at all is not a match.
+    if status.agent_runtime_id.is_none() {
+        return false;
+    }
+    let registered_session = status.session_id.as_ref().map(ToString::to_string);
+    // One centralized rule: live roster id decoded exactly to the durable
+    // identity, plus EXACT session equality (a one-sided missing session fails
+    // closed). `agent_runtime_id` stays binding bookkeeping and is not the
+    // roster spelling.
+    crate::member_comms_id::live_binding_matches_identity(
+        &alias.runtime_member_id,
         alias.session_id.as_deref(),
-    ) {
-        (Some(status_session), Some(live_session)) => status_session == live_session,
-        _ => true,
-    };
-    status
-        .agent_runtime_id
-        .as_ref()
-        .is_some_and(|runtime_id| runtime_id.as_str() == alias.runtime_member_id)
-        && alias.identity == status.identity.as_str()
-        && session_matches
+        status.identity.as_str(),
+        registered_session.as_deref(),
+        status
+            .agent_runtime_id
+            .as_ref()
+            .map(crate::identity_first::AgentRuntimeId::as_str),
+    ) && alias.identity == status.identity.as_str()
 }
 
 async fn stale_live_alias_json_rpc_error(
@@ -8503,13 +8511,42 @@ async fn console_member_peer_info(
         )
         .or_else(|| crate::identity_first::AgentIdentity::parse(&member_alias).ok())
         .ok_or_else(|| format!("invalid durable member alias {member_alias:?}"))?;
-        identity_runtime
+        let status = identity_runtime
             .status(&identity)
             .await
-            .map_err(|error| error.to_string())?
-            .agent_runtime_id
-            .map(|runtime_id| runtime_id.to_string())
-            .ok_or_else(|| format!("identity {identity} has no current runtime member"))?
+            .map_err(|error| error.to_string())?;
+        // Presence of a runtime binding, not its spelling: the roster is keyed
+        // by the encoded durable identity since the stable-identity lowering,
+        // and this value is encoded and handed to handle.get_member below.
+        if status.agent_runtime_id.is_none() {
+            return Err(format!("identity {identity} has no current runtime member"));
+        }
+        // And the live member must be the one this binding is registered for,
+        // session included. Without the session check a peer-info call could
+        // report on a member bound to a different session than the identity
+        // runtime believes is current.
+        let roster_member =
+            crate::member_comms_id::roster_member_id_for_identity(identity.as_str());
+        let live_session = handle.resolve_bridge_session_id(&roster_member).await;
+        if !crate::member_comms_id::live_binding_matches_identity(
+            roster_member.as_str(),
+            live_session.as_ref().map(ToString::to_string).as_deref(),
+            identity.as_str(),
+            status
+                .session_id
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            status
+                .agent_runtime_id
+                .as_ref()
+                .map(crate::identity_first::AgentRuntimeId::as_str),
+        ) {
+            return Err(format!(
+                "identity {identity} live member does not match its registered binding session"
+            ));
+        }
+        identity.as_str().to_string()
     } else {
         let direct = crate::member_comms_id::mob_member_id(&member_alias);
         if handle
@@ -9020,7 +9057,10 @@ async fn reset_all_live_console_agents(
                 .map(str::to_owned)
                 .or_else(|| {
                     identity_by_runtime_member_id
-                        .get(&member.agent_identity)
+                        .get(
+                            crate::member_comms_id::runtime_alias_str(&member.agent_identity)
+                                .as_ref(),
+                        )
                         .cloned()
                 })
                 .unwrap_or_else(|| member.agent_identity.clone());
@@ -9062,7 +9102,7 @@ async fn reset_all_live_console_agents(
             .map(str::to_owned)
             .or_else(|| {
                 identity_by_runtime_member_id
-                    .get(&member.agent_identity)
+                    .get(crate::member_comms_id::runtime_alias_str(&member.agent_identity).as_ref())
                     .cloned()
             })
             .unwrap_or_else(|| member.agent_identity.clone());
@@ -9125,8 +9165,19 @@ async fn reset_all_live_console_agents(
             .as_ref()
             .and_then(|status| status.agent_runtime_id.as_ref())
             .map(crate::identity_first::AgentRuntimeId::as_str);
-        let registered_visible = registered_runtime_id
-            .is_some_and(|runtime_id| visible_runtime_member_ids.contains(runtime_id));
+        // Visibility of the identity's ROSTER ROW, not of its incarnation.
+        //
+        // This used to ask whether the registered AgentRuntimeId was among
+        // the visible roster member ids. Since the stable-identity lowering
+        // the roster row is the encoded durable identity and the runtime id
+        // names an incarnation, so that question can never be true - which
+        // made every identity carrying a duplicate label read as ambiguous
+        // even with its own row visible and healthy. The binding must still
+        // EXIST, which registered_runtime_id covers.
+        let registered_visible = registered_runtime_id.is_some()
+            && visible_runtime_member_ids.iter().any(|member_id| {
+                crate::member_comms_id::live_member_is_identity(member_id, identity)
+            });
         let registered_hidden = registered_runtime_id.is_some_and(|runtime_id| {
             raw_live_alias_by_runtime_member_id.contains_key(runtime_id)
                 && !visible_runtime_member_ids.contains(runtime_id)
@@ -9137,7 +9188,7 @@ async fn reset_all_live_console_agents(
         if duplicate_live_identities.contains(identity) && !registered_visible {
             failures.push(json!({
                 "identity": identity,
-                "error": "ambiguous live identity alias",
+                "error": "ambiguous live identity alias [via reset-all preflight]",
             }));
             continue;
         }
@@ -9157,8 +9208,13 @@ async fn reset_all_live_console_agents(
                 continue;
             }
             if let Some(live_runtime_ids) = raw_runtime_member_ids_by_identity.get(identity) {
-                if !registered_runtime_id
-                    .is_some_and(|runtime_id| live_runtime_ids.contains(runtime_id))
+                // The registered binding must exist AND this identity must have a
+                // live roster member. Roster ids are the encoded durable identity
+                // now, so `contains` against an AgentRuntimeId never matched.
+                if !(registered_runtime_id.is_some()
+                    && live_runtime_ids.iter().any(|live| {
+                        crate::member_comms_id::live_member_is_identity(live, identity)
+                    }))
                 {
                     failures.push(json!({
                         "identity": identity,
@@ -9205,7 +9261,8 @@ async fn reset_all_live_console_agents(
             .get(identity)
             .map(String::as_str)
             .unwrap_or(identity.as_str());
-        if let Some(bound_identity) = identity_by_runtime_member_id.get(runtime_member_id)
+        if let Some(bound_identity) = identity_by_runtime_member_id
+            .get(crate::member_comms_id::runtime_alias_str(runtime_member_id).as_ref())
             && bound_identity != identity
         {
             failures.push(json!({
@@ -9346,8 +9403,19 @@ async fn reset_all_live_console_agents(
             .as_ref()
             .and_then(|status| status.agent_runtime_id.as_ref())
             .map(crate::identity_first::AgentRuntimeId::as_str);
-        let registered_visible = registered_runtime_id
-            .is_some_and(|runtime_id| visible_runtime_member_ids.contains(runtime_id));
+        // Visibility of the identity's ROSTER ROW, not of its incarnation.
+        //
+        // This used to ask whether the registered AgentRuntimeId was among
+        // the visible roster member ids. Since the stable-identity lowering
+        // the roster row is the encoded durable identity and the runtime id
+        // names an incarnation, so that question can never be true - which
+        // made every identity carrying a duplicate label read as ambiguous
+        // even with its own row visible and healthy. The binding must still
+        // EXIST, which registered_runtime_id covers.
+        let registered_visible = registered_runtime_id.is_some()
+            && visible_runtime_member_ids.iter().any(|member_id| {
+                crate::member_comms_id::live_member_is_identity(member_id, identity.as_str())
+            });
         let registered_hidden = registered_runtime_id.is_some_and(|runtime_id| {
             raw_live_alias_by_runtime_member_id.contains_key(runtime_id)
                 && !visible_runtime_member_ids.contains(runtime_id)
@@ -9358,7 +9426,7 @@ async fn reset_all_live_console_agents(
         if duplicate_live_identities.contains(&identity) && !registered_visible {
             failures.push(json!({
                 "identity": identity,
-                "error": "ambiguous live identity alias",
+                "error": "ambiguous live identity alias [via reset-all execution]",
             }));
             continue;
         }
@@ -9386,8 +9454,13 @@ async fn reset_all_live_console_agents(
                     continue;
                 }
                 if let Some(live_runtime_ids) = raw_runtime_member_ids_by_identity.get(&identity) {
-                    if !registered_runtime_id
-                        .is_some_and(|runtime_id| live_runtime_ids.contains(runtime_id))
+                    // The registered binding must exist AND this identity must have a
+                    // live roster member. Roster ids are the encoded durable identity
+                    // now, so `contains` against an AgentRuntimeId never matched.
+                    if !(registered_runtime_id.is_some()
+                        && live_runtime_ids.iter().any(|live| {
+                            crate::member_comms_id::live_member_is_identity(live, identity.as_str())
+                        }))
                     {
                         failures.push(json!({
                             "identity": identity,
@@ -9465,7 +9538,8 @@ async fn reset_all_live_console_agents(
                 .get(&identity)
                 .map(String::as_str)
                 .unwrap_or(identity.as_str());
-            if let Some(bound_identity) = identity_by_runtime_member_id.get(runtime_member_id)
+            if let Some(bound_identity) = identity_by_runtime_member_id
+                .get(crate::member_comms_id::runtime_alias_str(runtime_member_id).as_ref())
                 && bound_identity != &identity
             {
                 failures.push(json!({
@@ -9517,12 +9591,26 @@ async fn reset_all_live_console_agents(
                     .agent_runtime_id
                     .as_ref()
                     .map(crate::identity_first::AgentRuntimeId::as_str);
-                let registered_visible = registered_runtime_id
-                    .is_some_and(|runtime_id| visible_runtime_member_ids.contains(runtime_id));
+                // Visibility of the identity's ROSTER ROW, not of its incarnation.
+                //
+                // This used to ask whether the registered AgentRuntimeId was among
+                // the visible roster member ids. Since the stable-identity lowering
+                // the roster row is the encoded durable identity and the runtime id
+                // names an incarnation, so that question can never be true - which
+                // made every identity carrying a duplicate label read as ambiguous
+                // even with its own row visible and healthy. The binding must still
+                // EXIST, which registered_runtime_id covers.
+                let registered_visible = registered_runtime_id.is_some()
+                    && visible_runtime_member_ids.iter().any(|member_id| {
+                        crate::member_comms_id::live_member_is_identity(
+                            member_id,
+                            identity.as_str(),
+                        )
+                    });
                 if duplicate_live_identities.contains(&identity) && !registered_visible {
                     failures.push(json!({
                         "identity": identity,
-                        "error": "ambiguous live identity alias",
+                        "error": "ambiguous live identity alias [via reset-all execution-retire]",
                     }));
                     continue;
                 }
@@ -9541,8 +9629,13 @@ async fn reset_all_live_console_agents(
                     continue;
                 }
                 if let Some(live_runtime_ids) = raw_runtime_member_ids_by_identity.get(&identity) {
-                    if !registered_runtime_id
-                        .is_some_and(|runtime_id| live_runtime_ids.contains(runtime_id))
+                    // The registered binding must exist AND this identity must have a
+                    // live roster member. Roster ids are the encoded durable identity
+                    // now, so `contains` against an AgentRuntimeId never matched.
+                    if !(registered_runtime_id.is_some()
+                        && live_runtime_ids.iter().any(|live| {
+                            crate::member_comms_id::live_member_is_identity(live, identity.as_str())
+                        }))
                     {
                         failures.push(json!({
                             "identity": identity,
@@ -9643,7 +9736,8 @@ async fn reset_all_live_console_agents(
                 .get(&identity)
                 .map(String::as_str)
                 .unwrap_or(identity.as_str());
-            if let Some(bound_identity) = identity_by_runtime_member_id.get(runtime_member_id)
+            if let Some(bound_identity) = identity_by_runtime_member_id
+                .get(crate::member_comms_id::runtime_alias_str(runtime_member_id).as_ref())
                 && bound_identity != &identity
             {
                 failures.push(json!({
@@ -10850,7 +10944,8 @@ comms = true
         .expect_err("stdio adapter must fail closed on a visible duplicate");
         assert_eq!(
             rpc_ambiguous,
-            "ambiguous live identity alias review:golden: candidates [rt:review:golden:0, rt:review:golden:1]"
+            "ambiguous live identity alias review:golden [via identity-control-target \
+             resolver]: candidates [rt:review:golden:0, rt:review:golden:1]"
         );
         let console_ambiguous = resolve_console_identity_control_target(
             &ambiguous_handle,
@@ -11227,7 +11322,11 @@ comms = true
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let (_temp_dir, runtime) =
             build_empty_console_test_runtime("console-durable-wins-duplicate-live-labels").await?;
-        for runtime_id in ["rt:review:singleton:0", "rt:review:singleton:1"] {
+        // The REGISTERED row is the durable identity itself now; the generated
+        // alias beside it is a decoy carrying the same agent_identity label,
+        // which is what preserves this test's subject - a registered live
+        // binding must win over label matches.
+        for runtime_id in ["review:singleton", "rt:review:singleton:1"] {
             let mut labels = BTreeMap::new();
             labels.insert("agent_identity".to_string(), "review:singleton".to_string());
             runtime
@@ -11262,7 +11361,7 @@ comms = true
         let registered_session_id = runtime
             .handle()
             .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
-                "rt:review:singleton:0",
+                "review:singleton",
             ))
             .await
             .unwrap_or_else(meerkat_core::types::SessionId::new);
@@ -13384,26 +13483,29 @@ comms = true
         let (_temp_dir, runtime) =
             build_empty_console_test_runtime("console-current-generation-peer-info").await?;
         let durable_identity = "review:peer-info-current";
-        let stale_alias = "rt:review:peer-info-current:0";
-        let current_alias = "rt:review:peer-info-current:1";
-        for runtime_alias in [stale_alias, current_alias] {
-            runtime
-                .handle()
-                .spawn_spec(
-                    SpawnMemberSpec::from_wire(
-                        "worker".to_string(),
-                        crate::member_comms_id::mob_member_id_str(runtime_alias).into_owned(),
-                        None,
-                        None,
-                        None,
-                    )
-                    .with_labels(BTreeMap::from([(
-                        "agent_identity".to_string(),
-                        durable_identity.to_string(),
-                    )])),
+        // ONE stable roster row. This used to seat rt:...:0 and rt:...:1 so a
+        // stale generation row would remain for peer info to skip. Under the
+        // durable-roster contract there is one row per identity and a reset
+        // replaces its binding, so a leftover generation row cannot exist. What
+        // still matters, and what this now asserts, is that peer info names the
+        // stable row and refuses a binding that disagrees with it.
+        let successor_alias = "rt:review:peer-info-current:1";
+        runtime
+            .handle()
+            .spawn_spec(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    crate::member_comms_id::mob_member_id_str(durable_identity).into_owned(),
+                    None,
+                    None,
+                    None,
                 )
-                .await?;
-        }
+                .with_labels(BTreeMap::from([(
+                    "agent_identity".to_string(),
+                    durable_identity.to_string(),
+                )])),
+            )
+            .await?;
 
         let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
@@ -13434,8 +13536,17 @@ comms = true
                 IdentityLifecycleState::Active,
                 Some(ContinuityRecord {
                     identity,
-                    agent_runtime_id: AgentRuntimeId::parse(current_alias)?,
-                    session_id: meerkat_core::types::SessionId::new(),
+                    agent_runtime_id: AgentRuntimeId::parse(successor_alias)?,
+                    // The row's ACTUAL session. The old fixture used a fresh
+                    // random SessionId, which only went unnoticed because
+                    // nothing compared it against the live binding.
+                    session_id: runtime
+                        .handle()
+                        .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id(
+                            durable_identity,
+                        ))
+                        .await
+                        .ok_or("the stable roster row must have a bridge session")?,
                     generation: ContinuityGeneration::new(1),
                     checkpoint_version: CheckpointVersion::new(0),
                 }),
@@ -13465,33 +13576,22 @@ comms = true
             .as_str()
             .ok_or("peer info must return comms_name")?;
         assert!(
-            comms_name.ends_with(crate::member_comms_id::mob_member_id_str(current_alias).as_ref()),
-            "console peer info selected the stale generation: {response:#?}"
+            comms_name
+                .ends_with(crate::member_comms_id::mob_member_id_str(durable_identity).as_ref()),
+            "console peer info must name the stable roster row: {response:#?}"
         );
 
-        let ambiguous = Box::pin(handle_console_runtime_rpc(
-            &runtime,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            rpc_request_with_params(
-                "mobkit/cross_mob/peer_info",
-                json!({"member_id": durable_identity}),
-            ),
-            true,
-        ))
-        .await;
-        assert!(
-            ambiguous["error"]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("ambiguous durable member alias")),
-            "classic fallback must fail closed when both reset generations remain: {ambiguous:#?}"
-        );
+        // The label-disambiguation fallback is NOT reachable for a durable
+        // identity any more, and that is worth stating rather than asserting
+        // around. It existed because the bare identity was not a roster id, so a
+        // classic lookup had to match rows by their agent_identity LABEL and
+        // could find several. The durable identity is now the roster id itself,
+        // so the exact-member-id path always wins - I verified this by seeding
+        // two rows labelled for one identity and watching peer info resolve the
+        // exact row cleanly rather than reporting ambiguity.
+        //
+        // The fallback still guards callers that pass something which is not a
+        // roster id; it simply cannot be provoked through this identity.
 
         let _ = runtime.handle().stop().await;
         Ok(())

@@ -1018,7 +1018,7 @@ fn resolved_tools_for_alpha(
 ///   member RESUMES the phase-1 session, and its resolved tool surface must
 ///   carry `workgraph_*`.
 #[test]
-fn resumed_member_resolves_tool_category_declared_after_creation() {
+fn ephemeral_mob_storage_resumed_member_resolves_tool_category_declared_after_creation() {
     let state_dir = tempfile::tempdir().expect("state dir");
     let scratch_dir = tempfile::tempdir().expect("scratch dir");
     let continuity = HostContinuityState::default();
@@ -1041,6 +1041,12 @@ fn resumed_member_resolves_tool_category_declared_after_creation() {
             "scratch_dir": scratch_dir.path(),
             "runtime_options": {
                 "demo_llm": true,
+                // Declared in-memory mob storage. A persistent mob storage
+                // PINS mob_config, because Meerkat refuses a definition that
+                // disagrees with the persisted spec store, so changing the
+                // profile across restarts requires declaring mob state
+                // ephemeral. That trade is the point of this contract.
+                "mob_storage": { "storage": "memory" },
                 "identity_bootstrap_mode": { "mode": "lazy_materialize" }
             }
         }
@@ -1163,6 +1169,12 @@ fn resumed_member_resolves_tool_category_declared_after_creation() {
             "scratch_dir": scratch_dir.path(),
             "runtime_options": {
                 "demo_llm": true,
+                // Declared in-memory mob storage. A persistent mob storage
+                // PINS mob_config, because Meerkat refuses a definition that
+                // disagrees with the persisted spec store, so changing the
+                // profile across restarts requires declaring mob state
+                // ephemeral. That trade is the point of this contract.
+                "mob_storage": { "storage": "memory" },
                 "identity_bootstrap_mode": { "mode": "lazy_materialize" }
             }
         }
@@ -1234,4 +1246,561 @@ fn resumed_member_resolves_tool_category_declared_after_creation() {
         Some(phase1_session_id.as_str()),
         "resumed member must keep the phase-1 session (no recreation): {status}"
     );
+}
+
+/// CONTRACT: a PERSISTENT mob storage pins `mob_config`. Two gateway processes
+/// over the same state dir, second one carrying a changed definition, must be
+/// refused with the typed actionable divergence error before the mob actuates.
+///
+/// This is the other half of
+/// `ephemeral_mob_storage_resumed_member_resolves_tool_category_declared_after_creation`.
+/// Durable mob storage is what makes adopted identity declarations survive a
+/// restart, and Meerkat 0.8.26 refuses a definition that disagrees with the
+/// persisted spec store on both create and resume
+/// (`sync_definition_with_spec_store`). So the two properties cannot both hold
+/// on one storage, and the operator has to be told which one they have rather
+/// than discovering it as an internal error naming two stores.
+#[test]
+fn persistent_mob_storage_refuses_changed_definition_on_the_same_state_dir() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let scratch_dir = tempfile::tempdir().expect("scratch dir");
+    let continuity = HostContinuityState::default();
+
+    // PHASE 1: create era, persistent mob storage (the default on a
+    // persistent_state launch), definition WITHOUT workgraph.
+    let mut gateway = Gateway::start();
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "init1",
+        "method": "mobkit/init",
+        "params": {
+            "persistent_state": state_dir.path(),
+            "mob_config": MOB_CONFIG,
+            "has_roster_provider": true,
+            "has_continuity_store": true,
+            "has_lease_provider": true,
+            "has_session_builder": true,
+            "scratch_dir": scratch_dir.path(),
+            "runtime_options": {
+                "demo_llm": true,
+                "identity_bootstrap_mode": { "mode": "lazy_materialize" }
+            }
+        }
+    }));
+    let init = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    101,
+                );
+            },
+            |m| is_response_with_id(m, "init1"),
+        )
+        .expect("phase-1 init response");
+    assert!(
+        init["result"]["contract_version"].is_string(),
+        "phase-1 init must succeed so the composition is recorded: {init}"
+    );
+
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "shutdown1",
+        "method": "mobkit/shutdown",
+        "params": {}
+    }));
+    let shutdown = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    101,
+                );
+            },
+            |m| is_response_with_id(m, "shutdown1"),
+        )
+        .expect("phase-1 shutdown handshake response");
+    assert_eq!(
+        shutdown["result"]["shutdown"], true,
+        "phase-1 shutdown failed: {shutdown}"
+    );
+    gateway.close_stdin();
+    gateway.wait_for_exit(WEDGE_BACKSTOP);
+    drop(gateway);
+
+    // PHASE 2: same state dir, CHANGED definition, still persistent.
+    let mut gateway = Gateway::start();
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "init2",
+        "method": "mobkit/init",
+        "params": {
+            "persistent_state": state_dir.path(),
+            "mob_config": MOB_CONFIG_WORKGRAPH,
+            "has_roster_provider": true,
+            "has_continuity_store": true,
+            "has_lease_provider": true,
+            "has_session_builder": true,
+            "scratch_dir": scratch_dir.path(),
+            "runtime_options": {
+                "demo_llm": true,
+                "identity_bootstrap_mode": { "mode": "lazy_materialize" }
+            }
+        }
+    }));
+    let init = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    102,
+                );
+            },
+            |m| is_response_with_id(m, "init2"),
+        )
+        .expect("phase-2 init response");
+
+    // Positive observables. Asserting merely that init failed would pass on any
+    // unrelated breakage, and asserting the absence of a success field would
+    // pass against a hang.
+    let message = init["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("phase-2 must be refused with a typed error: {init}"));
+    assert!(
+        message.contains("diverges from the composition this storage was created for"),
+        "the refusal must be the composition-divergence error, not an internal store \
+         mismatch: {message}"
+    );
+    assert!(
+        message.contains("profiles"),
+        "the refusal must name the diverged field so the operator can act: {message}"
+    );
+    assert!(
+        message.contains("create a new mob storage path"),
+        "the refusal must state a remedy: {message}"
+    );
+}
+
+/// RELEASE CONTRACT: an adopted and applied member tool declaration survives a
+/// real process restart.
+///
+/// This is the user-visible property the persistent-mob-storage repair exists
+/// for, and it is deliberately tested across two gateway PROCESSES rather than
+/// an in-process rebootstrap. In-process, the comms participant registry keeps
+/// the member endpoint bound and a second bootstrap of the same mob collides on
+/// its durable generation binding, so an in-process test cannot model a
+/// restart. Two processes can.
+///
+/// Both phases carry the SAME definition: a persistent mob storage pins
+/// `mob_config`, which the divergence contract above covers separately. What is
+/// under test here is that declaration state written in phase 1 is readable in
+/// phase 2 at the revision it was left at.
+#[test]
+fn adopted_and_applied_declaration_survives_a_real_process_restart() {
+    const MOB_ID: &str = "gateway-concurrent-dispatch-test";
+    const ALIAS: &str = "agent:alpha";
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let scratch_dir = tempfile::tempdir().expect("scratch dir");
+    let continuity = HostContinuityState::default();
+
+    let init_params = |id: &str| {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "mobkit/init",
+            "params": {
+                "persistent_state": state_dir.path(),
+                "mob_config": MOB_CONFIG,
+                "has_roster_provider": true,
+                "has_continuity_store": true,
+                "has_lease_provider": true,
+                "has_session_builder": true,
+                "scratch_dir": scratch_dir.path(),
+                "runtime_options": {
+                    "demo_llm": true,
+                    "identity_bootstrap_mode": { "mode": "lazy_materialize" }
+                }
+            }
+        })
+    };
+    let declaration = json!({
+        "category_overrides": {
+            "builtins": "inherit",
+            "shell": "enable",
+            "comms": "inherit",
+            "mob": "inherit",
+            "memory": "inherit",
+            "schedule": "inherit",
+            "workgraph": "inherit",
+            "image_generation": "inherit",
+            "web_search": "inherit"
+        },
+        "callback_tools": { "kind": "set", "tools": [] },
+        "execution": { "kind": "unrestricted" },
+        "application_policy": { "kind": "unmanaged" }
+    });
+
+    // ------------------------------------------------------------------
+    // PHASE 1: adopt revision 1, then apply revision 2, then exit.
+    // ------------------------------------------------------------------
+    let mut gateway = Gateway::start();
+    gateway.send(init_params("init1"));
+    let init = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    101,
+                );
+            },
+            |m| is_response_with_id(m, "init1"),
+        )
+        .expect("phase-1 init response");
+    assert!(
+        init["result"]["contract_version"].is_string(),
+        "phase-1 init failed: {init}"
+    );
+
+    let dispatch = dispatch_alpha_through_build(&mut gateway, &continuity, 101, "dispatch1");
+    assert!(
+        dispatch.get("result").is_some(),
+        "phase-1 dispatch must succeed so {ALIAS} has a bridge session: {dispatch}"
+    );
+    let session_id = continuity
+        .record(ALIAS)
+        .expect("phase 1 must have upserted a continuity record")["session_id"]
+        .as_str()
+        .expect("continuity record session_id")
+        .to_string();
+
+    // Declarations are keyed on the STABLE durable identity. The runtime id is
+    // read only to prove it CHANGES across the process boundary: it is a
+    // per-binding incarnation, so durable state keyed on it could not survive a
+    // restart. That is the whole point of the contract under test.
+    let rpc_result =
+        |gateway: &mut Gateway, id: &str, method: &str, params: Value, cb: u64| -> Value {
+            gateway.send(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+                "params": params
+            }));
+            let status = gateway
+                .wait_for(
+                    WEDGE_BACKSTOP,
+                    |gateway, message| {
+                        answer_stateful_provider_callback_holding_builds(
+                            gateway,
+                            message,
+                            &continuity,
+                            cb,
+                        );
+                    },
+                    |m| is_response_with_id(m, id),
+                )
+                .expect("status_identity response");
+            status["result"].clone()
+        };
+    let runtime_identity = |status: &Value| -> String {
+        status["agent_runtime_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{ALIAS} must have a runtime id: {status}"))
+            .to_string()
+    };
+    let phase1_runtime = runtime_identity(&rpc_result(
+        &mut gateway,
+        "status1",
+        "mobkit/status_identity",
+        json!({ "identity": ALIAS }),
+        101,
+    ));
+    // Adoption must state the EXACT existing baseline. `mobkit/status_identity`
+    // does not project runtime_mode, so read it from the member surface, which
+    // does, rather than guessing a default that would be rejected as a change.
+    // Adoption is for an ALREADY-realized member, and upstream compares the
+    // declaration's MATERIALIZED runtime mode AND labels against the live roster
+    // entry (`material_runtime_mode != entry.runtime_mode ||
+    // material.overlay.labels.unwrap_or_default() != entry.labels`). An omitted
+    // field is therefore not "unchanged": it materializes to a default and is
+    // rejected as a change. So echo the live entry exactly rather than guessing
+    // a mode, and take labels from the ROSTER entry, not from
+    // status_identity (whose labels are the identity's and are empty here).
+    let members = rpc_result(
+        &mut gateway,
+        "members1",
+        "mobkit/list_members",
+        json!({}),
+        101,
+    );
+    let entry = members
+        .as_array()
+        .unwrap_or_else(|| panic!("list_members must return an array: {members}"))
+        .iter()
+        .find(|entry| {
+            entry["agent_identity"]
+                .as_str()
+                .is_some_and(|id| meerkat_mobkit::member_comms_id::runtime_alias_str(id) == ALIAS)
+        })
+        .unwrap_or_else(|| panic!("{ALIAS} must be on the roster: {members}"))
+        .clone();
+    // A missing field here is a surface regression, not something to paper over.
+    let baseline_runtime_mode = entry
+        .get("runtime_mode")
+        .filter(|value| !value.is_null())
+        .unwrap_or_else(|| panic!("list_members entry must project runtime_mode: {entry}"))
+        .clone();
+    let baseline_labels = entry
+        .get("labels")
+        .unwrap_or_else(|| panic!("list_members entry must project labels: {entry}"))
+        .clone();
+
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "adopt1",
+        "method": "mob/adopt_member_identity_declaration",
+        "params": {
+            "mob_id": MOB_ID,
+            "agent_identity": ALIAS,
+            "request_id": "adopt-restart-1",
+            "precondition": "expected_absent",
+            "declaration_scope": "restart-durability-test",
+            "declaration_revision": 1,
+            "session": {
+                "session_id": session_id,
+                "lineage_id": format!("session:{session_id}"),
+                "lineage_generation": 0,
+                "authority_policy": "require_existing"
+            },
+            "member": {
+                "profile_name": "default",
+                // NO system_prompt_override, deliberately. This launch wires no
+                // SpawnBasePromptSource and the profile declares no skills, which
+                // used to force the declaration to carry its own prompt - and
+                // meerkat 0.8.28 now REFUSES exactly that for an existing
+                // session: "identity adoption cannot restate an existing
+                // session's durable system prompt; omit system_prompt_override so
+                // the transcript remains authoritative". Adoption reads the
+                // persisted transcript instead, so the workaround is both
+                // unnecessary and rejected.
+                "runtime_mode": baseline_runtime_mode,
+                "labels": baseline_labels,
+                "execution": { "execution": "controlling_session" }
+            },
+            "owned_wiring": [],
+            "convergence": { "kind": "drain", "max_wait_ms": 5000 }
+        }
+    }));
+    let adoption = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    101,
+                );
+            },
+            |m| is_response_with_id(m, "adopt1"),
+        )
+        .expect("adopt response");
+    assert_eq!(
+        adoption["error"],
+        Value::Null,
+        "adopt failed: {adoption:#?}"
+    );
+    assert_eq!(
+        adoption["result"]["adoption"]["desired_revision"],
+        json!(1),
+        "adopt must land revision 1: {adoption:#?}"
+    );
+
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "apply1",
+        "method": "mob/apply_member_tool_declaration",
+        "params": {
+            "mob_id": MOB_ID,
+            "agent_identity": ALIAS,
+            "request_id": "apply-restart-1",
+            "expected_intent_revision": 1,
+            "declaration": declaration,
+            "convergence": { "kind": "drain", "max_wait_ms": 5000 }
+        }
+    }));
+    let apply = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    101,
+                );
+            },
+            |m| is_response_with_id(m, "apply1"),
+        )
+        .expect("apply response");
+    assert_eq!(apply["error"], Value::Null, "apply failed: {apply:#?}");
+    assert_eq!(
+        apply["result"]["commit"]["desired_revision"],
+        json!(2),
+        "apply must land revision 2: {apply:#?}"
+    );
+
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "shutdown1",
+        "method": "mobkit/shutdown",
+        "params": {}
+    }));
+    let shutdown = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    101,
+                );
+            },
+            |m| is_response_with_id(m, "shutdown1"),
+        )
+        .expect("phase-1 shutdown handshake response");
+    assert_eq!(
+        shutdown["result"]["shutdown"], true,
+        "phase-1 shutdown failed: {shutdown}"
+    );
+    gateway.close_stdin();
+    gateway.wait_for_exit(WEDGE_BACKSTOP);
+    drop(gateway);
+
+    // ------------------------------------------------------------------
+    // PHASE 2: a NEW process over the same state dir must still see it.
+    // ------------------------------------------------------------------
+    let mut gateway = Gateway::start();
+    gateway.send(init_params("init2"));
+    let init = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    102,
+                );
+            },
+            |m| is_response_with_id(m, "init2"),
+        )
+        .expect("phase-2 init response");
+    assert!(
+        init["result"]["contract_version"].is_string(),
+        "phase-2 init failed: {init}"
+    );
+
+    // A plain restart RESUMES the same incarnation: the generation is minted
+    // per identity by Meerkat and is preserved across process replacement, so
+    // this is the same runtime id, not a new one. Asserted rather than assumed,
+    // because the incarnation-change property is exercised by the respawn
+    // below and this pins down which of the two is which.
+    let phase2_runtime = runtime_identity(&rpc_result(
+        &mut gateway,
+        "status2pre",
+        "mobkit/status_identity",
+        json!({ "identity": ALIAS }),
+        102,
+    ));
+    assert_eq!(
+        phase1_runtime, phase2_runtime,
+        "a restart resumes the same incarnation; a changed runtime id here would mean the \
+         process replacement rotated the binding instead of resuming it"
+    );
+
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "read2",
+        "method": "mob/member_tool_declaration",
+        "params": { "mob_id": MOB_ID, "agent_identity": ALIAS }
+    }));
+    let read = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    102,
+                );
+            },
+            |m| is_response_with_id(m, "read2"),
+        )
+        .expect("phase-2 declaration read response");
+
+    // Positive observables: the exact revision and the exact declaration. A
+    // bare "no error" would pass against a fresh empty mob, which is precisely
+    // the failure this repair exists to prevent.
+    assert_eq!(read["error"], Value::Null, "phase-2 read failed: {read:#?}");
+    assert_eq!(read["result"]["agent_identity"], json!(ALIAS));
+    assert_eq!(
+        read["result"]["desired_intent_revision"],
+        json!(2),
+        "the applied revision must survive the process restart: {read:#?}"
+    );
+    assert_eq!(
+        read["result"]["declaration"], declaration,
+        "the declaration content must survive the process restart: {read:#?}"
+    );
+
+    // And it is bound to the SAME session, not a freshly minted one. A
+    // declaration that survived while its session did not would still be a
+    // broken restart.
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "status2",
+        "method": "mobkit/status_identity",
+        "params": { "identity": ALIAS }
+    }));
+    let status = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    102,
+                );
+            },
+            |m| is_response_with_id(m, "status2"),
+        )
+        .expect("phase-2 status_identity response");
+    assert_eq!(
+        status["result"]["session_id"].as_str(),
+        Some(session_id.as_str()),
+        "the restarted process must keep the phase-1 session, not create a new one: {status}"
+    );
+
+    // NOTE for whoever extends this: the incarnation-change property (durable
+    // declaration state outliving a NEW generation) is NOT covered here. A
+    // restart resumes the same incarnation, as asserted above, so forcing a
+    // successor needs a respawn - and `mobkit/respawn_member` does not return
+    // within the wedge backstop in this callback-hosted fixture, so wiring it
+    // in would trade coverage for a 60-second hang. Covering it needs either a
+    // respawn-capable fixture or a separate lane.
 }

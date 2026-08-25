@@ -26,8 +26,8 @@ pub use agent_memory::{
 pub use bridge::{
     BridgeAdmissionError, BridgeDelivery, BridgeError, BridgeTurnError, BridgeTurnReceipt,
     CommittedBoundaryRecoverer, CommittedBoundaryRepair, CompactionFloorRegistry, MemberInspection,
-    MobSessionBridge, ResumeFallbackReason, ResumeRejectionKind, ResumeSessionOutcome,
-    SessionBridge,
+    MobSessionBridge, ResetSuccessorBinding, ResumeFallbackReason, ResumeRejectionKind,
+    ResumeSessionOutcome, SessionBridge,
 };
 pub use contracts::*;
 pub use gateway_bridges::{

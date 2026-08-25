@@ -5799,6 +5799,13 @@ impl MobSessionService for AfterCreateMobSessionService {
 pub struct MobBootstrapSpec {
     pub definition: MobDefinition,
     pub storage: MobStorage,
+    /// Whether `storage` carries a composition that outlives the process.
+    ///
+    /// Declared by the launch path, because `MobStorage` does not report its
+    /// own durability. `bootstrap` uses it to decide whether the composition
+    /// needs a provenance record at all: an ephemeral storage has no
+    /// cross-restart composition to judge.
+    pub mob_storage_provenance: crate::mob_composition_manifest::MobStorageProvenance,
     pub session_service: Arc<dyn MobSessionService>,
     pub binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
     pub(crate) agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
@@ -5903,6 +5910,12 @@ impl MobBootstrapSpec {
         Self {
             definition,
             storage,
+            // Unspecified, not DeclaredEphemeral: this constructor accepts
+            // arbitrary storage and cannot know what it was handed. Claiming
+            // ephemerality on the caller's behalf is what would let an
+            // external embedder's durable storage resume unverified.
+            mob_storage_provenance: crate::mob_composition_manifest::MobStorageProvenance::default(
+            ),
             session_service,
             binary_blob_store: None,
             agent_mob_mcp_state: None,
@@ -6063,6 +6076,32 @@ impl MobBootstrapSpec {
         registry: Arc<meerkat_core::ToolConsequencePolicyRegistry>,
     ) -> Self {
         self.tool_consequence_policy_registry = Some(registry);
+        self
+    }
+
+    /// Declare that `storage` lives only for this process.
+    ///
+    /// The named form exists so in-process callers can say so explicitly
+    /// instead of relying on a default claim. It permits resuming a pre-seeded
+    /// in-memory storage, which carries no cross-restart composition risk
+    /// because the storage was built in this same process.
+    pub fn with_declared_ephemeral_mob_storage(mut self) -> Self {
+        self.mob_storage_provenance =
+            crate::mob_composition_manifest::MobStorageProvenance::declared_ephemeral();
+        self
+    }
+
+    /// Carry the provenance returned alongside a composed mob storage.
+    ///
+    /// Takes the provenance rather than a bare path so the pair produced by
+    /// [`crate::mob_composition_manifest::persistent_mob_storage`] threads
+    /// through intact: a launch path cannot compose persistent mob storage and
+    /// then forget to declare it.
+    pub fn with_mob_storage_provenance(
+        mut self,
+        provenance: crate::mob_composition_manifest::MobStorageProvenance,
+    ) -> Self {
+        self.mob_storage_provenance = provenance;
         self
     }
 
@@ -7159,6 +7198,9 @@ pub enum MobRuntimeError {
     Mob(MobError),
     InvalidInput(&'static str),
     InvalidConfig(String),
+    /// A persistent mob storage path could not be proven to match the supplied
+    /// composition. Raised before the mob actuates.
+    CompositionProvenance(crate::mob_composition_manifest::MobCompositionProvenanceError),
 }
 
 impl std::fmt::Display for MobRuntimeError {
@@ -7167,6 +7209,7 @@ impl std::fmt::Display for MobRuntimeError {
             Self::Mob(err) => write!(f, "{err}"),
             Self::InvalidInput(message) => write!(f, "{message}"),
             Self::InvalidConfig(message) => write!(f, "{message}"),
+            Self::CompositionProvenance(err) => write!(f, "{err}"),
         }
     }
 }
@@ -7368,8 +7411,70 @@ pub struct MobRuntime {
     _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
 }
 
+/// The right to lift a prepared mob from `Stopped` to `Running`, once.
+///
+/// A resumed persistent log replays the prior graceful shutdown, so the handle
+/// comes back `Stopped`. Lifting it is what makes MobMachine revive persisted
+/// sessions - and revival needs the owning identity already registered, which
+/// only an installed `IdentityRuntime` can do. So for an identity-first
+/// composition the lift cannot happen where the mob is built; it has to wait
+/// until the identity context exists.
+///
+/// This is that obligation made typed rather than left to a convention. It is
+/// only produced when a lift is genuinely owed, it is consumed by value so it
+/// cannot be discharged twice, and there is no boolean anywhere that says
+/// "skip the lift".
+#[must_use = "a prepared mob stays Stopped until this activation is consumed, and a Stopped mob cannot spawn"]
+pub(crate) struct PendingMobActivation {
+    handle: MobHandle,
+}
+
+impl PendingMobActivation {
+    /// Perform the deferred `Stopped` -> `Running` transition.
+    ///
+    /// Call only after the identity context is installed and current continuity
+    /// records are registered; that ordering is the whole reason this is
+    /// deferred.
+    pub(crate) async fn activate(self) -> Result<(), MobRuntimeError> {
+        match self.handle.status().await? {
+            // The only transition MobHandle::resume performs.
+            meerkat_mob::MobState::Stopped => {
+                self.handle.resume().await?;
+                Ok(())
+            }
+            // Something else already lifted it; the obligation is discharged.
+            meerkat_mob::MobState::Running => Ok(()),
+            state => Err(MobRuntimeError::InvalidConfig(format!(
+                "a prepared mob reported state {} at activation, so it can no longer be lifted \
+                 to Running",
+                state.as_str()
+            ))),
+        }
+    }
+}
+
 impl MobRuntime {
-    pub async fn bootstrap(mut spec: MobBootstrapSpec) -> Result<Self, MobRuntimeError> {
+    /// Bootstrap a mob that is `Running` on return.
+    ///
+    /// The honest wrapper: any caller that gets a `MobRuntime` from here can
+    /// spawn into it. Identity-first composition uses [`Self::prepare`] instead,
+    /// because it must interpose registration before the lift.
+    pub async fn bootstrap(spec: MobBootstrapSpec) -> Result<Self, MobRuntimeError> {
+        let (runtime, pending) = Self::prepare(spec).await?;
+        if let Some(pending) = pending {
+            pending.activate().await?;
+        }
+        Ok(runtime)
+    }
+
+    /// Build the mob without committing to `Running`.
+    ///
+    /// Returns the runtime plus, when a lift is owed and an identity runtime
+    /// slot says identity-first composition is coming, the typed activation that
+    /// must be consumed once continuity is registered.
+    pub(crate) async fn prepare(
+        mut spec: MobBootstrapSpec,
+    ) -> Result<(Self, Option<PendingMobActivation>), MobRuntimeError> {
         // Every mobkit surface funnels its definition through here, so this
         // is the one ingress where declared-field resume overrides are
         // marked before the definition reaches meerkat-mob.
@@ -7401,7 +7506,54 @@ impl MobRuntime {
             .clone()
             .or_else(|| session_service.runtime_adapter());
 
-        let mut builder = MobBuilder::new(spec.definition, spec.storage);
+        // Create-vs-resume selection, in ONE place. An in-memory storage is
+        // always empty at boot, so this single read serves both modes:
+        // ephemeral launches always create, and only a persistent path that
+        // already holds events resumes. No launch site needs to decide, which
+        // is what stops the three launch paths from drifting apart again.
+        //
+        // `spec.definition` is already normalized here:
+        // `auto_mark_declared_resume_overrides` ran above, so the composition
+        // recorded on create and the one compared on resume are the same form.
+        // Recording a pre-normalization definition would mismatch its own
+        // first boot.
+        let event_log_empty = spec
+            .storage
+            .is_event_log_empty()
+            .await
+            .map_err(|err| MobRuntimeError::Mob(MobError::from(err)))?;
+        let persistent_mob_path = spec.mob_storage_provenance.persistent_path();
+        // Fail closed on undeclared storage. `MobBootstrapSpec::new` accepts
+        // arbitrary storage from any caller including external embedders, so a
+        // non-empty log with nothing declared about it could be a durable
+        // database opened directly, and resuming it would skip composition
+        // verification entirely. An explicit in-process declaration is
+        // permitted: a pre-seeded in-memory storage has no composition that
+        // outlives the process to disagree with.
+        if !event_log_empty && !spec.mob_storage_provenance.permits_unverified_resume() {
+            return Err(MobRuntimeError::CompositionProvenance(
+                crate::mob_composition_manifest::MobCompositionProvenanceError::UnprovenStorage,
+            ));
+        }
+        let mut builder = if event_log_empty {
+            if let Some(path) = persistent_mob_path {
+                // Refuse rather than leave behind a path whose composition the
+                // next restart cannot judge.
+                crate::mob_composition_manifest::record_on_create(path, &spec.definition)
+                    .map_err(MobRuntimeError::CompositionProvenance)?;
+            }
+            MobBuilder::new(spec.definition, spec.storage)
+        } else {
+            // The event log's `MobCreated` definition is authoritative and
+            // `for_resume` structurally cannot accept a new one, so the
+            // supplied composition is verified BEFORE the builder exists:
+            // every refusal lands before the mob can actuate.
+            if let Some(path) = persistent_mob_path {
+                crate::mob_composition_manifest::verify_before_resume(path, &spec.definition)
+                    .map_err(MobRuntimeError::CompositionProvenance)?;
+            }
+            MobBuilder::for_resume(spec.storage)
+        };
 
         // MobActor's autonomous readiness/comms-drain path consults the
         // builder-published runtime adapter directly. For session services
@@ -7439,7 +7591,62 @@ impl MobRuntime {
             builder = builder.with_default_llm_client(client);
         }
 
-        let handle = builder.create().await?;
+        let mut pending_activation: Option<PendingMobActivation> = None;
+        let handle = if event_log_empty {
+            builder.create().await?
+        } else {
+            let handle = builder.resume().await?;
+            // A persistent event log replays the PRIOR GRACEFUL SHUTDOWN. The
+            // last event of a clean stop is `MobStopped`, so replaying it
+            // faithfully hands back a handle in `Stopped`, and the identity
+            // restore below then tries to spawn into a stopped mob and leaves
+            // the identity broken.
+            //
+            // `bootstrap` is an operational bootstrap: the caller asked for a
+            // running mob. So lift it here, once, rather than leaving every
+            // downstream actuator to discover a stopped mob and interpret it
+            // for itself. Any failure stays typed.
+            match handle.status().await? {
+                // Defer the lift for identity-first composition. Lifting here
+                // is what triggers machine-authorized revival of the persisted
+                // sessions, and revival is refused unless the owning identity
+                // is already registered - which cannot have happened yet,
+                // because the IdentityRuntime arrives later, via
+                // install_and_bootstrap_identity_first_context. Lifting anyway
+                // is what left every restored member Broken.
+                meerkat_mob::MobState::Stopped if identity_runtime_slot.is_some() => {
+                    pending_activation = Some(PendingMobActivation {
+                        handle: handle.clone(),
+                    });
+                }
+                // The only transition MobHandle::resume performs.
+                meerkat_mob::MobState::Stopped => handle.resume().await?,
+                meerkat_mob::MobState::Running => {}
+                // Terminal upstream. Returning Ok here would hand identity
+                // restore a mob it can never spawn into, which is the obscure
+                // failure class this whole branch exists to remove: the comment
+                // claiming a refusal has to BE the refusal.
+                state @ (meerkat_mob::MobState::Completed | meerkat_mob::MobState::Destroyed) => {
+                    return Err(MobRuntimeError::InvalidConfig(format!(
+                        "the mob storage at this path holds a mob in terminal state {} and \
+                         cannot be resumed into a running runtime (MobHandle::resume only \
+                         lifts Stopped to Running); use a new mob storage path",
+                        state.as_str()
+                    )));
+                }
+                // Not a state a just-resumed handle should report. Say so
+                // rather than succeeding quietly into a half-built runtime.
+                meerkat_mob::MobState::Creating => {
+                    return Err(MobRuntimeError::InvalidConfig(
+                        "a resumed mob reported state Creating, which a replayed event log \
+                         should never produce; refusing rather than installing an identity \
+                         runtime against an unsettled mob"
+                            .to_string(),
+                    ));
+                }
+            }
+            handle
+        };
         if let Some(state) = agent_mob_mcp_state.as_ref() {
             state.mob_insert_handle(mob_id, handle.clone()).await;
         }
@@ -7461,22 +7668,25 @@ impl MobRuntime {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                 Some(Arc::clone(&workgraph_admission));
         }
-        Ok(Self {
-            handle,
-            session_service: Some(session_service),
-            agent_mob_mcp_state,
-            implicit_delegate_retirement_overrides,
-            binary_blob_store,
-            baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
-            console_spawn_sink_slot,
-            identity_runtime_slot,
-            workgraph_service: spec.workgraph_service,
-            workgraph_admission,
-            resolved_storage: spec.resolved_storage,
-            session_write_epochs: spec.session_write_epochs,
-            committed_boundary_recoverer: spec.committed_boundary_recoverer,
-            _ephemeral_dir: ephemeral_dir,
-        })
+        Ok((
+            Self {
+                handle,
+                session_service: Some(session_service),
+                agent_mob_mcp_state,
+                implicit_delegate_retirement_overrides,
+                binary_blob_store,
+                baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+                console_spawn_sink_slot,
+                identity_runtime_slot,
+                workgraph_service: spec.workgraph_service,
+                workgraph_admission,
+                resolved_storage: spec.resolved_storage,
+                session_write_epochs: spec.session_write_epochs,
+                committed_boundary_recoverer: spec.committed_boundary_recoverer,
+                _ephemeral_dir: ephemeral_dir,
+            },
+            pending_activation,
+        ))
     }
 
     pub fn from_handle(handle: MobHandle) -> Self {

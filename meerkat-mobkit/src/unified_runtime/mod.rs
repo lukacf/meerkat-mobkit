@@ -222,6 +222,12 @@ pub struct UnifiedRuntime {
     shutting_down: AtomicBool,
     mob_event_ingress: tokio::sync::Mutex<Option<MobEventIngress>>,
     bootstrap_edges_report: tokio::sync::RwLock<Option<UnifiedRuntimeReconcileEdgesReport>>,
+    /// Set only for an identity-first resume of a persistent log, where the
+    /// mob is deliberately left `Stopped` until continuity is registered.
+    /// While this is `Some`, the runtime is NOT ready: the mob cannot spawn
+    /// and bootstrap edge reconciliation has been deferred.
+    pending_mob_activation:
+        tokio::sync::Mutex<Option<crate::mob_handle_runtime::PendingMobActivation>>,
     event_log: Option<event_log::EventLogHandle>,
     console_log_store: Arc<dyn ConsoleLogStore>,
     console_events: ConsoleEventStore,
@@ -476,6 +482,7 @@ impl UnifiedRuntime {
             shutting_down: AtomicBool::new(false),
             mob_event_ingress: tokio::sync::Mutex::new(mob_event_ingress),
             bootstrap_edges_report: tokio::sync::RwLock::new(None),
+            pending_mob_activation: tokio::sync::Mutex::new(None),
             event_log: None,
             console_log_store: Arc::new(InMemoryConsoleLogStore::new()),
             console_events,
@@ -653,7 +660,10 @@ impl UnifiedRuntime {
             .bind_authority(topology_authority)
             .await
             .map_err(|error| UnifiedRuntimeBootstrapError::Topology(error.to_string()))?;
-        let mob_runtime = MobRuntime::bootstrap(mob_spec)
+        // `prepare`, not `bootstrap`: an identity-first resume of a persistent
+        // log must stay Stopped until its continuity owners are registered,
+        // because the lift is what triggers session revival.
+        let (mob_runtime, pending_mob_activation) = MobRuntime::prepare(mob_spec)
             .await
             .map_err(UnifiedRuntimeBootstrapError::Mob)?;
         let runtime_options = options.clone();
@@ -667,15 +677,26 @@ impl UnifiedRuntime {
                 let mut runtime =
                     Self::from_parts(mob_runtime, module_runtime, persistent_metadata).await;
                 runtime.topology_controller = topology_controller;
+                // Configuration-only; dispatches nothing into the mob.
                 runtime
                     .configure_implicit_delegate_retirement(&runtime_options)
                     .await;
-                if runtime.edge_discovery.is_some()
-                    || runtime.topology_controller.revision().await > 0
-                    || runtime.topology_controller.has_pending().await
-                {
-                    let report = runtime.reconcile_edges().await;
-                    *runtime.bootstrap_edges_report.write().await = Some(report);
+                let staged = pending_mob_activation.is_some();
+                *runtime.pending_mob_activation.lock().await = pending_mob_activation;
+                if staged {
+                    // DEFERRED, not skipped. Reconciliation here would take the
+                    // non-identity authority path (no identity context exists
+                    // yet) and wire or unwire through a Stopped mob. It runs
+                    // after activation, through the identity context, and
+                    // `bootstrap_edges_report` stays None until then so an
+                    // observer cannot read an absent report as "reconciled, no
+                    // changes".
+                    tracing::info!(
+                        "identity-first resume: mob left Stopped pending continuity registration; \
+                         bootstrap edge reconciliation deferred until activation"
+                    );
+                } else {
+                    runtime.reconcile_bootstrap_edges_if_configured().await;
                 }
                 Ok(runtime)
             }
@@ -687,6 +708,20 @@ impl UnifiedRuntime {
                 let startup_error = UnifiedRuntimeBootstrapError::ModuleStartupThreadPanicked;
                 Self::rollback_mob_runtime(mob_runtime, startup_error).await
             }
+        }
+    }
+
+    /// Run bootstrap edge reconciliation if this runtime was configured for it.
+    ///
+    /// One rule, shared by the immediate path and the deferred identity-first
+    /// path, so the two cannot drift on WHEN reconciliation is owed.
+    async fn reconcile_bootstrap_edges_if_configured(&self) {
+        if self.edge_discovery.is_some()
+            || self.topology_controller.revision().await > 0
+            || self.topology_controller.has_pending().await
+        {
+            let report = self.reconcile_edges().await;
+            *self.bootstrap_edges_report.write().await = Some(report);
         }
     }
 
@@ -925,6 +960,45 @@ impl UnifiedRuntime {
     ) -> Result<crate::identity_first::RestoreFlowResult, crate::identity_first::IdentityRuntimeError>
     {
         self.install_identity_first_context_authority(Arc::clone(&context));
+        // The ruled activation order. Registration must precede the lift,
+        // because the lift is what makes MobMachine revive persisted sessions
+        // and a revived session with no registered owner is refused; and
+        // materialization must follow the lift, because a Stopped mob cannot
+        // spawn. So this sits between installing the context and rostering.
+        if let Some(pending) = self.pending_mob_activation.lock().await.take() {
+            match context
+                .runtime
+                .register_persisted_continuity_owners(roster)
+                .await
+            {
+                Ok(registered) => {
+                    tracing::info!(
+                        registered,
+                        "registered persisted continuity owners before mob activation"
+                    );
+                }
+                Err(error) => {
+                    // Do NOT activate. Lifting now would revive sessions whose
+                    // owners are not registered, which is the exact failure
+                    // this ordering exists to prevent, and it would present as
+                    // every restored member coming back Broken.
+                    self.shutdown().await;
+                    return Err(error);
+                }
+            }
+            if let Err(error) = pending.activate().await {
+                self.shutdown().await;
+                return Err(crate::identity_first::IdentityRuntimeError::Internal(
+                    format!(
+                        "activating the prepared mob after registering continuity owners: {error}"
+                    ),
+                ));
+            }
+            // Deferred from bootstrap: now the identity context exists, so
+            // reconciliation takes the identity authority path against a
+            // Running mob.
+            self.reconcile_bootstrap_edges_if_configured().await;
+        }
         match context.bootstrap_roster(roster).await {
             Ok(result) => {
                 self.start_identity_first_supervisors();
@@ -1722,6 +1796,7 @@ async fn record_identity_turn_completion(
 }
 
 async fn trigger_identity_stream_repair(
+    handle: &MobHandle,
     primary_mob_id: &str,
     tracked_key: &TrackedAgentEventStream,
     identity_runtime: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
@@ -1757,6 +1832,51 @@ async fn trigger_identity_stream_repair(
             return;
         }
     };
+    // CUSTODY GATE. A closed stream is not evidence that identity-first may
+    // repair. When the identity store holds a valid Present intent for this
+    // identity, MobMachine is the sole actuator - on an ordinary death and on
+    // a rotation alike - and marking the runtime Broken here starts a second
+    // actuator that races it. That race is how a stream closing during an
+    // applied declaration turned into a retired live member.
+    //
+    // Only a valid Absent intent leaves identity-first its repair ownership.
+    // An unreadable or malformed intent is fail-closed: it says nothing about
+    // ownership, so it cannot authorize repair either. Not marking Broken is
+    // safe to retry, because the reconcile loop below re-attaches streams on
+    // its own cadence and a genuinely dead member stays Present until
+    // MobMachine resolves it.
+    match crate::identity_first::bridge::identity_actuation_custody(handle, durable_identity, None)
+        .await
+    {
+        // Absence lifts the veto: with no intent row, identity-first is not
+        // being second-guessed by another authority and its existing repair
+        // behaviour stands.
+        crate::identity_first::bridge::CollisionCustody::IdentityFirstOwns
+        | crate::identity_first::bridge::CollisionCustody::LegacyRepairMayProveCustody => {}
+        crate::identity_first::bridge::CollisionCustody::MobMachineOwns => {
+            tracing::info!(
+                identity = %identity,
+                runtime_id = %tracked_key.runtime_id,
+                detail,
+                "mobkit agent event forwarder: durable intent wants this identity present, so \
+                 MobMachine owns its materialization; not marking identity-first broken and \
+                 leaving reattachment to the reconcile loop"
+            );
+            return;
+        }
+        crate::identity_first::bridge::CollisionCustody::Indeterminate => {
+            tracing::warn!(
+                identity = %identity,
+                runtime_id = %tracked_key.runtime_id,
+                detail,
+                "mobkit agent event forwarder: identity intent is unreadable or does not name \
+                 this identity, so repair ownership cannot be established; declining to mark \
+                 identity-first broken (degraded, retried on the next closure)"
+            );
+            return;
+        }
+    }
+
     if let Err(error) = authority
         .mark_active_runtime_broken(&identity, &runtime_alias, identity_fencing_token, detail)
         .await
@@ -1877,6 +1997,7 @@ async fn run_identity_stream_health_monitor(
                         tracked.remove(&tracked_key);
                         subscribe_failures.remove(&tracked_key);
                         trigger_identity_stream_repair(
+                            &handle,
                             handle.mob_id().as_str(),
                             &tracked_key,
                             &identity_runtime,
@@ -2099,6 +2220,7 @@ async fn reconcile_agent_event_streams(
                         backoff.consecutive_failures >= PERMANENT_STREAM_FAILURE_THRESHOLD;
                     if stream_is_permanently_lost && let Some(identity_runtime) = identity_runtime {
                         trigger_identity_stream_repair(
+                            handle,
                             &primary_mob_id,
                             &repair_key,
                             identity_runtime,
