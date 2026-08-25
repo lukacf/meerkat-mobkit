@@ -1347,10 +1347,9 @@ async fn member_declarations_round_trip_public_aliases_over_the_http_console()
                 "member": {
                     "profile_name": "lead",
                     "runtime_mode": "turn_driven",
-                    "system_prompt_override": {
-                        "prompt": "set",
-                        "text": "Identity-first member declaration fixture."
-                    },
+                    // NO system_prompt_override: meerkat 0.8.28 refuses an adoption that
+                    // restates an existing session's durable prompt, because the
+                    // transcript is authoritative. Omitting it is now the contract.
                     "execution": { "execution": "controlling_session" }
                 },
                 "owned_wiring": [],

@@ -1585,13 +1585,15 @@ fn adopted_and_applied_declaration_survives_a_real_process_restart() {
             },
             "member": {
                 "profile_name": "default",
-                // This launch wires no SpawnBasePromptSource and the profile
-                // declares no skills, so the declaration must carry its own
-                // prompt rather than inherit silently.
-                "system_prompt_override": {
-                    "prompt": "set",
-                    "text": "Restart-durability declaration fixture."
-                },
+                // NO system_prompt_override, deliberately. This launch wires no
+                // SpawnBasePromptSource and the profile declares no skills, which
+                // used to force the declaration to carry its own prompt - and
+                // meerkat 0.8.28 now REFUSES exactly that for an existing
+                // session: "identity adoption cannot restate an existing
+                // session's durable system prompt; omit system_prompt_override so
+                // the transcript remains authoritative". Adoption reads the
+                // persisted transcript instead, so the workaround is both
+                // unnecessary and rejected.
                 "runtime_mode": baseline_runtime_mode,
                 "labels": baseline_labels,
                 "execution": { "execution": "controlling_session" }
