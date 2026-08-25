@@ -39,9 +39,19 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 heavy-runtime = { max-threads = 2 }
 
 [[profile.default.overrides]]
-filter = 'package(meerkat-mobkit) & (binary(routing_delivery) + binary(list_runs) + binary(list_flows_run_flow) + binary(mob_events_cursor_persistence) + binary(mob_events_query_ledger) + binary(mob_events_streaming) + binary(access_control) + binary(unified_console) + binary(repair_queue_carry))'
+filter = 'package(meerkat-mobkit) & (binary(routing_delivery) + binary(list_runs) + binary(list_flows_run_flow) + binary(mob_events_cursor_persistence) + binary(mob_events_query_ledger) + binary(mob_events_streaming) + binary(access_control) + binary(unified_console) + binary(repair_queue_carry) + binary(mobkit_gateway_bootstrap))'
 test-group = 'heavy-runtime'
 retries = 2
+
+# `mobkit_gateway_bootstrap` joined 2026-08-25: it SPAWNS A REAL GATEWAY PROCESS
+# and waits up to 45s for it to answer mobkit/init, which is the most
+# starvation-prone shape in the suite - more so than the members already listed,
+# because the bound covers process start AND bootstrap. Under full-suite load all
+# three of its process-spawning tests timed out at exactly 45s in one run while
+# unrelated tests that had failed the previous run passed; standalone, all 7 pass
+# in 42.7s total. That is the aggregate-load starvation this group exists for, and
+# the alternative - raising the 45s bound - would weaken a real timeout to hide a
+# scheduling problem.
 
 # `access_control` joined the family 2026-07-09: its tests each boot a full
 # reference-app runtime, and under peak suite load on 4-core CI runners two
