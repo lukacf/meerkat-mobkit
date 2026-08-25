@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used)]
+
 use meerkat_mobkit::{
     ActiveLiveChannelHandle, ExperimentalLiveChannelStatus, FeatureCapability,
     LIVE_EXECUTION_CLIENT_CONTEXT_V1, LIVE_EXECUTION_FUNCTION_BRIDGE_V1,
