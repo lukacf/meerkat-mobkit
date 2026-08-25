@@ -181,6 +181,91 @@ async fn durable_mob_state_survives_drop_and_rebootstrap() {
 
 /// A changed definition must refuse loudly, naming the diverged field, rather
 /// than boot the composition recorded at first create.
+async fn boot_non_authoritative(
+    mob_path: &Path,
+    session_root: &Path,
+    definition: MobDefinition,
+) -> Result<MobRuntime, MobRuntimeError> {
+    let (storage, provenance) =
+        persistent_mob_storage(mob_path.to_path_buf()).expect("open persistent mob storage");
+    MobRuntime::bootstrap(
+        MobBootstrapSpec::new(definition, storage, session_service(session_root).await)
+            .with_mob_storage_provenance(provenance)
+            .with_composition_authority(
+                meerkat_mobkit::mob_composition_manifest::CompositionAuthority::NonAuthoritative,
+            )
+            .with_options(options()),
+    )
+    .await
+}
+
+/// HomeCore's production rollback, reproduced: a candidate/promote pipeline
+/// against ONE state directory.
+///
+/// Their deploy boots a deliberately RESTRICTED candidate first to certify it,
+/// then promotes. On a fresh store the candidate boot was the first persistent
+/// launch, so it CREATED the composition pin from the candidate-phase
+/// composition; the promoted boot supplied the real composition and was refused
+/// on every field the two modes differ in. launchd respawned the refused boot
+/// 929 times.
+///
+/// The door cannot reach that state - the refusal is at boot, before any operator
+/// ceremony can run, and the composition worth declaring never existed in the
+/// store. So a candidate must take no part in pin semantics at all.
+#[tokio::test]
+async fn a_candidate_launch_neither_creates_the_pin_nor_is_refused_by_it() {
+    const MOB_ID: &str = "candidate-promote";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite");
+    let session_root = temp.path().join("sessions");
+
+    // 1. The CANDIDATE boots first, with the restricted composition, on a fresh
+    //    store. It must NOT create the pin.
+    let candidate =
+        boot_non_authoritative(&mob_path, &session_root, diverged_definition_for(MOB_ID))
+            .await
+            .expect("a candidate launch must boot on a fresh store");
+    // shutdown, not just drop: the comms participant registry is process-global
+    // and the supervisor name derives from the mob id, so an in-process
+    // rebootstrap of the SAME mob otherwise collides on the supervisor endpoint.
+    // A real candidate/promote deploy is separate processes and never sees this.
+    candidate
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown the candidate runtime");
+    drop(candidate);
+
+    // 2. The PROMOTED boot supplies the real composition. Before the fix this
+    //    was refused, because step 1 had pinned the candidate's composition.
+    let promoted = boot(&mob_path, &session_root, base_definition_for(MOB_ID))
+        .await
+        .expect(
+            "the promoted boot must not be refused for a pin the candidate created - this is \
+             the 929-respawn production failure",
+        );
+    promoted
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown the promoted runtime");
+    drop(promoted);
+
+    // 3. And the other direction: a candidate booting against a store the
+    //    promoted launch HAS pinned must not be refused for the fields it exists
+    //    to differ in. Exempting creation alone would wedge this way instead.
+    let candidate_again =
+        boot_non_authoritative(&mob_path, &session_root, diverged_definition_for(MOB_ID)).await;
+    assert!(
+        candidate_again.is_ok(),
+        "a candidate must not be refused by a pin it does not speak for: {:?}",
+        candidate_again.err()
+    );
+    if let Ok(runtime) = candidate_again {
+        let _ = runtime.handle().shutdown().await;
+    }
+}
+
 #[tokio::test]
 async fn changed_definition_refuses_instead_of_booting_stale() {
     const MOB_ID: &str = "persistence-diverged";

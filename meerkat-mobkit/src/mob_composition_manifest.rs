@@ -362,6 +362,52 @@ fn collect_diverged_paths(
     }
 }
 
+/// Whether a launch speaks for the durable composition of its mob storage.
+///
+/// The composition pin assumes one state directory sees one composition. That
+/// assumption held for every launch shape I tested and fails for a normal one:
+/// a candidate-then-promote pipeline boots a deliberately RESTRICTED composition
+/// first, against the same state directory, to certify it. On a fresh store that
+/// candidate boot CREATED the pin from the candidate-phase composition, and the
+/// promoted boot - carrying the real composition - was then refused on every
+/// field the two modes differ in. Measured in production: 929 supervisor
+/// respawns of the refused boot before rollback.
+///
+/// The door cannot reach that state. The refusal happens at BOOT, before any
+/// operator ceremony can run, and the composition the operator would declare
+/// never existed in the store to begin with.
+///
+/// So a launch may say it does not speak for the durable composition. Such a
+/// launch takes no part in pin semantics: it neither creates the pin nor is
+/// refused by one. It is not claiming to be the durable composition, and a
+/// deliberately-restricted certification pass is exactly that claim's opposite.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CompositionAuthority {
+    /// This launch speaks for the durable composition: it creates the pin when
+    /// absent and is verified against it when present. The default, so a launch
+    /// that says nothing keeps the protection - the inverse default would mean
+    /// forgetting a flag silently loses the pin.
+    #[default]
+    Authoritative,
+    /// This launch does NOT speak for the durable composition - a candidate,
+    /// probe, or certification pass whose composition is intentionally not the
+    /// one that should be pinned.
+    ///
+    /// Exempt from BOTH halves on purpose. Exempting creation alone would wedge
+    /// the pipeline in the other direction: the next candidate boot against an
+    /// existing pin would be refused for precisely the fields it is meant to
+    /// differ in.
+    NonAuthoritative,
+}
+
+impl CompositionAuthority {
+    /// Whether this launch participates in composition pin semantics at all.
+    #[must_use]
+    pub fn speaks_for_composition(self) -> bool {
+        matches!(self, Self::Authoritative)
+    }
+}
+
 /// What a composed mob storage is, as declared by whoever composed it.
 ///
 /// `MobStorage` does not report its own durability, so this cannot be derived
