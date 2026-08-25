@@ -3,7 +3,11 @@ import os
 from pathlib import Path
 
 import pytest
-from meerkat_mobkit import IdentityBootstrapMode
+from meerkat_mobkit import (
+    ExperimentalLiveGatewayConfig,
+    IdentityBootstrapMode,
+    LiveAuthBindingRef,
+)
 from meerkat_mobkit.builder import MobKit, MobKitBuilder
 from meerkat_mobkit.runtime import MobKitRuntime
 
@@ -26,6 +30,42 @@ class TestBuilderChain:
         params = MobKitRuntime(b._config)._build_init_params()
 
         assert "identity_bootstrap_mode" not in params["runtime_options"]
+
+    def test_experimental_live_defaults_to_omitted(self):
+        b = MobKit.builder()
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert "experimental_live" not in params["runtime_options"]
+
+    def test_experimental_live_reaches_strict_runtime_option(self):
+        b = MobKit.builder().experimental_live(
+            ExperimentalLiveGatewayConfig(
+                principal="user:luka",
+                realm="family",
+                factory_kind="openai-gpt-live",
+                factory_version="v1",
+                gate0_qualification="gate0-v1",
+                auth_binding=LiveAuthBindingRef(
+                    realm="family", binding="chatgpt-oauth", profile="luka"
+                ),
+                voice="marin",
+            )
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["experimental_live"] == {
+            "principal": "user:luka",
+            "realm": "family",
+            "factory_kind": "openai-gpt-live",
+            "factory_version": "v1",
+            "gate0_qualification": "gate0-v1",
+            "auth_binding": {
+                "realm": "family",
+                "binding": "chatgpt-oauth",
+                "profile": "luka",
+            },
+            "voice": "marin",
+        }
 
     @pytest.mark.parametrize(
         ("mode", "expected"),

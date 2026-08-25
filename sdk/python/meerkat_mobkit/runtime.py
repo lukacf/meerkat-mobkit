@@ -48,6 +48,22 @@ from .identity_first_models import (
     CompletionProgress,
     IdentityBootstrapStatus,
 )
+from .live import (
+    LIVE_EXECUTION_IDENTITY_V1,
+    ActiveLiveChannelHandle,
+    ExperimentalLiveChannelStatus,
+    LiveAssistantOutputAddress,
+    LiveChannelHandle,
+    LiveExecutionIdentityV1,
+    LivePlaybackOwner,
+    LivePlaybackOwnerReadiness,
+    LivePlaybackCompleteResult,
+    LiveReplacementRequired,
+    PendingLiveChannelHandle,
+    live_open_execution_identity_params,
+    supports_live_execution_identity_v1,
+    supports_live_execution_mode,
+)
 from ._sse import SseEvent, parse_sse_stream
 from ._transport import PersistentTransport
 from .models import DiscoverySpec
@@ -591,6 +607,10 @@ class MobKitRuntime:
         if self._config.identity_bootstrap_mode is not None:
             runtime_options["identity_bootstrap_mode"] = (
                 self._config.identity_bootstrap_mode.to_dict()
+            )
+        if self._config.experimental_live_config is not None:
+            runtime_options["experimental_live"] = (
+                self._config.experimental_live_config.to_dict()
             )
         params["runtime_options"] = runtime_options
         if self._config.persistent_state:
@@ -1212,6 +1232,15 @@ class IdentityAgentHandle:
 
     async def delete_identity(self) -> Any:
         return await self._runtime.delete_identity(self._identity)
+
+
+def _require_active_live_handle(
+    handle: ActiveLiveChannelHandle | object,
+) -> ActiveLiveChannelHandle:
+    if not isinstance(handle, ActiveLiveChannelHandle):
+        raise TypeError("operation requires an active live channel handle")
+    handle.to_dict()
+    return handle
 
 
 class MobHandle:
@@ -2482,15 +2511,324 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/live/open", params)
         return raw if isinstance(raw, dict) else {}
 
+    async def live_open_typed(
+        self,
+        identity: str,
+        execution_identity: LiveExecutionIdentityV1 | None = None,
+        **kwargs: Any,
+    ) -> LiveChannelHandle | PendingLiveChannelHandle:
+        """Open a live channel and return the strict typed channel handle.
+
+        ``execution_identity`` is serialized through the versioned v1
+        envelope. Legacy gateways remain readable for ordinary live opens by
+        projecting the already-authorized caller target into an absent
+        ``target_identity`` response field.
+        """
+        params: dict[str, Any] = {"identity": identity, **kwargs}
+        advertised_feature_capabilities: list[str] | None = None
+        if execution_identity is not None:
+            forbidden = {
+                "mode",
+                "execution_mode",
+                "profile",
+                "profile_id",
+                "execution_profile",
+                "execution_profile_id",
+                "delegation",
+                "delegation_type",
+                "delegation_model",
+                "responses",
+                "responses_model",
+                "responses_tools",
+                "responses_instructions",
+                "bridge_model",
+                "bridge_tools",
+                "bridge_instructions",
+                "tools",
+                "instructions",
+                "member_id",
+                "session_id",
+            }.intersection(kwargs)
+            if forbidden:
+                field = sorted(forbidden)[0]
+                raise ValueError(
+                    f"experimental live/open does not accept {field}"
+                )
+            capabilities = await self.capabilities()
+            advertised_feature_capabilities = capabilities.feature_capabilities
+            if not supports_live_execution_identity_v1(
+                capabilities.feature_capabilities
+            ):
+                raise CapabilityUnavailableError(
+                    f"capability {LIVE_EXECUTION_IDENTITY_V1} is not available",
+                    method="mobkit/live/open",
+                    data={"capability": LIVE_EXECUTION_IDENTITY_V1},
+                )
+            if "model" in kwargs or "provider" in kwargs:
+                raise ValueError(
+                    "execution_identity conflicts with legacy top-level model/provider"
+                )
+            params.update(live_open_execution_identity_params(execution_identity))
+        raw = await self._runtime._rpc("mobkit/live/open", params)
+        if not isinstance(raw, dict):
+            raise ValueError("mobkit/live/open returned a non-object channel handle")
+        if execution_identity is not None:
+            pending = PendingLiveChannelHandle.from_dict(raw)
+            if pending.target_identity != identity:
+                raise ValueError(
+                    "strict mobkit/live/open returned a different target identity"
+                )
+            if not supports_live_execution_mode(
+                advertised_feature_capabilities or [], pending.execution_mode
+            ):
+                raise CapabilityUnavailableError(
+                    "resolved live execution mode is not advertised",
+                    method="mobkit/live/open",
+                    data={"execution_mode": pending.execution_mode},
+                )
+            return pending
+        if "target_identity" not in raw:
+            raw = {**raw, "target_identity": identity}
+        return LiveChannelHandle.from_dict(raw)
+
+    async def live_playback_owner_register(
+        self, pending: PendingLiveChannelHandle
+    ) -> LivePlaybackOwnerReadiness:
+        """Register local gated playback before WebRTC answer acceptance."""
+        raw = await self._runtime._rpc(
+            "mobkit/live/playback_owner/register",
+            {
+                "identity": pending.target_identity,
+                "channel_id": pending.channel_id,
+                "pending_receipt": pending.pending_receipt,
+            },
+        )
+        if not isinstance(raw, dict):
+            raise ValueError("playback owner registration returned a non-object")
+        readiness = LivePlaybackOwnerReadiness.from_dict(raw)
+        if readiness.channel_id != pending.channel_id:
+            raise ValueError("playback owner readiness channel mismatch")
+        return readiness
+
+    async def live_experimental_status(
+        self,
+        handle: PendingLiveChannelHandle | ActiveLiveChannelHandle,
+    ) -> ExperimentalLiveChannelStatus:
+        params: dict[str, Any] = {
+            "identity": handle.target_identity,
+            "channel_id": handle.channel_id,
+        }
+        if isinstance(handle, PendingLiveChannelHandle):
+            params["pending_receipt"] = handle.pending_receipt
+        else:
+            params["activation_receipt"] = handle.activation_receipt
+        raw = await self._runtime._rpc("mobkit/live/status", params)
+        if not isinstance(raw, dict):
+            raise ValueError("mobkit/live/status returned a non-object phase")
+        status = ExperimentalLiveChannelStatus.from_dict(raw)
+        if status.handle is not None:
+            if (
+                status.handle.channel_id != handle.channel_id
+                or status.handle.target_identity != handle.target_identity
+                or status.handle.execution_mode != handle.execution_mode
+            ):
+                raise ValueError("active live handle does not match pending custody")
+        return status
+
+    async def live_connect(
+        self,
+        identity: str,
+        execution_identity: LiveExecutionIdentityV1,
+        playback_owner: LivePlaybackOwner,
+        *,
+        activation_poll_interval: float = 0.05,
+        activation_attempts: int = 200,
+        **kwargs: Any,
+    ) -> ActiveLiveChannelHandle:
+        """Open and activate one experimental channel in custody order.
+
+        The method returns only after generated active authority exists and the
+        local playback owner has been told it may release gated media.
+        """
+        if activation_poll_interval < 0:
+            raise ValueError("activation_poll_interval must be non-negative")
+        if activation_attempts <= 0:
+            raise ValueError("activation_attempts must be positive")
+        pending: PendingLiveChannelHandle | None = None
+        try:
+            opened = await self.live_open_typed(identity, execution_identity, **kwargs)
+            if not isinstance(opened, PendingLiveChannelHandle):
+                raise ValueError("experimental live/open did not return a pending handle")
+            pending = opened
+            if pending.transport.transport != "webrtc" or pending.transport.token is None:
+                raise ValueError("experimental live/open did not return a WebRTC bootstrap")
+            offer_sdp = await playback_owner.prepare(pending)
+            if not isinstance(offer_sdp, str) or not offer_sdp.strip():
+                raise ValueError("playback owner returned an invalid SDP offer")
+            readiness = await self.live_playback_owner_register(pending)
+            answer_sdp = await self.live_webrtc_answer_pending(
+                pending, readiness, offer_sdp
+            )
+            await playback_owner.accept_answer(answer_sdp)
+            for _ in range(activation_attempts):
+                status = await self.live_experimental_status(pending)
+                if status.phase == "active" and status.handle is not None:
+                    await playback_owner.activate(status.handle)
+                    return status.handle
+                if status.phase in {"revoked", "closed"}:
+                    raise RuntimeError(
+                        f"experimental live channel {status.phase} before activation"
+                    )
+                await asyncio.sleep(activation_poll_interval)
+            raise TimeoutError("experimental live channel did not activate")
+        except BaseException:
+            try:
+                await playback_owner.abort()
+            finally:
+                if pending is not None:
+                    try:
+                        await self.live_close(pending)
+                    except Exception:
+                        pass
+            raise
+
+    async def live_webrtc_answer(
+        self, channel_id: str, token: str, offer_sdp: str
+    ) -> str:
+        """Complete the one-use WebRTC signaling bootstrap for a live channel."""
+        raw = await self._runtime._rpc(
+            "live/webrtc/answer",
+            {"channel_id": channel_id, "token": token, "offer_sdp": offer_sdp},
+        )
+        if not isinstance(raw, dict) or not isinstance(raw.get("answer_sdp"), str):
+            raise ValueError("live/webrtc/answer returned an invalid answer")
+        return raw["answer_sdp"]
+
+    async def live_webrtc_answer_pending(
+        self,
+        pending: PendingLiveChannelHandle,
+        readiness: LivePlaybackOwnerReadiness,
+        offer_sdp: str,
+    ) -> str:
+        """Answer only under exact pending and playback-owner readiness custody."""
+        if readiness.channel_id != pending.channel_id:
+            raise ValueError("playback owner readiness channel mismatch")
+        raw = await self._runtime._rpc(
+            "live/webrtc/answer",
+            {
+                "identity": pending.target_identity,
+                "channel_id": pending.channel_id,
+                "pending_receipt": pending.pending_receipt,
+                "readiness_receipt": readiness.readiness_receipt,
+                "token": pending.transport.token,
+                "offer_sdp": offer_sdp,
+            },
+        )
+        if not isinstance(raw, dict) or not isinstance(raw.get("answer_sdp"), str):
+            raise ValueError("live/webrtc/answer returned an invalid answer")
+        return raw["answer_sdp"]
+
+    async def live_replacement_required(
+        self, active: ActiveLiveChannelHandle
+    ) -> LiveReplacementRequired:
+        """Read pending replacement signaling under current active authority.
+
+        This method never answers the offer or starts renegotiation
+        automatically. A lost response can be retried until the fresh channel
+        binds, after which the pending bootstrap disappears.
+        """
+        active = _require_active_live_handle(active)
+        raw = await self._runtime._rpc(
+            "mobkit/live/replacement_required",
+            {
+                "identity": active.target_identity,
+                "channel_id": active.channel_id,
+                "activation_receipt": active.activation_receipt,
+            },
+        )
+        if not isinstance(raw, dict):
+            raise ValueError(
+                "mobkit/live/replacement_required returned a non-object result"
+            )
+        return LiveReplacementRequired.from_dict(raw)
+
+    async def live_outputs(
+        self,
+        active: ActiveLiveChannelHandle,
+        *,
+        capacity: int = 16,
+    ) -> AsyncIterator[LiveAssistantOutputAddress]:
+        """Yield opaque output addresses with bounded, loss-intolerant delivery.
+
+        The iterator must be active before output begins. Queue overflow or a
+        missing consumer rejects the server callback. Closing the iterator
+        closes the exact channel so pending output remains Unmeasured.
+        """
+        active = _require_active_live_handle(active)
+        queue = self._runtime._dispatcher.register_live_output_queue(
+            active.channel_id, capacity
+        )
+        try:
+            while True:
+                yield await queue.get()
+        finally:
+            self._runtime._dispatcher.unregister_live_output_queue(
+                active.channel_id, queue
+            )
+            await self.live_close(active)
+
+    async def live_playback_complete(
+        self,
+        active: ActiveLiveChannelHandle,
+        output: LiveAssistantOutputAddress,
+    ) -> LivePlaybackCompleteResult:
+        """Report measured playback completion for an exact opaque output."""
+        active = _require_active_live_handle(active)
+        if output.channel_id != active.channel_id:
+            raise ValueError("assistant output does not belong to active channel")
+        raw = await self._runtime._rpc(
+            "mobkit/live/playback_complete",
+            {
+                "identity": active.target_identity,
+                "channel_id": active.channel_id,
+                "activation_receipt": active.activation_receipt,
+                "output_id": output.output_id,
+            },
+        )
+        if not isinstance(raw, dict):
+            raise ValueError(
+                "mobkit/live/playback_complete returned a non-object result"
+            )
+        return LivePlaybackCompleteResult.from_dict(raw)
+
     async def live_status(self, identity: str, **kwargs: Any) -> dict[str, Any]:
         """Status of the member's live channel (open/closed, channel id)."""
         params: dict[str, Any] = {"identity": identity, **kwargs}
         raw = await self._runtime._rpc("mobkit/live/status", params)
         return raw if isinstance(raw, dict) else {}
 
-    async def live_close(self, identity: str, **kwargs: Any) -> dict[str, Any]:
-        """Close the member's live channel."""
-        params: dict[str, Any] = {"identity": identity, **kwargs}
+    async def live_close(
+        self,
+        handle: str | PendingLiveChannelHandle | ActiveLiveChannelHandle,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Close an ordinary channel ID or an exact experimental handle."""
+        if isinstance(handle, PendingLiveChannelHandle):
+            params: dict[str, Any] = {
+                "identity": handle.target_identity,
+                "channel_id": handle.channel_id,
+                "pending_receipt": handle.pending_receipt,
+                **kwargs,
+            }
+        elif isinstance(handle, ActiveLiveChannelHandle):
+            params = {
+                "identity": handle.target_identity,
+                "channel_id": handle.channel_id,
+                "activation_receipt": handle.activation_receipt,
+                **kwargs,
+            }
+        else:
+            params = {"channel_id": handle, **kwargs}
         raw = await self._runtime._rpc("mobkit/live/close", params)
         return raw if isinstance(raw, dict) else {}
 
@@ -2529,24 +2867,90 @@ class MobHandle:
 
     async def live_truncate(
         self,
-        channel_id: str,
-        item_id: str,
-        content_index: int,
+        active: ActiveLiveChannelHandle,
+        output: LiveAssistantOutputAddress,
         audio_played_ms: int,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Truncate an assistant item at the client-tracked playback cursor
-        (barge-in cleanup).  ``item_id``/``content_index`` are the
-        provider-side handle for the assistant item; ``audio_played_ms`` is
-        how much the client actually played."""
+        """Truncate an exact opaque output at measured playback progress."""
+        active = _require_active_live_handle(active)
+        if output.channel_id != active.channel_id:
+            raise ValueError("assistant output does not belong to active channel")
         params: dict[str, Any] = {
-            "channel_id": channel_id,
-            "item_id": item_id,
-            "content_index": content_index,
+            "identity": active.target_identity,
+            "channel_id": active.channel_id,
+            "activation_receipt": active.activation_receipt,
+            "output_id": output.output_id,
             "audio_played_ms": audio_played_ms,
             **kwargs,
         }
         raw = await self._runtime._rpc("mobkit/live/truncate", params)
+        return raw if isinstance(raw, dict) else {}
+
+    async def live_refresh_active(
+        self, active: ActiveLiveChannelHandle, **kwargs: Any
+    ) -> dict[str, Any]:
+        active = _require_active_live_handle(active)
+        params = {
+            "identity": active.target_identity,
+            "channel_id": active.channel_id,
+            "activation_receipt": active.activation_receipt,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/live/refresh", params)
+        return raw if isinstance(raw, dict) else {}
+
+    async def live_send_input_image_active(
+        self,
+        active: ActiveLiveChannelHandle,
+        idempotency_key: str,
+        mime: str,
+        data_base64: str,
+    ) -> dict[str, Any]:
+        active = _require_active_live_handle(active)
+        raw = await self._runtime._rpc(
+            "mobkit/live/send_input",
+            {
+                "identity": active.target_identity,
+                "channel_id": active.channel_id,
+                "activation_receipt": active.activation_receipt,
+                "chunk": {
+                    "kind": "image",
+                    "idempotency_key": idempotency_key,
+                    "mime": mime,
+                    "data": data_base64,
+                },
+            },
+        )
+        return raw if isinstance(raw, dict) else {}
+
+    async def live_commit_input_active(
+        self, active: ActiveLiveChannelHandle, **kwargs: Any
+    ) -> dict[str, Any]:
+        active = _require_active_live_handle(active)
+        raw = await self._runtime._rpc(
+            "mobkit/live/commit_input",
+            {
+                "identity": active.target_identity,
+                "channel_id": active.channel_id,
+                "activation_receipt": active.activation_receipt,
+                **kwargs,
+            },
+        )
+        return raw if isinstance(raw, dict) else {}
+
+    async def live_interrupt_active(
+        self, active: ActiveLiveChannelHandle
+    ) -> dict[str, Any]:
+        active = _require_active_live_handle(active)
+        raw = await self._runtime._rpc(
+            "mobkit/live/interrupt",
+            {
+                "identity": active.target_identity,
+                "channel_id": active.channel_id,
+                "activation_receipt": active.activation_receipt,
+            },
+        )
         return raw if isinstance(raw, dict) else {}
 
     # -----------------------------------------------------------------

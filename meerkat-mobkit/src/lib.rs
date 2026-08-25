@@ -25,10 +25,14 @@ pub mod fork;
 pub mod gateway_composition;
 pub mod gateway_wiring;
 pub mod governance;
+#[cfg(feature = "experimental-gpt-live-gate0-harness")]
+#[doc(hidden)]
+pub mod gpt_live_gate0;
 pub mod http_auth;
 pub mod http_console;
 pub mod http_flow_editor;
 pub mod http_sse;
+pub mod live_contracts;
 pub mod live_wiring;
 pub mod member_comms_id;
 pub mod member_tool_policy;
@@ -149,6 +153,15 @@ pub use identity_first::{
     AgentMemoryRuntimeInjector, AgentMemorySelection, AuthoredWriteReceipt, MEMORY_TOOL_NAME,
     NewAgentMemory,
 };
+pub use live_contracts::{
+    ActiveLiveChannelHandle, ExperimentalLiveChannelStatus, FeatureCapability,
+    LIVE_EXECUTION_CLIENT_CONTEXT_V1, LIVE_EXECUTION_FUNCTION_BRIDGE_V1,
+    LIVE_EXECUTION_IDENTITY_V1, LiveAuthBindingOverride, LiveChannelHandle,
+    LiveExecutionIdentityContractError, LiveExecutionIdentityV1, LiveExecutionIdentityVersion,
+    LiveExecutionMode, LiveExecutionProvider, LivePlaybackOwnerReadiness, PendingLiveChannelHandle,
+    parse_live_open_execution_identity, validate_experimental_live_open_surface,
+    validate_experimental_live_target_surface,
+};
 pub use meerkat_mob::{MemberTurnEventSender, MemberTurnHandle, MemberTurnOptions};
 pub use memory::{
     CompactionResetSink, ConsolePrincipalOperatorResolver, ContentTrustConfig, DispatchTaintSlot,
@@ -176,10 +189,12 @@ pub use mocks::{MockModuleProcess, MockProcessError};
 pub use process::{ProcessBoundaryError, run_process_json_line};
 pub use protocol::{ProtocolParseError, parse_module_event_line, parse_unified_event_line};
 pub use rpc::{
-    CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE, IdentityFirstContext, JsonRpcError, JsonRpcRequest,
-    JsonRpcResponse, MEMORY_BACKEND_UNAVAILABLE_CODE, MOB_EVENTS_STALE_CURSOR_CODE,
-    MOBKIT_CONTRACT_VERSION, STORAGE_RESOLUTION_CODE, handle_console_ingress_json,
-    handle_mobkit_rpc_json, handle_unified_rpc_json, handle_unified_rpc_json_arc,
+    CAPABILITY_UNAVAILABLE_CODE, CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE, IdentityFirstContext,
+    JsonRpcError, JsonRpcRequest, JsonRpcResponse, MEMORY_BACKEND_UNAVAILABLE_CODE,
+    MOB_EVENTS_STALE_CURSOR_CODE, MOBKIT_CONTRACT_VERSION, STORAGE_RESOLUTION_CODE,
+    SerializedRpcResponseDelivery, handle_console_ingress_json, handle_mobkit_rpc_json,
+    handle_unified_rpc_json, handle_unified_rpc_json_arc,
+    handle_unified_rpc_json_with_live_arc_delivery,
 };
 pub use rpc::{RpcCapabilities, RpcCapabilitiesError, parse_rpc_capabilities};
 pub use runtime::{
