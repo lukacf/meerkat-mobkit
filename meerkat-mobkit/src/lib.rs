@@ -25,9 +25,6 @@ pub mod fork;
 pub mod gateway_composition;
 pub mod gateway_wiring;
 pub mod governance;
-#[cfg(feature = "experimental-gpt-live-gate0-harness")]
-#[doc(hidden)]
-pub mod gpt_live_gate0;
 pub mod http_auth;
 pub mod http_console;
 pub mod http_flow_editor;

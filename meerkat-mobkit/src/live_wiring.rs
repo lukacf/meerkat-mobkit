@@ -973,6 +973,11 @@ impl LiveSurfaceAuthority {
 #[async_trait]
 trait ExactLiveSessionOwner: Send + Sync {
     async fn owns_session(&self, canonical_session_id: &SessionId) -> bool;
+
+    async fn validate_live_bridge_eligibility(
+        &self,
+        canonical_session_id: &SessionId,
+    ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>;
 }
 
 #[cfg(feature = "experimental-gpt-live")]
@@ -990,6 +995,30 @@ impl ExactLiveSessionOwner for MobHandleLiveSessionOwner {
             .await
             .as_ref()
             == Some(canonical_session_id)
+    }
+
+    async fn validate_live_bridge_eligibility(
+        &self,
+        canonical_session_id: &SessionId,
+    ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError> {
+        use meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError;
+
+        if !self.owns_session(canonical_session_id).await {
+            return Err(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable);
+        }
+        let member = self
+            .handle
+            .member(&self.member_identity)
+            .await
+            .map_err(|_| ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable)?;
+        member
+            .validate_live_bridge_eligibility()
+            .await
+            .map_err(|_| ExperimentalLiveOpenAuthorityError::MemberIneligible)?;
+        if !self.owns_session(canonical_session_id).await {
+            return Err(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable);
+        }
+        Ok(())
     }
 }
 
@@ -1059,6 +1088,15 @@ impl MobkitExperimentalLiveSessionBindingAuthority {
 impl meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority
     for MobkitExperimentalLiveSessionBindingAuthority
 {
+    async fn validate_live_bridge_member_eligibility(
+        &self,
+        canonical_session_id: &SessionId,
+    ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError> {
+        self.owner
+            .validate_live_bridge_eligibility(canonical_session_id)
+            .await
+    }
+
     async fn authorize_binding_use(
         &self,
         canonical_session_id: &SessionId,
@@ -4236,6 +4274,7 @@ fn experimental_live_open_error_response(
             ExperimentalLiveOpenAuthorityError::Unavailable
             | ExperimentalLiveOpenAuthorityError::AccessDenied
             | ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable
+            | ExperimentalLiveOpenAuthorityError::MemberIneligible
             | ExperimentalLiveOpenAuthorityError::BindingUseDenied
             | ExperimentalLiveOpenAuthorityError::AdmissionFailed,
         ) => live_error(rpc_id, crate::rpc::CAPABILITY_UNAVAILABLE_CODE, detail),
@@ -5961,6 +6000,41 @@ mod tests {
         async fn owns_session(&self, _canonical_session_id: &SessionId) -> bool {
             self.0
         }
+
+        async fn validate_live_bridge_eligibility(
+            &self,
+            _canonical_session_id: &SessionId,
+        ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>
+        {
+            if self.0 {
+                Ok(())
+            } else {
+                Err(
+                    meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable,
+                )
+            }
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct IneligibleSessionOwner;
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl ExactLiveSessionOwner for IneligibleSessionOwner {
+        async fn owns_session(&self, _canonical_session_id: &SessionId) -> bool {
+            true
+        }
+
+        async fn validate_live_bridge_eligibility(
+            &self,
+            _canonical_session_id: &SessionId,
+        ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>
+        {
+            Err(
+                meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::MemberIneligible,
+            )
+        }
     }
 
     #[cfg(feature = "experimental-gpt-live")]
@@ -6089,6 +6163,34 @@ mod tests {
 
     #[cfg(feature = "experimental-gpt-live")]
     #[tokio::test]
+    async fn ineligible_member_preflight_is_denied_before_credential_policy() {
+        let credential_policy = Arc::new(CountingCredentialPolicy {
+            calls: AtomicUsize::new(0),
+            allow: true,
+        });
+        let authority = MobkitExperimentalLiveSessionBindingAuthority {
+            owner: Arc::new(IneligibleSessionOwner),
+            machine: test_live_machine(),
+            durable_identity: "identity:reachy".to_string(),
+            access_view: access_view(Some("root")),
+            credential_policy: credential_policy.clone(),
+        };
+
+        let error = meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority::validate_live_bridge_member_eligibility(
+            &authority,
+            &test_session_id(),
+        )
+        .await
+        .expect_err("ineligible exact member must fail closed");
+        assert!(matches!(
+            error,
+            meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::MemberIneligible
+        ));
+        assert_eq!(credential_policy.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
     async fn agent_send_denial_is_enforced_before_credential_policy() {
         let credential_policy = Arc::new(CountingCredentialPolicy {
             calls: AtomicUsize::new(0),
@@ -6145,7 +6247,7 @@ mod tests {
 
     #[cfg(feature = "experimental-gpt-live")]
     #[tokio::test]
-    async fn exact_access_and_binding_policy_return_machine_authorization() {
+    async fn eligible_member_preflight_and_exact_access_return_machine_authorization() {
         let credential_policy = Arc::new(CountingCredentialPolicy {
             calls: AtomicUsize::new(0),
             allow: true,
@@ -6158,6 +6260,12 @@ mod tests {
             credential_policy: credential_policy.clone(),
         };
 
+        meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority::validate_live_bridge_member_eligibility(
+            &authority,
+            &test_session_id(),
+        )
+        .await
+        .expect("eligible exact member should pass before binding use");
         meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority::authorize_binding_use(
             &authority,
             &test_session_id(),

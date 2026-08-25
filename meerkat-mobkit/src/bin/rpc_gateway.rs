@@ -5370,10 +5370,80 @@ struct GatewayExperimentalLiveSessionBindingAuthority {
 }
 
 #[cfg(feature = "experimental-gpt-live")]
+impl GatewayExperimentalLiveSessionBindingAuthority {
+    async fn resolve_exact_member(
+        &self,
+        canonical_session_id: &meerkat_core::SessionId,
+    ) -> Result<
+        meerkat_mob::MemberHandle,
+        meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError,
+    > {
+        use meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError;
+
+        let mut owners = Vec::new();
+        for member in self.handle.list_members().await {
+            if self
+                .handle
+                .resolve_bridge_session_id(&member.agent_identity)
+                .await
+                .as_ref()
+                == Some(canonical_session_id)
+            {
+                owners.push(member.agent_identity);
+            }
+        }
+        if owners.len() != 1 {
+            return Err(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable);
+        }
+        let identity = owners
+            .pop()
+            .ok_or(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable)?;
+        let member = self
+            .handle
+            .member(&identity)
+            .await
+            .map_err(|_| ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable)?;
+        if self
+            .handle
+            .resolve_bridge_session_id(&identity)
+            .await
+            .as_ref()
+            != Some(canonical_session_id)
+        {
+            return Err(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable);
+        }
+        Ok(member)
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
 #[async_trait]
 impl meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority
     for GatewayExperimentalLiveSessionBindingAuthority
 {
+    async fn validate_live_bridge_member_eligibility(
+        &self,
+        canonical_session_id: &meerkat_core::SessionId,
+    ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError> {
+        use meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError;
+
+        let member = self.resolve_exact_member(canonical_session_id).await?;
+        member
+            .validate_live_bridge_eligibility()
+            .await
+            .map_err(|_| ExperimentalLiveOpenAuthorityError::MemberIneligible)?;
+        if self
+            .handle
+            .resolve_bridge_session_id(&member.identity())
+            .await
+            .as_ref()
+            != Some(canonical_session_id)
+        {
+            return Err(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable);
+        }
+        Ok(())
+    }
+
     async fn authorize_binding_use(
         &self,
         canonical_session_id: &meerkat_core::SessionId,
@@ -5387,25 +5457,8 @@ impl meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority
         if selected_binding != &self.allowed_binding {
             return Err(ExperimentalLiveOpenAuthorityError::BindingUseDenied);
         }
-        let mut owners = Vec::new();
-        for member in self.handle.list_members().await {
-            if self
-                .handle
-                .resolve_bridge_session_id(&member.agent_identity)
-                .await
-                .as_ref()
-                == Some(canonical_session_id)
-            {
-                owners.push(member);
-            }
-        }
-        if owners.len() != 1 {
-            return Err(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable);
-        }
-        let owner = owners
-            .pop()
-            .ok_or(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable)?;
-        let durable_identity = owner.agent_identity.as_str().to_string();
+        let owner = self.resolve_exact_member(canonical_session_id).await?;
+        let durable_identity = owner.identity().as_str().to_string();
         let access = self.access.view_for_subject(Some(&self.principal));
         if !access.allows_agent(meerkat_mobkit::access::ACTION_AGENT_SEND, &durable_identity) {
             return Err(ExperimentalLiveOpenAuthorityError::AccessDenied);
