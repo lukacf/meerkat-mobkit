@@ -66,7 +66,7 @@ use meerkat::{
 use meerkat_core::ContentBlock;
 use meerkat_core::error::{AgentError, ToolError};
 use meerkat_core::ops::ToolDispatchOutcome;
-use meerkat_core::types::{ToolCallView, ToolDef, ToolResult};
+use meerkat_core::types::{ToolCallView, ToolDef, ToolProvenance, ToolResult, ToolSourceKind};
 use meerkat_core::{
     AgentToolDispatcher, ToolCatalogCapabilities, ToolCatalogEntry, ToolDeadlineContributor,
     ToolDeadlineOwner, ToolExecutionContract, ToolExecutionMode,
@@ -1324,9 +1324,17 @@ mod tests {
         assert_eq!(defs[0].name.as_ref(), "legacy_name");
         assert_eq!(defs[0].description, "Python callback tool");
         assert_eq!(defs[0].input_schema, json!({"type": "object"}));
+        assert_eq!(
+            defs[0].provenance,
+            Some(ToolProvenance {
+                kind: ToolSourceKind::Callback,
+                source_id: "mobkit-callback:build-1".into(),
+            })
+        );
         assert_eq!(defs[1].name.as_ref(), "weather");
         assert_eq!(defs[1].description, "Look up the weather");
         assert_eq!(defs[1].input_schema, schema);
+        assert_eq!(defs[1].provenance, defs[0].provenance);
         let catalog = AgentToolDispatcher::tool_catalog(&dispatcher);
         assert_eq!(
             catalog[1].execution.default_mode(),
@@ -6613,6 +6621,7 @@ impl CallbackToolDispatcher {
         tools: Vec<CallbackToolSpec>,
         detached_jobs: Option<DetachedCallbackJobRuntime>,
     ) -> Self {
+        let provenance_source_id = format!("mobkit-callback:{scope_id}");
         let entries: Vec<(Arc<ToolDef>, ToolExecutionContract)> = tools
             .into_iter()
             .map(|tool| {
@@ -6625,7 +6634,10 @@ impl CallbackToolDispatcher {
                         input_schema: tool
                             .input_schema
                             .unwrap_or_else(|| json!({"type": "object"})),
-                        provenance: None,
+                        provenance: Some(ToolProvenance {
+                            kind: ToolSourceKind::Callback,
+                            source_id: provenance_source_id.as_str().into(),
+                        }),
                     }),
                     tool.execution,
                 )
