@@ -155,13 +155,17 @@ class LiveAuthBindingOverride:
 @dataclass(frozen=True)
 class LiveExecutionIdentityV1:
     version: Literal["v1"] = field(default="v1", init=False)
+    profile_id: str
     model: str | None = None
     provider: LiveProvider | None = None
     self_hosted_server_id: str | None = None
     auth_binding: LiveAuthBindingOverride | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        result: dict[str, Any] = {"version": self.version}
+        result: dict[str, Any] = {
+            "version": self.version,
+            "profile_id": _non_empty(self.profile_id, "profile_id"),
+        }
         if self.model is not None:
             if not isinstance(self.model, str) or not self.model.strip():
                 raise ValueError("model must be a non-empty string")
@@ -185,7 +189,14 @@ class LiveExecutionIdentityV1:
     def from_dict(cls, data: dict[str, Any]) -> LiveExecutionIdentityV1:
         _exact(
             data,
-            {"version", "model", "provider", "self_hosted_server_id", "auth_binding"},
+            {
+                "version",
+                "profile_id",
+                "model",
+                "provider",
+                "self_hosted_server_id",
+                "auth_binding",
+            },
             "execution identity",
         )
         if data.get("version") != "v1":
@@ -212,6 +223,7 @@ class LiveExecutionIdentityV1:
         if auth_raw is not None and not isinstance(auth_raw, dict):
             raise ValueError("auth_binding must be an object")
         return cls(
+            profile_id=_string(data, "profile_id", "execution identity"),
             model=model,
             provider=provider,
             self_hosted_server_id=self_hosted_server_id,

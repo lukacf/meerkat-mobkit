@@ -2508,10 +2508,6 @@ class MobHandle:
         forwarded (e.g. ``model=`` to override the realtime model,
         ``turning_mode=``).
         """
-        if "instructions" in kwargs:
-            raise ValueError(
-                "experimental live/open does not accept instructions; instructions are catalog-owned"
-            )
         params: dict[str, Any] = {"identity": identity, **kwargs}
         raw = await self._runtime._rpc("mobkit/live/open", params)
         return raw if isinstance(raw, dict) else {}
@@ -2529,10 +2525,6 @@ class MobHandle:
         projecting the already-authorized caller target into an absent
         ``target_identity`` response field.
         """
-        if "instructions" in kwargs:
-            raise ValueError(
-                "experimental live/open does not accept instructions; instructions are catalog-owned"
-            )
         params: dict[str, Any] = {"identity": identity, **kwargs}
         advertised_feature_capabilities: list[str] | None = None
         if execution_identity is not None:

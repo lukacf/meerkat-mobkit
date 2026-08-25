@@ -1,6 +1,7 @@
 {
   "execution_identity_set": {
     "version": "v1",
+    "profile_id": "gpt-live-function-bridge-v1",
     "model": "gpt-live-1-codex",
     "provider": "openai",
     "auth_binding": {
@@ -14,6 +15,7 @@
   },
   "execution_identity_clear": {
     "version": "v1",
+    "profile_id": "gpt-live-function-bridge-v1",
     "model": "gpt-live-1-codex",
     "provider": "openai",
     "auth_binding": {

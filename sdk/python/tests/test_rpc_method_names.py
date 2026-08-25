@@ -1589,7 +1589,14 @@ async def test_live_method_names_and_identity_param():
         "mobkit/live/refresh": {"refreshed": True},
     })
 
-    opened = await handle.live_open("reachy", model="gpt-realtime-2")
+    opened = await handle.live_open(
+        "reachy",
+        model="gpt-realtime-2",
+        instructions=[
+            "Use the current room voice.",
+            "Keep replies concise.",
+        ],
+    )
     assert opened["channel_id"] == "ch-1"
     assert opened["transport"]["type"] == "websocket"
 
@@ -1609,7 +1616,14 @@ async def test_live_method_names_and_identity_param():
         "mobkit/live/close",
         "mobkit/live/refresh",
     ]
-    assert calls[0][1] == {"identity": "reachy", "model": "gpt-realtime-2"}
+    assert calls[0][1] == {
+        "identity": "reachy",
+        "model": "gpt-realtime-2",
+        "instructions": [
+            "Use the current room voice.",
+            "Keep replies concise.",
+        ],
+    }
     assert calls[1][1] == {"identity": "reachy"}
 
 
@@ -1651,6 +1665,7 @@ async def test_live_open_typed_serializes_v1_and_returns_handle():
     opened = await handle.live_open_typed(
         "identity:reachy",
         LiveExecutionIdentityV1(
+            profile_id="gpt-live-function-bridge-v1",
             model="gpt-live-1-codex",
             provider="openai",
         ),
@@ -1666,6 +1681,7 @@ async def test_live_open_typed_serializes_v1_and_returns_handle():
             "identity": "identity:reachy",
             "execution_identity": {
                 "version": "v1",
+                "profile_id": "gpt-live-function-bridge-v1",
                 "model": "gpt-live-1-codex",
                 "provider": "openai",
             },
@@ -1689,7 +1705,10 @@ async def test_live_open_typed_refuses_execution_identity_before_old_gateway_ope
     with pytest.raises(CapabilityUnavailableError):
         await handle.live_open_typed(
             "identity:reachy",
-            LiveExecutionIdentityV1(model="gpt-live-1-codex"),
+            LiveExecutionIdentityV1(
+                profile_id="gpt-live-function-bridge-v1",
+                model="gpt-live-1-codex",
+            ),
         )
 
     assert calls == [("mobkit/capabilities", None)]
@@ -1717,7 +1736,11 @@ async def test_strict_live_open_rejects_catalog_and_responses_bridge_overrides(
     with pytest.raises(ValueError, match="experimental live/open does not accept"):
         await handle.live_open_typed(
             "identity:reachy",
-            LiveExecutionIdentityV1(model="gpt-live-1-codex", provider="openai"),
+            LiveExecutionIdentityV1(
+                profile_id="gpt-live-function-bridge-v1",
+                model="gpt-live-1-codex",
+                provider="openai",
+            ),
             **{field: value},
         )
     assert calls == []
@@ -1748,7 +1771,11 @@ async def test_strict_live_open_refuses_missing_server_target_identity():
     with pytest.raises(ValueError, match="unknown field|must be a non-empty string"):
         await handle.live_open_typed(
             "caller-alias",
-            LiveExecutionIdentityV1(model="gpt-live-1-codex", provider="openai"),
+            LiveExecutionIdentityV1(
+                profile_id="gpt-live-function-bridge-v1",
+                model="gpt-live-1-codex",
+                provider="openai",
+            ),
         )
 
 
@@ -1837,7 +1864,11 @@ async def test_live_connect_orders_owner_readiness_answer_and_activation():
 
     active = await handle.live_connect(
         "identity:reachy",
-        LiveExecutionIdentityV1(model="gpt-live-1-codex", provider="openai"),
+        LiveExecutionIdentityV1(
+            profile_id="gpt-live-function-bridge-v1",
+            model="gpt-live-1-codex",
+            provider="openai",
+        ),
         Owner(),
         activation_poll_interval=0,
     )
@@ -1947,7 +1978,11 @@ async def test_live_connect_aborts_and_closes_pending_channel_when_owner_is_revo
     with pytest.raises(RuntimeError, match="revoked before activation"):
         await handle.live_connect(
             "identity:reachy",
-            LiveExecutionIdentityV1(model="gpt-live-1-codex", provider="openai"),
+            LiveExecutionIdentityV1(
+                profile_id="gpt-live-function-bridge-v1",
+                model="gpt-live-1-codex",
+                provider="openai",
+            ),
             Owner(),
             activation_poll_interval=0,
         )

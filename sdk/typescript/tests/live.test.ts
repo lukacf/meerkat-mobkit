@@ -98,6 +98,7 @@ describe("live execution identity v1", () => {
   it("serializes the shared set and clear fixtures", () => {
     assert.deepEqual(
       liveExecutionIdentityV1ToWire({
+        profileId: "gpt-live-function-bridge-v1",
         model: "gpt-live-1-codex",
         provider: "openai",
         authBinding: {
@@ -109,6 +110,7 @@ describe("live execution identity v1", () => {
     );
     assert.deepEqual(
       liveExecutionIdentityV1ToWire({
+        profileId: "gpt-live-function-bridge-v1",
         model: "gpt-live-1-codex",
         provider: "openai",
         authBinding: { action: "clear" },
@@ -120,17 +122,22 @@ describe("live execution identity v1", () => {
   it("rejects unknown nested fields and legacy conflicts", () => {
     assert.throws(() =>
       liveExecutionIdentityV1ToWire({
+        profileId: "gpt-live-function-bridge-v1",
         model: "gpt-live-1-codex",
         extra: true,
       } as never),
     );
     assert.throws(() =>
       liveOpenExecutionIdentityParams(
-        { model: "gpt-live-1-codex" },
+        {
+          profileId: "gpt-live-function-bridge-v1",
+          model: "gpt-live-1-codex",
+        },
         { model: "legacy" },
       ),
     );
     for (const input of [
+      { profileId: "  " },
       { model: null },
       { model: "  " },
       { provider: null },

@@ -37,6 +37,13 @@ fn execution_identity_v1_rejects_unknown_fields_and_ambiguous_clear() {
             .is_err()
     );
     assert!(
+        serde_json::from_value::<LiveExecutionIdentityV1>(json!({
+            "version": "v1",
+            "profile_id": "   "
+        }))
+        .is_err()
+    );
+    assert!(
         serde_json::from_value::<LiveExecutionIdentityV1>(
             json!({"version": "v1", "provider": "unknown"})
         )
@@ -176,7 +183,10 @@ fn pending_and_active_handles_match_shared_fixtures() {
 fn strict_experimental_surface_is_identity_only_and_provider_neutral() {
     validate_experimental_live_open_surface(&json!({
         "identity": "identity:luka",
-        "execution_identity": {"version": "v1"}
+        "execution_identity": {
+            "version": "v1",
+            "profile_id": "gpt-live-function-bridge-v1"
+        }
     }))
     .expect("identity-only target must pass surface validation");
 

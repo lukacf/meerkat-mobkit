@@ -252,6 +252,11 @@ where
 #[serde(deny_unknown_fields)]
 pub struct LiveExecutionIdentityV1 {
     pub version: LiveExecutionIdentityVersion,
+    /// Stable host-registered profile identity. Provider mode, tools, and
+    /// approved top-level GPT Live session instructions remain behind this
+    /// catalog selection and cannot be supplied as raw open parameters.
+    #[serde(deserialize_with = "deserialize_non_empty_string")]
+    pub profile_id: String,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

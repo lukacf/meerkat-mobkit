@@ -2819,11 +2819,15 @@ describe("MobHandle live methods", () => {
       transport: { type: "websocket", url: "ws://x/live/ws", token: "t" },
     }));
 
-    const opened = await handle.liveOpen("reachy", { model: "gpt-realtime-2" });
+    const opened = await handle.liveOpen("reachy", {
+      model: "gpt-realtime-2",
+      instructions: "Use the current room voice.",
+    });
     assert.equal(calls[0].method, "mobkit/live/open");
     assert.deepEqual(calls[0].params, {
       identity: "reachy",
       model: "gpt-realtime-2",
+      instructions: "Use the current room voice.",
     });
     assert.equal((opened.transport as Record<string, unknown>).type, "websocket");
 
@@ -2906,6 +2910,7 @@ describe("MobHandle live methods", () => {
     }));
 
     const opened = await handle.liveOpenTyped("identity:reachy", {
+      profileId: "gpt-live-function-bridge-v1",
       model: "gpt-live-1-codex",
       provider: "openai",
     });
@@ -2917,6 +2922,7 @@ describe("MobHandle live methods", () => {
       identity: "identity:reachy",
       execution_identity: {
         version: "v1",
+        profile_id: "gpt-live-function-bridge-v1",
         model: "gpt-live-1-codex",
         provider: "openai",
       },
@@ -2933,6 +2939,7 @@ describe("MobHandle live methods", () => {
 
     await assert.rejects(
       handle.liveOpenTyped("identity:reachy", {
+        profileId: "gpt-live-function-bridge-v1",
         model: "gpt-live-1-codex",
       }),
       CapabilityUnavailableError,
@@ -2954,7 +2961,11 @@ describe("MobHandle live methods", () => {
       await assert.rejects(
         handle.liveOpenTyped(
           "identity:reachy",
-          { model: "gpt-live-1-codex", provider: "openai" },
+          {
+            profileId: "gpt-live-function-bridge-v1",
+            model: "gpt-live-1-codex",
+            provider: "openai",
+          },
           { [field]: value },
         ),
         /experimental live\/open does not accept/,
@@ -2982,6 +2993,7 @@ describe("MobHandle live methods", () => {
     }));
     await assert.rejects(
       handle.liveOpenTyped("caller-alias", {
+        profileId: "gpt-live-function-bridge-v1",
         model: "gpt-live-1-codex",
         provider: "openai",
       }),
@@ -3066,7 +3078,11 @@ describe("MobHandle live methods", () => {
 
     const active = await handle.liveConnect(
       "identity:reachy",
-      { model: "gpt-live-1-codex", provider: "openai" },
+      {
+        profileId: "gpt-live-function-bridge-v1",
+        model: "gpt-live-1-codex",
+        provider: "openai",
+      },
       {
         async prepare(pending) {
           events.push(`prepare:${pending.pendingReceipt}`);
@@ -3174,7 +3190,11 @@ describe("MobHandle live methods", () => {
     await assert.rejects(
       handle.liveConnect(
         "identity:reachy",
-        { model: "gpt-live-1-codex", provider: "openai" },
+        {
+          profileId: "gpt-live-function-bridge-v1",
+          model: "gpt-live-1-codex",
+          provider: "openai",
+        },
         {
           async prepare() {
             events.push("prepare");

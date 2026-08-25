@@ -2556,11 +2556,6 @@ export class MobHandle {
     identity: string,
     options?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    if (Object.prototype.hasOwnProperty.call(options ?? {}, "instructions")) {
-      throw new TypeError(
-        "experimental live/open does not accept instructions; instructions are catalog-owned",
-      );
-    }
     const raw = await this._runtime._rpc("mobkit/live/open", {
       identity,
       ...(options ?? {}),
@@ -2574,11 +2569,6 @@ export class MobHandle {
     executionIdentity?: LiveExecutionIdentityV1,
     options?: Record<string, unknown>,
   ): Promise<LiveChannelHandle | PendingLiveChannelHandle> {
-    if (Object.prototype.hasOwnProperty.call(options ?? {}, "instructions")) {
-      throw new TypeError(
-        "experimental live/open does not accept instructions; instructions are catalog-owned",
-      );
-    }
     let advertisedFeatureCapabilities: readonly string[] = [];
     if (executionIdentity !== undefined) {
       const forbidden = [

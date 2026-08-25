@@ -1331,11 +1331,30 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
 // channel verbs retain their existing MobKit surface projection.
 // ---------------------------------------------------------------------------
 
+/// `instructions` on an ordinary `mobkit/live/open` accepts a single string
+/// or an array of strings. This is the legacy per-open overlay and is never
+/// accepted by the strict experimental execution-identity branch.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LiveOpenInstructions {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl LiveOpenInstructions {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Self::One(text) => vec![text],
+            Self::Many(items) => items,
+        }
+    }
+}
+
 /// The gateway-side params for `mobkit/live/open`. The member target
 /// (`identity` / `member_id` / `session_id`) is resolved by the CALLER
 /// before `handle_live_method`; unknown fields are ignored here so the
 /// target spellings pass through untouched.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct GatewayLiveOpenParams {
     #[serde(default)]
     turning_mode: Option<RealtimeTurningMode>,
@@ -1361,6 +1380,11 @@ struct GatewayLiveOpenParams {
     /// configured default credential resolution applies.
     #[serde(default)]
     provider: Option<String>,
+    /// Legacy ordinary-live per-open instruction overlay. Strict
+    /// experimental execution rejects this raw prose and accepts only the
+    /// host-registered `execution_identity.profile_id` catalog selection.
+    #[serde(default)]
+    instructions: Option<LiveOpenInstructions>,
     /// Per-open override of the gateway-wide seed clamp
     /// (`runtime_options.live.seed_max_chars`).
     #[serde(default)]
@@ -3315,6 +3339,18 @@ async fn handle_live_webrtc_answer<B: SessionAgentBuilder + 'static>(
     }
 }
 
+/// Normalize the legacy ordinary-live instruction overlay without promoting
+/// it into durable transcript truth or the strict experimental profile lane.
+fn live_open_instruction_overlay(instructions: Vec<String>) -> Option<String> {
+    let joined = instructions
+        .iter()
+        .map(|instruction| instruction.trim())
+        .filter(|instruction| !instruction.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!joined.is_empty()).then_some(joined)
+}
+
 /// Project the member session into a [`RealtimeSessionOpenConfig`].
 ///
 /// mobkit mirror of the facade `LiveOrchestrator::live_open_config_for_session`
@@ -3692,13 +3728,6 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     params: &Value,
     rpc_id: Value,
 ) -> JsonRpcResponse {
-    if params.get("instructions").is_some() {
-        return live_error(
-            rpc_id,
-            INVALID_PARAMS_CODE,
-            "live/open instructions are catalog-owned and cannot be supplied by callers",
-        );
-    }
     let parsed: GatewayLiveOpenParams = match parse_live_params(params, &rpc_id) {
         Ok(p) => p,
         Err(resp) => return *resp,
@@ -3777,6 +3806,12 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
                 );
             }
         };
+    if let Some(overlay) = parsed
+        .instructions
+        .and_then(|instructions| live_open_instruction_overlay(instructions.into_vec()))
+    {
+        open_config.append_ephemeral_system_overlay(overlay);
+    }
     // Design §6: the member session's model decides; an explicit `model`
     // override swaps the realtime model for this channel without touching
     // the member's text identity, and an explicit `provider` re-pairs the
@@ -4038,13 +4073,6 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map_or_else(|| session_id.to_string(), ToString::to_string);
-    if params.get("instructions").is_some() {
-        return live_error(
-            rpc_id,
-            INVALID_PARAMS_CODE,
-            "live/open instructions are catalog-owned and cannot be supplied by callers",
-        );
-    }
     let parsed: GatewayLiveOpenParams = match parse_live_params(params, &rpc_id) {
         Ok(p) => p,
         Err(resp) => return *resp,
@@ -4065,6 +4093,13 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
                 rpc_id,
                 INVALID_PARAMS_CODE,
                 "execution_identity conflicts with legacy top-level model/provider",
+            );
+        }
+        if parsed.instructions.is_some() {
+            return live_error(
+                rpc_id,
+                INVALID_PARAMS_CODE,
+                "strict experimental live/open does not accept raw instructions; select a registered execution_identity.profile_id",
             );
         }
         let Some(open_authority) = capability_provider.open_authority_arc() else {
@@ -4233,6 +4268,12 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
             return live_open_error_response(rpc_id, LiveOpenError::OpenConfig(error));
         }
     };
+    if let Some(overlay) = parsed
+        .instructions
+        .and_then(|instructions| live_open_instruction_overlay(instructions.into_vec()))
+    {
+        projection.append_ephemeral_system_overlay(overlay);
+    }
     // Design §6: the member session's model decides; an explicit `model`
     // override swaps the realtime model for this channel without touching
     // the member's text identity, and an explicit `provider` re-pairs the
@@ -5393,6 +5434,22 @@ mod tests {
 
     #[cfg(feature = "experimental-gpt-live")]
     use meerkat::experimental_gpt_live::ExperimentalLiveBoundChannelActivator as _;
+
+    #[test]
+    fn ordinary_live_instruction_overlay_preserves_legacy_normalization() {
+        assert_eq!(
+            live_open_instruction_overlay(vec![
+                "  Speak as the room embodiment.  ".to_string(),
+                "".to_string(),
+                "Keep replies concise.".to_string(),
+            ]),
+            Some("Speak as the room embodiment.\n\nKeep replies concise.".to_string())
+        );
+        assert_eq!(
+            live_open_instruction_overlay(vec!["  ".to_string(), "\n".to_string()]),
+            None
+        );
+    }
 
     #[test]
     fn stock_live_capability_provider_is_fail_closed() {

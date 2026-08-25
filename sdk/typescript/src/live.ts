@@ -104,6 +104,7 @@ export type LiveAuthBindingOverride =
   | { readonly action: "clear" };
 
 export interface LiveExecutionIdentityV1 {
+  readonly profileId: string;
   readonly model?: string;
   readonly provider?: LiveProvider;
   readonly selfHostedServerId?: string;
@@ -112,6 +113,7 @@ export interface LiveExecutionIdentityV1 {
 
 export interface LiveExecutionIdentityWireV1 {
   readonly version: "v1";
+  readonly profile_id: string;
   readonly model?: string;
   readonly provider?: LiveProvider;
   readonly self_hosted_server_id?: string;
@@ -272,16 +274,20 @@ export function liveExecutionIdentityV1ToWire(
   const raw = asRecord(input, "execution identity");
   assertExactKeys(
     raw,
-    ["model", "provider", "selfHostedServerId", "authBinding"],
+    ["profileId", "model", "provider", "selfHostedServerId", "authBinding"],
     "execution identity",
   );
   const result: {
     version: "v1";
+    profile_id: string;
     model?: string;
     provider?: LiveProvider;
     self_hosted_server_id?: string;
     auth_binding?: LiveExecutionIdentityWireV1["auth_binding"];
-  } = { version: "v1" };
+  } = {
+    version: "v1",
+    profile_id: requireString(raw.profileId, "profileId"),
+  };
   if (raw.model !== undefined) result.model = requireString(raw.model, "model");
   if (raw.provider !== undefined) {
     if (!PROVIDERS.includes(raw.provider as LiveProvider)) {

@@ -74,6 +74,7 @@ def test_experimental_live_gateway_registration_is_explicit_and_strict():
 
 def test_execution_identity_matches_shared_set_and_clear_fixtures(contracts_fixture):
     selected = LiveExecutionIdentityV1(
+        profile_id="gpt-live-function-bridge-v1",
         model="gpt-live-1-codex",
         provider="openai",
         auth_binding=LiveAuthBindingOverride.set(
@@ -83,6 +84,7 @@ def test_execution_identity_matches_shared_set_and_clear_fixtures(contracts_fixt
         ),
     )
     cleared = LiveExecutionIdentityV1(
+        profile_id="gpt-live-function-bridge-v1",
         model="gpt-live-1-codex",
         provider="openai",
         auth_binding=LiveAuthBindingOverride.clear(),
@@ -98,10 +100,22 @@ def test_execution_identity_rejects_unknown_fields_null_and_legacy_conflicts():
             {"version": "v1", "model": "gpt-live-1-codex", "extra": True}
         )
     with pytest.raises(ValueError, match="cannot be null"):
-        LiveExecutionIdentityV1.from_dict({"version": "v1", "auth_binding": None})
+        LiveExecutionIdentityV1.from_dict(
+            {
+                "version": "v1",
+                "profile_id": "gpt-live-function-bridge-v1",
+                "auth_binding": None,
+            }
+        )
+    with pytest.raises(ValueError, match="profile_id must be a non-empty string"):
+        LiveExecutionIdentityV1(profile_id=" ").to_dict()
     with pytest.raises(ValueError, match="legacy top-level model"):
         live_open_execution_identity_params(
-            LiveExecutionIdentityV1(model="gpt-live-1-codex"), model="legacy"
+            LiveExecutionIdentityV1(
+                profile_id="gpt-live-function-bridge-v1",
+                model="gpt-live-1-codex",
+            ),
+            model="legacy",
         )
     with pytest.raises(ValueError, match="must be v1"):
         LiveExecutionIdentityV1.from_dict(
@@ -120,6 +134,7 @@ def test_execution_identity_rejects_unknown_fields_null_and_legacy_conflicts():
             LiveExecutionIdentityV1.from_dict({"version": "v1", field: value})
     with pytest.raises(ValueError):
         LiveExecutionIdentityV1(
+            profile_id="gpt-live-function-bridge-v1",
             model="gpt-live-1-codex",
             auth_binding=LiveAuthBindingOverride.set(
                 LiveAuthBindingRef(realm="family", binding="chatgpt", profile="  ")
