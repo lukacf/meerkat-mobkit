@@ -105,14 +105,6 @@ experimental-gpt-live-test-support = [
 test-realtime-fixtures = [
     "experimental-gpt-live",
 ]
-# Non-shipping direct-protocol Gate0 binary. It reuses the MobKit wire method
-# names through a dedicated dispatch table and cannot register with the stock
-# gateway or advertise the shipping live capability.
-experimental-gpt-live-gate0-harness = [
-    "experimental-gpt-live",
-    "dep:meerkat-openai",
-]
-
 # Calibration-harness seam for the memory Distiller (§8.4/§11); same contract
 # as the other calibration bins, fixture in / structured ops out.
 # `scripts/memory-evals --mode live` drives these binaries per fixture. Each is
@@ -133,11 +125,6 @@ path = "src/bin/steward_eval.rs"
 name = "hygienist-eval"
 path = "src/bin/hygienist_eval.rs"
 
-[[bin]]
-name = "gpt-live-gate0-host"
-path = "src/bin/gpt_live_gate0_host.rs"
-required-features = ["experimental-gpt-live-gate0-harness"]
-
 [[example]]
 name = "incident_command_center"
 path = "../examples/001-incident-command-center-pack/server.rs"
@@ -151,7 +138,6 @@ name = "access_control_console"
 path = "../examples/005-access-control-pack/server.rs"
 
 [dev-dependencies]
-axum = { version = "0.8", features = ["ws"] }
 serde_json = "1"
 # Process CPU-time deltas (never wall clock) for the idle-CPU regression
 # gate (tests/idle_cpu_gate.rs); safe wrapper because unsafe_code is forbidden.

@@ -2344,8 +2344,6 @@ dependencies = [
  "meerkat-mob",
  "meerkat-mob-mcp",
  "meerkat-models",
- "meerkat-openai",
- "meerkat-providers",
  "meerkat-runtime",
  "meerkat-schedule",
  "meerkat-session",
