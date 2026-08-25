@@ -39,9 +39,21 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 heavy-runtime = { max-threads = 2 }
 
 [[profile.default.overrides]]
-filter = 'package(meerkat-mobkit) & (binary(routing_delivery) + binary(list_runs) + binary(list_flows_run_flow) + binary(mob_events_cursor_persistence) + binary(mob_events_query_ledger) + binary(mob_events_streaming) + binary(access_control) + binary(unified_console) + binary(repair_queue_carry) + binary(mobkit_gateway_bootstrap))'
+filter = 'package(meerkat-mobkit) & (binary(routing_delivery) + binary(list_runs) + binary(list_flows_run_flow) + binary(mob_events_cursor_persistence) + binary(mob_events_query_ledger) + binary(mob_events_streaming) + binary(access_control) + binary(unified_console) + binary(repair_queue_carry) + binary(mobkit_gateway_bootstrap) + binary(gateway_concurrent_dispatch))'
 test-group = 'heavy-runtime'
 retries = 2
+
+# `gateway_concurrent_dispatch` joined 2026-08-25 alongside it, and it is the
+# literal example this group's comment already cites: it fails on a TEARDOWN
+# assertion, `mob_stop` reporting "failed" with identity_authority_release
+# skipped_mob_stop_failed, under peak load - and passes 9/9 standalone in 9.8s.
+#
+# Open gap that this does NOT fix and should not be mistaken for fixing: that
+# shutdown report names the phase that blocked and carries NO typed reason, by
+# deliberate design (no error Display on a wire that crosses the SDK). So nobody
+# can diagnose WHY mob_stop failed from the report itself - only that it did.
+# Surfacing a stable reason slug is the real fix and is tracked separately; this
+# override only stops aggregate-load starvation from manufacturing the symptom.
 
 # `mobkit_gateway_bootstrap` joined 2026-08-25: it SPAWNS A REAL GATEWAY PROCESS
 # and waits up to 45s for it to answer mobkit/init, which is the most
