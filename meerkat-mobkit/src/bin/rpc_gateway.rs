@@ -141,6 +141,15 @@ struct GatewayRuntimeOptions {
     /// names a revision the store has moved past is refused rather than
     /// overwriting a spec the operator never saw.
     declare_spec_update: Option<u64>,
+    /// `runtime_options.mob_composition = {"authority": "candidate"}`: this
+    /// launch does NOT speak for the durable composition, so it neither creates
+    /// the composition pin nor is refused by one.
+    ///
+    /// For candidate/certification boots in a candidate-then-promote pipeline
+    /// against one state directory. Without it such a boot pins its own
+    /// deliberately-restricted composition and the promoted boot is refused -
+    /// which cost a live household 929 supervisor respawns and a rollback.
+    composition_authority: meerkat_mobkit::mob_composition_manifest::CompositionAuthority,
     /// `runtime_options.compaction = {"auto_compact_threshold": 120000, ...}`:
     /// the host-level session-compaction policy for every agent this gateway
     /// builds. Absent, the gateway inherits meerkat's model-aware default
@@ -320,6 +329,8 @@ impl Default for GatewayRuntimeOptions {
             runtime_store_ephemeral: false,
             mob_storage_ephemeral: false,
             declare_spec_update: None,
+            composition_authority:
+                meerkat_mobkit::mob_composition_manifest::CompositionAuthority::default(),
             compaction: None,
         }
     }
@@ -3452,6 +3463,9 @@ fn parse_gateway_runtime_options(
     if let Some(mob_storage) = runtime_options.get("mob_storage") {
         parsed.mob_storage_ephemeral = parse_gateway_mob_storage_config(mob_storage)?;
     }
+    if let Some(composition) = runtime_options.get("mob_composition") {
+        parsed.composition_authority = parse_gateway_composition_authority(composition)?;
+    }
     if let Some(declare) = runtime_options.get("declare_spec_update") {
         parsed.declare_spec_update = Some(parse_gateway_declare_spec_update(declare)?);
     }
@@ -3684,6 +3698,34 @@ fn parse_gateway_runtime_store_config(value: &Value) -> Result<bool, String> {
         ));
     }
     Ok(true)
+}
+
+fn parse_gateway_composition_authority(
+    value: &Value,
+) -> Result<meerkat_mobkit::mob_composition_manifest::CompositionAuthority, String> {
+    let object = value.as_object().ok_or_else(|| {
+        "runtime_options.mob_composition must be a JSON object with an authority".to_string()
+    })?;
+    let authority = object
+        .get("authority")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "runtime_options.mob_composition.authority must be 'candidate' or 'authoritative'"
+                .to_string()
+        })?;
+    match authority {
+        "candidate" | "non_authoritative" => {
+            Ok(meerkat_mobkit::mob_composition_manifest::CompositionAuthority::NonAuthoritative)
+        }
+        "authoritative" => {
+            Ok(meerkat_mobkit::mob_composition_manifest::CompositionAuthority::Authoritative)
+        }
+        other => Err(format!(
+            "unsupported runtime_options.mob_composition.authority '{other}' (use 'candidate' for \
+             a certification boot that must not pin its own composition, or 'authoritative' - the \
+             default - for the launch that speaks for the durable composition)"
+        )),
+    }
 }
 
 fn parse_gateway_declare_spec_update(value: &Value) -> Result<u64, String> {
@@ -8401,6 +8443,9 @@ external_addressable = true
         let session_service: Arc<dyn meerkat_mob::MobSessionService> = concrete_service;
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
             .with_mob_storage_provenance(mob_storage_provenance)
+            // A parsed option that never reaches the spec is the same defect as
+            // an unreachable API, one layer down.
+            .with_composition_authority(gateway_options.composition_authority)
             .with_optional_tool_consequence_policy_registry(
                 tool_consequence_policy_registry.clone(),
             )

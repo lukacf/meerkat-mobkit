@@ -5806,6 +5806,11 @@ pub struct MobBootstrapSpec {
     /// needs a provenance record at all: an ephemeral storage has no
     /// cross-restart composition to judge.
     pub mob_storage_provenance: crate::mob_composition_manifest::MobStorageProvenance,
+    /// Whether this launch speaks for the durable composition of its mob
+    /// storage. Defaults to authoritative; a candidate or certification pass
+    /// declares itself non-authoritative so it neither creates the composition
+    /// pin nor is refused by one.
+    pub composition_authority: crate::mob_composition_manifest::CompositionAuthority,
     pub session_service: Arc<dyn MobSessionService>,
     pub binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
     pub(crate) agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
@@ -5914,6 +5919,7 @@ impl MobBootstrapSpec {
             // arbitrary storage and cannot know what it was handed. Claiming
             // ephemerality on the caller's behalf is what would let an
             // external embedder's durable storage resume unverified.
+            composition_authority: crate::mob_composition_manifest::CompositionAuthority::default(),
             mob_storage_provenance: crate::mob_composition_manifest::MobStorageProvenance::default(
             ),
             session_service,
@@ -6097,6 +6103,17 @@ impl MobBootstrapSpec {
     /// [`crate::mob_composition_manifest::persistent_mob_storage`] threads
     /// through intact: a launch path cannot compose persistent mob storage and
     /// then forget to declare it.
+    /// Declare that this launch does or does not speak for the durable
+    /// composition. See [`crate::mob_composition_manifest::CompositionAuthority`].
+    #[must_use]
+    pub fn with_composition_authority(
+        mut self,
+        authority: crate::mob_composition_manifest::CompositionAuthority,
+    ) -> Self {
+        self.composition_authority = authority;
+        self
+    }
+
     pub fn with_mob_storage_provenance(
         mut self,
         provenance: crate::mob_composition_manifest::MobStorageProvenance,
@@ -7409,6 +7426,10 @@ pub struct MobRuntime {
     /// Keeps the ephemeral temp directory alive for the lifetime of the runtime.
     /// Dropped when the runtime is dropped, cleaning up the temp dir.
     _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
+    /// Whether this launch speaks for the durable composition. Retained past
+    /// bootstrap because it gates more than the pin: a launch that does not
+    /// speak for the composition must not AUTHOR durable state either.
+    composition_authority: crate::mob_composition_manifest::CompositionAuthority,
 }
 
 /// The right to lift a prepared mob from `Stopped` to `Running`, once.
@@ -7535,12 +7556,28 @@ impl MobRuntime {
                 crate::mob_composition_manifest::MobCompositionProvenanceError::UnprovenStorage,
             ));
         }
+        // A launch that does not speak for the durable composition is exempt from
+        // VERIFICATION: verifying it would refuse the candidate for exactly the
+        // fields it exists to differ in, wedging a candidate/promote pipeline in
+        // the other direction.
+        //
+        // It is NOT exempt from RECORDING. Skipping the record would leave a store
+        // whose composition nobody has spoken for, and the authoritative resume
+        // that follows would adopt its OWN definition as the record while
+        // `for_resume` boots the rehearsal definition the event log holds - a
+        // manifest certifying a composition that is not running. Recording the
+        // creating authority instead lets that resume refuse with the real reason.
+        let speaks_for_composition = spec.composition_authority.speaks_for_composition();
         let mut builder = if event_log_empty {
             if let Some(path) = persistent_mob_path {
                 // Refuse rather than leave behind a path whose composition the
                 // next restart cannot judge.
-                crate::mob_composition_manifest::record_on_create(path, &spec.definition)
-                    .map_err(MobRuntimeError::CompositionProvenance)?;
+                crate::mob_composition_manifest::record_on_create(
+                    path,
+                    &spec.definition,
+                    spec.composition_authority,
+                )
+                .map_err(MobRuntimeError::CompositionProvenance)?;
             }
             MobBuilder::new(spec.definition, spec.storage)
         } else {
@@ -7548,9 +7585,43 @@ impl MobRuntime {
             // `for_resume` structurally cannot accept a new one, so the
             // supplied composition is verified BEFORE the builder exists:
             // every refusal lands before the mob can actuate.
-            if let Some(path) = persistent_mob_path {
-                crate::mob_composition_manifest::verify_before_resume(path, &spec.definition)
-                    .map_err(MobRuntimeError::CompositionProvenance)?;
+            if let Some(path) = persistent_mob_path.filter(|_| speaks_for_composition) {
+                match crate::mob_composition_manifest::verify_before_resume(path, &spec.definition)
+                {
+                    Ok(()) => {}
+                    // No manifest exists, so there is no recorded composition to
+                    // contradict. Refusing here reports a conflict that cannot be
+                    // shown and blocks a boot for a claim nobody made.
+                    //
+                    // What remains reachable is narrow, and deliberately so: a
+                    // store from a build that predates the manifest, or one whose
+                    // manifest an operator removed during recovery surgery. A
+                    // rehearsal-created store is NOT in that set any more - it
+                    // carries a manifest tagged non-authoritative, and
+                    // `verify_before_resume` refuses it by name. Without that tag
+                    // this branch would adopt a definition the event log does not
+                    // hold and certify it.
+                    //
+                    // THIS launch speaks for the composition, so it records one
+                    // rather than refusing to start.
+                    Err(
+                        crate::mob_composition_manifest::MobCompositionProvenanceError::Missing {
+                            ..
+                        },
+                    ) => {
+                        tracing::info!(
+                            manifest = %crate::mob_composition_manifest::manifest_path(path).display(),
+                            "no composition manifest beside this mob storage; adopting the                              supplied definition as its recorded composition"
+                        );
+                        crate::mob_composition_manifest::record_on_create(
+                            path,
+                            &spec.definition,
+                            spec.composition_authority,
+                        )
+                        .map_err(MobRuntimeError::CompositionProvenance)?;
+                    }
+                    Err(other) => return Err(MobRuntimeError::CompositionProvenance(other)),
+                }
             }
             MobBuilder::for_resume(spec.storage)
         };
@@ -7684,6 +7755,7 @@ impl MobRuntime {
                 session_write_epochs: spec.session_write_epochs,
                 committed_boundary_recoverer: spec.committed_boundary_recoverer,
                 _ephemeral_dir: ephemeral_dir,
+                composition_authority: spec.composition_authority,
             },
             pending_activation,
         ))
@@ -7696,6 +7768,11 @@ impl MobRuntime {
             None,
         ));
         Self {
+            // A runtime adopted from a bare handle made no declaration, so it
+            // keeps the safe default: it speaks for the composition unless told
+            // otherwise. A candidate must say so explicitly.
+            composition_authority:
+                crate::mob_composition_manifest::CompositionAuthority::Authoritative,
             handle,
             session_service: None,
             agent_mob_mcp_state: None,
@@ -7711,6 +7788,18 @@ impl MobRuntime {
             committed_boundary_recoverer: None,
             _ephemeral_dir: None,
         }
+    }
+
+    /// Whether this launch speaks for the durable composition.
+    ///
+    /// Gates two things, and the second is the one that is easy to forget: the
+    /// composition pin, and whether this launch may AUTHOR durable state. A
+    /// certification pass that adopted declarations would write them under a
+    /// composition no pin will ever cover, which is the hole the pin exemption
+    /// would otherwise open.
+    #[must_use]
+    pub fn speaks_for_composition(&self) -> bool {
+        self.composition_authority.speaks_for_composition()
     }
 
     pub fn handle(&self) -> MobHandle {

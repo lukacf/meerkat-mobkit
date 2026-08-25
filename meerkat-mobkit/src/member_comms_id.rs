@@ -135,6 +135,17 @@ pub fn mob_member_id_str(alias: &str) -> Cow<'_, str> {
 }
 
 /// Map a public member alias to a typed mob roster member id.
+/// # This encodes WHATEVER YOU GIVE IT
+///
+/// Passing a runtime alias (`rt:review:singleton:0`) produces a VALID roster id
+/// for a member that does not exist, because since the stable-identity lowering
+/// the roster is keyed by the bare durable identity. Nothing fails at the call -
+/// it surfaces later as "mob member not found" about a healthy member, or worse
+/// as a well-formed status for a member never looked up.
+///
+/// If you have an identity and want its roster row, use
+/// [`roster_member_id_for_identity`]. If you have a caller-supplied string of
+/// unknown shape, decode first.
 pub fn mob_member_id(alias: &str) -> meerkat_mob::ids::AgentIdentity {
     meerkat_mob::ids::AgentIdentity::from(mob_member_id_str(alias).as_ref())
 }
@@ -234,7 +245,40 @@ pub(crate) fn public_runtime_alias(runtime_id: &meerkat_mob::ids::AgentRuntimeId
 /// the shape of the defect this function exists to remove, found when a caller
 /// round-tripped `agent_runtime_id` from a status call straight back into a
 /// member lookup, which is the obvious thing to do.
-pub(crate) fn roster_member_id_for_supplied_id(supplied: &str) -> meerkat_mob::ids::AgentIdentity {
+///
+/// PUBLIC, and the difference from [`roster_member_id_for_identity`] is which
+/// spelling the caller HAS, not which is preferred. An embedder that already
+/// holds the durable identity should call that one and say so. An embedder
+/// holding a value it read back from a surface - `status_identity`, a console
+/// projection, a persisted binding - has no way to know which of the three
+/// shapes it is holding, and should call this.
+///
+/// It was `pub(crate)` while being the only correct answer for an embedder that
+/// only has an alias, which left the obvious mistake as the only reachable
+/// option. OB3 asked which function to call and there was no right answer to
+/// give them.
+///
+/// # NOT for deciding whether two values agree
+///
+/// This answers "which roster row" and deliberately COLLAPSES generation:
+/// `rt:x:0` and `rt:x:7` return the same row, because generation is incarnation
+/// detail and a lookup must not miss a healthy member over it.
+///
+/// That makes it wrong for any check that asks "do these two persisted values
+/// agree" - a tamper boundary, a binding-vs-session postcondition, an equality
+/// gate on two stored fields. Routed through here, a pair differing ONLY in
+/// generation compares equal, so a substituted value passes. Meerkat hit exactly
+/// this at 0.8.29: a matcher made tolerant for lookup accepted binding/comms
+/// aliases with the same durable identity and different legacy generations, and
+/// an existing tamper test caught it.
+///
+/// Same function, two questions, opposite requirements. For agreement checks,
+/// compare the values as stored and let the difference be a difference. No
+/// caller in this crate does otherwise today - the other users of the underlying
+/// strict derivation produce identities rather than compare them - but this
+/// function is public now, so the boundary is documented rather than merely
+/// true.
+pub fn roster_member_id_for_supplied_id(supplied: &str) -> meerkat_mob::ids::AgentIdentity {
     let decoded = runtime_alias_str(supplied);
     let durable = durable_identity_from_runtime_alias(decoded.as_ref())
         .unwrap_or_else(|| decoded.into_owned());
@@ -250,7 +294,7 @@ pub(crate) fn roster_member_id_for_supplied_id(supplied: &str) -> meerkat_mob::i
 /// longer names a roster row at all. A site that keeps the old conversion does
 /// not fail loudly - it silently misses and its surface reports "not found" for
 /// a healthy member.
-pub(crate) fn roster_member_id_for_identity(identity: &str) -> meerkat_mob::ids::AgentIdentity {
+pub fn roster_member_id_for_identity(identity: &str) -> meerkat_mob::ids::AgentIdentity {
     mob_member_id(identity)
 }
 
@@ -572,6 +616,41 @@ mod tests {
             roster_member_id_for_supplied_id(&encoded),
             expected,
             "the encoded roster id must round-trip to its own row"
+        );
+    }
+
+    /// The STACKED form: a comms encoding wrapped around a runtime ALIAS rather
+    /// than around a durable identity. Two encodings deep, alias innermost.
+    ///
+    /// Its own test, not another assertion appended to the spelling test. A
+    /// single test function stops at its first failing assert, so a mutation
+    /// that breaks an EARLIER case masks whether these two discriminate at all -
+    /// which is exactly what happened when this was written inline: reversing
+    /// the decode order failed the plain encoded-identity case first and these
+    /// never ran.
+    #[test]
+    fn a_comms_encoded_runtime_alias_reaches_the_durable_roster_row() {
+        let expected = roster_member_id_for_identity("review:singleton");
+
+        let stacked = mob_member_id_str("rt:review:singleton:2").into_owned();
+        assert_eq!(
+            roster_member_id_for_supplied_id(&stacked),
+            expected,
+            "a comms encoding of a runtime alias must reach the durable row: {stacked}"
+        );
+
+        // OB3's exact production value, verbatim from their store rather than
+        // constructed here. Their typed MobMemberBinding.member and comms_name
+        // both carry this, and theirs is the only store known to hold the
+        // stacked shape - so a helper that agrees with itself about how to build
+        // the input cannot stand in for it. If their encoding differs from what
+        // this crate would produce, that difference IS the bug and constructing
+        // the input would hide it.
+        let ob3_persisted = "mk--rt_cperson_cfederico_x2e_gomez_x40_king_x2e_com_c2";
+        assert_eq!(
+            roster_member_id_for_supplied_id(ob3_persisted),
+            roster_member_id_for_identity("person:federico.gomez@king.com"),
+            "OB3's persisted stacked alias must reach the durable person row"
         );
     }
 

@@ -9781,6 +9781,21 @@ impl IdentityRuntime {
     }
 
     /// Resolve the AgentRuntimeId for a registered identity.
+    /// # NOT a roster key
+    ///
+    /// This returns the identity's CURRENT INCARNATION - `rt:{identity}:{gen}` -
+    /// which is binding detail. Since the stable-identity lowering the mob roster
+    /// is keyed by the bare DURABLE identity, so encoding this result into a
+    /// member id yields a valid-looking id for a member that does not exist, and
+    /// operations on it fail with "mob member not found" about a healthy member.
+    ///
+    /// For "which roster row is this identity", use
+    /// [`crate::member_comms_id::roster_member_id_for_identity`].
+    ///
+    /// This distinction cost a downstream fleet a zeroed board: our resolver
+    /// handed out this spelling, the consumer encoded it as documented, and wire
+    /// rejected it - two halves of one public API disagreeing about what a roster
+    /// key is.
     pub async fn runtime_id_for(
         &self,
         identity: &AgentIdentity,

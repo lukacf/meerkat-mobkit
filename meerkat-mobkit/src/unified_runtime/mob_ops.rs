@@ -63,6 +63,15 @@ pub(crate) fn is_ready_wait_timeout(err: &MobError) -> bool {
 }
 
 impl UnifiedRuntime {
+    /// Whether this launch speaks for the durable mob composition.
+    ///
+    /// Delegates to the mob runtime. Surfaces need it to refuse durable-state
+    /// authorship from a certification pass.
+    #[must_use]
+    pub fn speaks_for_composition(&self) -> bool {
+        self.mob_runtime.speaks_for_composition()
+    }
+
     pub fn mob_handle(&self) -> MobHandle {
         self.mob_runtime.handle()
     }

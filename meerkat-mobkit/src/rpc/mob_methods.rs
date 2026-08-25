@@ -3762,6 +3762,44 @@ mod member_declaration_wire_tests {
       "convergence": { "kind": "drain", "max_wait_ms": 120000 }
     }"#;
 
+    /// A certification pass must not author durable state.
+    ///
+    /// The composition-pin exemption lets a candidate launch boot without
+    /// pinning its own restricted composition. That exemption would otherwise
+    /// open a hole: a candidate that ADOPTED would persist a declaration under a
+    /// composition no pin covers - trading a loud refusal for silent unpinned
+    /// durable state, which is worse. HomeCore's own deploy doctrine says the
+    /// same thing: candidate mode exists to gate effects.
+    ///
+    /// Asserted on the refusal's CONTENT, not merely that an error occurred: the
+    /// message has to tell an operator which declaration caused it and what to do
+    /// instead, or it is a dead end wearing a verdict's clothes.
+    #[test]
+    fn adoption_from_a_non_authoritative_launch_is_refused() {
+        let refused =
+            super::refuse_adoption_from_non_authoritative_launch(serde_json::json!("probe"));
+        assert_eq!(refused.id, serde_json::json!("probe"));
+        assert!(
+            refused.result.is_none(),
+            "a refusal must not also carry a result"
+        );
+        let error = refused
+            .error
+            .expect("a non-authoritative launch must be refused, not served");
+        assert_eq!(error.code, -32602);
+        assert!(
+            error.message.contains("non-authoritative"),
+            "the refusal must name the declaration that caused it: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("rehearsal store")
+                || error.message.contains("authoritative (promoted) launch"),
+            "the refusal must say what to do instead, or it is a dead end: {}",
+            error.message
+        );
+    }
+
     #[test]
     fn the_adopt_payload_homecore_actually_sends_parses_and_converts() {
         let params: meerkat_contracts::wire::MobAdoptMemberIdentityDeclarationParams =
@@ -4276,14 +4314,53 @@ pub(crate) fn is_member_declaration_mutating_method(method: &str) -> bool {
 /// full-runtime console passes `runtime.handle()`. One implementation, two
 /// doorways. Returns `None` for a method outside the family so a caller can fall
 /// through to its own dispatch.
+/// The typed refusal for adoption from a launch that does not speak for the
+/// durable composition.
+///
+/// Extracted so the refusal can be asserted without fabricating a MobHandle: the
+/// guard fires BEFORE dispatch, so there is nothing to build a handle for, and
+/// inventing a test-only constructor on an upstream type to satisfy a signature
+/// would be testing the wrong thing.
+fn refuse_adoption_from_non_authoritative_launch(response_id: Value) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: None,
+        error: Some(JsonRpcError {
+            code: -32602,
+            message: "identity adoption refused: this launch declared itself non-authoritative \
+                      for the mob composition (runtime_options.mob_composition.authority = \
+                      candidate), and a candidate must not author durable state - the \
+                      declaration would persist under a composition no pin covers. Adopt from \
+                      the authoritative (promoted) launch, or certify adoption against a \
+                      rehearsal store."
+                .to_string(),
+            data: None,
+        }),
+    }
+}
+
 pub(crate) async fn handle_member_declaration_rpc(
     handle: &meerkat_mob::MobHandle,
+    speaks_for_composition: bool,
     method: &str,
     response_id: Value,
     params: &Value,
 ) -> Option<JsonRpcResponse> {
     match method {
         ADOPT_MEMBER_IDENTITY_DECLARATION => {
+            // A launch that does not speak for the durable composition must not
+            // AUTHOR durable state. Adoption writes a declaration that outlives
+            // the process, and the pin exemption means no pin covers the
+            // composition it was written under - so allowing it would trade the
+            // 929-respawn refusal for silent unpinned durable state, which is
+            // worse. A certification pass certifies; it does not author.
+            //
+            // If adoption behaviour itself needs certifying, the honest shape is
+            // a rehearsal store, never the production store through an exemption.
+            if !speaks_for_composition {
+                return Some(refuse_adoption_from_non_authoritative_launch(response_id));
+            }
             Some(handle_adopt_member_identity_declaration(handle, response_id, params).await)
         }
         APPLY_MEMBER_TOOL_DECLARATION => {
