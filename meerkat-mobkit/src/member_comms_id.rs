@@ -135,6 +135,17 @@ pub fn mob_member_id_str(alias: &str) -> Cow<'_, str> {
 }
 
 /// Map a public member alias to a typed mob roster member id.
+/// # This encodes WHATEVER YOU GIVE IT
+///
+/// Passing a runtime alias (`rt:review:singleton:0`) produces a VALID roster id
+/// for a member that does not exist, because since the stable-identity lowering
+/// the roster is keyed by the bare durable identity. Nothing fails at the call -
+/// it surfaces later as "mob member not found" about a healthy member, or worse
+/// as a well-formed status for a member never looked up.
+///
+/// If you have an identity and want its roster row, use
+/// [`roster_member_id_for_identity`]. If you have a caller-supplied string of
+/// unknown shape, decode first.
 pub fn mob_member_id(alias: &str) -> meerkat_mob::ids::AgentIdentity {
     meerkat_mob::ids::AgentIdentity::from(mob_member_id_str(alias).as_ref())
 }
@@ -250,7 +261,7 @@ pub(crate) fn roster_member_id_for_supplied_id(supplied: &str) -> meerkat_mob::i
 /// longer names a roster row at all. A site that keeps the old conversion does
 /// not fail loudly - it silently misses and its surface reports "not found" for
 /// a healthy member.
-pub(crate) fn roster_member_id_for_identity(identity: &str) -> meerkat_mob::ids::AgentIdentity {
+pub fn roster_member_id_for_identity(identity: &str) -> meerkat_mob::ids::AgentIdentity {
     mob_member_id(identity)
 }
 
