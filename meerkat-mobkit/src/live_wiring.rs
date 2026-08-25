@@ -974,7 +974,7 @@ impl LiveSurfaceAuthority {
 trait ExactLiveSessionOwner: Send + Sync {
     async fn owns_session(&self, canonical_session_id: &SessionId) -> bool;
 
-    async fn validate_live_bridge_eligibility(
+    async fn validate_live_durable_source_availability(
         &self,
         canonical_session_id: &SessionId,
     ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>;
@@ -997,7 +997,7 @@ impl ExactLiveSessionOwner for MobHandleLiveSessionOwner {
             == Some(canonical_session_id)
     }
 
-    async fn validate_live_bridge_eligibility(
+    async fn validate_live_durable_source_availability(
         &self,
         canonical_session_id: &SessionId,
     ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError> {
@@ -1012,9 +1012,9 @@ impl ExactLiveSessionOwner for MobHandleLiveSessionOwner {
             .await
             .map_err(|_| ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable)?;
         member
-            .validate_live_bridge_eligibility()
+            .validate_live_durable_source_availability()
             .await
-            .map_err(|_| ExperimentalLiveOpenAuthorityError::MemberIneligible)?;
+            .map_err(|_| ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable)?;
         if !self.owns_session(canonical_session_id).await {
             return Err(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable);
         }
@@ -1088,12 +1088,12 @@ impl MobkitExperimentalLiveSessionBindingAuthority {
 impl meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority
     for MobkitExperimentalLiveSessionBindingAuthority
 {
-    async fn validate_live_bridge_member_eligibility(
+    async fn validate_live_durable_source_availability(
         &self,
         canonical_session_id: &SessionId,
     ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError> {
         self.owner
-            .validate_live_bridge_eligibility(canonical_session_id)
+            .validate_live_durable_source_availability(canonical_session_id)
             .await
     }
 
@@ -6010,7 +6010,7 @@ mod tests {
             self.0
         }
 
-        async fn validate_live_bridge_eligibility(
+        async fn validate_live_durable_source_availability(
             &self,
             _canonical_session_id: &SessionId,
         ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>
@@ -6026,22 +6026,22 @@ mod tests {
     }
 
     #[cfg(feature = "experimental-gpt-live")]
-    struct IneligibleSessionOwner;
+    struct UnavailableDurableSourceOwner;
 
     #[cfg(feature = "experimental-gpt-live")]
     #[async_trait]
-    impl ExactLiveSessionOwner for IneligibleSessionOwner {
+    impl ExactLiveSessionOwner for UnavailableDurableSourceOwner {
         async fn owns_session(&self, _canonical_session_id: &SessionId) -> bool {
             true
         }
 
-        async fn validate_live_bridge_eligibility(
+        async fn validate_live_durable_source_availability(
             &self,
             _canonical_session_id: &SessionId,
         ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>
         {
             Err(
-                meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::MemberIneligible,
+                meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable,
             )
         }
     }
@@ -6172,28 +6172,28 @@ mod tests {
 
     #[cfg(feature = "experimental-gpt-live")]
     #[tokio::test]
-    async fn ineligible_member_preflight_is_denied_before_credential_policy() {
+    async fn unavailable_durable_source_is_denied_before_credential_policy() {
         let credential_policy = Arc::new(CountingCredentialPolicy {
             calls: AtomicUsize::new(0),
             allow: true,
         });
         let authority = MobkitExperimentalLiveSessionBindingAuthority {
-            owner: Arc::new(IneligibleSessionOwner),
+            owner: Arc::new(UnavailableDurableSourceOwner),
             machine: test_live_machine(),
             durable_identity: "identity:reachy".to_string(),
             access_view: access_view(Some("root")),
             credential_policy: credential_policy.clone(),
         };
 
-        let error = meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority::validate_live_bridge_member_eligibility(
+        let error = meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority::validate_live_durable_source_availability(
             &authority,
             &test_session_id(),
         )
         .await
-        .expect_err("ineligible exact member must fail closed");
+        .expect_err("unavailable exact durable source must fail closed");
         assert!(matches!(
             error,
-            meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::MemberIneligible
+            meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable
         ));
         assert_eq!(credential_policy.calls.load(Ordering::SeqCst), 0);
     }
@@ -6256,7 +6256,7 @@ mod tests {
 
     #[cfg(feature = "experimental-gpt-live")]
     #[tokio::test]
-    async fn eligible_member_preflight_and_exact_access_return_machine_authorization() {
+    async fn durable_source_preflight_and_exact_access_return_machine_authorization() {
         let credential_policy = Arc::new(CountingCredentialPolicy {
             calls: AtomicUsize::new(0),
             allow: true,
@@ -6269,12 +6269,12 @@ mod tests {
             credential_policy: credential_policy.clone(),
         };
 
-        meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority::validate_live_bridge_member_eligibility(
+        meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority::validate_live_durable_source_availability(
             &authority,
             &test_session_id(),
         )
         .await
-        .expect("eligible exact member should pass before binding use");
+        .expect("available exact durable source should pass before binding use");
         meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority::authorize_binding_use(
             &authority,
             &test_session_id(),

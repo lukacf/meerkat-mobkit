@@ -5492,7 +5492,7 @@ impl GatewayExperimentalLiveSessionBindingAuthority {
 impl meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority
     for GatewayExperimentalLiveSessionBindingAuthority
 {
-    async fn validate_live_bridge_member_eligibility(
+    async fn validate_live_durable_source_availability(
         &self,
         canonical_session_id: &meerkat_core::SessionId,
     ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError> {
@@ -5500,9 +5500,9 @@ impl meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority
 
         let member = self.resolve_exact_member(canonical_session_id).await?;
         member
-            .validate_live_bridge_eligibility()
+            .validate_live_durable_source_availability()
             .await
-            .map_err(|_| ExperimentalLiveOpenAuthorityError::MemberIneligible)?;
+            .map_err(|_| ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable)?;
         if self
             .handle
             .resolve_bridge_session_id(&member.identity())
@@ -10841,7 +10841,6 @@ external_addressable = true
                         factory_identity: experimental.factory.clone(),
                         transport: Arc::clone(&transport),
                         voice: experimental.voice.clone(),
-                        instructions: None,
                     },
                 )
                 .unwrap_or_else(|error| {
