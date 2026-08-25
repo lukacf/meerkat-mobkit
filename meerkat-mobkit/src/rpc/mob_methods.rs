@@ -1047,7 +1047,10 @@ pub(super) async fn handle_get_member(
                 return response;
             }
             let handle = runtime.mob_handle();
-            let identity = crate::member_comms_id::mob_member_id(&mid);
+            // Decode before encoding: a caller may hand back the runtime alias
+            // `status_identity` returns, and encoding that directly yields a
+            // well-formed roster id for a member that does not exist.
+            let identity = crate::member_comms_id::roster_member_id_for_supplied_id(&mid);
             let entries = handle.list_members_including_retiring().await;
             match entries.into_iter().find(|e| e.agent_identity == identity) {
                 Some(entry) => JsonRpcResponse {
@@ -1254,7 +1257,10 @@ pub(super) async fn handle_respawn_member(
                 };
             }
             let handle = runtime.mob_handle();
-            let identity = crate::member_comms_id::mob_member_id(&mid);
+            // Decode before encoding: a caller may hand back the runtime alias
+            // `status_identity` returns, and encoding that directly yields a
+            // well-formed roster id for a member that does not exist.
+            let identity = crate::member_comms_id::roster_member_id_for_supplied_id(&mid);
             // Best-effort repair material: a faulted lookup degrades to None
             // (the respawn itself surfaces real faults).
             let entry_before_respawn = handle.get_member(&identity).await.ok().flatten();

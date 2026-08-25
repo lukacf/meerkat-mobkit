@@ -219,6 +219,28 @@ pub(crate) fn public_runtime_alias(runtime_id: &meerkat_mob::ids::AgentRuntimeId
     }
 }
 
+/// The roster member id for WHATEVER SPELLING A CALLER SUPPLIED.
+///
+/// Callers hand us three shapes and all of them are legitimate, because our own
+/// surfaces hand them out: the bare durable identity (`review:singleton`), the
+/// public runtime alias (`rt:review:singleton:0`, which `status_identity`
+/// RETURNS), and the comms-safe roster encoding (`mk--...`, which mob-plane
+/// projections carry). The roster is keyed by exactly one of those.
+///
+/// So decode before encoding: strip the comms marker, then reduce a runtime
+/// alias to the durable identity it names, then encode. Skipping the middle step
+/// is silent - it produces a well-formed roster id for an identity that does not
+/// exist, and the caller gets "member not found" for a healthy member. That is
+/// the shape of the defect this function exists to remove, found when a caller
+/// round-tripped `agent_runtime_id` from a status call straight back into a
+/// member lookup, which is the obvious thing to do.
+pub(crate) fn roster_member_id_for_supplied_id(supplied: &str) -> meerkat_mob::ids::AgentIdentity {
+    let decoded = runtime_alias_str(supplied);
+    let durable = durable_identity_from_runtime_alias(decoded.as_ref())
+        .unwrap_or_else(|| decoded.into_owned());
+    mob_member_id(&durable)
+}
+
 /// The stable roster member id for a durable identity.
 ///
 /// ONE spelling for "which roster row is this identity". Every site that used
@@ -512,6 +534,46 @@ pub(crate) fn canonical_correlation_id(correlation_id: &str) -> std::borrow::Cow
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// A caller may hand back any spelling our own surfaces emit, and all three
+    /// must reach the same roster row.
+    ///
+    /// This is the defect that shipped past a full green suite and was caught by
+    /// a Python SDK test doing the obvious thing: take `agent_runtime_id` out of
+    /// a status response and pass it to `get_member`. Encoding an alias without
+    /// decoding it first produces a well-formed roster id for an identity that
+    /// does not exist, so the caller is told "member not found" about a healthy
+    /// member - a lie with no diagnostic in it.
+    #[test]
+    fn every_spelling_a_caller_can_supply_reaches_one_roster_row() {
+        let durable = "review:singleton";
+        let expected = roster_member_id_for_identity(durable);
+
+        // 1. the bare durable identity
+        assert_eq!(
+            roster_member_id_for_supplied_id(durable),
+            expected,
+            "a bare durable identity must resolve to its own roster row"
+        );
+        // 2. the PUBLIC RUNTIME ALIAS, which status_identity returns
+        assert_eq!(
+            roster_member_id_for_supplied_id("rt:review:singleton:0"),
+            expected,
+            "the alias status_identity hands out must resolve to the same row"
+        );
+        assert_eq!(
+            roster_member_id_for_supplied_id("rt:review:singleton:7"),
+            expected,
+            "generation is incarnation detail and must not change which row is named"
+        );
+        // 3. the comms-safe roster encoding, which mob-plane projections carry
+        let encoded = mob_member_id_str(durable).into_owned();
+        assert_eq!(
+            roster_member_id_for_supplied_id(&encoded),
+            expected,
+            "the encoded roster id must round-trip to its own row"
+        );
+    }
 
     #[test]
     fn canonical_correlation_id_passes_canonical_uuids_and_canonicalizes_the_rest() {
