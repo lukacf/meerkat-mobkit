@@ -1130,8 +1130,9 @@ impl meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority
     }
 }
 
-/// Routes live tool calls into the member session's NORMAL external-tool
-/// dispatch (callback bridge, composed recorder tools, gating — unchanged).
+/// Routes live tool calls into the member session's normal external-tool
+/// dispatch. Experimental GPT Live admission separately rejects callback
+/// provenance before this dispatcher can receive a live tool call.
 /// Port of meerkat-rpc's `RuntimeLiveToolDispatcher`.
 pub struct GatewayLiveToolDispatcher<B: SessionAgentBuilder + 'static> {
     service: Arc<PersistentSessionService<B>>,
