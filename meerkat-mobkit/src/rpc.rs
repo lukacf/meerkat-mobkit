@@ -1612,6 +1612,10 @@ impl SerializedRpcResponseDelivery {
                 custody.rejected().await.map_err(|error| error.to_string())
             };
         }
+        // Keep the public async contract identical when live custody is not
+        // compiled in. The experimental branch above performs the real await.
+        #[cfg(not(feature = "experimental-gpt-live"))]
+        std::future::ready(()).await;
         let _ = delivered;
         Ok(())
     }
