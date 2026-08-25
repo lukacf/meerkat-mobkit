@@ -257,6 +257,27 @@ pub(crate) fn public_runtime_alias(runtime_id: &meerkat_mob::ids::AgentRuntimeId
 /// only has an alias, which left the obvious mistake as the only reachable
 /// option. OB3 asked which function to call and there was no right answer to
 /// give them.
+///
+/// # NOT for deciding whether two values agree
+///
+/// This answers "which roster row" and deliberately COLLAPSES generation:
+/// `rt:x:0` and `rt:x:7` return the same row, because generation is incarnation
+/// detail and a lookup must not miss a healthy member over it.
+///
+/// That makes it wrong for any check that asks "do these two persisted values
+/// agree" - a tamper boundary, a binding-vs-session postcondition, an equality
+/// gate on two stored fields. Routed through here, a pair differing ONLY in
+/// generation compares equal, so a substituted value passes. Meerkat hit exactly
+/// this at 0.8.29: a matcher made tolerant for lookup accepted binding/comms
+/// aliases with the same durable identity and different legacy generations, and
+/// an existing tamper test caught it.
+///
+/// Same function, two questions, opposite requirements. For agreement checks,
+/// compare the values as stored and let the difference be a difference. No
+/// caller in this crate does otherwise today - the other users of the underlying
+/// strict derivation produce identities rather than compare them - but this
+/// function is public now, so the boundary is documented rather than merely
+/// true.
 pub fn roster_member_id_for_supplied_id(supplied: &str) -> meerkat_mob::ids::AgentIdentity {
     let decoded = runtime_alias_str(supplied);
     let durable = durable_identity_from_runtime_alias(decoded.as_ref())
