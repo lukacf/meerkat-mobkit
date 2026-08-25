@@ -88,7 +88,7 @@ integration-real-tests = []
 experimental-gpt-live = []
 # Non-shipping cross-crate lifecycle tests may mint only the upstream test
 # profile selection. Production experimental builds do not enable this.
-experimental-gpt-live-test-support = [
+experimental-gpt-live-test = [
     "experimental-gpt-live",
     "meerkat-runtime/test-support",
 ]
