@@ -15,13 +15,15 @@ member's durable transcript.
   existing `Router`. It has NO meerkat-runtime dependency; canonical
   semantics arrive through two injected traits: `LiveProjectionSink` and
   `LiveToolDispatcher`. WebRTC optional behind the `webrtc` feature.
-- The reference composition lives in the `meerkat-rpc` BINARY crate and is
-  NOT re-exported: `SessionServiceProjectionSink` (implements the sink +
-  `LiveChannelCloseFeedback` + `LiveChannelStatusFeedback` +
-  `LiveWsTokenAuthority`), `RuntimeLiveToolDispatcher`,
-  `handlers/live.rs` (the `live/*` RPC methods), and
-  `build_per_open_realtime_session_factory` (per-open credential
-  resolution). mobkit must port this glue.
+- Experimental GPT Live canonical projection is shared by Meerkat's generic
+  `ServiceLiveProjection<B>`, which implements `LiveProjectionSink`,
+  `LiveChannelCloseFeedback`, `LiveChannelStatusFeedback`, and
+  `LiveWsTokenAuthority`. MobKit composes this facade directly and does not
+  port experimental transcript, playback, or machine-authority sequences.
+  Published Meerkat 0.8.26 still exposes only its Factory-bound projection,
+  so non-experimental builds retain MobKit's preexisting ordinary websocket
+  projection behind an exclusive compatibility cfg. The two paths cannot be
+  compiled into the same build.
 - Lifecycle authority is machine-owned: every open/close/status/token step
   requires a non-forgeable authority minted by `MeerkatMachine` live
   methods (`resolve_live_open_admission`, `resolve_live_close_result`,
@@ -56,18 +58,15 @@ member's durable transcript.
 
 New module `meerkat-mobkit/src/live_wiring.rs`:
 
-1. **`GatewayLiveProjectionSink<B: SessionAgentBuilder>`** — port of
-   meerkat-rpc's `SessionServiceProjectionSink`, holding
-   `Arc<PersistentSessionService<B>>` + `Arc<MeerkatMachine>` (the
-   gateway's existing `adapter` instance — one machine per process, same
-   one wired for image generation and the schedule host). Implements
-   `LiveProjectionSink`, `LiveChannelCloseFeedback`,
-   `LiveChannelStatusFeedback`, `LiveWsTokenAuthority`. Keeps the
-   pending-turn buffering semantics verbatim (per-(session, response_id)
-   display-text finals drained at TurnCompleted; spoken-transcript lane
-   commits via the realtime staging materializer; R6: mismatched
-   response_id never flushes another turn's transcript; fail-closed
-   delta identity via `LiveTranscriptIdentity::require_delta_identity`).
+1. **Projection ownership** - experimental builds compose the shared Meerkat
+   `ServiceLiveProjection<B: SessionAgentBuilder>` facade with the gateway's
+   existing persistent service and `MeerkatMachine`. It is the single owner
+   of experimental canonical transcript projection, assistant-output target
+   admission/bind, playback completion, truncation and Unmeasured settlement,
+   close/status feedback, and token authority. Stock 0.8.26 builds compile
+   only the preexisting ordinary `GatewayLiveProjectionSink<B>` compatibility
+   path until the generic facade is available in the minimum published
+   dependency.
 2. **`GatewayLiveToolDispatcher<B>`** — `dispatch_external_tool_call` on
    the service.
 3. **`GatewayLiveContext`** — `{host: Arc<LiveAdapterHost>, ws_state:
@@ -122,6 +121,34 @@ New module `meerkat-mobkit/src/live_wiring.rs`:
    the target member (console surface); stdin surface is host-trusted as
    usual.
 
+## Experimental channel-scoped execution
+
+The experimental surface is stricter than ordinary live compatibility.
+It accepts only an identity-first durable member target. Raw `session_id`,
+runtime `member_id`, mixed target forms, and stale aliases cannot acquire the
+experimental capability. The nested `execution_identity` request is versioned
+and strict. The caller does not select a provider-native delegation mode or
+provide a Responses model, bridge instructions, or tool declaration.
+
+The catalog-resolved mode is returned as `function_bridge` or
+`client_context`, backed independently by
+`live.execution.function_bridge.v1` and
+`live.execution.client_context.v1`. Those provider-neutral atoms are
+advertised only when the full shared Meerkat authority path is composed.
+
+Experimental open returns `PendingLiveChannelHandle`, not an active channel.
+The pending receipt permits only playback-owner registration, status, WebRTC
+answer under the resulting readiness receipt, and close. Activation mints a
+distinct `ActiveLiveChannelHandle` with an opaque activation receipt. Refresh,
+input, commit, interruption, truncation, replacement, and playback settlement
+require that exact current active receipt. Playback-owner loss revokes active
+authority before the provider can accept more effects.
+
+The Python and TypeScript high-level connect methods install the gated media
+owner, register readiness, answer, wait for generated activation, and only
+then release media and return the active handle. Stock crates.io builds remain
+portable and advertise none of these experimental capability atoms.
+
 ## Images (meerkat 0.7.27, mobkit 0.7.32)
 
 Still-image input rides the SAME transport and RPC surface: the wire chunk
@@ -134,7 +161,7 @@ within the session — retries are exact-retry deduplicated by the runtime's
 user-content identity lane, which also rides the open config
 (`user_content_identities` / `user_content_tombstones` /
 `transcript_rewrite_generation`) so reopened channels do not replay
-committed images. The projection sink forwards the transcript apply outcome
+committed images. The shared Meerkat projection forwards the transcript apply outcome
 (0.7.27 API) so the host synthesizes the redacted image receipt only after
 durable reducer application. Only `gpt-realtime-2` accepts image input in
 the shipped catalog (capabilities carry `image_in`). As of meerkat 0.7.28
@@ -163,9 +190,10 @@ explicit GPT-5.5 pins stay honored) — realtime capability is unchanged.
   cursor. Same machine-authority choreography as the sibling command
   handlers; SDK conveniences `live_truncate` / `liveTruncate`.
 
-## What we deliberately do NOT do in v1
+## What ordinary live compatibility deliberately does not do
 
-- WebRTC (feature-gated upstream; WS covers the LAN robot).
+- WebRTC remains absent from the ordinary compatibility path. Experimental
+  channel-scoped execution uses the separately gated WebRTC surface.
 - Provider-native resume (upstream returns TranscriptOnly anyway).
 - Console UI affordance (phase 2, with the SDK methods).
 - A second listener/port: the WS mounts on the existing gateway HTTP app.

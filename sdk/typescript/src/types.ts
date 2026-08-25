@@ -278,6 +278,7 @@ function parseRuntimeCapabilities(raw: unknown): RuntimeCapabilities | undefined
 
 export interface CapabilitiesResult {
   readonly contractVersion: string;
+  readonly featureCapabilities: readonly string[];
   readonly methods: readonly string[];
   readonly loadedModules: readonly string[];
   readonly runtimeCapabilities?: RuntimeCapabilities;
@@ -290,6 +291,7 @@ export function parseCapabilitiesResult(raw: unknown): CapabilitiesResult {
   const storage = parseOptionalStorageSummary(d.storage);
   return {
     contractVersion: String(d.contract_version ?? ""),
+    featureCapabilities: asStringArray(d.feature_capabilities),
     methods: asStringArray(d.methods),
     loadedModules: asStringArray(d.loaded_modules),
     runtimeCapabilities: parseRuntimeCapabilities(d.runtime_capabilities),

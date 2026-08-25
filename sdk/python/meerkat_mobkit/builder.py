@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Sequence
 
 from .identity_first_models import IdentityBootstrapMode, RoleMigrationDeclaration
+from .live import ExperimentalLiveGatewayConfig
 
 
 @dataclass
@@ -46,6 +47,7 @@ class MobKitBuilderConfig:
     topology_provider: Any | None = None
     agent_customizer: Any | None = None
     identity_bootstrap_mode: IdentityBootstrapMode | None = None
+    experimental_live_config: ExperimentalLiveGatewayConfig | None = None
 
 
 class MobKitBuilder:
@@ -191,6 +193,21 @@ class MobKitBuilder:
         ``config/access.toml``) access control is off entirely.
         """
         self._config.access_config_path = config_path
+        return self
+
+    def experimental_live(
+        self, config: ExperimentalLiveGatewayConfig
+    ) -> MobKitBuilder:
+        """Install the explicit pre-release GPT Live host registration.
+
+        This is disabled by default and requires a gateway binary compiled
+        with ``experimental-gpt-live`` plus matching Gate0 build evidence.
+        It exposes stdio RPC only and does not mount an HTTP live route.
+        """
+        if not isinstance(config, ExperimentalLiveGatewayConfig):
+            raise TypeError("experimental_live requires ExperimentalLiveGatewayConfig")
+        config.to_dict()
+        self._config.experimental_live_config = config
         return self
 
     def workgraph(self, enabled: bool | str = True) -> MobKitBuilder:

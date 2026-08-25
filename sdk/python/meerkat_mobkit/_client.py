@@ -200,10 +200,14 @@ class MobkitStatusResult(TypedDict):
     loaded_modules: list[str]
 
 
-class MobkitCapabilitiesResult(TypedDict):
+class _MobkitCapabilitiesRequired(TypedDict):
     contract_version: str
     methods: list[str]
     loaded_modules: list[str]
+
+
+class MobkitCapabilitiesResult(_MobkitCapabilitiesRequired, total=False):
+    feature_capabilities: list[str]
 
 
 class MobkitReconcileResult(TypedDict):
@@ -1401,6 +1405,10 @@ def _is_capabilities_result(value: Any) -> bool:
     return (
         isinstance(value, dict)
         and isinstance(value.get("contract_version"), str)
+        and (
+            "feature_capabilities" not in value
+            or _is_string_list(value.get("feature_capabilities"))
+        )
         and _is_string_list(value.get("methods"))
         and _is_string_list(value.get("loaded_modules"))
     )

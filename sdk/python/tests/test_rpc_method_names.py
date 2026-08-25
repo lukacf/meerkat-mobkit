@@ -1596,8 +1596,9 @@ async def test_live_method_names_and_identity_param():
     status = await handle.live_status("reachy")
     assert status["open"] is True
 
-    closed = await handle.live_close("reachy")
+    closed = await handle.live_close("live-channel-1")
     assert closed["closed"] is True
+    assert calls[-1] == ("mobkit/live/close", {"channel_id": "live-channel-1"})
 
     refreshed = await handle.live_refresh("reachy")
     assert refreshed["refreshed"] is True
@@ -1613,19 +1614,513 @@ async def test_live_method_names_and_identity_param():
 
 
 @pytest.mark.asyncio
+async def test_live_open_typed_serializes_v1_and_returns_handle():
+    from meerkat_mobkit.live import LiveExecutionIdentityV1
+
+    handle, calls = make_mock_mob_handle({
+        "mobkit/capabilities": {
+            "contract_version": "0.5.0",
+            "methods": ["mobkit/live/open"],
+            "loaded_modules": [],
+            "feature_capabilities": [
+                "live.execution_identity.v1",
+                "live.execution.function_bridge.v1",
+            ],
+        },
+        "mobkit/live/open": {
+            "channel_id": "ch-typed",
+            "target_identity": "identity:reachy",
+            "execution_mode": "function_bridge",
+            "pending_receipt": "pending-receipt",
+            "transport": {"transport": "webrtc", "token": "t", "answer_method": "live/webrtc/answer"},
+            "capabilities": {
+                "audio_in": True,
+                "audio_out": True,
+                "text_in": True,
+                "text_out": True,
+                "image_in": False,
+                "video_in": False,
+                "transcript_supported": True,
+                "barge_in_supported": True,
+                "provider_native_resume": False,
+            },
+            "continuity": {"mode": "transcript_only"},
+        }
+    })
+
+    opened = await handle.live_open_typed(
+        "identity:reachy",
+        LiveExecutionIdentityV1(
+            model="gpt-live-1-codex",
+            provider="openai",
+        ),
+    )
+
+    assert opened.channel_id == "ch-typed"
+    assert opened.target_identity == "identity:reachy"
+    assert opened.execution_mode == "function_bridge"
+    assert calls[0][0] == "mobkit/capabilities"
+    assert calls[1] == (
+        "mobkit/live/open",
+        {
+            "identity": "identity:reachy",
+            "execution_identity": {
+                "version": "v1",
+                "model": "gpt-live-1-codex",
+                "provider": "openai",
+            },
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_open_typed_refuses_execution_identity_before_old_gateway_open():
+    from meerkat_mobkit.errors import CapabilityUnavailableError
+    from meerkat_mobkit.live import LiveExecutionIdentityV1
+
+    handle, calls = make_mock_mob_handle({
+        "mobkit/capabilities": {
+            "contract_version": "0.5.0",
+            "methods": ["mobkit/live/open"],
+            "loaded_modules": [],
+        }
+    })
+
+    with pytest.raises(CapabilityUnavailableError):
+        await handle.live_open_typed(
+            "identity:reachy",
+            LiveExecutionIdentityV1(model="gpt-live-1-codex"),
+        )
+
+    assert calls == [("mobkit/capabilities", None)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("execution_mode", "responses"),
+        ("profile_id", "gpt-live-function-bridge-v1"),
+        ("responses_model", "gpt-5.5"),
+        ("responses_tools", []),
+        ("responses_instructions", "delegate"),
+        ("tools", []),
+        ("instructions", "delegate"),
+    ],
+)
+async def test_strict_live_open_rejects_catalog_and_responses_bridge_overrides(
+    field, value
+):
+    from meerkat_mobkit.live import LiveExecutionIdentityV1
+
+    handle, calls = make_mock_mob_handle({})
+    with pytest.raises(ValueError, match="experimental live/open does not accept"):
+        await handle.live_open_typed(
+            "identity:reachy",
+            LiveExecutionIdentityV1(model="gpt-live-1-codex", provider="openai"),
+            **{field: value},
+        )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_strict_live_open_refuses_missing_server_target_identity():
+    from meerkat_mobkit.live import LiveExecutionIdentityV1
+
+    handle, _calls = make_mock_mob_handle({
+        "mobkit/capabilities": {
+            "contract_version": "0.5.0",
+            "methods": ["mobkit/live/open"],
+            "loaded_modules": [],
+            "feature_capabilities": ["live.execution_identity.v1"],
+        },
+        "mobkit/live/open": {
+            "channel_id": "ch-typed",
+            "transport": {"transport": "webrtc", "token": "t", "answer_method": "live/webrtc/answer"},
+            "capabilities": {
+                "audio_in": True, "audio_out": True, "text_in": True, "text_out": True,
+                "image_in": False, "video_in": False, "transcript_supported": True,
+                "barge_in_supported": True, "provider_native_resume": False,
+            },
+            "continuity": {"mode": "transcript_only"},
+        },
+    })
+    with pytest.raises(ValueError, match="unknown field|must be a non-empty string"):
+        await handle.live_open_typed(
+            "caller-alias",
+            LiveExecutionIdentityV1(model="gpt-live-1-codex", provider="openai"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_live_webrtc_answer_uses_bootstrap_method_shape():
+    handle, calls = make_mock_mob_handle({
+        "live/webrtc/answer": {"answer_sdp": "v=0\\r\\nanswer"},
+    })
+    answer = await handle.live_webrtc_answer("chan-1", "token-1", "v=0\\r\\noffer")
+    assert answer == "v=0\\r\\nanswer"
+    assert calls == [(
+        "live/webrtc/answer",
+        {"channel_id": "chan-1", "token": "token-1", "offer_sdp": "v=0\\r\\noffer"},
+    )]
+
+
+@pytest.mark.asyncio
+async def test_live_connect_orders_owner_readiness_answer_and_activation():
+    from meerkat_mobkit.live import LiveExecutionIdentityV1
+
+    events: list[str] = []
+
+    class Owner:
+        async def prepare(self, pending):
+            events.append(f"prepare:{pending.pending_receipt}")
+            return "v=0\r\noffer"
+
+        async def accept_answer(self, answer_sdp):
+            events.append(f"answer:{answer_sdp}")
+
+        async def activate(self, active):
+            events.append(f"activate:{active.activation_receipt}")
+
+        async def abort(self):
+            events.append("abort")
+
+    handle, calls = make_mock_mob_handle({
+        "mobkit/capabilities": {
+            "contract_version": "0.5.0",
+            "methods": [],
+            "loaded_modules": [],
+            "feature_capabilities": [
+                "live.execution_identity.v1",
+                "live.execution.function_bridge.v1",
+            ],
+        },
+        "mobkit/live/open": {
+            "channel_id": "chan-1",
+            "target_identity": "identity:reachy",
+            "execution_mode": "function_bridge",
+            "pending_receipt": "pending-receipt",
+            "transport": {
+                "transport": "webrtc",
+                "token": "token-1",
+                "answer_method": "live/webrtc/answer",
+            },
+            "capabilities": {
+                "audio_in": True,
+                "audio_out": True,
+                "text_in": False,
+                "text_out": True,
+                "image_in": False,
+                "video_in": False,
+                "transcript_supported": True,
+                "barge_in_supported": True,
+                "provider_native_resume": False,
+            },
+            "continuity": {"mode": "transcript_only"},
+        },
+        "mobkit/live/playback_owner/register": {
+            "channel_id": "chan-1",
+            "readiness_receipt": "ready-receipt",
+        },
+        "live/webrtc/answer": {"answer_sdp": "v=0\r\nanswer"},
+        "mobkit/live/status": {
+            "phase": "active",
+            "handle": {
+                "channel_id": "chan-1",
+                "target_identity": "identity:reachy",
+                "execution_mode": "function_bridge",
+                "activation_receipt": "active-receipt",
+            },
+        },
+    })
+
+    active = await handle.live_connect(
+        "identity:reachy",
+        LiveExecutionIdentityV1(model="gpt-live-1-codex", provider="openai"),
+        Owner(),
+        activation_poll_interval=0,
+    )
+    assert active.activation_receipt == "active-receipt"
+    assert events == [
+        "prepare:pending-receipt",
+        "answer:v=0\r\nanswer",
+        "activate:active-receipt",
+    ]
+    assert [method for method, _ in calls] == [
+        "mobkit/capabilities",
+        "mobkit/live/open",
+        "mobkit/live/playback_owner/register",
+        "live/webrtc/answer",
+        "mobkit/live/status",
+    ]
+    assert calls[2][1] == {
+        "identity": "identity:reachy",
+        "channel_id": "chan-1",
+        "pending_receipt": "pending-receipt",
+    }
+    assert calls[3][1]["readiness_receipt"] == "ready-receipt"
+    assert calls[4][1] == {
+        "identity": "identity:reachy",
+        "channel_id": "chan-1",
+        "pending_receipt": "pending-receipt",
+    }
+
+
+@pytest.mark.asyncio
+async def test_live_connect_aborts_and_closes_pending_channel_when_owner_is_revoked():
+    from meerkat_mobkit.live import LiveExecutionIdentityV1
+
+    events: list[str] = []
+
+    class Owner:
+        async def prepare(self, _pending):
+            events.append("prepare")
+            return "v=0\r\noffer"
+
+        async def accept_answer(self, _answer_sdp):
+            events.append("answer")
+
+        async def activate(self, _active):
+            events.append("activate")
+
+        async def abort(self):
+            events.append("abort")
+
+    handle, calls = make_mock_mob_handle({
+        "mobkit/capabilities": {
+            "contract_version": "0.5.0",
+            "methods": [],
+            "loaded_modules": [],
+            "feature_capabilities": [
+                "live.execution_identity.v1",
+                "live.execution.function_bridge.v1",
+            ],
+        },
+        "mobkit/live/open": {
+            "channel_id": "chan-1",
+            "target_identity": "identity:reachy",
+            "execution_mode": "function_bridge",
+            "pending_receipt": "pending-receipt",
+            "transport": {
+                "transport": "webrtc",
+                "token": "token-1",
+                "answer_method": "live/webrtc/answer",
+            },
+            "capabilities": {
+                "audio_in": True,
+                "audio_out": True,
+                "text_in": False,
+                "text_out": True,
+                "image_in": False,
+                "video_in": False,
+                "transcript_supported": True,
+                "barge_in_supported": True,
+                "provider_native_resume": False,
+            },
+            "continuity": {"mode": "transcript_only"},
+        },
+        "mobkit/live/playback_owner/register": {
+            "channel_id": "chan-1",
+            "readiness_receipt": "ready-receipt",
+        },
+        "live/webrtc/answer": {"answer_sdp": "v=0\r\nanswer"},
+        "mobkit/live/status": {"phase": "revoked"},
+        "mobkit/live/close": {"closed": True},
+    })
+
+    with pytest.raises(RuntimeError, match="revoked before activation"):
+        await handle.live_connect(
+            "identity:reachy",
+            LiveExecutionIdentityV1(model="gpt-live-1-codex", provider="openai"),
+            Owner(),
+            activation_poll_interval=0,
+        )
+
+    assert events == ["prepare", "answer", "abort"]
+    assert [method for method, _ in calls] == [
+        "mobkit/capabilities",
+        "mobkit/live/open",
+        "mobkit/live/playback_owner/register",
+        "live/webrtc/answer",
+        "mobkit/live/status",
+        "mobkit/live/close",
+    ]
+    assert calls[-1][1] == {
+        "identity": "identity:reachy",
+        "channel_id": "chan-1",
+        "pending_receipt": "pending-receipt",
+    }
+
+
+@pytest.mark.asyncio
+async def test_pending_handle_cannot_invoke_active_provider_operations():
+    from meerkat_mobkit import PendingLiveChannelHandle
+
+    pending = PendingLiveChannelHandle.from_dict({
+        "channel_id": "chan-1",
+        "target_identity": "identity:reachy",
+        "execution_mode": "function_bridge",
+        "pending_receipt": "pending-receipt",
+        "transport": {
+            "transport": "webrtc",
+            "token": "token-1",
+            "answer_method": "live/webrtc/answer",
+        },
+        "capabilities": {
+            "audio_in": True,
+            "audio_out": True,
+            "text_in": False,
+            "text_out": True,
+            "image_in": False,
+            "video_in": False,
+            "transcript_supported": True,
+            "barge_in_supported": True,
+            "provider_native_resume": False,
+        },
+        "continuity": {"mode": "transcript_only"},
+    })
+    handle, calls = make_mock_mob_handle({})
+    with pytest.raises(TypeError, match="requires an active live channel handle"):
+        await handle.live_interrupt_active(pending)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_live_replacement_required_uses_active_channel_authority():
+    from meerkat_mobkit import ActiveLiveChannelHandle
+
+    handle, calls = make_mock_mob_handle({
+        "mobkit/live/replacement_required": {"required": False},
+    })
+    active = ActiveLiveChannelHandle(
+        "chan-1", "identity:reachy", "function_bridge", "active-receipt"
+    )
+    result = await handle.live_replacement_required(active)
+    assert result.required is False
+    assert calls == [(
+        "mobkit/live/replacement_required",
+        {
+            "identity": "identity:reachy",
+            "channel_id": "chan-1",
+            "activation_receipt": "active-receipt",
+        },
+    )]
+
+
+@pytest.mark.asyncio
+async def test_live_playback_complete_has_no_caller_interaction_identity():
+    from meerkat_mobkit import ActiveLiveChannelHandle, LiveAssistantOutputAddress
+
+    handle, calls = make_mock_mob_handle({
+        "mobkit/live/playback_complete": {"status": "completed"},
+    })
+    active = ActiveLiveChannelHandle(
+        "chan-1", "identity:reachy", "function_bridge", "active-receipt"
+    )
+    output = LiveAssistantOutputAddress("chan-1", "opaque-output-1", 0)
+    result = await handle.live_playback_complete(active, output)
+    assert result.status == "completed"
+    assert calls == [(
+        "mobkit/live/playback_complete",
+        {
+            "identity": "identity:reachy",
+            "channel_id": "chan-1",
+            "activation_receipt": "active-receipt",
+            "output_id": "opaque-output-1",
+        },
+    )]
+
+
+@pytest.mark.asyncio
 async def test_live_truncate_wire_shape():
+    from meerkat_mobkit import ActiveLiveChannelHandle, LiveAssistantOutputAddress
+
     handle, calls = make_mock_mob_handle({
         "mobkit/live/truncate": {"status": "truncated"},
     })
-    result = await handle.live_truncate("chan-1", "item_1", 0, 1200)
+    active = ActiveLiveChannelHandle(
+        "chan-1", "identity:reachy", "function_bridge", "active-receipt"
+    )
+    output = LiveAssistantOutputAddress("chan-1", "opaque-output-1", 0)
+    result = await handle.live_truncate(active, output, 1200)
     assert result["status"] == "truncated"
     assert calls[0][0] == "mobkit/live/truncate"
     assert calls[0][1] == {
+        "identity": "identity:reachy",
         "channel_id": "chan-1",
-        "item_id": "item_1",
-        "content_index": 0,
+        "activation_receipt": "active-receipt",
+        "output_id": "opaque-output-1",
         "audio_played_ms": 1200,
     }
+
+
+@pytest.mark.asyncio
+async def test_live_output_callback_streams_to_terminal_and_closes_on_teardown():
+    from meerkat_mobkit import ActiveLiveChannelHandle
+    from meerkat_mobkit.agent_builder import CallbackDispatcher
+
+    handle, calls = make_mock_mob_handle({
+        "mobkit/live/playback_complete": {"status": "completed"},
+        "mobkit/live/close": {"status": "closed"},
+    })
+    dispatcher = CallbackDispatcher()
+    handle._runtime._dispatcher = dispatcher
+    active = ActiveLiveChannelHandle(
+        "chan-1", "identity:reachy", "function_bridge", "active-receipt"
+    )
+    stream = handle.live_outputs(active, capacity=1)
+    next_output = asyncio.create_task(anext(stream))
+    await asyncio.sleep(0)
+    assert await dispatcher.handle_callback(
+        "mobkit/live/assistant_output_available",
+        {"channel_id": "chan-1", "output_id": "opaque-output-1", "content_index": 0},
+    ) == {"accepted": True}
+    output = await next_output
+    assert output.output_id == "opaque-output-1"
+    assert (await handle.live_playback_complete(active, output)).status == "completed"
+    await stream.aclose()
+    assert calls == [
+        (
+            "mobkit/live/playback_complete",
+            {
+                "identity": "identity:reachy",
+                "channel_id": "chan-1",
+                "activation_receipt": "active-receipt",
+                "output_id": "opaque-output-1",
+            },
+        ),
+        (
+            "mobkit/live/close",
+            {
+                "identity": "identity:reachy",
+                "channel_id": "chan-1",
+                "activation_receipt": "active-receipt",
+            },
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_live_output_queue_overflow_and_missing_consumer_fail_loudly():
+    from meerkat_mobkit.agent_builder import CallbackDispatcher
+
+    dispatcher = CallbackDispatcher()
+    queue = dispatcher.register_live_output_queue("chan-1", 1)
+    await dispatcher.handle_callback(
+        "mobkit/live/assistant_output_available",
+        {"channel_id": "chan-1", "output_id": "opaque-output-1", "content_index": 0},
+    )
+    with pytest.raises(RuntimeError, match="queue is full"):
+        await dispatcher.handle_callback(
+            "mobkit/live/assistant_output_available",
+            {"channel_id": "chan-1", "output_id": "opaque-output-2", "content_index": 0},
+        )
+    dispatcher.unregister_live_output_queue("chan-1", queue)
+    with pytest.raises(RuntimeError, match="no live output consumer"):
+        await dispatcher.handle_callback(
+            "mobkit/live/assistant_output_available",
+            {"channel_id": "chan-1", "output_id": "opaque-output-3", "content_index": 0},
+        )
 
 
 @pytest.mark.asyncio

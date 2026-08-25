@@ -1,0 +1,99 @@
+{
+  "execution_identity_set": {
+    "version": "v1",
+    "model": "gpt-live-1-codex",
+    "provider": "openai",
+    "auth_binding": {
+      "action": "set",
+      "value": {
+        "realm": "family",
+        "binding": "chatgpt-oauth",
+        "profile": "luka"
+      }
+    }
+  },
+  "execution_identity_clear": {
+    "version": "v1",
+    "model": "gpt-live-1-codex",
+    "provider": "openai",
+    "auth_binding": {
+      "action": "clear"
+    }
+  },
+  "channel_handle": {
+    "channel_id": "live-ch-1",
+    "target_identity": "identity:luka",
+    "transport": {
+      "transport": "websocket",
+      "url": "wss://gateway.example/live/ws",
+      "token": "fixture-token"
+    },
+    "capabilities": {
+      "audio_in": true,
+      "audio_out": true,
+      "text_in": true,
+      "text_out": true,
+      "image_in": true,
+      "video_in": false,
+      "transcript_supported": true,
+      "barge_in_supported": true,
+      "provider_native_resume": false
+    },
+    "continuity": {
+      "mode": "transcript_only"
+    }
+  },
+  "pending_channel_handle": {
+    "channel_id": "live-ch-1",
+    "target_identity": "identity:luka",
+    "execution_mode": "function_bridge",
+    "pending_receipt": "opaque-pending-receipt",
+    "transport": {
+      "transport": "webrtc",
+      "token": "fixture-token",
+      "answer_method": "live/webrtc/answer"
+    },
+    "capabilities": {
+      "audio_in": true,
+      "audio_out": true,
+      "text_in": false,
+      "text_out": true,
+      "image_in": false,
+      "video_in": false,
+      "transcript_supported": true,
+      "barge_in_supported": true,
+      "provider_native_resume": false
+    },
+    "continuity": {
+      "mode": "transcript_only"
+    }
+  },
+  "active_channel_handle": {
+    "channel_id": "live-ch-1",
+    "target_identity": "identity:luka",
+    "execution_mode": "function_bridge",
+    "activation_receipt": "opaque-active-receipt"
+  },
+  "playback_owner_readiness": {
+    "channel_id": "live-ch-1",
+    "readiness_receipt": "opaque-readiness-receipt"
+  },
+  "pending_status": {
+    "phase": "pending"
+  },
+  "active_status": {
+    "phase": "active",
+    "handle": {
+      "channel_id": "live-ch-1",
+      "target_identity": "identity:luka",
+      "execution_mode": "function_bridge",
+      "activation_receipt": "opaque-active-receipt"
+    }
+  },
+  "revoked_status": {
+    "phase": "revoked"
+  },
+  "closed_status": {
+    "phase": "closed"
+  }
+}

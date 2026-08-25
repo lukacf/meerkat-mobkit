@@ -115,6 +115,12 @@ struct GatewayRuntimeOptions {
     workgraph: GatewayWorkgraphOption,
     /// Live (realtime) transport opt-in (default off). Persistent mode only.
     live: GatewayLiveOption,
+    /// Strict experimental GPT Live registration. Independent from the
+    /// ordinary WebSocket live option so opting in does not mount an HTTP
+    /// route. Every authority-bearing value is explicit and absence keeps
+    /// capability projection fail-closed.
+    #[cfg(feature = "experimental-gpt-live")]
+    experimental_live: Option<GatewayExperimentalLiveOption>,
     /// SDK-registered deterministic schedule targets
     /// (`runtime_options.host_runnables`): each name registers a schedule
     /// host runnable whose fire forwards over the callback bridge as
@@ -176,6 +182,18 @@ enum GatewayLiveOption {
         public_base_url: Option<String>,
         seed_max_chars: Option<usize>,
     },
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GatewayExperimentalLiveOption {
+    principal: String,
+    realm: meerkat_core::RealmId,
+    factory: meerkat::ExperimentalLiveFactoryIdentity,
+    qualification: meerkat::ExperimentalLiveGate0QualificationVersion,
+    binding: meerkat_core::AuthBindingRef,
+    voice: String,
+    instructions: Option<String>,
 }
 
 /// `runtime_options.workgraph` wire forms. Booleans keep the original
@@ -325,6 +343,8 @@ impl Default for GatewayRuntimeOptions {
             agent_memory: None,
             workgraph: GatewayWorkgraphOption::Enabled,
             live: GatewayLiveOption::Disabled,
+            #[cfg(feature = "experimental-gpt-live")]
+            experimental_live: None,
             host_runnables: Vec::new(),
             runtime_store_ephemeral: false,
             mob_storage_ephemeral: false,
@@ -944,8 +964,331 @@ mod tests {
     }
 
     fn test_callback_bridge() -> StdioCallbackBridge {
-        let (stdout_tx, _stdout_rx) = mpsc::channel::<String>(4);
+        let (stdout_tx, _stdout_rx) = mpsc::channel::<GatewayStdoutLine>(4);
         StdioCallbackBridge::new(stdout_tx)
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    fn stale_public_observation_binding() -> (
+        Arc<meerkat_runtime::MeerkatMachine>,
+        meerkat_live::ProviderWebrtcBinding,
+    ) {
+        (
+            Arc::new(meerkat_runtime::MeerkatMachine::ephemeral()),
+            meerkat_live::ProviderWebrtcBinding::new(
+                meerkat_live::LiveChannelId::new("stale-output-channel"),
+                meerkat_core::SessionId::new(),
+                meerkat_live::LiveRuntimeBindingGeneration::new(1),
+                meerkat_live::LiveRuntimeBindingFence::new(1),
+            ),
+        )
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct PublicationTestSideband;
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat_live::ProviderWebrtcSidebandSession for PublicationTestSideband {
+        async fn send_command(
+            &self,
+            _command: meerkat_live::LiveSidebandCommand,
+        ) -> Result<
+            meerkat_live::LiveSidebandCommandDelivery,
+            meerkat_live::ProviderWebrtcBrokerError,
+        > {
+            Err(meerkat_live::ProviderWebrtcBrokerError::Unavailable)
+        }
+
+        async fn next_observation(
+            &self,
+        ) -> Result<
+            Option<meerkat_live::LiveSidebandObservation>,
+            meerkat_live::ProviderWebrtcBrokerError,
+        > {
+            Ok(None)
+        }
+
+        async fn close(&self) -> Result<(), meerkat_live::ProviderWebrtcBrokerError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct PublicationTestAnswerTransport;
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat_live::LiveWebrtcAnswerTransport for PublicationTestAnswerTransport {
+        async fn answer_admitted_offer(
+            &self,
+            offer: meerkat_live::LiveWebrtcAdmittedOffer,
+        ) -> Result<meerkat_live::LiveWebrtcAnswerAccepted, meerkat_live::LiveWebrtcError> {
+            let answer = offer.into_provider_offer()?.into_seeded_answer(
+                "publication-answer".to_string(),
+                Arc::new(PublicationTestSideband),
+                0,
+            );
+            let (answer_sdp, _sideband, bound_ready) = answer.into_parts();
+            Ok(meerkat_live::LiveWebrtcAnswerAccepted {
+                answer_sdp,
+                answer_observation_sequence: 1,
+                bound_ready: Some(bound_ready),
+            })
+        }
+
+        async fn reject_answer(
+            &self,
+            _binding: &meerkat_live::LiveWebrtcBindingRequest,
+            _answer_observation_sequence: u64,
+        ) -> Result<(), meerkat_live::LiveWebrtcError> {
+            Ok(())
+        }
+
+        async fn accept_answer(
+            &self,
+            _binding: &meerkat_live::LiveWebrtcBindingRequest,
+            _answer_observation_sequence: u64,
+        ) {
+        }
+
+        async fn wait_for_construction_cleanup(
+            &self,
+            _binding: &meerkat_live::LiveWebrtcBindingRequest,
+        ) -> Result<(), meerkat_live::LiveWebrtcError> {
+            Ok(())
+        }
+
+        async fn close_binding(
+            &self,
+            _binding: &meerkat_live::LiveWebrtcBindingRequest,
+        ) -> Result<(), meerkat_live::LiveWebrtcError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct PublicationTestBoundReadyBinder;
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct PublicationTestBoundReadyCustody {
+        authority:
+            Option<meerkat_runtime::meerkat_machine::LiveWebrtcAnswerExecutionBindingAuthority>,
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat::surface::LiveWebrtcBoundReadyCustody for PublicationTestBoundReadyCustody {
+        async fn commit(mut self: Box<Self>) {
+            if let Some(authority) = self.authority.take() {
+                let _ = authority.commit();
+            }
+        }
+
+        async fn rollback(mut self: Box<Self>) -> Result<(), String> {
+            let _rollback = self
+                .authority
+                .take()
+                .map(|authority| authority.into_rollback());
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat::surface::LiveWebrtcBoundReadyBinder for PublicationTestBoundReadyBinder {
+        async fn bind_answer_ready(
+            &self,
+            runtime: Arc<meerkat_runtime::MeerkatMachine>,
+            binding: &meerkat_live::LiveWebrtcBindingRequest,
+            receipt: meerkat_live::ProviderWebrtcBoundReadyReceipt,
+            answer_observation_sequence: u64,
+        ) -> Result<
+            Box<dyn meerkat::surface::LiveWebrtcBoundReadyCustody>,
+            meerkat::surface::LiveWebrtcBoundReadyBindFailure,
+        > {
+            let runtime_binding = binding
+                .runtime_binding
+                .expect("test answer carries runtime binding");
+            let provider_binding = meerkat_live::ProviderWebrtcBinding::new(
+                binding.channel_id.clone(),
+                binding.session_id.clone(),
+                meerkat_live::LiveRuntimeBindingGeneration::new(runtime_binding.generation),
+                meerkat_live::LiveRuntimeBindingFence::new(runtime_binding.fence),
+            );
+            let authority = runtime
+                .accept_live_webrtc_answer_and_bind_execution(
+                    &provider_binding,
+                    &receipt,
+                    answer_observation_sequence,
+                )
+                .await
+                .expect("test answer binds through generated authority");
+            Ok(Box::new(PublicationTestBoundReadyCustody {
+                authority: Some(authority),
+            }))
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    async fn current_public_observation_binding() -> (
+        Arc<meerkat_runtime::MeerkatMachine>,
+        meerkat_live::ProviderWebrtcBinding,
+    ) {
+        let machine = Arc::new(meerkat_runtime::MeerkatMachine::ephemeral());
+        let session_id = meerkat_core::SessionId::new();
+        machine
+            .prepare_bindings(session_id.clone())
+            .await
+            .expect("prepare exact live binding");
+        let channel_id = meerkat_live::LiveChannelId::new("current-output-channel");
+        let identity = meerkat_core::SessionLlmIdentity {
+            model: "gpt-realtime-2".to_string(),
+            provider: meerkat_core::Provider::OpenAI,
+            self_hosted_server_id: None,
+            provider_params: None,
+            auth_binding: None,
+        };
+        machine
+            .resolve_live_open_admission(&session_id, &channel_id, &identity)
+            .await
+            .expect("admit exact live binding");
+        machine
+            .stage_experimental_live_execution(&session_id, &channel_id, 0)
+            .await
+            .expect("stage exact live binding");
+        let token = "publication-test-token";
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_millis() as u64;
+        machine
+            .record_live_webrtc_token_issued(&session_id, &channel_id, token, now, 60_000)
+            .await
+            .expect("issue exact signaling token");
+        let answer = meerkat::surface::coordinate_live_webrtc_answer(
+            Arc::clone(&machine),
+            Arc::new(PublicationTestAnswerTransport),
+            Some(Arc::new(PublicationTestBoundReadyBinder)),
+            channel_id.clone(),
+            token.to_string(),
+            "publication-offer".to_string(),
+        )
+        .await
+        .expect("bind exact answer through production coordinator");
+        answer
+            .delivery_custody
+            .delivered()
+            .await
+            .expect("commit exact answer publication");
+        let runtime_binding = machine
+            .live_delegation_runtime_binding(&session_id, &channel_id)
+            .await
+            .expect("project exact live runtime binding");
+        let provider_binding = meerkat_live::ProviderWebrtcBinding::new(
+            channel_id,
+            session_id,
+            meerkat_live::LiveRuntimeBindingGeneration::new(runtime_binding.generation()),
+            meerkat_live::LiveRuntimeBindingFence::new(runtime_binding.fence_token()),
+        );
+        (machine, provider_binding)
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
+    async fn live_public_observation_ack_waits_for_outer_writer_settlement() {
+        let (machine, binding) = stale_public_observation_binding();
+        let (_line, delivered) = GatewayStdoutLine::public_observation(
+            Arc::clone(&machine),
+            binding.clone(),
+            "{\"event\":true}".to_string(),
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), delivered)
+                .await
+                .is_err(),
+            "enqueue alone must not attest outer publication"
+        );
+
+        let (mut line, delivered) =
+            GatewayStdoutLine::public_observation(machine, binding, "{\"event\":true}".to_string());
+        line.settle_delivery(true).await;
+        assert!(delivered.await.expect("writer settlement"));
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
+    async fn dropped_live_public_observation_rejects_delivery() {
+        let (machine, binding) = stale_public_observation_binding();
+        let (line, delivered) =
+            GatewayStdoutLine::public_observation(machine, binding, "{\"event\":true}".to_string());
+        drop(line);
+        assert!(!delivered.await.expect("drop settlement"));
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
+    async fn queued_stale_live_public_observation_is_rejected_before_write() {
+        let (machine, binding) = stale_public_observation_binding();
+        let (line, _delivered) =
+            GatewayStdoutLine::public_observation(machine, binding, "{\"event\":true}".to_string());
+        assert!(
+            line.acquire_public_observation_custody().await.is_err(),
+            "a queued stale generation/fence must be fenced before stdout"
+        );
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
+    async fn live_public_observation_requires_writer_and_sdk_queue_ack() {
+        let (machine, binding) = current_public_observation_binding().await;
+        let (stdout_tx, mut stdout_rx) = mpsc::channel::<GatewayStdoutLine>(1);
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        let publish = tokio::spawn({
+            let bridge = bridge.clone();
+            async move {
+                bridge
+                    .call_live_public_observation(
+                        machine,
+                        binding,
+                        json!({
+                            "channel_id": "current-output-channel",
+                            "output_id": "opaque-output-1",
+                            "content_index": 0,
+                        }),
+                    )
+                    .await
+            }
+        });
+
+        let mut line = stdout_rx.recv().await.expect("queued callback request");
+        let request: Value = serde_json::from_str(&line).expect("callback request JSON");
+        assert_eq!(
+            request.get("method"),
+            Some(&json!("mobkit/live/assistant_output_available"))
+        );
+        let custody = line
+            .acquire_public_observation_custody()
+            .await
+            .expect("current binding")
+            .expect("live line requires custody");
+        line.settle_delivery(true).await;
+        bridge
+            .route_callback_response(json!({
+                "jsonrpc": "2.0",
+                "id": request.get("id").expect("callback id"),
+                "result": {"accepted": true},
+            }))
+            .await;
+        drop(custody);
+
+        assert_eq!(
+            publish
+                .await
+                .expect("publisher task")
+                .expect("accepted callback"),
+            json!({"accepted": true})
+        );
     }
 
     /// Fix 3: `register_tool(..., input_schema=...)` schemas cross the
@@ -1223,7 +1566,7 @@ mod tests {
             .await
             .expect("claim");
 
-        let (stdout_tx, mut stdout_rx) = mpsc::channel::<String>(4);
+        let (stdout_tx, mut stdout_rx) = mpsc::channel::<GatewayStdoutLine>(4);
         let bridge = StdioCallbackBridge::new(stdout_tx);
         let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
         let blobs: Arc<dyn meerkat_core::BlobStore> = Arc::new(Base64BlobStoreAdapter::new(binary));
@@ -2789,6 +3132,85 @@ actions = ["agent.view"]
         }
     }
 
+    #[cfg(feature = "experimental-gpt-live")]
+    #[test]
+    fn gateway_experimental_live_registration_is_explicit_and_strict() {
+        let defaults = parse_gateway_runtime_options(&json!({}), None).expect("defaults");
+        assert!(defaults.experimental_live.is_none());
+
+        let options = parse_gateway_runtime_options(
+            &json!({
+                "runtime_options": {
+                    "experimental_live": {
+                        "principal": "user:luka",
+                        "realm": "family",
+                        "factory_kind": "private-live",
+                        "factory_version": "v1",
+                        "gate0_qualification": "gate0-v1",
+                        "auth_binding": {
+                            "realm": "family",
+                            "binding": "chatgpt-oauth",
+                            "profile": "luka"
+                        },
+                        "voice": "marin",
+                        "instructions": "Use the canonical session context."
+                    }
+                }
+            }),
+            None,
+        )
+        .expect("explicit registration parses");
+        let experimental = options.experimental_live.expect("registration");
+        assert_eq!(experimental.principal, "user:luka");
+        assert_eq!(experimental.realm.as_str(), "family");
+        assert_eq!(experimental.binding.realm.as_str(), "family");
+        assert_eq!(experimental.binding.binding.as_str(), "chatgpt-oauth");
+        assert_eq!(experimental.voice, "marin");
+        assert_eq!(
+            experimental.instructions.as_deref(),
+            Some("Use the canonical session context.")
+        );
+        assert_eq!(options.live, GatewayLiveOption::Disabled);
+
+        for invalid in [
+            json!({
+                "realm": "family",
+                "factory_kind": "private-live",
+                "factory_version": "v1",
+                "gate0_qualification": "gate0-v1",
+                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "voice": "marin"
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "factory_kind": "private-live",
+                "factory_version": "v1",
+                "gate0_qualification": "gate0-v1",
+                "auth_binding": {"realm": "other", "binding": "chatgpt-oauth"},
+                "voice": "marin"
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "factory_kind": "private-live",
+                "factory_version": "v1",
+                "gate0_qualification": "gate0-v1",
+                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "voice": "marin",
+                "ambient_default": true
+            }),
+        ] {
+            let error = parse_gateway_runtime_options(
+                &json!({"runtime_options": {"experimental_live": invalid}}),
+                None,
+            )
+            .err()
+            .expect("invalid registration must fail");
+            assert!(error.contains("experimental_live"), "{error}");
+        }
+    }
+
     #[tokio::test]
     async fn callback_close_wakes_pending_call_and_rejects_late_admission() {
         let (stdout_tx, mut stdout_rx) = mpsc::channel(4);
@@ -3201,6 +3623,154 @@ fn validate_gateway_identity_bootstrap_intent(
     Ok(())
 }
 
+#[cfg(feature = "experimental-gpt-live")]
+fn parse_gateway_experimental_live_option(
+    value: &Value,
+) -> Result<GatewayExperimentalLiveOption, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "runtime_options.experimental_live must be an object".to_string())?;
+    let supported = [
+        "principal",
+        "realm",
+        "factory_kind",
+        "factory_version",
+        "gate0_qualification",
+        "auth_binding",
+        "voice",
+        "instructions",
+    ];
+    let unsupported = object
+        .keys()
+        .filter(|key| !supported.contains(&key.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.experimental_live fields: {}",
+            unsupported.join(", ")
+        ));
+    }
+    let required_string = |name: &str| -> Result<String, String> {
+        object
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                format!("runtime_options.experimental_live.{name} must be a non-empty string")
+            })
+    };
+    let principal = required_string("principal")?;
+    let realm_text = required_string("realm")?;
+    let realm = meerkat_core::RealmId::parse(&realm_text)
+        .map_err(|error| format!("runtime_options.experimental_live.realm is invalid: {error}"))?;
+    let factory = meerkat::ExperimentalLiveFactoryIdentity::parse(
+        required_string("factory_kind")?,
+        required_string("factory_version")?,
+    )
+    .map_err(|error| {
+        format!("runtime_options.experimental_live factory identity is invalid: {error}")
+    })?;
+    let qualification = meerkat::ExperimentalLiveGate0QualificationVersion::parse(required_string(
+        "gate0_qualification",
+    )?)
+    .map_err(|error| {
+        format!("runtime_options.experimental_live Gate0 qualification is invalid: {error}")
+    })?;
+    let binding_object = object
+        .get("auth_binding")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            "runtime_options.experimental_live.auth_binding must be an object".to_string()
+        })?;
+    let binding_supported = ["realm", "binding", "profile"];
+    let binding_unsupported = binding_object
+        .keys()
+        .filter(|key| !binding_supported.contains(&key.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !binding_unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.experimental_live.auth_binding fields: {}",
+            binding_unsupported.join(", ")
+        ));
+    }
+    let binding_string = |name: &str| -> Result<String, String> {
+        binding_object
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                format!(
+                    "runtime_options.experimental_live.auth_binding.{name} must be a non-empty string"
+                )
+            })
+    };
+    let binding_realm =
+        meerkat_core::RealmId::parse(binding_string("realm")?).map_err(|error| {
+            format!("runtime_options.experimental_live.auth_binding.realm is invalid: {error}")
+        })?;
+    if binding_realm != realm {
+        return Err(
+            "runtime_options.experimental_live.auth_binding.realm must equal experimental_live.realm"
+                .to_string(),
+        );
+    }
+    let binding = meerkat_core::BindingId::parse(binding_string("binding")?).map_err(|error| {
+        format!("runtime_options.experimental_live.auth_binding.binding is invalid: {error}")
+    })?;
+    let profile = match binding_object.get("profile") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let profile = value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    "runtime_options.experimental_live.auth_binding.profile must be a non-empty string or null"
+                        .to_string()
+                })?;
+            Some(meerkat_core::ProfileId::parse(profile).map_err(|error| {
+                format!(
+                    "runtime_options.experimental_live.auth_binding.profile is invalid: {error}"
+                )
+            })?)
+        }
+    };
+    let instructions = match object.get("instructions") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    "runtime_options.experimental_live.instructions must be a non-empty string or null"
+                        .to_string()
+                })?,
+        ),
+    };
+    Ok(GatewayExperimentalLiveOption {
+        principal,
+        realm,
+        factory,
+        qualification,
+        binding: meerkat_core::AuthBindingRef {
+            realm: binding_realm,
+            binding,
+            profile,
+            origin: meerkat_core::BindingOrigin::Configured,
+        },
+        voice: required_string("voice")?,
+        instructions,
+    })
+}
+
 fn parse_gateway_runtime_options(
     params: &Value,
     persistent_state: Option<&std::path::Path>,
@@ -3233,6 +3803,8 @@ fn parse_gateway_runtime_options(
         "implicit_delegate_idle_sweep_interval_ms",
         "workgraph",
         "live",
+        #[cfg(feature = "experimental-gpt-live")]
+        "experimental_live",
         "host_runnables",
         "runtime_store",
         "mob_storage",
@@ -3376,6 +3948,10 @@ fn parse_gateway_runtime_options(
                 );
             }
         };
+    }
+    #[cfg(feature = "experimental-gpt-live")]
+    if let Some(value) = runtime_options.get("experimental_live") {
+        parsed.experimental_live = Some(parse_gateway_experimental_live_option(value)?);
     }
     if let Some(value) = runtime_options.get("host_runnables") {
         let entries = value.as_array().ok_or_else(|| {
@@ -4698,11 +5274,273 @@ fn run_single_shot(args: &[String]) {
 // to Python over stdout before building the agent.
 // ---------------------------------------------------------------------------
 
+struct GatewayStdoutLine {
+    response: meerkat_mobkit::SerializedRpcResponseDelivery,
+    #[cfg(feature = "experimental-gpt-live")]
+    public_observation_delivery: Option<oneshot::Sender<bool>>,
+    #[cfg(feature = "experimental-gpt-live")]
+    public_observation_binding: Option<LivePublicObservationBinding>,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+struct LivePublicObservationBinding {
+    machine: Arc<meerkat_runtime::MeerkatMachine>,
+    binding: meerkat_live::ProviderWebrtcBinding,
+}
+
+impl GatewayStdoutLine {
+    fn plain(line: String) -> Self {
+        Self {
+            response: meerkat_mobkit::SerializedRpcResponseDelivery::plain(line),
+            #[cfg(feature = "experimental-gpt-live")]
+            public_observation_delivery: None,
+            #[cfg(feature = "experimental-gpt-live")]
+            public_observation_binding: None,
+        }
+    }
+
+    fn delivery(response: meerkat_mobkit::SerializedRpcResponseDelivery) -> Self {
+        Self {
+            response,
+            #[cfg(feature = "experimental-gpt-live")]
+            public_observation_delivery: None,
+            #[cfg(feature = "experimental-gpt-live")]
+            public_observation_binding: None,
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    fn public_observation(
+        machine: Arc<meerkat_runtime::MeerkatMachine>,
+        binding: meerkat_live::ProviderWebrtcBinding,
+        line: String,
+    ) -> (Self, oneshot::Receiver<bool>) {
+        let (delivery, delivered) = oneshot::channel();
+        (
+            Self {
+                response: meerkat_mobkit::SerializedRpcResponseDelivery::plain(line),
+                public_observation_delivery: Some(delivery),
+                public_observation_binding: Some(LivePublicObservationBinding { machine, binding }),
+            },
+            delivered,
+        )
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    async fn acquire_public_observation_custody(
+        &self,
+    ) -> Result<Option<meerkat_runtime::meerkat_machine::LiveBindingPublicationCustody>, ()> {
+        let Some(publication) = self.public_observation_binding.as_ref() else {
+            return Ok(None);
+        };
+        match publication
+            .machine
+            .acquire_live_binding_publication_custody(&publication.binding)
+            .await
+            .map_err(|_| ())?
+        {
+            meerkat_runtime::meerkat_machine::LiveBindingPublicationAdmission::Current(custody) => {
+                Ok(Some(custody))
+            }
+            meerkat_runtime::meerkat_machine::LiveBindingPublicationAdmission::Stale => Err(()),
+        }
+    }
+
+    async fn settle_delivery(&mut self, delivered: bool) {
+        let _ = self.response.settle_delivery(delivered).await;
+        #[cfg(feature = "experimental-gpt-live")]
+        if let Some(public_observation_delivery) = self.public_observation_delivery.take() {
+            let _ = public_observation_delivery.send(delivered);
+        }
+    }
+}
+
+impl Drop for GatewayStdoutLine {
+    fn drop(&mut self) {
+        #[cfg(feature = "experimental-gpt-live")]
+        if let Some(public_observation_delivery) = self.public_observation_delivery.take() {
+            let _ = public_observation_delivery.send(false);
+        }
+    }
+}
+
+impl std::ops::Deref for GatewayStdoutLine {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.response.response.as_str()
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+struct GatewayExperimentalLiveSessionBindingAuthority {
+    handle: meerkat_mob::MobHandle,
+    machine: Arc<meerkat_runtime::MeerkatMachine>,
+    access: meerkat_mobkit::AccessController,
+    principal: String,
+    allowed_binding: meerkat_core::AuthBindingRef,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[async_trait]
+impl meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority
+    for GatewayExperimentalLiveSessionBindingAuthority
+{
+    async fn authorize_binding_use(
+        &self,
+        canonical_session_id: &meerkat_core::SessionId,
+        selected_binding: &meerkat_core::AuthBindingRef,
+    ) -> Result<
+        meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthorization,
+        meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError,
+    > {
+        use meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError;
+
+        if selected_binding != &self.allowed_binding {
+            return Err(ExperimentalLiveOpenAuthorityError::BindingUseDenied);
+        }
+        let mut owners = Vec::new();
+        for member in self.handle.list_members().await {
+            if self
+                .handle
+                .resolve_bridge_session_id(&member.agent_identity)
+                .await
+                .as_ref()
+                == Some(canonical_session_id)
+            {
+                owners.push(member);
+            }
+        }
+        if owners.len() != 1 {
+            return Err(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable);
+        }
+        let owner = owners
+            .pop()
+            .ok_or(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable)?;
+        let durable_identity = owner.agent_identity.as_str().to_string();
+        let access = self.access.view_for_subject(Some(&self.principal));
+        if !access.allows_agent(meerkat_mobkit::access::ACTION_AGENT_SEND, &durable_identity) {
+            return Err(ExperimentalLiveOpenAuthorityError::AccessDenied);
+        }
+
+        let principal = meerkat_core::PrincipalRef::new(
+            meerkat_core::PrincipalKind::Human,
+            self.principal.clone(),
+        )
+        .map_err(|_| ExperimentalLiveOpenAuthorityError::BindingUseDenied)?;
+        let target = meerkat_core::PrincipalRef::new(
+            meerkat_core::PrincipalKind::PersonalAgent,
+            durable_identity,
+        )
+        .map_err(|_| ExperimentalLiveOpenAuthorityError::BindingUseDenied)?;
+        let request = meerkat_core::AuthBindingUseRequest::new(
+            principal.clone(),
+            target.clone(),
+            selected_binding.clone(),
+        );
+        let grant = meerkat_core::AuthGrant {
+            principal: principal.clone(),
+            scope: meerkat_core::GrantScope::AuthBinding {
+                realm_id: selected_binding.realm.clone(),
+                binding_id: selected_binding.binding.clone(),
+                profile_id: selected_binding.profile.clone(),
+            },
+            actions: std::collections::BTreeSet::from([meerkat_core::GrantAction::UseAuthBinding]),
+            acting_on_behalf_of: Some(meerkat_core::ActingOnBehalfOf::new(principal, target)),
+        };
+        let binding_use = meerkat_core::authorize_explicit_auth_binding_use(&request, &[grant])
+            .into_result()
+            .map_err(|_| ExperimentalLiveOpenAuthorityError::BindingUseDenied)?;
+        Ok(
+            meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthorization::from_machine_authority(
+                binding_use,
+                self.machine.generated_auth_lease_handle(),
+            ),
+        )
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Clone)]
+struct StdioExperimentalLivePublicObservationPublisher {
+    machine: Arc<meerkat_runtime::MeerkatMachine>,
+    callback_bridge: StdioCallbackBridge,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+impl StdioExperimentalLivePublicObservationPublisher {
+    fn new(
+        machine: Arc<meerkat_runtime::MeerkatMachine>,
+        callback_bridge: StdioCallbackBridge,
+    ) -> Self {
+        Self {
+            machine,
+            callback_bridge,
+        }
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[async_trait]
+impl meerkat::experimental_gpt_live::ExperimentalLivePublicObservationPublisher
+    for StdioExperimentalLivePublicObservationPublisher
+{
+    async fn publish(
+        &self,
+        observation: meerkat::experimental_gpt_live::ExperimentalLivePublicObservation,
+    ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLivePublicObservationDeliveryError>
+    {
+        use meerkat::experimental_gpt_live::ExperimentalLivePublicObservationDeliveryError;
+
+        if observation.binding().channel_id() != &observation.output().channel_id {
+            return Err(ExperimentalLivePublicObservationDeliveryError::Rejected);
+        }
+        let result = self
+            .callback_bridge
+            .call_live_public_observation(
+                Arc::clone(&self.machine),
+                observation.binding().clone(),
+                observation.output(),
+            )
+            .await
+            .map_err(|error| {
+                if error == "callback transport closed" || error == "stdout channel closed" {
+                    ExperimentalLivePublicObservationDeliveryError::Closed
+                } else {
+                    ExperimentalLivePublicObservationDeliveryError::Rejected
+                }
+            })?;
+        if result.get("accepted").and_then(Value::as_bool) == Some(true) {
+            Ok(())
+        } else {
+            Err(ExperimentalLivePublicObservationDeliveryError::Rejected)
+        }
+    }
+}
+
+impl std::fmt::Display for GatewayStdoutLine {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self)
+    }
+}
+
+async fn write_gateway_stdout_line(line: &mut GatewayStdoutLine) -> bool {
+    #[cfg(feature = "experimental-gpt-live")]
+    let _public_observation_custody = match line.acquire_public_observation_custody().await {
+        Ok(custody) => custody,
+        Err(()) => return false,
+    };
+    let mut stdout = std::io::stdout().lock();
+    writeln!(stdout, "{line}")
+        .and_then(|()| stdout.flush())
+        .is_ok()
+}
+
 /// Shared handle for sending lines to stdout and receiving callback responses.
 #[derive(Clone)]
 struct StdioCallbackBridge {
     /// Send a line to stdout (the stdout writer task reads from this).
-    stdout_tx: mpsc::Sender<String>,
+    stdout_tx: mpsc::Sender<GatewayStdoutLine>,
     /// Callback admission and pending responses share one lock so EOF cannot
     /// race a late insertion after pending callers have been cancelled.
     state: Arc<Mutex<StdioCallbackState>>,
@@ -4862,7 +5700,7 @@ fn gateway_shutdown_response(
 }
 
 impl StdioCallbackBridge {
-    fn new(stdout_tx: mpsc::Sender<String>) -> Self {
+    fn new(stdout_tx: mpsc::Sender<GatewayStdoutLine>) -> Self {
         Self {
             stdout_tx,
             state: Arc::new(Mutex::new(StdioCallbackState::default())),
@@ -4879,7 +5717,7 @@ impl StdioCallbackBridge {
             "params": params,
         });
         if let Ok(line) = serde_json::to_string(&notification) {
-            let _ = self.stdout_tx.try_send(line);
+            let _ = self.stdout_tx.try_send(GatewayStdoutLine::plain(line));
         }
     }
 
@@ -4892,7 +5730,7 @@ impl StdioCallbackBridge {
             "params": params,
         });
         if let Ok(line) = serde_json::to_string(&notification) {
-            if let Err(e) = self.stdout_tx.send(line).await {
+            if let Err(e) = self.stdout_tx.send(GatewayStdoutLine::plain(line)).await {
                 eprintln!("[mobkit-gateway] failed to deliver {method}: {e}");
             }
         }
@@ -4927,7 +5765,7 @@ impl StdioCallbackBridge {
                 return Err(e.to_string());
             }
         };
-        if let Err(_) = self.stdout_tx.send(line).await {
+        if let Err(_) = self.stdout_tx.send(GatewayStdoutLine::plain(line)).await {
             self.state.lock().await.pending.remove(&id_str);
             return Err("stdout channel closed".to_string());
         }
@@ -4941,6 +5779,89 @@ impl StdioCallbackBridge {
                         error
                             .get("message")
                             .and_then(|m| m.as_str())
+                            .unwrap_or("unknown")
+                    ))
+                } else {
+                    Ok(value.get("result").cloned().unwrap_or(Value::Null))
+                }
+            }
+            Ok(Err(_)) => Err("callback response channel dropped".to_string()),
+            Err(_) => {
+                self.state.lock().await.pending.remove(&id_str);
+                Err(format!(
+                    "callback timed out after {}s",
+                    PROVIDER_CALLBACK_TIMEOUT.as_secs()
+                ))
+            }
+        }
+    }
+
+    /// Publish one exact live output as an acknowledged SDK callback.
+    ///
+    /// The writer acquires opaque machine custody immediately before writing
+    /// and holds it through flush. The callback must then explicitly accept
+    /// the bounded SDK queue entry. A stale binding, writer failure, missing
+    /// consumer, or queue overflow is returned to the provider pump as a
+    /// delivery failure instead of silently losing playback authority.
+    #[cfg(feature = "experimental-gpt-live")]
+    async fn call_live_public_observation(
+        &self,
+        machine: Arc<meerkat_runtime::MeerkatMachine>,
+        binding: meerkat_live::ProviderWebrtcBinding,
+        params: impl serde::Serialize,
+    ) -> Result<Value, String> {
+        let id = self
+            .counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id_str = format!("cb-{id}");
+
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut state = self.state.lock().await;
+            if state.closed {
+                return Err("callback transport closed".to_string());
+            }
+            state.pending.insert(id_str.clone(), tx);
+        }
+
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": id_str,
+            "method": "mobkit/live/assistant_output_available",
+            "params": params,
+        });
+        let line = match serde_json::to_string(&request) {
+            Ok(line) => line,
+            Err(error) => {
+                self.state.lock().await.pending.remove(&id_str);
+                return Err(error.to_string());
+            }
+        };
+        let (line, written) = GatewayStdoutLine::public_observation(machine, binding, line);
+        if self.stdout_tx.send(line).await.is_err() {
+            self.state.lock().await.pending.remove(&id_str);
+            return Err("stdout channel closed".to_string());
+        }
+        match written.await {
+            Ok(true) => {}
+            Ok(false) => {
+                self.state.lock().await.pending.remove(&id_str);
+                return Err("live output publication rejected before write".to_string());
+            }
+            Err(_) => {
+                self.state.lock().await.pending.remove(&id_str);
+                return Err("stdout channel closed".to_string());
+            }
+        }
+
+        match tokio::time::timeout(PROVIDER_CALLBACK_TIMEOUT, rx).await {
+            Ok(Ok(value)) => {
+                if let Some(error) = value.get("error") {
+                    Err(format!(
+                        "callback error: {}",
+                        error
+                            .get("message")
+                            .and_then(Value::as_str)
                             .unwrap_or("unknown")
                     ))
                 } else {
@@ -7692,17 +8613,16 @@ external_addressable = true
         });
 
     // 3. Set up stdout writer channel for multiplexed output
-    let (stdout_tx, mut stdout_rx) = mpsc::channel::<String>(64);
+    let (stdout_tx, mut stdout_rx) = mpsc::channel::<GatewayStdoutLine>(64);
     let (stdout_shutdown_tx, mut stdout_shutdown_rx) = oneshot::channel::<()>();
     let mut stdout_writer = tokio::spawn(async move {
         loop {
             let line = tokio::select! {
                 shutdown = &mut stdout_shutdown_rx => {
                     let _ = shutdown;
-                    while let Ok(line) = stdout_rx.try_recv() {
-                        let mut stdout = std::io::stdout().lock();
-                        let _ = writeln!(stdout, "{line}");
-                        let _ = stdout.flush();
+                    while let Ok(mut line) = stdout_rx.try_recv() {
+                        let delivered = write_gateway_stdout_line(&mut line).await;
+                        line.settle_delivery(delivered).await;
                     }
                     break;
                 }
@@ -7711,10 +8631,9 @@ external_addressable = true
                     None => break,
                 },
             };
-            let mut stdout = std::io::stdout().lock();
-            let _ = writeln!(stdout, "{line}");
-            let _ = stdout.flush();
-            drop(stdout); // release lock before next await
+            let mut line = line;
+            let delivered = write_gateway_stdout_line(&mut line).await;
+            line.settle_delivery(delivered).await;
         }
     });
 
@@ -7773,7 +8692,7 @@ external_addressable = true
                                 }
                             });
                             if let Ok(line) = serde_json::to_string(&response) {
-                                let _ = stdout_tx.send(line).await;
+                                let _ = stdout_tx.send(GatewayStdoutLine::plain(line)).await;
                             }
                         }
                     } else if rpc_tx.send(trimmed.to_string()).await.is_err() {
@@ -7793,7 +8712,7 @@ external_addressable = true
                             }
                         });
                         if let Ok(line) = serde_json::to_string(&response) {
-                            let _ = stdout_tx.send(line).await;
+                            let _ = stdout_tx.send(GatewayStdoutLine::plain(line)).await;
                         }
                     }
                 } else {
@@ -8254,6 +9173,29 @@ external_addressable = true
         // Live (realtime) needs the SAME factory shape for its per-open
         // credential-resolving realtime session factory; clone before
         // the builder consumes it.
+        #[cfg(feature = "experimental-gpt-live")]
+        let live_agent_factory = if let Some(experimental) =
+            gateway_options.experimental_live.as_ref()
+        {
+            let operator = meerkat::ExperimentalLiveOperatorConfig::new(
+                experimental.factory.clone(),
+                experimental.qualification.clone(),
+            )
+            .with_gpt_live_function_bridge_profile()
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    -32602,
+                    format!("runtime_options.experimental_live execution profile failed: {error}"),
+                )
+            });
+            factory
+                .clone()
+                .with_experimental_live_admission(operator, [experimental.realm.clone()])
+        } else {
+            factory.clone()
+        };
+        #[cfg(not(feature = "experimental-gpt-live"))]
         let live_agent_factory = factory.clone();
         let live_machine = Arc::clone(&adapter);
         let mut inner_builder =
@@ -8425,7 +9367,17 @@ external_addressable = true
         // (`runtime_options.live`). Ephemeral mode cannot serve live —
         // the projection sink and machine authorities are
         // persistent-service seams.
-        let live_inputs = if matches!(gateway_options.live, GatewayLiveOption::Enabled { .. }) {
+        let live_inputs = if matches!(gateway_options.live, GatewayLiveOption::Enabled { .. })
+            || cfg!(feature = "experimental-gpt-live") && {
+                #[cfg(feature = "experimental-gpt-live")]
+                {
+                    gateway_options.experimental_live.is_some()
+                }
+                #[cfg(not(feature = "experimental-gpt-live"))]
+                {
+                    false
+                }
+            } {
             Some((
                 Arc::clone(&concrete_service),
                 live_machine,
@@ -9708,34 +10660,111 @@ external_addressable = true
     // host's reverse proxy reaches it at {base}/live/ws), and erase the
     // live/* RPC handler over the gateway's concrete session-builder type
     // for the stdin dispatch loop.
-    let (app, live_rpc) =
-        if let Some((live_service, live_machine, live_agent_factory)) = live_inputs {
-            let ws_base_url = match &gateway_options.live {
-                GatewayLiveOption::Enabled {
-                    public_base_url: Some(public),
-                    ..
-                } => public.trim_end_matches('/').to_string(),
-                _ => format!("ws://127.0.0.1:{port}"),
-            };
-            let live_seed_max_chars = match &gateway_options.live {
-                GatewayLiveOption::Enabled { seed_max_chars, .. } => *seed_max_chars,
-                GatewayLiveOption::Disabled => None,
-            };
-            let live_ctx = Arc::new(meerkat_mobkit::live_wiring::attach_live(
-                Arc::clone(&live_service),
-                Arc::clone(&live_machine),
-                &live_agent_factory,
-                meerkat::Config::default(),
-                ws_base_url,
-                live_seed_max_chars,
-            ));
-            let app = app.merge(meerkat_live::live_ws_router(Arc::clone(&live_ctx.ws_state)));
-            let handler =
-                meerkat_mobkit::live_wiring::live_rpc_handler(live_ctx, live_service, live_machine);
-            (app, Some(handler))
-        } else {
-            (app, None)
+    let (app, live_rpc) = if let Some((live_service, live_machine, live_agent_factory)) =
+        live_inputs
+    {
+        let ws_base_url = match &gateway_options.live {
+            GatewayLiveOption::Enabled {
+                public_base_url: Some(public),
+                ..
+            } => public.trim_end_matches('/').to_string(),
+            _ => format!("ws://127.0.0.1:{port}"),
         };
+        let live_seed_max_chars = match &gateway_options.live {
+            GatewayLiveOption::Enabled { seed_max_chars, .. } => *seed_max_chars,
+            GatewayLiveOption::Disabled => None,
+        };
+        let live_ctx = Arc::new(meerkat_mobkit::live_wiring::attach_live(
+            Arc::clone(&live_service),
+            Arc::clone(&live_machine),
+            &live_agent_factory,
+            meerkat::Config::default(),
+            ws_base_url,
+            live_seed_max_chars,
+        ));
+        let app = if matches!(gateway_options.live, GatewayLiveOption::Enabled { .. }) {
+            app.merge(meerkat_live::live_ws_router(Arc::clone(&live_ctx.ws_state)))
+        } else {
+            app
+        };
+        #[cfg(feature = "experimental-gpt-live")]
+        let capability_provider = if let Some(experimental) =
+            gateway_options.experimental_live.as_ref()
+        {
+            let mob_mcp_state = runtime
+                .mob_runtime()
+                .agent_mob_mcp_state()
+                .unwrap_or_else(|| {
+                    fail_init(
+                        &request_id,
+                        -32602,
+                        "runtime_options.experimental_live requires the owning Mob MCP state"
+                            .to_string(),
+                    )
+                });
+            let access = gateway_options
+                .access
+                .clone()
+                .unwrap_or_else(meerkat_mobkit::AccessController::disabled);
+            let binding_authority = Arc::new(GatewayExperimentalLiveSessionBindingAuthority {
+                handle: runtime.mob_handle(),
+                machine: Arc::clone(&live_machine),
+                access,
+                principal: experimental.principal.clone(),
+                allowed_binding: experimental.binding.clone(),
+            });
+            let transport =
+                Arc::new(meerkat::experimental_gpt_live::ExperimentalGptLiveWebrtcTransport::new());
+            let open_authority = Arc::new(
+                meerkat::experimental_gpt_live::ExperimentalGptLiveOpenAuthority::new(
+                    meerkat::experimental_gpt_live::ExperimentalGptLiveOpenAuthorityConfig {
+                        agent_factory: live_agent_factory.clone(),
+                        config_source: live_ctx.experimental_live_config_source(),
+                        binding_authority,
+                        realm: experimental.realm.clone(),
+                        factory_identity: experimental.factory.clone(),
+                        transport: Arc::clone(&transport),
+                        voice: experimental.voice.clone(),
+                        instructions: experimental.instructions.clone(),
+                    },
+                )
+                .unwrap_or_else(|error| {
+                    fail_init(
+                        &request_id,
+                        -32602,
+                        format!("runtime_options.experimental_live composition failed: {error}"),
+                    )
+                }),
+            );
+            meerkat_mobkit::live_wiring::LiveCapabilityProvider::experimental(
+                Arc::new(live_agent_factory.clone()),
+                experimental.realm.clone(),
+                experimental.factory.clone(),
+                open_authority,
+                transport,
+                mob_mcp_state,
+                Arc::new(StdioExperimentalLivePublicObservationPublisher::new(
+                    Arc::clone(&live_machine),
+                    bridge.clone(),
+                )),
+            )
+        } else {
+            meerkat_mobkit::live_wiring::LiveCapabilityProvider::disabled()
+        };
+        #[cfg(feature = "experimental-gpt-live")]
+        let handler = meerkat_mobkit::live_wiring::live_rpc_handler_with_capabilities(
+            live_ctx,
+            live_service,
+            live_machine,
+            capability_provider,
+        );
+        #[cfg(not(feature = "experimental-gpt-live"))]
+        let handler =
+            meerkat_mobkit::live_wiring::live_rpc_handler(live_ctx, live_service, live_machine);
+        (app, Some(handler))
+    } else {
+        (app, None)
+    };
     let http_server = http_binding.serve(app);
 
     // 8. Send init response via stdout channel
@@ -9785,10 +10814,10 @@ external_addressable = true
         }
     });
     let _ = stdout_tx
-        .send(
+        .send(GatewayStdoutLine::plain(
             serde_json::to_string(&init_response)
                 .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()),
-        )
+        ))
         .await;
 
     // 9. RPC dispatch loop: each request runs on its own task. The loop must
@@ -9844,9 +10873,9 @@ external_addressable = true
                 )
                 .await
                 {
-                    Some(response) => response,
-                    None => {
-                        meerkat_mobkit::rpc::handle_unified_rpc_json_with_live_arc(
+                    Some(response) => GatewayStdoutLine::plain(response),
+                    None => GatewayStdoutLine::delivery(
+                        meerkat_mobkit::rpc::handle_unified_rpc_json_with_live_arc_delivery(
                             &runtime,
                             &request_line,
                             timeout,
@@ -9854,8 +10883,8 @@ external_addressable = true
                             identity_ctx.as_deref(),
                             live_rpc.as_ref(),
                         )
-                        .await
-                    }
+                        .await,
+                    ),
                 };
                 if !response.is_empty() {
                     let _ = stdout_tx.send(response).await;
@@ -9909,7 +10938,7 @@ external_addressable = true
     if let Some(request) = gateway_shutdown {
         let response = gateway_shutdown_response(request.response_id, runtime_shutdown.as_ref());
         if let Ok(line) = serde_json::to_string(&response) {
-            let _ = stdout_tx.send(line).await;
+            let _ = stdout_tx.send(GatewayStdoutLine::plain(line)).await;
         }
         // The SDK closes stdin after receiving the response. Abort our Tokio
         // reader task now; that close also releases Tokio's blocking stdin

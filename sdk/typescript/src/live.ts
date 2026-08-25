@@ -1,0 +1,665 @@
+/** Versioned live channel contracts shared with the MobKit wire boundary. */
+
+export const LIVE_EXECUTION_IDENTITY_V1 = "live.execution_identity.v1" as const;
+export const LIVE_EXECUTION_FUNCTION_BRIDGE_V1 =
+  "live.execution.function_bridge.v1" as const;
+export const LIVE_EXECUTION_CLIENT_CONTEXT_V1 =
+  "live.execution.client_context.v1" as const;
+
+export type LiveExecutionMode = "function_bridge" | "client_context";
+
+const EXECUTION_MODE_CAPABILITIES: Readonly<Record<LiveExecutionMode, string>> = {
+  function_bridge: LIVE_EXECUTION_FUNCTION_BRIDGE_V1,
+  client_context: LIVE_EXECUTION_CLIENT_CONTEXT_V1,
+};
+
+export type LiveProvider =
+  | "anthropic"
+  | "openai"
+  | "gemini"
+  | "self_hosted"
+  | "other";
+
+export interface LiveAuthBindingRef {
+  readonly realm: string;
+  readonly binding: string;
+  readonly profile?: string;
+}
+
+export interface ExperimentalLiveGatewayConfig {
+  readonly principal: string;
+  readonly realm: string;
+  readonly factoryKind: string;
+  readonly factoryVersion: string;
+  readonly gate0Qualification: string;
+  readonly authBinding: LiveAuthBindingRef;
+  readonly voice: string;
+}
+
+export function experimentalLiveGatewayConfigToWire(
+  config: ExperimentalLiveGatewayConfig,
+): Record<string, unknown> {
+  const principal = requireString(config.principal, "experimental live principal");
+  const realm = requireString(config.realm, "experimental live realm");
+  const factoryKind = requireString(
+    config.factoryKind,
+    "experimental live factoryKind",
+  );
+  const factoryVersion = requireString(
+    config.factoryVersion,
+    "experimental live factoryVersion",
+  );
+  const gate0Qualification = requireString(
+    config.gate0Qualification,
+    "experimental live gate0Qualification",
+  );
+  const voice = requireString(config.voice, "experimental live voice");
+  const bindingRealm = requireString(
+    config.authBinding.realm,
+    "experimental live authBinding.realm",
+  );
+  if (bindingRealm !== realm) {
+    throw new TypeError("experimental live auth binding realm must equal realm");
+  }
+  const authBinding: Record<string, unknown> = {
+    realm: bindingRealm,
+    binding: requireString(
+      config.authBinding.binding,
+      "experimental live authBinding.binding",
+    ),
+  };
+  if (config.authBinding.profile !== undefined) {
+    authBinding.profile = requireString(
+      config.authBinding.profile,
+      "experimental live authBinding.profile",
+    );
+  }
+  const result: Record<string, unknown> = {
+    principal,
+    realm,
+    factory_kind: factoryKind,
+    factory_version: factoryVersion,
+    gate0_qualification: gate0Qualification,
+    auth_binding: authBinding,
+    voice,
+  };
+  return result;
+}
+
+export type LiveAuthBindingOverride =
+  | { readonly action: "set"; readonly value: LiveAuthBindingRef }
+  | { readonly action: "clear" };
+
+export interface LiveExecutionIdentityV1 {
+  readonly model?: string;
+  readonly provider?: LiveProvider;
+  readonly selfHostedServerId?: string;
+  readonly authBinding?: LiveAuthBindingOverride;
+}
+
+export interface LiveExecutionIdentityWireV1 {
+  readonly version: "v1";
+  readonly model?: string;
+  readonly provider?: LiveProvider;
+  readonly self_hosted_server_id?: string;
+  readonly auth_binding?:
+    | { readonly action: "set"; readonly value: LiveAuthBindingRef }
+    | { readonly action: "clear" };
+}
+
+export type LiveTransportBootstrap =
+  | { readonly transport: "websocket"; readonly url: string; readonly token: string }
+  | {
+      readonly transport: "webrtc";
+      readonly token: string;
+      readonly answerMethod: string;
+      readonly httpUrl?: string;
+    }
+  | { readonly transport: "unknown"; readonly debug: string };
+
+export interface LiveChannelCapabilities {
+  readonly audioIn: boolean;
+  readonly audioOut: boolean;
+  readonly textIn: boolean;
+  readonly textOut: boolean;
+  readonly imageIn: boolean;
+  readonly videoIn: boolean;
+  readonly transcriptSupported: boolean;
+  readonly bargeInSupported: boolean;
+  readonly providerNativeResume: boolean;
+}
+
+export type LiveContinuityMode =
+  | { readonly mode: "fresh" | "transcript_only" | "degraded" }
+  | { readonly mode: "provider_native_resume"; readonly providerSessionId: string }
+  | { readonly mode: "unknown"; readonly debug: string };
+
+export interface LiveChannelHandle {
+  readonly channelId: string;
+  readonly targetIdentity: string;
+  readonly transport: LiveTransportBootstrap;
+  readonly capabilities: LiveChannelCapabilities;
+  readonly continuity: LiveContinuityMode;
+}
+
+export interface PendingLiveChannelHandle {
+  readonly channelId: string;
+  readonly targetIdentity: string;
+  readonly executionMode: LiveExecutionMode;
+  readonly pendingReceipt: string;
+  readonly transport: LiveTransportBootstrap;
+  readonly capabilities: LiveChannelCapabilities;
+  readonly continuity: LiveContinuityMode;
+}
+
+export interface ActiveLiveChannelHandle {
+  readonly channelId: string;
+  readonly targetIdentity: string;
+  readonly executionMode: LiveExecutionMode;
+  readonly activationReceipt: string;
+}
+
+export interface LivePlaybackOwnerReadiness {
+  readonly channelId: string;
+  readonly readinessReceipt: string;
+}
+
+export type ExperimentalLiveChannelStatus =
+  | { readonly phase: "pending" }
+  | { readonly phase: "active"; readonly handle: ActiveLiveChannelHandle }
+  | { readonly phase: "revoked" }
+  | { readonly phase: "closed" };
+
+export interface LivePlaybackOwner {
+  /** Install the output consumer and media gates before producing an offer. */
+  prepare(pending: PendingLiveChannelHandle): Promise<string>;
+  /** Apply the remote answer while microphone and remote audio remain gated. */
+  acceptAnswer(answerSdp: string): Promise<void>;
+  /** Release the media gates only after generated active authority exists. */
+  activate(active: ActiveLiveChannelHandle): Promise<void>;
+  /** Tear down the local peer and all gates after any failed activation. */
+  abort(): Promise<void>;
+}
+
+export type LiveReplacementRequired =
+  | { readonly required: false }
+  | {
+      readonly required: true;
+      readonly reason: "canonical_context" | "delegation_result";
+      readonly replacement: LiveChannelHandle;
+      readonly canonicalSeedCursor: number;
+    };
+
+/** Opaque channel-scoped address published before assistant playback. */
+export interface LiveAssistantOutputAddress {
+  readonly channelId: string;
+  readonly outputId: string;
+  readonly contentIndex: number;
+}
+
+export interface LivePlaybackCompleteResult {
+  readonly status: "completed";
+}
+
+function asRecord(value: unknown, context: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError(`${context} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function assertExactKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  context: string,
+): void {
+  const unknown = Object.keys(value).find((key) => !allowed.includes(key));
+  if (unknown !== undefined) {
+    throw new TypeError(`${context} contains unknown field ${unknown}`);
+  }
+}
+
+function requireString(value: unknown, context: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new TypeError(`${context} must be a non-empty string`);
+  }
+  return value;
+}
+
+function requireBoolean(value: unknown, context: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new TypeError(`${context} must be a boolean`);
+  }
+  return value;
+}
+
+const PROVIDERS: readonly LiveProvider[] = [
+  "anthropic",
+  "openai",
+  "gemini",
+  "self_hosted",
+  "other",
+];
+
+/** Serialize the strict v1 envelope to canonical snake-case wire JSON. */
+export function liveExecutionIdentityV1ToWire(
+  input: LiveExecutionIdentityV1,
+): LiveExecutionIdentityWireV1 {
+  const raw = asRecord(input, "execution identity");
+  assertExactKeys(
+    raw,
+    ["model", "provider", "selfHostedServerId", "authBinding"],
+    "execution identity",
+  );
+  const result: {
+    version: "v1";
+    model?: string;
+    provider?: LiveProvider;
+    self_hosted_server_id?: string;
+    auth_binding?: LiveExecutionIdentityWireV1["auth_binding"];
+  } = { version: "v1" };
+  if (raw.model !== undefined) result.model = requireString(raw.model, "model");
+  if (raw.provider !== undefined) {
+    if (!PROVIDERS.includes(raw.provider as LiveProvider)) {
+      throw new TypeError("provider is not a known live provider");
+    }
+    result.provider = raw.provider as LiveProvider;
+  }
+  if (raw.selfHostedServerId !== undefined) {
+    result.self_hosted_server_id = requireString(
+      raw.selfHostedServerId,
+      "selfHostedServerId",
+    );
+  }
+  if (raw.authBinding !== undefined) {
+    const override = asRecord(raw.authBinding, "authBinding");
+    if (override.action === "clear") {
+      assertExactKeys(override, ["action"], "authBinding clear override");
+      result.auth_binding = { action: "clear" };
+    } else if (override.action === "set") {
+      assertExactKeys(override, ["action", "value"], "authBinding set override");
+      const binding = asRecord(override.value, "authBinding value");
+      assertExactKeys(binding, ["realm", "binding", "profile"], "authBinding value");
+      const value: { realm: string; binding: string; profile?: string } = {
+        realm: requireString(binding.realm, "authBinding.value.realm"),
+        binding: requireString(binding.binding, "authBinding.value.binding"),
+      };
+      if (binding.profile !== undefined) {
+        value.profile = requireString(binding.profile, "authBinding.value.profile");
+      }
+      result.auth_binding = { action: "set", value };
+    } else {
+      throw new TypeError("authBinding.action must be set or clear");
+    }
+  }
+  return result;
+}
+
+/** Reject ambiguous mixing of the new envelope with legacy top-level fields. */
+export function liveOpenExecutionIdentityParams(
+  executionIdentity: LiveExecutionIdentityV1,
+  legacy?: { readonly model?: unknown; readonly provider?: unknown },
+): { readonly execution_identity: LiveExecutionIdentityWireV1 } {
+  if (legacy !== undefined && Object.prototype.hasOwnProperty.call(legacy, "model")) {
+    throw new TypeError("executionIdentity conflicts with legacy top-level model");
+  }
+  if (legacy !== undefined && Object.prototype.hasOwnProperty.call(legacy, "provider")) {
+    throw new TypeError("executionIdentity conflicts with legacy top-level provider");
+  }
+  return { execution_identity: liveExecutionIdentityV1ToWire(executionIdentity) };
+}
+
+export function supportsLiveExecutionIdentityV1(capabilities: {
+  readonly featureCapabilities: readonly string[];
+}): boolean {
+  return capabilities.featureCapabilities.includes(LIVE_EXECUTION_IDENTITY_V1);
+}
+
+export function liveExecutionModeCapability(mode: LiveExecutionMode): string {
+  const capability = EXECUTION_MODE_CAPABILITIES[mode];
+  if (capability === undefined) {
+    throw new TypeError("unknown provider-neutral live execution mode");
+  }
+  return capability;
+}
+
+export function supportsLiveExecutionMode(
+  capabilities: { readonly featureCapabilities: readonly string[] },
+  mode: LiveExecutionMode,
+): boolean {
+  return capabilities.featureCapabilities.includes(
+    liveExecutionModeCapability(mode),
+  );
+}
+
+/** Parse a canonical wire handle and reject drift in the typed top-level shape. */
+export function parseLiveChannelHandle(raw: unknown): LiveChannelHandle {
+  const d = asRecord(raw, "live channel handle");
+  assertExactKeys(
+    d,
+    ["channel_id", "target_identity", "transport", "capabilities", "continuity"],
+    "live channel handle",
+  );
+  const transport = parseTransport(d.transport);
+  const capabilities = parseCapabilities(d.capabilities);
+  const continuity = parseContinuity(d.continuity);
+  return {
+    channelId: requireString(d.channel_id, "channel_id"),
+    targetIdentity: requireString(d.target_identity, "target_identity"),
+    transport,
+    capabilities,
+    continuity,
+  };
+}
+
+function parseExecutionMode(raw: unknown, context: string): LiveExecutionMode {
+  const mode = requireString(raw, `${context}.execution_mode`);
+  if (mode !== "function_bridge" && mode !== "client_context") {
+    throw new TypeError(`${context}.execution_mode is unknown`);
+  }
+  return mode;
+}
+
+export function parsePendingLiveChannelHandle(
+  raw: unknown,
+): PendingLiveChannelHandle {
+  const d = asRecord(raw, "pending live channel handle");
+  assertExactKeys(
+    d,
+    [
+      "channel_id",
+      "target_identity",
+      "execution_mode",
+      "pending_receipt",
+      "transport",
+      "capabilities",
+      "continuity",
+    ],
+    "pending live channel handle",
+  );
+  return {
+    channelId: requireString(d.channel_id, "pending live channel handle.channel_id"),
+    targetIdentity: requireString(
+      d.target_identity,
+      "pending live channel handle.target_identity",
+    ),
+    executionMode: parseExecutionMode(d.execution_mode, "pending live channel handle"),
+    pendingReceipt: requireString(
+      d.pending_receipt,
+      "pending live channel handle.pending_receipt",
+    ),
+    transport: parseTransport(d.transport),
+    capabilities: parseCapabilities(d.capabilities),
+    continuity: parseContinuity(d.continuity),
+  };
+}
+
+export function parseActiveLiveChannelHandle(
+  raw: unknown,
+): ActiveLiveChannelHandle {
+  const d = asRecord(raw, "active live channel handle");
+  assertExactKeys(
+    d,
+    ["channel_id", "target_identity", "execution_mode", "activation_receipt"],
+    "active live channel handle",
+  );
+  return {
+    channelId: requireString(d.channel_id, "active live channel handle.channel_id"),
+    targetIdentity: requireString(
+      d.target_identity,
+      "active live channel handle.target_identity",
+    ),
+    executionMode: parseExecutionMode(d.execution_mode, "active live channel handle"),
+    activationReceipt: requireString(
+      d.activation_receipt,
+      "active live channel handle.activation_receipt",
+    ),
+  };
+}
+
+export function parseLivePlaybackOwnerReadiness(
+  raw: unknown,
+): LivePlaybackOwnerReadiness {
+  const d = asRecord(raw, "playback owner readiness");
+  assertExactKeys(d, ["channel_id", "readiness_receipt"], "playback owner readiness");
+  return {
+    channelId: requireString(d.channel_id, "playback owner readiness.channel_id"),
+    readinessReceipt: requireString(
+      d.readiness_receipt,
+      "playback owner readiness.readiness_receipt",
+    ),
+  };
+}
+
+export function parseExperimentalLiveChannelStatus(
+  raw: unknown,
+): ExperimentalLiveChannelStatus {
+  const d = asRecord(raw, "experimental live channel status");
+  const phase = requireString(d.phase, "experimental live channel status.phase");
+  if (phase === "pending" || phase === "revoked" || phase === "closed") {
+    assertExactKeys(d, ["phase"], "experimental live channel status");
+    return { phase };
+  }
+  if (phase === "active") {
+    assertExactKeys(d, ["phase", "handle"], "experimental live channel status");
+    return { phase, handle: parseActiveLiveChannelHandle(d.handle) };
+  }
+  throw new TypeError("experimental live channel status.phase is unknown");
+}
+
+export function pendingLiveChannelHandleToWire(
+  handle: PendingLiveChannelHandle,
+): Record<string, unknown> {
+  liveExecutionModeCapability(handle.executionMode);
+  return {
+    ...liveChannelHandleToWire({
+      channelId: handle.channelId,
+      targetIdentity: handle.targetIdentity,
+      transport: handle.transport,
+      capabilities: handle.capabilities,
+      continuity: handle.continuity,
+    }),
+    execution_mode: handle.executionMode,
+    pending_receipt: requireString(handle.pendingReceipt, "pendingReceipt"),
+  };
+}
+
+export function activeLiveChannelHandleToWire(
+  handle: ActiveLiveChannelHandle,
+): Record<string, string> {
+  liveExecutionModeCapability(handle.executionMode);
+  return {
+    channel_id: requireString(handle.channelId, "channelId"),
+    target_identity: requireString(handle.targetIdentity, "targetIdentity"),
+    execution_mode: handle.executionMode,
+    activation_receipt: requireString(handle.activationReceipt, "activationReceipt"),
+  };
+}
+
+/** Parse the strict one-shot replacement signaling result. */
+export function parseLiveReplacementRequired(
+  raw: unknown,
+): LiveReplacementRequired {
+  const d = asRecord(raw, "live replacement result");
+  const required = requireBoolean(d.required, "live replacement result.required");
+  if (!required) {
+    assertExactKeys(d, ["required"], "live replacement result");
+    return { required: false };
+  }
+  assertExactKeys(
+    d,
+    ["required", "reason", "replacement", "canonical_seed_cursor"],
+    "live replacement result",
+  );
+  const reason = requireString(d.reason, "live replacement result.reason");
+  if (reason !== "canonical_context" && reason !== "delegation_result") {
+    throw new TypeError("live replacement result.reason is unknown");
+  }
+  if (
+    typeof d.canonical_seed_cursor !== "number" ||
+    !Number.isSafeInteger(d.canonical_seed_cursor) ||
+    d.canonical_seed_cursor < 0
+  ) {
+    throw new TypeError(
+      "live replacement result.canonical_seed_cursor must be a non-negative integer",
+    );
+  }
+  return {
+    required: true,
+    reason,
+    replacement: parseLiveChannelHandle(d.replacement),
+    canonicalSeedCursor: d.canonical_seed_cursor,
+  };
+}
+
+export function parseLivePlaybackCompleteResult(
+  raw: unknown,
+): LivePlaybackCompleteResult {
+  const d = asRecord(raw, "live playback complete result");
+  assertExactKeys(d, ["status"], "live playback complete result");
+  if (d.status !== "completed") {
+    throw new TypeError("live playback complete result.status must be completed");
+  }
+  return { status: "completed" };
+}
+
+export function parseLiveAssistantOutputAddress(
+  raw: unknown,
+): LiveAssistantOutputAddress {
+  const d = asRecord(raw, "live assistant output address");
+  assertExactKeys(
+    d,
+    ["channel_id", "output_id", "content_index"],
+    "live assistant output address",
+  );
+  if (
+    typeof d.content_index !== "number" ||
+    !Number.isSafeInteger(d.content_index) ||
+    d.content_index < 0
+  ) {
+    throw new TypeError(
+      "live assistant output address.content_index must be a non-negative integer",
+    );
+  }
+  return {
+    channelId: requireString(d.channel_id, "channel_id"),
+    outputId: requireString(d.output_id, "output_id"),
+    contentIndex: d.content_index,
+  };
+}
+
+/** Serialize a typed channel handle to canonical snake-case wire JSON. */
+export function liveChannelHandleToWire(
+  handle: LiveChannelHandle,
+): Record<string, unknown> {
+  const transport: Record<string, unknown> = { transport: handle.transport.transport };
+  if (handle.transport.transport === "websocket") {
+    transport.url = handle.transport.url;
+    transport.token = handle.transport.token;
+  } else if (handle.transport.transport === "webrtc") {
+    transport.token = handle.transport.token;
+    transport.answer_method = handle.transport.answerMethod;
+    if (handle.transport.httpUrl !== undefined) transport.http_url = handle.transport.httpUrl;
+  } else {
+    transport.debug = handle.transport.debug;
+  }
+
+  const continuity: Record<string, unknown> = { mode: handle.continuity.mode };
+  if (handle.continuity.mode === "provider_native_resume") {
+    continuity.provider_session_id = handle.continuity.providerSessionId;
+  } else if (handle.continuity.mode === "unknown") {
+    continuity.debug = handle.continuity.debug;
+  }
+
+  return {
+    channel_id: handle.channelId,
+    target_identity: handle.targetIdentity,
+    transport,
+    capabilities: {
+      audio_in: handle.capabilities.audioIn,
+      audio_out: handle.capabilities.audioOut,
+      text_in: handle.capabilities.textIn,
+      text_out: handle.capabilities.textOut,
+      image_in: handle.capabilities.imageIn,
+      video_in: handle.capabilities.videoIn,
+      transcript_supported: handle.capabilities.transcriptSupported,
+      barge_in_supported: handle.capabilities.bargeInSupported,
+      provider_native_resume: handle.capabilities.providerNativeResume,
+    },
+    continuity,
+  };
+}
+
+function parseTransport(raw: unknown): LiveTransportBootstrap {
+  const d = asRecord(raw, "transport");
+  const kind = requireString(d.transport, "transport.transport");
+  if (kind === "websocket") {
+    assertExactKeys(d, ["transport", "url", "token"], "websocket transport");
+    return {
+      transport: "websocket",
+      url: requireString(d.url, "transport.url"),
+      token: requireString(d.token, "transport.token"),
+    };
+  }
+  if (kind === "webrtc") {
+    assertExactKeys(d, ["transport", "token", "answer_method", "http_url"], "webrtc transport");
+    const result: {
+      transport: "webrtc";
+      token: string;
+      answerMethod: string;
+      httpUrl?: string;
+    } = {
+      transport: "webrtc",
+      token: requireString(d.token, "transport.token"),
+      answerMethod: requireString(d.answer_method, "transport.answer_method"),
+    };
+    if (d.http_url !== undefined) result.httpUrl = requireString(d.http_url, "transport.http_url");
+    return result;
+  }
+  if (kind === "unknown") {
+    assertExactKeys(d, ["transport", "debug"], "unknown transport");
+    return { transport: "unknown", debug: requireString(d.debug, "transport.debug") };
+  }
+  throw new TypeError(`unknown live transport ${kind}`);
+}
+
+function parseCapabilities(raw: unknown): LiveChannelCapabilities {
+  const d = asRecord(raw, "capabilities");
+  const keys = [
+    "audio_in", "audio_out", "text_in", "text_out", "image_in", "video_in",
+    "transcript_supported", "barge_in_supported", "provider_native_resume",
+  ] as const;
+  assertExactKeys(d, keys, "capabilities");
+  return {
+    audioIn: requireBoolean(d.audio_in, "capabilities.audio_in"),
+    audioOut: requireBoolean(d.audio_out, "capabilities.audio_out"),
+    textIn: requireBoolean(d.text_in, "capabilities.text_in"),
+    textOut: requireBoolean(d.text_out, "capabilities.text_out"),
+    imageIn: requireBoolean(d.image_in, "capabilities.image_in"),
+    videoIn: requireBoolean(d.video_in, "capabilities.video_in"),
+    transcriptSupported: requireBoolean(d.transcript_supported, "capabilities.transcript_supported"),
+    bargeInSupported: requireBoolean(d.barge_in_supported, "capabilities.barge_in_supported"),
+    providerNativeResume: requireBoolean(d.provider_native_resume, "capabilities.provider_native_resume"),
+  };
+}
+
+function parseContinuity(raw: unknown): LiveContinuityMode {
+  const d = asRecord(raw, "continuity");
+  const mode = requireString(d.mode, "continuity.mode");
+  if (mode === "fresh" || mode === "transcript_only" || mode === "degraded") {
+    assertExactKeys(d, ["mode"], "continuity");
+    return { mode };
+  }
+  if (mode === "provider_native_resume") {
+    assertExactKeys(d, ["mode", "provider_session_id"], "continuity");
+    return {
+      mode,
+      providerSessionId: requireString(d.provider_session_id, "continuity.provider_session_id"),
+    };
+  }
+  if (mode === "unknown") {
+    assertExactKeys(d, ["mode", "debug"], "continuity");
+    return { mode, debug: requireString(d.debug, "continuity.debug") };
+  }
+  throw new TypeError(`unknown live continuity mode ${mode}`);
+}

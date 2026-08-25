@@ -1549,6 +1549,17 @@ fn is_console_mutating_rpc_method(method: &str) -> bool {
             | "mobkit/access/rules/delete"
             | "mobkit/access/groups/set"
             | "mobkit/access/groups/delete"
+            | "mobkit/live/open"
+            | "mobkit/live/replacement_required"
+            | "mobkit/live/playback_owner/register"
+            | "mobkit/live/close"
+            | "mobkit/live/refresh"
+            | "mobkit/live/send_input"
+            | "mobkit/live/commit_input"
+            | "mobkit/live/interrupt"
+            | "mobkit/live/truncate"
+            | "mobkit/live/playback_complete"
+            | "live/webrtc/answer"
     )
 }
 
@@ -4883,6 +4894,7 @@ async fn handle_console_aggregator_rpc(
                 response_id,
                 Some(json!({
                     "methods": methods,
+                    "feature_capabilities": serde_json::json!([]),
                     "authenticated": is_authenticated,
                     "read_only": read_only,
                     "runtime_capabilities": {
@@ -5383,6 +5395,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 response_id,
                 Some(serde_json::json!({
                     "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
+                    "feature_capabilities": serde_json::json!([]),
                     "methods": methods,
                     // Doctrine: consumers gate their migration on this flag —
                     // when true, the member RPCs re-dispatch durable targets
@@ -10735,6 +10748,79 @@ comms = true
         assert!(super::is_console_mutating_rpc_method(
             "mobkit/collect_completed"
         ));
+    }
+
+    #[test]
+    fn read_only_classifies_every_live_mutation_but_not_status() {
+        for method in [
+            "mobkit/live/open",
+            "mobkit/live/replacement_required",
+            "mobkit/live/playback_owner/register",
+            "mobkit/live/close",
+            "mobkit/live/refresh",
+            "mobkit/live/send_input",
+            "mobkit/live/commit_input",
+            "mobkit/live/interrupt",
+            "mobkit/live/truncate",
+            "mobkit/live/playback_complete",
+            "live/webrtc/answer",
+        ] {
+            assert!(
+                super::is_console_mutating_rpc_method(method),
+                "{method} must be denied before any future HTTP live dispatch"
+            );
+        }
+        assert!(!super::is_console_mutating_rpc_method("mobkit/live/status"));
+    }
+
+    #[tokio::test]
+    async fn missing_http_principal_cannot_reach_live_mutation_dispatch() {
+        let response = handle_console_aggregator_rpc(
+            None,
+            rpc_request_with_params("mobkit/live/open", json!({ "identity": "worker" })),
+            false,
+            false,
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(response["result"], Value::Null);
+        assert_eq!(response["error"]["code"], json!(-32010));
+        assert_eq!(response["error"]["data"]["kind"], json!("read_only"));
+    }
+
+    #[tokio::test]
+    async fn authenticated_writable_http_console_still_has_no_live_route() {
+        for method in [
+            "mobkit/live/open",
+            "mobkit/live/replacement_required",
+            "mobkit/live/playback_owner/register",
+            "mobkit/live/status",
+            "mobkit/live/close",
+            "mobkit/live/refresh",
+            "mobkit/live/send_input",
+            "mobkit/live/commit_input",
+            "mobkit/live/interrupt",
+            "mobkit/live/truncate",
+            "mobkit/live/playback_complete",
+            "live/webrtc/answer",
+        ] {
+            let response = handle_console_aggregator_rpc(
+                None,
+                rpc_request_with_params(method, json!({})),
+                true,
+                false,
+                None,
+                None,
+            )
+            .await;
+            assert_eq!(
+                response["error"]["code"],
+                json!(-32601),
+                "{method} must remain unmounted on HTTP"
+            );
+        }
     }
 
     #[test]
