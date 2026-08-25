@@ -78,7 +78,6 @@ meerkat-store = { version = "=0.8.28", features = ["sqlite", "memory"] }
 meerkat-tools = "=0.8.28"
 tempfile = "3"
 async-trait = "0.1"
-thiserror = "2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
