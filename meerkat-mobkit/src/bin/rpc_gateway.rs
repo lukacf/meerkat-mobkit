@@ -193,7 +193,6 @@ struct GatewayExperimentalLiveOption {
     qualification: meerkat::ExperimentalLiveGate0QualificationVersion,
     binding: meerkat_core::AuthBindingRef,
     voice: String,
-    instructions: Option<String>,
 }
 
 /// `runtime_options.workgraph` wire forms. Booleans keep the original
@@ -3152,8 +3151,7 @@ actions = ["agent.view"]
                             "binding": "chatgpt-oauth",
                             "profile": "luka"
                         },
-                        "voice": "marin",
-                        "instructions": "Use the canonical session context."
+                        "voice": "marin"
                     }
                 }
             }),
@@ -3166,10 +3164,6 @@ actions = ["agent.view"]
         assert_eq!(experimental.binding.realm.as_str(), "family");
         assert_eq!(experimental.binding.binding.as_str(), "chatgpt-oauth");
         assert_eq!(experimental.voice, "marin");
-        assert_eq!(
-            experimental.instructions.as_deref(),
-            Some("Use the canonical session context.")
-        );
         assert_eq!(options.live, GatewayLiveOption::Disabled);
 
         for invalid in [
@@ -3199,6 +3193,16 @@ actions = ["agent.view"]
                 "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
                 "voice": "marin",
                 "ambient_default": true
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "factory_kind": "private-live",
+                "factory_version": "v1",
+                "gate0_qualification": "gate0-v1",
+                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "voice": "marin",
+                "instructions": "caller-owned prompt"
             }),
         ] {
             let error = parse_gateway_runtime_options(
@@ -3638,7 +3642,6 @@ fn parse_gateway_experimental_live_option(
         "gate0_qualification",
         "auth_binding",
         "voice",
-        "instructions",
     ];
     let unsupported = object
         .keys()
@@ -3741,20 +3744,6 @@ fn parse_gateway_experimental_live_option(
             })?)
         }
     };
-    let instructions = match object.get("instructions") {
-        None | Some(Value::Null) => None,
-        Some(value) => Some(
-            value
-                .as_str()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    "runtime_options.experimental_live.instructions must be a non-empty string or null"
-                        .to_string()
-                })?,
-        ),
-    };
     Ok(GatewayExperimentalLiveOption {
         principal,
         realm,
@@ -3767,7 +3756,6 @@ fn parse_gateway_experimental_live_option(
             origin: meerkat_core::BindingOrigin::Configured,
         },
         voice: required_string("voice")?,
-        instructions,
     })
 }
 
@@ -10725,7 +10713,7 @@ external_addressable = true
                         factory_identity: experimental.factory.clone(),
                         transport: Arc::clone(&transport),
                         voice: experimental.voice.clone(),
-                        instructions: experimental.instructions.clone(),
+                        instructions: None,
                     },
                 )
                 .unwrap_or_else(|error| {

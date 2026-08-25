@@ -2018,6 +2018,7 @@ async fn handle_unified_rpc_json_inner(
                     methods.extend_from_slice(&[
                         "mobkit/live/replacement_required",
                         "mobkit/live/playback_owner/register",
+                        "mobkit/live/playback_owner/revoke",
                         "mobkit/live/truncate",
                         "mobkit/live/playback_complete",
                         meerkat_live::LIVE_WEBRTC_ANSWER_METHOD,
@@ -5705,6 +5706,7 @@ fn experimental_live_target_preflight(
     response_id: Value,
 ) -> Option<JsonRpcResponse> {
     let strict = method == "mobkit/live/playback_owner/register"
+        || method == "mobkit/live/playback_owner/revoke"
         || params.get("pending_receipt").is_some()
         || params.get("activation_receipt").is_some()
         || params.get("readiness_receipt").is_some();
