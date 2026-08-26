@@ -1576,7 +1576,7 @@ impl SerializedRpcResponseDelivery {
         }
     }
 
-    #[cfg(all(test, feature = "experimental-gpt-live"))]
+    #[cfg(all(test, feature = "experimental-gpt-live-test"))]
     pub(crate) fn with_delivery_for_test(
         response: String,
         delivery: meerkat::surface::LiveWebrtcAnswerDeliveryCustody,
@@ -1607,9 +1607,9 @@ impl SerializedRpcResponseDelivery {
         #[cfg(feature = "experimental-gpt-live")]
         if let Some(custody) = self.delivery.take() {
             return if delivered {
-                custody.delivered().await.map_err(|error| error.to_string())
+                custody.delivered().await
             } else {
-                custody.rejected().await.map_err(|error| error.to_string())
+                custody.rejected().await
             };
         }
         // Keep the public async contract identical when live custody is not
@@ -1658,7 +1658,7 @@ pub fn handle_unified_rpc_json_with_live_arc_delivery<'a>(
             {
                 let _ = custody.rejected().await;
             }
-            return SerializedRpcResponseDelivery { response, delivery };
+            SerializedRpcResponseDelivery { response, delivery }
         }
         #[cfg(not(feature = "experimental-gpt-live"))]
         SerializedRpcResponseDelivery {

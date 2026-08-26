@@ -1863,10 +1863,10 @@ fn retain_live_open_response_delivery(
 }
 
 #[cfg(feature = "experimental-gpt-live")]
-fn retain_live_rpc_response_delivery(
+async fn retain_live_rpc_response_delivery(
     custody: LiveRpcResponseDeliveryCustody,
-) -> impl std::future::Future<Output = Result<(), String>> {
-    async move {
+) -> Result<(), String> {
+    {
         let mut custody = Some(custody);
         let retained = LIVE_RPC_RESPONSE_DELIVERY.try_with(|slot| {
             let mut slot = slot
@@ -2472,6 +2472,9 @@ pub async fn handle_live_method<B: SessionAgentBuilder + 'static>(
 }
 
 #[cfg(feature = "experimental-gpt-live")]
+// A dispatch entry point legitimately carries the whole call context; splitting
+// it into a struct would only move the arity behind a constructor.
+#[allow(clippy::too_many_arguments)]
 async fn handle_live_method_with_host<B: SessionAgentBuilder + 'static>(
     ctx: &GatewayLiveContext,
     service: &Arc<PersistentSessionService<B>>,
@@ -5008,14 +5011,14 @@ async fn handle_live_close(
             Ok(status) => status,
             Err(error) => return live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
         };
-        return match serde_json::to_value(LiveCloseResult { status }) {
+        match serde_json::to_value(LiveCloseResult { status }) {
             Ok(body) => live_success(rpc_id, body),
             Err(error) => live_error(
                 rpc_id,
                 INTERNAL_ERROR_CODE,
                 format!("live close authority projection failed: {error}"),
             ),
-        };
+        }
     }
 
     #[cfg(not(feature = "experimental-gpt-live"))]
@@ -5581,10 +5584,10 @@ mod tests {
     #[cfg(feature = "experimental-gpt-live")]
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     use std::sync::atomic::AtomicBool;
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     use meerkat::experimental_gpt_live::ExperimentalLiveBoundChannelActivator as _;
 
     #[test]
@@ -5833,10 +5836,10 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     struct ReceiptSideband;
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     #[async_trait]
     impl meerkat_live::ProviderWebrtcSidebandSession for ReceiptSideband {
         async fn send_command(
@@ -5863,16 +5866,16 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     struct ReceiptAnswerTransport {
         accepted: AtomicUsize,
         rejected: AtomicUsize,
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     struct ReceiptPendingBoundReady;
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     #[async_trait]
     impl meerkat_live::ProviderWebrtcPendingBoundReadyResolver for ReceiptPendingBoundReady {
         async fn resolve(self: Box<Self>) -> Result<u64, meerkat_live::ProviderWebrtcBrokerError> {
@@ -5880,7 +5883,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     #[async_trait]
     impl meerkat_live::LiveWebrtcAnswerTransport for ReceiptAnswerTransport {
         async fn answer_admitted_offer(
@@ -5934,12 +5937,12 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     struct TestControlPlane {
         binding: meerkat_live::ProviderWebrtcBinding,
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     #[async_trait]
     impl meerkat::experimental_gpt_live::ExperimentalGptLiveControlPlane for TestControlPlane {
         async fn active_binding(
@@ -5983,13 +5986,13 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     struct OrderingActivator {
         machine_bound: Arc<AtomicBool>,
         calls: AtomicUsize,
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     #[async_trait]
     impl meerkat::experimental_gpt_live::ExperimentalLiveBoundChannelActivator for OrderingActivator {
         async fn prepare_bound_channel(
@@ -6026,7 +6029,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     struct TestBoundReadyCustody {
         authority:
             Option<meerkat_runtime::meerkat_machine::LiveWebrtcAnswerExecutionBindingAuthority>,
@@ -6037,7 +6040,7 @@ mod tests {
         rolled_back: Arc<AtomicBool>,
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     #[async_trait]
     impl meerkat::surface::LiveWebrtcBoundReadyCustody for TestBoundReadyCustody {
         async fn commit(mut self: Box<Self>) -> Result<(), String> {
@@ -6055,7 +6058,9 @@ mod tests {
             let _rollback = self
                 .authority
                 .take()
-                .map(|authority| authority.into_rollback());
+                .map(
+                    meerkat_runtime::meerkat_machine::LiveWebrtcAnswerExecutionBindingAuthority::into_rollback,
+                );
             self.activator
                 .deactivate_bound_channel(&self.binding)
                 .await?;
@@ -6064,7 +6069,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     struct OrderingBinder {
         activator: Arc<OrderingActivator>,
         machine_bound: Arc<AtomicBool>,
@@ -6072,7 +6077,7 @@ mod tests {
         rolled_back: Arc<AtomicBool>,
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "experimental-gpt-live-test")]
     #[async_trait]
     impl meerkat::surface::LiveWebrtcBoundReadyBinder for OrderingBinder {
         async fn bind_answer_ready(
