@@ -4025,6 +4025,14 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
                 INTERNAL_ERROR_CODE,
                 format!("generated duplicate live channel id {candidate_channel_id}"),
             ),
+            Some(LiveOpenAdmissionRejection::RevokedChannelId) => live_error(
+                rpc_id,
+                INTERNAL_ERROR_CODE,
+                format!(
+                    "generated live channel id {candidate_channel_id} was previously revoked, \
+                     so admission is refused rather than reusing a revoked identity"
+                ),
+            ),
             Some(LiveOpenAdmissionRejection::LifecycleClosed) => live_error(
                 rpc_id,
                 INVALID_PARAMS_CODE,
@@ -4532,7 +4540,9 @@ fn live_command_result_from_machine_authority(
             serde_json::to_value(LiveTruncateResult::truncated())
                 .map_err(|err| format!("failed to serialize LiveTruncateResult: {err}"))
         }
-        #[cfg(feature = "experimental-gpt-live")]
+        // Unconditional: Meerkat 0.8.30 carries this variant regardless of the
+        // experimental feature, so gating the arm left default builds with a
+        // non-exhaustive match. The refusal holds in both builds.
         LiveCommandPublicKind::CompleteAssistantPlayback => Err(
             "assistant playback terminal must use Meerkat's sealed output-handle facade"
                 .to_string(),
