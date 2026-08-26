@@ -86,6 +86,18 @@ struct GatewayRuntimeOptions {
     /// Presence is identity-first intent. `None` preserves the classic gateway
     /// when no roster is configured; a roster still defaults to eager restore.
     identity_bootstrap_mode: Option<meerkat_mobkit::IdentityBootstrapMode>,
+    /// Exclusive root for session comms identities, when the launch declares
+    /// one.
+    ///
+    /// `meerkat::canonical_session_comms_identity_root(Some(root))` resolves
+    /// `<root>/.rkat/session_comms_identity` and consults no ambient location,
+    /// so a declared root cannot silently fall back to this machine's
+    /// canonical keys. `None` keeps the ambient resolution, which is correct
+    /// for an ordinary launch and is exactly what must NOT happen when a
+    /// rehearsal replays another host's durable member endpoints: the local
+    /// keys are foreign to them, and `register_seeded_member_peer` rightly
+    /// refuses to rewrite a trust endpoint with a foreign key.
+    session_identity_config_root: Option<PathBuf>,
     max_sessions: usize,
     routing_routes: Vec<RuntimeRoute>,
     gating: GatewayGatingConfig,
@@ -308,6 +320,7 @@ impl Default for GatewayRuntimeOptions {
         Self {
             runtime_options: RuntimeOptions::default(),
             identity_bootstrap_mode: None,
+            session_identity_config_root: None,
             max_sessions: 16,
             routing_routes: Vec::new(),
             gating: GatewayGatingConfig::default(),
@@ -799,6 +812,50 @@ mod tests {
             meerkat_mobkit::mob_composition_manifest::CompositionAuthority::Authoritative
         );
         assert_eq!(quiet.declare_spec_update, None);
+    }
+
+    /// The identity-root door must REACH the parsed options, and its absence
+    /// must stay absent.
+    ///
+    /// A declared root is the only thing standing between a rehearsal and this
+    /// machine's ambient keys. If the field parsed but never reached the
+    /// factory the launch would look configured and still resolve local keys,
+    /// which is exactly the substitution that refused a production resume.
+    #[test]
+    fn a_declared_session_identity_root_reaches_the_parsed_options() {
+        let declared = parse_gateway_runtime_options(
+            &json!({
+                "runtime_options": {
+                    "session_identity_config_root": "/rehearsal/root"
+                }
+            }),
+            None,
+        )
+        .expect("session_identity_config_root must pass the allowlist");
+        assert_eq!(
+            declared.session_identity_config_root.as_deref(),
+            Some(std::path::Path::new("/rehearsal/root")),
+            "the declared root must reach the parsed options, not merely avoid rejection"
+        );
+
+        // Silence stays silence: an ambient launch is the ordinary case and
+        // must not acquire a root it never declared.
+        let quiet = parse_gateway_runtime_options(&json!({ "runtime_options": {} }), None)
+            .expect("empty options");
+        assert_eq!(quiet.session_identity_config_root, None);
+
+        // Present-but-empty is a configuration error, NOT an ambient fallback.
+        // Treating it as absent would resolve local keys under a launch that
+        // believed it had declared a root - the silent substitution again,
+        // reached by a different route.
+        let empty = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "session_identity_config_root": "  " } }),
+            None,
+        );
+        assert!(
+            empty.is_err(),
+            "an empty declared root must be refused rather than treated as absent"
+        );
     }
 
     #[test]
@@ -3300,6 +3357,7 @@ fn parse_gateway_runtime_options(
         "mob_composition",
         "declare_spec_update",
         "compaction",
+        "session_identity_config_root",
     ];
     let unsupported = runtime_options
         .keys()
@@ -3316,6 +3374,21 @@ fn parse_gateway_runtime_options(
     let mut parsed = GatewayRuntimeOptions::default();
     if let Some(value) = runtime_options.get("identity_bootstrap_mode") {
         parsed.identity_bootstrap_mode = Some(parse_gateway_identity_bootstrap_mode(value)?);
+    }
+    if let Some(value) = runtime_options.get("session_identity_config_root") {
+        let root = value.as_str().ok_or_else(|| {
+            "runtime_options.session_identity_config_root must be a string path".to_string()
+        })?;
+        if root.trim().is_empty() {
+            return Err(
+                "runtime_options.session_identity_config_root must not be empty".to_string(),
+            );
+        }
+        // Deliberately NOT verified for existence here. This is a config ROOT;
+        // meerkat owns the `.rkat/session_comms_identity` layout beneath it and
+        // is the authority on whether the material is usable. Re-deriving that
+        // rule here would make MobKit a second authority on the same fact.
+        parsed.session_identity_config_root = Some(PathBuf::from(root));
     }
     if let Some(memory_config) = runtime_options.get("memory_config") {
         parsed.runtime_options.memory_backend = Some(parse_gateway_memory_config(
@@ -8379,6 +8452,11 @@ external_addressable = true
         if image_generation {
             factory = factory.with_image_generation_machine(adapter.clone());
         }
+        // Exclusive session-identity root, when the launch declares one. See
+        // `GatewayRuntimeOptions::session_identity_config_root`.
+        if let Some(root) = gateway_options.session_identity_config_root.as_ref() {
+            factory = factory.user_config_root(root.clone());
+        }
         // Live (realtime) needs the SAME factory shape for its per-open
         // credential-resolving realtime session factory; clone before
         // the builder consumes it.
@@ -8742,6 +8820,11 @@ external_addressable = true
         if image_generation {
             factory = factory.with_image_generation_machine(adapter.clone());
         }
+        // Exclusive session-identity root, when the launch declares one. See
+        // `GatewayRuntimeOptions::session_identity_config_root`.
+        if let Some(root) = gateway_options.session_identity_config_root.as_ref() {
+            factory = factory.user_config_root(root.clone());
+        }
         let mut inner_builder =
             FactoryAgentBuilder::new(factory, gateway_agent_config(&gateway_options));
         inner_builder.default_blob_store = Some(blob_store.clone());
@@ -8861,6 +8944,11 @@ external_addressable = true
                     .session_store(Arc::new(meerkat::MemoryStore::new()));
                 if image_generation {
                     factory = factory.with_image_generation_machine(adapter.clone());
+                }
+                // Exclusive session-identity root, when declared. See
+                // `GatewayRuntimeOptions::session_identity_config_root`.
+                if let Some(root) = gateway_options.session_identity_config_root.as_ref() {
+                    factory = factory.user_config_root(root.clone());
                 }
                 let mut inner_builder =
                     FactoryAgentBuilder::new(factory, gateway_agent_config(&gateway_options));
