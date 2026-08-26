@@ -82,14 +82,23 @@ pub trait ContinuityStore: Send + Sync {
     /// `None` when no record binds the session (never-registered sessions,
     /// rotated-away sessions) or when the substrate does not support the
     /// lookup - callers must then keep their registration-required refusal.
+    /// Resolve the record bound to `session_id`, with the facts a
+    /// registration would carry.
+    ///
+    /// REQUIRED, deliberately. This used to default to `Ok(None)`, which made
+    /// "authoritatively no record" and "this store cannot answer"
+    /// indistinguishable at every call site. Both owner-authority passes read
+    /// this to decide whether an identity has a durable owner, and both treat
+    /// absence as ordinary and skip - so a store that merely inherited the
+    /// default silently caused owner pre-registration to do nothing, and the
+    /// prepare-time durable-tail refusal became unclearable. The gateway
+    /// bridge inherited exactly that. An implementor that has no answer must
+    /// now say so in its own words rather than borrow a negative that reads as
+    /// fact.
     async fn resolve_record_by_session(
         &self,
         session_id: &meerkat_core::types::SessionId,
-    ) -> Result<Option<(ContinuityRecord, FencingToken, CheckpointVersion)>, ContinuityStoreError>
-    {
-        let _ = session_id;
-        Ok(None)
-    }
+    ) -> Result<Option<(ContinuityRecord, FencingToken, CheckpointVersion)>, ContinuityStoreError>;
 
     /// Load a previously saved session snapshot.
     async fn load_session_snapshot(
