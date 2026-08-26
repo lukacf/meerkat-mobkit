@@ -3918,9 +3918,16 @@ impl IdentityRuntime {
     /// On a blob-only store the older best-effort semantics stand, because there
     /// is no head-canonical projection requiring the cursor.
     ///
-    /// A non-Ready record still skips on EITHER store: a newly added roster
-    /// identity legitimately has no prior session, and the ordinary create path
-    /// owns it. That is the creation path, not a degraded read.
+    /// Only an EXPLICIT `Uninitialized` skips, on either store shape: a newly
+    /// added roster identity legitimately has no prior session and the ordinary
+    /// create path owns it. That is the creation path, not a degraded read.
+    ///
+    /// The other two non-Ready outcomes are NOT the creation path. `Broken` is
+    /// terminal on a head-canonical store, because the identity HAS durable
+    /// state. A MISSING map entry is terminal on both shapes, because the
+    /// `ContinuityStore` contract requires an entry per requested identity and
+    /// says a missing one is a provider error rather than an implicit
+    /// `Uninitialized`.
     ///
     /// Identity and generation come from the Ready record; the fencing token and
     /// fence-current come from `resolve_record_by_session`. Both sources must
@@ -11677,6 +11684,34 @@ mod reset_reprofile_tests {
                 .is_err(),
             "Broken is not the creation path: an identity with unusable durable state must be \
              terminal on a head-canonical store rather than silently recreated"
+        );
+
+        // BLOB-ONLY Broken control, proving the accepted legacy disposition
+        // rather than assuming it: no head-canonical projection needs the cursor
+        // there, so Broken degrades to best-effort - ZERO states, and NOT an
+        // error. Without this the head-canonical assertion above would be
+        // consistent with Broken being terminal everywhere, which is not what
+        // was accepted.
+        let broken_blob = scripted(
+            Some(
+                crate::identity_first::types::ContinuityResolveState::Broken {
+                    failure: crate::identity_first::types::ContinuityFailure {
+                        identity: identity.clone(),
+                        kind:
+                            crate::identity_first::types::ContinuityFailureKind::SnapshotCorrupted,
+                        record: None,
+                        detail: "scripted broken head, blob-only".to_string(),
+                    },
+                },
+            ),
+            false,
+        );
+        let blob_states =
+            IdentityRuntime::resolve_persisted_owner_states(&broken_blob, &roster).await?;
+        assert!(
+            blob_states.is_empty(),
+            "on a blob-only store Broken keeps the legacy best-effort disposition: zero states, \
+             not an error"
         );
 
         // INV-06 before any store read: a duplicated roster identity must be
