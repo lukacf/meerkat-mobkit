@@ -8958,6 +8958,63 @@ builtins = true
         );
     }
 
+    /// Normalization is IDEMPOTENT at the byte level, proven rather than argued.
+    ///
+    /// Piece 2 normalizes each definition once, before both the pre-prepare owner
+    /// callback and MobRuntimeSpec construction. `MobRuntime::prepare` then
+    /// applies `auto_mark_declared_resume_overrides` again on its own copy. If
+    /// that second application changed anything, the callback and the runtime
+    /// would disagree about the definition - the byte-identity violation that got
+    /// the first wiring attempt rejected.
+    ///
+    /// An idempotency ARGUMENT is not evidence: a transform that happens to be
+    /// idempotent for the cases I construct is not idempotent. So this compares
+    /// exact serialized bytes.
+    ///
+    /// NON-VACUITY IS ASSERTED FIRST. If the first application changed nothing,
+    /// once-versus-twice would be trivially equal and this test would pass while
+    /// proving nothing about a transform that never fired. The fixture is chosen
+    /// so the first pass DOES mark declared overrides.
+    #[test]
+    fn definition_normalization_is_byte_identical_on_reapplication() {
+        let base = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "normalization-idempotence"
+
+[profiles.worker]
+model = "gpt-5.5"
+
+[profiles.worker.tools]
+builtins = true
+"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+
+        let raw_bytes = serde_json::to_vec(&base).unwrap_or_else(|e| panic!("{e}"));
+
+        let mut once = base.clone();
+        auto_mark_declared_resume_overrides(&mut once);
+        let once_bytes = serde_json::to_vec(&once).unwrap_or_else(|e| panic!("{e}"));
+
+        assert_ne!(
+            raw_bytes, once_bytes,
+            "the fixture must be one the transform ACTUALLY changes, or once-vs-twice equality \
+             proves nothing about idempotence"
+        );
+
+        let mut twice = once.clone();
+        auto_mark_declared_resume_overrides(&mut twice);
+        let twice_bytes = serde_json::to_vec(&twice).unwrap_or_else(|e| panic!("{e}"));
+
+        assert_eq!(
+            once_bytes, twice_bytes,
+            "re-applying normalization must be byte-identical: prepare applies it again on its own \
+             copy, so any change here means the owner callback and the runtime disagree about the \
+             definition"
+        );
+    }
+
     #[test]
     fn image_generation_substrate_follows_profile_tool_config() {
         let definition = meerkat_mob::MobDefinition::from_toml(
