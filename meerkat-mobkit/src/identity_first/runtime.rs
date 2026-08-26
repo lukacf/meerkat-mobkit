@@ -3894,6 +3894,270 @@ impl IdentityRuntime {
     /// Cancellation-safe compatibility restore used by embedders that pass
     /// an RPC identity context without attaching an
     /// [`IdentityFirstRuntimeContext`] to the unified runtime.
+    /// Resolve the owner state for each rostered identity from durable
+    /// continuity, with NO write target required.
+    ///
+    /// Layer 1 of the pre-prepare registration path. Separated from publication
+    /// on purpose: `register_persisted_continuity_owners` publishes through
+    /// `SessionBridge`, which is a LATE indirection - it arrives with the
+    /// identity context, after `MobRuntime::prepare` has already run. Meerkat's
+    /// durable-tail recovery executes DURING prepare, so anything needing the
+    /// bridge is structurally too late for it, and the bridge's absence makes
+    /// that method return `Ok(0)`: a silent nothing that logs as a boot with
+    /// nothing to register. This function needs only the continuity store, which
+    /// the caller holds long before prepare.
+    ///
+    /// # Strictness depends on the store, deliberately
+    ///
+    /// On a store with an INCREMENTAL (head-canonical) channel, an unreadable
+    /// fact is TERMINAL. A Ready record followed by an error or an empty answer
+    /// from the exact session lookup returns `Err`, and the caller must fail this
+    /// boot attempt and retry rather than proceed. Skipping there reproduces the
+    /// exact defect this path exists to remove: publish nothing, run prepare,
+    /// let inner recovery commit, and let the projection hit the backstop - and
+    /// that boot is NOT byte-neutral, because the inner commit has already
+    /// landed by the time the refusal fires.
+    ///
+    /// On a blob-only store the older best-effort semantics stand, because there
+    /// is no head-canonical projection requiring the cursor.
+    ///
+    /// A non-Ready record still skips on EITHER store: a newly added roster
+    /// identity legitimately has no prior session, and the ordinary create path
+    /// owns it. That is the creation path, not a degraded read.
+    ///
+    /// Identity and generation come from the Ready record; the fencing token and
+    /// fence-current come from `resolve_record_by_session`. Both sources must
+    /// agree on identity AND session AND generation - a mismatch is always
+    /// `Err`, on any store, because publishing an authority the two sources
+    /// dispute is worse than refusing to boot.
+    pub async fn resolve_persisted_owner_states(
+        continuity_store: &Arc<dyn super::ContinuityStore>,
+        roster: &[DurableAgentSpec],
+    ) -> Result<
+        Vec<(
+            meerkat_core::types::SessionId,
+            super::adapters::SessionRuntimeState,
+        )>,
+        IdentityRuntimeError,
+    > {
+        // INV-06 FIRST, before any store read or publication. Roster uniqueness
+        // used to be validated in the later roster-registration path, which was
+        // downstream of everything; hoisting owner registration ahead of prepare
+        // also hoisted it ahead of that guard. A duplicated identity would
+        // otherwise reach register_session twice with two different resolved
+        // states and be rejected as an ownership conflict - reporting a
+        // conflict when the real fault is a malformed roster.
+        //
+        // Moving work earlier moves it before the checks that used to protect
+        // it. That is the same class as everything else this hoist touched.
+        Self::validate_roster_uniqueness(roster)?;
+        // The discriminator for strictness. A head-canonical store projects
+        // through the cursor, so an owner it cannot report is an owner whose
+        // recovery will refuse; a blob-only store has no such projection.
+        let head_canonical = continuity_store.as_incremental_sessions().is_some();
+        let mut states = Vec::new();
+        for spec in roster {
+            let identity = &spec.identity;
+            let resolved = match continuity_store
+                .resolve_many(std::slice::from_ref(identity))
+                .await
+            {
+                Ok(resolved) => resolved,
+                Err(error) if head_canonical => {
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "continuity resolution for {identity} failed before prepare on a \
+                         head-canonical store, so no owner state can be published and recovery \
+                         would refuse after an inner commit that is not byte-neutral; failing \
+                         this boot attempt instead: {error}"
+                    )));
+                }
+                Err(error) => {
+                    tracing::info!(
+                        %identity,
+                        %error,
+                        "continuity resolution unavailable before prepare on a blob-only store; \
+                         no owner state for this identity"
+                    );
+                    continue;
+                }
+            };
+            // THREE distinct outcomes, not two. Collapsing them into one skip
+            // treats a Broken identity as one that never existed, which is how a
+            // broken continuity head gets silently recreated instead of refused.
+            let record = match resolved.get(identity) {
+                // The ONLY creation path. resolve_many answered, and its answer
+                // is that this identity has never persisted a session.
+                Some(super::types::ContinuityResolveState::Uninitialized) => {
+                    tracing::info!(
+                        %identity,
+                        head_canonical,
+                        "continuity reports Uninitialized before prepare; ordinary create path \
+                         owns this identity"
+                    );
+                    continue;
+                }
+                Some(super::types::ContinuityResolveState::Ready { record }) => record,
+                // Broken is NOT a creation path: the identity HAS durable state
+                // and the store is telling us it cannot be used. Publishing
+                // nothing and letting prepare proceed means recovery meets an
+                // empty owner map for a session that exists.
+                Some(super::types::ContinuityResolveState::Broken { failure }) => {
+                    if head_canonical {
+                        return Err(IdentityRuntimeError::Internal(format!(
+                            "continuity for {identity} is Broken before prepare ({failure:?}), so \
+                             no owner state can be published and recovery would meet an empty \
+                             owner map for a session that exists; failing this boot attempt"
+                        )));
+                    }
+                    tracing::info!(
+                        %identity,
+                        ?failure,
+                        "continuity Broken before prepare on a blob-only store; no owner state"
+                    );
+                    continue;
+                }
+                // A PROVIDER ERROR on every store shape, not a capability
+                // difference. The ContinuityStore trait doc is explicit:
+                // "resolve_many MUST return an entry for every requested
+                // identity. Missing entries are treated as a provider error, not
+                // implicit Uninitialized." So this is terminal regardless of
+                // head_canonical - a store that violates its own contract has
+                // told us nothing about this identity, and inferring
+                // Uninitialized from silence is precisely what the contract
+                // forbids.
+                None => {
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "continuity resolution returned no entry for {identity} before prepare, \
+                         which its contract forbids: resolve_many must answer for every requested \
+                         identity and a missing entry is a provider error, not an implicit \
+                         Uninitialized"
+                    )));
+                }
+            };
+            let session_id = record.session_id.clone();
+            let bound = match continuity_store
+                .resolve_record_by_session(&session_id)
+                .await
+            {
+                Ok(bound) => bound,
+                Err(error) if head_canonical => {
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "continuity fence lookup for {identity} session {session_id} failed \
+                         before prepare on a head-canonical store after a Ready record; failing \
+                         this boot attempt rather than letting recovery commit and refuse: \
+                         {error}"
+                    )));
+                }
+                Err(error) => {
+                    tracing::info!(
+                        %identity,
+                        %session_id,
+                        %error,
+                        "continuity fence lookup unavailable before prepare on a blob-only \
+                         store; no owner state for this session"
+                    );
+                    continue;
+                }
+            };
+            let Some((bound_record, fencing_token, fence_current)) = bound else {
+                if head_canonical {
+                    // A Ready record naming a session the substrate will not
+                    // bind is not a creation path - the record asserts the
+                    // session exists. On a head-canonical store that is the
+                    // unreadable-fact case, and it is terminal.
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "continuity reports a Ready record for {identity} at session \
+                         {session_id} but the substrate binds no fence for it before prepare, \
+                         so no owner state can be published on a head-canonical store"
+                    )));
+                }
+                tracing::info!(
+                    %identity,
+                    %session_id,
+                    "no substrate fence binds this session before prepare on a blob-only store; \
+                     no owner state"
+                );
+                continue;
+            };
+            // Exact agreement on all three, on EITHER store shape. The
+            // pre-activation pass checked identity and session; generation is
+            // added because the published state CARRIES a generation, and a
+            // state whose generation came from one source while its fence came
+            // from another is an authority neither source asserted.
+            if bound_record.session_id != session_id
+                || bound_record.identity != *identity
+                || bound_record.generation != record.generation
+            {
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "continuity for {identity} resolves to session {session_id} generation {:?} \
+                     but the substrate binds that session to {}/{}/{:?}, so no owner state can \
+                     be resolved before prepare",
+                    record.generation,
+                    bound_record.identity,
+                    bound_record.session_id,
+                    bound_record.generation
+                )));
+            }
+            states.push((
+                session_id,
+                super::adapters::SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: bound_record.generation,
+                    fencing_token,
+                    checkpoint_version: fence_current,
+                },
+            ));
+        }
+        Ok(states)
+    }
+
+    /// Publish resolved owner states DIRECTLY to the adapter, before
+    /// `MobRuntime::prepare`.
+    ///
+    /// Layer 2. Takes the same `Arc<ContinuitySessionStoreAdapter>` the caller
+    /// will hand to the runtime, so the states land in the exact map that
+    /// meerkat's durable-tail recovery will consult during prepare.
+    ///
+    /// Returns how many owners were published. A caller that resolved states and
+    /// published NONE has a real problem and this cannot hide it: unlike
+    /// `register_persisted_continuity_owners`, there is no bridge to be absent,
+    /// so there is no path where this reports success without having written.
+    /// That method's `let Some(bridge) = ... else { return Ok(0) }` is exactly
+    /// the silent nothing this layer exists to avoid.
+    ///
+    /// Idempotent by construction: `register_session` refuses an identity or
+    /// generation change and refuses a fencing-token regression, so republishing
+    /// the same facts later - through the bridge, after context installation -
+    /// confirms rather than conflicts.
+    pub async fn publish_persisted_owner_states(
+        adapter: &Arc<super::adapters::ContinuitySessionStoreAdapter>,
+        states: &[(
+            meerkat_core::types::SessionId,
+            super::adapters::SessionRuntimeState,
+        )],
+    ) -> Result<usize, IdentityRuntimeError> {
+        let mut published = 0usize;
+        for (session_id, state) in states {
+            adapter
+                .register_session(session_id, state.clone())
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!(
+                        "publishing the persisted owner of {} session {session_id} before \
+                         prepare: {error}",
+                        state.identity
+                    ))
+                })?;
+            published += 1;
+        }
+        tracing::info!(
+            published,
+            resolved = states.len(),
+            "published persisted continuity owners before mob prepare"
+        );
+        Ok(published)
+    }
+
     /// Register the owning identity of every persisted session on the roster,
     /// without materializing anything.
     ///
@@ -11077,6 +11341,369 @@ mod reset_reprofile_tests {
         async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
             Ok(())
         }
+    }
+
+    /// A head-canonical store that answers Ready and then fails the exact
+    /// session lookup must make pre-prepare resolution TERMINAL, not skip.
+    ///
+    /// Skipping is the defect: publish nothing, let prepare run, let inner
+    /// recovery commit, and let the projection hit the unregistered-owner
+    /// backstop - a boot that is NOT byte-neutral, because the inner commit has
+    /// already landed when the refusal fires. Failing here lets the caller retry
+    /// a boot that has changed nothing.
+    #[tokio::test]
+    async fn strict_preflight_refuses_rather_than_skipping_on_a_head_canonical_store()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::identity_first::types::{
+            CheckpointVersion, ContinuityGeneration, ContinuityRecord,
+        };
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum FenceAnswer {
+            Error,
+            Absent,
+            Matching,
+        }
+
+        struct ScriptedFenceStore {
+            inner: Arc<crate::identity_first::local_store::LocalContinuityStore>,
+            record: ContinuityRecord,
+            answer: FenceAnswer,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::identity_first::ContinuityStore for ScriptedFenceStore {
+            async fn resolve_many(
+                &self,
+                identities: &[AgentIdentity],
+            ) -> Result<
+                std::collections::BTreeMap<
+                    AgentIdentity,
+                    crate::identity_first::types::ContinuityResolveState,
+                >,
+                crate::identity_first::types::ContinuityStoreError,
+            > {
+                let mut out = std::collections::BTreeMap::new();
+                for identity in identities {
+                    out.insert(
+                        identity.clone(),
+                        crate::identity_first::types::ContinuityResolveState::Ready {
+                            record: self.record.clone(),
+                        },
+                    );
+                }
+                Ok(out)
+            }
+
+            async fn resolve_record_by_session(
+                &self,
+                _session_id: &meerkat_core::types::SessionId,
+            ) -> Result<
+                Option<(
+                    ContinuityRecord,
+                    crate::identity_first::types::FencingToken,
+                    CheckpointVersion,
+                )>,
+                crate::identity_first::types::ContinuityStoreError,
+            > {
+                match self.answer {
+                    FenceAnswer::Error => Err(
+                        crate::identity_first::types::ContinuityStoreError::Transient(
+                            "scripted fence failure".to_string(),
+                        ),
+                    ),
+                    FenceAnswer::Absent => Ok(None),
+                    FenceAnswer::Matching => Ok(Some((
+                        self.record.clone(),
+                        crate::identity_first::types::FencingToken::new(1),
+                        CheckpointVersion::new(7),
+                    ))),
+                }
+            }
+
+            async fn load_session_snapshot(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<
+                Option<crate::identity_first::types::SessionSnapshot>,
+                crate::identity_first::types::ContinuityStoreError,
+            > {
+                self.inner.load_session_snapshot(session_id).await
+            }
+
+            async fn save_session_snapshot(
+                &self,
+                identity: &AgentIdentity,
+                session_id: &meerkat_core::types::SessionId,
+                generation: crate::identity_first::types::ContinuityGeneration,
+                version: CheckpointVersion,
+                fencing_token: crate::identity_first::types::FencingToken,
+                snapshot: &crate::identity_first::types::SessionSnapshot,
+            ) -> Result<(), crate::identity_first::types::ContinuityStoreError> {
+                self.inner
+                    .save_session_snapshot(
+                        identity,
+                        session_id,
+                        generation,
+                        version,
+                        fencing_token,
+                        snapshot,
+                    )
+                    .await
+            }
+
+            async fn upsert_continuity_record(
+                &self,
+                record: &ContinuityRecord,
+                fencing_token: crate::identity_first::types::FencingToken,
+            ) -> Result<(), crate::identity_first::types::ContinuityStoreError> {
+                self.inner
+                    .upsert_continuity_record(record, fencing_token)
+                    .await
+            }
+
+            async fn delete_continuity_record(
+                &self,
+                identity: &AgentIdentity,
+                fencing_token: crate::identity_first::types::FencingToken,
+            ) -> Result<(), crate::identity_first::types::ContinuityStoreError> {
+                self.inner
+                    .delete_continuity_record(identity, fencing_token)
+                    .await
+            }
+
+            // Delegated so this double IS head-canonical, which is the whole
+            // point: the strict branch is selected by as_incremental_sessions()
+            // being Some, so a double that returned None would silently test the
+            // blob-only path and pass while proving nothing.
+            fn as_incremental_sessions(
+                &self,
+            ) -> Option<Arc<dyn crate::identity_first::contracts::ContinuityIncrementalSessions>>
+            {
+                self.inner.as_incremental_sessions()
+            }
+        }
+
+        let identity = AgentIdentity::parse("domain:calendar")?;
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:domain:calendar:0")?,
+            session_id: meerkat_core::types::SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let roster = vec![durable_spec(identity.clone(), "calendar")];
+
+        for answer in [FenceAnswer::Error, FenceAnswer::Absent] {
+            let store: Arc<dyn crate::identity_first::ContinuityStore> =
+                Arc::new(ScriptedFenceStore {
+                    inner: Arc::new(
+                        crate::identity_first::local_store::LocalContinuityStore::in_memory()?,
+                    ),
+                    record: record.clone(),
+                    answer,
+                });
+            let outcome = IdentityRuntime::resolve_persisted_owner_states(&store, &roster).await;
+            assert!(
+                outcome.is_err(),
+                "a Ready record followed by an unreadable fence must be TERMINAL on a \
+                 head-canonical store, not a skip that lets prepare proceed"
+            );
+        }
+
+        // Control: the same double with a matching fence resolves one state, so
+        // the refusals above are about the unreadable fence and not about the
+        // double being unusable.
+        let store: Arc<dyn crate::identity_first::ContinuityStore> = Arc::new(ScriptedFenceStore {
+            inner: Arc::new(crate::identity_first::local_store::LocalContinuityStore::in_memory()?),
+            record: record.clone(),
+            answer: FenceAnswer::Matching,
+        });
+        let states = IdentityRuntime::resolve_persisted_owner_states(&store, &roster).await?;
+        assert_eq!(
+            states.len(),
+            1,
+            "a matching fence must resolve exactly one owner state"
+        );
+        assert_eq!(states[0].1.identity, identity);
+        assert_eq!(states[0].1.checkpoint_version, CheckpointVersion::new(7));
+
+        // The three resolve-state outcomes, which must NOT collapse into one
+        // skip. Only Uninitialized is the creation path.
+        struct ScriptedResolveStore {
+            inner: Arc<crate::identity_first::local_store::LocalContinuityStore>,
+            state: Option<crate::identity_first::types::ContinuityResolveState>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::identity_first::ContinuityStore for ScriptedResolveStore {
+            async fn resolve_many(
+                &self,
+                identities: &[AgentIdentity],
+            ) -> Result<
+                std::collections::BTreeMap<
+                    AgentIdentity,
+                    crate::identity_first::types::ContinuityResolveState,
+                >,
+                crate::identity_first::types::ContinuityStoreError,
+            > {
+                let mut out = std::collections::BTreeMap::new();
+                if let Some(state) = self.state.clone() {
+                    for identity in identities {
+                        out.insert(identity.clone(), state.clone());
+                    }
+                }
+                // state == None means we deliberately answer with NO entry,
+                // which the trait contract forbids.
+                Ok(out)
+            }
+
+            async fn resolve_record_by_session(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<
+                Option<(
+                    ContinuityRecord,
+                    crate::identity_first::types::FencingToken,
+                    CheckpointVersion,
+                )>,
+                crate::identity_first::types::ContinuityStoreError,
+            > {
+                self.inner.resolve_record_by_session(session_id).await
+            }
+
+            async fn load_session_snapshot(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<
+                Option<crate::identity_first::types::SessionSnapshot>,
+                crate::identity_first::types::ContinuityStoreError,
+            > {
+                self.inner.load_session_snapshot(session_id).await
+            }
+
+            async fn save_session_snapshot(
+                &self,
+                identity: &AgentIdentity,
+                session_id: &meerkat_core::types::SessionId,
+                generation: crate::identity_first::types::ContinuityGeneration,
+                version: CheckpointVersion,
+                fencing_token: crate::identity_first::types::FencingToken,
+                snapshot: &crate::identity_first::types::SessionSnapshot,
+            ) -> Result<(), crate::identity_first::types::ContinuityStoreError> {
+                self.inner
+                    .save_session_snapshot(
+                        identity,
+                        session_id,
+                        generation,
+                        version,
+                        fencing_token,
+                        snapshot,
+                    )
+                    .await
+            }
+
+            async fn upsert_continuity_record(
+                &self,
+                record: &ContinuityRecord,
+                fencing_token: crate::identity_first::types::FencingToken,
+            ) -> Result<(), crate::identity_first::types::ContinuityStoreError> {
+                self.inner
+                    .upsert_continuity_record(record, fencing_token)
+                    .await
+            }
+
+            async fn delete_continuity_record(
+                &self,
+                identity: &AgentIdentity,
+                fencing_token: crate::identity_first::types::FencingToken,
+            ) -> Result<(), crate::identity_first::types::ContinuityStoreError> {
+                self.inner
+                    .delete_continuity_record(identity, fencing_token)
+                    .await
+            }
+
+            fn as_incremental_sessions(
+                &self,
+            ) -> Option<Arc<dyn crate::identity_first::contracts::ContinuityIncrementalSessions>>
+            {
+                self.inner.as_incremental_sessions()
+            }
+        }
+
+        // Built once with `?` rather than `.expect()` inside the closure: this
+        // crate denies clippy::expect_used, and --lib alone does not compile the
+        // test targets, so only --all-targets surfaces it.
+        let scripted_inner =
+            Arc::new(crate::identity_first::local_store::LocalContinuityStore::in_memory()?);
+        let scripted = |state: Option<crate::identity_first::types::ContinuityResolveState>| {
+            let store: Arc<dyn crate::identity_first::ContinuityStore> =
+                Arc::new(ScriptedResolveStore {
+                    inner: Arc::clone(&scripted_inner),
+                    state,
+                });
+            store
+        };
+
+        // Uninitialized: the ONLY creation path. Zero states, no error.
+        let uninit = scripted(Some(
+            crate::identity_first::types::ContinuityResolveState::Uninitialized,
+        ));
+        let states = IdentityRuntime::resolve_persisted_owner_states(&uninit, &roster).await?;
+        assert!(
+            states.is_empty(),
+            "Uninitialized is the creation path: no owner state, and NOT an error"
+        );
+
+        // Missing entry: a provider-contract violation, terminal on ANY store.
+        let missing = scripted(None);
+        assert!(
+            IdentityRuntime::resolve_persisted_owner_states(&missing, &roster)
+                .await
+                .is_err(),
+            "resolve_many must answer for every requested identity; a missing entry is a provider \
+             error, not an implicit Uninitialized, and must not be inferred as the creation path"
+        );
+
+        // Broken: the identity HAS durable state and the store says it is
+        // unusable. Terminal on a head-canonical store - publishing nothing and
+        // letting prepare proceed means recovery meets an empty owner map for a
+        // session that exists, which is the defect, not a creation.
+        let broken = scripted(Some(
+            crate::identity_first::types::ContinuityResolveState::Broken {
+                failure: crate::identity_first::types::ContinuityFailure {
+                    identity: identity.clone(),
+                    kind: crate::identity_first::types::ContinuityFailureKind::SnapshotCorrupted,
+                    record: None,
+                    detail: "scripted broken head".to_string(),
+                },
+            },
+        ));
+        assert!(
+            IdentityRuntime::resolve_persisted_owner_states(&broken, &roster)
+                .await
+                .is_err(),
+            "Broken is not the creation path: an identity with unusable durable state must be \
+             terminal on a head-canonical store rather than silently recreated"
+        );
+
+        // INV-06 before any store read: a duplicated roster identity must be
+        // rejected as a malformed roster, NOT surface later as an ownership
+        // conflict from register_session being called twice.
+        let duplicated = vec![
+            durable_spec(identity.clone(), "calendar"),
+            durable_spec(identity.clone(), "calendar"),
+        ];
+        let ok_store = scripted(Some(
+            crate::identity_first::types::ContinuityResolveState::Uninitialized,
+        ));
+        assert!(
+            IdentityRuntime::resolve_persisted_owner_states(&ok_store, &duplicated)
+                .await
+                .is_err(),
+            "roster uniqueness (INV-06) must be validated before the first store read"
+        );
+        Ok(())
     }
 
     /// Herd-investigation park: a build the HOST deterministically rejects
