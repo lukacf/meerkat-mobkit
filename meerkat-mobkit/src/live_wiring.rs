@@ -30,8 +30,12 @@ use meerkat::session_runtime::live_orchestration::{
     LiveSeedWindow, RealtimeSessionOpenProjectionError,
 };
 use meerkat::session_runtime::realtime_credentials::RealtimeCurrentConfigSource;
+// The host + its config are needed by the DEFAULT build now, because the
+// stock truncate path routes through the owner seam. Only the projection
+// type remains experimental-only.
 #[cfg(feature = "experimental-gpt-live")]
-use meerkat::surface::{ServiceLiveProjection, ServiceMemberLiveHost, ServiceMemberLiveHostConfig};
+use meerkat::surface::ServiceLiveProjection;
+use meerkat::surface::{ServiceMemberLiveHost, ServiceMemberLiveHostConfig};
 use meerkat_client::realtime_session::{RealtimeSessionFactory, RealtimeSessionOpenConfig};
 #[cfg(feature = "experimental-gpt-live")]
 use meerkat_contracts::LivePlaybackCompleteParams;
@@ -2313,15 +2317,17 @@ pub fn live_rpc_handler_with_capabilities<B: SessionAgentBuilder + 'static>(
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+// Ungated: the DEFAULT build now needs a `ServiceMemberLiveHost` too, to reach
+// the stock truncate owner seam. The only experimental-specific line in the
+// body already carries its own inner cfg.
 fn shared_live_host<B: SessionAgentBuilder + 'static>(
     ctx: &GatewayLiveContext,
     service: &Arc<PersistentSessionService<B>>,
     machine: &Arc<MeerkatMachine>,
 ) -> ServiceMemberLiveHost<B> {
     let host = ServiceMemberLiveHost::new(ServiceMemberLiveHostConfig {
-        service: Arc::clone(&service),
-        runtime_adapter: Arc::clone(&machine),
+        service: Arc::clone(service),
+        runtime_adapter: Arc::clone(machine),
         host: Arc::clone(&ctx.host),
         ws_state: Some(Arc::clone(&ctx.ws_state)),
         base_url: Some(ctx.ws_base_url.clone()),
@@ -2460,7 +2466,7 @@ pub async fn handle_live_method<B: SessionAgentBuilder + 'static>(
         "mobkit/live/send_input" => handle_live_send_input(ctx, machine, params, rpc_id).await,
         "mobkit/live/commit_input" => handle_live_commit_input(ctx, machine, params, rpc_id).await,
         "mobkit/live/interrupt" => handle_live_interrupt(ctx, machine, params, rpc_id).await,
-        "mobkit/live/truncate" => handle_live_truncate(ctx, machine, params, rpc_id).await,
+        "mobkit/live/truncate" => handle_live_truncate(ctx, service, machine, params, rpc_id).await,
         _ => unreachable!("LiveOperation::from_method admitted only known methods"),
     }
 }
@@ -5409,12 +5415,20 @@ async fn handle_live_interrupt(
 }
 
 #[cfg(not(feature = "experimental-gpt-live"))]
-/// A7: `mobkit/live/truncate` — truncate an assistant item at the given
-/// playback cursor. Port of the reference `handle_live_truncate`; maps to
-/// `LiveAdapterCommand::TruncateAssistantOutput` (no webrtc output-audio
-/// discard arm — the mobkit gateway mounts the WS transport only).
-async fn handle_live_truncate(
+/// A7: `mobkit/live/truncate` - truncate an assistant item at the given
+/// playback cursor, through Meerkat's OWNER SEAM.
+///
+/// This used to construct `LiveAdapterCommand::TruncateAssistantOutput`
+/// directly. At Meerkat 0.8.30 that command requires an `InteractionId` which
+/// is "resolved from the session's admitted playback target, never minted by a
+/// caller or surface", so a downstream surface structurally cannot build it, by
+/// design. `ServiceMemberLiveHost::truncate_stock_live_output` delegates to the
+/// canonical `LiveOrchestrator` with the legacy item/content cursor and exposes
+/// no interaction argument - which is why the whole command/acceptance/authority
+/// round trip collapses into one call here.
+async fn handle_live_truncate<B: SessionAgentBuilder + 'static>(
     ctx: &GatewayLiveContext,
+    service: &Arc<PersistentSessionService<B>>,
     machine: &Arc<MeerkatMachine>,
     params: &Value,
     rpc_id: Value,
@@ -5423,57 +5437,53 @@ async fn handle_live_truncate(
         Ok(p) => p,
         Err(resp) => return *resp,
     };
-    // Validate item_id is non-empty. content_index is `u32` and
-    // audio_played_ms is `u64`, so the type system already rejects negatives
-    // at deserialization (`>= 0` is satisfied by construction).
-    if parsed.item_id.is_empty() {
-        return live_error(rpc_id, INVALID_PARAMS_CODE, "item_id must be non-empty");
-    }
+    // 0.8.30 made `item_id` and `content_index` optional on the wire because
+    // EXPERIMENTAL channels address output by opaque `output_id` instead. The
+    // stock path still requires the provider address, and a missing one is a
+    // typed refusal rather than a fabricated empty value - the same rule the
+    // transcript path already applies: never fabricate empty identity.
+    let Some(item_id) = parsed
+        .item_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return live_error(
+            rpc_id,
+            INVALID_PARAMS_CODE,
+            "item_id must be a non-empty provider item address on the stock live path",
+        );
+    };
+    // Deliberately NOT defaulted to 0: truncating content index 0 when the
+    // caller meant another part would silently discard the wrong content.
+    let Some(content_index) = parsed.content_index else {
+        return live_error(
+            rpc_id,
+            INVALID_PARAMS_CODE,
+            "content_index is required on the stock live truncate path",
+        );
+    };
 
     let channel_id = LiveChannelId::new(&parsed.channel_id);
-    let command_kind =
-        meerkat_runtime::meerkat_machine::dsl::LiveCommandPublicKind::TruncateAssistantOutput;
-    let Some(session_id) = machine.live_session_for_active_channel(&channel_id).await else {
-        return live_unbound_command_error_response(rpc_id, machine, &channel_id, command_kind)
-            .await;
-    };
-    let command = LiveAdapterCommand::TruncateAssistantOutput {
-        item_id: parsed.item_id.clone(),
-        content_index: parsed.content_index,
-        audio_played_ms: parsed.audio_played_ms,
-    };
-
-    match ctx.host.send_command_observed(&channel_id, command).await {
-        Ok(acceptance) => {
-            let authority = match machine
-                .resolve_live_command_result(&session_id, &acceptance)
-                .await
-            {
-                Ok(authority) => authority,
-                Err(error) => {
-                    return live_error(
-                        rpc_id,
-                        INTERNAL_ERROR_CODE,
-                        format!("live truncate authority rejected result: {error}"),
-                    );
-                }
-            };
-            match live_command_result_from_machine_authority(&authority, command_kind) {
-                Ok(value) => live_success(rpc_id, value),
-                Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error),
-            }
-        }
-        Err(err) => {
-            live_command_error_response(
-                rpc_id,
-                machine,
-                &session_id,
-                &channel_id,
-                command_kind,
-                &err,
-            )
-            .await
-        }
+    let host = shared_live_host(ctx, service, machine);
+    match host
+        .truncate_stock_live_output(
+            &channel_id,
+            item_id,
+            content_index,
+            parsed.audio_played_ms,
+            // Forwarded UNCHANGED. Omission is explicit `Unmeasured` coverage
+            // and authorizes no canonical assistant transcript replacement, so
+            // it must never be synthesized from audio_played_ms.
+            parsed.reported_playback_prefix,
+        )
+        .await
+    {
+        Ok(result) => match serde_json::to_value(result) {
+            Ok(value) => live_success(rpc_id, value),
+            Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+        },
+        Err(error) => live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()),
     }
 }
 
