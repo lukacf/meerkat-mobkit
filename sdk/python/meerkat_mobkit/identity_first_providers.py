@@ -214,6 +214,24 @@ class ContinuityStoreProvider(Protocol):
         self, session_id: str,
     ) -> SessionSnapshot | None: ...
 
+    async def resolve_record_by_session(
+        self, session_id: str,
+    ) -> tuple[ContinuityRecord, int, int] | None:
+        """Resolve the record bound to ``session_id``, with the facts a registration carries.
+
+        Returns ``(record, fencing_token, checkpoint_version)``, or ``None`` for
+        an AUTHORITATIVE absence only.
+
+        A provider that cannot answer must RAISE rather than return ``None``.
+        The platform trait requires this method precisely so those two stop
+        sharing a value: both owner-authority passes treat ``None`` as "this
+        identity has no durable owner" and skip, so a provider that answered
+        ``None`` because it was never taught the question silently disabled
+        owner pre-registration and made the prepare-time durable-tail refusal
+        unclearable.
+        """
+        ...
+
     async def save_session_snapshot(
         self, identity: str, session_id: str, generation: int,
         version: int, fencing_token: int, snapshot: SessionSnapshot,

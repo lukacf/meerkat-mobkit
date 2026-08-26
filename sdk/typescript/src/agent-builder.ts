@@ -39,6 +39,7 @@ import {
   type ErrorEvent,
   type SessionCreatedContext,
   type ContinuityStore,
+  continuityRecordToDict,
   type LeaseProvider,
   type RosterProvider,
   type AgentCustomizer,
@@ -328,6 +329,29 @@ export class CallbackDispatcher {
       const snap = await this._continuityStore.loadSessionSnapshot(sessionId);
       if (snap === null) return null;
       return sessionSnapshotToDict(snap);
+    }
+
+    if (method === "callback/continuity_store/resolve_record_by_session") {
+      if (this._continuityStore === null) {
+        throw new Error("no ContinuityStore registered");
+      }
+      const sessionId = String(params.session_id ?? "");
+      const handler = this._continuityStore.resolveRecordBySession;
+      if (!handler) {
+        // Loud, not null: see the interface doc. A null would read as an
+        // authoritative absence and silently disable owner pre-registration.
+        throw new Error(
+          "ContinuityStore.resolveRecordBySession is required: owner pre-registration " +
+            "cannot distinguish 'no record' from 'cannot answer' without it",
+        );
+      }
+      const bound = await handler.call(this._continuityStore, sessionId, callbackContext);
+      if (bound === null || bound === undefined) return null;
+      return {
+        record: continuityRecordToDict(bound.record),
+        fencing_token: bound.fencingToken,
+        checkpoint_version: bound.checkpointVersion,
+      };
     }
 
     if (method === "callback/continuity_store/delete_session_snapshot_if_current_revision") {

@@ -3048,6 +3048,23 @@ export interface ProviderCallbackContext {
 export interface ContinuityStore {
   resolveMany(identities: string[]): Promise<Record<string, ContinuityResolveState>>;
   loadSessionSnapshot(sessionId: string): Promise<SessionSnapshot | null>;
+  /**
+   * Resolve the record bound to `sessionId`, with the facts a registration carries.
+   *
+   * Return `null` for an AUTHORITATIVE absence only. THROW if this store cannot
+   * answer. The platform requires the two to be distinguishable: both
+   * owner-authority passes read `null` as "this identity has no durable owner"
+   * and skip, so answering `null` because the question was never implemented
+   * silently disables owner pre-registration.
+   */
+  resolveRecordBySession(
+    sessionId: string,
+    context?: ProviderCallbackContext,
+  ): Promise<{
+    record: ContinuityRecord;
+    fencingToken: number;
+    checkpointVersion: number;
+  } | null>;
   /** Save only if fencingToken is current and version advances the identity/generation head. */
   saveSessionSnapshot(
     identity: string,

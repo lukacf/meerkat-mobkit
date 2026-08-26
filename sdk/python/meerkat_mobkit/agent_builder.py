@@ -619,6 +619,27 @@ class CallbackDispatcher:
             snap = await store.load_session_snapshot(params["session_id"])
             return snap.to_dict() if snap is not None else None
 
+        if op == "resolve_record_by_session":
+            handler = getattr(store, "resolve_record_by_session", None)
+            if handler is None:
+                # Loud, not null: a null here would be indistinguishable from an
+                # authoritative "no record" and would silently disable owner
+                # pre-registration.
+                raise ValueError(
+                    "continuity store provider does not implement "
+                    "resolve_record_by_session; owner pre-registration cannot "
+                    "distinguish 'no record' from 'cannot answer' without it"
+                )
+            bound = await handler(params["session_id"])
+            if bound is None:
+                return None
+            record, fencing_token, checkpoint_version = bound
+            return {
+                "record": record.to_dict(),
+                "fencing_token": fencing_token,
+                "checkpoint_version": checkpoint_version,
+            }
+
         if op == "delete_session_snapshot_if_current_revision":
             handler = getattr(
                 store, "delete_session_snapshot_if_current_revision", None
