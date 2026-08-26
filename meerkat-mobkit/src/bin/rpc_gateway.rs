@@ -8513,6 +8513,10 @@ external_addressable = true
                 tool_consequence_policy_registry.clone(),
             )
             .with_session_write_epochs(&session_write_epochs)
+            // The SAME facade handed to MeerkatMachine::persistent above.
+            // The durable-authority convergence memo is per-facade, so a
+            // different instance here would warm nothing.
+            .with_runtime_authority_prewarm(&runtime_store)
             // Resume-seam reads must carry the runtime store's archived
             // terminal (at 0.8.11 archive stamps the catalog/lifecycle row,
             // never the session body).
@@ -8836,6 +8840,10 @@ external_addressable = true
                 tool_consequence_policy_registry.clone(),
             )
             .with_session_write_epochs(&session_write_epochs)
+            // The SAME facade handed to MeerkatMachine::persistent above.
+            // The durable-authority convergence memo is per-facade, so a
+            // different instance here would warm nothing.
+            .with_runtime_authority_prewarm(&runtime_store)
             .with_session_runtime_adapter(adapter.clone())
             .with_workgraph_service(workgraph_service.clone())
             .with_options(MobBootstrapOptions {

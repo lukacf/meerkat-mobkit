@@ -966,16 +966,17 @@ impl UnifiedRuntime {
         // materialization must follow the lift, because a Stopped mob cannot
         // spawn. So this sits between installing the context and rostering.
         if let Some(pending) = self.pending_mob_activation.lock().await.take() {
-            match context
+            let registered_sessions = match context
                 .runtime
                 .register_persisted_continuity_owners(roster)
                 .await
             {
                 Ok(registered) => {
                     tracing::info!(
-                        registered,
+                        registered = registered.len(),
                         "registered persisted continuity owners before mob activation"
                     );
+                    registered
                 }
                 Err(error) => {
                     // Do NOT activate. Lifting now would revive sessions whose
@@ -985,7 +986,25 @@ impl UnifiedRuntime {
                     self.shutdown().await;
                     return Err(error);
                 }
-            }
+            };
+            // Still parked `Stopped`, so nothing here is on a lifecycle budget.
+            // The explicit resume `activate` is about to perform IS budgeted -
+            // by a single per-member retire timeout covering O(members) work -
+            // and the durable-authority convergence it would otherwise do
+            // lazily, inside that budget, is what exhausts it on a large
+            // roster. Converging it here moves the same memoized work into an
+            // unbounded window. Exactly the sessions just registered: this set
+            // is the registration's own output, so it cannot disagree with what
+            // was published.
+            let converged = self
+                .mob_runtime
+                .prewarm_persisted_runtime_authority(&registered_sessions)
+                .await;
+            tracing::info!(
+                converged,
+                requested = registered_sessions.len(),
+                "converged persisted runtime authority before mob activation"
+            );
             if let Err(error) = pending.activate().await {
                 self.shutdown().await;
                 return Err(crate::identity_first::IdentityRuntimeError::Internal(

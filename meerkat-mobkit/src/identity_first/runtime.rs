@@ -4120,9 +4120,6 @@ impl IdentityRuntime {
         Ok(states)
     }
 
-    /// Cancellation-safe compatibility restore used by embedders that pass
-    /// an RPC identity context without attaching an
-    /// [`IdentityFirstRuntimeContext`] to the unified runtime.
     /// Register the owning identity of every persisted session on the roster,
     /// without materializing anything.
     ///
@@ -4144,16 +4141,23 @@ impl IdentityRuntime {
     ///
     /// Best-effort per identity BY DESIGN. An identity with no durable record
     /// has nothing to register and is not an error - it has never persisted a
-    /// session, so the ordinary create path owns it. Returns how many owners
-    /// were registered so a caller can log a boot that registered none.
+    /// session, so the ordinary create path owns it.
+    ///
+    /// Returns the sessions whose owners were registered, in roster order, so a
+    /// caller can log a boot that registered none AND reuse this exact set
+    /// without resolving continuity a second time. The set is deliberately the
+    /// registration's own output rather than a re-read: a second resolve could
+    /// disagree with what was actually published here, and a caller acting on
+    /// the disagreeing half would be operating on an authority nothing
+    /// registered.
     pub async fn register_persisted_continuity_owners(
         &self,
         roster: &[DurableAgentSpec],
-    ) -> Result<usize, IdentityRuntimeError> {
+    ) -> Result<Vec<meerkat_core::types::SessionId>, IdentityRuntimeError> {
         let Some(bridge) = self.bridge.as_ref() else {
-            return Ok(0);
+            return Ok(Vec::new());
         };
-        let mut registered = 0usize;
+        let mut registered: Vec<meerkat_core::types::SessionId> = Vec::new();
         for spec in roster {
             let identity = &spec.identity;
             // A substrate that cannot answer is not a boot failure. This pass
@@ -4239,7 +4243,7 @@ impl IdentityRuntime {
                          before activation: {error}"
                     ))
                 })?;
-            registered += 1;
+            registered.push(session_id);
         }
         Ok(registered)
     }
@@ -4307,6 +4311,9 @@ impl IdentityRuntime {
         Ok(super::bridge::ResumeSessionOutcome::Resumed { session_id })
     }
 
+    /// Cancellation-safe compatibility restore used by embedders that pass
+    /// an RPC identity context without attaching an
+    /// [`IdentityFirstRuntimeContext`] to the unified runtime.
     pub(crate) async fn restore_flow_tracked(
         self: &Arc<Self>,
         roster: Vec<DurableAgentSpec>,
