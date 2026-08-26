@@ -4120,6 +4120,57 @@ impl IdentityRuntime {
         Ok(states)
     }
 
+    /// Publish resolved persisted owner authority into the session store
+    /// BEFORE the mob is prepared.
+    ///
+    /// This exists for an ordering problem that `register_persisted_continuity_owners`
+    /// cannot solve, because it runs too late. Durable-tail recovery happens
+    /// INSIDE `MobRuntime::prepare` and commits runtime boundaries; a
+    /// head-canonical session whose owning identity has no authoritative
+    /// registration is refused there BY DESIGN ("this is a deliberate refusal,
+    /// not a store failure: no retry of the write will succeed"). Registration
+    /// after prepare is therefore unreachable for exactly the stores that need
+    /// it: a resume whose durable tail is behind its committed authority.
+    /// Verified against a production clone, whose first boot dies precisely
+    /// there.
+    ///
+    /// Idempotent by construction, which is why publishing here and registering
+    /// again later is safe: `register_session` refuses an identity or generation
+    /// change and a fencing regression, so a re-publish of the same facts is a
+    /// no-op rather than a second authority.
+    ///
+    /// Returns how many owners were published, so a caller can log a boot that
+    /// published none rather than leaving an absent effect indistinguishable
+    /// from an unconfigured one.
+    pub async fn publish_persisted_owner_states(
+        adapter: &Arc<super::adapters::ContinuitySessionStoreAdapter>,
+        states: &[(
+            meerkat_core::types::SessionId,
+            super::adapters::SessionRuntimeState,
+        )],
+    ) -> Result<usize, IdentityRuntimeError> {
+        let mut published = 0usize;
+        for (session_id, state) in states {
+            adapter
+                .register_session(session_id, state.clone())
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!(
+                        "publishing the persisted owner of {} session {session_id} before \
+                         prepare: {error}",
+                        state.identity
+                    ))
+                })?;
+            published += 1;
+        }
+        tracing::info!(
+            published,
+            resolved = states.len(),
+            "published persisted continuity owners before mob prepare"
+        );
+        Ok(published)
+    }
+
     /// Register the owning identity of every persisted session on the roster,
     /// without materializing anything.
     ///

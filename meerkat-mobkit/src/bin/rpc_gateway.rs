@@ -8089,6 +8089,71 @@ external_addressable = true
         Arc::new(meerkat_mobkit::identity_first::ContinuitySessionStoreAdapter::new(store.clone()))
     });
 
+    // Publish persisted owner authority BEFORE the bootstrap spec is built.
+    //
+    // `MobRuntime::prepare` runs durable-tail recovery and commits runtime
+    // boundaries, and a head-canonical session whose owning identity has no
+    // authoritative registration is refused there BY DESIGN ("a deliberate
+    // refusal, not a store failure: no retry of the write will succeed").
+    // `register_persisted_continuity_owners` runs AFTER prepare, so it cannot
+    // reach exactly the stores that need it: a resume whose durable tail is
+    // behind its committed authority. Confirmed against a production clone,
+    // whose first boot dies precisely there.
+    //
+    // Best-effort and idempotent, deliberately: this only ever publishes a
+    // registration that would otherwise happen later, and `register_session`
+    // refuses an identity/generation change or a fencing regression, so the
+    // later pass re-publishing the same facts is a no-op. A substrate that
+    // cannot answer is therefore a WARN, not a boot failure - the same rule
+    // `register_persisted_continuity_owners` already applies to itself.
+    // Failing closed here would regress every boot that works today.
+    if let (Some(store), Some(adapter)) = (
+        identity_continuity_store.as_ref(),
+        identity_session_store_adapter.as_ref(),
+    ) {
+        use meerkat_mobkit::identity_first::contracts::RosterProvider as _;
+        use meerkat_mobkit::identity_first::{
+            IdentityRuntime, RosterContext, gateway_bridges::GatewayRosterProvider,
+        };
+        let roster_provider = GatewayRosterProvider::new(bridge.clone());
+        // `RosterContext` carries no mob state, so resolving the roster this
+        // early is contract-preserving. Nothing is registered yet, so there are
+        // no previous identities to report.
+        let roster_context = RosterContext {
+            mob_definition: Some(definition.clone()),
+            previous_identities: Vec::new(),
+        };
+        match roster_provider.roster(&roster_context).await {
+            Ok(roster) => {
+                match IdentityRuntime::resolve_persisted_owner_states(store, &roster).await {
+                    Ok(states) => {
+                        if let Err(error) =
+                            IdentityRuntime::publish_persisted_owner_states(adapter, &states).await
+                        {
+                            tracing::warn!(
+                                %error,
+                                resolved = states.len(),
+                                "publishing persisted owner authority before prepare failed; \
+                                 durable-tail recovery may refuse an unregistered owner"
+                            );
+                        }
+                    }
+                    Err(error) => tracing::warn!(
+                        %error,
+                        rostered = roster.len(),
+                        "resolving persisted owner authority before prepare failed; \
+                         durable-tail recovery may refuse an unregistered owner"
+                    ),
+                }
+            }
+            Err(error) => tracing::warn!(
+                %error,
+                "roster unavailable before prepare, so no persisted owner authority could be \
+                 published; durable-tail recovery may refuse an unregistered owner"
+            ),
+        }
+    }
+
     // 5. Build session service with callback bridge.
     // Stable owner id for the schedule driver, captured before `definition` is
     // moved into the bootstrap spec.
