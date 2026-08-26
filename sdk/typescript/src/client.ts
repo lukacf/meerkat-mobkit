@@ -29,6 +29,7 @@ export type MobkitStatusResult = {
 
 export type MobkitCapabilitiesResult = {
   contract_version: string;
+  feature_capabilities?: string[];
   methods: string[];
   loaded_modules: string[];
 };
@@ -99,6 +100,7 @@ function isMobkitCapabilitiesResult(
   const o = asValueObject(value);
   return (
     typeof o.contract_version === "string" &&
+    (o.feature_capabilities === undefined || isStringArray(o.feature_capabilities)) &&
     isStringArray(o.methods) &&
     isStringArray(o.loaded_modules)
   );

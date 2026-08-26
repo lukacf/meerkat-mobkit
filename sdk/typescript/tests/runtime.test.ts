@@ -9,6 +9,7 @@ import {
   MobKitRuntime,
   MobHandle,
   ToolCaller,
+  CapabilityUnavailableError,
   NotConnectedError,
   RpcError,
   TransportError,
@@ -409,6 +410,47 @@ describe("MobKitRuntime", () => {
     const params = (rt as any)._buildInitParams();
 
     assert.equal("workgraph" in params.runtime_options, false);
+  });
+
+  it("omits experimental live registration unless explicitly configured", () => {
+    const { rt } = createMockRuntime();
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal("experimental_live" in params.runtime_options, false);
+  });
+
+  it("builds the explicit experimental live registration", () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._config.experimentalLiveConfig = {
+      principal: "user:luka",
+      realm: "family",
+      factoryKind: "openai-gpt-live",
+      factoryVersion: "v1",
+      gate0Qualification: "gate0-v1",
+      authBinding: {
+        realm: "family",
+        binding: "chatgpt-oauth",
+        profile: "luka",
+      },
+      voice: "marin",
+    };
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.deepEqual(params.runtime_options.experimental_live, {
+      principal: "user:luka",
+      realm: "family",
+      factory_kind: "openai-gpt-live",
+      factory_version: "v1",
+      gate0_qualification: "gate0-v1",
+      auth_binding: {
+        realm: "family",
+        binding: "chatgpt-oauth",
+        profile: "luka",
+      },
+      voice: "marin",
+    });
   });
 });
 
@@ -2790,8 +2832,9 @@ describe("MobHandle live methods", () => {
     assert.equal(calls[1].method, "mobkit/live/status");
 
     setResponse(() => ({ closed: true }));
-    await handle.liveClose("reachy");
+    await handle.liveClose("live-channel-1");
     assert.equal(calls[2].method, "mobkit/live/close");
+    assert.deepEqual(calls[2].params, { channel_id: "live-channel-1" });
 
     setResponse(() => ({ refreshed: true }));
     await handle.liveRefresh("reachy");
@@ -2811,13 +2854,527 @@ describe("MobHandle live methods", () => {
     });
 
     setResponse(() => ({ status: "truncated" }));
-    await handle.liveTruncate("chan-1", "item_1", 0, 1200);
+    const active = {
+      channelId: "chan-1",
+      targetIdentity: "identity:reachy",
+      executionMode: "function_bridge" as const,
+      activationReceipt: "active-receipt",
+    };
+    await handle.liveTruncate(
+      active,
+      { channelId: "chan-1", outputId: "opaque-output-1", contentIndex: 0 },
+      1200,
+    );
     assert.equal(calls[5].method, "mobkit/live/truncate");
     assert.deepEqual(calls[5].params, {
+      identity: "identity:reachy",
       channel_id: "chan-1",
-      item_id: "item_1",
-      content_index: 0,
+      activation_receipt: "active-receipt",
+      output_id: "opaque-output-1",
       audio_played_ms: 1200,
     });
+  });
+
+  it("serializes v1 execution identity and returns a typed handle", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse((method) => method === "mobkit/capabilities" ? {
+      contract_version: "0.5.0",
+      methods: ["mobkit/live/open"],
+      loaded_modules: [],
+      feature_capabilities: [
+        "live.execution_identity.v1",
+        "live.execution.function_bridge.v1",
+      ],
+    } : ({
+      channel_id: "ch-typed",
+      target_identity: "identity:reachy",
+      execution_mode: "function_bridge",
+      pending_receipt: "pending-receipt",
+      transport: { transport: "webrtc", token: "t", answer_method: "live/webrtc/answer" },
+      capabilities: {
+        audio_in: true,
+        audio_out: true,
+        text_in: true,
+        text_out: true,
+        image_in: false,
+        video_in: false,
+        transcript_supported: true,
+        barge_in_supported: true,
+        provider_native_resume: false,
+      },
+      continuity: { mode: "transcript_only" },
+    }));
+
+    const opened = await handle.liveOpenTyped("identity:reachy", {
+      model: "gpt-live-1-codex",
+      provider: "openai",
+    });
+
+    assert.equal(opened.channelId, "ch-typed");
+    assert.equal(opened.targetIdentity, "identity:reachy");
+    assert.equal(calls[0].method, "mobkit/capabilities");
+    assert.deepEqual(calls[1].params, {
+      identity: "identity:reachy",
+      execution_identity: {
+        version: "v1",
+        model: "gpt-live-1-codex",
+        provider: "openai",
+      },
+    });
+  });
+
+  it("refuses execution identity before opening against an old gateway", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      contract_version: "0.5.0",
+      methods: ["mobkit/live/open"],
+      loaded_modules: [],
+    }));
+
+    await assert.rejects(
+      handle.liveOpenTyped("identity:reachy", {
+        model: "gpt-live-1-codex",
+      }),
+      CapabilityUnavailableError,
+    );
+    assert.deepEqual(calls.map((call) => call.method), ["mobkit/capabilities"]);
+  });
+
+  it("rejects catalog and Responses bridge overrides before strict open", async () => {
+    for (const [field, value] of [
+      ["execution_mode", "responses"],
+      ["profile_id", "gpt-live-function-bridge-v1"],
+      ["responses_model", "gpt-5.5"],
+      ["responses_tools", []],
+      ["responses_instructions", "delegate"],
+      ["tools", []],
+      ["instructions", "delegate"],
+    ] as const) {
+      const { handle, calls } = createMockRuntime();
+      await assert.rejects(
+        handle.liveOpenTyped(
+          "identity:reachy",
+          { model: "gpt-live-1-codex", provider: "openai" },
+          { [field]: value },
+        ),
+        /experimental live\/open does not accept/,
+      );
+      assert.deepEqual(calls, []);
+    }
+  });
+
+  it("refuses a strict open response missing canonical target identity", async () => {
+    const { handle, setResponse } = createMockRuntime();
+    setResponse((method) => method === "mobkit/capabilities" ? {
+      contract_version: "0.5.0",
+      methods: ["mobkit/live/open"],
+      loaded_modules: [],
+      feature_capabilities: ["live.execution_identity.v1"],
+    } : ({
+      channel_id: "ch-typed",
+      transport: { transport: "webrtc", token: "t", answer_method: "live/webrtc/answer" },
+      capabilities: {
+        audio_in: true, audio_out: true, text_in: true, text_out: true,
+        image_in: false, video_in: false, transcript_supported: true,
+        barge_in_supported: true, provider_native_resume: false,
+      },
+      continuity: { mode: "transcript_only" },
+    }));
+    await assert.rejects(
+      handle.liveOpenTyped("caller-alias", {
+        model: "gpt-live-1-codex",
+        provider: "openai",
+      }),
+      /unknown field|non-empty string/,
+    );
+  });
+
+  it("answers the WebRTC bootstrap through the advertised method", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ answer_sdp: "v=0\r\nanswer" }));
+    const answer = await handle.liveWebrtcAnswer(
+      "chan-1",
+      "token-1",
+      "v=0\r\noffer",
+    );
+    assert.equal(answer, "v=0\r\nanswer");
+    assert.deepEqual(calls[0], {
+      method: "live/webrtc/answer",
+      params: {
+        channel_id: "chan-1",
+        token: "token-1",
+        offer_sdp: "v=0\r\noffer",
+      },
+    });
+  });
+
+  it("connects only after owner readiness, answer, and active authority", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    const events: string[] = [];
+    setResponse((method) => {
+      if (method === "mobkit/capabilities") return {
+        contract_version: "0.5.0",
+        methods: [],
+        loaded_modules: [],
+        feature_capabilities: [
+          "live.execution_identity.v1",
+          "live.execution.function_bridge.v1",
+        ],
+      };
+      if (method === "mobkit/live/open") return {
+        channel_id: "chan-1",
+        target_identity: "identity:reachy",
+        execution_mode: "function_bridge",
+        pending_receipt: "pending-receipt",
+        transport: {
+          transport: "webrtc",
+          token: "token-1",
+          answer_method: "live/webrtc/answer",
+        },
+        capabilities: {
+          audio_in: true,
+          audio_out: true,
+          text_in: false,
+          text_out: true,
+          image_in: false,
+          video_in: false,
+          transcript_supported: true,
+          barge_in_supported: true,
+          provider_native_resume: false,
+        },
+        continuity: { mode: "transcript_only" },
+      };
+      if (method === "mobkit/live/playback_owner/register") return {
+        channel_id: "chan-1",
+        readiness_receipt: "ready-receipt",
+      };
+      if (method === "live/webrtc/answer") return { answer_sdp: "v=0\r\nanswer" };
+      if (method === "mobkit/live/status") return {
+        phase: "active",
+        handle: {
+          channel_id: "chan-1",
+          target_identity: "identity:reachy",
+          execution_mode: "function_bridge",
+          activation_receipt: "active-receipt",
+        },
+      };
+      if (method === "mobkit/live/playback_owner/revoke") return {
+        phase: "revoked",
+      };
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const active = await handle.liveConnect(
+      "identity:reachy",
+      { model: "gpt-live-1-codex", provider: "openai" },
+      {
+        async prepare(pending) {
+          events.push(`prepare:${pending.pendingReceipt}`);
+          return "v=0\r\noffer";
+        },
+        async acceptAnswer(answerSdp) {
+          events.push(`answer:${answerSdp}`);
+        },
+        async activate(activated) {
+          events.push(`activate:${activated.activationReceipt}`);
+        },
+        async abort() {
+          events.push("abort");
+        },
+      },
+      { activationPollIntervalMs: 0 },
+    );
+
+    assert.equal(active.activationReceipt, "active-receipt");
+    assert.equal(active.pendingReceipt, "pending-receipt");
+    assert.equal(active.readinessReceipt, "ready-receipt");
+    assert.deepEqual(events, [
+      "prepare:pending-receipt",
+      "answer:v=0\r\nanswer",
+      "activate:active-receipt",
+    ]);
+    assert.deepEqual(calls.map((call) => call.method), [
+      "mobkit/capabilities",
+      "mobkit/live/open",
+      "mobkit/live/playback_owner/register",
+      "live/webrtc/answer",
+      "mobkit/live/status",
+    ]);
+    assert.deepEqual(calls[2].params, {
+      identity: "identity:reachy",
+      channel_id: "chan-1",
+      pending_receipt: "pending-receipt",
+    });
+    assert.equal(calls[3].params?.readiness_receipt, "ready-receipt");
+    assert.deepEqual(calls[4].params, {
+      identity: "identity:reachy",
+      channel_id: "chan-1",
+      pending_receipt: "pending-receipt",
+    });
+    assert.equal((await active.ownerLost()).phase, "revoked");
+    assert.equal(events.at(-1), "abort");
+    assert.deepEqual(calls.at(-1), {
+      method: "mobkit/live/playback_owner/revoke",
+      params: {
+        identity: "identity:reachy",
+        channel_id: "chan-1",
+        pending_receipt: "pending-receipt",
+        readiness_receipt: "ready-receipt",
+        activation_receipt: "active-receipt",
+      },
+    });
+  });
+
+  it("aborts and closes the pending channel when owner authority is revoked", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    const events: string[] = [];
+    setResponse((method) => {
+      if (method === "mobkit/capabilities") return {
+        contract_version: "0.5.0",
+        methods: [],
+        loaded_modules: [],
+        feature_capabilities: [
+          "live.execution_identity.v1",
+          "live.execution.function_bridge.v1",
+        ],
+      };
+      if (method === "mobkit/live/open") return {
+        channel_id: "chan-1",
+        target_identity: "identity:reachy",
+        execution_mode: "function_bridge",
+        pending_receipt: "pending-receipt",
+        transport: {
+          transport: "webrtc",
+          token: "token-1",
+          answer_method: "live/webrtc/answer",
+        },
+        capabilities: {
+          audio_in: true,
+          audio_out: true,
+          text_in: false,
+          text_out: true,
+          image_in: false,
+          video_in: false,
+          transcript_supported: true,
+          barge_in_supported: true,
+          provider_native_resume: false,
+        },
+        continuity: { mode: "transcript_only" },
+      };
+      if (method === "mobkit/live/playback_owner/register") return {
+        channel_id: "chan-1",
+        readiness_receipt: "ready-receipt",
+      };
+      if (method === "live/webrtc/answer") return { answer_sdp: "v=0\r\nanswer" };
+      if (method === "mobkit/live/status") return { phase: "revoked" };
+      if (method === "mobkit/live/close") return { closed: true };
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    await assert.rejects(
+      handle.liveConnect(
+        "identity:reachy",
+        { model: "gpt-live-1-codex", provider: "openai" },
+        {
+          async prepare() {
+            events.push("prepare");
+            return "v=0\r\noffer";
+          },
+          async acceptAnswer() {
+            events.push("answer");
+          },
+          async activate() {
+            events.push("activate");
+          },
+          async abort() {
+            events.push("abort");
+          },
+        },
+        { activationPollIntervalMs: 0 },
+      ),
+      /revoked before activation/,
+    );
+
+    assert.deepEqual(events, ["prepare", "answer", "abort"]);
+    assert.deepEqual(calls.map((call) => call.method), [
+      "mobkit/capabilities",
+      "mobkit/live/open",
+      "mobkit/live/playback_owner/register",
+      "live/webrtc/answer",
+      "mobkit/live/status",
+      "mobkit/live/close",
+    ]);
+    assert.deepEqual(calls.at(-1)?.params, {
+      identity: "identity:reachy",
+      channel_id: "chan-1",
+      pending_receipt: "pending-receipt",
+    });
+  });
+
+  it("rejects pending handles before active provider operations", async () => {
+    const { handle, calls } = createMockRuntime();
+    const pending = {
+      channelId: "chan-1",
+      targetIdentity: "identity:reachy",
+      executionMode: "function_bridge" as const,
+      pendingReceipt: "pending-receipt",
+      transport: {
+        transport: "webrtc" as const,
+        token: "token-1",
+        answerMethod: "live/webrtc/answer",
+      },
+      capabilities: {
+        audioIn: true,
+        audioOut: true,
+        textIn: false,
+        textOut: true,
+        imageIn: false,
+        videoIn: false,
+        transcriptSupported: true,
+        bargeInSupported: true,
+        providerNativeResume: false,
+      },
+      continuity: { mode: "transcript_only" as const },
+    };
+    await assert.rejects(
+      handle.liveInterruptActive(pending as never),
+      /activationReceipt must be a non-empty string/,
+    );
+    assert.deepEqual(calls, []);
+  });
+
+  it("pulls replacement signaling under active channel authority", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ required: false }));
+    const active = {
+      channelId: "chan-1",
+      targetIdentity: "identity:reachy",
+      executionMode: "function_bridge" as const,
+      activationReceipt: "active-receipt",
+    };
+    const result = await handle.liveReplacementRequired(active);
+    assert.deepEqual(result, { required: false });
+    assert.deepEqual(calls[0], {
+      method: "mobkit/live/replacement_required",
+      params: {
+        identity: "identity:reachy",
+        channel_id: "chan-1",
+        activation_receipt: "active-receipt",
+      },
+    });
+  });
+
+  it("reports playback completion without caller interaction identity", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ status: "completed" }));
+    const active = {
+      channelId: "chan-1",
+      targetIdentity: "identity:reachy",
+      executionMode: "function_bridge" as const,
+      activationReceipt: "active-receipt",
+    };
+    const result = await handle.livePlaybackComplete(active, {
+      channelId: "chan-1",
+      outputId: "opaque-output-1",
+      contentIndex: 0,
+    });
+    assert.deepEqual(result, { status: "completed" });
+    assert.deepEqual(calls[0], {
+      method: "mobkit/live/playback_complete",
+      params: {
+        identity: "identity:reachy",
+        channel_id: "chan-1",
+        activation_receipt: "active-receipt",
+        output_id: "opaque-output-1",
+      },
+    });
+  });
+
+  it("streams an acknowledged output to playback completion and closes on teardown", async () => {
+    const { rt, handle, calls, setResponse } = createMockRuntime();
+    setResponse((method) => method === "mobkit/live/playback_complete"
+      ? { status: "completed" }
+      : { status: "closed" });
+    const active = {
+      channelId: "chan-1",
+      targetIdentity: "identity:reachy",
+      executionMode: "function_bridge" as const,
+      activationReceipt: "active-receipt",
+    };
+    const outputs = handle.liveOutputs(active, { capacity: 1 });
+    const nextOutput = outputs.next();
+    await Promise.resolve();
+
+    const accepted = await (rt as any)._dispatcher.handleCallback(
+      "mobkit/live/assistant_output_available",
+      {
+        channel_id: "chan-1",
+        output_id: "opaque-output-1",
+        content_index: 0,
+      },
+    );
+    assert.deepEqual(accepted, { accepted: true });
+    const output = await nextOutput;
+    assert.equal(output.done, false);
+    assert.equal(output.value?.outputId, "opaque-output-1");
+    assert.deepEqual(
+      await handle.livePlaybackComplete(active, output.value!),
+      { status: "completed" },
+    );
+    await outputs.return();
+
+    assert.deepEqual(calls, [
+      {
+        method: "mobkit/live/playback_complete",
+        params: {
+          identity: "identity:reachy",
+          channel_id: "chan-1",
+          activation_receipt: "active-receipt",
+          output_id: "opaque-output-1",
+        },
+      },
+      {
+        method: "mobkit/live/close",
+        params: {
+          identity: "identity:reachy",
+          channel_id: "chan-1",
+          activation_receipt: "active-receipt",
+        },
+      },
+    ]);
+  });
+
+  it("rejects output queue overflow and consumer teardown", async () => {
+    const { rt, handle, setResponse } = createMockRuntime();
+    setResponse(() => ({ status: "closed" }));
+    const outputs = handle.liveOutputs({
+      channelId: "chan-1",
+      targetIdentity: "identity:reachy",
+      executionMode: "function_bridge",
+      activationReceipt: "active-receipt",
+    }, { capacity: 1 });
+    const first = outputs.next();
+    await Promise.resolve();
+    const dispatch = (outputId: string) => (rt as any)._dispatcher.handleCallback(
+      "mobkit/live/assistant_output_available",
+      {
+        channel_id: "chan-1",
+        output_id: outputId,
+        content_index: 0,
+      },
+    );
+
+    await dispatch("opaque-output-1");
+    await first;
+    await dispatch("opaque-output-2");
+    await assert.rejects(
+      dispatch("opaque-output-3"),
+      /live output consumer queue is full/,
+    );
+    await outputs.return();
+    await assert.rejects(
+      dispatch("opaque-output-4"),
+      /no live output consumer registered/,
+    );
   });
 });

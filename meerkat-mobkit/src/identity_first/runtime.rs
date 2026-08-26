@@ -1381,6 +1381,15 @@ pub(crate) struct MemberAliasLifecycleTarget {
     lock: Arc<Mutex<()>>,
 }
 
+impl MemberAliasLifecycleTarget {
+    /// Canonical durable identity whose lifecycle lock owns this generated
+    /// member alias. Surfaces may project this label, but the target itself
+    /// remains the authority carried into the tracked operation.
+    pub(crate) fn durable_identity(&self) -> &AgentIdentity {
+        &self.identity
+    }
+}
+
 struct MultiRuntimeForegroundCompletion(watch::Sender<bool>);
 
 impl Drop for MultiRuntimeForegroundCompletion {

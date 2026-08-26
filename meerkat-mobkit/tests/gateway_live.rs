@@ -117,6 +117,33 @@ fn init_params(state_dir: &tempfile::TempDir, live: Value) -> Value {
     })
 }
 
+#[cfg(feature = "experimental-gpt-live")]
+fn experimental_init_params(state_dir: &tempfile::TempDir) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": "init",
+        "method": "mobkit/init",
+        "params": {
+            "persistent_state": state_dir.path(),
+            "mob_config": MOB_CONFIG,
+            "runtime_options": {
+                "experimental_live": {
+                    "principal": "root",
+                    "realm": "family",
+                    "factory_kind": "private-live",
+                    "factory_version": "v1",
+                    "gate0_qualification": "gate0-v1",
+                    "auth_binding": {
+                        "realm": "family",
+                        "binding": "chatgpt-oauth"
+                    },
+                    "voice": "marin"
+                }
+            }
+        }
+    })
+}
+
 #[test]
 fn live_methods_answer_unavailable_without_opt_in() {
     let state_dir = tempfile::tempdir().expect("state dir");
@@ -140,8 +167,43 @@ fn live_methods_answer_unavailable_without_opt_in() {
         "jsonrpc": "2.0", "id": "caps", "method": "mobkit/capabilities", "params": {}
     }));
     let caps = gateway.wait_for_response("caps", Duration::from_secs(15));
+    assert_eq!(caps["result"]["feature_capabilities"], json!([]));
     let methods = caps["result"]["methods"].as_array().expect("methods");
     assert!(!methods.iter().any(|m| m == "mobkit/live/open"), "{caps}");
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[test]
+fn experimental_live_registration_is_app_opt_in_without_http_mount() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let mut gateway = Gateway::start();
+    gateway.send(experimental_init_params(&state_dir));
+    let init = gateway.wait_for_response("init", Duration::from_mins(1));
+    assert!(init["result"]["contract_version"].is_string(), "{init}");
+    let base = init["result"]["http_base_url"]
+        .as_str()
+        .expect("http_base_url");
+
+    gateway.send(json!({
+        "jsonrpc": "2.0", "id": "caps", "method": "mobkit/capabilities", "params": {}
+    }));
+    let caps = gateway.wait_for_response("caps", Duration::from_secs(15));
+    assert_eq!(
+        caps["result"]["feature_capabilities"],
+        json!([]),
+        "an unqualified build must keep experimental capability absent"
+    );
+    let methods = caps["result"]["methods"].as_array().expect("methods");
+    assert!(
+        methods.iter().any(|method| method == "mobkit/live/open"),
+        "the explicit stdio registration must install the live handler: {caps}"
+    );
+
+    assert_eq!(
+        ureq_get_status(&format!("{base}/live/ws")),
+        404,
+        "experimental stdio registration must not mount the HTTP live route"
+    );
 }
 
 #[test]
@@ -160,16 +222,49 @@ fn live_opt_in_advertises_methods_and_mounts_the_ws_route() {
         "jsonrpc": "2.0", "id": "caps", "method": "mobkit/capabilities", "params": {}
     }));
     let caps = gateway.wait_for_response("caps", Duration::from_secs(15));
+    assert_eq!(
+        caps["result"]["feature_capabilities"],
+        json!([]),
+        "ordinary live attachment must not advertise experimental execution identity"
+    );
     let methods = caps["result"]["methods"].as_array().expect("methods");
     for method in [
         "mobkit/live/open",
         "mobkit/live/status",
         "mobkit/live/close",
         "mobkit/live/refresh",
-        "mobkit/live/truncate",
     ] {
         assert!(methods.iter().any(|m| m == method), "missing {method}");
     }
+
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "experimental-off",
+        "method": "mobkit/live/open",
+        "params": {
+            "identity": "worker-1",
+            "execution_identity": {"version": "v1", "model": "gpt-live-1-codex", "provider": "openai"}
+        }
+    }));
+    let unavailable = gateway.wait_for_response("experimental-off", Duration::from_secs(15));
+    assert_eq!(unavailable["error"]["code"], json!(-32004));
+    assert_eq!(
+        unavailable["error"]["data"]["capability"],
+        json!("live.execution_identity.v1")
+    );
+
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "experimental-conflict",
+        "method": "mobkit/live/open",
+        "params": {
+            "identity": "worker-1",
+            "model": "legacy",
+            "execution_identity": {"version": "v1", "model": "gpt-live-1-codex"}
+        }
+    }));
+    let conflict = gateway.wait_for_response("experimental-conflict", Duration::from_secs(15));
+    assert_eq!(conflict["error"]["code"], json!(-32602));
 
     // Unresolvable member target → typed invalid params, not a hang.
     gateway.send(json!({
@@ -194,11 +289,12 @@ fn live_opt_in_advertises_methods_and_mounts_the_ws_route() {
 }
 
 /// Fix 5: `mobkit/live/truncate` is served (not method-not-found) and
-/// answers TYPED errors — invalid params for an empty item_id, and the
+/// answers TYPED errors - invalid params for an empty opaque output_id, and the
 /// machine-authority channel-not-found rejection for a channel that was
 /// never opened. A full truncate round-trip needs a live provider channel;
 /// the command mapping is covered by the shared
 /// `live_command_result_from_machine_authority` unit coverage.
+#[cfg(feature = "experimental-gpt-live")]
 #[test]
 fn live_truncate_answers_typed_errors_without_a_channel() {
     let state_dir = tempfile::tempdir().expect("state dir");
@@ -209,22 +305,21 @@ fn live_truncate_answers_typed_errors_without_a_channel() {
 
     gateway.send(json!({
         "jsonrpc": "2.0",
-        "id": "truncate-empty-item",
+        "id": "truncate-empty-output",
         "method": "mobkit/live/truncate",
         "params": {
             "channel_id": "chan-1",
-            "item_id": "",
-            "content_index": 0,
+            "output_id": "",
             "audio_played_ms": 0
         }
     }));
-    let response = gateway.wait_for_response("truncate-empty-item", Duration::from_secs(15));
+    let response = gateway.wait_for_response("truncate-empty-output", Duration::from_secs(15));
     assert_eq!(response["error"]["code"], json!(-32602), "{response}");
     assert!(
         response["error"]["message"]
             .as_str()
             .expect("error message")
-            .contains("item_id"),
+            .contains("output_id"),
         "{response}"
     );
 
@@ -234,8 +329,7 @@ fn live_truncate_answers_typed_errors_without_a_channel() {
         "method": "mobkit/live/truncate",
         "params": {
             "channel_id": "no-such-channel",
-            "item_id": "item_1",
-            "content_index": 0,
+            "output_id": "opaque-output-1",
             "audio_played_ms": 1200
         }
     }));
@@ -444,6 +538,7 @@ mod cross_provider_open {
             &stack.ctx,
             &stack.service,
             &stack.machine,
+            meerkat_mobkit::live_wiring::LiveSurfaceAuthority::host_trusted_stdio(),
             Some(stack.session_id.clone()),
             "mobkit/live/open",
             &params,
@@ -523,6 +618,7 @@ mod cross_provider_open {
             &stack.ctx,
             &stack.service,
             &stack.machine,
+            meerkat_mobkit::live_wiring::LiveSurfaceAuthority::host_trusted_stdio(),
             None,
             "mobkit/live/close",
             &json!({ "channel_id": channel_id }),

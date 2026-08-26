@@ -19,6 +19,7 @@
 import { existsSync } from "node:fs";
 import type { SessionAgentBuilder, ErrorCallback } from "./agent-builder.js";
 import type { MobKitRuntime } from "./runtime.js";
+import type { ExperimentalLiveGatewayConfig } from "./live.js";
 import type { JobCredentialResolver } from "./jobs.js";
 import type {
   ContinuityStore,
@@ -136,6 +137,7 @@ export interface MobKitBuilderConfig {
   agentCustomizer: AgentCustomizer | null;
   topologyProvider: TopologyProvider | null;
   jobCredentialResolver: JobCredentialResolver | null;
+  experimentalLiveConfig: ExperimentalLiveGatewayConfig | null;
 }
 
 function defaultConfig(): MobKitBuilderConfig {
@@ -174,6 +176,7 @@ function defaultConfig(): MobKitBuilderConfig {
     agentCustomizer: null,
     topologyProvider: null,
     jobCredentialResolver: null,
+    experimentalLiveConfig: null,
   };
 }
 
@@ -274,6 +277,17 @@ export class MobKitBuilder {
    */
   accessControl(configPath: string): this {
     this._config.accessConfigPath = configPath;
+    return this;
+  }
+
+  /**
+   * Install the explicit pre-release GPT Live stdio registration.
+   *
+   * The gateway remains disabled when omitted. The selected binary must be
+   * compiled with `experimental-gpt-live` and matching Gate0 evidence.
+   */
+  experimentalLive(config: ExperimentalLiveGatewayConfig): this {
+    this._config.experimentalLiveConfig = config;
     return this;
   }
 

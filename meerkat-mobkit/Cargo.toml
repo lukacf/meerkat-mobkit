@@ -84,7 +84,25 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
 integration-real-tests = []
-
+experimental-gpt-live = []
+# Non-shipping cross-crate lifecycle tests may mint only the upstream test
+# profile selection. Production experimental builds do not enable this.
+experimental-gpt-live-test = [
+    "experimental-gpt-live",
+    "meerkat-runtime/test-support",
+]
+# Pre-release integration note: the upstream feature-forwarding edges are
+# added only after the Meerkat release carrying `experimental-gpt-live` is
+# published. Cargo validates dependency feature names even when this feature
+# is not selected, so forwarding them while the workspace remains pinned to
+# 0.8.28 would break every default build. The implementation is validated in
+# development with an ephemeral local patch and ephemeral forwarding edges;
+# neither belongs in the committed portable manifest.
+# Test-only outer-boundary mechanics for offline realtime integration fixtures.
+# This never supplies admission, binding, lease, or provider authority.
+test-realtime-fixtures = [
+    "experimental-gpt-live",
+]
 # Calibration-harness seam for the memory Distiller (§8.4/§11); same contract
 # as the other calibration bins, fixture in / structured ops out.
 # `scripts/memory-evals --mode live` drives these binaries per fixture. Each is

@@ -1,78 +1,66 @@
 //! Live (realtime) member sessions through the mobkit gateways.
 //!
-//! Port of meerkat-rpc's `SessionServiceProjectionSink`
-//! (`meerkat-rpc/src/live_projection_sink.rs`), `RuntimeLiveToolDispatcher`
-//! (`router.rs`), the `live/*` handlers (`handlers/live.rs`, websocket arms
-//! only) and the per-open factory composition (`live_wiring.rs`) onto
-//! mobkit's `PersistentSessionService<B>` + `MeerkatMachine` pair. The
-//! reference composition lives in the meerkat-rpc BINARY crate and is not
-//! re-exported, so mobkit carries this glue itself (design:
-//! `docs/design/live-sessions.md`).
-//!
-//! Translation map vs the reference:
-//! - `SessionRuntime::runtime_adapter()` → the gateway's `MeerkatMachine`
-//!   (the same one wired for schedules and image generation — one machine
-//!   per process, machine-owned live lifecycle authority).
-//! - `SessionRuntime::<session seam>` → the same-named inherent method on
-//!   `PersistentSessionService<B>` (`append_realtime_transcript_event`,
-//!   `append_external_user_content`, `append_external_assistant_output`,
-//!   `dispatch_external_tool_call`); `record_live_terminal_error` /
-//!   `record_live_output_audio_degraded` route through the `SessionService`
-//!   trait impl the persistent service overrides.
-//! - `interrupt_live_with_machine_authority` →
-//!   `interrupt_with_machine_authority(id, machine.session_control_authority())`.
-//! - `in_flight_realtime_assistant_response_ids` →
-//!   `load_authoritative_session` + the `Session` accessor.
-//! - `live_open_config_for_session` → rebuilt here from the published
-//!   `PersistentSessionService` snapshot seams + the facade's pub
-//!   `realtime_projection_*` free functions. The reference additionally
-//!   recovers archived/staged sessions before projecting
-//!   (`recover_live_session_for_realtime_open`); mobkit member sessions are
-//!   held live by the bridge, so an archived target surfaces as a typed
-//!   not-found instead of being silently resumed.
-//! - `ensure_live_peer_ingress` has no mobkit equivalent: member comms
-//!   ingress is wired at member build time by the mob runtime, not lazily
-//!   per live open.
-//!
-//! Everything else is kept verbatim: the pending-turn buffer keyed on
-//! `(SessionId, response_id)` (R6), the display-text vs spoken-transcript
-//! lane split (T6/CC2/CC3), fail-closed delta identity (#199), the
-//! `LiveProjectionError::from_session_error` classification, and the
-//! machine-authority-first shape of every handler (no public result or
-//! error class is minted surface-side).
+//! MobKit retains target parsing, access enforcement, transport packaging,
+//! SDK-facing verbs, and its callback tool dispatcher. Experimental live
+//! projection is the shared Meerkat `ServiceLiveProjection`; experimental
+//! open and channel lifecycle enter `ServiceMemberLiveHost`. MobKit may
+//! serialize a typed per-open identity/seed request, but it does not copy
+//! experimental projection, effectful lifecycle, machine admission,
+//! provider-open, attachment, token-mint, playback settlement, or fail-closed
+//! cleanup choreography. Until that generic facade is published, stock
+//! 0.8.26 builds retain the preexisting ordinary websocket implementation
+//! behind the mutually exclusive non-experimental cfg.
 
-use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(feature = "experimental-gpt-live")]
 use std::sync::Mutex as StdMutex;
 
 use async_trait::async_trait;
 use meerkat::AgentFactory;
-use meerkat::session_runtime::LiveOpenPrecheckError;
+#[cfg(feature = "experimental-gpt-live")]
+use meerkat::ExperimentalLiveFactoryIdentity;
+#[cfg(feature = "experimental-gpt-live")]
+use meerkat::session_runtime::errors::LiveOpenError;
+use meerkat::session_runtime::errors::LiveOpenPrecheckError;
+#[cfg(not(feature = "experimental-gpt-live"))]
+use meerkat::session_runtime::live_orchestration::precheck_identity;
+use meerkat::session_runtime::live_orchestration::realtime_projection_messages;
+#[cfg(feature = "experimental-gpt-live")]
 use meerkat::session_runtime::live_orchestration::{
-    precheck_identity, realtime_projection_messages,
+    LiveSeedWindow, RealtimeSessionOpenProjectionError,
 };
 use meerkat::session_runtime::realtime_credentials::RealtimeCurrentConfigSource;
+#[cfg(feature = "experimental-gpt-live")]
+use meerkat::surface::{ServiceLiveProjection, ServiceMemberLiveHost, ServiceMemberLiveHostConfig};
 use meerkat_client::realtime_session::{RealtimeSessionFactory, RealtimeSessionOpenConfig};
+#[cfg(feature = "experimental-gpt-live")]
+use meerkat_contracts::LivePlaybackCompleteParams;
+use meerkat_contracts::LiveTruncateParams;
+#[cfg(feature = "experimental-gpt-live")]
+use meerkat_contracts::{BridgeLiveControlVerb, LiveInputChunkWire, WireLiveResponseModality};
 use meerkat_contracts::{
     LiveChannelParams, LiveCloseResult, LiveCommitInputParams, LiveCommitInputResult,
-    LiveInterruptResult, LiveOpenResult, LiveOpenTransport, LiveRefreshResult, LiveSendInputParams,
-    LiveSendInputResult, LiveStatusResult, LiveTruncateParams, LiveTruncateResult,
-    RealtimeCapabilities, RealtimeTurningMode, WireLiveAdapterStatus, WireLiveDegradationReason,
+    LiveInterruptResult, LiveOpenTransport, LiveRefreshResult, LiveSendInputParams,
+    LiveSendInputResult, LiveStatusResult, LiveTruncateResult, RealtimeTurningMode,
+    WireLiveAdapterStatus, WireLiveDegradationReason,
 };
+#[cfg(not(feature = "experimental-gpt-live"))]
+use meerkat_contracts::{LiveOpenResult, RealtimeCapabilities};
+#[cfg(feature = "experimental-gpt-live")]
+use meerkat_core::RealmId;
+use meerkat_core::live_adapter::{LiveAdapterCommand, LiveProjectionSnapshot};
+#[cfg(not(feature = "experimental-gpt-live"))]
 use meerkat_core::live_adapter::{
-    LiveAdapterCommand, LiveAdapterErrorCode, LiveAudioConfig, LiveChannelCapabilities,
-    LiveContinuityMode, LiveProjectionSnapshot, LiveTransportBootstrap,
+    LiveAudioConfig, LiveChannelCapabilities, LiveContinuityMode, LiveTransportBootstrap,
 };
-use meerkat_core::service::SessionService as _;
-use meerkat_core::types::{AssistantBlock, ContentInput, Message, SessionId, StopReason, Usage};
-use meerkat_core::{Config, ConfigError, Provider, RealtimeTranscriptEvent, SessionLlmIdentity};
+use meerkat_core::types::SessionId;
+use meerkat_core::{Config, ConfigError, Provider, SessionLlmIdentity};
+#[cfg(not(feature = "experimental-gpt-live"))]
+use meerkat_live::LiveChannelCloseObservation;
 use meerkat_live::{
-    LiveAdapterHost, LiveAdapterHostError, LiveChannelCloseFeedback, LiveChannelCloseObservation,
-    LiveChannelId, LiveChannelStatusFeedback, LiveChannelStatusObservation, LiveProjectionError,
-    LiveProjectionSink, LiveTokenString, LiveToolDispatcher, LiveTranscriptIdentity,
-    LiveTranscriptIdentityError, LiveWsState, LiveWsTokenAdmission,
-    LiveWsTokenAdmissionPublicErrorClass, LiveWsTokenAdmissionRejection, LiveWsTokenAuthority,
-    LiveWsTokenIssue, live_input_chunk_from_wire,
+    LiveAdapterHost, LiveAdapterHostError, LiveChannelCloseFeedback, LiveChannelId,
+    LiveChannelStatusFeedback, LiveProjectionSink, LiveToolDispatcher, LiveWsState,
+    LiveWsTokenAuthority, live_input_chunk_from_wire,
 };
 use meerkat_runtime::MeerkatMachine;
 use meerkat_session::{PersistentSessionService, SessionAgentBuilder};
@@ -80,6 +68,8 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+#[cfg(feature = "experimental-gpt-live")]
+use crate::access::{ACTION_AGENT_SEND, AccessView};
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcResponse};
 
 /// JSON-RPC error code for live methods invoked on a gateway with no live
@@ -96,312 +86,320 @@ const INVALID_PARAMS_CODE: i64 = -32602;
 const METHOD_NOT_FOUND_CODE: i64 = -32601;
 const INTERNAL_ERROR_CODE: i64 = -32000;
 
-/// One buffered assistant **display-text** fragment awaiting an
-/// authoritative `signal_turn_completed` flush.
-///
-/// CC2/CC3 (upstream Round-4 reconciliation, kept verbatim): the production
-/// assistant-transcript commit path is canonical via the realtime-staging
-/// pipeline (`append_realtime_transcript_event` → session staging →
-/// materializer flush at `AssistantTurnCompleted`). The buffered-final path
-/// retained here covers **only** the display-text lane: spoken transcript
-/// commits through staging (buffering it here would commit twice), and
-/// display text keeps this lane because no typed `AssistantTextFinal`
-/// observation exists upstream yet.
-#[derive(Debug, Clone)]
-enum PendingAssistantContent {
-    /// Display lane — flushes as `AssistantBlock::Text`.
-    Text(String),
-}
+#[cfg(not(feature = "experimental-gpt-live"))]
+mod ordinary_compat {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex as StdMutex;
 
-#[derive(Debug, Default)]
-struct PendingTurn {
-    /// Display-text fragments in arrival order. Consecutive fragments
-    /// coalesce into a single `AssistantBlock::Text` at flush time.
-    blocks: Vec<PendingAssistantContent>,
-}
+    use meerkat_core::RealtimeTranscriptEvent;
+    use meerkat_core::live_adapter::LiveAdapterErrorCode;
+    use meerkat_core::service::SessionService as _;
+    use meerkat_core::types::{AssistantBlock, ContentInput, StopReason, Usage};
+    use meerkat_live::{
+        LiveChannelCloseObservation, LiveChannelStatusObservation, LiveProjectionError,
+        LiveTokenString, LiveTranscriptIdentity, LiveTranscriptIdentityError, LiveWsTokenAdmission,
+        LiveWsTokenAdmissionPublicErrorClass, LiveWsTokenAdmissionRejection, LiveWsTokenIssue,
+    };
 
-/// Per-(session, response_id) buffer of assistant finals awaiting an
-/// authoritative `TurnCompleted`.
-///
-/// R6: keyed by `(SessionId, Option<String>)` where the second element is
-/// the provider's `response_id`. Keyed only on `SessionId`, an interrupted,
-/// stale, or overlapping `response.done` carrying the next turn's
-/// `stop_reason`/`usage` would flush the wrong buffered transcript. Orphan
-/// completions (no `response_id` from the provider) bucket under the same
-/// `None` slot, preserving legacy behaviour for adapters without response
-/// identity. Extracted from the sink so the keying contract is unit-testable
-/// without a `PersistentSessionService`.
-#[derive(Default)]
-struct PendingTurnLedger {
-    /// The lock is held only for short, sync sections — never across
-    /// `.await`.
-    slots: StdMutex<HashMap<(SessionId, Option<String>), PendingTurn>>,
-}
-
-impl PendingTurnLedger {
-    fn buffer(
-        &self,
-        session_id: &SessionId,
-        response_id: Option<&str>,
-        content: PendingAssistantContent,
-    ) {
-        let Ok(mut slots) = self.slots.lock() else {
-            // Lock poisoning would mean a previous panic in this struct; the
-            // only operations holding the guard are short sync reads/writes.
-            // Falling through silently preserves the prior buffer rather
-            // than breaking the in-flight turn.
-            return;
-        };
-        slots
-            .entry((session_id.clone(), response_id.map(ToString::to_string)))
-            .or_default()
-            .blocks
-            .push(content);
-    }
-
-    /// Drain the matching slot at turn-completed time.
+    /// One buffered assistant **display-text** fragment awaiting an
+    /// authoritative `signal_turn_completed` flush.
     ///
-    /// R6: callers must pass the same `response_id` they buffered under so
-    /// the matching slot drains; mismatched ids leave the buffer alone — a
-    /// stale/overlapping `response.done` cannot flush a different turn's
-    /// transcript.
-    fn drain(&self, session_id: &SessionId, response_id: Option<&str>) -> PendingTurn {
-        let Ok(mut slots) = self.slots.lock() else {
-            return PendingTurn::default();
-        };
-        slots
-            .remove(&(session_id.clone(), response_id.map(ToString::to_string)))
-            .unwrap_or_default()
+    /// CC2/CC3 (upstream Round-4 reconciliation, kept verbatim): the production
+    /// assistant-transcript commit path is canonical via the realtime-staging
+    /// pipeline (`append_realtime_transcript_event` → session staging →
+    /// materializer flush at `AssistantTurnCompleted`). The buffered-final path
+    /// retained here covers **only** the display-text lane: spoken transcript
+    /// commits through staging (buffering it here would commit twice), and
+    /// display text keeps this lane because no typed `AssistantTextFinal`
+    /// observation exists upstream yet.
+    #[derive(Debug, Clone)]
+    enum PendingAssistantContent {
+        /// Display lane — flushes as `AssistantBlock::Text`.
+        Text(String),
     }
 
-    /// Drain every slot for `session_id` regardless of `response_id`.
+    #[derive(Debug, Default)]
+    struct PendingTurn {
+        /// Display-text fragments in arrival order. Consecutive fragments
+        /// coalesce into a single `AssistantBlock::Text` at flush time.
+        blocks: Vec<PendingAssistantContent>,
+    }
+
+    /// Per-(session, response_id) buffer of assistant finals awaiting an
+    /// authoritative `TurnCompleted`.
     ///
-    /// Used on terminal error: when the channel is torn down every buffered
-    /// final becomes non-canonical, so per-response keying does not need to
-    /// be honoured for cleanup.
-    fn drain_all(&self, session_id: &SessionId) {
-        let Ok(mut slots) = self.slots.lock() else {
-            return;
-        };
-        slots.retain(|(sid, _resp), _| sid != session_id);
+    /// R6: keyed by `(SessionId, Option<String>)` where the second element is
+    /// the provider's `response_id`. Keyed only on `SessionId`, an interrupted,
+    /// stale, or overlapping `response.done` carrying the next turn's
+    /// `stop_reason`/`usage` would flush the wrong buffered transcript. Orphan
+    /// completions (no `response_id` from the provider) bucket under the same
+    /// `None` slot, preserving legacy behaviour for adapters without response
+    /// identity. Extracted from the sink so the keying contract is unit-testable
+    /// without a `PersistentSessionService`.
+    #[derive(Default)]
+    struct PendingTurnLedger {
+        /// The lock is held only for short, sync sections — never across
+        /// `.await`.
+        slots: StdMutex<HashMap<(SessionId, Option<String>), PendingTurn>>,
     }
-}
 
-/// Bridges [`LiveProjectionSink`] callbacks (plus the transport feedback and
-/// WS-token-authority seams) into the gateway's persistent session service
-/// and machine. Port of meerkat-rpc's `SessionServiceProjectionSink`.
-pub struct GatewayLiveProjectionSink<B: SessionAgentBuilder + 'static> {
-    service: Arc<PersistentSessionService<B>>,
-    machine: Arc<MeerkatMachine>,
-    pending_turns: PendingTurnLedger,
-}
+    impl PendingTurnLedger {
+        fn buffer(
+            &self,
+            session_id: &SessionId,
+            response_id: Option<&str>,
+            content: PendingAssistantContent,
+        ) {
+            let Ok(mut slots) = self.slots.lock() else {
+                // Lock poisoning would mean a previous panic in this struct; the
+                // only operations holding the guard are short sync reads/writes.
+                // Falling through silently preserves the prior buffer rather
+                // than breaking the in-flight turn.
+                return;
+            };
+            slots
+                .entry((session_id.clone(), response_id.map(ToString::to_string)))
+                .or_default()
+                .blocks
+                .push(content);
+        }
 
-impl<B: SessionAgentBuilder + 'static> GatewayLiveProjectionSink<B> {
-    pub fn new(service: Arc<PersistentSessionService<B>>, machine: Arc<MeerkatMachine>) -> Self {
-        Self {
-            service,
-            machine,
-            pending_turns: PendingTurnLedger::default(),
+        /// Drain the matching slot at turn-completed time.
+        ///
+        /// R6: callers must pass the same `response_id` they buffered under so
+        /// the matching slot drains; mismatched ids leave the buffer alone — a
+        /// stale/overlapping `response.done` cannot flush a different turn's
+        /// transcript.
+        fn drain(&self, session_id: &SessionId, response_id: Option<&str>) -> PendingTurn {
+            let Ok(mut slots) = self.slots.lock() else {
+                return PendingTurn::default();
+            };
+            slots
+                .remove(&(session_id.clone(), response_id.map(ToString::to_string)))
+                .unwrap_or_default()
+        }
+
+        /// Drain every slot for `session_id` regardless of `response_id`.
+        ///
+        /// Used on terminal error: when the channel is torn down every buffered
+        /// final becomes non-canonical, so per-response keying does not need to
+        /// be honoured for cleanup.
+        fn drain_all(&self, session_id: &SessionId) {
+            let Ok(mut slots) = self.slots.lock() else {
+                return;
+            };
+            slots.retain(|(sid, _resp), _| sid != session_id);
         }
     }
-}
 
-/// Build the realtime-transcript event the sink stages on the
-/// **display-text** lane. Extracted so unit tests can assert the exact event
-/// shape without a service.
-///
-/// #199: the required delta identity triple (`response_id` / `delta_id` /
-/// `item_id`) resolves through the canonical fail-closed accessor
-/// [`LiveTranscriptIdentity::require_delta_identity`]; a delta missing any
-/// required id yields a typed [`LiveTranscriptIdentityError`] so the
-/// projection rejects the malformed delta instead of emitting empty-string
-/// identity truth.
-fn build_assistant_text_delta_event(
-    delta: &str,
-    identity: LiveTranscriptIdentity<'_>,
-) -> Result<RealtimeTranscriptEvent, LiveTranscriptIdentityError> {
-    let resolved = identity.require_delta_identity()?;
-    Ok(RealtimeTranscriptEvent::AssistantTextDelta {
-        response_id: resolved.response_id.to_string(),
-        delta_id: resolved.delta_id.to_string(),
-        item_id: resolved.item_id.to_string(),
-        previous_item_id: resolved.previous_item_id.map(ToString::to_string),
-        content_index: resolved.content_index.unwrap_or(0),
-        delta: delta.to_string(),
-    })
-}
-
-/// Build the realtime-transcript event the sink stages on the
-/// **spoken-transcript** lane (T9/T10: the dedicated
-/// `AssistantTranscriptDelta` variant, so the materializer flushes
-/// `AssistantBlock::Transcript { source: Spoken }` rather than `Text`).
-fn build_assistant_transcript_delta_event(
-    delta: &str,
-    identity: LiveTranscriptIdentity<'_>,
-) -> Result<RealtimeTranscriptEvent, LiveTranscriptIdentityError> {
-    let resolved = identity.require_delta_identity()?;
-    Ok(RealtimeTranscriptEvent::AssistantTranscriptDelta {
-        response_id: resolved.response_id.to_string(),
-        delta_id: resolved.delta_id.to_string(),
-        item_id: resolved.item_id.to_string(),
-        previous_item_id: resolved.previous_item_id.map(ToString::to_string),
-        content_index: resolved.content_index.unwrap_or(0),
-        delta: delta.to_string(),
-    })
-}
-
-/// A malformed delta (missing required identity) is a projection rejection,
-/// not an internal fault: it lands in [`LiveProjectionError::Rejected`],
-/// mirroring the `SessionError::Unsupported` classification.
-fn identity_error_to_projection(err: LiveTranscriptIdentityError) -> LiveProjectionError {
-    LiveProjectionError::Rejected(err.to_string())
-}
-
-/// Collapse arrival-order display-text fragments into a single
-/// `AssistantBlock::Text` (or empty list if no fragments were buffered).
-fn collapse_pending_blocks(buffered: Vec<PendingAssistantContent>) -> Vec<AssistantBlock> {
-    if buffered.is_empty() {
-        return Vec::new();
+    /// Bridges [`LiveProjectionSink`] callbacks (plus the transport feedback and
+    /// WS-token-authority seams) into the gateway's persistent session service
+    /// and machine. Port of meerkat-rpc's `SessionServiceProjectionSink`.
+    pub struct GatewayLiveProjectionSink<B: SessionAgentBuilder + 'static> {
+        service: Arc<PersistentSessionService<B>>,
+        machine: Arc<MeerkatMachine>,
+        pending_turns: PendingTurnLedger,
     }
-    let mut acc = String::new();
-    for PendingAssistantContent::Text(fragment) in buffered {
-        acc.push_str(&fragment);
-    }
-    vec![AssistantBlock::Text {
-        text: acc,
-        meta: None,
-    }]
-}
 
-/// Classify a [`meerkat_core::SessionError`] through the single canonical
-/// classification owner [`LiveProjectionError::from_session_error`] so every
-/// variant lands in a distinct typed `LiveProjectionError` — no variant is
-/// collapsed into a prose-only `Internal(to_string())` at this surface.
-fn session_error_to_projection(
-    err: meerkat_core::SessionError,
-    id: &SessionId,
-) -> LiveProjectionError {
-    LiveProjectionError::from_session_error(id, err)
-}
-
-#[async_trait]
-impl<B: SessionAgentBuilder + 'static> LiveChannelCloseFeedback for GatewayLiveProjectionSink<B> {
-    async fn record_live_channel_closed(
-        &self,
-        channel_id: &LiveChannelId,
-        observation: &LiveChannelCloseObservation,
-    ) -> Result<meerkat_live::LiveChannelCloseCommitAuthority, String> {
-        let session_id = self
-            .machine
-            .live_session_for_active_channel(channel_id)
-            .await
-            .ok_or_else(|| {
-                format!("generated live active-channel authority absent for channel {channel_id}")
-            })?;
-        self.machine
-            .resolve_live_close_result(&session_id, observation)
-            .await
-            .map_err(|err| err.to_string())?
-            .into_channel_close_commit_authority()
-            .ok_or_else(|| {
-                format!(
-                    "generated live close authority omitted host commit handoff for channel {channel_id}"
-                )
-            })
-    }
-}
-
-#[async_trait]
-impl<B: SessionAgentBuilder + 'static> LiveChannelStatusFeedback for GatewayLiveProjectionSink<B> {
-    async fn record_live_channel_status(
-        &self,
-        channel_id: &LiveChannelId,
-        observation: &LiveChannelStatusObservation,
-    ) -> Result<meerkat_live::LiveChannelStatusCommitAuthority, String> {
-        if observation.channel_id() != channel_id.as_str() {
-            return Err(format!(
-                "generated live status observation channel mismatch: observed {}, requested {}",
-                observation.channel_id(),
-                channel_id
-            ));
+    impl<B: SessionAgentBuilder + 'static> GatewayLiveProjectionSink<B> {
+        pub fn new(
+            service: Arc<PersistentSessionService<B>>,
+            machine: Arc<MeerkatMachine>,
+        ) -> Self {
+            Self {
+                service,
+                machine,
+                pending_turns: PendingTurnLedger::default(),
+            }
         }
-        let session_id = self
-            .machine
-            .live_session_for_status_channel(channel_id)
-            .await
-            .ok_or_else(|| {
-                format!("generated live status-channel authority absent for channel {channel_id}")
-            })?;
-        self.machine
-            .resolve_live_channel_status_result(&session_id, observation)
-            .await
-            .map_err(|err| err.to_string())?
-            .into_channel_status_commit_authority()
-            .ok_or_else(|| {
-                format!(
-                    "generated live status authority omitted host commit handoff for channel {channel_id}"
-                )
-            })
     }
-}
 
-#[async_trait]
-impl<B: SessionAgentBuilder + 'static> LiveWsTokenAuthority for GatewayLiveProjectionSink<B> {
-    async fn record_live_ws_token_issued(
-        &self,
-        session_id: &SessionId,
-        channel_id: &LiveChannelId,
-        token: &LiveTokenString,
-        issued_at_ms: u64,
-        ttl_ms: u64,
-    ) -> Result<LiveWsTokenIssue, String> {
-        let authority = self
-            .machine
-            .record_live_websocket_token_issued(
-                session_id,
-                channel_id,
-                token.as_str(),
-                issued_at_ms,
-                ttl_ms,
-            )
-            .await
-            .map_err(|err| err.to_string())?;
-        let token = LiveTokenString::new(authority.token).map_err(|err| err.to_string())?;
-        Ok(LiveWsTokenIssue {
-            token,
-            expires_at_ms: authority.expires_at_ms,
-            sequence: authority.sequence,
+    /// Build the realtime-transcript event the sink stages on the
+    /// **display-text** lane. Extracted so unit tests can assert the exact event
+    /// shape without a service.
+    ///
+    /// #199: the required delta identity triple (`response_id` / `delta_id` /
+    /// `item_id`) resolves through the canonical fail-closed accessor
+    /// [`LiveTranscriptIdentity::require_delta_identity`]; a delta missing any
+    /// required id yields a typed [`LiveTranscriptIdentityError`] so the
+    /// projection rejects the malformed delta instead of emitting empty-string
+    /// identity truth.
+    fn build_assistant_text_delta_event(
+        delta: &str,
+        identity: LiveTranscriptIdentity<'_>,
+    ) -> Result<RealtimeTranscriptEvent, LiveTranscriptIdentityError> {
+        let resolved = identity.require_delta_identity()?;
+        Ok(RealtimeTranscriptEvent::AssistantTextDelta {
+            response_id: resolved.response_id.to_string(),
+            delta_id: resolved.delta_id.to_string(),
+            item_id: resolved.item_id.to_string(),
+            previous_item_id: resolved.previous_item_id.map(ToString::to_string),
+            content_index: resolved.content_index.unwrap_or(0),
+            delta: delta.to_string(),
         })
     }
 
-    async fn resolve_live_ws_token_admission(
-        &self,
-        channel_id: &LiveChannelId,
-        token: &str,
-        observed_at_ms: u64,
-    ) -> Result<LiveWsTokenAdmission, String> {
-        // Admission resolves against the token's OWNING session when the
-        // machine knows the token; otherwise against the channel's bound
-        // session; otherwise through the unbound rejection path. All three
-        // arms end in generated machine authority — the transport never
-        // decides token facts.
-        let token_owner = self.machine.live_session_for_websocket_token(token).await;
-        let authority = match token_owner {
-            Some(session_id) => {
-                self.machine
-                    .resolve_live_websocket_token_admission(
-                        &session_id,
-                        channel_id,
-                        token,
-                        observed_at_ms,
-                    )
-                    .await
-            }
-            None => match self
+    /// Build the realtime-transcript event the sink stages on the
+    /// **spoken-transcript** lane (T9/T10: the dedicated
+    /// `AssistantTranscriptDelta` variant, so the materializer flushes
+    /// `AssistantBlock::Transcript { source: Spoken }` rather than `Text`).
+    fn build_assistant_transcript_delta_event(
+        delta: &str,
+        identity: LiveTranscriptIdentity<'_>,
+    ) -> Result<RealtimeTranscriptEvent, LiveTranscriptIdentityError> {
+        let resolved = identity.require_delta_identity()?;
+        Ok(RealtimeTranscriptEvent::AssistantTranscriptDelta {
+            response_id: resolved.response_id.to_string(),
+            delta_id: resolved.delta_id.to_string(),
+            item_id: resolved.item_id.to_string(),
+            previous_item_id: resolved.previous_item_id.map(ToString::to_string),
+            content_index: resolved.content_index.unwrap_or(0),
+            delta: delta.to_string(),
+        })
+    }
+
+    /// A malformed delta (missing required identity) is a projection rejection,
+    /// not an internal fault: it lands in [`LiveProjectionError::Rejected`],
+    /// mirroring the `SessionError::Unsupported` classification.
+    fn identity_error_to_projection(err: LiveTranscriptIdentityError) -> LiveProjectionError {
+        LiveProjectionError::Rejected(err.to_string())
+    }
+
+    /// Collapse arrival-order display-text fragments into a single
+    /// `AssistantBlock::Text` (or empty list if no fragments were buffered).
+    fn collapse_pending_blocks(buffered: Vec<PendingAssistantContent>) -> Vec<AssistantBlock> {
+        if buffered.is_empty() {
+            return Vec::new();
+        }
+        let mut acc = String::new();
+        for PendingAssistantContent::Text(fragment) in buffered {
+            acc.push_str(&fragment);
+        }
+        vec![AssistantBlock::Text {
+            text: acc,
+            meta: None,
+        }]
+    }
+
+    /// Classify a [`meerkat_core::SessionError`] through the single canonical
+    /// classification owner [`LiveProjectionError::from_session_error`] so every
+    /// variant lands in a distinct typed `LiveProjectionError` — no variant is
+    /// collapsed into a prose-only `Internal(to_string())` at this surface.
+    fn session_error_to_projection(
+        err: meerkat_core::SessionError,
+        id: &SessionId,
+    ) -> LiveProjectionError {
+        LiveProjectionError::from_session_error(id, err)
+    }
+
+    #[async_trait]
+    impl<B: SessionAgentBuilder + 'static> LiveChannelCloseFeedback for GatewayLiveProjectionSink<B> {
+        async fn record_live_channel_closed(
+            &self,
+            channel_id: &LiveChannelId,
+            observation: &LiveChannelCloseObservation,
+        ) -> Result<meerkat_live::LiveChannelCloseCommitAuthority, String> {
+            let session_id = self
                 .machine
                 .live_session_for_active_channel(channel_id)
                 .await
-            {
+                .ok_or_else(|| {
+                    format!(
+                        "generated live active-channel authority absent for channel {channel_id}"
+                    )
+                })?;
+            self.machine
+                .resolve_live_close_result(&session_id, observation)
+                .await
+                .map_err(|err| err.to_string())?
+                .into_channel_close_commit_authority()
+                .ok_or_else(|| {
+                    format!(
+                        "generated live close authority omitted host commit handoff for channel {channel_id}"
+                    )
+                })
+        }
+    }
+
+    #[async_trait]
+    impl<B: SessionAgentBuilder + 'static> LiveChannelStatusFeedback for GatewayLiveProjectionSink<B> {
+        async fn record_live_channel_status(
+            &self,
+            channel_id: &LiveChannelId,
+            observation: &LiveChannelStatusObservation,
+        ) -> Result<meerkat_live::LiveChannelStatusCommitAuthority, String> {
+            if observation.channel_id() != channel_id.as_str() {
+                return Err(format!(
+                    "generated live status observation channel mismatch: observed {}, requested {}",
+                    observation.channel_id(),
+                    channel_id
+                ));
+            }
+            let session_id = self
+                .machine
+                .live_session_for_status_channel(channel_id)
+                .await
+                .ok_or_else(|| {
+                    format!(
+                        "generated live status-channel authority absent for channel {channel_id}"
+                    )
+                })?;
+            self.machine
+                .resolve_live_channel_status_result(&session_id, observation)
+                .await
+                .map_err(|err| err.to_string())?
+                .into_channel_status_commit_authority()
+                .ok_or_else(|| {
+                    format!(
+                        "generated live status authority omitted host commit handoff for channel {channel_id}"
+                    )
+                })
+        }
+    }
+
+    #[async_trait]
+    impl<B: SessionAgentBuilder + 'static> LiveWsTokenAuthority for GatewayLiveProjectionSink<B> {
+        async fn record_live_ws_token_issued(
+            &self,
+            session_id: &SessionId,
+            channel_id: &LiveChannelId,
+            token: &LiveTokenString,
+            issued_at_ms: u64,
+            ttl_ms: u64,
+        ) -> Result<LiveWsTokenIssue, String> {
+            let authority = self
+                .machine
+                .record_live_websocket_token_issued(
+                    session_id,
+                    channel_id,
+                    token.as_str(),
+                    issued_at_ms,
+                    ttl_ms,
+                )
+                .await
+                .map_err(|err| err.to_string())?;
+            let token = LiveTokenString::new(authority.token).map_err(|err| err.to_string())?;
+            Ok(LiveWsTokenIssue {
+                token,
+                expires_at_ms: authority.expires_at_ms,
+                sequence: authority.sequence,
+            })
+        }
+
+        async fn resolve_live_ws_token_admission(
+            &self,
+            channel_id: &LiveChannelId,
+            token: &str,
+            observed_at_ms: u64,
+        ) -> Result<LiveWsTokenAdmission, String> {
+            // Admission resolves against the token's OWNING session when the
+            // machine knows the token; otherwise against the channel's bound
+            // session; otherwise through the unbound rejection path. All three
+            // arms end in generated machine authority — the transport never
+            // decides token facts.
+            let token_owner = self.machine.live_session_for_websocket_token(token).await;
+            let authority = match token_owner {
                 Some(session_id) => {
                     self.machine
                         .resolve_live_websocket_token_admission(
@@ -412,428 +410,729 @@ impl<B: SessionAgentBuilder + 'static> LiveWsTokenAuthority for GatewayLiveProje
                         )
                         .await
                 }
-                None => {
-                    self.machine
-                        .resolve_unbound_live_websocket_token_admission(
-                            channel_id,
-                            token,
-                            observed_at_ms,
-                        )
-                        .await
-                }
-            },
+                None => match self
+                    .machine
+                    .live_session_for_active_channel(channel_id)
+                    .await
+                {
+                    Some(session_id) => {
+                        self.machine
+                            .resolve_live_websocket_token_admission(
+                                &session_id,
+                                channel_id,
+                                token,
+                                observed_at_ms,
+                            )
+                            .await
+                    }
+                    None => {
+                        self.machine
+                            .resolve_unbound_live_websocket_token_admission(
+                                channel_id,
+                                token,
+                                observed_at_ms,
+                            )
+                            .await
+                    }
+                },
+            }
+            .map_err(|err| err.to_string())?;
+
+            Ok(LiveWsTokenAdmission {
+                channel_id: channel_id.clone(),
+                admitted: authority.admitted,
+                rejection: authority
+                    .rejection
+                    .map(live_ws_token_admission_rejection_from_machine),
+                public_error_class: authority
+                    .public_error_class
+                    .map(live_ws_token_public_error_class_from_machine),
+                sequence: authority.sequence,
+            })
         }
-        .map_err(|err| err.to_string())?;
-
-        Ok(LiveWsTokenAdmission {
-            channel_id: channel_id.clone(),
-            admitted: authority.admitted,
-            rejection: authority
-                .rejection
-                .map(live_ws_token_admission_rejection_from_machine),
-            public_error_class: authority
-                .public_error_class
-                .map(live_ws_token_public_error_class_from_machine),
-            sequence: authority.sequence,
-        })
     }
-}
 
-fn live_ws_token_admission_rejection_from_machine(
-    rejection: meerkat_runtime::meerkat_machine::dsl::LiveWebsocketTokenAdmissionRejection,
-) -> LiveWsTokenAdmissionRejection {
-    use meerkat_runtime::meerkat_machine::dsl::LiveWebsocketTokenAdmissionRejection as Dsl;
-    match rejection {
-        Dsl::TokenNotFound => LiveWsTokenAdmissionRejection::TokenNotFound,
-        Dsl::TokenExpired => LiveWsTokenAdmissionRejection::TokenExpired,
-        Dsl::TokenChannelMismatch => LiveWsTokenAdmissionRejection::TokenChannelMismatch,
-        Dsl::TokenAlreadyConsumed => LiveWsTokenAdmissionRejection::TokenAlreadyConsumed,
-        Dsl::ChannelNotBound => LiveWsTokenAdmissionRejection::ChannelNotBound,
+    fn live_ws_token_admission_rejection_from_machine(
+        rejection: meerkat_runtime::meerkat_machine::dsl::LiveWebsocketTokenAdmissionRejection,
+    ) -> LiveWsTokenAdmissionRejection {
+        use meerkat_runtime::meerkat_machine::dsl::LiveWebsocketTokenAdmissionRejection as Dsl;
+        match rejection {
+            Dsl::TokenNotFound => LiveWsTokenAdmissionRejection::TokenNotFound,
+            Dsl::TokenExpired => LiveWsTokenAdmissionRejection::TokenExpired,
+            Dsl::TokenChannelMismatch => LiveWsTokenAdmissionRejection::TokenChannelMismatch,
+            Dsl::TokenAlreadyConsumed => LiveWsTokenAdmissionRejection::TokenAlreadyConsumed,
+            Dsl::ChannelNotBound => LiveWsTokenAdmissionRejection::ChannelNotBound,
+        }
     }
-}
 
-fn live_ws_token_public_error_class_from_machine(
-    public_error_class: meerkat_runtime::meerkat_machine::dsl::LiveWebsocketTokenAdmissionPublicErrorClass,
-) -> LiveWsTokenAdmissionPublicErrorClass {
-    use meerkat_runtime::meerkat_machine::dsl::LiveWebsocketTokenAdmissionPublicErrorClass as Dsl;
-    match public_error_class {
-        Dsl::InvalidToken => LiveWsTokenAdmissionPublicErrorClass::InvalidToken,
+    fn live_ws_token_public_error_class_from_machine(
+        public_error_class: meerkat_runtime::meerkat_machine::dsl::LiveWebsocketTokenAdmissionPublicErrorClass,
+    ) -> LiveWsTokenAdmissionPublicErrorClass {
+        use meerkat_runtime::meerkat_machine::dsl::LiveWebsocketTokenAdmissionPublicErrorClass as Dsl;
+        match public_error_class {
+            Dsl::InvalidToken => LiveWsTokenAdmissionPublicErrorClass::InvalidToken,
+        }
     }
-}
 
-#[async_trait]
-impl<B: SessionAgentBuilder + 'static> LiveProjectionSink for GatewayLiveProjectionSink<B> {
-    async fn append_user_transcript(
-        &self,
-        session_id: &SessionId,
-        text: &str,
-        identity: LiveTranscriptIdentity<'_>,
-    ) -> Result<(), LiveProjectionError> {
-        // P2#1: with a stable `provider_item_id`, route through the typed
-        // realtime transcript seam so its idempotent ordering / dedup owns
-        // the canonical commit (duplicate provider finals collapse by
-        // item_id + content_index instead of producing duplicate user turns).
-        if let Some(item_id) = identity.provider_item_id {
-            let event = RealtimeTranscriptEvent::UserTranscriptFinal {
-                item_id: item_id.to_string(),
-                previous_item_id: identity.previous_item_id.map(ToString::to_string),
-                content_index: identity.content_index.unwrap_or(0),
-                text: text.to_string(),
-            };
-            return self
-                .service
+    #[async_trait]
+    impl<B: SessionAgentBuilder + 'static> LiveProjectionSink for GatewayLiveProjectionSink<B> {
+        async fn append_user_transcript(
+            &self,
+            session_id: &SessionId,
+            text: &str,
+            identity: LiveTranscriptIdentity<'_>,
+        ) -> Result<(), LiveProjectionError> {
+            // P2#1: with a stable `provider_item_id`, route through the typed
+            // realtime transcript seam so its idempotent ordering / dedup owns
+            // the canonical commit (duplicate provider finals collapse by
+            // item_id + content_index instead of producing duplicate user turns).
+            if let Some(item_id) = identity.provider_item_id {
+                let event = RealtimeTranscriptEvent::UserTranscriptFinal {
+                    item_id: item_id.to_string(),
+                    previous_item_id: identity.previous_item_id.map(ToString::to_string),
+                    content_index: identity.content_index.unwrap_or(0),
+                    text: text.to_string(),
+                };
+                return self
+                    .service
+                    .append_realtime_transcript_event(session_id, event)
+                    .await
+                    .map(|_outcome| ())
+                    .map_err(|err| session_error_to_projection(err, session_id));
+            }
+
+            // Legacy fallback: providers without a stable item id cannot be
+            // deduplicated by the realtime layer, so commit directly into
+            // canonical history.
+            self.service
+                .append_external_user_content(session_id, ContentInput::Text(text.to_string()))
+                .await
+                .map_err(|err| session_error_to_projection(err, session_id))
+        }
+
+        async fn append_assistant_text_delta(
+            &self,
+            session_id: &SessionId,
+            delta: &str,
+            identity: LiveTranscriptIdentity<'_>,
+        ) -> Result<(), LiveProjectionError> {
+            // A3/A11/T6: display-text delta lane, staged through the typed
+            // realtime seam with the full identity tuple.
+            let event = build_assistant_text_delta_event(delta, identity)
+                .map_err(identity_error_to_projection)?;
+            self.service
                 .append_realtime_transcript_event(session_id, event)
                 .await
                 .map(|_outcome| ())
-                .map_err(|err| session_error_to_projection(err, session_id));
+                .map_err(|err| session_error_to_projection(err, session_id))
         }
 
-        // Legacy fallback: providers without a stable item id cannot be
-        // deduplicated by the realtime layer, so commit directly into
-        // canonical history.
-        self.service
-            .append_external_user_content(session_id, ContentInput::Text(text.to_string()))
-            .await
-            .map_err(|err| session_error_to_projection(err, session_id))
-    }
+        async fn append_assistant_transcript_delta(
+            &self,
+            session_id: &SessionId,
+            delta: &str,
+            identity: LiveTranscriptIdentity<'_>,
+        ) -> Result<(), LiveProjectionError> {
+            // T6/T9/T10: spoken-transcript delta lane; the staging site tags the
+            // owning item `TranscriptLane::Spoken` so the materializer flushes
+            // `AssistantBlock::Transcript { source: Spoken }`.
+            let event = build_assistant_transcript_delta_event(delta, identity)
+                .map_err(identity_error_to_projection)?;
+            self.service
+                .append_realtime_transcript_event(session_id, event)
+                .await
+                .map(|_outcome| ())
+                .map_err(|err| session_error_to_projection(err, session_id))
+        }
 
-    async fn append_assistant_text_delta(
-        &self,
-        session_id: &SessionId,
-        delta: &str,
-        identity: LiveTranscriptIdentity<'_>,
-    ) -> Result<(), LiveProjectionError> {
-        // A3/A11/T6: display-text delta lane, staged through the typed
-        // realtime seam with the full identity tuple.
-        let event = build_assistant_text_delta_event(delta, identity)
-            .map_err(identity_error_to_projection)?;
-        self.service
-            .append_realtime_transcript_event(session_id, event)
-            .await
-            .map(|_outcome| ())
-            .map_err(|err| session_error_to_projection(err, session_id))
-    }
+        async fn append_assistant_text_final(
+            &self,
+            session_id: &SessionId,
+            text: &str,
+            _identity: LiveTranscriptIdentity<'_>,
+            _stop_reason: StopReason,
+            _usage: Usage,
+            response_id: Option<&str>,
+        ) -> Result<(), LiveProjectionError> {
+            // P1#1 + T6: buffer display-text finals on the per-(session,
+            // response_id) slot; `signal_turn_completed` drains and flushes with
+            // the authoritative stop_reason/usage (the values stamped on this
+            // event are provider best-effort sentinels). Display text is
+            // preserved across barge-in (T7).
+            self.pending_turns.buffer(
+                session_id,
+                response_id,
+                PendingAssistantContent::Text(text.to_string()),
+            );
+            Ok(())
+        }
 
-    async fn append_assistant_transcript_delta(
-        &self,
-        session_id: &SessionId,
-        delta: &str,
-        identity: LiveTranscriptIdentity<'_>,
-    ) -> Result<(), LiveProjectionError> {
-        // T6/T9/T10: spoken-transcript delta lane; the staging site tags the
-        // owning item `TranscriptLane::Spoken` so the materializer flushes
-        // `AssistantBlock::Transcript { source: Spoken }`.
-        let event = build_assistant_transcript_delta_event(delta, identity)
-            .map_err(identity_error_to_projection)?;
-        self.service
-            .append_realtime_transcript_event(session_id, event)
-            .await
-            .map(|_outcome| ())
-            .map_err(|err| session_error_to_projection(err, session_id))
-    }
-
-    async fn append_assistant_text_final(
-        &self,
-        session_id: &SessionId,
-        text: &str,
-        _identity: LiveTranscriptIdentity<'_>,
-        _stop_reason: StopReason,
-        _usage: Usage,
-        response_id: Option<&str>,
-    ) -> Result<(), LiveProjectionError> {
-        // P1#1 + T6: buffer display-text finals on the per-(session,
-        // response_id) slot; `signal_turn_completed` drains and flushes with
-        // the authoritative stop_reason/usage (the values stamped on this
-        // event are provider best-effort sentinels). Display text is
-        // preserved across barge-in (T7).
-        self.pending_turns.buffer(
-            session_id,
-            response_id,
-            PendingAssistantContent::Text(text.to_string()),
-        );
-        Ok(())
-    }
-
-    async fn append_assistant_transcript_final(
-        &self,
-        session_id: &SessionId,
-        text: &str,
-        identity: LiveTranscriptIdentity<'_>,
-        _stop_reason: StopReason,
-        _usage: Usage,
-        response_id: Option<&str>,
-    ) -> Result<(), LiveProjectionError> {
-        // R5-7: forward the authoritative final transcript text into the
-        // realtime-staging pipeline. The materializer respects barge-in
-        // discards, creates the staged item for final-only providers,
-        // promotes the lane to Spoken, and REPLACES the staged segment with
-        // this authoritative text (repairing dropped deltas).
-        // `stop_reason`/`usage` are ignored here — the canonical values
-        // arrive atomically with `TurnCompleted`. The identity-carried
-        // `response_id` takes precedence over the arg form; empty ids are
-        // rejected downstream by the materializer as a typed Rejected.
-        let response_id = identity
-            .response_id
-            .map(ToString::to_string)
-            .or_else(|| response_id.map(ToString::to_string))
-            .unwrap_or_default();
-        let event = RealtimeTranscriptEvent::AssistantTranscriptFinalText {
-            response_id,
-            item_id: identity
-                .provider_item_id
+        async fn append_assistant_transcript_final(
+            &self,
+            session_id: &SessionId,
+            text: &str,
+            identity: LiveTranscriptIdentity<'_>,
+            _stop_reason: StopReason,
+            _usage: Usage,
+            response_id: Option<&str>,
+        ) -> Result<(), LiveProjectionError> {
+            // R5-7: forward the authoritative final transcript text into the
+            // realtime-staging pipeline. The materializer respects barge-in
+            // discards, creates the staged item for final-only providers,
+            // promotes the lane to Spoken, and REPLACES the staged segment with
+            // this authoritative text (repairing dropped deltas).
+            // `stop_reason`/`usage` are ignored here — the canonical values
+            // arrive atomically with `TurnCompleted`. The identity-carried
+            // `response_id` takes precedence over the arg form; empty ids are
+            // rejected downstream by the materializer as a typed Rejected.
+            let response_id = identity
+                .response_id
                 .map(ToString::to_string)
-                .unwrap_or_default(),
-            content_index: identity.content_index.unwrap_or(0),
-            text: text.to_string(),
-        };
-        self.service
-            .append_realtime_transcript_event(session_id, event)
-            .await
-            .map(|_outcome| ())
-            .map_err(|err| session_error_to_projection(err, session_id))
-    }
-
-    async fn truncate_assistant_transcript(
-        &self,
-        session_id: &SessionId,
-        provider_item_id: Option<&str>,
-        _previous_item_id: Option<&str>,
-        content_index: Option<u32>,
-        response_id: Option<&str>,
-        text: Option<&str>,
-    ) -> Result<(), LiveProjectionError> {
-        // P1#3: never fabricate empty identity — the realtime layer rejects
-        // empty response_ids, which made the pre-fix projection inert.
-        // Surface a typed Rejected when the provider genuinely omitted the
-        // id (a provider-fact gap, not a silently-dropped event).
-        let Some(response_id) = response_id else {
-            return Err(LiveProjectionError::Rejected(
-                "AssistantTranscriptTruncated missing response_id from adapter".to_string(),
-            ));
-        };
-        let Some(item_id) = provider_item_id else {
-            return Err(LiveProjectionError::Rejected(
-                "AssistantTranscriptTruncated missing provider_item_id from adapter".to_string(),
-            ));
-        };
-        let event = RealtimeTranscriptEvent::AssistantTranscriptTruncated {
-            response_id: response_id.to_string(),
-            item_id: item_id.to_string(),
-            content_index: content_index.unwrap_or(0),
-            text: text.unwrap_or_default().to_string(),
-        };
-        self.service
-            .append_realtime_transcript_event(session_id, event)
-            .await
-            .map(|_outcome| ())
-            .map_err(|err| session_error_to_projection(err, session_id))
-    }
-
-    async fn signal_turn_interrupt(
-        &self,
-        session_id: &SessionId,
-        response_id: Option<&str>,
-    ) -> Result<(), LiveProjectionError> {
-        // A6/CC4: barge-in coordinates ACROSS the two layers holding
-        // in-flight transcript state — (1) the realtime-staging pipeline,
-        // where `AssistantTurnInterrupted` must be synthesized for every
-        // in-flight response so staged deltas do not survive into the next
-        // turn's materializer sweep, and (2) the buffered display-text path,
-        // which is preserved (the user is not "speaking over" written
-        // output). G4: the observation-carried `response_id` is
-        // authoritative even before any delta staged; the fallback discovers
-        // every staged in-flight response id, and the two sources union.
-        let mut response_ids: Vec<String> = Vec::new();
-        if let Some(rid) = response_id.filter(|s| !s.is_empty()) {
-            response_ids.push(rid.to_string());
+                .or_else(|| response_id.map(ToString::to_string))
+                .unwrap_or_default();
+            let event = RealtimeTranscriptEvent::AssistantTranscriptFinalText {
+                response_id,
+                item_id: identity
+                    .provider_item_id
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
+                content_index: identity.content_index.unwrap_or(0),
+                text: text.to_string(),
+            };
+            self.service
+                .append_realtime_transcript_event(session_id, event)
+                .await
+                .map(|_outcome| ())
+                .map_err(|err| session_error_to_projection(err, session_id))
         }
-        match self.service.load_authoritative_session(session_id).await {
-            Ok(Some(session)) => {
-                for id in session.in_flight_realtime_assistant_response_ids() {
-                    if !response_ids.contains(&id) {
-                        response_ids.push(id);
+
+        async fn truncate_assistant_transcript(
+            &self,
+            session_id: &SessionId,
+            provider_item_id: Option<&str>,
+            _previous_item_id: Option<&str>,
+            content_index: Option<u32>,
+            response_id: Option<&str>,
+            text: Option<&str>,
+        ) -> Result<(), LiveProjectionError> {
+            // P1#3: never fabricate empty identity — the realtime layer rejects
+            // empty response_ids, which made the pre-fix projection inert.
+            // Surface a typed Rejected when the provider genuinely omitted the
+            // id (a provider-fact gap, not a silently-dropped event).
+            let Some(response_id) = response_id else {
+                return Err(LiveProjectionError::Rejected(
+                    "AssistantTranscriptTruncated missing response_id from adapter".to_string(),
+                ));
+            };
+            let Some(item_id) = provider_item_id else {
+                return Err(LiveProjectionError::Rejected(
+                    "AssistantTranscriptTruncated missing provider_item_id from adapter"
+                        .to_string(),
+                ));
+            };
+            let event = RealtimeTranscriptEvent::AssistantTranscriptTruncated {
+                response_id: response_id.to_string(),
+                item_id: item_id.to_string(),
+                content_index: content_index.unwrap_or(0),
+                text: text.unwrap_or_default().to_string(),
+            };
+            self.service
+                .append_realtime_transcript_event(session_id, event)
+                .await
+                .map(|_outcome| ())
+                .map_err(|err| session_error_to_projection(err, session_id))
+        }
+
+        async fn signal_turn_interrupt(
+            &self,
+            session_id: &SessionId,
+            response_id: Option<&str>,
+        ) -> Result<(), LiveProjectionError> {
+            // A6/CC4: barge-in coordinates ACROSS the two layers holding
+            // in-flight transcript state — (1) the realtime-staging pipeline,
+            // where `AssistantTurnInterrupted` must be synthesized for every
+            // in-flight response so staged deltas do not survive into the next
+            // turn's materializer sweep, and (2) the buffered display-text path,
+            // which is preserved (the user is not "speaking over" written
+            // output). G4: the observation-carried `response_id` is
+            // authoritative even before any delta staged; the fallback discovers
+            // every staged in-flight response id, and the two sources union.
+            let mut response_ids: Vec<String> = Vec::new();
+            if let Some(rid) = response_id.filter(|s| !s.is_empty()) {
+                response_ids.push(rid.to_string());
+            }
+            match self.service.load_authoritative_session(session_id).await {
+                Ok(Some(session)) => {
+                    for id in session.in_flight_realtime_assistant_response_ids() {
+                        if !response_ids.contains(&id) {
+                            response_ids.push(id);
+                        }
                     }
                 }
-            }
-            Ok(None) => {}
-            Err(
-                meerkat_core::SessionError::NotFound { .. }
-                | meerkat_core::SessionError::Unsupported(_),
-            ) => {}
-            Err(err) => return Err(session_error_to_projection(err, session_id)),
-        }
-        for rid in response_ids {
-            let event = RealtimeTranscriptEvent::AssistantTurnInterrupted { response_id: rid };
-            match self
-                .service
-                .append_realtime_transcript_event(session_id, event)
-                .await
-            {
-                Ok(_) => {}
+                Ok(None) => {}
                 Err(
                     meerkat_core::SessionError::NotFound { .. }
                     | meerkat_core::SessionError::Unsupported(_),
                 ) => {}
                 Err(err) => return Err(session_error_to_projection(err, session_id)),
             }
-        }
-
-        // Project through the same machine-authority interrupt path the
-        // user-facing `mobkit/live/interrupt` RPC uses. Tolerate
-        // `NotRunning` (typical when no turn is in flight) so a late
-        // provider-side interrupt does not poison the channel.
-        match self
-            .service
-            .interrupt_with_machine_authority(session_id, self.machine.session_control_authority())
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(meerkat_core::SessionError::NotRunning { .. }) => Ok(()),
-            Err(err) => Err(session_error_to_projection(err, session_id)),
-        }
-    }
-
-    async fn signal_turn_completed(
-        &self,
-        session_id: &SessionId,
-        stop_reason: StopReason,
-        usage: meerkat_core::TurnUsage,
-        response_id: Option<&str>,
-    ) -> Result<(), LiveProjectionError> {
-        // 0.8.22: the sink receives a per-turn `TurnUsage` where 0.8.21 passed
-        // the same per-turn value as a flat `Usage`. The value's meaning did
-        // not change - only its evidence: `TurnUsage` carries the provider's
-        // normalized token accounting alongside the flat counters. The real
-        // turn's accounting is forwarded untouched. The single-counted ZERO
-        // used when the realtime materializer already booked this turn is
-        // host-declared at the drain below, NOT `Usage::default()` - see the
-        // comment there before simplifying it away.
-        //
-        // CC2: synthesize `AssistantTurnCompleted` BEFORE draining the
-        // buffered display-text path — the staging materializer commits any
-        // staged spoken-transcript items for `response_id` here (the
-        // provider emits `TurnCompleted` directly, never a staged
-        // `AssistantTurnCompleted`, so without this synthesis staged deltas
-        // leak forever). Orphan completions (no `response_id`) skip the
-        // synthesis (staging rejects empty ids) but still flush the buffer.
-        let mut realtime_materialized = false;
-        if let Some(rid) = response_id.filter(|s| !s.is_empty()) {
-            let event = RealtimeTranscriptEvent::AssistantTurnCompleted {
-                response_id: rid.to_string(),
-                stop_reason,
-                usage: usage.clone(),
-            };
-            match self
-                .service
-                .append_realtime_transcript_event(session_id, event)
-                .await
-            {
-                Ok(outcome) => {
-                    // If the materializer fired it has already recorded the
-                    // authoritative usage for this turn; the drain below must
-                    // then forward typed zero usage to stay single-counted.
-                    realtime_materialized = !outcome.is_inert();
+            for rid in response_ids {
+                let event = RealtimeTranscriptEvent::AssistantTurnInterrupted { response_id: rid };
+                match self
+                    .service
+                    .append_realtime_transcript_event(session_id, event)
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(
+                        meerkat_core::SessionError::NotFound { .. }
+                        | meerkat_core::SessionError::Unsupported(_),
+                    ) => {}
+                    Err(err) => return Err(session_error_to_projection(err, session_id)),
                 }
-                Err(
-                    meerkat_core::SessionError::NotFound { .. }
-                    | meerkat_core::SessionError::Unsupported(_),
-                ) => {}
-                Err(err) => return Err(session_error_to_projection(err, session_id)),
+            }
+
+            // Project through the same machine-authority interrupt path the
+            // user-facing `mobkit/live/interrupt` RPC uses. Tolerate
+            // `NotRunning` (typical when no turn is in flight) so a late
+            // provider-side interrupt does not poison the channel.
+            match self
+                .service
+                .interrupt_with_machine_authority(
+                    session_id,
+                    self.machine.session_control_authority(),
+                )
+                .await
+            {
+                Ok(()) => Ok(()),
+                Err(meerkat_core::SessionError::NotRunning { .. }) => Ok(()),
+                Err(err) => Err(session_error_to_projection(err, session_id)),
             }
         }
 
-        // R6: drain only the matching (session, response_id) display-text
-        // slot. If realtime materialized and nothing was buffered, skip the
-        // empty append entirely — no synthetic empty assistant block and no
-        // double-recorded usage.
-        let pending = self.pending_turns.drain(session_id, response_id);
-        let blocks = collapse_pending_blocks(pending.blocks);
-        if realtime_materialized && blocks.is_empty() {
-            return Ok(());
+        async fn signal_turn_completed(
+            &self,
+            session_id: &SessionId,
+            stop_reason: StopReason,
+            usage: meerkat_core::TurnUsage,
+            response_id: Option<&str>,
+        ) -> Result<(), LiveProjectionError> {
+            // 0.8.22: the sink receives a per-turn `TurnUsage` where 0.8.21 passed
+            // the same per-turn value as a flat `Usage`. The value's meaning did
+            // not change - only its evidence: `TurnUsage` carries the provider's
+            // normalized token accounting alongside the flat counters. The real
+            // turn's accounting is forwarded untouched. The single-counted ZERO
+            // used when the realtime materializer already booked this turn is
+            // host-declared at the drain below, NOT `Usage::default()` - see the
+            // comment there before simplifying it away.
+            //
+            // CC2: synthesize `AssistantTurnCompleted` BEFORE draining the
+            // buffered display-text path — the staging materializer commits any
+            // staged spoken-transcript items for `response_id` here (the
+            // provider emits `TurnCompleted` directly, never a staged
+            // `AssistantTurnCompleted`, so without this synthesis staged deltas
+            // leak forever). Orphan completions (no `response_id`) skip the
+            // synthesis (staging rejects empty ids) but still flush the buffer.
+            let mut realtime_materialized = false;
+            if let Some(rid) = response_id.filter(|s| !s.is_empty()) {
+                let event = RealtimeTranscriptEvent::AssistantTurnCompleted {
+                    response_id: rid.to_string(),
+                    stop_reason,
+                    usage: usage.clone(),
+                };
+                match self
+                    .service
+                    .append_realtime_transcript_event(session_id, event)
+                    .await
+                {
+                    Ok(outcome) => {
+                        // If the materializer fired it has already recorded the
+                        // authoritative usage for this turn; the drain below must
+                        // then forward typed zero usage to stay single-counted.
+                        realtime_materialized = !outcome.is_inert();
+                    }
+                    Err(
+                        meerkat_core::SessionError::NotFound { .. }
+                        | meerkat_core::SessionError::Unsupported(_),
+                    ) => {}
+                    Err(err) => return Err(session_error_to_projection(err, session_id)),
+                }
+            }
+
+            // R6: drain only the matching (session, response_id) display-text
+            // slot. If realtime materialized and nothing was buffered, skip the
+            // empty append entirely — no synthetic empty assistant block and no
+            // double-recorded usage.
+            let pending = self.pending_turns.drain(session_id, response_id);
+            let blocks = collapse_pending_blocks(pending.blocks);
+            if realtime_materialized && blocks.is_empty() {
+                return Ok(());
+            }
+            // 0.8.22: `append_external_assistant_output` still takes the flat
+            // `Usage`, but the agent-side boundary now runs
+            // `TurnUsage::try_from_usage` on it and rejects a `Usage` whose
+            // `provider_accounting` is `None`. A bare `Usage::default()` (the
+            // 0.8.21 zero) would therefore fail the drain with a typed
+            // `ConfigError` on exactly the turns where realtime materialized AND
+            // display text was buffered. Zero usage must be *host-declared* so it
+            // carries normalized accounting; the real usage is restored to flat
+            // form (accounting re-attached) via `into_inner`.
+            let usage_for_drain = if realtime_materialized {
+                meerkat_core::TurnUsage::host_declared(
+                    meerkat_core::Provider::Other,
+                    "realtime-usage-already-recorded",
+                    Usage::default(),
+                )
+                .into_inner()
+            } else {
+                usage.into_inner()
+            };
+            self.service
+                .append_external_assistant_output(session_id, blocks, stop_reason, usage_for_drain)
+                .await
+                .map_err(|err| session_error_to_projection(err, session_id))
         }
-        // 0.8.22: `append_external_assistant_output` still takes the flat
-        // `Usage`, but the agent-side boundary now runs
-        // `TurnUsage::try_from_usage` on it and rejects a `Usage` whose
-        // `provider_accounting` is `None`. A bare `Usage::default()` (the
-        // 0.8.21 zero) would therefore fail the drain with a typed
-        // `ConfigError` on exactly the turns where realtime materialized AND
-        // display text was buffered. Zero usage must be *host-declared* so it
-        // carries normalized accounting; the real usage is restored to flat
-        // form (accounting re-attached) via `into_inner`.
-        let usage_for_drain = if realtime_materialized {
-            meerkat_core::TurnUsage::host_declared(
-                meerkat_core::Provider::Other,
-                "realtime-usage-already-recorded",
-                Usage::default(),
-            )
-            .into_inner()
-        } else {
-            usage.into_inner()
-        };
-        self.service
-            .append_external_assistant_output(session_id, blocks, stop_reason, usage_for_drain)
-            .await
-            .map_err(|err| session_error_to_projection(err, session_id))
-    }
 
-    async fn signal_terminal_error(
-        &self,
-        session_id: &SessionId,
-        code: LiveAdapterErrorCode,
-        message: &str,
-    ) -> Result<(), LiveProjectionError> {
-        // R6: drop ALL buffered finals across every response_id slot —
-        // terminal error invalidates every in-flight response.
-        self.pending_turns.drain_all(session_id);
-        tracing::warn!(
-            target: "meerkat_mobkit::live_wiring",
-            session_id = %session_id,
-            ?code,
-            message,
-            "live adapter terminal error",
-        );
-        // Route the typed terminal cause onto the session's owned event
-        // stream via the canonical `SessionService::record_live_terminal_error`
-        // seam — observable to session subscribers, not only tracing.
-        self.service
-            .record_live_terminal_error(session_id, code)
-            .await
-            .map_err(|err| session_error_to_projection(err, session_id))
-    }
+        async fn signal_terminal_error(
+            &self,
+            session_id: &SessionId,
+            code: LiveAdapterErrorCode,
+            message: &str,
+        ) -> Result<(), LiveProjectionError> {
+            // R6: drop ALL buffered finals across every response_id slot —
+            // terminal error invalidates every in-flight response.
+            self.pending_turns.drain_all(session_id);
+            tracing::warn!(
+                target: "meerkat_mobkit::live_wiring",
+                session_id = %session_id,
+                ?code,
+                message,
+                "live adapter terminal error",
+            );
+            // Route the typed terminal cause onto the session's owned event
+            // stream via the canonical `SessionService::record_live_terminal_error`
+            // seam — observable to session subscribers, not only tracing.
+            self.service
+                .record_live_terminal_error(session_id, code)
+                .await
+                .map_err(|err| session_error_to_projection(err, session_id))
+        }
 
-    async fn signal_output_audio_degraded(
-        &self,
-        session_id: &SessionId,
-        dropped: u64,
-    ) -> Result<(), LiveProjectionError> {
-        // K16: transport delivery degradation is a typed session-observable
-        // fact, never a transport-local counter or a tracing-only warning.
-        self.service
-            .record_live_output_audio_degraded(session_id, dropped)
-            .await
-            .map_err(|err| session_error_to_projection(err, session_id))
-    }
+        async fn signal_output_audio_degraded(
+            &self,
+            session_id: &SessionId,
+            dropped: u64,
+        ) -> Result<(), LiveProjectionError> {
+            // K16: transport delivery degradation is a typed session-observable
+            // fact, never a transport-local counter or a tracing-only warning.
+            self.service
+                .record_live_output_audio_degraded(session_id, dropped)
+                .await
+                .map_err(|err| session_error_to_projection(err, session_id))
+        }
 
-    async fn append_realtime_transcript(
-        &self,
-        session_id: &SessionId,
-        event: &RealtimeTranscriptEvent,
-    ) -> Result<meerkat_core::RealtimeTranscriptApplyOutcome, LiveProjectionError> {
-        // P1#2: forward provider-emitted realtime transcript events into the
-        // same idempotent ordering / staging path used by deltas +
-        // truncation; without this override `ItemObserved` /
-        // `AssistantTurnCompleted` etc. would be silently dropped. 0.7.27:
-        // the apply outcome flows back so the host synthesizes the redacted
-        // image receipt only AFTER durable reducer application.
-        self.service
-            .append_realtime_transcript_event(session_id, event.clone())
-            .await
-            .map_err(|err| session_error_to_projection(err, session_id))
+        async fn append_realtime_transcript(
+            &self,
+            session_id: &SessionId,
+            event: &RealtimeTranscriptEvent,
+        ) -> Result<meerkat_core::RealtimeTranscriptApplyOutcome, LiveProjectionError> {
+            // P1#2: forward provider-emitted realtime transcript events into the
+            // same idempotent ordering / staging path used by deltas +
+            // truncation; without this override `ItemObserved` /
+            // `AssistantTurnCompleted` etc. would be silently dropped. 0.7.27:
+            // the apply outcome flows back so the host synthesizes the redacted
+            // image receipt only AFTER durable reducer application.
+            self.service
+                .append_realtime_transcript_event(session_id, event.clone())
+                .await
+                .map_err(|err| session_error_to_projection(err, session_id))
+        }
     }
 }
 
-/// Routes live tool calls into the member session's NORMAL external-tool
-/// dispatch (callback bridge, composed recorder tools, gating — unchanged).
+#[cfg(not(feature = "experimental-gpt-live"))]
+use ordinary_compat::GatewayLiveProjectionSink;
+
+/// Operation-specific authority input for a future authenticated HTTP live
+/// surface. Implementations must prove target ABAC, authoritative channel
+/// ownership for channel verbs, and exact binding-use authorization for open
+/// before returning success. Provider/credential materialization occurs only
+/// after this seam returns `Ok(())`.
+#[async_trait]
+pub(crate) trait AuthenticatedHttpLiveAuthority: Send + Sync {
+    fn principal(&self) -> &meerkat_core::PrincipalRef;
+
+    async fn authorize(
+        &self,
+        operation: LiveOperation,
+        resolved_session: Option<&SessionId>,
+        params: &Value,
+        machine: &MeerkatMachine,
+    ) -> Result<(), JsonRpcError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LiveOperation {
+    Open,
+    #[cfg(feature = "experimental-gpt-live")]
+    ReplacementRequired,
+    #[cfg(feature = "experimental-gpt-live")]
+    PlaybackOwnerRegister,
+    #[cfg(feature = "experimental-gpt-live")]
+    PlaybackOwnerRevoke,
+    Status,
+    Close,
+    Refresh,
+    SendInput,
+    CommitInput,
+    Interrupt,
+    Truncate,
+    #[cfg(feature = "experimental-gpt-live")]
+    PlaybackComplete,
+    #[cfg(feature = "experimental-gpt-live")]
+    WebrtcAnswer,
+}
+
+impl LiveOperation {
+    fn from_method(method: &str) -> Option<Self> {
+        match method {
+            "mobkit/live/open" => Some(Self::Open),
+            #[cfg(feature = "experimental-gpt-live")]
+            "mobkit/live/replacement_required" => Some(Self::ReplacementRequired),
+            #[cfg(feature = "experimental-gpt-live")]
+            "mobkit/live/playback_owner/register" => Some(Self::PlaybackOwnerRegister),
+            #[cfg(feature = "experimental-gpt-live")]
+            "mobkit/live/playback_owner/revoke" => Some(Self::PlaybackOwnerRevoke),
+            "mobkit/live/status" => Some(Self::Status),
+            "mobkit/live/close" => Some(Self::Close),
+            "mobkit/live/refresh" => Some(Self::Refresh),
+            "mobkit/live/send_input" => Some(Self::SendInput),
+            "mobkit/live/commit_input" => Some(Self::CommitInput),
+            "mobkit/live/interrupt" => Some(Self::Interrupt),
+            "mobkit/live/truncate" => Some(Self::Truncate),
+            #[cfg(feature = "experimental-gpt-live")]
+            "mobkit/live/playback_complete" => Some(Self::PlaybackComplete),
+            #[cfg(feature = "experimental-gpt-live")]
+            meerkat_live::LIVE_WEBRTC_ANSWER_METHOD => Some(Self::WebrtcAnswer),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct LiveSurfaceAuthority {
+    kind: LiveSurfaceAuthorityKind,
+}
+
+#[derive(Clone)]
+enum LiveSurfaceAuthorityKind {
+    HostTrustedStdio,
+    AuthenticatedHttp(Arc<dyn AuthenticatedHttpLiveAuthority>),
+}
+
+impl LiveSurfaceAuthority {
+    /// Explicit host authority for the local stdio control plane. Missing
+    /// principals never select this mode implicitly.
+    #[must_use]
+    pub fn host_trusted_stdio() -> Self {
+        Self {
+            kind: LiveSurfaceAuthorityKind::HostTrustedStdio,
+        }
+    }
+
+    /// Future HTTP composition seam. It is crate-private so an HTTP route
+    /// cannot manufacture authority from an optional/missing principal; it
+    /// must first construct the typed ABAC/owner/binding-use witness.
+    #[allow(dead_code)]
+    pub(crate) fn authenticated_http(witness: Arc<dyn AuthenticatedHttpLiveAuthority>) -> Self {
+        Self {
+            kind: LiveSurfaceAuthorityKind::AuthenticatedHttp(witness),
+        }
+    }
+
+    async fn authorize(
+        &self,
+        operation: LiveOperation,
+        resolved_session: Option<&SessionId>,
+        params: &Value,
+        machine: &MeerkatMachine,
+    ) -> Result<(), JsonRpcError> {
+        match &self.kind {
+            LiveSurfaceAuthorityKind::HostTrustedStdio => Ok(()),
+            LiveSurfaceAuthorityKind::AuthenticatedHttp(witness) => {
+                let _principal = witness.principal();
+                witness
+                    .authorize(operation, resolved_session, params, machine)
+                    .await
+            }
+        }
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[async_trait]
+trait ExactLiveSessionOwner: Send + Sync {
+    async fn owns_session(&self, canonical_session_id: &SessionId) -> bool;
+
+    async fn validate_live_bridge_eligibility(
+        &self,
+        canonical_session_id: &SessionId,
+    ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>;
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+struct MobHandleLiveSessionOwner {
+    handle: meerkat_mob::MobHandle,
+    member_identity: meerkat_mob::AgentIdentity,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[async_trait]
+impl ExactLiveSessionOwner for MobHandleLiveSessionOwner {
+    async fn owns_session(&self, canonical_session_id: &SessionId) -> bool {
+        self.handle
+            .resolve_bridge_session_id(&self.member_identity)
+            .await
+            .as_ref()
+            == Some(canonical_session_id)
+    }
+
+    async fn validate_live_bridge_eligibility(
+        &self,
+        canonical_session_id: &SessionId,
+    ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError> {
+        use meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError;
+
+        if !self.owns_session(canonical_session_id).await {
+            return Err(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable);
+        }
+        let member = self
+            .handle
+            .member(&self.member_identity)
+            .await
+            .map_err(|_| ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable)?;
+        member
+            .validate_live_bridge_eligibility()
+            .await
+            .map_err(|_| ExperimentalLiveOpenAuthorityError::MemberIneligible)?;
+        if !self.owns_session(canonical_session_id).await {
+            return Err(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable);
+        }
+        Ok(())
+    }
+}
+
+/// Authenticated MobKit guard for one exact experimental live target.
+///
+/// The current member-session binding is re-read from MobMachine authority on
+/// every use. Only after that binding and the request's immutable
+/// [`AccessView`] both authorize `agent.send` does this guard delegate to the
+/// Meerkat realm credential-policy authority that can mint the opaque binding
+/// witness. Missing principals, stale sessions, and ABAC denials therefore
+/// cannot reach credential materialization.
+#[cfg(feature = "experimental-gpt-live")]
+pub struct MobkitExperimentalLiveSessionBindingAuthority {
+    owner: Arc<dyn ExactLiveSessionOwner>,
+    machine: Arc<MeerkatMachine>,
+    durable_identity: String,
+    access_view: AccessView,
+    credential_policy: Arc<dyn MobkitExperimentalLiveBindingUsePolicy>,
+}
+
+/// Realm policy that mints only the exact opaque binding-use witness.
+/// MobKit attaches the generated AuthMachine lease from the same machine that
+/// owns the revalidated member session.
+#[cfg(feature = "experimental-gpt-live")]
+#[async_trait]
+pub trait MobkitExperimentalLiveBindingUsePolicy: Send + Sync {
+    async fn authorize_binding_use(
+        &self,
+        canonical_session_id: &SessionId,
+        selected_binding: &meerkat_core::AuthBindingRef,
+    ) -> Result<
+        meerkat_core::AuthBindingUseWitness,
+        meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError,
+    >;
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+impl MobkitExperimentalLiveSessionBindingAuthority {
+    /// Bind a request-scoped access snapshot to the exact current member
+    /// whose bridge session was selected by MobKit's authoritative target
+    /// resolver.
+    #[must_use]
+    pub fn new(
+        handle: meerkat_mob::MobHandle,
+        machine: Arc<MeerkatMachine>,
+        member_identity: meerkat_mob::AgentIdentity,
+        access_view: AccessView,
+        credential_policy: Arc<dyn MobkitExperimentalLiveBindingUsePolicy>,
+    ) -> Self {
+        let durable_identity =
+            crate::member_comms_id::logical_memory_identity(member_identity.as_str());
+        Self {
+            owner: Arc::new(MobHandleLiveSessionOwner {
+                handle,
+                member_identity,
+            }),
+            machine,
+            durable_identity,
+            access_view,
+            credential_policy,
+        }
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[async_trait]
+impl meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority
+    for MobkitExperimentalLiveSessionBindingAuthority
+{
+    async fn validate_live_bridge_member_eligibility(
+        &self,
+        canonical_session_id: &SessionId,
+    ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError> {
+        self.owner
+            .validate_live_bridge_eligibility(canonical_session_id)
+            .await
+    }
+
+    async fn authorize_binding_use(
+        &self,
+        canonical_session_id: &SessionId,
+        selected_binding: &meerkat_core::AuthBindingRef,
+    ) -> Result<
+        meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthorization,
+        meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError,
+    > {
+        use meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError;
+
+        if !self.owner.owns_session(canonical_session_id).await {
+            return Err(ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable);
+        }
+        if self.access_view.subject().is_none()
+            || !self
+                .access_view
+                .allows_agent(ACTION_AGENT_SEND, &self.durable_identity)
+        {
+            return Err(ExperimentalLiveOpenAuthorityError::AccessDenied);
+        }
+        let binding_use = self
+            .credential_policy
+            .authorize_binding_use(canonical_session_id, selected_binding)
+            .await?;
+        Ok(
+            meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthorization::from_machine_authority(
+                binding_use,
+                self.machine.generated_auth_lease_handle(),
+            ),
+        )
+    }
+}
+
+/// Routes live tool calls into the member session's normal external-tool
+/// dispatch. Experimental GPT Live admission separately rejects callback
+/// provenance before this dispatcher can receive a live tool call.
 /// Port of meerkat-rpc's `RuntimeLiveToolDispatcher`.
 pub struct GatewayLiveToolDispatcher<B: SessionAgentBuilder + 'static> {
     service: Arc<PersistentSessionService<B>>,
@@ -883,6 +1182,16 @@ impl RealtimeCurrentConfigSource for EnvRealtimeConfigSource {
     }
 }
 
+#[cfg(feature = "experimental-gpt-live")]
+#[async_trait]
+impl meerkat::experimental_gpt_live::ExperimentalLiveCurrentConfigSource
+    for EnvRealtimeConfigSource
+{
+    async fn current_config(&self) -> Result<Config, ConfigError> {
+        Ok(self.config.clone())
+    }
+}
+
 /// Everything a gateway needs to serve live channels: the adapter host, the
 /// WS transport state (mount via `meerkat_live::live_ws_router(ws_state)` on
 /// the gateway's HTTP app), the per-open realtime session factory, and the
@@ -891,6 +1200,11 @@ impl RealtimeCurrentConfigSource for EnvRealtimeConfigSource {
 pub struct GatewayLiveContext {
     pub host: Arc<LiveAdapterHost>,
     pub ws_state: Arc<LiveWsState>,
+    #[cfg(feature = "experimental-gpt-live")]
+    pub webrtc_state: Arc<meerkat_live::LiveWebrtcState>,
+    /// The exact current-Config snapshot owner shared by ordinary realtime
+    /// credential resolution and an opt-in experimental live authority.
+    pub config_source: Arc<EnvRealtimeConfigSource>,
     pub session_factory: Arc<dyn RealtimeSessionFactory>,
     pub ws_base_url: String,
     /// Gateway-wide seed-projection clamp (`runtime_options.live.seed_max_chars`),
@@ -900,15 +1214,80 @@ pub struct GatewayLiveContext {
     pub seed_max_chars: Option<usize>,
 }
 
+impl GatewayLiveContext {
+    /// Project the same immutable current-Config owner into Meerkat's
+    /// experimental admission seam without coupling the host to the public
+    /// OpenAI realtime credential trait.
+    #[cfg(feature = "experimental-gpt-live")]
+    #[must_use]
+    pub fn experimental_live_config_source(
+        &self,
+    ) -> Arc<dyn meerkat::experimental_gpt_live::ExperimentalLiveCurrentConfigSource> {
+        Arc::clone(&self.config_source)
+            as Arc<dyn meerkat::experimental_gpt_live::ExperimentalLiveCurrentConfigSource>
+    }
+}
+
 /// Compose the live stack for a persistent-mode gateway.
 ///
-/// One `GatewayLiveProjectionSink` instance serves all four injected trait
-/// seams (projection sink, close feedback, status feedback, WS token
-/// authority), exactly like the upstream wiring. The tool dispatcher rides
-/// the host builder with the upstream default tool timeout
+/// One shared Meerkat [`ServiceLiveProjection`] instance serves all four
+/// injected trait seams (projection sink, close feedback, status feedback,
+/// and WS token authority). The tool dispatcher rides the host builder with
+/// the upstream default tool timeout
 /// (`meerkat_live::DEFAULT_LIVE_TOOL_TIMEOUT`). Credentials resolve PER OPEN
 /// via the facade's `PerOpenCredentialRealtimeSessionFactory` over
 /// [`EnvRealtimeConfigSource`].
+#[cfg(feature = "experimental-gpt-live")]
+pub fn attach_live<B: SessionAgentBuilder + 'static>(
+    service: Arc<PersistentSessionService<B>>,
+    machine: Arc<MeerkatMachine>,
+    factory: &AgentFactory,
+    config: Config,
+    ws_base_url: String,
+    seed_max_chars: Option<usize>,
+) -> GatewayLiveContext {
+    let projection = Arc::new(ServiceLiveProjection::new(
+        Arc::clone(&service),
+        Arc::clone(&machine),
+    ));
+    let dispatcher: Arc<dyn LiveToolDispatcher> = Arc::new(GatewayLiveToolDispatcher::new(service));
+    let host = Arc::new(
+        LiveAdapterHost::new(Arc::clone(&projection) as Arc<dyn LiveProjectionSink>)
+            .with_live_tool_dispatcher(dispatcher),
+    );
+    let ws_state = Arc::new(LiveWsState::new(
+        Arc::clone(&host),
+        Arc::clone(&projection) as Arc<dyn LiveChannelCloseFeedback>,
+        Arc::clone(&projection) as Arc<dyn LiveChannelStatusFeedback>,
+        Arc::clone(&projection) as Arc<dyn LiveWsTokenAuthority>,
+    ));
+    #[cfg(feature = "experimental-gpt-live")]
+    let webrtc_state = Arc::new(meerkat_live::LiveWebrtcState::new(
+        Arc::clone(&host),
+        Arc::clone(&projection) as Arc<dyn LiveChannelCloseFeedback>,
+        projection as Arc<dyn LiveChannelStatusFeedback>,
+    ));
+    let config_source = Arc::new(EnvRealtimeConfigSource::new(config));
+    let session_factory = factory.build_openai_realtime_session_factory(
+        Arc::clone(&config_source) as Arc<dyn RealtimeCurrentConfigSource>
+    );
+    GatewayLiveContext {
+        host,
+        ws_state,
+        #[cfg(feature = "experimental-gpt-live")]
+        webrtc_state,
+        config_source,
+        session_factory,
+        ws_base_url,
+        seed_max_chars,
+    }
+}
+
+/// Compose the preexisting ordinary websocket live stack against the
+/// published Meerkat 0.8.26 surface. This compatibility path is excluded
+/// from experimental builds, whose projection and lifecycle authority are
+/// exclusively the shared generic Meerkat facades above.
+#[cfg(not(feature = "experimental-gpt-live"))]
 pub fn attach_live<B: SessionAgentBuilder + 'static>(
     service: Arc<PersistentSessionService<B>>,
     machine: Arc<MeerkatMachine>,
@@ -932,11 +1311,14 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
         Arc::clone(&sink) as Arc<dyn LiveChannelStatusFeedback>,
         sink as Arc<dyn LiveWsTokenAuthority>,
     ));
-    let session_factory = factory
-        .build_openai_realtime_session_factory(Arc::new(EnvRealtimeConfigSource::new(config)));
+    let config_source = Arc::new(EnvRealtimeConfigSource::new(config));
+    let session_factory = factory.build_openai_realtime_session_factory(
+        Arc::clone(&config_source) as Arc<dyn RealtimeCurrentConfigSource>
+    );
     GatewayLiveContext {
         host,
         ws_state,
+        config_source,
         session_factory,
         ws_base_url,
         seed_max_chars,
@@ -944,28 +1326,10 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
 }
 
 // ---------------------------------------------------------------------------
-// mobkit/live/* handlers — port of meerkat-rpc/src/handlers/live.rs
-// (websocket arms; webrtc deliberately not ported, per design §"What we
-// deliberately do NOT do in v1").
+// mobkit/live/* handlers. Open, WebRTC answer, and strict close are thin
+// callers of Meerkat's shared facade coordinators. The remaining ordinary
+// channel verbs retain their existing MobKit surface projection.
 // ---------------------------------------------------------------------------
-
-/// `instructions` on `mobkit/live/open` accepts a single string or an array
-/// of strings — both spell the same per-open overlay.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum LiveOpenInstructions {
-    One(String),
-    Many(Vec<String>),
-}
-
-impl LiveOpenInstructions {
-    fn into_vec(self) -> Vec<String> {
-        match self {
-            Self::One(text) => vec![text],
-            Self::Many(items) => items,
-        }
-    }
-}
 
 /// The gateway-side params for `mobkit/live/open`. The member target
 /// (`identity` / `member_id` / `session_id`) is resolved by the CALLER
@@ -977,6 +1341,9 @@ struct GatewayLiveOpenParams {
     turning_mode: Option<RealtimeTurningMode>,
     #[serde(default)]
     transport: Option<LiveOpenTransport>,
+    #[cfg(feature = "experimental-gpt-live")]
+    #[serde(default)]
+    execution_identity: Option<meerkat_contracts::WireLiveExecutionIdentityOverrideV1>,
     /// v1 realtime-model override (design §6): members whose text model is
     /// not realtime-capable open the channel against this model instead.
     #[serde(default)]
@@ -994,17 +1361,127 @@ struct GatewayLiveOpenParams {
     /// configured default credential resolution applies.
     #[serde(default)]
     provider: Option<String>,
-    /// Per-open ephemeral instruction overlay. Rides the runtime
-    /// system-context lane of the open projection, so it reaches the
-    /// provider's instructions channel without ever touching the member's
-    /// durable transcript or prompt truth. Dropped on `live/refresh` (the
-    /// refresh path re-projects from the durable session) and on reopen.
-    #[serde(default)]
-    instructions: Option<LiveOpenInstructions>,
     /// Per-open override of the gateway-wide seed clamp
     /// (`runtime_options.live.seed_max_chars`).
     #[serde(default)]
     seed_max_chars: Option<usize>,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GatewayLiveWebrtcAnswerParams {
+    #[serde(default)]
+    identity: Option<String>,
+    channel_id: String,
+    #[serde(default)]
+    pending_receipt: Option<String>,
+    #[serde(default)]
+    readiness_receipt: Option<String>,
+    token: String,
+    offer_sdp: String,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictLiveReceiptParams {
+    identity: String,
+    channel_id: String,
+    #[serde(default)]
+    pending_receipt: Option<String>,
+    #[serde(default)]
+    activation_receipt: Option<String>,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictLivePlaybackOwnerRegisterParams {
+    identity: String,
+    channel_id: String,
+    pending_receipt: String,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictLivePlaybackOwnerRevokeParams {
+    identity: String,
+    channel_id: String,
+    pending_receipt: String,
+    readiness_receipt: String,
+    #[serde(default)]
+    activation_receipt: Option<String>,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictLiveSendInputParams {
+    identity: String,
+    channel_id: String,
+    activation_receipt: String,
+    chunk: LiveInputChunkWire,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictLiveCommitInputParams {
+    identity: String,
+    channel_id: String,
+    activation_receipt: String,
+    #[serde(default)]
+    response_modality: Option<WireLiveResponseModality>,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictLiveActiveChannelParams {
+    identity: String,
+    channel_id: String,
+    activation_receipt: String,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictLiveTruncateParams {
+    identity: String,
+    channel_id: String,
+    activation_receipt: String,
+    output_id: String,
+    audio_played_ms: u64,
+    #[serde(default)]
+    reported_playback_prefix: Option<String>,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictLivePlaybackCompleteParams {
+    identity: String,
+    channel_id: String,
+    activation_receipt: String,
+    output_id: String,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GatewayLiveReplacementRequiredParams {
+    #[serde(default)]
+    identity: Option<String>,
+    #[serde(default)]
+    member_id: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    channel_id: Option<String>,
+    #[serde(default)]
+    activation_receipt: Option<String>,
 }
 
 fn live_success(rpc_id: Value, result: Value) -> JsonRpcResponse {
@@ -1025,6 +1502,47 @@ fn live_error(rpc_id: Value, code: i64, message: impl Into<String>) -> JsonRpcRe
     }
 }
 
+#[cfg(feature = "experimental-gpt-live")]
+fn live_open_error_response(rpc_id: Value, error: LiveOpenError) -> JsonRpcResponse {
+    let code = match &error {
+        LiveOpenError::SessionNotFound { .. }
+        | LiveOpenError::OpenConfig(RealtimeSessionOpenProjectionError::Session(
+            meerkat_core::SessionError::NotFound { .. },
+        ))
+        | LiveOpenError::AdmissionRejectedAlreadyBound { .. }
+        | LiveOpenError::AdmissionRejectedRevokedChannel { .. }
+        | LiveOpenError::AdmissionRejectedLifecycleClosed
+        | LiveOpenError::Precheck(LiveOpenPrecheckError::ModelNotRealtime { .. }) => {
+            INVALID_PARAMS_CODE
+        }
+        LiveOpenError::SessionStateFault(_)
+        | LiveOpenError::RealtimeFactoryMissing
+        | LiveOpenError::OpenConfig(_)
+        | LiveOpenError::AdmissionAuthority(_)
+        | LiveOpenError::AdmissionRejectedChannelCollision { .. }
+        | LiveOpenError::AdmissionRejectedNoReason
+        | LiveOpenError::MissingHostHandoff
+        | LiveOpenError::HostOpenSessionAlreadyBound { .. }
+        | LiveOpenError::HostOpen(_)
+        | LiveOpenError::Precheck(_)
+        | LiveOpenError::ProviderUnsupportedByFactory { .. }
+        | LiveOpenError::AdapterOpen(_)
+        | LiveOpenError::AdapterAttach(_)
+        | LiveOpenError::Ingress(_)
+        | LiveOpenError::NoTransportConfigured
+        | LiveOpenError::WebsocketNotConfigured
+        | LiveOpenError::TokenMint(_)
+        | LiveOpenError::AudioPolicyMissing
+        | LiveOpenError::AudioFormatUnmappable { .. }
+        | LiveOpenError::WebrtcNotConfigured
+        | LiveOpenError::WebrtcNotCompiled
+        | LiveOpenError::WebrtcClock(_)
+        | LiveOpenError::WebrtcTokenMint(_)
+        | LiveOpenError::UnsupportedTransport => INTERNAL_ERROR_CODE,
+    };
+    live_error(rpc_id, code, error.to_string())
+}
+
 /// The CALLER answers this when the gateway has no [`GatewayLiveContext`]
 /// (ephemeral mode, or `runtime_options.live` off). Kept here so every
 /// surface emits the identical `-32050` / `data.kind = "live_unavailable"`
@@ -1033,9 +1551,11 @@ fn live_error(rpc_id: Value, code: i64, message: impl Into<String>) -> JsonRpcRe
 /// session-builder type `B` — captures its `GatewayLiveContext`, service, and
 /// machine into this closure so the shared (non-generic) RPC dispatch in
 /// `crate::rpc` can serve `mobkit/live/*` without a type parameter.
-pub type LiveRpcHandler = Arc<
+type LiveRpcDispatch = Arc<
     dyn Fn(
+            LiveSurfaceAuthority,
             Option<meerkat_core::types::SessionId>,
+            Option<String>,
             String,
             Value,
             Value,
@@ -1044,29 +1564,619 @@ pub type LiveRpcHandler = Arc<
         + Sync,
 >;
 
+#[cfg(feature = "experimental-gpt-live")]
+tokio::task_local! {
+    static LIVE_RPC_RESPONSE_DELIVERY: Arc<StdMutex<Option<LiveRpcResponseDeliveryCustody>>>;
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[async_trait]
+trait LiveOpenPublicationCleanup: Send + Sync {
+    async fn cleanup(&self) -> Result<(), String>;
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+struct LiveOpenPublicationCleanupOwner<B: SessionAgentBuilder + 'static> {
+    host: Arc<ServiceMemberLiveHost<B>>,
+    authority: Arc<dyn meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider>,
+    session: SessionId,
+    channel: LiveChannelId,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[async_trait]
+impl<B: SessionAgentBuilder + 'static> LiveOpenPublicationCleanup
+    for LiveOpenPublicationCleanupOwner<B>
+{
+    async fn cleanup(&self) -> Result<(), String> {
+        self.host
+            .cleanup_execution_identity_publication_failure(
+                self.authority.as_ref(),
+                &self.session,
+                &self.channel,
+            )
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+pub(crate) struct LiveOpenResponseDeliveryCustody {
+    cleanup: Option<Arc<dyn LiveOpenPublicationCleanup>>,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+impl LiveOpenResponseDeliveryCustody {
+    fn new(cleanup: Arc<dyn LiveOpenPublicationCleanup>) -> Self {
+        Self {
+            cleanup: Some(cleanup),
+        }
+    }
+
+    async fn delivered(mut self) -> Result<(), String> {
+        self.cleanup.take();
+        Ok(())
+    }
+
+    async fn rejected(mut self) -> Result<(), String> {
+        let Some(cleanup) = self.cleanup.take() else {
+            return Ok(());
+        };
+        cleanup.cleanup().await
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+impl Drop for LiveOpenResponseDeliveryCustody {
+    fn drop(&mut self) {
+        let Some(cleanup) = self.cleanup.take() else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = cleanup.cleanup().await;
+            });
+        }
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+pub(crate) enum LiveRpcResponseDeliveryCustody {
+    WebrtcAnswer(meerkat::surface::LiveWebrtcAnswerDeliveryCustody),
+    Open(LiveOpenResponseDeliveryCustody),
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+impl LiveRpcResponseDeliveryCustody {
+    pub(crate) async fn delivered(self) -> Result<(), String> {
+        match self {
+            Self::WebrtcAnswer(custody) => {
+                custody.delivered().await.map_err(|error| error.to_string())
+            }
+            Self::Open(custody) => custody.delivered().await,
+        }
+    }
+
+    pub(crate) async fn rejected(self) -> Result<(), String> {
+        match self {
+            Self::WebrtcAnswer(custody) => {
+                custody.rejected().await.map_err(|error| error.to_string())
+            }
+            Self::Open(custody) => custody.rejected().await,
+        }
+    }
+}
+
+/// Run one RPC dispatch with request-local custody for an accepted WebRTC
+/// answer or strict live open. The caller settles it only after the outer
+/// transport has published (or failed to publish) the serialized response.
+#[cfg(feature = "experimental-gpt-live")]
+pub(crate) async fn capture_live_rpc_response_delivery<F, T>(
+    future: F,
+) -> (T, Option<LiveRpcResponseDeliveryCustody>)
+where
+    F: std::future::Future<Output = T>,
+{
+    let slot = Arc::new(StdMutex::new(None));
+    let output = LIVE_RPC_RESPONSE_DELIVERY
+        .scope(Arc::clone(&slot), future)
+        .await;
+    let delivery = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    (output, delivery)
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+fn retain_live_webrtc_answer_delivery(
+    custody: meerkat::surface::LiveWebrtcAnswerDeliveryCustody,
+) -> impl std::future::Future<Output = Result<(), String>> {
+    retain_live_rpc_response_delivery(LiveRpcResponseDeliveryCustody::WebrtcAnswer(custody))
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+fn retain_live_open_response_delivery(
+    custody: LiveOpenResponseDeliveryCustody,
+) -> impl std::future::Future<Output = Result<(), String>> {
+    retain_live_rpc_response_delivery(LiveRpcResponseDeliveryCustody::Open(custody))
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+fn retain_live_rpc_response_delivery(
+    custody: LiveRpcResponseDeliveryCustody,
+) -> impl std::future::Future<Output = Result<(), String>> {
+    async move {
+        let mut custody = Some(custody);
+        let retained = LIVE_RPC_RESPONSE_DELIVERY.try_with(|slot| {
+            let mut slot = slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if slot.is_some() {
+                false
+            } else {
+                *slot = custody.take();
+                true
+            }
+        });
+        if matches!(retained, Ok(true)) {
+            Ok(())
+        } else {
+            if let Some(custody) = custody {
+                custody.rejected().await?;
+            }
+            Err("experimental live response requires a delivery-aware outer RPC writer".to_string())
+        }
+    }
+}
+
+/// Side-effect-free capability projection owned by the same configured
+/// Meerkat factory that will admit experimental live opens.
+///
+/// Stock MobKit composition uses [`Self::disabled`]. An embedding host may
+/// opt in only by supplying its already-configured factory, exact realm, and
+/// exact experimental factory identity. Every capabilities request
+/// revalidates those predicates upstream, so stale Gate0, realm, operator, or
+/// factory state fails closed to an empty capability list.
+#[derive(Clone)]
+pub struct LiveCapabilityProvider {
+    #[cfg(feature = "experimental-gpt-live")]
+    configured: Option<Arc<ConfiguredLiveCapabilityProvider>>,
+    #[cfg(not(feature = "experimental-gpt-live"))]
+    _disabled: (),
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+struct ConfiguredLiveCapabilityProvider {
+    factory: Arc<AgentFactory>,
+    realm: RealmId,
+    experimental_factory: ExperimentalLiveFactoryIdentity,
+    #[cfg(feature = "experimental-gpt-live")]
+    open_authority: Arc<dyn meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider>,
+    #[cfg(feature = "experimental-gpt-live")]
+    answer_transport: Arc<dyn meerkat_live::LiveWebrtcAnswerTransport>,
+    public_observation_publisher:
+        Arc<dyn meerkat::experimental_gpt_live::ExperimentalLivePublicObservationPublisher>,
+    activator: ExperimentalLiveActivatorRegistration,
+    live_adapter_host: Option<Arc<LiveAdapterHost>>,
+    /// True only when the shared Meerkat pending/active authority contract is
+    /// composed. The preexisting bound-ready binder is not sufficient.
+    phase_authority_composed: bool,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Clone)]
+enum ExperimentalLiveActivatorRegistration {
+    Uncomposed(Arc<meerkat_mob_mcp::MobMcpState>),
+    Composed(Arc<dyn meerkat::experimental_gpt_live::ExperimentalLiveBoundChannelActivator>),
+}
+
+impl Default for LiveCapabilityProvider {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
+impl LiveCapabilityProvider {
+    /// Fail-closed provider used by stock gateway composition.
+    #[must_use]
+    pub fn disabled() -> Self {
+        Self {
+            #[cfg(feature = "experimental-gpt-live")]
+            configured: None,
+            #[cfg(not(feature = "experimental-gpt-live"))]
+            _disabled: (),
+        }
+    }
+
+    /// Opt in using the one atomic host registration required for a usable
+    /// experimental channel: qualification, per-open authority, and sealed
+    /// WebRTC answer transport.
+    #[cfg(feature = "experimental-gpt-live")]
+    #[must_use]
+    pub fn experimental(
+        factory: Arc<AgentFactory>,
+        realm: RealmId,
+        experimental_factory: ExperimentalLiveFactoryIdentity,
+        open_authority: Arc<
+            dyn meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider,
+        >,
+        answer_transport: Arc<dyn meerkat_live::LiveWebrtcAnswerTransport>,
+        mob_mcp_state: Arc<meerkat_mob_mcp::MobMcpState>,
+        public_observation_publisher: Arc<
+            dyn meerkat::experimental_gpt_live::ExperimentalLivePublicObservationPublisher,
+        >,
+    ) -> Self {
+        Self {
+            configured: Some(Arc::new(ConfiguredLiveCapabilityProvider {
+                factory,
+                realm,
+                experimental_factory,
+                open_authority,
+                answer_transport,
+                public_observation_publisher,
+                activator: ExperimentalLiveActivatorRegistration::Uncomposed(mob_mcp_state),
+                live_adapter_host: None,
+                phase_authority_composed: false,
+            })),
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    fn compose_for_host<B: SessionAgentBuilder + 'static>(
+        &self,
+        machine: Arc<MeerkatMachine>,
+        shared_live_host: Arc<ServiceMemberLiveHost<B>>,
+        live_adapter_host: Arc<LiveAdapterHost>,
+    ) -> Self {
+        let Some(configured) = self.configured.as_ref() else {
+            return Self::disabled();
+        };
+        let ExperimentalLiveActivatorRegistration::Uncomposed(mob_mcp_state) =
+            &configured.activator
+        else {
+            return self.clone();
+        };
+        let downstream =
+            meerkat_mob_mcp::live_delegation::compose_experimental_live_delegation_coordinator(
+                Arc::clone(&machine),
+                Arc::clone(mob_mcp_state),
+            );
+        let activator = meerkat::surface::ExperimentalGptLiveContextMirrorHost::new(
+            machine,
+            shared_live_host,
+            Arc::clone(&configured.open_authority),
+            downstream,
+        );
+        Self {
+            configured: Some(Arc::new(ConfiguredLiveCapabilityProvider {
+                factory: Arc::clone(&configured.factory),
+                realm: configured.realm.clone(),
+                experimental_factory: configured.experimental_factory.clone(),
+                open_authority: Arc::clone(&configured.open_authority),
+                answer_transport: Arc::clone(&configured.answer_transport),
+                public_observation_publisher: Arc::clone(&configured.public_observation_publisher),
+                activator: ExperimentalLiveActivatorRegistration::Composed(activator),
+                live_adapter_host: Some(live_adapter_host),
+                phase_authority_composed: true,
+            })),
+        }
+    }
+
+    /// Revalidate the upstream qualification and project only capabilities
+    /// recognized by MobKit's strict wire contract.
+    #[must_use]
+    pub fn feature_capabilities(&self) -> Vec<crate::live_contracts::FeatureCapability> {
+        #[cfg(not(feature = "experimental-gpt-live"))]
+        {
+            Vec::new()
+        }
+        #[cfg(feature = "experimental-gpt-live")]
+        {
+            let Some(configured) = &self.configured else {
+                return Vec::new();
+            };
+            if !configured.phase_authority_composed {
+                return Vec::new();
+            }
+            let Some(live_adapter_host) = configured.live_adapter_host.as_ref() else {
+                return Vec::new();
+            };
+            let ExperimentalLiveActivatorRegistration::Composed(bound_channel_activator) =
+                &configured.activator
+            else {
+                return Vec::new();
+            };
+            if configured
+                .open_authority
+                .bound_ready_binder_for(
+                    Arc::clone(bound_channel_activator),
+                    Arc::clone(live_adapter_host),
+                    Arc::clone(&configured.public_observation_publisher),
+                )
+                .is_none()
+            {
+                return Vec::new();
+            }
+            let Ok(capabilities) = configured.open_authority.execution_feature_capabilities()
+            else {
+                return Vec::new();
+            };
+            capabilities
+                .iter()
+                .filter(|capability| {
+                    matches!(
+                        **capability,
+                        crate::live_contracts::LIVE_EXECUTION_IDENTITY_V1
+                            | crate::live_contracts::LIVE_EXECUTION_FUNCTION_BRIDGE_V1
+                            | crate::live_contracts::LIVE_EXECUTION_CLIENT_CONTEXT_V1
+                    )
+                })
+                .filter_map(|capability| {
+                    crate::live_contracts::FeatureCapability::new(*capability).ok()
+                })
+                .collect()
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    fn open_authority(
+        &self,
+    ) -> Option<&dyn meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider> {
+        self.configured
+            .as_ref()
+            .map(|configured| configured.open_authority.as_ref())
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    fn open_authority_arc(
+        &self,
+    ) -> Option<Arc<dyn meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider>>
+    {
+        self.configured
+            .as_ref()
+            .map(|configured| Arc::clone(&configured.open_authority))
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    fn answer_transport(&self) -> Option<&Arc<dyn meerkat_live::LiveWebrtcAnswerTransport>> {
+        self.configured
+            .as_ref()
+            .map(|configured| &configured.answer_transport)
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    fn bound_ready_binder(&self) -> Option<Arc<dyn meerkat::surface::LiveWebrtcBoundReadyBinder>> {
+        self.configured.as_ref().and_then(|configured| {
+            let live_adapter_host = configured.live_adapter_host.as_ref()?;
+            let ExperimentalLiveActivatorRegistration::Composed(bound_channel_activator) =
+                &configured.activator
+            else {
+                return None;
+            };
+            configured.open_authority.bound_ready_binder_for(
+                Arc::clone(bound_channel_activator),
+                Arc::clone(live_adapter_host),
+                Arc::clone(&configured.public_observation_publisher),
+            )
+        })
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    async fn pending_replacement_required(
+        &self,
+        session_id: &SessionId,
+    ) -> Option<meerkat::surface::ExperimentalLiveReplacementRequired> {
+        let configured = self.configured.as_ref()?;
+        let ExperimentalLiveActivatorRegistration::Composed(activator) = &configured.activator
+        else {
+            return None;
+        };
+        activator.pending_replacement_required(session_id).await
+    }
+}
+
+/// Type-erased live RPC registration plus its fail-closed capability owner.
+#[derive(Clone)]
+pub struct LiveRpcHandler {
+    dispatch: LiveRpcDispatch,
+    capability_provider: LiveCapabilityProvider,
+}
+
+impl LiveRpcHandler {
+    #[must_use]
+    pub fn feature_capabilities(&self) -> Vec<crate::live_contracts::FeatureCapability> {
+        self.capability_provider.feature_capabilities()
+    }
+
+    #[must_use]
+    pub fn supports_live_execution_identity_v1(&self) -> bool {
+        self.feature_capabilities().iter().any(|capability| {
+            capability.as_str() == crate::live_contracts::LIVE_EXECUTION_IDENTITY_V1
+        })
+    }
+
+    pub async fn dispatch(
+        &self,
+        authority: LiveSurfaceAuthority,
+        resolved_session: Option<meerkat_core::types::SessionId>,
+        canonical_target_identity: Option<String>,
+        method: String,
+        params: Value,
+        rpc_id: Value,
+    ) -> JsonRpcResponse {
+        (self.dispatch)(
+            authority,
+            resolved_session,
+            canonical_target_identity,
+            method,
+            params,
+            rpc_id,
+        )
+        .await
+    }
+
+    /// Dispatch through the same response-delivery custody used by the outer
+    /// RPC writer, then acknowledge successful publication. This is exposed
+    /// only for offline realtime fixtures; it does not construct or replace
+    /// live admission, binding-use, auth-lease, or provider authority.
+    #[cfg(feature = "test-realtime-fixtures")]
+    #[doc(hidden)]
+    pub async fn dispatch_with_successful_delivery_for_test(
+        &self,
+        authority: LiveSurfaceAuthority,
+        resolved_session: Option<meerkat_core::types::SessionId>,
+        canonical_target_identity: Option<String>,
+        method: String,
+        params: Value,
+        rpc_id: Value,
+    ) -> Result<JsonRpcResponse, String> {
+        let (response, delivery) = capture_live_rpc_response_delivery(self.dispatch(
+            authority,
+            resolved_session,
+            canonical_target_identity,
+            method,
+            params,
+            rpc_id,
+        ))
+        .await;
+        if let Some(delivery) = delivery {
+            delivery.delivered().await?;
+        }
+        Ok(response)
+    }
+}
+
 /// Erase `handle_live_method` over the gateway's concrete types.
 pub fn live_rpc_handler<B: SessionAgentBuilder + 'static>(
     ctx: Arc<GatewayLiveContext>,
     service: Arc<PersistentSessionService<B>>,
     machine: Arc<MeerkatMachine>,
 ) -> LiveRpcHandler {
-    Arc::new(move |resolved_session, method, params, rpc_id| {
-        let ctx = Arc::clone(&ctx);
-        let service = Arc::clone(&service);
-        let machine = Arc::clone(&machine);
-        Box::pin(async move {
-            handle_live_method(
-                &ctx,
-                &service,
-                &machine,
-                resolved_session,
-                &method,
-                &params,
-                rpc_id,
-            )
-            .await
-        })
-    })
+    live_rpc_handler_with_capabilities(ctx, service, machine, LiveCapabilityProvider::disabled())
+}
+
+/// Erase `handle_live_method` with an explicit, revalidating capability
+/// provider installed by the embedding application.
+#[cfg(feature = "experimental-gpt-live")]
+pub fn live_rpc_handler_with_capabilities<B: SessionAgentBuilder + 'static>(
+    ctx: Arc<GatewayLiveContext>,
+    service: Arc<PersistentSessionService<B>>,
+    machine: Arc<MeerkatMachine>,
+    capability_provider: LiveCapabilityProvider,
+) -> LiveRpcHandler {
+    let shared_live_host = Arc::new(shared_live_host(&ctx, &service, &machine));
+    #[cfg(feature = "experimental-gpt-live")]
+    let capability_provider = capability_provider.compose_for_host(
+        Arc::clone(&machine),
+        Arc::clone(&shared_live_host),
+        Arc::clone(&ctx.host),
+    );
+    let dispatch_capability_provider = capability_provider.clone();
+    let dispatch =
+        Arc::new(
+            move |authority: LiveSurfaceAuthority,
+                  resolved_session: Option<SessionId>,
+                  canonical_target_identity: Option<String>,
+                  method: String,
+                  params: Value,
+                  rpc_id: Value|
+                  -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = JsonRpcResponse> + Send>,
+            > {
+                let ctx = Arc::clone(&ctx);
+                let service = Arc::clone(&service);
+                let machine = Arc::clone(&machine);
+                let shared_live_host = Arc::clone(&shared_live_host);
+                let capability_provider = dispatch_capability_provider.clone();
+                Box::pin(async move {
+                    handle_live_method_with_host(
+                        &ctx,
+                        &service,
+                        &machine,
+                        &shared_live_host,
+                        &capability_provider,
+                        authority,
+                        resolved_session,
+                        canonical_target_identity,
+                        &method,
+                        &params,
+                        rpc_id,
+                    )
+                    .await
+                })
+            },
+        );
+    LiveRpcHandler {
+        dispatch,
+        capability_provider,
+    }
+}
+
+/// Stock 0.8.26 registration keeps the preexisting ordinary live dispatcher
+/// and projects no experimental capability.
+#[cfg(not(feature = "experimental-gpt-live"))]
+pub fn live_rpc_handler_with_capabilities<B: SessionAgentBuilder + 'static>(
+    ctx: Arc<GatewayLiveContext>,
+    service: Arc<PersistentSessionService<B>>,
+    machine: Arc<MeerkatMachine>,
+    _capability_provider: LiveCapabilityProvider,
+) -> LiveRpcHandler {
+    let dispatch =
+        Arc::new(
+            move |authority: LiveSurfaceAuthority,
+                  resolved_session: Option<SessionId>,
+                  _canonical_target_identity: Option<String>,
+                  method: String,
+                  params: Value,
+                  rpc_id: Value|
+                  -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = JsonRpcResponse> + Send>,
+            > {
+                let ctx = Arc::clone(&ctx);
+                let service = Arc::clone(&service);
+                let machine = Arc::clone(&machine);
+                Box::pin(async move {
+                    handle_live_method(
+                        &ctx,
+                        &service,
+                        &machine,
+                        authority,
+                        resolved_session,
+                        &method,
+                        &params,
+                        rpc_id,
+                    )
+                    .await
+                })
+            },
+        );
+    LiveRpcHandler {
+        dispatch,
+        capability_provider: LiveCapabilityProvider::disabled(),
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+fn shared_live_host<B: SessionAgentBuilder + 'static>(
+    ctx: &GatewayLiveContext,
+    service: &Arc<PersistentSessionService<B>>,
+    machine: &Arc<MeerkatMachine>,
+) -> ServiceMemberLiveHost<B> {
+    let host = ServiceMemberLiveHost::new(ServiceMemberLiveHostConfig {
+        service: Arc::clone(&service),
+        runtime_adapter: Arc::clone(&machine),
+        host: Arc::clone(&ctx.host),
+        ws_state: Some(Arc::clone(&ctx.ws_state)),
+        base_url: Some(ctx.ws_base_url.clone()),
+        session_factory: Arc::clone(&ctx.session_factory),
+        realm_id: None,
+        instance_id: None,
+        backend: None,
+    });
+    #[cfg(feature = "experimental-gpt-live")]
+    let host = host.with_webrtc_cleanup_state(Arc::clone(&ctx.webrtc_state));
+    host
 }
 
 #[must_use]
@@ -1101,21 +2211,81 @@ fn parse_live_params<T: DeserializeOwned>(
 /// Dispatch a `mobkit/live/*` method against a live-enabled gateway.
 ///
 /// `resolved_session` is the member target already canonicalized by the
-/// caller (identity → member alias → raw session id — the same
+/// caller (identity -> member alias -> raw session id - the same
 /// canonicalization class as `/agents/{id}/events`); only `mobkit/live/open`
 /// consumes it, every other method addresses a `channel_id`. `service` and
 /// `machine` are passed alongside the (deliberately non-generic)
 /// [`GatewayLiveContext`] because open/refresh must re-project the member
 /// session and every handler resolves results through machine authority.
+#[cfg(feature = "experimental-gpt-live")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "published live RPC boundary keeps each authority input explicit"
+)]
 pub async fn handle_live_method<B: SessionAgentBuilder + 'static>(
     ctx: &GatewayLiveContext,
     service: &Arc<PersistentSessionService<B>>,
     machine: &Arc<MeerkatMachine>,
+    authority: LiveSurfaceAuthority,
     resolved_session: Option<SessionId>,
     method: &str,
     params: &Value,
     rpc_id: Value,
 ) -> JsonRpcResponse {
+    let shared_live_host = Arc::new(shared_live_host(ctx, service, machine));
+    let capability_provider = LiveCapabilityProvider::disabled();
+    handle_live_method_with_host(
+        ctx,
+        service,
+        machine,
+        &shared_live_host,
+        &capability_provider,
+        authority,
+        resolved_session,
+        None,
+        method,
+        params,
+        rpc_id,
+    )
+    .await
+}
+
+/// Dispatch the published 0.8.26 ordinary live API without constructing the
+/// newer generic Meerkat host facade. Surface authority remains enforced
+/// before the original handler sequence runs.
+#[cfg(not(feature = "experimental-gpt-live"))]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "published live RPC boundary keeps each authority input explicit"
+)]
+pub async fn handle_live_method<B: SessionAgentBuilder + 'static>(
+    ctx: &GatewayLiveContext,
+    service: &Arc<PersistentSessionService<B>>,
+    machine: &Arc<MeerkatMachine>,
+    authority: LiveSurfaceAuthority,
+    resolved_session: Option<SessionId>,
+    method: &str,
+    params: &Value,
+    rpc_id: Value,
+) -> JsonRpcResponse {
+    let Some(operation) = LiveOperation::from_method(method) else {
+        return live_error(
+            rpc_id,
+            METHOD_NOT_FOUND_CODE,
+            format!("unknown live method {method}"),
+        );
+    };
+    if let Err(error) = authority
+        .authorize(operation, resolved_session.as_ref(), params, machine)
+        .await
+    {
+        return JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: rpc_id,
+            result: None,
+            error: Some(error),
+        };
+    }
     match method {
         "mobkit/live/open" => {
             let Some(session_id) = resolved_session else {
@@ -1135,11 +2305,1013 @@ pub async fn handle_live_method<B: SessionAgentBuilder + 'static>(
         "mobkit/live/commit_input" => handle_live_commit_input(ctx, machine, params, rpc_id).await,
         "mobkit/live/interrupt" => handle_live_interrupt(ctx, machine, params, rpc_id).await,
         "mobkit/live/truncate" => handle_live_truncate(ctx, machine, params, rpc_id).await,
-        other => live_error(
+        _ => unreachable!("LiveOperation::from_method admitted only known methods"),
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+async fn handle_live_method_with_host<B: SessionAgentBuilder + 'static>(
+    ctx: &GatewayLiveContext,
+    service: &Arc<PersistentSessionService<B>>,
+    machine: &Arc<MeerkatMachine>,
+    shared_live_host: &Arc<ServiceMemberLiveHost<B>>,
+    capability_provider: &LiveCapabilityProvider,
+    authority: LiveSurfaceAuthority,
+    resolved_session: Option<SessionId>,
+    canonical_target_identity: Option<String>,
+    method: &str,
+    params: &Value,
+    rpc_id: Value,
+) -> JsonRpcResponse {
+    let Some(operation) = LiveOperation::from_method(method) else {
+        return live_error(
             rpc_id,
             METHOD_NOT_FOUND_CODE,
-            format!("unknown live method {other}"),
+            format!("unknown live method {method}"),
+        );
+    };
+    if let Err(error) = authority
+        .authorize(operation, resolved_session.as_ref(), params, machine)
+        .await
+    {
+        return JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: rpc_id,
+            result: None,
+            error: Some(error),
+        };
+    }
+    if let Some(response) = handle_strict_experimental_live_method(
+        ctx,
+        service,
+        shared_live_host,
+        capability_provider,
+        resolved_session.as_ref(),
+        canonical_target_identity.as_deref(),
+        method,
+        params,
+        rpc_id.clone(),
+    )
+    .await
+    {
+        return response;
+    }
+    if let Some(response) = reject_missing_receipt_for_strict_channel(
+        shared_live_host,
+        machine,
+        resolved_session.as_ref(),
+        method,
+        params,
+        rpc_id.clone(),
+    )
+    .await
+    {
+        return response;
+    }
+    match method {
+        "mobkit/live/open" => {
+            let Some(session_id) = resolved_session else {
+                return live_error(
+                    rpc_id,
+                    INVALID_PARAMS_CODE,
+                    "live/open requires a resolvable member target \
+                     (identity, member_id, or session_id)",
+                );
+            };
+            handle_live_open(
+                ctx,
+                shared_live_host,
+                capability_provider,
+                &session_id,
+                canonical_target_identity,
+                params,
+                rpc_id,
+            )
+            .await
+        }
+        #[cfg(feature = "experimental-gpt-live")]
+        "mobkit/live/replacement_required" => {
+            let Some(session_id) = resolved_session else {
+                return live_error(
+                    rpc_id,
+                    INVALID_PARAMS_CODE,
+                    "live/replacement_required requires a resolvable durable member target",
+                );
+            };
+            handle_live_replacement_required(
+                capability_provider,
+                &session_id,
+                canonical_target_identity,
+                params,
+                rpc_id,
+            )
+            .await
+        }
+        "mobkit/live/status" => handle_live_status(ctx, machine, params, rpc_id).await,
+        "mobkit/live/close" => {
+            handle_live_close(
+                ctx,
+                machine,
+                shared_live_host,
+                capability_provider,
+                params,
+                rpc_id,
+            )
+            .await
+        }
+        "mobkit/live/refresh" => handle_live_refresh(ctx, service, machine, params, rpc_id).await,
+        "mobkit/live/send_input" => handle_live_send_input(ctx, machine, params, rpc_id).await,
+        "mobkit/live/commit_input" => handle_live_commit_input(ctx, machine, params, rpc_id).await,
+        "mobkit/live/interrupt" => handle_live_interrupt(ctx, machine, params, rpc_id).await,
+        #[cfg(feature = "experimental-gpt-live")]
+        "mobkit/live/truncate" => handle_live_truncate(shared_live_host, params, rpc_id).await,
+        #[cfg(feature = "experimental-gpt-live")]
+        "mobkit/live/playback_complete" => {
+            handle_live_playback_complete(shared_live_host, params, rpc_id).await
+        }
+        #[cfg(feature = "experimental-gpt-live")]
+        meerkat_live::LIVE_WEBRTC_ANSWER_METHOD => {
+            handle_live_webrtc_answer(shared_live_host, capability_provider, params, rpc_id).await
+        }
+        _ => unreachable!("LiveOperation::from_method admitted only known methods"),
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+fn local_live_execution_mode(
+    mode: meerkat_core::LiveExecutionMode,
+) -> crate::live_contracts::LiveExecutionMode {
+    match mode {
+        meerkat_core::LiveExecutionMode::FunctionBridge => {
+            crate::live_contracts::LiveExecutionMode::FunctionBridge
+        }
+        meerkat_core::LiveExecutionMode::ClientContext => {
+            crate::live_contracts::LiveExecutionMode::ClientContext
+        }
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+fn validate_strict_custody_target(
+    custody: &meerkat::surface::ExperimentalLiveChannelCustodyStatus,
+    resolved_session: &SessionId,
+    requested_channel: &LiveChannelId,
+) -> Result<(), &'static str> {
+    if custody.session_id() != resolved_session {
+        return Err("live handle target no longer owns the channel session");
+    }
+    if custody.channel_id() != requested_channel {
+        return Err("live handle channel does not match machine custody");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+fn strict_target<'a>(
+    resolved_session: Option<&'a SessionId>,
+    canonical_target_identity: Option<&'a str>,
+) -> Result<(&'a SessionId, &'a str), &'static str> {
+    match (resolved_session, canonical_target_identity) {
+        (Some(session), Some(identity)) if !identity.is_empty() => Ok((session, identity)),
+        _ => Err("strict live operation requires current durable identity authority"),
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+async fn strict_custody_by_activation<B: SessionAgentBuilder + 'static>(
+    shared_live_host: &ServiceMemberLiveHost<B>,
+    channel_id: &LiveChannelId,
+    activation_receipt: &str,
+    resolved_session: &SessionId,
+) -> Result<meerkat::surface::ExperimentalLiveChannelCustodyStatus, String> {
+    let custody = shared_live_host
+        .validate_experimental_live_channel_custody_by_activation(channel_id, activation_receipt)
+        .await
+        .map_err(|error| error.to_string())?;
+    validate_strict_custody_target(&custody, resolved_session, channel_id)
+        .map_err(ToString::to_string)?;
+    if !matches!(
+        custody.phase(),
+        meerkat::surface::ExperimentalLiveChannelPhaseStatus::Active { .. }
+    ) {
+        return Err("live active receipt no longer carries active authority".to_string());
+    }
+    Ok(custody)
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+async fn reject_missing_receipt_for_strict_channel<B: SessionAgentBuilder + 'static>(
+    shared_live_host: &ServiceMemberLiveHost<B>,
+    machine: &MeerkatMachine,
+    resolved_session: Option<&SessionId>,
+    method: &str,
+    params: &Value,
+    rpc_id: Value,
+) -> Option<JsonRpcResponse> {
+    if method == "mobkit/live/open"
+        || method == "mobkit/live/playback_owner/register"
+        || method == "mobkit/live/playback_owner/revoke"
+        || params.get("pending_receipt").is_some()
+        || params.get("activation_receipt").is_some()
+    {
+        return None;
+    }
+    let channel_id = if let Some(channel_id) = params.get("channel_id").and_then(Value::as_str) {
+        LiveChannelId::new(channel_id)
+    } else {
+        machine
+            .live_active_channel_for_session(resolved_session?)
+            .await?
+    };
+    match shared_live_host
+        .experimental_live_channel_phase(&channel_id)
+        .await
+    {
+        Ok(Some(_)) => Some(live_error(
+            rpc_id,
+            INVALID_PARAMS_CODE,
+            "strict live channel operation requires its exact phase receipt",
+        )),
+        Ok(None) | Err(_) => None,
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn handle_strict_experimental_live_method<B: SessionAgentBuilder + 'static>(
+    _ctx: &GatewayLiveContext,
+    _service: &Arc<PersistentSessionService<B>>,
+    shared_live_host: &Arc<ServiceMemberLiveHost<B>>,
+    capability_provider: &LiveCapabilityProvider,
+    resolved_session: Option<&SessionId>,
+    canonical_target_identity: Option<&str>,
+    method: &str,
+    params: &Value,
+    rpc_id: Value,
+) -> Option<JsonRpcResponse> {
+    let strict = method == "mobkit/live/playback_owner/register"
+        || method == "mobkit/live/playback_owner/revoke"
+        || params.get("pending_receipt").is_some()
+        || params.get("activation_receipt").is_some()
+        || params.get("readiness_receipt").is_some();
+    if !strict {
+        return None;
+    }
+    let (resolved_session, canonical_target_identity) =
+        match strict_target(resolved_session, canonical_target_identity) {
+            Ok(target) => target,
+            Err(error) => return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error)),
+        };
+    match method {
+        "mobkit/live/playback_owner/register" => {
+            let parsed: StrictLivePlaybackOwnerRegisterParams =
+                match parse_live_params(params, &rpc_id) {
+                    Ok(parsed) => parsed,
+                    Err(response) => return Some(*response),
+                };
+            let _ = parsed.identity;
+            let channel_id = LiveChannelId::new(parsed.channel_id);
+            let custody = match shared_live_host
+                .validate_experimental_live_channel_custody(&channel_id, &parsed.pending_receipt)
+                .await
+            {
+                Ok(custody) => custody,
+                Err(error) => {
+                    return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()));
+                }
+            };
+            if let Err(error) =
+                validate_strict_custody_target(&custody, resolved_session, &channel_id)
+            {
+                return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+            }
+            if !matches!(
+                custody.phase(),
+                meerkat::surface::ExperimentalLiveChannelPhaseStatus::Pending
+            ) {
+                return Some(live_error(
+                    rpc_id,
+                    INVALID_PARAMS_CODE,
+                    "playback owner registration requires pending channel authority",
+                ));
+            }
+            let readiness = match shared_live_host
+                .register_experimental_live_playback_owner(&channel_id, &parsed.pending_receipt)
+                .await
+            {
+                Ok(readiness) => readiness,
+                Err(error) => {
+                    return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()));
+                }
+            };
+            let result = crate::live_contracts::LivePlaybackOwnerReadiness {
+                channel_id: readiness.channel_id().to_string(),
+                readiness_receipt: readiness.readiness_receipt().to_string(),
+            };
+            Some(match serde_json::to_value(result) {
+                Ok(value) => live_success(rpc_id, value),
+                Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+            })
+        }
+        "mobkit/live/playback_owner/revoke" => {
+            let parsed: StrictLivePlaybackOwnerRevokeParams =
+                match parse_live_params(params, &rpc_id) {
+                    Ok(parsed) => parsed,
+                    Err(response) => return Some(*response),
+                };
+            let _ = parsed.identity;
+            let channel_id = LiveChannelId::new(parsed.channel_id);
+            let pending_custody = match shared_live_host
+                .validate_experimental_live_channel_custody(&channel_id, &parsed.pending_receipt)
+                .await
+            {
+                Ok(custody) => custody,
+                Err(error) => {
+                    return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()));
+                }
+            };
+            if let Err(error) =
+                validate_strict_custody_target(&pending_custody, resolved_session, &channel_id)
+            {
+                return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+            }
+            match (&parsed.activation_receipt, pending_custody.phase()) {
+                (None, meerkat::surface::ExperimentalLiveChannelPhaseStatus::Pending) => {}
+                (
+                    Some(activation_receipt),
+                    meerkat::surface::ExperimentalLiveChannelPhaseStatus::Active { .. },
+                ) => {
+                    if let Err(error) = strict_custody_by_activation(
+                        shared_live_host,
+                        &channel_id,
+                        activation_receipt,
+                        resolved_session,
+                    )
+                    .await
+                    {
+                        return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+                    }
+                }
+                (None, _) => {
+                    return Some(live_error(
+                        rpc_id,
+                        INVALID_PARAMS_CODE,
+                        "active playback-owner loss requires the exact activation receipt",
+                    ));
+                }
+                (Some(_), _) => {
+                    return Some(live_error(
+                        rpc_id,
+                        INVALID_PARAMS_CODE,
+                        "activation receipt is valid only for an active playback owner",
+                    ));
+                }
+            }
+            if let Err(error) = shared_live_host
+                .revoke_experimental_live_playback_owner(
+                    &channel_id,
+                    &parsed.pending_receipt,
+                    &parsed.readiness_receipt,
+                    parsed.activation_receipt.as_deref(),
+                )
+                .await
+            {
+                return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()));
+            }
+            let revoked = match shared_live_host
+                .validate_experimental_live_channel_custody(&channel_id, &parsed.pending_receipt)
+                .await
+            {
+                Ok(custody) => custody,
+                Err(error) => {
+                    return Some(live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()));
+                }
+            };
+            if let Err(error) =
+                validate_strict_custody_target(&revoked, resolved_session, &channel_id)
+            {
+                return Some(live_error(rpc_id, INTERNAL_ERROR_CODE, error));
+            }
+            if !matches!(
+                revoked.phase(),
+                meerkat::surface::ExperimentalLiveChannelPhaseStatus::Revoked
+            ) {
+                return Some(live_error(
+                    rpc_id,
+                    INTERNAL_ERROR_CODE,
+                    "playback-owner revoke did not project revoked custody",
+                ));
+            }
+            Some(
+                match serde_json::to_value(
+                    crate::live_contracts::ExperimentalLiveChannelStatus::Revoked,
+                ) {
+                    Ok(value) => live_success(rpc_id, value),
+                    Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+                },
+            )
+        }
+        "mobkit/live/status" => {
+            let parsed: StrictLiveReceiptParams = match parse_live_params(params, &rpc_id) {
+                Ok(parsed) => parsed,
+                Err(response) => return Some(*response),
+            };
+            let _ = parsed.identity;
+            let channel_id = LiveChannelId::new(parsed.channel_id);
+            let custody = match (parsed.pending_receipt, parsed.activation_receipt) {
+                (Some(pending), None) => {
+                    shared_live_host
+                        .validate_experimental_live_channel_custody(&channel_id, &pending)
+                        .await
+                }
+                (None, Some(active)) => {
+                    shared_live_host
+                        .validate_experimental_live_channel_custody_by_activation(
+                            &channel_id,
+                            &active,
+                        )
+                        .await
+                }
+                _ => {
+                    return Some(live_error(
+                        rpc_id,
+                        INVALID_PARAMS_CODE,
+                        "live/status requires exactly one phase receipt",
+                    ));
+                }
+            };
+            let custody = match custody {
+                Ok(custody) => custody,
+                Err(error) => {
+                    return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()));
+                }
+            };
+            if let Err(error) =
+                validate_strict_custody_target(&custody, resolved_session, &channel_id)
+            {
+                return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+            }
+            let status = match custody.phase() {
+                meerkat::surface::ExperimentalLiveChannelPhaseStatus::Pending => {
+                    crate::live_contracts::ExperimentalLiveChannelStatus::Pending
+                }
+                meerkat::surface::ExperimentalLiveChannelPhaseStatus::Active {
+                    activation_receipt,
+                } => crate::live_contracts::ExperimentalLiveChannelStatus::Active {
+                    handle: crate::live_contracts::ActiveLiveChannelHandle {
+                        channel_id: custody.channel_id().to_string(),
+                        target_identity: canonical_target_identity.to_string(),
+                        execution_mode: local_live_execution_mode(custody.execution_mode()),
+                        activation_receipt: activation_receipt.clone(),
+                    },
+                },
+                meerkat::surface::ExperimentalLiveChannelPhaseStatus::Revoked => {
+                    crate::live_contracts::ExperimentalLiveChannelStatus::Revoked
+                }
+                meerkat::surface::ExperimentalLiveChannelPhaseStatus::Closed => {
+                    crate::live_contracts::ExperimentalLiveChannelStatus::Closed
+                }
+            };
+            Some(match serde_json::to_value(status) {
+                Ok(value) => live_success(rpc_id, value),
+                Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+            })
+        }
+        "mobkit/live/close" => {
+            let open_authority = match capability_provider.open_authority() {
+                Some(authority) => authority,
+                None => {
+                    return Some(live_error(
+                        rpc_id,
+                        crate::rpc::CAPABILITY_UNAVAILABLE_CODE,
+                        "experimental live channel authority is not available",
+                    ));
+                }
+            };
+            let parsed: StrictLiveReceiptParams = match parse_live_params(params, &rpc_id) {
+                Ok(parsed) => parsed,
+                Err(response) => return Some(*response),
+            };
+            let _ = parsed.identity;
+            let channel_id = LiveChannelId::new(parsed.channel_id);
+            let status = match (parsed.pending_receipt, parsed.activation_receipt) {
+                (Some(pending), None) => {
+                    let custody = match shared_live_host
+                        .validate_experimental_live_channel_custody(&channel_id, &pending)
+                        .await
+                    {
+                        Ok(custody) => custody,
+                        Err(error) => {
+                            return Some(live_error(
+                                rpc_id,
+                                INVALID_PARAMS_CODE,
+                                error.to_string(),
+                            ));
+                        }
+                    };
+                    if let Err(error) =
+                        validate_strict_custody_target(&custody, resolved_session, &channel_id)
+                    {
+                        return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+                    }
+                    shared_live_host
+                        .close_experimental_live_pending_channel(
+                            open_authority,
+                            &channel_id,
+                            &pending,
+                        )
+                        .await
+                }
+                (None, Some(active)) => {
+                    let custody = match shared_live_host
+                        .validate_experimental_live_channel_custody_by_activation(
+                            &channel_id,
+                            &active,
+                        )
+                        .await
+                    {
+                        Ok(custody) => custody,
+                        Err(error) => {
+                            return Some(live_error(
+                                rpc_id,
+                                INVALID_PARAMS_CODE,
+                                error.to_string(),
+                            ));
+                        }
+                    };
+                    if let Err(error) =
+                        validate_strict_custody_target(&custody, resolved_session, &channel_id)
+                    {
+                        return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+                    }
+                    shared_live_host
+                        .close_experimental_live_active_channel(
+                            open_authority,
+                            &channel_id,
+                            &active,
+                        )
+                        .await
+                }
+                _ => {
+                    return Some(live_error(
+                        rpc_id,
+                        INVALID_PARAMS_CODE,
+                        "live/close requires exactly one phase receipt",
+                    ));
+                }
+            };
+            Some(match status {
+                Ok(status) => match serde_json::to_value(LiveCloseResult { status }) {
+                    Ok(value) => live_success(rpc_id, value),
+                    Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+                },
+                Err(error) => live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()),
+            })
+        }
+        "mobkit/live/send_input" => {
+            let parsed: StrictLiveSendInputParams = match parse_live_params(params, &rpc_id) {
+                Ok(parsed) => parsed,
+                Err(response) => return Some(*response),
+            };
+            let _ = parsed.identity;
+            let channel_id = LiveChannelId::new(parsed.channel_id);
+            if let Err(error) = strict_custody_by_activation(
+                shared_live_host,
+                &channel_id,
+                &parsed.activation_receipt,
+                resolved_session,
+            )
+            .await
+            {
+                return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+            }
+            let chunk = match live_input_chunk_from_wire(parsed.chunk) {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()));
+                }
+            };
+            let result = shared_live_host
+                .send_experimental_live_input(&channel_id, &parsed.activation_receipt, chunk)
+                .await;
+            Some(match result {
+                Ok(result) => match serde_json::to_value(result) {
+                    Ok(value) => live_success(rpc_id, value),
+                    Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+                },
+                Err(error) => live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()),
+            })
+        }
+        "mobkit/live/commit_input" => {
+            let parsed: StrictLiveCommitInputParams = match parse_live_params(params, &rpc_id) {
+                Ok(parsed) => parsed,
+                Err(response) => return Some(*response),
+            };
+            let _ = parsed.identity;
+            if parsed.response_modality.is_some() {
+                return Some(live_error(
+                    rpc_id,
+                    INVALID_PARAMS_CODE,
+                    "strict live commit_input does not accept response_modality",
+                ));
+            }
+            let channel_id = LiveChannelId::new(parsed.channel_id);
+            if let Err(error) = strict_custody_by_activation(
+                shared_live_host,
+                &channel_id,
+                &parsed.activation_receipt,
+                resolved_session,
+            )
+            .await
+            {
+                return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+            }
+            let result = shared_live_host
+                .control_experimental_live_channel(
+                    &channel_id,
+                    &parsed.activation_receipt,
+                    BridgeLiveControlVerb::CommitInput,
+                )
+                .await;
+            Some(strict_control_response(rpc_id, result))
+        }
+        "mobkit/live/interrupt" | "mobkit/live/refresh" => {
+            let parsed: StrictLiveActiveChannelParams = match parse_live_params(params, &rpc_id) {
+                Ok(parsed) => parsed,
+                Err(response) => return Some(*response),
+            };
+            let _ = parsed.identity;
+            let channel_id = LiveChannelId::new(parsed.channel_id);
+            if let Err(error) = strict_custody_by_activation(
+                shared_live_host,
+                &channel_id,
+                &parsed.activation_receipt,
+                resolved_session,
+            )
+            .await
+            {
+                return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+            }
+            let verb = if method == "mobkit/live/interrupt" {
+                BridgeLiveControlVerb::Interrupt
+            } else {
+                BridgeLiveControlVerb::Refresh
+            };
+            let result = shared_live_host
+                .control_experimental_live_channel(&channel_id, &parsed.activation_receipt, verb)
+                .await;
+            Some(strict_control_response(rpc_id, result))
+        }
+        "mobkit/live/truncate" => {
+            let parsed: StrictLiveTruncateParams = match parse_live_params(params, &rpc_id) {
+                Ok(parsed) => parsed,
+                Err(response) => return Some(*response),
+            };
+            let _ = parsed.identity;
+            if parsed.output_id.trim().is_empty() {
+                return Some(live_error(
+                    rpc_id,
+                    INVALID_PARAMS_CODE,
+                    "output_id must be non-empty",
+                ));
+            }
+            let channel_id = LiveChannelId::new(parsed.channel_id);
+            if let Err(error) = strict_custody_by_activation(
+                shared_live_host,
+                &channel_id,
+                &parsed.activation_receipt,
+                resolved_session,
+            )
+            .await
+            {
+                return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+            }
+            let result = shared_live_host
+                .truncate_live_output(
+                    &channel_id,
+                    &parsed.activation_receipt,
+                    &parsed.output_id,
+                    parsed.audio_played_ms,
+                    parsed.reported_playback_prefix,
+                )
+                .await;
+            Some(match result {
+                Ok(result) => match serde_json::to_value(result) {
+                    Ok(value) => live_success(rpc_id, value),
+                    Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+                },
+                Err(error) => live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()),
+            })
+        }
+        "mobkit/live/playback_complete" => {
+            let parsed: StrictLivePlaybackCompleteParams = match parse_live_params(params, &rpc_id)
+            {
+                Ok(parsed) => parsed,
+                Err(response) => return Some(*response),
+            };
+            let _ = parsed.identity;
+            if parsed.output_id.trim().is_empty() {
+                return Some(live_error(
+                    rpc_id,
+                    INVALID_PARAMS_CODE,
+                    "output_id must be non-empty",
+                ));
+            }
+            let channel_id = LiveChannelId::new(parsed.channel_id);
+            if let Err(error) = strict_custody_by_activation(
+                shared_live_host,
+                &channel_id,
+                &parsed.activation_receipt,
+                resolved_session,
+            )
+            .await
+            {
+                return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+            }
+            let result = shared_live_host
+                .complete_live_playback(&channel_id, &parsed.activation_receipt, &parsed.output_id)
+                .await;
+            Some(match result {
+                Ok(result) => match serde_json::to_value(result) {
+                    Ok(value) => live_success(rpc_id, value),
+                    Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+                },
+                Err(error) => live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()),
+            })
+        }
+        meerkat_live::LIVE_WEBRTC_ANSWER_METHOD => {
+            let parsed: GatewayLiveWebrtcAnswerParams = match parse_live_params(params, &rpc_id) {
+                Ok(parsed) => parsed,
+                Err(response) => return Some(*response),
+            };
+            let _ = parsed.identity;
+            let (Some(pending_receipt), Some(readiness_receipt)) =
+                (parsed.pending_receipt, parsed.readiness_receipt)
+            else {
+                return Some(live_error(
+                    rpc_id,
+                    INVALID_PARAMS_CODE,
+                    "strict WebRTC answer requires pending and readiness receipts",
+                ));
+            };
+            let channel_id = LiveChannelId::new(parsed.channel_id);
+            let custody = match shared_live_host
+                .validate_experimental_live_channel_custody(&channel_id, &pending_receipt)
+                .await
+            {
+                Ok(custody) => custody,
+                Err(error) => {
+                    return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()));
+                }
+            };
+            if let Err(error) =
+                validate_strict_custody_target(&custody, resolved_session, &channel_id)
+            {
+                return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+            }
+            if !matches!(
+                custody.phase(),
+                meerkat::surface::ExperimentalLiveChannelPhaseStatus::Pending
+            ) {
+                return Some(live_error(
+                    rpc_id,
+                    INVALID_PARAMS_CODE,
+                    "strict WebRTC answer requires pending channel authority",
+                ));
+            }
+            let Some(answer_transport) = capability_provider.answer_transport() else {
+                return Some(live_error(
+                    rpc_id,
+                    crate::rpc::CAPABILITY_UNAVAILABLE_CODE,
+                    "experimental live WebRTC answer transport is not available",
+                ));
+            };
+            let Some(bound_ready_binder) = capability_provider.bound_ready_binder() else {
+                return Some(live_error(
+                    rpc_id,
+                    crate::rpc::CAPABILITY_UNAVAILABLE_CODE,
+                    "experimental live WebRTC bound-ready authority is not available",
+                ));
+            };
+            let coordinated = match shared_live_host
+                .answer_experimental_live_webrtc_offer(
+                    Arc::clone(answer_transport),
+                    bound_ready_binder,
+                    channel_id,
+                    &pending_receipt,
+                    &readiness_receipt,
+                    parsed.token,
+                    parsed.offer_sdp,
+                )
+                .await
+            {
+                Ok(coordinated) => coordinated,
+                Err(error) => {
+                    return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()));
+                }
+            };
+            let value = match serde_json::to_value(meerkat_contracts::LiveWebrtcAnswerResult {
+                answer_sdp: coordinated.answer_sdp,
+            }) {
+                Ok(value) => value,
+                Err(error) => {
+                    let cleanup_error = coordinated.delivery_custody.rejected().await.err();
+                    return Some(live_error(
+                        rpc_id,
+                        INTERNAL_ERROR_CODE,
+                        match cleanup_error {
+                            Some(cleanup_error) => format!(
+                                "failed to serialize LiveWebrtcAnswerResult: {error}; answer rejection failed: {cleanup_error}"
+                            ),
+                            None => format!("failed to serialize LiveWebrtcAnswerResult: {error}"),
+                        },
+                    ));
+                }
+            };
+            Some(
+                match retain_live_webrtc_answer_delivery(coordinated.delivery_custody).await {
+                    Ok(()) => live_success(rpc_id, value),
+                    Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error),
+                },
+            )
+        }
+        "mobkit/live/replacement_required" => {
+            let parsed: StrictLiveActiveChannelParams = match parse_live_params(params, &rpc_id) {
+                Ok(parsed) => parsed,
+                Err(response) => return Some(*response),
+            };
+            let _ = parsed.identity;
+            let channel_id = LiveChannelId::new(parsed.channel_id);
+            if let Err(error) = strict_custody_by_activation(
+                shared_live_host,
+                &channel_id,
+                &parsed.activation_receipt,
+                resolved_session,
+            )
+            .await
+            {
+                return Some(live_error(rpc_id, INVALID_PARAMS_CODE, error));
+            }
+            Some(
+                handle_live_replacement_required(
+                    capability_provider,
+                    resolved_session,
+                    Some(canonical_target_identity.to_string()),
+                    params,
+                    rpc_id,
+                )
+                .await,
+            )
+        }
+        _ => None,
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+fn strict_control_response(
+    rpc_id: Value,
+    result: Result<
+        meerkat_contracts::BridgeLiveControlOutcome,
+        meerkat::session_runtime::errors::LiveChannelVerbError,
+    >,
+) -> JsonRpcResponse {
+    match result {
+        Ok(result) => match serde_json::to_value(result) {
+            Ok(value) => live_success(rpc_id, value),
+            Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+        },
+        Err(error) => live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string()),
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+async fn handle_live_replacement_required(
+    capability_provider: &LiveCapabilityProvider,
+    session_id: &SessionId,
+    canonical_target_identity: Option<String>,
+    params: &Value,
+    rpc_id: Value,
+) -> JsonRpcResponse {
+    let parsed: GatewayLiveReplacementRequiredParams = match parse_live_params(params, &rpc_id) {
+        Ok(parsed) => parsed,
+        Err(response) => return *response,
+    };
+    let _ = (
+        parsed.identity,
+        parsed.member_id,
+        parsed.session_id,
+        parsed.channel_id,
+        parsed.activation_receipt,
+    );
+    let Some(target_identity) = canonical_target_identity else {
+        return live_error(
+            rpc_id,
+            INVALID_PARAMS_CODE,
+            "live/replacement_required requires canonical durable identity authority",
+        );
+    };
+    if capability_provider.open_authority().is_none() {
+        return live_error(
+            rpc_id,
+            crate::rpc::CAPABILITY_UNAVAILABLE_CODE,
+            format!(
+                "capability {} is not available",
+                crate::live_contracts::LIVE_EXECUTION_IDENTITY_V1
+            ),
+        );
+    }
+    let replacement = capability_provider
+        .pending_replacement_required(session_id)
+        .await;
+    let result = match replacement {
+        None => crate::live_contracts::LiveReplacementRequiredResult::not_required(),
+        Some(meerkat::surface::ExperimentalLiveReplacementRequired::CanonicalContext {
+            open,
+            canonical_seed_cursor,
+        }) => crate::live_contracts::LiveReplacementRequiredResult::required(
+            crate::live_contracts::LiveReplacementReason::CanonicalContext,
+            crate::live_contracts::LiveChannelHandle::from_open_result(target_identity, open),
+            canonical_seed_cursor,
         ),
+        Some(meerkat::surface::ExperimentalLiveReplacementRequired::DelegationResult {
+            open,
+            canonical_seed_cursor,
+        }) => crate::live_contracts::LiveReplacementRequiredResult::required(
+            crate::live_contracts::LiveReplacementReason::DelegationResult,
+            crate::live_contracts::LiveChannelHandle::from_open_result(target_identity, open),
+            canonical_seed_cursor,
+        ),
+    };
+    match serde_json::to_value(result) {
+        Ok(value) => live_success(rpc_id, value),
+        Err(error) => live_error(
+            rpc_id,
+            INTERNAL_ERROR_CODE,
+            format!("failed to serialize live replacement bootstrap: {error}"),
+        ),
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+async fn handle_live_webrtc_answer<B: SessionAgentBuilder + 'static>(
+    shared_live_host: &ServiceMemberLiveHost<B>,
+    capability_provider: &LiveCapabilityProvider,
+    params: &Value,
+    rpc_id: Value,
+) -> JsonRpcResponse {
+    let parsed: GatewayLiveWebrtcAnswerParams = match parse_live_params(params, &rpc_id) {
+        Ok(parsed) => parsed,
+        Err(response) => return *response,
+    };
+    let Some(answer_transport) = capability_provider.answer_transport() else {
+        return live_error(
+            rpc_id,
+            crate::rpc::CAPABILITY_UNAVAILABLE_CODE,
+            "experimental live WebRTC answer transport is not available",
+        );
+    };
+    let Some(bound_ready_binder) = capability_provider.bound_ready_binder() else {
+        return live_error(
+            rpc_id,
+            crate::rpc::CAPABILITY_UNAVAILABLE_CODE,
+            "experimental live WebRTC bound-ready authority is not available",
+        );
+    };
+    let coordinated = match shared_live_host
+        .answer_webrtc_offer(
+            Arc::clone(answer_transport),
+            Some(bound_ready_binder),
+            LiveChannelId::new(parsed.channel_id),
+            parsed.token,
+            parsed.offer_sdp,
+        )
+        .await
+    {
+        Ok(coordinated) => coordinated,
+        Err(error) => {
+            return live_error(rpc_id, INVALID_PARAMS_CODE, error.to_string());
+        }
+    };
+    match serde_json::to_value(meerkat_contracts::LiveWebrtcAnswerResult {
+        answer_sdp: coordinated.answer_sdp,
+    }) {
+        Ok(value) => match retain_live_webrtc_answer_delivery(coordinated.delivery_custody).await {
+            Ok(()) => live_success(rpc_id, value),
+            Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error),
+        },
+        Err(error) => {
+            let cleanup_error = coordinated.delivery_custody.rejected().await.err();
+            live_error(
+                rpc_id,
+                INTERNAL_ERROR_CODE,
+                match cleanup_error {
+                    Some(cleanup_error) => format!(
+                        "failed to serialize LiveWebrtcAnswerResult: {error}; answer rejection failed: {cleanup_error}"
+                    ),
+                    None => format!("failed to serialize LiveWebrtcAnswerResult: {error}"),
+                },
+            )
+        }
     }
 }
 
@@ -1149,14 +3321,13 @@ pub async fn handle_live_method<B: SessionAgentBuilder + 'static>(
 /// (which is pinned to `FactoryAgentBuilder` + the staged-session registry,
 /// so a generic-`B` gateway cannot borrow it): the same three published
 /// service seams feed the same three pub projection free functions. No
-/// staged/archived recovery — mobkit member sessions are held live by the
+/// staged/archived recovery - mobkit member sessions are held live by the
 /// bridge, and an archived target surfaces as `NotFound`.
 async fn live_open_config_for_session<B: SessionAgentBuilder + 'static>(
     service: &PersistentSessionService<B>,
     session_id: &SessionId,
     turning_mode: RealtimeTurningMode,
     seed_max_chars: Option<usize>,
-    instruction_overlay: Option<Message>,
 ) -> Result<RealtimeSessionOpenConfig, meerkat_core::SessionError> {
     // Mirror of the facade orchestrator: process-wide open-projection custody
     // is acquired BEFORE the persistent service can hydrate blob-backed image
@@ -1222,16 +3393,6 @@ async fn live_open_config_for_session<B: SessionAgentBuilder + 'static>(
         }
         None => realtime_projection_messages(&session)?,
     };
-    // Per-open ephemeral instruction overlay: appended to the replay seed as
-    // an ordinary System row (adapters replay System seed rows natively in
-    // their transcript positions), while the canonical System drift witness
-    // is derived from the durable session only. The overlay therefore reaches
-    // the provider for exactly this open, never persists, and never trips the
-    // refresh drift check that compares the durable canonical sequence.
-    let mut seed_projection = seed_projection;
-    if let Some(overlay) = instruction_overlay {
-        seed_projection.push(overlay);
-    }
     let open_config = RealtimeSessionOpenConfig::for_open_from_messages(
         turning_mode,
         llm_identity,
@@ -1250,32 +3411,6 @@ async fn live_open_config_for_session<B: SessionAgentBuilder + 'static>(
         .with_user_content_tombstones(session.realtime_user_content_tombstones())
         .with_canonical_user_image_decoded_bytes(canonical_user_image_decoded_bytes)
         .with_transcript_rewrite_generation(transcript_rewrite_generation))
-}
-
-/// Build the per-open instruction overlay from `mobkit/live/open`
-/// `instructions` as one System seed row.
-///
-/// Lane choice (0.8.11 ordered-System world): the retired
-/// `runtime_system_context` lane is gone; provider adapters replay System
-/// rows from the replay seed natively, and the provider `instructions`
-/// channel is reserved for provider-owned configuration. Appending the
-/// overlay to the per-open seed (NOT to the canonical drift witness, which
-/// stays derived from the durable session) keeps the original semantics:
-/// authoritative for exactly this open, never persisted, never misreported
-/// as the member's durable prompt, never a refresh-drift trigger.
-fn live_open_instruction_overlay_message(instructions: Vec<String>) -> Option<Message> {
-    let joined = instructions
-        .iter()
-        .map(|instruction| instruction.trim())
-        .filter(|instruction| !instruction.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if joined.is_empty() {
-        return None;
-    }
-    Some(Message::System(meerkat_core::types::SystemMessage::new(
-        joined,
-    )))
 }
 
 /// Fold the per-open `(provider, model)` selection into the projected
@@ -1307,47 +3442,226 @@ fn apply_live_open_identity_selection(
     }
 }
 
-/// #176: project the factory's typed realtime audio policy into the typed
-/// [`LiveAudioConfig`] the snapshot carries. `None` when the factory does
-/// not advertise both directions of audio, so the caller fails closed
-/// rather than inventing a sample rate.
-fn live_audio_config_from_capabilities(
-    capabilities: &RealtimeCapabilities,
-) -> Option<LiveAudioConfig> {
-    let input = capabilities.audio_input_format.as_ref()?;
-    let output = capabilities.audio_output_format.as_ref()?;
-    Some(LiveAudioConfig {
-        input_sample_rate_hz: input.sample_rate_hz,
-        input_channels: u16::from(input.channels),
-        output_sample_rate_hz: output.sample_rate_hz,
-        output_channels: u16::from(output.channels),
-    })
-}
+#[cfg(not(feature = "experimental-gpt-live"))]
+mod ordinary_open_helpers {
+    use super::*;
 
-/// #176: derive the WS `&format=` query token from the typed audio policy.
-/// The WS transport stamps inbound binary-chunk sample rates from this
-/// token, and the only layout it accepts today is 16-bit signed LE PCM,
-/// 24 kHz, mono. Fail closed (`None`) when the resolved policy does not map
-/// — a mismatch would silently stamp the wrong rate onto every frame.
-fn live_ws_audio_format_param(audio: &LiveAudioConfig) -> Option<&'static str> {
-    const PCM_24K_MONO_RATE_HZ: u32 = 24_000;
-    const PCM_24K_MONO_CHANNELS: u16 = 1;
-    if audio.input_sample_rate_hz == PCM_24K_MONO_RATE_HZ
-        && audio.input_channels == PCM_24K_MONO_CHANNELS
-    {
-        Some("pcm_24k_mono")
-    } else {
-        None
+    /// #176: project the factory's typed realtime audio policy into the typed
+    /// [`LiveAudioConfig`] the snapshot carries. `None` when the factory does
+    /// not advertise both directions of audio, so the caller fails closed
+    /// rather than inventing a sample rate.
+    pub(super) fn live_audio_config_from_capabilities(
+        capabilities: &RealtimeCapabilities,
+    ) -> Option<LiveAudioConfig> {
+        let input = capabilities.audio_input_format.as_ref()?;
+        let output = capabilities.audio_output_format.as_ref()?;
+        Some(LiveAudioConfig {
+            input_sample_rate_hz: input.sample_rate_hz,
+            input_channels: u16::from(input.channels),
+            output_sample_rate_hz: output.sample_rate_hz,
+            output_channels: u16::from(output.channels),
+        })
+    }
+
+    /// #176: derive the WS `&format=` query token from the typed audio policy.
+    /// The WS transport stamps inbound binary-chunk sample rates from this
+    /// token, and the only layout it accepts today is 16-bit signed LE PCM,
+    /// 24 kHz, mono. Fail closed (`None`) when the resolved policy does not map
+    /// — a mismatch would silently stamp the wrong rate onto every frame.
+    pub(super) fn live_ws_audio_format_param(audio: &LiveAudioConfig) -> Option<&'static str> {
+        const PCM_24K_MONO_RATE_HZ: u32 = 24_000;
+        const PCM_24K_MONO_CHANNELS: u16 = 1;
+        if audio.input_sample_rate_hz == PCM_24K_MONO_RATE_HZ
+            && audio.input_channels == PCM_24K_MONO_CHANNELS
+        {
+            Some("pcm_24k_mono")
+        } else {
+            None
+        }
+    }
+
+    /// A8: build a `LiveProjectionSnapshot` from the resolved open config.
+    /// `snapshot_version = 0` is the open-time placeholder; the refresh path
+    /// overwrites it via `host.next_snapshot_version(channel_id)` (R8).
+    pub(super) fn build_live_projection_snapshot(
+        session_id: &SessionId,
+        open_config: &RealtimeSessionOpenConfig,
+        audio_config: Option<LiveAudioConfig>,
+    ) -> LiveProjectionSnapshot {
+        LiveProjectionSnapshot {
+            session_id: session_id.clone(),
+            snapshot_version: 0,
+            seed_messages: open_config.seed_messages().to_vec(),
+            visible_tools: open_config.visible_tools.clone(),
+            user_content_identities: open_config.user_content_identities.clone(),
+            user_content_tombstones: open_config.user_content_tombstones.clone(),
+            transcript_rewrite_generation: open_config.transcript_rewrite_generation,
+            canonical_user_image_decoded_bytes: open_config.canonical_user_image_decoded_bytes,
+            // 0.8.11: the exact canonical System payload sequence is the refresh
+            // drift witness; the actual System rows ride `seed_messages` and are
+            // replayed natively by provider adapters.
+            canonical_system_messages: open_config.canonical_system_messages_ref().to_vec(),
+            model_id: open_config.llm_identity.model.clone(),
+            provider_id: open_config.llm_identity.provider,
+            audio_config,
+        }
+    }
+
+    /// A8: `Fresh` on empty seed history, `TranscriptOnly` once seeded.
+    /// Provider-native resume is not wired by any shipped provider.
+    pub(super) fn continuity_from_snapshot(
+        snapshot: &LiveProjectionSnapshot,
+    ) -> LiveContinuityMode {
+        if snapshot.seed_messages.is_empty() {
+            LiveContinuityMode::Fresh
+        } else {
+            LiveContinuityMode::TranscriptOnly
+        }
+    }
+
+    pub(super) async fn abandon_live_open_admission(
+        machine: &Arc<MeerkatMachine>,
+        session_id: &SessionId,
+        channel_id: &LiveChannelId,
+    ) {
+        if let Err(err) = machine
+            .abandon_live_open_admission(session_id, channel_id)
+            .await
+        {
+            tracing::warn!(
+                target: "meerkat_mobkit::live_wiring",
+                ?channel_id,
+                ?session_id,
+                ?err,
+                "generated live-open admission abandonment failed"
+            );
+        }
+    }
+
+    /// #355: open-failure cleanup is fail-closed, not best-effort. Attempt the
+    /// generated graceful close first (retains a queryable closed-channel
+    /// status); if the close authority rejects, omits the host handoff, or the
+    /// host commit fails, fall through to `abandon_live_open_admission` so a
+    /// failed open never leaves an orphaned machine-owned channel binding.
+    pub(super) async fn close_live_channel_after_open_failure(
+        host: &LiveAdapterHost,
+        machine: &Arc<MeerkatMachine>,
+        session_id: &SessionId,
+        channel_id: &LiveChannelId,
+    ) {
+        match host.reserve_channel_close_observation(channel_id).await {
+            Ok(observation) => {
+                // Reference order: the host commit requires the adapter
+                // physically closed and detached first (otherwise it fails
+                // closed as `CloseNotAuthorized` and this cleanup always
+                // degraded to admission eviction instead of the graceful
+                // close it documents). Physical-close failure keeps the
+                // fail-closed eviction fallback below.
+                let physically_closed =
+                    match host.prepare_channel_physical_close(&observation).await {
+                        Ok(()) => true,
+                        Err(err) => {
+                            tracing::warn!(
+                                target: "meerkat_mobkit::live_wiring",
+                                ?channel_id,
+                                ?session_id,
+                                ?err,
+                                "physical adapter close failed during open-failure cleanup; \
+                                 evicting admission"
+                            );
+                            false
+                        }
+                    };
+                let committed = physically_closed
+                    && commit_live_close_for_open_failure(
+                        host,
+                        machine,
+                        session_id,
+                        channel_id,
+                        &observation,
+                    )
+                    .await;
+                if !committed {
+                    abandon_live_open_admission(machine, session_id, channel_id).await;
+                }
+            }
+            Err(LiveAdapterHostError::ChannelNotFound(_)) => {
+                abandon_live_open_admission(machine, session_id, channel_id).await;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: "meerkat_mobkit::live_wiring",
+                    ?channel_id,
+                    ?session_id,
+                    ?err,
+                    "failed to close live channel after open failure; evicting admission"
+                );
+                abandon_live_open_admission(machine, session_id, channel_id).await;
+            }
+        }
+    }
+
+    /// Returns `true` only when the host commit succeeded (the machine-owned
+    /// channel binding is cleared); `false` after logging the typed cause.
+    pub(super) async fn commit_live_close_for_open_failure(
+        host: &LiveAdapterHost,
+        machine: &Arc<MeerkatMachine>,
+        session_id: &SessionId,
+        channel_id: &LiveChannelId,
+        observation: &LiveChannelCloseObservation,
+    ) -> bool {
+        let authority = match machine
+            .resolve_live_close_result(session_id, observation)
+            .await
+        {
+            Ok(authority) => authority,
+            Err(err) => {
+                tracing::warn!(
+                    target: "meerkat_mobkit::live_wiring",
+                    ?channel_id,
+                    ?session_id,
+                    ?err,
+                    "generated live-close authority rejected open-failure cleanup; evicting admission"
+                );
+                return false;
+            }
+        };
+        let Some(close_commit_authority) = authority.channel_close_commit_authority() else {
+            tracing::warn!(
+                target: "meerkat_mobkit::live_wiring",
+                ?channel_id,
+                ?session_id,
+                "generated live-close result omitted host commit authority; evicting admission"
+            );
+            return false;
+        };
+        if let Err(err) = host
+            .commit_channel_close_observation(observation, close_commit_authority)
+            .await
+        {
+            tracing::warn!(
+                target: "meerkat_mobkit::live_wiring",
+                ?channel_id,
+                ?session_id,
+                ?err,
+                "host live-close commit failed after generated open-failure cleanup; evicting admission"
+            );
+            return false;
+        }
+        true
     }
 }
+
+#[cfg(not(feature = "experimental-gpt-live"))]
+use ordinary_open_helpers::*;
 
 /// A8: build a `LiveProjectionSnapshot` from the resolved open config.
 /// `snapshot_version = 0` is the open-time placeholder; the refresh path
 /// overwrites it via `host.next_snapshot_version(channel_id)` (R8).
+#[cfg(feature = "experimental-gpt-live")]
 fn build_live_projection_snapshot(
     session_id: &SessionId,
     open_config: &RealtimeSessionOpenConfig,
-    audio_config: Option<LiveAudioConfig>,
 ) -> LiveProjectionSnapshot {
     LiveProjectionSnapshot {
         session_id: session_id.clone(),
@@ -1364,151 +3678,11 @@ fn build_live_projection_snapshot(
         canonical_system_messages: open_config.canonical_system_messages_ref().to_vec(),
         model_id: open_config.llm_identity.model.clone(),
         provider_id: open_config.llm_identity.provider,
-        audio_config,
+        audio_config: None,
     }
 }
 
-/// A8: `Fresh` on empty seed history, `TranscriptOnly` once seeded.
-/// Provider-native resume is not wired by any shipped provider.
-fn continuity_from_snapshot(snapshot: &LiveProjectionSnapshot) -> LiveContinuityMode {
-    if snapshot.seed_messages.is_empty() {
-        LiveContinuityMode::Fresh
-    } else {
-        LiveContinuityMode::TranscriptOnly
-    }
-}
-
-async fn abandon_live_open_admission(
-    machine: &Arc<MeerkatMachine>,
-    session_id: &SessionId,
-    channel_id: &LiveChannelId,
-) {
-    if let Err(err) = machine
-        .abandon_live_open_admission(session_id, channel_id)
-        .await
-    {
-        tracing::warn!(
-            target: "meerkat_mobkit::live_wiring",
-            ?channel_id,
-            ?session_id,
-            ?err,
-            "generated live-open admission abandonment failed"
-        );
-    }
-}
-
-/// #355: open-failure cleanup is fail-closed, not best-effort. Attempt the
-/// generated graceful close first (retains a queryable closed-channel
-/// status); if the close authority rejects, omits the host handoff, or the
-/// host commit fails, fall through to `abandon_live_open_admission` so a
-/// failed open never leaves an orphaned machine-owned channel binding.
-async fn close_live_channel_after_open_failure(
-    host: &LiveAdapterHost,
-    machine: &Arc<MeerkatMachine>,
-    session_id: &SessionId,
-    channel_id: &LiveChannelId,
-) {
-    match host.reserve_channel_close_observation(channel_id).await {
-        Ok(observation) => {
-            // Reference order: the host commit requires the adapter
-            // physically closed and detached first (otherwise it fails
-            // closed as `CloseNotAuthorized` and this cleanup always
-            // degraded to admission eviction instead of the graceful
-            // close it documents). Physical-close failure keeps the
-            // fail-closed eviction fallback below.
-            let physically_closed = match host.prepare_channel_physical_close(&observation).await {
-                Ok(()) => true,
-                Err(err) => {
-                    tracing::warn!(
-                        target: "meerkat_mobkit::live_wiring",
-                        ?channel_id,
-                        ?session_id,
-                        ?err,
-                        "physical adapter close failed during open-failure cleanup; \
-                         evicting admission"
-                    );
-                    false
-                }
-            };
-            let committed = physically_closed
-                && commit_live_close_for_open_failure(
-                    host,
-                    machine,
-                    session_id,
-                    channel_id,
-                    &observation,
-                )
-                .await;
-            if !committed {
-                abandon_live_open_admission(machine, session_id, channel_id).await;
-            }
-        }
-        Err(LiveAdapterHostError::ChannelNotFound(_)) => {
-            abandon_live_open_admission(machine, session_id, channel_id).await;
-        }
-        Err(err) => {
-            tracing::warn!(
-                target: "meerkat_mobkit::live_wiring",
-                ?channel_id,
-                ?session_id,
-                ?err,
-                "failed to close live channel after open failure; evicting admission"
-            );
-            abandon_live_open_admission(machine, session_id, channel_id).await;
-        }
-    }
-}
-
-/// Returns `true` only when the host commit succeeded (the machine-owned
-/// channel binding is cleared); `false` after logging the typed cause.
-async fn commit_live_close_for_open_failure(
-    host: &LiveAdapterHost,
-    machine: &Arc<MeerkatMachine>,
-    session_id: &SessionId,
-    channel_id: &LiveChannelId,
-    observation: &LiveChannelCloseObservation,
-) -> bool {
-    let authority = match machine
-        .resolve_live_close_result(session_id, observation)
-        .await
-    {
-        Ok(authority) => authority,
-        Err(err) => {
-            tracing::warn!(
-                target: "meerkat_mobkit::live_wiring",
-                ?channel_id,
-                ?session_id,
-                ?err,
-                "generated live-close authority rejected open-failure cleanup; evicting admission"
-            );
-            return false;
-        }
-    };
-    let Some(close_commit_authority) = authority.channel_close_commit_authority() else {
-        tracing::warn!(
-            target: "meerkat_mobkit::live_wiring",
-            ?channel_id,
-            ?session_id,
-            "generated live-close result omitted host commit authority; evicting admission"
-        );
-        return false;
-    };
-    if let Err(err) = host
-        .commit_channel_close_observation(observation, close_commit_authority)
-        .await
-    {
-        tracing::warn!(
-            target: "meerkat_mobkit::live_wiring",
-            ?channel_id,
-            ?session_id,
-            ?err,
-            "host live-close commit failed after generated open-failure cleanup; evicting admission"
-        );
-        return false;
-    }
-    true
-}
-
+#[cfg(not(feature = "experimental-gpt-live"))]
 #[allow(clippy::too_many_lines)]
 async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     ctx: &GatewayLiveContext,
@@ -1518,6 +3692,13 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     params: &Value,
     rpc_id: Value,
 ) -> JsonRpcResponse {
+    if params.get("instructions").is_some() {
+        return live_error(
+            rpc_id,
+            INVALID_PARAMS_CODE,
+            "live/open instructions are catalog-owned and cannot be supplied by callers",
+        );
+    }
     let parsed: GatewayLiveOpenParams = match parse_live_params(params, &rpc_id) {
         Ok(p) => p,
         Err(resp) => return *resp,
@@ -1577,37 +3758,25 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     // `runtime_options.live.seed_max_chars`; windowing is upstream-owned
     // (0.7.28, ask 30 SHIPPED).
     let seed_max_chars = parsed.seed_max_chars.or(ctx.seed_max_chars);
-    // Per-open ephemeral instruction overlay rides the replay seed (see
-    // live_open_instruction_overlay_message for the lane rationale), so it
-    // is woven in at config construction time.
-    let instruction_overlay = parsed
-        .instructions
-        .and_then(|instructions| live_open_instruction_overlay_message(instructions.into_vec()));
-    let mut open_config = match live_open_config_for_session(
-        service,
-        session_id,
-        turning_mode,
-        seed_max_chars,
-        instruction_overlay,
-    )
-    .await
-    {
-        Ok(config) => config,
-        Err(meerkat_core::SessionError::NotFound { .. }) => {
-            return live_error(
-                rpc_id,
-                INVALID_PARAMS_CODE,
-                format!("session {session_id} not found"),
-            );
-        }
-        Err(err) => {
-            return live_error(
-                rpc_id,
-                INTERNAL_ERROR_CODE,
-                format!("failed to build session config: {err}"),
-            );
-        }
-    };
+    let mut open_config =
+        match live_open_config_for_session(service, session_id, turning_mode, seed_max_chars).await
+        {
+            Ok(config) => config,
+            Err(meerkat_core::SessionError::NotFound { .. }) => {
+                return live_error(
+                    rpc_id,
+                    INVALID_PARAMS_CODE,
+                    format!("session {session_id} not found"),
+                );
+            }
+            Err(err) => {
+                return live_error(
+                    rpc_id,
+                    INTERNAL_ERROR_CODE,
+                    format!("failed to build session config: {err}"),
+                );
+            }
+        };
     // Design §6: the member session's model decides; an explicit `model`
     // override swaps the realtime model for this channel without touching
     // the member's text identity, and an explicit `provider` re-pairs the
@@ -1847,6 +4016,295 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     }
 }
 
+#[cfg(feature = "experimental-gpt-live")]
+#[allow(clippy::too_many_lines)]
+async fn handle_live_open<B: SessionAgentBuilder + 'static>(
+    ctx: &GatewayLiveContext,
+    shared_live_host: &Arc<ServiceMemberLiveHost<B>>,
+    capability_provider: &LiveCapabilityProvider,
+    session_id: &SessionId,
+    canonical_target_identity: Option<String>,
+    params: &Value,
+    rpc_id: Value,
+) -> JsonRpcResponse {
+    #[cfg(not(feature = "experimental-gpt-live"))]
+    let _ = &canonical_target_identity;
+    // This is a projection label only, never an ownership witness. Durable
+    // target resolution and channel ownership remain upstream/machine-owned.
+    let legacy_target_identity = params
+        .get("identity")
+        .or_else(|| params.get("member_id"))
+        .or_else(|| params.get("session_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| session_id.to_string(), ToString::to_string);
+    if params.get("instructions").is_some() {
+        return live_error(
+            rpc_id,
+            INVALID_PARAMS_CODE,
+            "live/open instructions are catalog-owned and cannot be supplied by callers",
+        );
+    }
+    let parsed: GatewayLiveOpenParams = match parse_live_params(params, &rpc_id) {
+        Ok(p) => p,
+        Err(resp) => return *resp,
+    };
+    #[cfg(not(feature = "experimental-gpt-live"))]
+    let _ = capability_provider;
+    #[cfg(feature = "experimental-gpt-live")]
+    if let Some(execution_identity) = parsed.execution_identity.as_ref() {
+        let Some(target_identity) = canonical_target_identity else {
+            return live_error(
+                rpc_id,
+                INVALID_PARAMS_CODE,
+                "strict live/open requires canonical durable identity authority",
+            );
+        };
+        if parsed.model.is_some() || parsed.provider.is_some() {
+            return live_error(
+                rpc_id,
+                INVALID_PARAMS_CODE,
+                "execution_identity conflicts with legacy top-level model/provider",
+            );
+        }
+        let Some(open_authority) = capability_provider.open_authority_arc() else {
+            return live_error(
+                rpc_id,
+                crate::rpc::CAPABILITY_UNAVAILABLE_CODE,
+                format!(
+                    "capability {} is not available",
+                    crate::live_contracts::LIVE_EXECUTION_IDENTITY_V1
+                ),
+            );
+        };
+        let seed_window = match parsed.seed_max_chars.or(ctx.seed_max_chars) {
+            Some(max_chars) => match LiveSeedWindow::new(max_chars) {
+                Ok(window) => Some(window),
+                Err(error) => {
+                    return live_error(
+                        rpc_id,
+                        INVALID_PARAMS_CODE,
+                        format!("invalid seed_max_chars: {error}"),
+                    );
+                }
+            },
+            None => None,
+        };
+        let result = match shared_live_host
+            .open_with_execution_identity(
+                open_authority.as_ref(),
+                session_id,
+                execution_identity,
+                parsed.turning_mode,
+                seed_window,
+                parsed.transport,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                return experimental_live_open_error_response(rpc_id, error);
+            }
+        };
+        let channel_id = result.channel_id().clone();
+        let execution_mode = local_live_execution_mode(result.execution_mode());
+        let pending_receipt = result.pending_receipt().to_string();
+        let open = result.into_open();
+        return match serde_json::to_value(crate::live_contracts::PendingLiveChannelHandle::new(
+            target_identity,
+            execution_mode,
+            pending_receipt,
+            open,
+        )) {
+            Ok(value) => {
+                let cleanup: Arc<dyn LiveOpenPublicationCleanup> =
+                    Arc::new(LiveOpenPublicationCleanupOwner {
+                        host: Arc::clone(shared_live_host),
+                        authority: Arc::clone(&open_authority),
+                        session: session_id.clone(),
+                        channel: channel_id.clone(),
+                    });
+                let custody = LiveOpenResponseDeliveryCustody::new(cleanup);
+                if let Err(error) = retain_live_open_response_delivery(custody).await {
+                    live_error(rpc_id, INTERNAL_ERROR_CODE, error)
+                } else {
+                    live_success(rpc_id, value)
+                }
+            }
+            Err(error) => {
+                let cleanup = shared_live_host
+                    .cleanup_execution_identity_publication_failure(
+                        open_authority.as_ref(),
+                        session_id,
+                        &channel_id,
+                    )
+                    .await;
+                match cleanup {
+                    Ok(()) => live_error(
+                        rpc_id,
+                        INTERNAL_ERROR_CODE,
+                        format!("failed to serialize LiveChannelHandle: {error}"),
+                    ),
+                    Err(cleanup_error) => live_error(
+                        rpc_id,
+                        INTERNAL_ERROR_CODE,
+                        format!(
+                            "failed to serialize LiveChannelHandle and cleanup failed: {cleanup_error}"
+                        ),
+                    ),
+                }
+            }
+        };
+    }
+    // The mobkit gateway mounts the WS transport only; a webrtc request is
+    // a caller error, not a silent websocket fallback.
+    match parsed.transport {
+        None | Some(LiveOpenTransport::Websocket) => {}
+        Some(_) => {
+            return live_error(
+                rpc_id,
+                INVALID_PARAMS_CODE,
+                "only the websocket live transport is supported by this gateway",
+            );
+        }
+    }
+    // HomeCore cross-provider regression: resolve the strict optional
+    // `provider` selection BEFORE any session work, so an unrecognized name
+    // is a pure typed parameter error (`Provider::from_name` would coerce
+    // it to `Other` and fall through to a misleading downstream rejection).
+    let provider_override = match parsed.provider.as_deref() {
+        None => None,
+        Some(name) => match Provider::parse_strict(name) {
+            Some(provider) => Some(provider),
+            None => {
+                return live_error(
+                    rpc_id,
+                    INVALID_PARAMS_CODE,
+                    format!(
+                        "unknown provider '{name}'; expected one of: \
+                         anthropic, openai, gemini, self_hosted"
+                    ),
+                );
+            }
+        },
+    };
+    // The channel identity's (provider, model) pair is mutated together: a
+    // provider selection without a model would pair the new provider with
+    // the member's text model, which is never what a cross-provider live
+    // open means.
+    if provider_override.is_some() && parsed.model.is_none() {
+        return live_error(
+            rpc_id,
+            INVALID_PARAMS_CODE,
+            "live/open `provider` requires an explicit `model`",
+        );
+    }
+
+    // R3-1: honor the caller's optional `turning_mode`; default
+    // `ProviderManaged`. Text-only callers that drive `commit_input` must
+    // pass `ExplicitCommit` (the OpenAI realtime API rejects
+    // `input_audio_buffer.commit` outside explicit-commit sessions).
+    let turning_mode = parsed
+        .turning_mode
+        .unwrap_or(RealtimeTurningMode::ProviderManaged);
+    // The legacy provider/model/overlay shape is applied only to the typed,
+    // session-sealed projection. Shared Meerkat retains ownership of every
+    // effectful S5-S12 step and validates the projection seal before the
+    // lifecycle lease, machine admission, provider factory, or token mint.
+    let seed_window = match parsed.seed_max_chars.or(ctx.seed_max_chars) {
+        Some(max_chars) => match LiveSeedWindow::new(max_chars) {
+            Ok(window) => Some(window),
+            Err(error) => {
+                return live_error(
+                    rpc_id,
+                    INTERNAL_ERROR_CODE,
+                    format!("failed to build session config: {error}"),
+                );
+            }
+        },
+        None => None,
+    };
+    let mut projection = match shared_live_host
+        .prepare_open_projection(session_id, turning_mode, seed_window)
+        .await
+    {
+        Ok(projection) => projection,
+        Err(error) => {
+            return live_open_error_response(rpc_id, LiveOpenError::OpenConfig(error));
+        }
+    };
+    // Design §6: the member session's model decides; an explicit `model`
+    // override swaps the realtime model for this channel without touching
+    // the member's text identity, and an explicit `provider` re-pairs the
+    // channel identity for a cross-provider open. Applied before precheck +
+    // admission so both gate — and the machine binds — the identity
+    // actually opened.
+    apply_live_open_identity_selection(
+        &mut projection.open_config.llm_identity,
+        provider_override,
+        parsed.model,
+    );
+    match shared_live_host
+        .open_from_projection(session_id, projection, parsed.transport)
+        .await
+    {
+        Ok(result) => {
+            match serde_json::to_value(crate::live_contracts::LiveChannelHandle::from_open_result(
+                legacy_target_identity,
+                result,
+            )) {
+                Ok(value) => live_success(rpc_id, value),
+                Err(err) => live_error(
+                    rpc_id,
+                    INTERNAL_ERROR_CODE,
+                    format!("failed to serialize LiveOpenResult: {err}"),
+                ),
+            }
+        }
+        Err(error) => live_open_error_response(rpc_id, error),
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+fn experimental_live_open_error_response(
+    rpc_id: Value,
+    error: meerkat::session_runtime::live_orchestration::ExperimentalLiveChannelOpenError,
+) -> JsonRpcResponse {
+    use meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError;
+    use meerkat::session_runtime::live_orchestration::ExperimentalLiveChannelOpenError;
+
+    let detail = error.to_string();
+    match error {
+        ExperimentalLiveChannelOpenError::InvalidTransport
+        | ExperimentalLiveChannelOpenError::Authority(
+            ExperimentalLiveOpenAuthorityError::InvalidExecutionIdentity,
+        ) => live_error(rpc_id, INVALID_PARAMS_CODE, detail),
+        ExperimentalLiveChannelOpenError::Authority(
+            ExperimentalLiveOpenAuthorityError::Unavailable
+            | ExperimentalLiveOpenAuthorityError::AccessDenied
+            | ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable
+            | ExperimentalLiveOpenAuthorityError::MemberIneligible
+            | ExperimentalLiveOpenAuthorityError::BindingUseDenied
+            | ExperimentalLiveOpenAuthorityError::AdmissionFailed,
+        ) => live_error(rpc_id, crate::rpc::CAPABILITY_UNAVAILABLE_CODE, detail),
+        ExperimentalLiveChannelOpenError::ExecutionProfile(_) => {
+            live_error(rpc_id, crate::rpc::CAPABILITY_UNAVAILABLE_CODE, detail)
+        }
+        ExperimentalLiveChannelOpenError::Open(open_error) => {
+            live_open_error_response(rpc_id, open_error)
+        }
+        ExperimentalLiveChannelOpenError::Projection(projection_error) => {
+            live_open_error_response(rpc_id, LiveOpenError::OpenConfig(projection_error))
+        }
+        ExperimentalLiveChannelOpenError::Authority(
+            ExperimentalLiveOpenAuthorityError::ChannelBindingFailed,
+        )
+        | ExperimentalLiveChannelOpenError::BindingCleanup { .. } => {
+            live_error(rpc_id, INTERNAL_ERROR_CODE, detail)
+        }
+    }
+}
+
 fn live_refresh_result_from_machine_authority(
     authority: &meerkat_runtime::meerkat_machine::LiveRefreshResultAuthority,
 ) -> LiveRefreshResult {
@@ -1859,6 +4317,7 @@ fn live_refresh_result_from_machine_authority(
     }
 }
 
+#[cfg(not(feature = "experimental-gpt-live"))]
 fn live_close_result_from_machine_authority(
     authority: &meerkat_runtime::meerkat_machine::LiveCloseResultAuthority,
 ) -> LiveCloseResult {
@@ -1900,6 +4359,11 @@ fn live_command_result_from_machine_authority(
             serde_json::to_value(LiveTruncateResult::truncated())
                 .map_err(|err| format!("failed to serialize LiveTruncateResult: {err}"))
         }
+        #[cfg(feature = "experimental-gpt-live")]
+        LiveCommandPublicKind::CompleteAssistantPlayback => Err(
+            "assistant playback terminal must use Meerkat's sealed output-handle facade"
+                .to_string(),
+        ),
     }
 }
 
@@ -2228,6 +4692,7 @@ async fn handle_live_status(
     }
 }
 
+#[cfg(not(feature = "experimental-gpt-live"))]
 async fn handle_live_close(
     ctx: &GatewayLiveContext,
     machine: &Arc<MeerkatMachine>,
@@ -2328,6 +4793,137 @@ async fn handle_live_close(
     }
 }
 
+#[cfg(feature = "experimental-gpt-live")]
+async fn handle_live_close(
+    ctx: &GatewayLiveContext,
+    machine: &Arc<MeerkatMachine>,
+    shared_live_host: &ServiceMemberLiveHost<impl SessionAgentBuilder + 'static>,
+    capability_provider: &LiveCapabilityProvider,
+    params: &Value,
+    rpc_id: Value,
+) -> JsonRpcResponse {
+    #[cfg(feature = "experimental-gpt-live")]
+    let _ = (ctx, machine);
+    let parsed: LiveChannelParams = match parse_live_params(params, &rpc_id) {
+        Ok(p) => p,
+        Err(resp) => return *resp,
+    };
+    let channel_id = LiveChannelId::new(&parsed.channel_id);
+
+    #[cfg(feature = "experimental-gpt-live")]
+    {
+        let status = match shared_live_host
+            .close_live_channel(capability_provider.open_authority(), &channel_id)
+            .await
+        {
+            Ok(status) => status,
+            Err(error) => return live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+        };
+        return match serde_json::to_value(LiveCloseResult { status }) {
+            Ok(body) => live_success(rpc_id, body),
+            Err(error) => live_error(
+                rpc_id,
+                INTERNAL_ERROR_CODE,
+                format!("live close authority projection failed: {error}"),
+            ),
+        };
+    }
+
+    #[cfg(not(feature = "experimental-gpt-live"))]
+    {
+        let _ = (shared_live_host, capability_provider);
+
+        let request_kind =
+            meerkat_runtime::meerkat_machine::dsl::LiveChannelRequestPublicKind::Close;
+        let Some(session_id) = machine.live_session_for_active_channel(&channel_id).await else {
+            return live_unbound_channel_request_error_response(
+                rpc_id,
+                machine,
+                &channel_id,
+                request_kind,
+            )
+            .await;
+        };
+
+        match ctx
+            .host
+            .reserve_channel_close_observation(&channel_id)
+            .await
+        {
+            Ok(observation) => {
+                // Reference order (`close_live_channel` in the facade's live
+                // orchestration): reserve -> PHYSICAL close -> generated close
+                // authority -> host commit. The host commit fails closed
+                // (`CloseNotAuthorized`) unless the adapter was physically
+                // closed and detached first; the original port omitted this
+                // step, so every RPC-initiated close of an attached channel
+                // died typed instead of closing.
+                if let Err(error) = ctx.host.prepare_channel_physical_close(&observation).await {
+                    return live_error(
+                        rpc_id,
+                        INTERNAL_ERROR_CODE,
+                        format!(
+                            "physical adapter close failed before generated terminal authority: {error}"
+                        ),
+                    );
+                }
+                let authority = match machine
+                    .resolve_live_close_result(&session_id, &observation)
+                    .await
+                {
+                    Ok(authority) => authority,
+                    Err(error) => {
+                        return live_error(
+                            rpc_id,
+                            INTERNAL_ERROR_CODE,
+                            format!("live close authority rejected result: {error}"),
+                        );
+                    }
+                };
+                let Some(close_commit_authority) = authority.channel_close_commit_authority()
+                else {
+                    return live_error(
+                        rpc_id,
+                        INTERNAL_ERROR_CODE,
+                        "live close authority omitted host commit handoff",
+                    );
+                };
+                if let Err(error) = ctx
+                    .host
+                    .commit_channel_close_observation(&observation, close_commit_authority)
+                    .await
+                {
+                    return live_error(
+                        rpc_id,
+                        INTERNAL_ERROR_CODE,
+                        format!("live close host commit failed after generated authority: {error}"),
+                    );
+                }
+                let result = live_close_result_from_machine_authority(&authority);
+                match serde_json::to_value(result) {
+                    Ok(body) => live_success(rpc_id, body),
+                    Err(error) => live_error(
+                        rpc_id,
+                        INTERNAL_ERROR_CODE,
+                        format!("live close authority projection failed: {error}"),
+                    ),
+                }
+            }
+            Err(err) => {
+                live_channel_request_error_response(
+                    rpc_id,
+                    machine,
+                    &session_id,
+                    &channel_id,
+                    request_kind,
+                    &err,
+                )
+                .await
+            }
+        }
+    }
+}
+
 /// P1#5: enqueue a mutable live-config update against the active channel.
 /// Config-only by design — history is `live/open`'s seed step (re-seeding on
 /// refresh compounds the provider transcript). Identity swaps require close
@@ -2365,7 +4961,6 @@ async fn handle_live_refresh<B: SessionAgentBuilder + 'static>(
         &session_id,
         RealtimeTurningMode::ProviderManaged,
         ctx.seed_max_chars,
-        None,
     )
     .await
     {
@@ -2380,8 +4975,11 @@ async fn handle_live_refresh<B: SessionAgentBuilder + 'static>(
     };
     // R8: stamp the host's monotonic per-channel version so adapters gating
     // on `snapshot_version` for stale-refresh detection see strictly
-    // increasing generations. #176: refresh has no factory audio policy in
-    // scope; the format negotiated at open time stays in force.
+    // increasing generations. Refresh carries no audio policy; the format
+    // negotiated by the shared open pipeline stays in force.
+    #[cfg(feature = "experimental-gpt-live")]
+    let mut snapshot = build_live_projection_snapshot(&session_id, &open_config);
+    #[cfg(not(feature = "experimental-gpt-live"))]
     let mut snapshot = build_live_projection_snapshot(&session_id, &open_config, None);
     match ctx.host.next_snapshot_version(&channel_id).await {
         Ok(v) => snapshot.snapshot_version = v,
@@ -2570,7 +5168,7 @@ async fn handle_live_commit_input(
     }
 }
 
-/// A7: explicit barge-in surface — without it callers can only rely on
+/// A7: explicit barge-in surface - without it callers can only rely on
 /// provider-native VAD.
 async fn handle_live_interrupt(
     ctx: &GatewayLiveContext,
@@ -2627,6 +5225,7 @@ async fn handle_live_interrupt(
     }
 }
 
+#[cfg(not(feature = "experimental-gpt-live"))]
 /// A7: `mobkit/live/truncate` — truncate an assistant item at the given
 /// playback cursor. Port of the reference `handle_live_truncate`; maps to
 /// `LiveAdapterCommand::TruncateAssistantOutput` (no webrtc output-audio
@@ -2695,80 +5294,1403 @@ async fn handle_live_truncate(
     }
 }
 
+/// Truncate one exact machine-sealed assistant output at the playback
+/// owner's measured cursor. MobKit accepts no provider item or caller-minted
+/// interaction identity on this boundary.
+#[cfg(feature = "experimental-gpt-live")]
+async fn handle_live_truncate<B: SessionAgentBuilder + 'static>(
+    shared_live_host: &ServiceMemberLiveHost<B>,
+    params: &Value,
+    rpc_id: Value,
+) -> JsonRpcResponse {
+    let parsed: LiveTruncateParams = match parse_live_params(params, &rpc_id) {
+        Ok(p) => p,
+        Err(resp) => return *resp,
+    };
+    if parsed.item_id.is_some() || parsed.content_index.is_some() {
+        return live_error(
+            rpc_id,
+            INVALID_PARAMS_CODE,
+            "mobkit live truncate accepts only an opaque output_id",
+        );
+    }
+    let Some(output_id) = parsed
+        .output_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return live_error(rpc_id, INVALID_PARAMS_CODE, "output_id must be non-empty");
+    };
+    let channel_id = LiveChannelId::new(&parsed.channel_id);
+    let Some(activation_receipt) = params.get("activation_receipt").and_then(Value::as_str) else {
+        return live_error(
+            rpc_id,
+            INVALID_PARAMS_CODE,
+            "strict live truncate requires activation_receipt",
+        );
+    };
+    match shared_live_host
+        .truncate_live_output(
+            &channel_id,
+            activation_receipt,
+            output_id,
+            parsed.audio_played_ms,
+            parsed.reported_playback_prefix,
+        )
+        .await
+    {
+        Ok(result) => match serde_json::to_value(result) {
+            Ok(value) => live_success(rpc_id, value),
+            Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+        },
+        Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+    }
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+async fn handle_live_playback_complete<B: SessionAgentBuilder + 'static>(
+    shared_live_host: &ServiceMemberLiveHost<B>,
+    params: &Value,
+    rpc_id: Value,
+) -> JsonRpcResponse {
+    let parsed: LivePlaybackCompleteParams = match parse_live_params(params, &rpc_id) {
+        Ok(parsed) => parsed,
+        Err(response) => return *response,
+    };
+    if parsed.output_id.trim().is_empty() {
+        return live_error(rpc_id, INVALID_PARAMS_CODE, "output_id must be non-empty");
+    }
+    let channel_id = LiveChannelId::new(&parsed.channel_id);
+    let Some(activation_receipt) = params.get("activation_receipt").and_then(Value::as_str) else {
+        return live_error(
+            rpc_id,
+            INVALID_PARAMS_CODE,
+            "strict live playback completion requires activation_receipt",
+        );
+    };
+    match shared_live_host
+        .complete_live_playback(&channel_id, activation_receipt, &parsed.output_id)
+        .await
+    {
+        Ok(result) => match serde_json::to_value(result) {
+            Ok(value) => live_success(rpc_id, value),
+            Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+        },
+        Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error.to_string()),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
+    #[cfg(feature = "experimental-gpt-live")]
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[cfg(feature = "experimental-gpt-live")]
+    use std::sync::atomic::AtomicBool;
+
+    #[cfg(feature = "experimental-gpt-live")]
+    use meerkat::experimental_gpt_live::ExperimentalLiveBoundChannelActivator as _;
+
+    #[test]
+    fn stock_live_capability_provider_is_fail_closed() {
+        assert!(
+            LiveCapabilityProvider::disabled()
+                .feature_capabilities()
+                .is_empty()
+        );
+        assert!(
+            LiveCapabilityProvider::default()
+                .feature_capabilities()
+                .is_empty()
+        );
+        #[cfg(feature = "experimental-gpt-live")]
+        assert!(
+            LiveCapabilityProvider::disabled()
+                .bound_ready_binder()
+                .is_none()
+        );
+    }
+
+    #[cfg(not(feature = "experimental-gpt-live"))]
+    #[test]
+    fn published_meerkat_compatibility_keeps_only_the_ordinary_live_contract() {
+        assert_eq!(
+            LiveOperation::from_method("mobkit/live/truncate"),
+            Some(LiveOperation::Truncate),
+        );
+        assert!(
+            LiveOperation::from_method("live/webrtc/answer").is_none(),
+            "the experimental answer method must remain absent on the stock 0.8.26 path",
+        );
+        assert!(
+            LiveCapabilityProvider::disabled()
+                .feature_capabilities()
+                .is_empty()
+        );
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct StaticSessionOwner(bool);
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct NoBinderOpenAuthority;
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider
+        for NoBinderOpenAuthority
+    {
+        async fn prepare_open(
+            &self,
+            _canonical_session_id: &SessionId,
+            _execution_identity: &meerkat_contracts::WireLiveExecutionIdentityOverrideV1,
+        ) -> Result<
+            Box<dyn meerkat::experimental_gpt_live::ExperimentalLivePendingOpen>,
+            meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError,
+        > {
+            Err(meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::Unavailable)
+        }
+
+        async fn unbind_channel(
+            &self,
+            _channel_id: &LiveChannelId,
+            _canonical_session_id: &SessionId,
+        ) {
+        }
+
+        async fn close_physical_if_bound(
+            &self,
+            _channel_id: &LiveChannelId,
+            _canonical_session_id: &SessionId,
+        ) -> Result<
+            meerkat::experimental_gpt_live::ExperimentalLivePhysicalClose,
+            meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError,
+        > {
+            Ok(meerkat::experimental_gpt_live::ExperimentalLivePhysicalClose::NotBound)
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct UnusedAnswerTransport;
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct UnusedPublicObservationPublisher;
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat::experimental_gpt_live::ExperimentalLivePublicObservationPublisher
+        for UnusedPublicObservationPublisher
+    {
+        async fn publish(
+            &self,
+            _observation: meerkat::experimental_gpt_live::ExperimentalLivePublicObservation,
+        ) -> Result<
+            (),
+            meerkat::experimental_gpt_live::ExperimentalLivePublicObservationDeliveryError,
+        > {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct UnusedBoundChannelActivator;
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct PendingReplacementActivator {
+        reads: AtomicUsize,
+        pending: meerkat::surface::ExperimentalLiveReplacementRequired,
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat::experimental_gpt_live::ExperimentalLiveBoundChannelActivator
+        for UnusedBoundChannelActivator
+    {
+        async fn prepare_bound_channel(
+            &self,
+            _binding: meerkat_runtime::live_execution::LiveDelegationRuntimeBinding,
+            _control: Arc<dyn meerkat::experimental_gpt_live::ExperimentalGptLiveControlPlane>,
+        ) -> Result<(), String> {
+            Err("unused".to_string())
+        }
+
+        async fn run_bound_channel(
+            &self,
+            _binding: meerkat_runtime::live_execution::LiveDelegationRuntimeBinding,
+            _control: Arc<dyn meerkat::experimental_gpt_live::ExperimentalGptLiveControlPlane>,
+        ) {
+        }
+
+        async fn observe_provider_lifecycle(
+            &self,
+            _observation: &meerkat_live::LiveSidebandObservation,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn deactivate_bound_channel(
+            &self,
+            _binding: &meerkat_runtime::live_execution::LiveDelegationRuntimeBinding,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat::experimental_gpt_live::ExperimentalLiveBoundChannelActivator
+        for PendingReplacementActivator
+    {
+        async fn prepare_bound_channel(
+            &self,
+            _binding: meerkat_runtime::live_execution::LiveDelegationRuntimeBinding,
+            _control: Arc<dyn meerkat::experimental_gpt_live::ExperimentalGptLiveControlPlane>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn run_bound_channel(
+            &self,
+            _binding: meerkat_runtime::live_execution::LiveDelegationRuntimeBinding,
+            _control: Arc<dyn meerkat::experimental_gpt_live::ExperimentalGptLiveControlPlane>,
+        ) {
+        }
+
+        async fn observe_provider_lifecycle(
+            &self,
+            _observation: &meerkat_live::LiveSidebandObservation,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn deactivate_bound_channel(
+            &self,
+            _binding: &meerkat_runtime::live_execution::LiveDelegationRuntimeBinding,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn pending_replacement_required(
+            &self,
+            _session_id: &SessionId,
+        ) -> Option<meerkat::surface::ExperimentalLiveReplacementRequired> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Some(self.pending.clone())
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat_live::LiveWebrtcAnswerTransport for UnusedAnswerTransport {
+        async fn answer_admitted_offer(
+            &self,
+            _offer: meerkat_live::LiveWebrtcAdmittedOffer,
+        ) -> Result<meerkat_live::LiveWebrtcAnswerAccepted, meerkat_live::LiveWebrtcError> {
+            Err(meerkat_live::LiveWebrtcError::ChannelNotFound(
+                "unused".to_string(),
+            ))
+        }
+
+        async fn reject_answer(
+            &self,
+            _binding: &meerkat_live::LiveWebrtcBindingRequest,
+            _answer_observation_sequence: u64,
+        ) -> Result<(), meerkat_live::LiveWebrtcError> {
+            Ok(())
+        }
+
+        async fn accept_answer(
+            &self,
+            _binding: &meerkat_live::LiveWebrtcBindingRequest,
+            _answer_observation_sequence: u64,
+        ) {
+        }
+
+        async fn wait_for_construction_cleanup(
+            &self,
+            _binding: &meerkat_live::LiveWebrtcBindingRequest,
+        ) -> Result<(), meerkat_live::LiveWebrtcError> {
+            Ok(())
+        }
+
+        async fn close_binding(
+            &self,
+            _binding: &meerkat_live::LiveWebrtcBindingRequest,
+        ) -> Result<(), meerkat_live::LiveWebrtcError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct ReceiptSideband;
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat_live::ProviderWebrtcSidebandSession for ReceiptSideband {
+        async fn send_command(
+            &self,
+            _command: meerkat_live::LiveSidebandCommand,
+        ) -> Result<
+            meerkat_live::LiveSidebandCommandDelivery,
+            meerkat_live::ProviderWebrtcBrokerError,
+        > {
+            Err(meerkat_live::ProviderWebrtcBrokerError::Unavailable)
+        }
+
+        async fn next_observation(
+            &self,
+        ) -> Result<
+            Option<meerkat_live::LiveSidebandObservation>,
+            meerkat_live::ProviderWebrtcBrokerError,
+        > {
+            Ok(None)
+        }
+
+        async fn close(&self) -> Result<(), meerkat_live::ProviderWebrtcBrokerError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct ReceiptAnswerTransport {
+        accepted: AtomicUsize,
+        rejected: AtomicUsize,
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat_live::LiveWebrtcAnswerTransport for ReceiptAnswerTransport {
+        async fn answer_admitted_offer(
+            &self,
+            offer: meerkat_live::LiveWebrtcAdmittedOffer,
+        ) -> Result<meerkat_live::LiveWebrtcAnswerAccepted, meerkat_live::LiveWebrtcError> {
+            let answer = offer.into_provider_offer()?.into_seeded_answer(
+                "receipt-answer".to_string(),
+                Arc::new(ReceiptSideband),
+                0,
+            );
+            let (answer_sdp, _sideband, bound_ready) = answer.into_parts();
+            Ok(meerkat_live::LiveWebrtcAnswerAccepted {
+                answer_sdp,
+                answer_observation_sequence: 41,
+                bound_ready: Some(bound_ready),
+            })
+        }
+
+        async fn reject_answer(
+            &self,
+            _binding: &meerkat_live::LiveWebrtcBindingRequest,
+            _answer_observation_sequence: u64,
+        ) -> Result<(), meerkat_live::LiveWebrtcError> {
+            self.rejected.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn accept_answer(
+            &self,
+            _binding: &meerkat_live::LiveWebrtcBindingRequest,
+            _answer_observation_sequence: u64,
+        ) {
+            self.accepted.fetch_add(1, Ordering::SeqCst);
+        }
+
+        async fn wait_for_construction_cleanup(
+            &self,
+            _binding: &meerkat_live::LiveWebrtcBindingRequest,
+        ) -> Result<(), meerkat_live::LiveWebrtcError> {
+            Ok(())
+        }
+
+        async fn close_binding(
+            &self,
+            _binding: &meerkat_live::LiveWebrtcBindingRequest,
+        ) -> Result<(), meerkat_live::LiveWebrtcError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct TestControlPlane {
+        binding: meerkat_live::ProviderWebrtcBinding,
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat::experimental_gpt_live::ExperimentalGptLiveControlPlane for TestControlPlane {
+        async fn active_binding(
+            &self,
+            session_id: &SessionId,
+        ) -> Option<meerkat_live::ProviderWebrtcBinding> {
+            (self.binding.session_id() == session_id).then(|| self.binding.clone())
+        }
+
+        async fn next_observation(
+            &self,
+            _binding: &meerkat_live::ProviderWebrtcBinding,
+        ) -> Result<
+            Option<meerkat::experimental_gpt_live::ExperimentalGptLiveControlObservation>,
+            meerkat_live::ProviderWebrtcBrokerError,
+        > {
+            Ok(None)
+        }
+
+        async fn append_session_context(
+            &self,
+            _authority: meerkat_runtime::live_execution::LiveContextAppendAuthority,
+            _text: String,
+        ) -> Result<
+            meerkat::experimental_gpt_live::ExperimentalGptLiveAppendDispatch,
+            meerkat::experimental_gpt_live::ExperimentalGptLiveBridgeError,
+        > {
+            Err(meerkat::experimental_gpt_live::ExperimentalGptLiveBridgeError::ActiveBindingUnavailable)
+        }
+
+        async fn release_delegation_context(
+            &self,
+            _authority: meerkat_runtime::live_execution::LiveDelegationResultDeliveryAuthority,
+            _delegation: meerkat_live::LiveSidebandDelegationRef,
+            _text: String,
+        ) -> Result<
+            meerkat::experimental_gpt_live::ExperimentalGptLiveResultDeliveryDispatch,
+            meerkat::experimental_gpt_live::ExperimentalGptLiveBridgeError,
+        > {
+            Err(meerkat::experimental_gpt_live::ExperimentalGptLiveBridgeError::ActiveBindingUnavailable)
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct OrderingActivator {
+        machine_bound: Arc<AtomicBool>,
+        calls: AtomicUsize,
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat::experimental_gpt_live::ExperimentalLiveBoundChannelActivator for OrderingActivator {
+        async fn prepare_bound_channel(
+            &self,
+            _binding: meerkat_runtime::live_execution::LiveDelegationRuntimeBinding,
+            _control: Arc<dyn meerkat::experimental_gpt_live::ExperimentalGptLiveControlPlane>,
+        ) -> Result<(), String> {
+            if !self.machine_bound.load(Ordering::SeqCst) {
+                return Err("activator ran before atomic machine binding".to_string());
+            }
+            Ok(())
+        }
+
+        async fn run_bound_channel(
+            &self,
+            _binding: meerkat_runtime::live_execution::LiveDelegationRuntimeBinding,
+            _control: Arc<dyn meerkat::experimental_gpt_live::ExperimentalGptLiveControlPlane>,
+        ) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+
+        async fn observe_provider_lifecycle(
+            &self,
+            _observation: &meerkat_live::LiveSidebandObservation,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn deactivate_bound_channel(
+            &self,
+            _binding: &meerkat_runtime::live_execution::LiveDelegationRuntimeBinding,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct TestBoundReadyCustody {
+        authority:
+            Option<meerkat_runtime::meerkat_machine::LiveWebrtcAnswerExecutionBindingAuthority>,
+        activator: Arc<OrderingActivator>,
+        binding: meerkat_runtime::live_execution::LiveDelegationRuntimeBinding,
+        control: Arc<dyn meerkat::experimental_gpt_live::ExperimentalGptLiveControlPlane>,
+        committed: Arc<AtomicBool>,
+        rolled_back: Arc<AtomicBool>,
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat::surface::LiveWebrtcBoundReadyCustody for TestBoundReadyCustody {
+        async fn commit(mut self: Box<Self>) {
+            if let Some(authority) = self.authority.take() {
+                let _ = authority.commit();
+            }
+            self.committed.store(true, Ordering::SeqCst);
+            self.activator
+                .run_bound_channel(self.binding.clone(), Arc::clone(&self.control))
+                .await;
+        }
+
+        async fn rollback(mut self: Box<Self>) -> Result<(), String> {
+            let _rollback = self
+                .authority
+                .take()
+                .map(|authority| authority.into_rollback());
+            self.activator
+                .deactivate_bound_channel(&self.binding)
+                .await?;
+            self.rolled_back.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct OrderingBinder {
+        activator: Arc<OrderingActivator>,
+        machine_bound: Arc<AtomicBool>,
+        committed: Arc<AtomicBool>,
+        rolled_back: Arc<AtomicBool>,
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat::surface::LiveWebrtcBoundReadyBinder for OrderingBinder {
+        async fn bind_answer_ready(
+            &self,
+            runtime: Arc<MeerkatMachine>,
+            binding: &meerkat_live::LiveWebrtcBindingRequest,
+            receipt: meerkat_live::ProviderWebrtcBoundReadyReceipt,
+            answer_observation_sequence: u64,
+        ) -> Result<
+            Box<dyn meerkat::surface::LiveWebrtcBoundReadyCustody>,
+            meerkat::surface::LiveWebrtcBoundReadyBindFailure,
+        > {
+            let runtime_binding = binding
+                .runtime_binding
+                .expect("staged experimental channel has runtime binding");
+            let provider_binding = meerkat_live::ProviderWebrtcBinding::new(
+                binding.channel_id.clone(),
+                binding.session_id.clone(),
+                meerkat_live::LiveRuntimeBindingGeneration::new(runtime_binding.generation),
+                meerkat_live::LiveRuntimeBindingFence::new(runtime_binding.fence),
+            );
+            let authority = runtime
+                .accept_live_webrtc_answer_and_bind_execution(
+                    &provider_binding,
+                    &receipt,
+                    answer_observation_sequence,
+                )
+                .await
+                .expect("atomic answer and execution bind");
+            self.machine_bound.store(true, Ordering::SeqCst);
+            let binding = authority.binding().clone();
+            let control: Arc<dyn meerkat::experimental_gpt_live::ExperimentalGptLiveControlPlane> =
+                Arc::new(TestControlPlane {
+                    binding: provider_binding,
+                });
+            self.activator
+                .prepare_bound_channel(binding.clone(), Arc::clone(&control))
+                .await
+                .expect("post-bind activation preparation");
+            Ok(Box::new(TestBoundReadyCustody {
+                authority: Some(authority),
+                activator: Arc::clone(&self.activator),
+                binding,
+                control,
+                committed: Arc::clone(&self.committed),
+                rolled_back: Arc::clone(&self.rolled_back),
+            }))
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[test]
+    fn configured_registration_without_authority_binder_does_not_advertise() {
+        let provider = LiveCapabilityProvider {
+            configured: Some(Arc::new(ConfiguredLiveCapabilityProvider {
+                factory: Arc::new(AgentFactory::minimal()),
+                realm: RealmId::parse("mob.homecore").expect("realm"),
+                experimental_factory: ExperimentalLiveFactoryIdentity::parse("private-live", "v1")
+                    .expect("factory identity"),
+                open_authority: Arc::new(NoBinderOpenAuthority),
+                answer_transport: Arc::new(UnusedAnswerTransport),
+                public_observation_publisher: Arc::new(UnusedPublicObservationPublisher),
+                activator: ExperimentalLiveActivatorRegistration::Composed(Arc::new(
+                    UnusedBoundChannelActivator,
+                )),
+                live_adapter_host: None,
+                phase_authority_composed: false,
+            })),
+        };
+
+        assert!(provider.feature_capabilities().is_empty());
+        assert!(provider.bound_ready_binder().is_none());
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    fn replacement_open_result(channel_id: &str) -> meerkat_contracts::LiveOpenResult {
+        serde_json::from_value(serde_json::json!({
+            "channel_id": channel_id,
+            "transport": {
+                "transport": "webrtc",
+                "token": "fresh-token",
+                "answer_method": "live/webrtc/answer"
+            },
+            "capabilities": {
+                "audio_in": true,
+                "audio_out": true,
+                "text_in": true,
+                "text_out": true,
+                "image_in": false,
+                "video_in": false,
+                "transcript_supported": true,
+                "barge_in_supported": true,
+                "provider_native_resume": false
+            },
+            "continuity": {"mode": "transcript_only"}
+        }))
+        .expect("replacement open result")
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    fn replacement_capability_provider(
+        activator: Arc<PendingReplacementActivator>,
+    ) -> LiveCapabilityProvider {
+        LiveCapabilityProvider {
+            configured: Some(Arc::new(ConfiguredLiveCapabilityProvider {
+                factory: Arc::new(AgentFactory::minimal()),
+                realm: RealmId::parse("mob.homecore").expect("realm"),
+                experimental_factory: ExperimentalLiveFactoryIdentity::parse("private-live", "v1")
+                    .expect("factory identity"),
+                open_authority: Arc::new(NoBinderOpenAuthority),
+                answer_transport: Arc::new(UnusedAnswerTransport),
+                public_observation_publisher: Arc::new(UnusedPublicObservationPublisher),
+                activator: ExperimentalLiveActivatorRegistration::Composed(activator),
+                live_adapter_host: None,
+                phase_authority_composed: false,
+            })),
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
+    async fn replacement_read_uses_canonical_identity_and_is_retryable_until_bind() {
+        let activator = Arc::new(PendingReplacementActivator {
+            reads: AtomicUsize::new(0),
+            pending: meerkat::surface::ExperimentalLiveReplacementRequired::CanonicalContext {
+                open: replacement_open_result("fresh-replacement-channel"),
+                canonical_seed_cursor: 17,
+            },
+        });
+        let provider = replacement_capability_provider(Arc::clone(&activator));
+        let session_id = SessionId::new();
+        let params = serde_json::json!({"identity": "identity:canonical"});
+        let response = handle_live_replacement_required(
+            &provider,
+            &session_id,
+            Some("identity:canonical".to_string()),
+            &params,
+            serde_json::json!("replacement"),
+        )
+        .await;
+        let result = response.result.expect("replacement result");
+        assert_eq!(result["required"], serde_json::json!(true));
+        assert_eq!(
+            result["replacement"]["target_identity"],
+            serde_json::json!("identity:canonical"),
+        );
+        assert_eq!(
+            result["replacement"]["channel_id"],
+            serde_json::json!("fresh-replacement-channel")
+        );
+        assert_eq!(activator.reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl ExactLiveSessionOwner for StaticSessionOwner {
+        async fn owns_session(&self, _canonical_session_id: &SessionId) -> bool {
+            self.0
+        }
+
+        async fn validate_live_bridge_eligibility(
+            &self,
+            _canonical_session_id: &SessionId,
+        ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>
+        {
+            if self.0 {
+                Ok(())
+            } else {
+                Err(
+                    meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable,
+                )
+            }
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct IneligibleSessionOwner;
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl ExactLiveSessionOwner for IneligibleSessionOwner {
+        async fn owns_session(&self, _canonical_session_id: &SessionId) -> bool {
+            true
+        }
+
+        async fn validate_live_bridge_eligibility(
+            &self,
+            _canonical_session_id: &SessionId,
+        ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>
+        {
+            Err(
+                meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::MemberIneligible,
+            )
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct CountingCredentialPolicy {
+        calls: AtomicUsize,
+        allow: bool,
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl MobkitExperimentalLiveBindingUsePolicy for CountingCredentialPolicy {
+        async fn authorize_binding_use(
+            &self,
+            _canonical_session_id: &SessionId,
+            selected_binding: &meerkat_core::AuthBindingRef,
+        ) -> Result<
+            meerkat_core::AuthBindingUseWitness,
+            meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError,
+        > {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if !self.allow {
+                return Err(
+                    meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::BindingUseDenied,
+                );
+            }
+            let principal =
+                meerkat_core::PrincipalRef::new(meerkat_core::PrincipalKind::Human, "root")
+                    .expect("principal");
+            let target = meerkat_core::PrincipalRef::new(
+                meerkat_core::PrincipalKind::PersonalAgent,
+                "identity:reachy",
+            )
+            .expect("target");
+            let request = meerkat_core::AuthBindingUseRequest::new(
+                principal.clone(),
+                target.clone(),
+                selected_binding.clone(),
+            );
+            let grant = meerkat_core::AuthGrant {
+                principal: principal.clone(),
+                scope: meerkat_core::GrantScope::AuthBinding {
+                    realm_id: selected_binding.realm.clone(),
+                    binding_id: selected_binding.binding.clone(),
+                    profile_id: selected_binding.profile.clone(),
+                },
+                actions: std::collections::BTreeSet::from([
+                    meerkat_core::GrantAction::UseAuthBinding,
+                ]),
+                acting_on_behalf_of: Some(meerkat_core::ActingOnBehalfOf::new(principal, target)),
+            };
+            meerkat_core::authorize_explicit_auth_binding_use(&request, &[grant])
+                .into_result()
+                .map_err(|_| {
+                    meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::BindingUseDenied
+                })
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    fn test_live_machine() -> Arc<MeerkatMachine> {
+        Arc::new(MeerkatMachine::ephemeral())
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    fn live_binding() -> meerkat_core::AuthBindingRef {
+        meerkat_core::AuthBindingRef {
+            realm: meerkat_core::RealmId::parse("mob.homecore").expect("realm"),
+            binding: meerkat_core::BindingId::parse("chatgpt").expect("binding"),
+            profile: None,
+            origin: meerkat_core::BindingOrigin::Configured,
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    fn access_view(subject: Option<&str>) -> AccessView {
+        crate::access::AccessController::new(crate::access::AccessControlConfig {
+            enabled: true,
+            admins: vec!["root".to_string()],
+            ..Default::default()
+        })
+        .expect("access config")
+        .view_for_subject(subject)
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    fn expect_live_binding_authority_error(
+        result: Result<
+            meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthorization,
+            meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError,
+        >,
+        message: &str,
+    ) -> meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError {
+        match result {
+            Err(error) => error,
+            Ok(_) => panic!("{message}"),
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
+    async fn stale_session_is_denied_before_credential_policy() {
+        let credential_policy = Arc::new(CountingCredentialPolicy {
+            calls: AtomicUsize::new(0),
+            allow: false,
+        });
+        let authority = MobkitExperimentalLiveSessionBindingAuthority {
+            owner: Arc::new(StaticSessionOwner(false)),
+            machine: test_live_machine(),
+            durable_identity: "identity:reachy".to_string(),
+            access_view: access_view(Some("root")),
+            credential_policy: credential_policy.clone(),
+        };
+
+        let error = expect_live_binding_authority_error(meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority::authorize_binding_use(
+            &authority,
+            &test_session_id(),
+            &live_binding(),
+        )
+        .await, "stale session must fail closed");
+        assert!(matches!(
+            error,
+            meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::DurableTargetUnavailable
+        ));
+        assert_eq!(credential_policy.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
+    async fn ineligible_member_preflight_is_denied_before_credential_policy() {
+        let credential_policy = Arc::new(CountingCredentialPolicy {
+            calls: AtomicUsize::new(0),
+            allow: true,
+        });
+        let authority = MobkitExperimentalLiveSessionBindingAuthority {
+            owner: Arc::new(IneligibleSessionOwner),
+            machine: test_live_machine(),
+            durable_identity: "identity:reachy".to_string(),
+            access_view: access_view(Some("root")),
+            credential_policy: credential_policy.clone(),
+        };
+
+        let error = meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority::validate_live_bridge_member_eligibility(
+            &authority,
+            &test_session_id(),
+        )
+        .await
+        .expect_err("ineligible exact member must fail closed");
+        assert!(matches!(
+            error,
+            meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::MemberIneligible
+        ));
+        assert_eq!(credential_policy.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
+    async fn agent_send_denial_is_enforced_before_credential_policy() {
+        let credential_policy = Arc::new(CountingCredentialPolicy {
+            calls: AtomicUsize::new(0),
+            allow: false,
+        });
+        let authority = MobkitExperimentalLiveSessionBindingAuthority {
+            owner: Arc::new(StaticSessionOwner(true)),
+            machine: test_live_machine(),
+            durable_identity: "identity:reachy".to_string(),
+            access_view: access_view(Some("alice")),
+            credential_policy: credential_policy.clone(),
+        };
+
+        let error = expect_live_binding_authority_error(meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority::authorize_binding_use(
+            &authority,
+            &test_session_id(),
+            &live_binding(),
+        )
+        .await, "agent.send denial must fail closed");
+        assert!(matches!(
+            error,
+            meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::AccessDenied
+        ));
+        assert_eq!(credential_policy.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
+    async fn missing_principal_is_denied_before_credential_policy() {
+        let credential_policy = Arc::new(CountingCredentialPolicy {
+            calls: AtomicUsize::new(0),
+            allow: false,
+        });
+        let authority = MobkitExperimentalLiveSessionBindingAuthority {
+            owner: Arc::new(StaticSessionOwner(true)),
+            machine: test_live_machine(),
+            durable_identity: "identity:reachy".to_string(),
+            access_view: access_view(None),
+            credential_policy: credential_policy.clone(),
+        };
+
+        let error = expect_live_binding_authority_error(meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority::authorize_binding_use(
+            &authority,
+            &test_session_id(),
+            &live_binding(),
+        )
+        .await, "missing principal must fail closed");
+        assert!(matches!(
+            error,
+            meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError::AccessDenied
+        ));
+        assert_eq!(credential_policy.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
+    async fn eligible_member_preflight_and_exact_access_return_machine_authorization() {
+        let credential_policy = Arc::new(CountingCredentialPolicy {
+            calls: AtomicUsize::new(0),
+            allow: true,
+        });
+        let authority = MobkitExperimentalLiveSessionBindingAuthority {
+            owner: Arc::new(StaticSessionOwner(true)),
+            machine: test_live_machine(),
+            durable_identity: "identity:reachy".to_string(),
+            access_view: access_view(Some("root")),
+            credential_policy: credential_policy.clone(),
+        };
+
+        meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority::validate_live_bridge_member_eligibility(
+            &authority,
+            &test_session_id(),
+        )
+        .await
+        .expect("eligible exact member should pass before binding use");
+        meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority::authorize_binding_use(
+            &authority,
+            &test_session_id(),
+            &live_binding(),
+        )
+        .await
+        .expect("exact target and binding policy should return machine authorization");
+        assert_eq!(credential_policy.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "experimental-gpt-live-test")]
+    async fn stage_receipt_answer_on_machine(
+        machine: Arc<MeerkatMachine>,
+        token: &str,
+    ) -> (
+        SessionId,
+        LiveChannelId,
+        meerkat_runtime::meerkat_machine::LivePlaybackOwnerReadinessAuthority,
+    ) {
+        let session_id = SessionId::new();
+        machine
+            .prepare_bindings(session_id.clone())
+            .await
+            .expect("prepare exact answer runtime binding");
+        let channel_id = LiveChannelId::new(format!("answer-{}", uuid::Uuid::new_v4()));
+        let identity = SessionLlmIdentity {
+            model: "gpt-realtime-2".to_string(),
+            provider: Provider::OpenAI,
+            self_hosted_server_id: None,
+            provider_params: None,
+            auth_binding: None,
+        };
+        machine
+            .resolve_live_open_admission(&session_id, &channel_id, &identity)
+            .await
+            .expect("admit exact answer channel");
+        let execution_profile =
+            meerkat_runtime::live_execution::LiveExecutionProfileSelection::__test_new(
+                "mobkit-test-function-bridge",
+                meerkat_core::LiveExecutionMode::FunctionBridge,
+                meerkat_core::LiveExecutionCapabilities {
+                    function_bridge: true,
+                    client_context: false,
+                },
+            )
+            .expect("test execution profile");
+        machine
+            .resolve_live_execution_profile_admission(&session_id, &channel_id, &execution_profile)
+            .await
+            .expect("resolve test live execution profile");
+        let stage = machine
+            .stage_experimental_live_execution(&session_id, &channel_id, 0)
+            .await
+            .expect("stage experimental answer execution");
+        let readiness = machine
+            .register_live_playback_owner(&stage, "mobkit-test-playback-owner")
+            .await
+            .expect("register test playback owner");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_millis() as u64;
+        machine
+            .record_live_webrtc_token_issued(&session_id, &channel_id, token, now, 60_000)
+            .await
+            .expect("issue exact answer token");
+        (session_id, channel_id, readiness)
+    }
+
+    #[cfg(feature = "experimental-gpt-live-test")]
+    async fn staged_receipt_answer_machine(
+        token: &str,
+    ) -> (
+        Arc<MeerkatMachine>,
+        SessionId,
+        LiveChannelId,
+        meerkat_runtime::meerkat_machine::LivePlaybackOwnerReadinessAuthority,
+    ) {
+        let machine = Arc::new(MeerkatMachine::ephemeral());
+        let (session_id, channel_id, readiness) =
+            stage_receipt_answer_on_machine(Arc::clone(&machine), token).await;
+        (machine, session_id, channel_id, readiness)
+    }
+
+    #[cfg(feature = "experimental-gpt-live-test")]
+    async fn coordinated_receipt_answer_fixture(
+        token: &str,
+    ) -> (
+        meerkat::surface::CoordinatedLiveWebrtcAnswer,
+        Arc<ReceiptAnswerTransport>,
+        Arc<OrderingActivator>,
+        Arc<AtomicBool>,
+        Arc<AtomicBool>,
+        Arc<MeerkatMachine>,
+        SessionId,
+        LiveChannelId,
+        meerkat_runtime::meerkat_machine::LivePlaybackOwnerReadinessAuthority,
+    ) {
+        let (machine, session_id, channel_id, readiness) =
+            staged_receipt_answer_machine(token).await;
+        let machine_bound = Arc::new(AtomicBool::new(false));
+        let committed = Arc::new(AtomicBool::new(false));
+        let rolled_back = Arc::new(AtomicBool::new(false));
+        let activator = Arc::new(OrderingActivator {
+            machine_bound: Arc::clone(&machine_bound),
+            calls: AtomicUsize::new(0),
+        });
+        let binder: Arc<dyn meerkat::surface::LiveWebrtcBoundReadyBinder> =
+            Arc::new(OrderingBinder {
+                activator: Arc::clone(&activator),
+                machine_bound,
+                committed: Arc::clone(&committed),
+                rolled_back: Arc::clone(&rolled_back),
+            });
+        let transport = Arc::new(ReceiptAnswerTransport {
+            accepted: AtomicUsize::new(0),
+            rejected: AtomicUsize::new(0),
+        });
+        let answer = meerkat::surface::coordinate_live_webrtc_answer(
+            Arc::clone(&machine),
+            Arc::clone(&transport) as Arc<dyn meerkat_live::LiveWebrtcAnswerTransport>,
+            Some(binder),
+            channel_id.clone(),
+            token.to_string(),
+            "receipt-offer".to_string(),
+        )
+        .await
+        .expect("coordinate receipt-bearing answer");
+        (
+            answer,
+            transport,
+            activator,
+            committed,
+            rolled_back,
+            machine,
+            session_id,
+            channel_id,
+            readiness,
+        )
+    }
+
+    #[cfg(feature = "experimental-gpt-live-test")]
+    #[tokio::test]
+    async fn receipt_answer_activates_after_atomic_bind_and_commits_after_delivery() {
+        let (
+            answer,
+            transport,
+            activator,
+            committed,
+            rolled_back,
+            _machine,
+            _session_id,
+            _channel_id,
+            _readiness,
+        ) = coordinated_receipt_answer_fixture("receipt-delivered-token").await;
+        assert_eq!(answer.answer_sdp, "receipt-answer");
+        assert_eq!(
+            activator.calls.load(Ordering::SeqCst),
+            0,
+            "prepared activation must not run before outer answer publication"
+        );
+        assert_eq!(transport.accepted.load(Ordering::SeqCst), 0);
+        answer
+            .delivery_custody
+            .delivered()
+            .await
+            .expect("delivery settlement");
+        assert_eq!(activator.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.accepted.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.rejected.load(Ordering::SeqCst), 0);
+        assert!(committed.load(Ordering::SeqCst));
+        assert!(!rolled_back.load(Ordering::SeqCst));
+    }
+
+    #[cfg(feature = "experimental-gpt-live-test")]
+    #[tokio::test]
+    async fn failed_outer_publication_rejects_transport_and_rolls_back_bound_custody() {
+        let (
+            answer,
+            transport,
+            _activator,
+            committed,
+            rolled_back,
+            _machine,
+            _session_id,
+            _channel_id,
+            _readiness,
+        ) = coordinated_receipt_answer_fixture("receipt-rejected-token").await;
+        let mut response = crate::rpc::SerializedRpcResponseDelivery::with_delivery_for_test(
+            serde_json::json!({ "answer_sdp": answer.answer_sdp }).to_string(),
+            answer.delivery_custody,
+        );
+        assert_eq!(transport.rejected.load(Ordering::SeqCst), 0);
+        response
+            .settle_delivery(false)
+            .await
+            .expect("failed writer settles rejection");
+        assert_eq!(transport.accepted.load(Ordering::SeqCst), 0);
+        assert_eq!(transport.rejected.load(Ordering::SeqCst), 1);
+        assert!(!committed.load(Ordering::SeqCst));
+        assert!(rolled_back.load(Ordering::SeqCst));
+    }
+
+    #[cfg(feature = "experimental-gpt-live-test")]
+    #[tokio::test]
+    async fn playback_owner_loss_rpc_revokes_active_receipt_authority() {
+        let persistence = meerkat::PersistenceBundle::new(
+            Arc::new(meerkat::MemoryStore::new()),
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
+            Arc::new(meerkat_store::MemoryBlobStore::new()),
+        );
+        let temp = tempfile::tempdir().expect("owner-loss fixture state");
+        let factory = AgentFactory::new(temp.path()).builtins(false);
+        let mut builder = meerkat::FactoryAgentBuilder::new(factory.clone(), Config::default());
+        builder.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+        let (service, machine) =
+            meerkat::surface::build_runtime_backed_service(builder, 4, persistence);
+        let service = Arc::new(service);
+        let ctx = Arc::new(attach_live(
+            Arc::clone(&service),
+            Arc::clone(&machine),
+            &factory,
+            Config::default(),
+            "ws://127.0.0.1/owner-loss".to_string(),
+            None,
+        ));
+        let handler = live_rpc_handler(ctx, service, Arc::clone(&machine));
+        let token = "receipt-owner-loss-token";
+        let (session_id, channel_id, readiness) =
+            stage_receipt_answer_on_machine(Arc::clone(&machine), token).await;
+        let machine_bound = Arc::new(AtomicBool::new(false));
+        let committed = Arc::new(AtomicBool::new(false));
+        let rolled_back = Arc::new(AtomicBool::new(false));
+        let activator = Arc::new(OrderingActivator {
+            machine_bound: Arc::clone(&machine_bound),
+            calls: AtomicUsize::new(0),
+        });
+        let binder: Arc<dyn meerkat::surface::LiveWebrtcBoundReadyBinder> =
+            Arc::new(OrderingBinder {
+                activator,
+                machine_bound,
+                committed,
+                rolled_back,
+            });
+        let transport = Arc::new(ReceiptAnswerTransport {
+            accepted: AtomicUsize::new(0),
+            rejected: AtomicUsize::new(0),
+        });
+        let answer = meerkat::surface::coordinate_live_webrtc_answer(
+            Arc::clone(&machine),
+            transport as Arc<dyn meerkat_live::LiveWebrtcAnswerTransport>,
+            Some(binder),
+            channel_id.clone(),
+            token.to_string(),
+            "receipt-offer".to_string(),
+        )
+        .await
+        .expect("coordinate active owner fixture");
+        answer
+            .delivery_custody
+            .delivered()
+            .await
+            .expect("activate exact test channel");
+        let active = machine
+            .validate_live_channel_custody_by_pending_receipt(
+                &session_id,
+                &channel_id,
+                readiness.pending_receipt(),
+            )
+            .await
+            .expect("active custody before owner loss");
+        let activation_receipt = match active.state() {
+            meerkat_runtime::meerkat_machine::LiveChannelCustodyState::Active(receipt) => {
+                receipt.activation_receipt().to_string()
+            }
+            phase => panic!("expected active custody, got {phase:?}"),
+        };
+        let response = handler
+            .dispatch(
+                LiveSurfaceAuthority::host_trusted_stdio(),
+                Some(session_id.clone()),
+                Some("identity:reachy".to_string()),
+                "mobkit/live/playback_owner/revoke".to_string(),
+                serde_json::json!({
+                    "identity": "identity:reachy",
+                    "channel_id": channel_id.as_str(),
+                    "pending_receipt": readiness.pending_receipt(),
+                    "readiness_receipt": readiness.readiness_id(),
+                    "activation_receipt": activation_receipt,
+                }),
+                serde_json::json!("owner-loss"),
+            )
+            .await;
+        assert!(
+            response.error.is_none(),
+            "owner-loss RPC failed: {response:?}"
+        );
+        assert_eq!(
+            response.result,
+            Some(serde_json::json!({"phase": "revoked"}))
+        );
+        assert!(
+            machine
+                .validate_live_channel_activation_receipt(
+                    &session_id,
+                    &channel_id,
+                    &activation_receipt,
+                )
+                .await
+                .is_err(),
+            "owner loss must invalidate active provider authority"
+        );
+        let revoked = machine
+            .validate_live_channel_custody_by_pending_receipt(
+                &session_id,
+                &channel_id,
+                readiness.pending_receipt(),
+            )
+            .await
+            .expect("revoked tombstone remains queryable");
+        assert!(matches!(
+            revoked.state(),
+            meerkat_runtime::meerkat_machine::LiveChannelCustodyState::Revoked
+        ));
+        let status = handler
+            .dispatch(
+                LiveSurfaceAuthority::host_trusted_stdio(),
+                Some(session_id),
+                Some("identity:reachy".to_string()),
+                "mobkit/live/status".to_string(),
+                serde_json::json!({
+                    "identity": "identity:reachy",
+                    "channel_id": channel_id.as_str(),
+                    "pending_receipt": readiness.pending_receipt(),
+                }),
+                serde_json::json!("status-after-owner-loss"),
+            )
+            .await;
+        assert_eq!(status.result, Some(serde_json::json!({"phase": "revoked"})));
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    struct CountingOpenPublicationCleanup {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl LiveOpenPublicationCleanup for CountingOpenPublicationCleanup {
+        async fn cleanup(&self) -> Result<(), String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    fn open_publication_response(
+        cleanup_calls: Arc<AtomicUsize>,
+    ) -> crate::rpc::SerializedRpcResponseDelivery {
+        let cleanup: Arc<dyn LiveOpenPublicationCleanup> =
+            Arc::new(CountingOpenPublicationCleanup {
+                calls: cleanup_calls,
+            });
+        crate::rpc::SerializedRpcResponseDelivery::with_open_delivery_for_test(
+            serde_json::json!({ "channel_id": "fresh-open" }).to_string(),
+            LiveOpenResponseDeliveryCustody::new(cleanup),
+        )
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
+    async fn strict_open_delivery_commits_publication_without_cleanup() {
+        let cleanup_calls = Arc::new(AtomicUsize::new(0));
+        let mut response = open_publication_response(Arc::clone(&cleanup_calls));
+        response
+            .settle_delivery(true)
+            .await
+            .expect("successful writer settles open publication");
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
+    async fn strict_open_rejected_publication_runs_exact_cleanup_once() {
+        let cleanup_calls = Arc::new(AtomicUsize::new(0));
+        let mut response = open_publication_response(Arc::clone(&cleanup_calls));
+        response
+            .settle_delivery(false)
+            .await
+            .expect("failed writer settles open cleanup");
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 1);
+        response
+            .settle_delivery(false)
+            .await
+            .expect("cleanup settlement is one-use");
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
+    async fn dropped_strict_open_publication_schedules_cleanup() {
+        let cleanup_calls = Arc::new(AtomicUsize::new(0));
+        drop(open_publication_response(Arc::clone(&cleanup_calls)));
+        tokio::task::yield_now().await;
+        for _ in 0..20 {
+            if cleanup_calls.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
     fn test_session_id() -> SessionId {
         SessionId::parse("00000000-0000-0000-0000-000000000001").unwrap()
-    }
-
-    fn other_session_id() -> SessionId {
-        SessionId::parse("00000000-0000-0000-0000-000000000002").unwrap()
-    }
-
-    fn user_message(text: &str) -> Message {
-        Message::User(meerkat_core::types::UserMessage::text(text))
-    }
-
-    fn system_message(text: &str) -> Message {
-        Message::System(meerkat_core::types::SystemMessage::new(text))
-    }
-
-    /// Fix 2 lane assertion (0.8.11 ordered-System shape): the per-open
-    /// overlay lands ONLY on the replay seed as a trailing System row — the
-    /// canonical System drift witness stays derived from the durable session,
-    /// and the projected seed history ahead of the overlay is untouched.
-    #[test]
-    fn instruction_overlay_rides_the_replay_seed_not_the_drift_witness() {
-        let canonical = vec![system_message("You are the member."), user_message("hello")];
-        let overlay = live_open_instruction_overlay_message(vec![
-            "Speak Swedish.".to_string(),
-            "   ".to_string(),
-            "Keep replies short.".to_string(),
-        ])
-        .expect("non-empty instructions produce an overlay row");
-        let mut seed = canonical.clone();
-        seed.push(overlay);
-
-        let config = RealtimeSessionOpenConfig::for_open_from_messages(
-            RealtimeTurningMode::ProviderManaged,
-            meerkat_core::SessionLlmIdentity {
-                model: "gpt-realtime-2".to_string(),
-                provider: meerkat_core::Provider::OpenAI,
-                self_hosted_server_id: None,
-                provider_params: None,
-                auth_binding: None,
-            },
-            Vec::new(),
-            seed.clone(),
-            &canonical,
-        )
-        .expect("open config construction");
-
-        let Some(Message::System(overlay_row)) = config.seed_messages().last() else {
-            panic!("overlay must be the trailing System seed row");
-        };
-        assert_eq!(overlay_row.content, "Speak Swedish.\n\nKeep replies short.");
-        assert_eq!(
-            config.canonical_system_messages_ref(),
-            ["You are the member.".to_string()],
-            "the drift witness stays derived from the durable session only"
-        );
-        assert_eq!(
-            config.seed_messages()[..seed.len() - 1],
-            canonical[..],
-            "seed history ahead of the overlay untouched"
-        );
-    }
-
-    #[test]
-    fn empty_or_whitespace_instructions_append_nothing() {
-        assert!(live_open_instruction_overlay_message(Vec::new()).is_none());
-        assert!(
-            live_open_instruction_overlay_message(vec!["  ".to_string(), String::new()]).is_none()
-        );
     }
 
     /// An Anthropic-profile text identity carrying a realm-scoped auth
@@ -2843,299 +6765,6 @@ mod tests {
         assert_eq!(identity, untouched);
     }
 
-    /// #301 port: the surface mapper routes through the canonical typed
-    /// owner so distinct `SessionError` variants land in distinct typed
-    /// `LiveProjectionError` variants — no collapse into
-    /// `Internal(to_string())`.
-    #[test]
-    fn session_error_maps_to_distinct_typed_projection_variants() {
-        let id = SessionId::new();
-
-        assert!(matches!(
-            session_error_to_projection(
-                meerkat_core::SessionError::NotFound { id: id.clone() },
-                &id,
-            ),
-            LiveProjectionError::SessionNotFound(_)
-        ));
-        assert!(matches!(
-            session_error_to_projection(
-                meerkat_core::SessionError::Unsupported("nope".to_string()),
-                &id,
-            ),
-            LiveProjectionError::Rejected(_)
-        ));
-        assert!(matches!(
-            session_error_to_projection(meerkat_core::SessionError::Busy { id: id.clone() }, &id),
-            LiveProjectionError::SessionBusy(_)
-        ));
-        assert!(matches!(
-            session_error_to_projection(
-                meerkat_core::SessionError::NotRunning { id: id.clone() },
-                &id,
-            ),
-            LiveProjectionError::SessionNotRunning(_)
-        ));
-        assert!(matches!(
-            session_error_to_projection(meerkat_core::SessionError::PersistenceDisabled, &id),
-            LiveProjectionError::CapabilityDisabled { .. }
-        ));
-    }
-
-    /// T10 port: the display-text lane builds the `AssistantTextDelta`
-    /// variant with the full identity tuple.
-    #[test]
-    fn assistant_text_delta_helper_builds_text_delta_event() {
-        let identity = LiveTranscriptIdentity {
-            provider_item_id: Some("item_text"),
-            previous_item_id: Some("item_prev"),
-            content_index: Some(2),
-            response_id: Some("resp_text"),
-            delta_id: Some("delta_text"),
-        };
-        let event = build_assistant_text_delta_event("display fragment", identity)
-            .expect("complete identity must build a typed delta event");
-        match event {
-            RealtimeTranscriptEvent::AssistantTextDelta {
-                response_id,
-                delta_id,
-                item_id,
-                previous_item_id,
-                content_index,
-                delta,
-            } => {
-                assert_eq!(response_id, "resp_text");
-                assert_eq!(delta_id, "delta_text");
-                assert_eq!(item_id, "item_text");
-                assert_eq!(previous_item_id.as_deref(), Some("item_prev"));
-                assert_eq!(content_index, 2);
-                assert_eq!(delta, "display fragment");
-            }
-            other => panic!("display-text delta path must build AssistantTextDelta, got {other:?}"),
-        }
-    }
-
-    /// T10 port: the spoken-transcript lane builds the dedicated
-    /// `AssistantTranscriptDelta` variant so the materializer flushes
-    /// `AssistantBlock::Transcript` rather than `Text`.
-    #[test]
-    fn assistant_transcript_delta_helper_builds_transcript_delta_event() {
-        let identity = LiveTranscriptIdentity {
-            provider_item_id: Some("item_tx"),
-            previous_item_id: Some("item_prev"),
-            content_index: Some(0),
-            response_id: Some("resp_tx"),
-            delta_id: Some("delta_tx"),
-        };
-        let event = build_assistant_transcript_delta_event("spoken fragment", identity)
-            .expect("complete identity must build a typed transcript delta event");
-        match event {
-            RealtimeTranscriptEvent::AssistantTranscriptDelta {
-                response_id,
-                delta_id,
-                item_id,
-                previous_item_id,
-                content_index,
-                delta,
-            } => {
-                assert_eq!(response_id, "resp_tx");
-                assert_eq!(delta_id, "delta_tx");
-                assert_eq!(item_id, "item_tx");
-                assert_eq!(previous_item_id.as_deref(), Some("item_prev"));
-                assert_eq!(content_index, 0);
-                assert_eq!(delta, "spoken fragment");
-            }
-            other => panic!(
-                "spoken-transcript delta path must build AssistantTranscriptDelta, got {other:?}"
-            ),
-        }
-    }
-
-    /// #199 port: a delta missing a required identity id fails closed with
-    /// a typed error rather than emitting empty-string identity.
-    #[test]
-    fn missing_delta_identity_fails_closed_typed() {
-        let missing_response = LiveTranscriptIdentity {
-            provider_item_id: Some("item"),
-            previous_item_id: None,
-            content_index: Some(0),
-            response_id: None,
-            delta_id: Some("delta"),
-        };
-        assert_eq!(
-            build_assistant_text_delta_event("fragment", missing_response),
-            Err(LiveTranscriptIdentityError::MissingResponseId)
-        );
-
-        let missing_delta = LiveTranscriptIdentity {
-            provider_item_id: Some("item"),
-            previous_item_id: None,
-            content_index: Some(0),
-            response_id: Some("resp"),
-            delta_id: None,
-        };
-        assert_eq!(
-            build_assistant_transcript_delta_event("fragment", missing_delta),
-            Err(LiveTranscriptIdentityError::MissingDeltaId)
-        );
-
-        let missing_item = LiveTranscriptIdentity {
-            provider_item_id: None,
-            previous_item_id: None,
-            content_index: Some(0),
-            response_id: Some("resp"),
-            delta_id: Some("delta"),
-        };
-        assert_eq!(
-            build_assistant_text_delta_event("fragment", missing_item),
-            Err(LiveTranscriptIdentityError::MissingItemId)
-        );
-    }
-
-    /// R6 port: two finals from different provider responses must NOT pool
-    /// into the same buffer slot; each completion drains only its own slot,
-    /// and a mismatched drain leaves the buffer untouched.
-    #[test]
-    fn r6_pending_turn_ledger_keys_on_response_id() {
-        let ledger = PendingTurnLedger::default();
-        let session_id = test_session_id();
-
-        ledger.buffer(
-            &session_id,
-            Some("resp_a"),
-            PendingAssistantContent::Text("from resp_a".to_string()),
-        );
-        ledger.buffer(
-            &session_id,
-            Some("resp_b"),
-            PendingAssistantContent::Text("from resp_b".to_string()),
-        );
-
-        // A completion carrying a response id no slot was buffered under
-        // must not flush another turn's transcript.
-        assert!(
-            ledger
-                .drain(&session_id, Some("resp_stale"))
-                .blocks
-                .is_empty()
-        );
-
-        let drained_a = collapse_pending_blocks(ledger.drain(&session_id, Some("resp_a")).blocks);
-        assert_eq!(drained_a.len(), 1);
-        match &drained_a[0] {
-            AssistantBlock::Text { text, .. } => assert_eq!(text, "from resp_a"),
-            other => panic!("expected text block, got {other:?}"),
-        }
-
-        // resp_b's buffer survived resp_a's completion.
-        let drained_b = collapse_pending_blocks(ledger.drain(&session_id, Some("resp_b")).blocks);
-        assert_eq!(drained_b.len(), 1);
-        match &drained_b[0] {
-            AssistantBlock::Text { text, .. } => assert_eq!(text, "from resp_b"),
-            other => panic!("expected text block, got {other:?}"),
-        }
-
-        // Both slots consumed exactly once.
-        assert!(ledger.drain(&session_id, Some("resp_a")).blocks.is_empty());
-        assert!(ledger.drain(&session_id, Some("resp_b")).blocks.is_empty());
-    }
-
-    /// Terminal-error port: `drain_all` clears every slot for the session
-    /// (including the `None` orphan slot) while other sessions' buffers
-    /// survive.
-    #[test]
-    fn terminal_error_drains_all_response_slots_for_session_only() {
-        let ledger = PendingTurnLedger::default();
-        let session_id = test_session_id();
-        let other = other_session_id();
-
-        ledger.buffer(
-            &session_id,
-            Some("resp_a"),
-            PendingAssistantContent::Text("a".to_string()),
-        );
-        ledger.buffer(
-            &session_id,
-            None,
-            PendingAssistantContent::Text("orphan".to_string()),
-        );
-        ledger.buffer(
-            &other,
-            Some("resp_x"),
-            PendingAssistantContent::Text("x".to_string()),
-        );
-
-        ledger.drain_all(&session_id);
-
-        assert!(ledger.drain(&session_id, Some("resp_a")).blocks.is_empty());
-        assert!(ledger.drain(&session_id, None).blocks.is_empty());
-        let survived = ledger.drain(&other, Some("resp_x"));
-        assert_eq!(survived.blocks.len(), 1);
-    }
-
-    /// P1#1/T6 port: consecutive same-lane fragments coalesce into ONE
-    /// `AssistantBlock::Text` in arrival order; an empty buffer collapses
-    /// to no blocks (the orphan-completion shape).
-    #[test]
-    fn collapse_pending_blocks_coalesces_fragments_in_arrival_order() {
-        let blocks = collapse_pending_blocks(vec![
-            PendingAssistantContent::Text("part one ".to_string()),
-            PendingAssistantContent::Text("part two".to_string()),
-        ]);
-        assert_eq!(blocks.len(), 1);
-        match &blocks[0] {
-            AssistantBlock::Text { text, .. } => assert_eq!(text, "part one part two"),
-            other => panic!("expected Text block, got {other:?}"),
-        }
-
-        assert!(collapse_pending_blocks(Vec::new()).is_empty());
-    }
-
-    /// Token-admission mapping port: every generated rejection variant maps
-    /// onto its transport twin, and the public error class collapses to the
-    /// transport's `InvalidToken`.
-    #[test]
-    fn ws_token_admission_mapping_covers_all_machine_variants() {
-        use meerkat_runtime::meerkat_machine::dsl::{
-            LiveWebsocketTokenAdmissionPublicErrorClass as DslClass,
-            LiveWebsocketTokenAdmissionRejection as Dsl,
-        };
-
-        let cases = [
-            (
-                Dsl::TokenNotFound,
-                LiveWsTokenAdmissionRejection::TokenNotFound,
-            ),
-            (
-                Dsl::TokenExpired,
-                LiveWsTokenAdmissionRejection::TokenExpired,
-            ),
-            (
-                Dsl::TokenChannelMismatch,
-                LiveWsTokenAdmissionRejection::TokenChannelMismatch,
-            ),
-            (
-                Dsl::TokenAlreadyConsumed,
-                LiveWsTokenAdmissionRejection::TokenAlreadyConsumed,
-            ),
-            (
-                Dsl::ChannelNotBound,
-                LiveWsTokenAdmissionRejection::ChannelNotBound,
-            ),
-        ];
-        for (machine, transport) in cases {
-            assert_eq!(
-                live_ws_token_admission_rejection_from_machine(machine),
-                transport
-            );
-        }
-
-        assert_eq!(
-            live_ws_token_public_error_class_from_machine(DslClass::InvalidToken),
-            LiveWsTokenAdmissionPublicErrorClass::InvalidToken
-        );
-    }
-
     /// `EnvRealtimeConfigSource` serves exactly the config it was given —
     /// per-open resolution then rides the session identity's auth binding
     /// against that config, matching text-model behaviour.
@@ -3148,12 +6777,24 @@ mod tests {
         );
 
         let source = EnvRealtimeConfigSource::new(config);
-        let served = source.current_config().await.expect("static config source");
+        let served = RealtimeCurrentConfigSource::current_config(&source)
+            .await
+            .expect("static config source");
         assert!(served.realm.contains_key("live-wiring-test"));
 
         // Stable across opens: the source never consults the environment or
         // mutates between calls.
-        let served_again = source.current_config().await.expect("static config source");
+        let served_again = RealtimeCurrentConfigSource::current_config(&source)
+            .await
+            .expect("static config source");
         assert!(served_again.realm.contains_key("live-wiring-test"));
+
+        #[cfg(feature = "experimental-gpt-live")]
+        {
+            let experimental = meerkat::experimental_gpt_live::ExperimentalLiveCurrentConfigSource::current_config(&source)
+                .await
+                .expect("experimental static config source");
+            assert!(experimental.realm.contains_key("live-wiring-test"));
+        }
     }
 }

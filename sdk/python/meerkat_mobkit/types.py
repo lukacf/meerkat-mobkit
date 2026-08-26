@@ -179,6 +179,7 @@ class CapabilitiesResult:
     contract_version: str
     methods: list[str]
     loaded_modules: list[str]
+    feature_capabilities: list[str] = field(default_factory=list)
     runtime_capabilities: RuntimeCapabilities | None = None
     workgraph: bool = False
     storage: StorageSummary | None = None
@@ -190,6 +191,7 @@ class CapabilitiesResult:
             contract_version=data["contract_version"],
             methods=list(data.get("methods", [])),
             loaded_modules=list(data.get("loaded_modules", [])),
+            feature_capabilities=list(data.get("feature_capabilities", [])),
             runtime_capabilities=RuntimeCapabilities.from_dict(rc_raw) if rc_raw else None,
             workgraph=bool(data.get("workgraph", False)),
             storage=_storage_summary_from(data),
