@@ -441,8 +441,12 @@ impl MobKitConsoleAggregator {
         let events_for_live = console_events.clone();
         let events_for_live_recovery = console_events.clone();
         let runtime_key_for_live = runtime_key.clone();
+        // Subscribe before spawning the projection task. If subscription is
+        // deferred into the task, an event can land after replay completes
+        // but before the task is first polled, leaving neither path able to
+        // observe it.
+        let mut live_rx = events_for_live.subscribe();
         tokio::spawn(async move {
-            let mut rx = events_for_live.subscribe();
             loop {
                 tokio::select! {
                     changed = shutdown_rx.changed() => {
@@ -451,7 +455,7 @@ impl MobKitConsoleAggregator {
                             break;
                         }
                     }
-                    received = rx.recv() => match received {
+                    received = live_rx.recv() => match received {
                         Ok(envelope) => {
                             let _ = project_console_event(
                                 inner.clone(),

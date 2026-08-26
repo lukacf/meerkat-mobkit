@@ -86,6 +86,82 @@ test("sidebar resolves worker-spawned workers under their worker host", () => {
   );
 });
 
+test("sidebar uses runtime-derived spawned_by when no wiring identifies the host", () => {
+  const parent: ConsoleAgent = {
+    agent_id: "ops-lead",
+    member_id: "ops-lead",
+    identity: "ops-lead",
+    label: "Ops Lead",
+    kind: "mob_agent",
+    role: "commander",
+    group: "Coordinators",
+    wired_to: [],
+  };
+  const child: ConsoleAgent = {
+    agent_id: "durable-investigator",
+    member_id: "durable-investigator",
+    identity: "durable-investigator",
+    label: "Durable Investigator",
+    kind: "mob_agent",
+    role: "worker",
+    group: "worker",
+    wired_to: [],
+    labels: { spawned_by: "ops-lead", via_tool: "fork_off" },
+  };
+
+  assert.equal(__sidebarTest.findSpawnHost(child, [child, parent], parent)?.member_id, "ops-lead");
+  assert.deepEqual(
+    __sidebarTest.groupSidebarAgents([child, parent]).get("Coordinators")?.map((row) => [
+      row.agent.member_id,
+      row.depth,
+    ]),
+    [
+      ["ops-lead", 0],
+      ["durable-investigator", 1],
+    ],
+  );
+});
+
+test("sidebar nests a same-role durable fork under its runtime-derived parent", () => {
+  const parent: ConsoleAgent = {
+    agent_id: "personal-agent",
+    member_id: "personal-agent",
+    identity: "personal-agent",
+    label: "Personal Agent",
+    kind: "mob_agent",
+    role: "coordinator",
+    group: "Coordinators",
+    wired_to: [],
+  };
+  const child: ConsoleAgent = {
+    agent_id: "personal-agent-voice-work",
+    member_id: "personal-agent-voice-work",
+    identity: "personal-agent-voice-work",
+    label: "Personal Agent Voice Work",
+    kind: "mob_agent",
+    role: "coordinator",
+    group: "Coordinators",
+    wired_to: [],
+    labels: { spawned_by: "personal-agent", via_tool: "fork_off" },
+  };
+
+  assert.equal(__sidebarTest.isCommanderLike(child), true);
+  assert.equal(
+    __sidebarTest.findSpawnHost(child, [parent, child], parent)?.member_id,
+    "personal-agent",
+  );
+  assert.deepEqual(
+    __sidebarTest.groupSidebarAgents([parent, child]).get("Coordinators")?.map((row) => [
+      row.agent.member_id,
+      row.depth,
+    ]),
+    [
+      ["personal-agent", 0],
+      ["personal-agent-voice-work", 1],
+    ],
+  );
+});
+
 test("sidebar nests workers under wired non-worker hosts", () => {
   const investigator: ConsoleAgent = {
     agent_id: "rt:deep-investigator:singleton:0",

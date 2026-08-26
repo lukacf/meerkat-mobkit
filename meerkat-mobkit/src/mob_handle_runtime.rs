@@ -921,6 +921,7 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
                 | "member_status"
                 | "wire_members"
                 | "unwire_members"
+                | "fork_off"
         ) {
             let args = serde_json::from_str::<Value>(call.args.get()).map_err(|error| {
                 meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
@@ -1051,7 +1052,8 @@ fn raw_member_tool_arguments(tool_name: &str, args: &Value) -> Vec<(&'static str
         | "spawn_member"
         | "retire_member"
         | "force_cancel_member"
-        | "member_status" => {
+        | "member_status"
+        | "fork_off" => {
             candidates.push(("member_id", args.get("member_id").and_then(Value::as_str)));
         }
         "spawn_many_members" => {
@@ -4544,6 +4546,20 @@ macro_rules! delegate_mob_session_service {
                     .await
             }
 
+            #[cfg(feature = "experimental-gpt-live")]
+            async fn enqueue_committed_parent_session_boundary_after_runtime_turn(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                runtime_adapter: &meerkat_runtime::MeerkatMachine,
+            ) -> Result<usize, SessionError> {
+                self.inner
+                    .enqueue_committed_parent_session_boundary_after_runtime_turn(
+                        session_id,
+                        runtime_adapter,
+                    )
+                    .await
+            }
+
             async fn create_session_under_runtime_turn_boundary(
                 &self,
                 req: meerkat_core::service::CreateSessionRequest,
@@ -5398,6 +5414,20 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<meerkat_mob::SessionResumeAuthority, SessionError> {
         self.inner
             .observe_session_resume_authority(session_id)
+            .await
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    async fn enqueue_committed_parent_session_boundary_after_runtime_turn(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        runtime_adapter: &meerkat_runtime::MeerkatMachine,
+    ) -> Result<usize, SessionError> {
+        self.inner
+            .enqueue_committed_parent_session_boundary_after_runtime_turn(
+                session_id,
+                runtime_adapter,
+            )
             .await
     }
 
@@ -8582,6 +8612,13 @@ mod tests {
         );
         assert_eq!(
             reserved_raw_member_tool_argument(
+                "fork_off",
+                &serde_json::json!({"member_id": "rt:worker:0"}),
+            ),
+            Some(("member_id", "rt:worker:0".to_string()))
+        );
+        assert_eq!(
+            reserved_raw_member_tool_argument(
                 "spawn_many_members",
                 &serde_json::json!({
                     "specs": [
@@ -8695,6 +8732,27 @@ mod tests {
             error
                 .to_string()
                 .contains("owned by the attached IdentityRuntime")
+        );
+
+        let child_collision = serde_json::value::RawValue::from_string(
+            serde_json::json!({
+                "member_id": "lead"
+            })
+            .to_string(),
+        )
+        .expect("raw args");
+        let error = dispatcher
+            .dispatch(meerkat_core::types::ToolCallView {
+                id: "fork-off-child-collision",
+                name: "fork_off",
+                args: &child_collision,
+            })
+            .await
+            .expect_err("registered child identity must fail before lower-plane dispatch");
+        assert!(
+            error
+                .to_string()
+                .contains("member_id 'lead' is owned by the attached IdentityRuntime")
         );
     }
 
@@ -11091,6 +11149,15 @@ comms = true
             // answer and is deliberately left un-overridden here.
             Ok(meerkat_mob::SessionResumeAuthority::default())
         }
+        #[cfg(feature = "experimental-gpt-live")]
+        async fn enqueue_committed_parent_session_boundary_after_runtime_turn(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+            _runtime_adapter: &meerkat_runtime::MeerkatMachine,
+        ) -> Result<usize, SessionError> {
+            self.record("enqueue_committed_parent_session_boundary_after_runtime_turn");
+            Ok(7)
+        }
         async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
             &self,
             _session_id: &meerkat_core::types::SessionId,
@@ -11198,6 +11265,58 @@ comms = true
                 "probe has no boundary authority",
             ))
         }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test]
+    async fn mob_session_wrappers_forward_committed_parent_boundary_exactly_once() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let session_id = meerkat_core::types::SessionId::new();
+        let machine = Arc::new(meerkat_runtime::MeerkatMachine::ephemeral());
+
+        let pre_build = PreBuildMobSessionService {
+            inner: probe.clone(),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: Some(Arc::clone(&machine)),
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        };
+        assert_eq!(
+            MobSessionService::enqueue_committed_parent_session_boundary_after_runtime_turn(
+                &pre_build,
+                &session_id,
+                machine.as_ref(),
+            )
+            .await
+            .expect("pre-build wrapper must forward the sealed boundary"),
+            7,
+        );
+
+        let after_create = AfterCreateMobSessionService {
+            inner: probe.clone(),
+            after_hook: Arc::new(|_, _| Box::pin(async {})),
+        };
+        assert_eq!(
+            MobSessionService::enqueue_committed_parent_session_boundary_after_runtime_turn(
+                &after_create,
+                &session_id,
+                machine.as_ref(),
+            )
+            .await
+            .expect("after-create wrapper must forward the sealed boundary"),
+            7,
+        );
+
+        assert_eq!(
+            probe.calls(),
+            vec![
+                "enqueue_committed_parent_session_boundary_after_runtime_turn",
+                "enqueue_committed_parent_session_boundary_after_runtime_turn",
+            ],
+            "each wrapper must delegate exactly once and add no semantic step",
+        );
     }
 
     #[tokio::test]

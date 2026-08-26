@@ -61,6 +61,8 @@ use subscribe_methods::{SubscribeParamsError, parse_subscribe_request};
 
 pub const JSONRPC_VERSION: &str = "2.0";
 pub const MOBKIT_CONTRACT_VERSION: &str = "0.5.0";
+/// JSON-RPC code for a known feature that is unavailable on this host.
+pub const CAPABILITY_UNAVAILABLE_CODE: i64 = -32004;
 pub(crate) const MOBPACK_AUTHORING_METHODS: &[&str] = &[
     "mobkit/mobpacks/schema",
     "mobkit/mobpacks/catalogs",
@@ -331,8 +333,31 @@ impl std::error::Error for RpcCapabilitiesError {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RpcCapabilities {
     pub contract_version: String,
+    #[serde(default)]
+    pub feature_capabilities: Vec<crate::live_contracts::FeatureCapability>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl RpcCapabilities {
+    /// Whether this exact gateway admitted the strict v1 live identity
+    /// envelope. Clients must check this before sending `execution_identity`.
+    #[must_use]
+    pub fn supports_live_execution_identity_v1(&self) -> bool {
+        self.feature_capabilities.iter().any(|capability| {
+            capability.as_str() == crate::live_contracts::LIVE_EXECUTION_IDENTITY_V1
+        })
+    }
+
+    #[must_use]
+    pub fn supports_live_execution_mode(
+        &self,
+        mode: crate::live_contracts::LiveExecutionMode,
+    ) -> bool {
+        self.feature_capabilities
+            .iter()
+            .any(|capability| capability.as_str() == mode.capability())
+    }
 }
 
 pub fn parse_rpc_capabilities(line: &str) -> Result<RpcCapabilities, RpcCapabilitiesError> {
@@ -528,6 +553,30 @@ pub fn handle_mobkit_rpc_json(
         };
     }
 
+    if let Some(response) = live_open_execution_identity_preflight(
+        request.method.as_str(),
+        &request.params,
+        response_id.clone(),
+        false,
+    ) {
+        return if is_notification {
+            String::new()
+        } else {
+            serialize_response(&response)
+        };
+    }
+    if let Some(response) = experimental_live_target_preflight(
+        request.method.as_str(),
+        &request.params,
+        response_id.clone(),
+    ) {
+        return if is_notification {
+            String::new()
+        } else {
+            serialize_response(&response)
+        };
+    }
+
     let response = match request.method.as_str() {
         // No `storage` object here: the module-only server holds a bare
         // `MobkitRuntimeHandle` with no mob/unified runtime, so the
@@ -574,6 +623,7 @@ pub fn handle_mobkit_rpc_json(
                 id: response_id,
                 result: Some(serde_json::json!({
                     "contract_version": MOBKIT_CONTRACT_VERSION,
+                    "feature_capabilities": serde_json::json!([]),
                     "methods": methods,
                     "loaded_modules": runtime.loaded_modules(),
                     "runtime_capabilities": {
@@ -1507,6 +1557,125 @@ pub fn handle_unified_rpc_json_with_live_arc<'a>(
     ))
 }
 
+/// Serialized RPC response plus any experimental live publication custody.
+/// A transport owner settles this only after its actual write and flush
+/// result is known.
+pub struct SerializedRpcResponseDelivery {
+    pub response: String,
+    #[cfg(feature = "experimental-gpt-live")]
+    delivery: Option<crate::live_wiring::LiveRpcResponseDeliveryCustody>,
+}
+
+impl SerializedRpcResponseDelivery {
+    #[must_use]
+    pub fn plain(response: String) -> Self {
+        Self {
+            response,
+            #[cfg(feature = "experimental-gpt-live")]
+            delivery: None,
+        }
+    }
+
+    #[cfg(all(test, feature = "experimental-gpt-live"))]
+    pub(crate) fn with_delivery_for_test(
+        response: String,
+        delivery: meerkat::surface::LiveWebrtcAnswerDeliveryCustody,
+    ) -> Self {
+        Self {
+            response,
+            delivery: Some(
+                crate::live_wiring::LiveRpcResponseDeliveryCustody::WebrtcAnswer(delivery),
+            ),
+        }
+    }
+
+    #[cfg(all(test, feature = "experimental-gpt-live"))]
+    pub(crate) fn with_open_delivery_for_test(
+        response: String,
+        delivery: crate::live_wiring::LiveOpenResponseDeliveryCustody,
+    ) -> Self {
+        Self {
+            response,
+            delivery: Some(crate::live_wiring::LiveRpcResponseDeliveryCustody::Open(
+                delivery,
+            )),
+        }
+    }
+
+    /// Commit or reject live publication after the outer response write.
+    pub async fn settle_delivery(&mut self, delivered: bool) -> Result<(), String> {
+        #[cfg(feature = "experimental-gpt-live")]
+        if let Some(custody) = self.delivery.take() {
+            return if delivered {
+                custody.delivered().await.map_err(|error| error.to_string())
+            } else {
+                custody.rejected().await.map_err(|error| error.to_string())
+            };
+        }
+        // Keep the public async contract identical when live custody is not
+        // compiled in. The experimental branch above performs the real await.
+        #[cfg(not(feature = "experimental-gpt-live"))]
+        std::future::ready(()).await;
+        let _ = delivered;
+        Ok(())
+    }
+}
+
+impl Drop for SerializedRpcResponseDelivery {
+    fn drop(&mut self) {
+        #[cfg(feature = "experimental-gpt-live")]
+        drop(self.delivery.take());
+    }
+}
+
+/// Delivery-aware variant used by an outer writer that can acknowledge the
+/// actual response write instead of treating JSON encoding as publication.
+pub fn handle_unified_rpc_json_with_live_arc_delivery<'a>(
+    runtime: &'a Arc<UnifiedRuntime>,
+    request_json: &'a str,
+    timeout: Duration,
+    http_base_url: Option<&'a str>,
+    identity_ctx: Option<&'a IdentityFirstContext>,
+    live: Option<&'a crate::live_wiring::LiveRpcHandler>,
+) -> Pin<Box<dyn Future<Output = SerializedRpcResponseDelivery> + Send + 'a>> {
+    Box::pin(async move {
+        #[cfg(feature = "experimental-gpt-live")]
+        {
+            let (response, mut delivery) = crate::live_wiring::capture_live_rpc_response_delivery(
+                handle_unified_rpc_json_inner(
+                    runtime.as_ref(),
+                    Some(runtime),
+                    request_json,
+                    timeout,
+                    http_base_url,
+                    identity_ctx,
+                    live,
+                ),
+            )
+            .await;
+            if response.is_empty()
+                && let Some(custody) = delivery.take()
+            {
+                let _ = custody.rejected().await;
+            }
+            return SerializedRpcResponseDelivery { response, delivery };
+        }
+        #[cfg(not(feature = "experimental-gpt-live"))]
+        SerializedRpcResponseDelivery {
+            response: handle_unified_rpc_json_inner(
+                runtime.as_ref(),
+                Some(runtime),
+                request_json,
+                timeout,
+                http_base_url,
+                identity_ctx,
+                live,
+            )
+            .await,
+        }
+    })
+}
+
 /// Typed error code for a read-only console arm that exhausted its deadline.
 ///
 /// Continues the operator-verb block (`OPERATOR_SESSION_BUSY_CODE` -32015,
@@ -1692,6 +1861,30 @@ async fn handle_unified_rpc_json_inner(
         };
     }
 
+    if let Some(response) = live_open_execution_identity_preflight(
+        request.method.as_str(),
+        &request.params,
+        response_id.clone(),
+        live.is_some_and(crate::live_wiring::LiveRpcHandler::supports_live_execution_identity_v1),
+    ) {
+        return if is_notification {
+            String::new()
+        } else {
+            serialize_response(&response)
+        };
+    }
+    if let Some(response) = experimental_live_target_preflight(
+        request.method.as_str(),
+        &request.params,
+        response_id.clone(),
+    ) {
+        return if is_notification {
+            String::new()
+        } else {
+            serialize_response(&response)
+        };
+    }
+
     let response = match request.method.as_str() {
         "mobkit/status" => {
             let mob_state = Some(runtime.mob_handle().status_observation_snapshot());
@@ -1821,8 +2014,20 @@ async fn handle_unified_rpc_json_inner(
                     "mobkit/live/send_input",
                     "mobkit/live/commit_input",
                     "mobkit/live/interrupt",
-                    "mobkit/live/truncate",
                 ]);
+                if live.is_some_and(
+                    crate::live_wiring::LiveRpcHandler::supports_live_execution_identity_v1,
+                ) {
+                    #[cfg(feature = "experimental-gpt-live")]
+                    methods.extend_from_slice(&[
+                        "mobkit/live/replacement_required",
+                        "mobkit/live/playback_owner/register",
+                        "mobkit/live/playback_owner/revoke",
+                        "mobkit/live/truncate",
+                        "mobkit/live/playback_complete",
+                        meerkat_live::LIVE_WEBRTC_ANSWER_METHOD,
+                    ]);
+                }
             }
             if identity_ctx.is_some() {
                 methods.extend_from_slice(&[
@@ -1929,6 +2134,14 @@ async fn handle_unified_rpc_json_inner(
                 id: response_id,
                 result: Some(serde_json::json!({
                     "contract_version": MOBKIT_CONTRACT_VERSION,
+                    // This projection revalidates upstream Gate0/operator/
+                    // realm/factory qualification and is non-empty only when
+                    // the same live registration carries open authority and
+                    // its mechanically derived bound-ready binder beside the
+                    // sealed WebRTC answer transport.
+                    "feature_capabilities": live
+                        .map(crate::live_wiring::LiveRpcHandler::feature_capabilities)
+                        .unwrap_or_default(),
                     "runtime_type": "unified",
                     "methods": methods,
                     "storage": storage,
@@ -4655,49 +4868,54 @@ async fn handle_unified_rpc_json_inner(
                 },
             }
         }
-        method if method.starts_with("mobkit/live/") => match live {
-            None => crate::live_wiring::live_unavailable_response(response_id),
-            Some(live) => {
-                let params = request.params.clone();
-                let member_alias = live_member_alias(&params);
-                let identity_runtime = identity_ctx
-                    .map(|context| &context.runtime)
-                    .or_else(|| runtime.identity_runtime());
-                let authority_target = if let Some(alias) = member_alias.as_deref()
-                    && let Some(identity_runtime) = identity_runtime
-                {
-                    identity_runtime.member_alias_lifecycle_target(alias).await
-                } else {
-                    Ok(None)
-                };
-                match authority_target {
-                    Err(error) => identity_error_response(response_id, &error),
-                    Ok(None)
-                        if member_alias
-                            .as_deref()
-                            .is_some_and(crate::member_comms_id::is_reserved_generated_alias) =>
+        method
+            if method.starts_with("mobkit/live/")
+                || cfg!(feature = "experimental-gpt-live") && method == "live/webrtc/answer" =>
+        {
+            match live {
+                None => crate::live_wiring::live_unavailable_response(response_id),
+                Some(live) => {
+                    let params = request.params.clone();
+                    let member_alias = live_member_alias(&params);
+                    let identity_runtime = identity_ctx
+                        .map(|context| &context.runtime)
+                        .or_else(|| runtime.identity_runtime());
+                    let authority_target = if let Some(alias) = member_alias.as_deref()
+                        && let Some(identity_runtime) = identity_runtime
                     {
-                        JsonRpcResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id,
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32000,
-                                message: format!(
-                                    "generated live target requires current identity authority: {}",
-                                    member_alias.as_deref().unwrap_or_default()
-                                ),
-                                data: None,
-                            }),
+                        identity_runtime.member_alias_lifecycle_target(alias).await
+                    } else {
+                        Ok(None)
+                    };
+                    match authority_target {
+                        Err(error) => identity_error_response(response_id, &error),
+                        Ok(None)
+                            if member_alias.as_deref().is_some_and(
+                                crate::member_comms_id::is_reserved_generated_alias,
+                            ) =>
+                        {
+                            JsonRpcResponse {
+                                jsonrpc: JSONRPC_VERSION.to_string(),
+                                id: response_id,
+                                result: None,
+                                error: Some(JsonRpcError {
+                                    code: -32000,
+                                    message: format!(
+                                        "generated live target requires current identity authority: {}",
+                                        member_alias.as_deref().unwrap_or_default()
+                                    ),
+                                    data: None,
+                                }),
+                            }
                         }
-                    }
-                    Ok(Some(target)) => {
-                        let handle = runtime.mob_handle();
-                        let identity_runtime = identity_runtime.cloned();
-                        let live = Arc::clone(live);
-                        let method = method.to_string();
-                        let operation_response_id = response_id.clone();
-                        match crate::identity_first::IdentityRuntime::run_member_alias_targets_operation_tracked(
+                        Ok(Some(target)) => {
+                            let canonical_target_identity = target.durable_identity().to_string();
+                            let handle = runtime.mob_handle();
+                            let identity_runtime = identity_runtime.cloned();
+                            let live = live.clone();
+                            let method = method.to_string();
+                            let operation_response_id = response_id.clone();
+                            match crate::identity_first::IdentityRuntime::run_member_alias_targets_operation_tracked(
                             vec![target],
                             move || async move {
                                 let session = resolve_live_target(
@@ -4707,7 +4925,15 @@ async fn handle_unified_rpc_json_inner(
                                     &params,
                                 )
                                 .await?;
-                                Ok(live(session, method, params, operation_response_id).await)
+                                Ok(live.dispatch(
+                                    crate::live_wiring::LiveSurfaceAuthority::host_trusted_stdio(),
+                                    session,
+                                    Some(canonical_target_identity),
+                                    method,
+                                    params,
+                                    operation_response_id,
+                                )
+                                .await)
                             },
                         )
                         .await
@@ -4715,12 +4941,20 @@ async fn handle_unified_rpc_json_inner(
                             Ok(response) => response,
                             Err(error) => identity_error_response(response_id, &error),
                         }
-                    }
-                    Ok(None) => {
-                        match resolve_live_target(&runtime.mob_handle(), None, false, &params).await
+                        }
+                        Ok(None) => {
+                            match resolve_live_target(&runtime.mob_handle(), None, false, &params).await
                         {
                             Ok(session) => {
-                                live(session, method.to_string(), params, response_id).await
+                                live.dispatch(
+                                    crate::live_wiring::LiveSurfaceAuthority::host_trusted_stdio(),
+                                    session,
+                                    None,
+                                    method.to_string(),
+                                    params,
+                                    response_id,
+                                )
+                                .await
                             }
                             Err(error) => JsonRpcResponse {
                                 jsonrpc: JSONRPC_VERSION.to_string(),
@@ -4733,10 +4967,11 @@ async fn handle_unified_rpc_json_inner(
                                 }),
                             },
                         }
+                        }
                     }
                 }
             }
-        },
+        }
         method if workgraph_methods::is_workgraph_method(method) => {
             let service = runtime.workgraph_service();
             let admission = runtime.workgraph_admission();
@@ -5412,6 +5647,90 @@ fn live_member_alias(params: &Value) -> Option<String> {
         .map(|raw| crate::member_comms_id::runtime_alias_str(raw).into_owned())
 }
 
+/// Validate and negotiate the execution-identity envelope before target
+/// resolution or any live-channel side effect.
+fn live_open_execution_identity_preflight(
+    method: &str,
+    params: &Value,
+    response_id: Value,
+    capability_available: bool,
+) -> Option<JsonRpcResponse> {
+    if method != "mobkit/live/open" {
+        return None;
+    }
+    match crate::live_contracts::parse_live_open_execution_identity(params) {
+        Ok(None) => None,
+        Ok(Some(_))
+            if let Err(error) =
+                crate::live_contracts::validate_experimental_live_open_surface(params) =>
+        {
+            Some(JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32602,
+                    message: format!("Invalid params: {error}"),
+                    data: None,
+                }),
+            })
+        }
+        Ok(Some(_)) if capability_available => None,
+        Ok(Some(_)) => Some(JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: CAPABILITY_UNAVAILABLE_CODE,
+                message: format!(
+                    "capability {} is not available",
+                    crate::live_contracts::LIVE_EXECUTION_IDENTITY_V1
+                ),
+                data: Some(serde_json::json!({
+                    "capability": crate::live_contracts::LIVE_EXECUTION_IDENTITY_V1,
+                })),
+            }),
+        }),
+        Err(error) => Some(JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: format!("Invalid params: {error}"),
+                data: None,
+            }),
+        }),
+    }
+}
+
+fn experimental_live_target_preflight(
+    method: &str,
+    params: &Value,
+    response_id: Value,
+) -> Option<JsonRpcResponse> {
+    let strict = method == "mobkit/live/playback_owner/register"
+        || method == "mobkit/live/playback_owner/revoke"
+        || params.get("pending_receipt").is_some()
+        || params.get("activation_receipt").is_some()
+        || params.get("readiness_receipt").is_some();
+    if !strict {
+        return None;
+    }
+    crate::live_contracts::validate_experimental_live_target_surface(params)
+        .err()
+        .map(|error| JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: format!("Invalid params: {error}"),
+                data: None,
+            }),
+        })
+}
+
 async fn resolve_live_target(
     handle: &meerkat_mob::MobHandle,
     identity_runtime: Option<&Arc<crate::identity_first::IdentityRuntime>>,
@@ -5548,8 +5867,9 @@ fn serialize_response(response: &JsonRpcResponse) -> String {
 mod tests {
     use super::{
         CONSOLE_READ_BUDGET, CONSOLE_READ_TIMEOUT_CODE, IdentityMemberReadiness, error_response,
-        handle_unified_rpc_json, identity_error_response, parse_console_read_budget,
-        resolve_live_target, resolve_rpc_identity_control_target, rpc_live_identity_alias_visible,
+        experimental_live_target_preflight, handle_unified_rpc_json, identity_error_response,
+        live_open_execution_identity_preflight, parse_console_read_budget, resolve_live_target,
+        resolve_rpc_identity_control_target, rpc_live_identity_alias_visible,
         rpc_member_id_matches_durable_identity, rpc_runtime_alias_generation,
         wait_identity_startup_ready, with_read_deadline,
     };
@@ -5576,6 +5896,142 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::time::Duration;
+
+    #[test]
+    fn execution_identity_preflight_is_fail_closed_before_live_dispatch() {
+        let unavailable = live_open_execution_identity_preflight(
+            "mobkit/live/open",
+            &json!({
+                "identity": "identity:luka",
+                "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
+            }),
+            json!(1),
+            false,
+        )
+        .expect("experimental envelope must stop before live dispatch");
+        let error = unavailable.error.expect("preflight must return an error");
+        assert_eq!(error.code, -32004);
+        assert_eq!(
+            error.data,
+            Some(json!({"capability": "live.execution_identity.v1"}))
+        );
+
+        let conflict = live_open_execution_identity_preflight(
+            "mobkit/live/open",
+            &json!({
+                "model": "legacy",
+                "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
+            }),
+            json!(2),
+            true,
+        )
+        .expect("conflict must stop before live dispatch");
+        assert_eq!(conflict.error.expect("conflict error").code, -32602);
+
+        assert!(
+            live_open_execution_identity_preflight(
+                "mobkit/live/open",
+                &json!({"model": "legacy"}),
+                json!(3),
+                false,
+            )
+            .is_none(),
+            "legacy live/open remains on the existing path"
+        );
+
+        assert!(
+            live_open_execution_identity_preflight(
+                "mobkit/live/open",
+                &json!({
+                    "identity": "identity:luka",
+                    "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
+                }),
+                json!(4),
+                true,
+            )
+            .is_none(),
+            "an admitted envelope continues to live target resolution"
+        );
+
+        for params in [
+            json!({
+                "session_id": "session:raw",
+                "execution_identity": {"version": "v1"}
+            }),
+            json!({
+                "identity": "identity:luka",
+                "member_id": "rt:luka:0",
+                "execution_identity": {"version": "v1"}
+            }),
+            json!({
+                "identity": "identity:luka",
+                "execution_mode": "responses",
+                "execution_identity": {"version": "v1"}
+            }),
+            json!({
+                "identity": "identity:luka",
+                "responses_model": "gpt-5.5",
+                "execution_identity": {"version": "v1"}
+            }),
+        ] {
+            let response =
+                live_open_execution_identity_preflight("mobkit/live/open", &params, json!(5), true)
+                    .expect("ineligible target or provider-native field must fail preflight");
+            assert_eq!(response.error.expect("preflight error").code, -32602);
+        }
+
+        let unavailable_raw_target = live_open_execution_identity_preflight(
+            "mobkit/live/open",
+            &json!({
+                "session_id": "session:raw",
+                "execution_identity": {"version": "v1"}
+            }),
+            json!(6),
+            false,
+        )
+        .expect("strict targeting must fail before capability negotiation");
+        assert_eq!(
+            unavailable_raw_target
+                .error
+                .expect("strict target error")
+                .code,
+            -32602
+        );
+    }
+
+    #[test]
+    fn strict_live_receipts_reject_raw_mixed_and_runtime_alias_targets() {
+        for params in [
+            json!({"session_id": "session:raw", "pending_receipt": "pending"}),
+            json!({
+                "identity": "identity:luka",
+                "member_id": "member:raw",
+                "activation_receipt": "active"
+            }),
+            json!({
+                "identity": "rt:identity:luka:0",
+                "pending_receipt": "pending"
+            }),
+        ] {
+            let response =
+                experimental_live_target_preflight("mobkit/live/status", &params, json!(7))
+                    .expect("ineligible strict target must fail before resolution");
+            assert_eq!(response.error.expect("target error").code, -32602);
+        }
+
+        assert!(
+            experimental_live_target_preflight(
+                "mobkit/live/status",
+                &json!({
+                    "identity": "identity:luka",
+                    "pending_receipt": "pending"
+                }),
+                json!(8),
+            )
+            .is_none(),
+            "a durable identity claim continues to authoritative lifecycle resolution"
+        );
+    }
 
     /// OB3 (2026-08-16): `mobkit/identity/resolved_tools` hung past 60 seconds
     /// with no completion because the member's session task was mid-turn and

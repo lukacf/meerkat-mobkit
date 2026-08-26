@@ -6,6 +6,10 @@
  */
 
 import { SessionBuildOptions, type ToolHandler } from "./models.js";
+import {
+  parseLiveAssistantOutputAddress,
+  type LiveAssistantOutputAddress,
+} from "./live.js";
 import { ToolResultContent } from "./tool-content.js";
 import {
   DetachedJobContext,
@@ -117,6 +121,10 @@ export class CallbackDispatcher {
   private readonly _jobHighestFence = new Map<string, number>();
   private readonly _jobTasks = new Set<Promise<void>>();
   private readonly _jobMutationTails = new Map<string, Promise<void>>();
+  private readonly _liveOutputConsumers = new Map<
+    string,
+    (output: LiveAssistantOutputAddress) => void
+  >();
 
   registerBuilder(builder: SessionAgentBuilder): void {
     this._builder = builder;
@@ -177,11 +185,41 @@ export class CallbackDispatcher {
     }
   }
 
+  registerLiveOutputConsumer(
+    channelId: string,
+    consumer: (output: LiveAssistantOutputAddress) => void,
+  ): () => void {
+    if (channelId.trim().length === 0) {
+      throw new TypeError("channelId must be non-empty");
+    }
+    if (this._liveOutputConsumers.has(channelId)) {
+      throw new Error(`live output consumer already registered for ${channelId}`);
+    }
+    this._liveOutputConsumers.set(channelId, consumer);
+    return () => {
+      if (this._liveOutputConsumers.get(channelId) === consumer) {
+        this._liveOutputConsumers.delete(channelId);
+      }
+    };
+  }
+
   async handleCallback(
     method: string,
     params: Record<string, unknown>,
     callbackContext?: ProviderCallbackContext,
   ): Promise<unknown> {
+    if (method === "mobkit/live/assistant_output_available") {
+      const output = parseLiveAssistantOutputAddress(params);
+      const consumer = this._liveOutputConsumers.get(output.channelId);
+      if (consumer === undefined) {
+        throw new Error(
+          `no live output consumer registered for ${output.channelId}`,
+        );
+      }
+      consumer(output);
+      return { accepted: true };
+    }
+
     if (method === "mobkit/on_error") {
       if (this._errorCallback !== null) {
         const event = parseErrorEvent(params);

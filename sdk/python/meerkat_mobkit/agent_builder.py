@@ -18,6 +18,7 @@ from .jobs import (
     _DetachedJobReporter,
 )
 from .models import SessionBuildOptions
+from .live import LiveAssistantOutputAddress
 from .types import ErrorEvent
 
 _log = logging.getLogger("meerkat_mobkit")
@@ -109,6 +110,9 @@ class CallbackDispatcher:
         self._job_highest_fence: dict[str, int] = {}
         self._job_tasks: set[asyncio.Task[None]] = set()
         self._job_mutation_locks: dict[str, _JobMutationLock] = {}
+        self._live_output_queues: dict[
+            str, asyncio.Queue[LiveAssistantOutputAddress]
+        ] = {}
 
     def register_builder(self, builder: SessionAgentBuilder) -> None:
         self._builder = builder
@@ -171,7 +175,43 @@ class CallbackDispatcher:
         for tool_name in self._scope_tools.pop(scope_id, []):
             self._tool_handlers.pop((scope_id, tool_name), None)
 
+    def register_live_output_queue(
+        self, channel_id: str, capacity: int
+    ) -> asyncio.Queue[LiveAssistantOutputAddress]:
+        if not channel_id.strip():
+            raise ValueError("channel_id must be non-empty")
+        if capacity <= 0:
+            raise ValueError("live output queue capacity must be positive")
+        if channel_id in self._live_output_queues:
+            raise RuntimeError(f"live output consumer already registered for {channel_id}")
+        queue: asyncio.Queue[LiveAssistantOutputAddress] = asyncio.Queue(capacity)
+        self._live_output_queues[channel_id] = queue
+        return queue
+
+    def unregister_live_output_queue(
+        self,
+        channel_id: str,
+        queue: asyncio.Queue[LiveAssistantOutputAddress],
+    ) -> None:
+        if self._live_output_queues.get(channel_id) is queue:
+            self._live_output_queues.pop(channel_id, None)
+
     async def handle_callback(self, method: str, params: dict[str, Any]) -> Any:
+        if method == "mobkit/live/assistant_output_available":
+            output = LiveAssistantOutputAddress.from_dict(params)
+            queue = self._live_output_queues.get(output.channel_id)
+            if queue is None:
+                raise RuntimeError(
+                    f"no live output consumer registered for {output.channel_id}"
+                )
+            try:
+                queue.put_nowait(output)
+            except asyncio.QueueFull as exc:
+                raise RuntimeError(
+                    f"live output consumer queue is full for {output.channel_id}"
+                ) from exc
+            return {"accepted": True}
+
         if method == "mobkit/on_error":
             if self._error_callback is not None:
                 event = ErrorEvent.from_dict(params)

@@ -55,6 +55,31 @@ import {
 } from "./events.js";
 import { discoverySpecToDict, type DiscoverySpec } from "./models.js";
 import {
+  LIVE_EXECUTION_IDENTITY_V1,
+  activeLiveChannelHandleToWire,
+  type ActiveLiveChannelConnection,
+  type ActiveLiveChannelHandle,
+  type ExperimentalLiveChannelStatus,
+  experimentalLiveGatewayConfigToWire,
+  liveOpenExecutionIdentityParams,
+  type LivePlaybackOwner,
+  type LivePlaybackOwnerReadiness,
+  type LiveAssistantOutputAddress,
+  parseExperimentalLiveChannelStatus,
+  parseLiveChannelHandle,
+  parseLivePlaybackOwnerReadiness,
+  parsePendingLiveChannelHandle,
+  parseLivePlaybackCompleteResult,
+  parseLiveReplacementRequired,
+  supportsLiveExecutionIdentityV1,
+  supportsLiveExecutionMode,
+  type LiveChannelHandle,
+  type LiveExecutionIdentityV1,
+  type LivePlaybackCompleteResult,
+  type LiveReplacementRequired,
+  type PendingLiveChannelHandle,
+} from "./live.js";
+import {
   parseStatusResult,
   parseStorageDoctorResult,
   parseCapabilitiesResult,
@@ -768,6 +793,11 @@ export class MobKitRuntime {
     if (this._config.maxSessions !== null) {
       runtimeOptions.max_sessions = this._config.maxSessions;
     }
+    if (this._config.experimentalLiveConfig != null) {
+      runtimeOptions.experimental_live = experimentalLiveGatewayConfigToWire(
+        this._config.experimentalLiveConfig,
+      );
+    }
     params.runtime_options = runtimeOptions;
     if (this._config.persistentState) {
       params.persistent_state = this._config.persistentState;
@@ -861,6 +891,14 @@ export class MobKitRuntime {
 
   setRustHttpBase(url: string): void {
     this._rustHttpBase = url;
+  }
+
+  /** @internal */
+  _registerLiveOutputConsumer(
+    channelId: string,
+    consumer: (output: LiveAssistantOutputAddress) => void,
+  ): () => void {
+    return this._dispatcher.registerLiveOutputConsumer(channelId, consumer);
   }
 
   mobHandle(): MobHandle {
@@ -2525,6 +2563,410 @@ export class MobHandle {
     return asWireRecord(raw);
   }
 
+  /** Open a live channel and parse the strict typed channel handle. */
+  async liveOpenTyped(
+    identity: string,
+    executionIdentity?: LiveExecutionIdentityV1,
+    options?: Record<string, unknown>,
+  ): Promise<LiveChannelHandle | PendingLiveChannelHandle> {
+    let advertisedFeatureCapabilities: readonly string[] = [];
+    if (executionIdentity !== undefined) {
+      const forbidden = [
+        "mode",
+        "execution_mode",
+        "profile",
+        "profile_id",
+        "execution_profile",
+        "execution_profile_id",
+        "delegation",
+        "delegation_type",
+        "delegation_model",
+        "responses",
+        "responses_model",
+        "responses_tools",
+        "responses_instructions",
+        "bridge_model",
+        "bridge_tools",
+        "bridge_instructions",
+        "auth_binding",
+        "self_hosted_server_id",
+        "provider_params",
+        "tools",
+        "instructions",
+        "member_id",
+        "session_id",
+      ].find((field) => Object.prototype.hasOwnProperty.call(options ?? {}, field));
+      if (forbidden !== undefined) {
+        throw new TypeError(`experimental live/open does not accept ${forbidden}`);
+      }
+    }
+    if (
+      executionIdentity !== undefined &&
+      (Object.prototype.hasOwnProperty.call(options ?? {}, "model") ||
+        Object.prototype.hasOwnProperty.call(options ?? {}, "provider"))
+    ) {
+      throw new TypeError(
+        "executionIdentity conflicts with legacy top-level model/provider",
+      );
+    }
+    if (executionIdentity !== undefined) {
+      const capabilities = await this.capabilities();
+      advertisedFeatureCapabilities = capabilities.featureCapabilities;
+      if (!supportsLiveExecutionIdentityV1(capabilities)) {
+        throw new CapabilityUnavailableError(
+          `capability ${LIVE_EXECUTION_IDENTITY_V1} is not available`,
+          "",
+          "mobkit/live/open",
+          { capability: LIVE_EXECUTION_IDENTITY_V1 },
+        );
+      }
+    }
+    const params: Record<string, unknown> = {
+      identity,
+      ...(options ?? {}),
+    };
+    if (executionIdentity !== undefined) {
+      Object.assign(
+        params,
+        liveOpenExecutionIdentityParams(executionIdentity),
+      );
+    }
+    const raw = asWireRecord(
+      await this._runtime._rpc("mobkit/live/open", params),
+    );
+    if (executionIdentity !== undefined) {
+      const pending = parsePendingLiveChannelHandle(raw);
+      if (pending.targetIdentity !== identity) {
+        throw new TypeError(
+          "strict mobkit/live/open returned a different target identity",
+        );
+      }
+      if (!supportsLiveExecutionMode(
+        { featureCapabilities: advertisedFeatureCapabilities },
+        pending.executionMode,
+      )) {
+        throw new CapabilityUnavailableError(
+          "resolved live execution mode is not advertised",
+          "",
+          "mobkit/live/open",
+          { execution_mode: pending.executionMode },
+        );
+      }
+      return pending;
+    }
+    return parseLiveChannelHandle({
+      ...raw,
+      target_identity: raw.target_identity ?? identity,
+    });
+  }
+
+  async livePlaybackOwnerRegister(
+    pending: PendingLiveChannelHandle,
+  ): Promise<LivePlaybackOwnerReadiness> {
+    const readiness = parseLivePlaybackOwnerReadiness(
+      await this._runtime._rpc("mobkit/live/playback_owner/register", {
+        identity: pending.targetIdentity,
+        channel_id: pending.channelId,
+        pending_receipt: pending.pendingReceipt,
+      }),
+    );
+    if (readiness.channelId !== pending.channelId) {
+      throw new TypeError("playback owner readiness channel mismatch");
+    }
+    return readiness;
+  }
+
+  async livePlaybackOwnerRevoke(
+    pending: PendingLiveChannelHandle,
+    readiness: LivePlaybackOwnerReadiness,
+    active?: ActiveLiveChannelHandle,
+  ): Promise<ExperimentalLiveChannelStatus> {
+    if (readiness.channelId !== pending.channelId) {
+      throw new TypeError("playback owner readiness channel mismatch");
+    }
+    const params: Record<string, unknown> = {
+      identity: pending.targetIdentity,
+      channel_id: pending.channelId,
+      pending_receipt: pending.pendingReceipt,
+      readiness_receipt: readiness.readinessReceipt,
+    };
+    if (active !== undefined) {
+      activeLiveChannelHandleToWire(active);
+      if (
+        active.channelId !== pending.channelId ||
+        active.targetIdentity !== pending.targetIdentity ||
+        active.executionMode !== pending.executionMode
+      ) {
+        throw new TypeError("active playback owner does not match pending custody");
+      }
+      params.activation_receipt = active.activationReceipt;
+    }
+    const status = parseExperimentalLiveChannelStatus(
+      await this._runtime._rpc("mobkit/live/playback_owner/revoke", params),
+    );
+    if (status.phase !== "revoked") {
+      throw new TypeError("playback owner revoke did not return revoked custody");
+    }
+    return status;
+  }
+
+  async liveExperimentalStatus(
+    handle: PendingLiveChannelHandle | ActiveLiveChannelHandle,
+  ): Promise<ExperimentalLiveChannelStatus> {
+    const params: Record<string, unknown> = {
+      identity: handle.targetIdentity,
+      channel_id: handle.channelId,
+    };
+    if ("pendingReceipt" in handle) {
+      params.pending_receipt = handle.pendingReceipt;
+    } else {
+      params.activation_receipt = handle.activationReceipt;
+    }
+    const status = parseExperimentalLiveChannelStatus(
+      await this._runtime._rpc("mobkit/live/status", params),
+    );
+    if (
+      status.phase === "active" &&
+      (status.handle.channelId !== handle.channelId ||
+        status.handle.targetIdentity !== handle.targetIdentity ||
+        status.handle.executionMode !== handle.executionMode)
+    ) {
+      throw new TypeError("active live handle does not match pending custody");
+    }
+    return status;
+  }
+
+  async liveConnect(
+    identity: string,
+    executionIdentity: LiveExecutionIdentityV1,
+    playbackOwner: LivePlaybackOwner,
+    options?: Record<string, unknown> & {
+      readonly activationPollIntervalMs?: number;
+      readonly activationAttempts?: number;
+    },
+  ): Promise<ActiveLiveChannelConnection> {
+    const activationPollIntervalMs = options?.activationPollIntervalMs ?? 50;
+    const activationAttempts = options?.activationAttempts ?? 200;
+    if (!Number.isFinite(activationPollIntervalMs) || activationPollIntervalMs < 0) {
+      throw new TypeError("activationPollIntervalMs must be non-negative");
+    }
+    if (!Number.isSafeInteger(activationAttempts) || activationAttempts <= 0) {
+      throw new TypeError("activationAttempts must be a positive integer");
+    }
+    const openOptions: Record<string, unknown> = { ...(options ?? {}) };
+    delete openOptions.activationPollIntervalMs;
+    delete openOptions.activationAttempts;
+    let pending: PendingLiveChannelHandle | undefined;
+    try {
+      const opened = await this.liveOpenTyped(
+        identity,
+        executionIdentity,
+        openOptions,
+      );
+      if (!("pendingReceipt" in opened)) {
+        throw new TypeError("experimental live/open did not return a pending handle");
+      }
+      pending = opened;
+      if (pending.transport.transport !== "webrtc") {
+        throw new TypeError("experimental live/open did not return a WebRTC bootstrap");
+      }
+      const offerSdp = await playbackOwner.prepare(pending);
+      if (typeof offerSdp !== "string" || offerSdp.trim().length === 0) {
+        throw new TypeError("playback owner returned an invalid SDP offer");
+      }
+      const readiness = await this.livePlaybackOwnerRegister(pending);
+      const answerSdp = await this.liveWebrtcAnswerPending(
+        pending,
+        readiness,
+        offerSdp,
+      );
+      await playbackOwner.acceptAnswer(answerSdp);
+      for (let attempt = 0; attempt < activationAttempts; attempt += 1) {
+        const status = await this.liveExperimentalStatus(pending);
+        if (status.phase === "active") {
+          await playbackOwner.activate(status.handle);
+          const active = status.handle;
+          const ownerPending = pending;
+          let revocation: Promise<ExperimentalLiveChannelStatus> | undefined;
+          const ownerLost = (): Promise<ExperimentalLiveChannelStatus> => {
+            revocation ??= (async () => {
+              const revoked = await this.livePlaybackOwnerRevoke(
+                ownerPending,
+                readiness,
+                active,
+              );
+              try {
+                await playbackOwner.abort();
+              } catch {
+                // Machine revocation has already removed active authority.
+              }
+              return revoked;
+            })();
+            return revocation;
+          };
+          const connection: ActiveLiveChannelConnection = {
+            ...active,
+            pendingReceipt: ownerPending.pendingReceipt,
+            readinessReceipt: readiness.readinessReceipt,
+            ownerLost,
+            dispose: ownerLost,
+          };
+          if (playbackOwner.waitForLoss !== undefined) {
+            void playbackOwner.waitForLoss().then(ownerLost, ownerLost).catch(() => {
+              // The explicit connection lifecycle remains available for retry.
+            });
+          }
+          return connection;
+        }
+        if (status.phase === "revoked" || status.phase === "closed") {
+          throw new Error(
+            `experimental live channel ${status.phase} before activation`,
+          );
+        }
+        if (activationPollIntervalMs > 0) {
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, activationPollIntervalMs),
+          );
+        }
+      }
+      throw new Error("experimental live channel did not activate");
+    } catch (error) {
+      try {
+        await playbackOwner.abort();
+      } finally {
+        if (pending !== undefined) {
+          try {
+            await this.liveClose(pending);
+          } catch {
+            // Preserve the activation error.
+          }
+        }
+      }
+      throw error;
+    }
+  }
+
+  /** Complete the one-use WebRTC signaling bootstrap for a live channel. */
+  async liveWebrtcAnswer(
+    channelId: string,
+    token: string,
+    offerSdp: string,
+  ): Promise<string> {
+    const raw = asWireRecord(
+      await this._runtime._rpc("live/webrtc/answer", {
+        channel_id: channelId,
+        token,
+        offer_sdp: offerSdp,
+      }),
+    );
+    if (typeof raw.answer_sdp !== "string") {
+      throw new TypeError("live/webrtc/answer returned an invalid answer");
+    }
+    return raw.answer_sdp;
+  }
+
+  async liveWebrtcAnswerPending(
+    pending: PendingLiveChannelHandle,
+    readiness: LivePlaybackOwnerReadiness,
+    offerSdp: string,
+  ): Promise<string> {
+    if (readiness.channelId !== pending.channelId) {
+      throw new TypeError("playback owner readiness channel mismatch");
+    }
+    if (pending.transport.transport !== "webrtc") {
+      throw new TypeError("pending handle is not a WebRTC bootstrap");
+    }
+    const raw = asWireRecord(
+      await this._runtime._rpc("live/webrtc/answer", {
+        identity: pending.targetIdentity,
+        channel_id: pending.channelId,
+        pending_receipt: pending.pendingReceipt,
+        readiness_receipt: readiness.readinessReceipt,
+        token: pending.transport.token,
+        offer_sdp: offerSdp,
+      }),
+    );
+    if (typeof raw.answer_sdp !== "string") {
+      throw new TypeError("live/webrtc/answer returned an invalid answer");
+    }
+    return raw.answer_sdp;
+  }
+
+  /** Read retryably pending signaling without auto-renegotiating. */
+  async liveReplacementRequired(
+    active: ActiveLiveChannelHandle,
+  ): Promise<LiveReplacementRequired> {
+    activeLiveChannelHandleToWire(active);
+    return parseLiveReplacementRequired(
+      await this._runtime._rpc("mobkit/live/replacement_required", {
+        identity: active.targetIdentity,
+        channel_id: active.channelId,
+        activation_receipt: active.activationReceipt,
+      }),
+    );
+  }
+
+  /**
+   * Stream opaque assistant outputs with bounded, loss-intolerant delivery.
+   * Closing the iterator closes the exact live channel.
+   */
+  async *liveOutputs(
+    active: ActiveLiveChannelHandle,
+    options?: { readonly capacity?: number },
+  ): AsyncGenerator<LiveAssistantOutputAddress, void, void> {
+    activeLiveChannelHandleToWire(active);
+    const capacity = options?.capacity ?? 16;
+    if (!Number.isSafeInteger(capacity) || capacity <= 0) {
+      throw new TypeError("live output queue capacity must be a positive integer");
+    }
+    const items: LiveAssistantOutputAddress[] = [];
+    const waiters: Array<(output: LiveAssistantOutputAddress) => void> = [];
+    const unregister = this._runtime._registerLiveOutputConsumer(
+      active.channelId,
+      (output) => {
+        const waiter = waiters.shift();
+        if (waiter !== undefined) {
+          waiter(output);
+          return;
+        }
+        if (items.length >= capacity) {
+          throw new Error(`live output consumer queue is full for ${active.channelId}`);
+        }
+        items.push(output);
+      },
+    );
+    try {
+      while (true) {
+        const output = items.shift() ?? await new Promise<LiveAssistantOutputAddress>(
+          (resolve) => waiters.push(resolve),
+        );
+        yield output;
+      }
+    } finally {
+      unregister();
+      await this.liveClose(active);
+    }
+  }
+
+  /** Report measured playback completion for an exact opaque output. */
+  async livePlaybackComplete(
+    active: ActiveLiveChannelHandle,
+    output: LiveAssistantOutputAddress,
+  ): Promise<LivePlaybackCompleteResult> {
+    activeLiveChannelHandleToWire(active);
+    if (output.channelId !== active.channelId) {
+      throw new TypeError("assistant output does not belong to active channel");
+    }
+    return parseLivePlaybackCompleteResult(
+      await this._runtime._rpc("mobkit/live/playback_complete", {
+        identity: active.targetIdentity,
+        channel_id: active.channelId,
+        activation_receipt: active.activationReceipt,
+        output_id: output.outputId,
+      }),
+    );
+  }
+
   async liveStatus(
     identity: string,
     options?: Record<string, unknown>,
@@ -2537,13 +2979,22 @@ export class MobHandle {
   }
 
   async liveClose(
-    identity: string,
+    handle: string | PendingLiveChannelHandle | ActiveLiveChannelHandle,
     options?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    const raw = await this._runtime._rpc("mobkit/live/close", {
-      identity,
+    const params: Record<string, unknown> = {
+      channel_id: typeof handle === "string" ? handle : handle.channelId,
       ...(options ?? {}),
-    });
+    };
+    if (typeof handle !== "string") {
+      params.identity = handle.targetIdentity;
+      if ("pendingReceipt" in handle) {
+        params.pending_receipt = handle.pendingReceipt;
+      } else {
+        params.activation_receipt = handle.activationReceipt;
+      }
+    }
+    const raw = await this._runtime._rpc("mobkit/live/close", params);
     return asWireRecord(raw);
   }
 
@@ -2588,27 +3039,91 @@ export class MobHandle {
     return asWireRecord(raw);
   }
 
-  /**
-   * Truncate an assistant item at the client-tracked playback cursor
-   * (barge-in cleanup). `itemId`/`contentIndex` are the provider-side
-   * handle for the assistant item; `audioPlayedMs` is how much the client
-   * actually played.
-   */
+  /** Truncate an exact opaque output at measured playback progress. */
   async liveTruncate(
-    channelId: string,
-    itemId: string,
-    contentIndex: number,
+    active: ActiveLiveChannelHandle,
+    output: LiveAssistantOutputAddress,
     audioPlayedMs: number,
     options?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
+    activeLiveChannelHandleToWire(active);
+    if (output.channelId !== active.channelId) {
+      throw new TypeError("assistant output does not belong to active channel");
+    }
     const raw = await this._runtime._rpc("mobkit/live/truncate", {
-      channel_id: channelId,
-      item_id: itemId,
-      content_index: contentIndex,
+      identity: active.targetIdentity,
+      channel_id: active.channelId,
+      activation_receipt: active.activationReceipt,
+      output_id: output.outputId,
       audio_played_ms: audioPlayedMs,
       ...(options ?? {}),
     });
     return asWireRecord(raw);
+  }
+
+  async liveRefreshActive(
+    active: ActiveLiveChannelHandle,
+    options?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    activeLiveChannelHandleToWire(active);
+    return asWireRecord(
+      await this._runtime._rpc("mobkit/live/refresh", {
+        identity: active.targetIdentity,
+        channel_id: active.channelId,
+        activation_receipt: active.activationReceipt,
+        ...(options ?? {}),
+      }),
+    );
+  }
+
+  async liveSendInputImageActive(
+    active: ActiveLiveChannelHandle,
+    idempotencyKey: string,
+    mime: string,
+    dataBase64: string,
+  ): Promise<Record<string, unknown>> {
+    activeLiveChannelHandleToWire(active);
+    return asWireRecord(
+      await this._runtime._rpc("mobkit/live/send_input", {
+        identity: active.targetIdentity,
+        channel_id: active.channelId,
+        activation_receipt: active.activationReceipt,
+        chunk: {
+          kind: "image",
+          idempotency_key: idempotencyKey,
+          mime,
+          data: dataBase64,
+        },
+      }),
+    );
+  }
+
+  async liveCommitInputActive(
+    active: ActiveLiveChannelHandle,
+    options?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    activeLiveChannelHandleToWire(active);
+    return asWireRecord(
+      await this._runtime._rpc("mobkit/live/commit_input", {
+        identity: active.targetIdentity,
+        channel_id: active.channelId,
+        activation_receipt: active.activationReceipt,
+        ...(options ?? {}),
+      }),
+    );
+  }
+
+  async liveInterruptActive(
+    active: ActiveLiveChannelHandle,
+  ): Promise<Record<string, unknown>> {
+    activeLiveChannelHandleToWire(active);
+    return asWireRecord(
+      await this._runtime._rpc("mobkit/live/interrupt", {
+        identity: active.targetIdentity,
+        channel_id: active.channelId,
+        activation_receipt: active.activationReceipt,
+      }),
+    );
   }
 
   // -- Topology -----------------------------------------------------------
