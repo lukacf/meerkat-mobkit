@@ -3948,9 +3948,35 @@ impl IdentityRuntime {
                     continue;
                 }
             };
-            let Some(super::types::ContinuityResolveState::Ready { record }) =
-                resolved.get(identity)
-            else {
+            let resolve_state = resolved.get(identity);
+            let Some(super::types::ContinuityResolveState::Ready { record }) = resolve_state else {
+                // A non-Ready state is a legitimate skip, but it used to be a
+                // SILENT one, and that made this pass unfalsifiable from
+                // outside: a skipped identity and an identity that was never in
+                // the roster produced byte-identical evidence, namely none.
+                //
+                // HomeCore hit the downstream refusal ("its owning identity has
+                // no authoritative registration ... the session was never
+                // registered in this process") and could not tell whether this
+                // pass had skipped their session or registered it fine, because
+                // the only witness for a skip was the ABSENCE of a warning that
+                // is only emitted on the error path. Absence of a log line is
+                // not evidence of a code path not taken.
+                // info!, not debug!, and deliberately the same level as the
+                // "registered persisted continuity owners" success line this is
+                // the counterpart to. A skip and a registration are the two
+                // outcomes of one pass; if they print at different levels, the
+                // log an operator actually captures shows one and hides the
+                // other, and absence of the skip reads as success. HomeCore ran
+                // at warn by default and at info for diagnostics - a debug line
+                // would have been invisible in both, which is the same
+                // unobservability this log was added to remove.
+                tracing::info!(
+                    %identity,
+                    state = ?resolve_state,
+                    "continuity record not Ready; skipping owner pre-registration for this \
+                     identity (the downstream registration-required refusal still stands)"
+                );
                 continue;
             };
             let session_id = record.session_id.clone();
