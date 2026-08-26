@@ -3891,9 +3891,6 @@ impl IdentityRuntime {
             .await
     }
 
-    /// Cancellation-safe compatibility restore used by embedders that pass
-    /// an RPC identity context without attaching an
-    /// [`IdentityFirstRuntimeContext`] to the unified runtime.
     /// Resolve the owner state for each rostered identity from durable
     /// continuity, with NO write target required.
     ///
@@ -3943,10 +3940,15 @@ impl IdentityRuntime {
         // INV-06 FIRST, before any store read or publication. Roster uniqueness
         // used to be validated in the later roster-registration path, which was
         // downstream of everything; hoisting owner registration ahead of prepare
-        // also hoisted it ahead of that guard. A duplicated identity would
-        // otherwise reach register_session twice with two different resolved
-        // states and be rejected as an ownership conflict - reporting a
-        // conflict when the real fault is a malformed roster.
+        // also hoisted it ahead of that guard.
+        //
+        // What actually happens without it is WORSE than a misleading error, and
+        // I only learned that by mutating it out: the duplicated roster resolves
+        // to Ok([]) - no error at all. The resolver publishes nothing and lets
+        // prepare proceed, which is the original defect shape. My first comment
+        // here claimed it would surface later as an ownership conflict from a
+        // double register_session; the mutation disproved that, so the claim is
+        // corrected rather than left as a plausible-sounding rationale.
         //
         // Moving work earlier moves it before the checks that used to protect
         // it. That is the same class as everything else this hoist touched.
@@ -4111,53 +4113,9 @@ impl IdentityRuntime {
         Ok(states)
     }
 
-    /// Publish resolved owner states DIRECTLY to the adapter, before
-    /// `MobRuntime::prepare`.
-    ///
-    /// Layer 2. Takes the same `Arc<ContinuitySessionStoreAdapter>` the caller
-    /// will hand to the runtime, so the states land in the exact map that
-    /// meerkat's durable-tail recovery will consult during prepare.
-    ///
-    /// Returns how many owners were published. A caller that resolved states and
-    /// published NONE has a real problem and this cannot hide it: unlike
-    /// `register_persisted_continuity_owners`, there is no bridge to be absent,
-    /// so there is no path where this reports success without having written.
-    /// That method's `let Some(bridge) = ... else { return Ok(0) }` is exactly
-    /// the silent nothing this layer exists to avoid.
-    ///
-    /// Idempotent by construction: `register_session` refuses an identity or
-    /// generation change and refuses a fencing-token regression, so republishing
-    /// the same facts later - through the bridge, after context installation -
-    /// confirms rather than conflicts.
-    pub async fn publish_persisted_owner_states(
-        adapter: &Arc<super::adapters::ContinuitySessionStoreAdapter>,
-        states: &[(
-            meerkat_core::types::SessionId,
-            super::adapters::SessionRuntimeState,
-        )],
-    ) -> Result<usize, IdentityRuntimeError> {
-        let mut published = 0usize;
-        for (session_id, state) in states {
-            adapter
-                .register_session(session_id, state.clone())
-                .await
-                .map_err(|error| {
-                    IdentityRuntimeError::Internal(format!(
-                        "publishing the persisted owner of {} session {session_id} before \
-                         prepare: {error}",
-                        state.identity
-                    ))
-                })?;
-            published += 1;
-        }
-        tracing::info!(
-            published,
-            resolved = states.len(),
-            "published persisted continuity owners before mob prepare"
-        );
-        Ok(published)
-    }
-
+    /// Cancellation-safe compatibility restore used by embedders that pass
+    /// an RPC identity context without attaching an
+    /// [`IdentityFirstRuntimeContext`] to the unified runtime.
     /// Register the owning identity of every persisted session on the roster,
     /// without materializing anything.
     ///
@@ -11533,6 +11491,15 @@ mod reset_reprofile_tests {
         struct ScriptedResolveStore {
             inner: Arc<crate::identity_first::local_store::LocalContinuityStore>,
             state: Option<crate::identity_first::types::ContinuityResolveState>,
+            // false => as_incremental_sessions returns None, i.e. BLOB-ONLY.
+            // Without this the "terminal on ANY store" claim was only ever
+            // exercised head-canonical, because delegating to a real store makes
+            // the double head-canonical by construction - the assertion passed
+            // while testing the opposite branch of the one it named.
+            head_canonical: bool,
+            // Counts store reads so INV-06 can be shown to reject BEFORE any
+            // read rather than merely returning some error eventually.
+            reads: Arc<std::sync::atomic::AtomicUsize>,
         }
 
         #[async_trait::async_trait]
@@ -11547,6 +11514,7 @@ mod reset_reprofile_tests {
                 >,
                 crate::identity_first::types::ContinuityStoreError,
             > {
+                self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let mut out = std::collections::BTreeMap::new();
                 if let Some(state) = self.state.clone() {
                     for identity in identities {
@@ -11627,7 +11595,11 @@ mod reset_reprofile_tests {
                 &self,
             ) -> Option<Arc<dyn crate::identity_first::contracts::ContinuityIncrementalSessions>>
             {
-                self.inner.as_incremental_sessions()
+                if self.head_canonical {
+                    self.inner.as_incremental_sessions()
+                } else {
+                    None
+                }
             }
         }
 
@@ -11636,49 +11608,69 @@ mod reset_reprofile_tests {
         // test targets, so only --all-targets surfaces it.
         let scripted_inner =
             Arc::new(crate::identity_first::local_store::LocalContinuityStore::in_memory()?);
-        let scripted = |state: Option<crate::identity_first::types::ContinuityResolveState>| {
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let scripted = |state: Option<crate::identity_first::types::ContinuityResolveState>,
+                        head_canonical: bool| {
             let store: Arc<dyn crate::identity_first::ContinuityStore> =
                 Arc::new(ScriptedResolveStore {
                     inner: Arc::clone(&scripted_inner),
                     state,
+                    head_canonical,
+                    reads: Arc::clone(&reads),
                 });
             store
         };
 
-        // Uninitialized: the ONLY creation path. Zero states, no error.
-        let uninit = scripted(Some(
-            crate::identity_first::types::ContinuityResolveState::Uninitialized,
-        ));
-        let states = IdentityRuntime::resolve_persisted_owner_states(&uninit, &roster).await?;
-        assert!(
-            states.is_empty(),
-            "Uninitialized is the creation path: no owner state, and NOT an error"
-        );
+        // Uninitialized: the ONLY creation path. Zero states, no error, on BOTH
+        // store shapes.
+        for head_canonical in [true, false] {
+            let uninit = scripted(
+                Some(crate::identity_first::types::ContinuityResolveState::Uninitialized),
+                head_canonical,
+            );
+            let states = IdentityRuntime::resolve_persisted_owner_states(&uninit, &roster).await?;
+            assert!(
+                states.is_empty(),
+                "Uninitialized is the creation path on either store shape: no owner state, and \
+                 NOT an error (head_canonical={head_canonical})"
+            );
+        }
 
-        // Missing entry: a provider-contract violation, terminal on ANY store.
-        let missing = scripted(None);
-        assert!(
-            IdentityRuntime::resolve_persisted_owner_states(&missing, &roster)
-                .await
-                .is_err(),
-            "resolve_many must answer for every requested identity; a missing entry is a provider \
-             error, not an implicit Uninitialized, and must not be inferred as the creation path"
-        );
+        // Missing entry: a provider-contract violation, terminal on ANY store -
+        // and now actually EXERCISED on a blob-only double. Previously this claim
+        // was only ever run head-canonical, because delegating
+        // as_incremental_sessions to a real store makes the double
+        // head-canonical, so the assertion named one branch and tested another.
+        for head_canonical in [true, false] {
+            let missing = scripted(None, head_canonical);
+            assert!(
+                IdentityRuntime::resolve_persisted_owner_states(&missing, &roster)
+                    .await
+                    .is_err(),
+                "resolve_many must answer for every requested identity; a missing entry is a \
+                 provider error on EITHER store shape, not an implicit Uninitialized \
+                 (head_canonical={head_canonical})"
+            );
+        }
 
         // Broken: the identity HAS durable state and the store says it is
         // unusable. Terminal on a head-canonical store - publishing nothing and
         // letting prepare proceed means recovery meets an empty owner map for a
         // session that exists, which is the defect, not a creation.
-        let broken = scripted(Some(
-            crate::identity_first::types::ContinuityResolveState::Broken {
-                failure: crate::identity_first::types::ContinuityFailure {
-                    identity: identity.clone(),
-                    kind: crate::identity_first::types::ContinuityFailureKind::SnapshotCorrupted,
-                    record: None,
-                    detail: "scripted broken head".to_string(),
+        let broken = scripted(
+            Some(
+                crate::identity_first::types::ContinuityResolveState::Broken {
+                    failure: crate::identity_first::types::ContinuityFailure {
+                        identity: identity.clone(),
+                        kind:
+                            crate::identity_first::types::ContinuityFailureKind::SnapshotCorrupted,
+                        record: None,
+                        detail: "scripted broken head".to_string(),
+                    },
                 },
-            },
-        ));
+            ),
+            true,
+        );
         assert!(
             IdentityRuntime::resolve_persisted_owner_states(&broken, &roster)
                 .await
@@ -11694,14 +11686,26 @@ mod reset_reprofile_tests {
             durable_spec(identity.clone(), "calendar"),
             durable_spec(identity.clone(), "calendar"),
         ];
-        let ok_store = scripted(Some(
-            crate::identity_first::types::ContinuityResolveState::Uninitialized,
-        ));
+        let ok_store = scripted(
+            Some(crate::identity_first::types::ContinuityResolveState::Uninitialized),
+            true,
+        );
+        let reads_before = reads.load(std::sync::atomic::Ordering::SeqCst);
+        let inv06 = IdentityRuntime::resolve_persisted_owner_states(&ok_store, &duplicated).await;
+        // The TYPED variant, not merely is_err(): an is_err() assertion passes on
+        // any failure at all, including one from a later store read, which is
+        // exactly the outcome this test exists to rule out.
         assert!(
-            IdentityRuntime::resolve_persisted_owner_states(&ok_store, &duplicated)
-                .await
-                .is_err(),
-            "roster uniqueness (INV-06) must be validated before the first store read"
+            matches!(inv06, Err(IdentityRuntimeError::DuplicateIdentity(_))),
+            "a duplicated roster identity must fail as DuplicateIdentity, not as some later \
+             ownership conflict: {inv06:?}"
+        );
+        // And ZERO store reads: INV-06 runs before the first read, so the counter
+        // must not have moved.
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::SeqCst),
+            reads_before,
+            "INV-06 must reject a malformed roster BEFORE any store read"
         );
         Ok(())
     }
