@@ -19,14 +19,14 @@ workspace = true
 async-trait = "0.1"
 base64 = "0.22"
 bytes = "1"
-meerkat-core = { version = "=0.8.30", git = "https://github.com/lukacf/meerkat.git", rev = "e9526278c82627b8c8be381ec71cdef4b844db86" }
+meerkat-core = { version = "=0.8.30", git = "https://github.com/lukacf/meerkat.git", rev = "3202b36cc453e894f8e258225a790278cba5c7fd" }
 # The one-remote-bundle reference provider (M4b) implements both levels of
 # the composite seam: meerkat's RealmStorageProvider (facade storage_provider
 # module + in-memory store implementations) next to MobKit's realm store set.
-meerkat = { version = "=0.8.30", git = "https://github.com/lukacf/meerkat.git", rev = "e9526278c82627b8c8be381ec71cdef4b844db86", features = ["session-store", "memory-store"] }
-meerkat-runtime = { version = "=0.8.30", git = "https://github.com/lukacf/meerkat.git", rev = "e9526278c82627b8c8be381ec71cdef4b844db86" }
-meerkat-store = { version = "=0.8.30", git = "https://github.com/lukacf/meerkat.git", rev = "e9526278c82627b8c8be381ec71cdef4b844db86", features = ["memory"] }
-meerkat-store-conformance = { version = "=0.8.30", git = "https://github.com/lukacf/meerkat.git", rev = "e9526278c82627b8c8be381ec71cdef4b844db86" }
+meerkat = { version = "=0.8.30", git = "https://github.com/lukacf/meerkat.git", rev = "3202b36cc453e894f8e258225a790278cba5c7fd", features = ["session-store", "memory-store"] }
+meerkat-runtime = { version = "=0.8.30", git = "https://github.com/lukacf/meerkat.git", rev = "3202b36cc453e894f8e258225a790278cba5c7fd" }
+meerkat-store = { version = "=0.8.30", git = "https://github.com/lukacf/meerkat.git", rev = "3202b36cc453e894f8e258225a790278cba5c7fd", features = ["memory"] }
+meerkat-store-conformance = { version = "=0.8.30", git = "https://github.com/lukacf/meerkat.git", rev = "3202b36cc453e894f8e258225a790278cba5c7fd" }
 meerkat-mobkit = { path = "../meerkat-mobkit" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde_json = "1"

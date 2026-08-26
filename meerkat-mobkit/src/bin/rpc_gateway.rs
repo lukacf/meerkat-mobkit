@@ -1292,10 +1292,37 @@ mod tests {
             .resolve_live_open_admission(&session_id, &channel_id, &identity)
             .await
             .expect("admit exact live binding");
+        // 0.8.30 gates staging on `execution_mode_is_resolved`. Open admission
+        // does not resolve a mode, so this fixture went straight from admitted
+        // to staging and the guard refused it. The sequence mirrors the
+        // established helper in live_wiring.rs; the mode is incidental to what
+        // this test asserts (writer/queue-ack mechanics), it is only what the
+        // guard requires to be RESOLVED rather than absent.
+        let execution_profile =
+            meerkat_runtime::live_execution::LiveExecutionProfileSelection::__test_new(
+                "mobkit-test-public-observation",
+                meerkat_core::LiveExecutionMode::FunctionBridge,
+                meerkat_core::LiveExecutionCapabilities {
+                    function_bridge: true,
+                    client_context: false,
+                },
+            )
+            .expect("test execution profile");
         machine
+            .resolve_live_execution_profile_admission(&session_id, &channel_id, &execution_profile)
+            .await
+            .expect("resolve test live execution profile");
+        let stage = machine
             .stage_experimental_live_execution(&session_id, &channel_id, 0)
             .await
             .expect("stage exact live binding");
+        // The answer-accept-and-bind guard requires a registered playback
+        // owner; without it the bind is refused from Attached. Same sequence as
+        // `stage_receipt_answer_on_machine` in live_wiring.rs.
+        let _readiness = machine
+            .register_live_playback_owner(&stage, "publication-test-playback-owner")
+            .await
+            .expect("register test playback owner");
         let token = "publication-test-token";
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
