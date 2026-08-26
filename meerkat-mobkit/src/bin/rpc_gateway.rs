@@ -740,6 +740,67 @@ mod tests {
         }
     }
 
+    /// Every documented runtime_options door must survive the UNKNOWN-FIELD
+    /// ALLOWLIST, not merely have a handler.
+    ///
+    /// Both of these shipped in 0.8.24 with a working handler, a documented
+    /// struct field, and NO allowlist entry, so the unknown-field rejection ran
+    /// first and the handlers were dead code in the published binary. HomeCore
+    /// found it by sending the documented line to the released artifact and
+    /// getting `unsupported runtime_options fields: mob_composition` - one step
+    /// EARLIER than the refusal the flag existed to avoid.
+    ///
+    /// The persistence suite stayed green throughout because it constructs the
+    /// authority through the builder, never through this parse path. A test that
+    /// does not cross the door cannot prove the door opens.
+    ///
+    /// Asserts the PARSED VALUE, not the absence of an error: an allowlist entry
+    /// with a broken handler would pass an is_ok() check.
+    #[test]
+    fn documented_runtime_options_doors_survive_the_unknown_field_allowlist() {
+        let candidate = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "mob_composition": { "authority": "candidate" } } }),
+            None,
+        )
+        .expect("mob_composition must pass the allowlist");
+        assert_eq!(
+            candidate.composition_authority,
+            meerkat_mobkit::mob_composition_manifest::CompositionAuthority::NonAuthoritative,
+            "the candidate declaration must reach the parsed options, not just avoid rejection"
+        );
+
+        let authoritative = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "mob_composition": { "authority": "authoritative" } } }),
+            None,
+        )
+        .expect("explicit authoritative must parse");
+        assert_eq!(
+            authoritative.composition_authority,
+            meerkat_mobkit::mob_composition_manifest::CompositionAuthority::Authoritative
+        );
+
+        let declared = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "declare_spec_update": { "expected_revision": 7 } } }),
+            None,
+        )
+        .expect("declare_spec_update must pass the allowlist");
+        assert_eq!(
+            declared.declare_spec_update,
+            Some(7),
+            "the declared revision must reach the parsed options"
+        );
+
+        // Default stays authoritative and undeclared, so a launch that says
+        // nothing keeps the protection rather than silently losing it.
+        let quiet = parse_gateway_runtime_options(&json!({ "runtime_options": {} }), None)
+            .expect("empty options");
+        assert_eq!(
+            quiet.composition_authority,
+            meerkat_mobkit::mob_composition_manifest::CompositionAuthority::Authoritative
+        );
+        assert_eq!(quiet.declare_spec_update, None);
+    }
+
     #[test]
     fn gateway_runtime_options_control_grants_are_closed_and_scoped() {
         let defaulted = parse_gateway_runtime_options(&json!({ "runtime_options": {} }), None)
@@ -3236,6 +3297,8 @@ fn parse_gateway_runtime_options(
         "host_runnables",
         "runtime_store",
         "mob_storage",
+        "mob_composition",
+        "declare_spec_update",
         "compaction",
     ];
     let unsupported = runtime_options
