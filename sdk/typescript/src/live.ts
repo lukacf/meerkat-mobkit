@@ -12,13 +12,10 @@ const EXECUTION_MODE_CAPABILITIES: Readonly<Record<LiveExecutionMode, string>> =
   function_bridge: LIVE_EXECUTION_FUNCTION_BRIDGE_V1,
   client_context: LIVE_EXECUTION_CLIENT_CONTEXT_V1,
 };
-
-export type LiveProvider =
-  | "anthropic"
-  | "openai"
-  | "gemini"
-  | "self_hosted"
-  | "other";
+const RESERVED_GPT_LIVE_PROFILE_IDS = new Set([
+  "openai.gpt-live-1-codex.client-context.v1",
+  "openai.gpt-live-1-codex.function-bridge.v1",
+]);
 
 export interface LiveAuthBindingRef {
   readonly realm: string;
@@ -34,6 +31,12 @@ export interface ExperimentalLiveGatewayConfig {
   readonly gate0Qualification: string;
   readonly authBinding: LiveAuthBindingRef;
   readonly voice: string;
+  readonly executionProfiles?: readonly ExperimentalLiveExecutionProfileConfig[];
+}
+
+export interface ExperimentalLiveExecutionProfileConfig {
+  readonly profileId: string;
+  readonly sessionInstructions: string;
 }
 
 export function experimentalLiveGatewayConfigToWire(
@@ -49,6 +52,7 @@ export function experimentalLiveGatewayConfigToWire(
       "gate0Qualification",
       "authBinding",
       "voice",
+      "executionProfiles",
     ],
     "experimental live config",
   );
@@ -96,30 +100,58 @@ export function experimentalLiveGatewayConfigToWire(
     auth_binding: authBinding,
     voice,
   };
+  if (config.executionProfiles !== undefined) {
+    if (!Array.isArray(config.executionProfiles)) {
+      throw new TypeError("experimental live executionProfiles must be an array");
+    }
+    const seen = new Set<string>();
+    const executionProfiles = config.executionProfiles.map((profile, index) => {
+      const profileRecord = asRecord(
+        profile,
+        `experimental live executionProfiles[${index}]`,
+      );
+      assertExactKeys(
+        profileRecord,
+        ["profileId", "sessionInstructions"],
+        `experimental live executionProfiles[${index}]`,
+      );
+      const profileId = requireString(
+        profileRecord.profileId,
+        `experimental live executionProfiles[${index}].profileId`,
+      ).trim();
+      if (RESERVED_GPT_LIVE_PROFILE_IDS.has(profileId)) {
+        throw new TypeError(
+          `experimental live executionProfiles[${index}].profileId is reserved`,
+        );
+      }
+      if (seen.has(profileId)) {
+        throw new TypeError(
+          `experimental live executionProfiles contains duplicate profileId ${profileId}`,
+        );
+      }
+      seen.add(profileId);
+      return {
+        profile_id: profileId,
+        session_instructions: requireString(
+          profileRecord.sessionInstructions,
+          `experimental live executionProfiles[${index}].sessionInstructions`,
+        ).trim(),
+      };
+    });
+    if (executionProfiles.length > 0) {
+      result.execution_profiles = executionProfiles;
+    }
+  }
   return result;
 }
 
-export type LiveAuthBindingOverride =
-  | { readonly action: "set"; readonly value: LiveAuthBindingRef }
-  | { readonly action: "clear" };
-
 export interface LiveExecutionIdentityV1 {
   readonly profileId: string;
-  readonly model?: string;
-  readonly provider?: LiveProvider;
-  readonly selfHostedServerId?: string;
-  readonly authBinding?: LiveAuthBindingOverride;
 }
 
 export interface LiveExecutionIdentityWireV1 {
   readonly version: "v1";
   readonly profile_id: string;
-  readonly model?: string;
-  readonly provider?: LiveProvider;
-  readonly self_hosted_server_id?: string;
-  readonly auth_binding?:
-    | { readonly action: "set"; readonly value: LiveAuthBindingRef }
-    | { readonly action: "clear" };
 }
 
 export type LiveTransportBootstrap =
@@ -259,82 +291,41 @@ function requireBoolean(value: unknown, context: string): boolean {
   return value;
 }
 
-const PROVIDERS: readonly LiveProvider[] = [
-  "anthropic",
-  "openai",
-  "gemini",
-  "self_hosted",
-  "other",
-];
-
 /** Serialize the strict v1 envelope to canonical snake-case wire JSON. */
 export function liveExecutionIdentityV1ToWire(
   input: LiveExecutionIdentityV1,
 ): LiveExecutionIdentityWireV1 {
   const raw = asRecord(input, "execution identity");
-  assertExactKeys(
-    raw,
-    ["profileId", "model", "provider", "selfHostedServerId", "authBinding"],
-    "execution identity",
-  );
-  const result: {
-    version: "v1";
-    profile_id: string;
-    model?: string;
-    provider?: LiveProvider;
-    self_hosted_server_id?: string;
-    auth_binding?: LiveExecutionIdentityWireV1["auth_binding"];
-  } = {
+  assertExactKeys(raw, ["profileId"], "execution identity");
+  return {
     version: "v1",
     profile_id: requireString(raw.profileId, "profileId"),
   };
-  if (raw.model !== undefined) result.model = requireString(raw.model, "model");
-  if (raw.provider !== undefined) {
-    if (!PROVIDERS.includes(raw.provider as LiveProvider)) {
-      throw new TypeError("provider is not a known live provider");
-    }
-    result.provider = raw.provider as LiveProvider;
-  }
-  if (raw.selfHostedServerId !== undefined) {
-    result.self_hosted_server_id = requireString(
-      raw.selfHostedServerId,
-      "selfHostedServerId",
-    );
-  }
-  if (raw.authBinding !== undefined) {
-    const override = asRecord(raw.authBinding, "authBinding");
-    if (override.action === "clear") {
-      assertExactKeys(override, ["action"], "authBinding clear override");
-      result.auth_binding = { action: "clear" };
-    } else if (override.action === "set") {
-      assertExactKeys(override, ["action", "value"], "authBinding set override");
-      const binding = asRecord(override.value, "authBinding value");
-      assertExactKeys(binding, ["realm", "binding", "profile"], "authBinding value");
-      const value: { realm: string; binding: string; profile?: string } = {
-        realm: requireString(binding.realm, "authBinding.value.realm"),
-        binding: requireString(binding.binding, "authBinding.value.binding"),
-      };
-      if (binding.profile !== undefined) {
-        value.profile = requireString(binding.profile, "authBinding.value.profile");
-      }
-      result.auth_binding = { action: "set", value };
-    } else {
-      throw new TypeError("authBinding.action must be set or clear");
-    }
-  }
-  return result;
 }
 
 /** Reject ambiguous mixing of the new envelope with legacy top-level fields. */
 export function liveOpenExecutionIdentityParams(
   executionIdentity: LiveExecutionIdentityV1,
-  legacy?: { readonly model?: unknown; readonly provider?: unknown },
+  legacy?: {
+    readonly model?: unknown;
+    readonly provider?: unknown;
+    readonly auth_binding?: unknown;
+    readonly self_hosted_server_id?: unknown;
+    readonly provider_params?: unknown;
+  },
 ): { readonly execution_identity: LiveExecutionIdentityWireV1 } {
-  if (legacy !== undefined && Object.prototype.hasOwnProperty.call(legacy, "model")) {
-    throw new TypeError("executionIdentity conflicts with legacy top-level model");
-  }
-  if (legacy !== undefined && Object.prototype.hasOwnProperty.call(legacy, "provider")) {
-    throw new TypeError("executionIdentity conflicts with legacy top-level provider");
+  for (const field of [
+    "model",
+    "provider",
+    "auth_binding",
+    "self_hosted_server_id",
+    "provider_params",
+  ] as const) {
+    if (legacy !== undefined && Object.prototype.hasOwnProperty.call(legacy, field)) {
+      throw new TypeError(
+        `executionIdentity conflicts with legacy top-level ${field}`,
+      );
+    }
   }
   return { execution_identity: liveExecutionIdentityV1ToWire(executionIdentity) };
 }

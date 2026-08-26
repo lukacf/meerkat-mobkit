@@ -190,8 +190,11 @@ fn experimental_live_registration_is_app_opt_in_without_http_mount() {
     let caps = gateway.wait_for_response("caps", Duration::from_secs(15));
     assert_eq!(
         caps["result"]["feature_capabilities"],
-        json!([]),
-        "an unqualified build must keep experimental capability absent"
+        json!([
+            "live.execution_identity.v1",
+            "live.execution.client_context.v1"
+        ]),
+        "the qualified experimental build must advertise only strict identity selection and client-context execution"
     );
     let methods = caps["result"]["methods"].as_array().expect("methods");
     assert!(
@@ -243,7 +246,7 @@ fn live_opt_in_advertises_methods_and_mounts_the_ws_route() {
         "method": "mobkit/live/open",
         "params": {
             "identity": "worker-1",
-            "execution_identity": {"version": "v1", "model": "gpt-live-1-codex", "provider": "openai"}
+            "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
         }
     }));
     let unavailable = gateway.wait_for_response("experimental-off", Duration::from_secs(15));
@@ -260,7 +263,7 @@ fn live_opt_in_advertises_methods_and_mounts_the_ws_route() {
         "params": {
             "identity": "worker-1",
             "model": "legacy",
-            "execution_identity": {"version": "v1", "model": "gpt-live-1-codex"}
+            "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
         }
     }));
     let conflict = gateway.wait_for_response("experimental-conflict", Duration::from_secs(15));
@@ -290,13 +293,13 @@ fn live_opt_in_advertises_methods_and_mounts_the_ws_route() {
 
 /// Fix 5: `mobkit/live/truncate` is served (not method-not-found) and
 /// answers TYPED errors - invalid params for an empty opaque output_id, and the
-/// machine-authority channel-not-found rejection for a channel that was
-/// never opened. A full truncate round-trip needs a live provider channel;
+/// strict target rejection when no durable identity accompanies an active
+/// receipt claim. A full truncate round-trip needs a live provider channel;
 /// the command mapping is covered by the shared
 /// `live_command_result_from_machine_authority` unit coverage.
 #[cfg(feature = "experimental-gpt-live")]
 #[test]
-fn live_truncate_answers_typed_errors_without_a_channel() {
+fn live_truncate_answers_typed_errors_without_active_custody() {
     let state_dir = tempfile::tempdir().expect("state dir");
     let mut gateway = Gateway::start();
     gateway.send(init_params(&state_dir, json!(true)));
@@ -330,7 +333,8 @@ fn live_truncate_answers_typed_errors_without_a_channel() {
         "params": {
             "channel_id": "no-such-channel",
             "output_id": "opaque-output-1",
-            "audio_played_ms": 1200
+            "audio_played_ms": 1200,
+            "activation_receipt": "not-a-real-activation-receipt"
         }
     }));
     let response = gateway.wait_for_response("truncate-unbound", Duration::from_secs(15));
@@ -339,8 +343,8 @@ fn live_truncate_answers_typed_errors_without_a_channel() {
         error["message"]
             .as_str()
             .expect("error message")
-            .contains("no-such-channel"),
-        "unbound-channel rejection names the channel: {response}"
+            .contains("exactly one non-empty identity is required"),
+        "strict truncate rejects receipt claims without durable identity authority: {response}"
     );
 }
 
@@ -423,6 +427,8 @@ mod cross_provider_open {
     use meerkat_mobkit::live_wiring::{GatewayLiveContext, attach_live, handle_live_method};
     use meerkat_mobkit::rpc::JsonRpcResponse;
     use serde_json::{Value, json};
+
+    static LIVE_OPEN_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     struct LiveOpenStack {
         ctx: GatewayLiveContext,
@@ -512,6 +518,22 @@ mod cross_provider_open {
             "create honors the pre-minted session"
         );
 
+        // Production member hosts admit only mob-owned peer ingress. Record
+        // the same ownership fact materialization installs before exercising
+        // the member-host live path.
+        let comms_name = format!("gateway-live-member-{session_id}");
+        let comms: Arc<dyn meerkat_core::agent::CommsRuntime> = Arc::new(
+            meerkat_comms::CommsRuntime::inproc_only(&comms_name).expect("inproc comms runtime"),
+        );
+        machine
+            .maybe_spawn_mob_comms_drain(
+                &session_id,
+                comms,
+                meerkat_runtime::meerkat_machine::dsl::MobId::from("gateway-live-test"),
+            )
+            .await
+            .expect("record mob-owned ingress for member session");
+
         let scripted = Arc::new(ScriptedRealtimeSessionFactory::new());
         let mut ctx = attach_live(
             Arc::clone(&service),
@@ -563,6 +585,7 @@ mod cross_provider_open {
     /// opened cross-provider.
     #[tokio::test]
     async fn cross_provider_open_reaches_the_selected_providers_realtime_lane() {
+        let _open_guard = LIVE_OPEN_TEST_LOCK.lock().await;
         let stack = anthropic_member_stack().await;
         let inherited = stack
             .service
@@ -577,7 +600,11 @@ mod cross_provider_open {
 
         let response = open(
             &stack,
-            json!({"provider": "openai", "model": "gpt-realtime-2"}),
+            json!({
+                "provider": "openai",
+                "model": "gpt-realtime-2",
+                "seed_max_chars": 200_000
+            }),
         )
         .await;
         assert!(
@@ -627,7 +654,11 @@ mod cross_provider_open {
         .await;
         assert!(closed.error.is_none(), "close must succeed: {closed:?}");
 
-        let reopened = open(&stack, json!({"model": "gpt-realtime-2"})).await;
+        let reopened = open(
+            &stack,
+            json!({"model": "gpt-realtime-2", "seed_max_chars": 200_000}),
+        )
+        .await;
         let error = reopened.error.expect("typed precheck rejection on reopen");
         assert_eq!(error.code, -32602, "{error:?}");
         assert_eq!(
@@ -642,8 +673,13 @@ mod cross_provider_open {
     /// provider lane.
     #[tokio::test]
     async fn omitted_provider_keeps_the_typed_model_not_realtime_rejection() {
+        let _open_guard = LIVE_OPEN_TEST_LOCK.lock().await;
         let stack = anthropic_member_stack().await;
-        let response = open(&stack, json!({"model": "gpt-realtime-2"})).await;
+        let response = open(
+            &stack,
+            json!({"model": "gpt-realtime-2", "seed_max_chars": 200_000}),
+        )
+        .await;
         let error = response.error.expect("typed precheck rejection");
         assert_eq!(error.code, -32602, "{error:?}");
         assert_eq!(
@@ -663,6 +699,7 @@ mod cross_provider_open {
     /// pair is mutated together.
     #[tokio::test]
     async fn unknown_or_unpaired_provider_is_a_typed_parameter_error() {
+        let _open_guard = LIVE_OPEN_TEST_LOCK.lock().await;
         let stack = anthropic_member_stack().await;
 
         let response = open(

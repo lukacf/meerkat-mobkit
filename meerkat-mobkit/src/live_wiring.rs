@@ -5718,22 +5718,35 @@ mod tests {
     }
 
     #[cfg(feature = "experimental-gpt-live")]
+    struct ReceiptPendingBoundReady;
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat_live::ProviderWebrtcPendingBoundReadyResolver for ReceiptPendingBoundReady {
+        async fn resolve(self: Box<Self>) -> Result<u64, meerkat_live::ProviderWebrtcBrokerError> {
+            Ok(0)
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
     #[async_trait]
     impl meerkat_live::LiveWebrtcAnswerTransport for ReceiptAnswerTransport {
         async fn answer_admitted_offer(
             &self,
             offer: meerkat_live::LiveWebrtcAdmittedOffer,
         ) -> Result<meerkat_live::LiveWebrtcAnswerAccepted, meerkat_live::LiveWebrtcError> {
-            let answer = offer.into_provider_offer()?.into_seeded_answer(
-                "receipt-answer".to_string(),
-                Arc::new(ReceiptSideband),
-                0,
-            );
-            let (answer_sdp, _sideband, bound_ready) = answer.into_parts();
+            let answer = offer
+                .into_provider_offer()?
+                .into_pending_bound_ready_answer(
+                    "receipt-answer".to_string(),
+                    Arc::new(ReceiptSideband),
+                    Box::new(ReceiptPendingBoundReady),
+                );
+            let (answer_sdp, _sideband, pending_bound_ready) = answer.into_parts();
             Ok(meerkat_live::LiveWebrtcAnswerAccepted {
                 answer_sdp,
                 answer_observation_sequence: 41,
-                bound_ready: Some(bound_ready),
+                pending_bound_ready: Some(pending_bound_ready),
             })
         }
 
@@ -5875,7 +5888,7 @@ mod tests {
     #[cfg(feature = "experimental-gpt-live")]
     #[async_trait]
     impl meerkat::surface::LiveWebrtcBoundReadyCustody for TestBoundReadyCustody {
-        async fn commit(mut self: Box<Self>) {
+        async fn commit(mut self: Box<Self>) -> Result<(), String> {
             if let Some(authority) = self.authority.take() {
                 let _ = authority.commit();
             }
@@ -5883,6 +5896,7 @@ mod tests {
             self.activator
                 .run_bound_channel(self.binding.clone(), Arc::clone(&self.control))
                 .await;
+            Ok(())
         }
 
         async fn rollback(mut self: Box<Self>) -> Result<(), String> {
@@ -6508,11 +6522,11 @@ mod tests {
 
     #[cfg(feature = "experimental-gpt-live-test")]
     #[tokio::test]
-    async fn failed_outer_publication_rejects_transport_and_rolls_back_bound_custody() {
+    async fn failed_outer_publication_rejects_transport_without_binding_pending_custody() {
         let (
             answer,
             transport,
-            _activator,
+            activator,
             committed,
             rolled_back,
             _machine,
@@ -6531,8 +6545,16 @@ mod tests {
             .expect("failed writer settles rejection");
         assert_eq!(transport.accepted.load(Ordering::SeqCst), 0);
         assert_eq!(transport.rejected.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            activator.calls.load(Ordering::SeqCst),
+            0,
+            "failed publication must discard pending readiness before binding"
+        );
         assert!(!committed.load(Ordering::SeqCst));
-        assert!(rolled_back.load(Ordering::SeqCst));
+        assert!(
+            !rolled_back.load(Ordering::SeqCst),
+            "no bound custody exists to roll back before successful publication"
+        );
     }
 
     #[cfg(feature = "experimental-gpt-live-test")]

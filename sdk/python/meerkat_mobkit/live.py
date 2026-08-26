@@ -14,8 +14,10 @@ _EXECUTION_MODE_CAPABILITIES: dict[str, str] = {
     "client_context": LIVE_EXECUTION_CLIENT_CONTEXT_V1,
 }
 
-LiveProvider = Literal["anthropic", "openai", "gemini", "self_hosted", "other"]
-_PROVIDERS = {"anthropic", "openai", "gemini", "self_hosted", "other"}
+_RESERVED_GPT_LIVE_PROFILE_IDS = {
+    "openai.gpt-live-1-codex.client-context.v1",
+    "openai.gpt-live-1-codex.function-bridge.v1",
+}
 
 
 def _exact(data: dict[str, Any], allowed: set[str], context: str) -> None:
@@ -78,6 +80,28 @@ class LiveAuthBindingRef:
 
 
 @dataclass(frozen=True)
+class ExperimentalLiveExecutionProfileConfig:
+    """One host-trusted, caller-selectable live instruction profile."""
+
+    profile_id: str
+    session_instructions: str
+
+    def to_dict(self) -> dict[str, str]:
+        profile_id = _non_empty(
+            self.profile_id, "experimental live execution profile.profile_id"
+        ).strip()
+        if profile_id in _RESERVED_GPT_LIVE_PROFILE_IDS:
+            raise ValueError("experimental live execution profile.profile_id is reserved")
+        return {
+            "profile_id": profile_id,
+            "session_instructions": _non_empty(
+                self.session_instructions,
+                "experimental live execution profile.session_instructions",
+            ).strip(),
+        }
+
+
+@dataclass(frozen=True)
 class ExperimentalLiveGatewayConfig:
     """Explicit host registration for the pre-release GPT Live lane.
 
@@ -93,6 +117,7 @@ class ExperimentalLiveGatewayConfig:
     gate0_qualification: str
     auth_binding: LiveAuthBindingRef
     voice: str
+    execution_profiles: tuple[ExperimentalLiveExecutionProfileConfig, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         values = {
@@ -112,124 +137,48 @@ class ExperimentalLiveGatewayConfig:
             **values,
             "auth_binding": self.auth_binding.to_dict(),
         }
+        if not isinstance(self.execution_profiles, tuple):
+            raise TypeError("experimental live execution_profiles must be a tuple")
+        seen: set[str] = set()
+        execution_profiles: list[dict[str, str]] = []
+        for profile in self.execution_profiles:
+            if not isinstance(profile, ExperimentalLiveExecutionProfileConfig):
+                raise TypeError(
+                    "experimental live execution_profiles entries must be "
+                    "ExperimentalLiveExecutionProfileConfig"
+                )
+            serialized = profile.to_dict()
+            profile_id = serialized["profile_id"]
+            if profile_id in seen:
+                raise ValueError(
+                    f"experimental live execution_profiles contains duplicate "
+                    f"profile_id {profile_id}"
+                )
+            seen.add(profile_id)
+            execution_profiles.append(serialized)
+        if execution_profiles:
+            result["execution_profiles"] = execution_profiles
         return result
-
-
-@dataclass(frozen=True)
-class LiveAuthBindingOverride:
-    action: Literal["set", "clear"]
-    value: LiveAuthBindingRef | None = None
-
-    @classmethod
-    def set(cls, value: LiveAuthBindingRef) -> LiveAuthBindingOverride:
-        return cls(action="set", value=value)
-
-    @classmethod
-    def clear(cls) -> LiveAuthBindingOverride:
-        return cls(action="clear")
-
-    def to_dict(self) -> dict[str, Any]:
-        if self.action == "clear":
-            if self.value is not None:
-                raise ValueError("clear auth binding override cannot carry value")
-            return {"action": "clear"}
-        if self.action == "set" and self.value is not None:
-            return {"action": "set", "value": self.value.to_dict()}
-        raise ValueError("set auth binding override requires value")
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> LiveAuthBindingOverride:
-        action = data.get("action")
-        if action == "clear":
-            _exact(data, {"action"}, "auth binding clear override")
-            return cls.clear()
-        if action == "set":
-            _exact(data, {"action", "value"}, "auth binding set override")
-            value = data.get("value")
-            if not isinstance(value, dict):
-                raise ValueError("auth binding set value must be an object")
-            return cls.set(LiveAuthBindingRef.from_dict(value))
-        raise ValueError("auth binding action must be set or clear")
 
 
 @dataclass(frozen=True)
 class LiveExecutionIdentityV1:
     version: Literal["v1"] = field(default="v1", init=False)
     profile_id: str
-    model: str | None = None
-    provider: LiveProvider | None = None
-    self_hosted_server_id: str | None = None
-    auth_binding: LiveAuthBindingOverride | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        result: dict[str, Any] = {
+        return {
             "version": self.version,
             "profile_id": _non_empty(self.profile_id, "profile_id"),
         }
-        if self.model is not None:
-            if not isinstance(self.model, str) or not self.model.strip():
-                raise ValueError("model must be a non-empty string")
-            result["model"] = self.model
-        if self.provider is not None:
-            if self.provider not in _PROVIDERS:
-                raise ValueError("provider is not a known live provider")
-            result["provider"] = self.provider
-        if self.self_hosted_server_id is not None:
-            if (
-                not isinstance(self.self_hosted_server_id, str)
-                or not self.self_hosted_server_id.strip()
-            ):
-                raise ValueError("self_hosted_server_id must be a non-empty string")
-            result["self_hosted_server_id"] = self.self_hosted_server_id
-        if self.auth_binding is not None:
-            result["auth_binding"] = self.auth_binding.to_dict()
-        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LiveExecutionIdentityV1:
-        _exact(
-            data,
-            {
-                "version",
-                "profile_id",
-                "model",
-                "provider",
-                "self_hosted_server_id",
-                "auth_binding",
-            },
-            "execution identity",
-        )
+        _exact(data, {"version", "profile_id"}, "execution identity")
         if data.get("version") != "v1":
             raise ValueError("execution identity.version must be v1")
-        model = data.get("model")
-        if "model" in data and (
-            not isinstance(model, str) or not model.strip()
-        ):
-            raise ValueError("model must be a non-empty string")
-        provider = data.get("provider")
-        if "provider" in data and provider not in _PROVIDERS:
-            raise ValueError("provider is not a known live provider")
-        self_hosted_server_id = data.get("self_hosted_server_id")
-        if "self_hosted_server_id" in data and (
-            not isinstance(self_hosted_server_id, str)
-            or not self_hosted_server_id.strip()
-        ):
-            raise ValueError("self_hosted_server_id must be a non-empty string")
-        auth_raw = data.get("auth_binding")
-        if "auth_binding" in data and auth_raw is None:
-            raise ValueError(
-                "auth_binding cannot be null; omit it to inherit or use action=clear"
-            )
-        if auth_raw is not None and not isinstance(auth_raw, dict):
-            raise ValueError("auth_binding must be an object")
         return cls(
             profile_id=_string(data, "profile_id", "execution identity"),
-            model=model,
-            provider=provider,
-            self_hosted_server_id=self_hosted_server_id,
-            auth_binding=LiveAuthBindingOverride.from_dict(auth_raw)
-            if auth_raw is not None
-            else None,
         )
 
 
@@ -238,10 +187,17 @@ def live_open_execution_identity_params(
     **legacy: Any,
 ) -> dict[str, Any]:
     """Serialize the v1 envelope and reject ambiguous legacy mixing."""
-    if "model" in legacy:
-        raise ValueError("execution_identity conflicts with legacy top-level model")
-    if "provider" in legacy:
-        raise ValueError("execution_identity conflicts with legacy top-level provider")
+    for field in [
+        "model",
+        "provider",
+        "auth_binding",
+        "self_hosted_server_id",
+        "provider_params",
+    ]:
+        if field in legacy:
+            raise ValueError(
+                f"execution_identity conflicts with legacy top-level {field}"
+            )
     return {"execution_identity": execution_identity.to_dict()}
 
 

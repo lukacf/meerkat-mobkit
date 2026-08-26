@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from meerkat_mobkit import (
     ExperimentalLiveGatewayConfig,
+    ExperimentalLiveExecutionProfileConfig,
     IdentityBootstrapMode,
     LiveAuthBindingRef,
 )
@@ -49,6 +50,12 @@ class TestBuilderChain:
                     realm="family", binding="chatgpt-oauth", profile="luka"
                 ),
                 voice="marin",
+                execution_profiles=(
+                    ExperimentalLiveExecutionProfileConfig(
+                        profile_id="homecore.reachy.open-room.v1",
+                        session_instructions="You are Reachy's voice embodiment.",
+                    ),
+                ),
             )
         )
         params = MobKitRuntime(b._config)._build_init_params()
@@ -65,6 +72,12 @@ class TestBuilderChain:
                 "profile": "luka",
             },
             "voice": "marin",
+            "execution_profiles": [
+                {
+                    "profile_id": "homecore.reachy.open-room.v1",
+                    "session_instructions": "You are Reachy's voice embodiment.",
+                }
+            ],
         }
 
     @pytest.mark.parametrize(

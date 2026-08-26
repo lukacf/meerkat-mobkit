@@ -153,11 +153,10 @@ pub use identity_first::{
 pub use live_contracts::{
     ActiveLiveChannelHandle, ExperimentalLiveChannelStatus, FeatureCapability,
     LIVE_EXECUTION_CLIENT_CONTEXT_V1, LIVE_EXECUTION_FUNCTION_BRIDGE_V1,
-    LIVE_EXECUTION_IDENTITY_V1, LiveAuthBindingOverride, LiveChannelHandle,
-    LiveExecutionIdentityContractError, LiveExecutionIdentityV1, LiveExecutionIdentityVersion,
-    LiveExecutionMode, LiveExecutionProvider, LivePlaybackOwnerReadiness, PendingLiveChannelHandle,
-    parse_live_open_execution_identity, validate_experimental_live_open_surface,
-    validate_experimental_live_target_surface,
+    LIVE_EXECUTION_IDENTITY_V1, LiveChannelHandle, LiveExecutionIdentityContractError,
+    LiveExecutionIdentityV1, LiveExecutionIdentityVersion, LiveExecutionMode,
+    LivePlaybackOwnerReadiness, PendingLiveChannelHandle, parse_live_open_execution_identity,
+    validate_experimental_live_open_surface, validate_experimental_live_target_surface,
 };
 pub use meerkat_mob::{MemberTurnEventSender, MemberTurnHandle, MemberTurnOptions};
 pub use memory::{

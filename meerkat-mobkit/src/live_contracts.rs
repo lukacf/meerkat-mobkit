@@ -9,8 +9,7 @@
 use std::fmt;
 
 use meerkat_contracts::{
-    LiveOpenResult, WireAuthBindingRef, WireLiveChannelCapabilities, WireLiveContinuityMode,
-    WireLiveTransportBootstrap,
+    LiveOpenResult, WireLiveChannelCapabilities, WireLiveContinuityMode, WireLiveTransportBootstrap,
 };
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -23,8 +22,10 @@ use serde_json::Value;
 /// same value through the upstream qualified capability projection.
 pub const LIVE_EXECUTION_IDENTITY_V1: &str = "live.execution_identity.v1";
 
-/// Catalog-qualified execution through the single provider-neutral Meerkat
-/// function bridge.
+/// Dormant compatibility vocabulary for provider-neutral FunctionBridge.
+///
+/// Production advertisement remains fail-closed until Meerkat qualifies the
+/// direct raw function-call and settlement lifecycle.
 pub const LIVE_EXECUTION_FUNCTION_BRIDGE_V1: &str = "live.execution.function_bridge.v1";
 
 /// Catalog-qualified execution through provider client-context delegation.
@@ -56,23 +57,6 @@ impl LiveExecutionMode {
 #[serde(rename_all = "snake_case")]
 pub enum LiveExecutionIdentityVersion {
     V1,
-}
-
-/// Canonical provider vocabulary for the versioned execution-identity wire.
-///
-/// This request mirror is intentionally strict and has no `unknown` sentinel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum LiveExecutionProvider {
-    #[serde(rename = "anthropic")]
-    Anthropic,
-    #[serde(rename = "openai")]
-    OpenAi,
-    #[serde(rename = "gemini")]
-    Gemini,
-    #[serde(rename = "self_hosted")]
-    SelfHosted,
-    #[serde(rename = "other")]
-    Other,
 }
 
 /// A forward-compatible feature capability advertised by `mobkit/capabilities`.
@@ -126,104 +110,6 @@ impl FeatureCapability {
     }
 }
 
-/// Strict tri-state auth-binding override for a live channel identity.
-///
-/// The value reuses Meerkat's canonical [`WireAuthBindingRef`] atom. Custom
-/// decoding closes two fail-open holes in the shared compatibility decoder:
-/// unknown wrapper or binding fields are rejected, and `clear` cannot carry a
-/// value.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "action", content = "value", rename_all = "snake_case")]
-pub enum LiveAuthBindingOverride {
-    Set(WireAuthBindingRef),
-    Clear,
-}
-
-impl<'de> Deserialize<'de> for LiveAuthBindingOverride {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = Value::deserialize(deserializer)?;
-        let object = raw
-            .as_object()
-            .ok_or_else(|| D::Error::custom("auth_binding override must be an object"))?;
-        let action = object
-            .get("action")
-            .and_then(Value::as_str)
-            .ok_or_else(|| D::Error::custom("auth_binding.action must be a string"))?;
-
-        match action {
-            "clear" => {
-                reject_unknown_keys(object.keys().map(String::as_str), &["action"])
-                    .map_err(D::Error::custom)?;
-                Ok(Self::Clear)
-            }
-            "set" => {
-                reject_unknown_keys(object.keys().map(String::as_str), &["action", "value"])
-                    .map_err(D::Error::custom)?;
-                let value = object.get("value").ok_or_else(|| {
-                    D::Error::custom("auth_binding set override is missing value")
-                })?;
-                let binding = value
-                    .as_object()
-                    .ok_or_else(|| D::Error::custom("auth_binding set value must be an object"))?;
-                reject_unknown_keys(
-                    binding.keys().map(String::as_str),
-                    &["realm", "binding", "profile"],
-                )
-                .map_err(D::Error::custom)?;
-                serde_json::from_value(value.clone())
-                    .map(Self::Set)
-                    .map_err(D::Error::custom)
-            }
-            other => Err(D::Error::custom(format!(
-                "unknown auth_binding action `{other}`"
-            ))),
-        }
-    }
-}
-
-fn reject_unknown_keys<'a>(
-    actual: impl Iterator<Item = &'a str>,
-    allowed: &[&str],
-) -> Result<(), String> {
-    if let Some(unknown) = actual.into_iter().find(|key| !allowed.contains(key)) {
-        return Err(format!("unknown field `{unknown}`"));
-    }
-    Ok(())
-}
-
-fn deserialize_optional_auth_binding<'de, D>(
-    deserializer: D,
-) -> Result<Option<LiveAuthBindingOverride>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = Value::deserialize(deserializer)?;
-    if value.is_null() {
-        return Err(D::Error::custom(
-            "auth_binding cannot be null; omit it to inherit or use action=clear",
-        ));
-    }
-    serde_json::from_value(value)
-        .map(Some)
-        .map_err(D::Error::custom)
-}
-
-fn deserialize_optional_non_empty_string<'de, D>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = String::deserialize(deserializer)?;
-    if value.trim().is_empty() {
-        return Err(D::Error::custom("value must be a non-empty string"));
-    }
-    Ok(Some(value))
-}
-
 fn deserialize_non_empty_string<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
@@ -235,19 +121,11 @@ where
     Ok(value)
 }
 
-fn deserialize_optional_provider<'de, D>(
-    deserializer: D,
-) -> Result<Option<LiveExecutionProvider>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    LiveExecutionProvider::deserialize(deserializer).map(Some)
-}
-
-/// Version 1 channel-scoped execution identity override.
+/// Version 1 host-registered channel execution profile selection.
 ///
-/// This changes only the opened live channel. It is not a durable member or
-/// session identity mutation.
+/// Provider, model, auth binding, provider mode, tools, and instructions stay
+/// host-owned. This request changes only the opened live channel and never
+/// mutates durable member or session identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LiveExecutionIdentityV1 {
@@ -257,30 +135,6 @@ pub struct LiveExecutionIdentityV1 {
     /// catalog selection and cannot be supplied as raw open parameters.
     #[serde(deserialize_with = "deserialize_non_empty_string")]
     pub profile_id: String,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_optional_non_empty_string"
-    )]
-    pub model: Option<String>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_optional_provider"
-    )]
-    pub provider: Option<LiveExecutionProvider>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_optional_non_empty_string"
-    )]
-    pub self_hosted_server_id: Option<String>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_optional_auth_binding"
-    )]
-    pub auth_binding: Option<LiveAuthBindingOverride>,
 }
 
 /// SDK/API handle returned by a successful live open.
@@ -541,6 +395,9 @@ pub fn validate_experimental_live_open_surface(
         "bridge_model",
         "bridge_tools",
         "bridge_instructions",
+        "auth_binding",
+        "self_hosted_server_id",
+        "provider_params",
         "tools",
         "instructions",
     ] {

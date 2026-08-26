@@ -434,6 +434,12 @@ describe("MobKitRuntime", () => {
         profile: "luka",
       },
       voice: "marin",
+      executionProfiles: [
+        {
+          profileId: "homecore.reachy.open-room.v1",
+          sessionInstructions: "You are Reachy's voice embodiment.",
+        },
+      ],
     };
 
     const params = (rt as any)._buildInitParams();
@@ -450,6 +456,12 @@ describe("MobKitRuntime", () => {
         profile: "luka",
       },
       voice: "marin",
+      execution_profiles: [
+        {
+          profile_id: "homecore.reachy.open-room.v1",
+          session_instructions: "You are Reachy's voice embodiment.",
+        },
+      ],
     });
   });
 });
@@ -2910,9 +2922,7 @@ describe("MobHandle live methods", () => {
     }));
 
     const opened = await handle.liveOpenTyped("identity:reachy", {
-      profileId: "gpt-live-function-bridge-v1",
-      model: "gpt-live-1-codex",
-      provider: "openai",
+      profileId: "homecore.reachy.open-room.v1",
     });
 
     assert.equal(opened.channelId, "ch-typed");
@@ -2922,9 +2932,7 @@ describe("MobHandle live methods", () => {
       identity: "identity:reachy",
       execution_identity: {
         version: "v1",
-        profile_id: "gpt-live-function-bridge-v1",
-        model: "gpt-live-1-codex",
-        provider: "openai",
+        profile_id: "homecore.reachy.open-room.v1",
       },
     });
   });
@@ -2939,8 +2947,7 @@ describe("MobHandle live methods", () => {
 
     await assert.rejects(
       handle.liveOpenTyped("identity:reachy", {
-        profileId: "gpt-live-function-bridge-v1",
-        model: "gpt-live-1-codex",
+        profileId: "homecore.reachy.open-room.v1",
       }),
       CapabilityUnavailableError,
     );
@@ -2954,6 +2961,9 @@ describe("MobHandle live methods", () => {
       ["responses_model", "gpt-5.5"],
       ["responses_tools", []],
       ["responses_instructions", "delegate"],
+      ["auth_binding", { realm: "family", binding: "other" }],
+      ["self_hosted_server_id", "server"],
+      ["provider_params", {}],
       ["tools", []],
       ["instructions", "delegate"],
     ] as const) {
@@ -2962,13 +2972,18 @@ describe("MobHandle live methods", () => {
         handle.liveOpenTyped(
           "identity:reachy",
           {
-            profileId: "gpt-live-function-bridge-v1",
-            model: "gpt-live-1-codex",
-            provider: "openai",
+            profileId: "homecore.reachy.open-room.v1",
           },
           { [field]: value },
         ),
-        /experimental live\/open does not accept/,
+        (error: unknown) => {
+          assert.match(
+            String(error),
+            /experimental live\/open does not accept/,
+            `expected ${field} to be rejected before capability discovery`,
+          );
+          return true;
+        },
       );
       assert.deepEqual(calls, []);
     }
@@ -2993,9 +3008,7 @@ describe("MobHandle live methods", () => {
     }));
     await assert.rejects(
       handle.liveOpenTyped("caller-alias", {
-        profileId: "gpt-live-function-bridge-v1",
-        model: "gpt-live-1-codex",
-        provider: "openai",
+        profileId: "homecore.reachy.open-room.v1",
       }),
       /unknown field|non-empty string/,
     );
@@ -3079,9 +3092,7 @@ describe("MobHandle live methods", () => {
     const active = await handle.liveConnect(
       "identity:reachy",
       {
-        profileId: "gpt-live-function-bridge-v1",
-        model: "gpt-live-1-codex",
-        provider: "openai",
+        profileId: "homecore.reachy.open-room.v1",
       },
       {
         async prepare(pending) {
@@ -3191,9 +3202,7 @@ describe("MobHandle live methods", () => {
       handle.liveConnect(
         "identity:reachy",
         {
-          profileId: "gpt-live-function-bridge-v1",
-          model: "gpt-live-1-codex",
-          provider: "openai",
+          profileId: "homecore.reachy.open-room.v1",
         },
         {
           async prepare() {

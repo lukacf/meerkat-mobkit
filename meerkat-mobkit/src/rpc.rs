@@ -5903,7 +5903,7 @@ mod tests {
             "mobkit/live/open",
             &json!({
                 "identity": "identity:luka",
-                "execution_identity": {"version": "v1", "model": "gpt-live-1-codex", "provider": "openai"}
+                "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
             }),
             json!(1),
             false,
@@ -5920,7 +5920,7 @@ mod tests {
             "mobkit/live/open",
             &json!({
                 "model": "legacy",
-                "execution_identity": {"version": "v1", "model": "gpt-live-1-codex"}
+                "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
             }),
             json!(2),
             true,
@@ -5944,7 +5944,7 @@ mod tests {
                 "mobkit/live/open",
                 &json!({
                     "identity": "identity:luka",
-                    "execution_identity": {"version": "v1", "model": "gpt-live-1-codex"}
+                    "execution_identity": {"version": "v1", "profile_id": "homecore.reachy.open-room.v1"}
                 }),
                 json!(4),
                 true,

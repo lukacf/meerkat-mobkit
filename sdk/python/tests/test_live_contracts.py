@@ -9,9 +9,9 @@ from meerkat_mobkit.live import (
     LIVE_EXECUTION_IDENTITY_V1,
     ActiveLiveChannelHandle,
     ExperimentalLiveChannelStatus,
+    ExperimentalLiveExecutionProfileConfig,
     ExperimentalLiveGatewayConfig,
     LiveAssistantOutputAddress,
-    LiveAuthBindingOverride,
     LiveAuthBindingRef,
     LiveChannelHandle,
     LiveExecutionIdentityV1,
@@ -33,7 +33,9 @@ def contracts_fixture():
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_experimental_live_gateway_registration_is_explicit_and_strict():
+def test_experimental_live_gateway_registration_is_explicit_and_strict(
+    contracts_fixture,
+):
     config = ExperimentalLiveGatewayConfig(
         principal="user:luka",
         realm="family",
@@ -44,20 +46,14 @@ def test_experimental_live_gateway_registration_is_explicit_and_strict():
             realm="family", binding="chatgpt-oauth", profile="luka"
         ),
         voice="marin",
+        execution_profiles=(
+            ExperimentalLiveExecutionProfileConfig(
+                profile_id="homecore.reachy.open-room.v1",
+                session_instructions="You are Reachy's voice embodiment.",
+            ),
+        ),
     )
-    assert config.to_dict() == {
-        "principal": "user:luka",
-        "realm": "family",
-        "factory_kind": "openai-gpt-live",
-        "factory_version": "v1",
-        "gate0_qualification": "gate0-v1",
-        "auth_binding": {
-            "realm": "family",
-            "binding": "chatgpt-oauth",
-            "profile": "luka",
-        },
-        "voice": "marin",
-    }
+    assert config.to_dict() == contracts_fixture["experimental_gateway_config"]
     with pytest.raises(ValueError, match="realm must equal"):
         ExperimentalLiveGatewayConfig(
             principal="user:luka",
@@ -72,25 +68,68 @@ def test_experimental_live_gateway_registration_is_explicit_and_strict():
         ).to_dict()
 
 
-def test_execution_identity_matches_shared_set_and_clear_fixtures(contracts_fixture):
-    selected = LiveExecutionIdentityV1(
-        profile_id="gpt-live-function-bridge-v1",
-        model="gpt-live-1-codex",
-        provider="openai",
-        auth_binding=LiveAuthBindingOverride.set(
-            LiveAuthBindingRef(
-                realm="family", binding="chatgpt-oauth", profile="luka"
-            )
+def test_experimental_live_execution_profiles_reject_authority_and_drift():
+    def config_with(*profiles):
+        return ExperimentalLiveGatewayConfig(
+            principal="user:luka",
+            realm="family",
+            factory_kind="openai-gpt-live",
+            factory_version="v1",
+            gate0_qualification="gate0-v1",
+            auth_binding=LiveAuthBindingRef(
+                realm="family", binding="chatgpt-oauth"
+            ),
+            voice="marin",
+            execution_profiles=profiles,
+        )
+
+    for profile in [
+        ExperimentalLiveExecutionProfileConfig(
+            profile_id=" ", session_instructions="voice"
         ),
+        ExperimentalLiveExecutionProfileConfig(
+            profile_id="reachy", session_instructions=" "
+        ),
+        *[
+            ExperimentalLiveExecutionProfileConfig(
+                profile_id=profile_id,
+                session_instructions="override canonical policy",
+            )
+            for profile_id in [
+                "openai.gpt-live-1-codex.client-context.v1",
+                "openai.gpt-live-1-codex.function-bridge.v1",
+            ]
+        ],
+    ]:
+        with pytest.raises(ValueError):
+            config_with(profile).to_dict()
+
+    duplicate = ExperimentalLiveExecutionProfileConfig(
+        profile_id="reachy", session_instructions="voice"
     )
-    cleared = LiveExecutionIdentityV1(
-        profile_id="gpt-live-function-bridge-v1",
-        model="gpt-live-1-codex",
-        provider="openai",
-        auth_binding=LiveAuthBindingOverride.clear(),
+    with pytest.raises(ValueError, match="duplicate"):
+        config_with(
+            duplicate,
+            ExperimentalLiveExecutionProfileConfig(
+                profile_id=" reachy ", session_instructions="other"
+            ),
+        ).to_dict()
+    with pytest.raises(TypeError, match="entries"):
+        config_with({"profile_id": "reachy"}).to_dict()
+    for field in ["mode", "model", "provider", "tools", "responses", "capabilities"]:
+        with pytest.raises(TypeError):
+            ExperimentalLiveExecutionProfileConfig(
+                profile_id="reachy",
+                session_instructions="voice",
+                **{field: "forbidden"},
+            )
+
+
+def test_execution_identity_matches_shared_profile_fixture(contracts_fixture):
+    selected = LiveExecutionIdentityV1(
+        profile_id="homecore.reachy.open-room.v1",
     )
-    assert selected.to_dict() == contracts_fixture["execution_identity_set"]
-    assert cleared.to_dict() == contracts_fixture["execution_identity_clear"]
+    assert selected.to_dict() == contracts_fixture["execution_identity"]
     assert LiveExecutionIdentityV1.from_dict(selected.to_dict()) == selected
 
 
@@ -99,47 +138,44 @@ def test_execution_identity_rejects_unknown_fields_null_and_legacy_conflicts():
         LiveExecutionIdentityV1.from_dict(
             {"version": "v1", "model": "gpt-live-1-codex", "extra": True}
         )
-    with pytest.raises(ValueError, match="cannot be null"):
-        LiveExecutionIdentityV1.from_dict(
-            {
-                "version": "v1",
-                "profile_id": "gpt-live-function-bridge-v1",
-                "auth_binding": None,
-            }
-        )
     with pytest.raises(ValueError, match="profile_id must be a non-empty string"):
         LiveExecutionIdentityV1(profile_id=" ").to_dict()
-    with pytest.raises(ValueError, match="legacy top-level model"):
-        live_open_execution_identity_params(
-            LiveExecutionIdentityV1(
-                profile_id="gpt-live-function-bridge-v1",
-                model="gpt-live-1-codex",
-            ),
-            model="legacy",
+    for field, value in [
+        ("model", "legacy"),
+        ("provider", "openai"),
+        ("auth_binding", {"realm": "family", "binding": "other"}),
+        ("self_hosted_server_id", "server"),
+        ("provider_params", {}),
+    ]:
+        with pytest.raises(ValueError, match=f"legacy top-level {field}"):
+            live_open_execution_identity_params(
+                LiveExecutionIdentityV1(
+                    profile_id="homecore.reachy.open-room.v1"
+                ),
+                **{field: value},
+            )
+    with pytest.raises(ValueError, match="must be v1"):
+        LiveExecutionIdentityV1.from_dict(
+            {"version": "v2", "profile_id": "homecore.reachy.open-room.v1"}
         )
     with pytest.raises(ValueError, match="must be v1"):
         LiveExecutionIdentityV1.from_dict(
-            {"version": "v2", "model": "gpt-live-1-codex"}
+            {"profile_id": "homecore.reachy.open-room.v1"}
         )
-    with pytest.raises(ValueError, match="must be v1"):
-        LiveExecutionIdentityV1.from_dict({"model": "gpt-live-1-codex"})
     for field, value in [
-        ("model", None),
-        ("model", "  "),
-        ("provider", None),
-        ("self_hosted_server_id", None),
-        ("self_hosted_server_id", "  "),
+        ("model", "gpt-live-1-codex"),
+        ("provider", "openai"),
+        ("self_hosted_server_id", "server"),
+        ("auth_binding", {"action": "clear"}),
     ]:
         with pytest.raises(ValueError):
-            LiveExecutionIdentityV1.from_dict({"version": "v1", field: value})
-    with pytest.raises(ValueError):
-        LiveExecutionIdentityV1(
-            profile_id="gpt-live-function-bridge-v1",
-            model="gpt-live-1-codex",
-            auth_binding=LiveAuthBindingOverride.set(
-                LiveAuthBindingRef(realm="family", binding="chatgpt", profile="  ")
-            ),
-        ).to_dict()
+            LiveExecutionIdentityV1.from_dict(
+                {
+                    "version": "v1",
+                    "profile_id": "homecore.reachy.open-room.v1",
+                    field: value,
+                }
+            )
 
 
 def test_capability_is_off_when_absent():
@@ -173,7 +209,7 @@ def test_pending_active_and_readiness_handles_are_distinct_and_strict(
     readiness = LivePlaybackOwnerReadiness.from_dict(
         contracts_fixture["playback_owner_readiness"]
     )
-    assert pending.execution_mode == "function_bridge"
+    assert pending.execution_mode == "client_context"
     assert active.channel_id == pending.channel_id == readiness.channel_id
     assert active.activation_receipt != pending.pending_receipt
     assert pending.to_dict() == contracts_fixture["pending_channel_handle"]

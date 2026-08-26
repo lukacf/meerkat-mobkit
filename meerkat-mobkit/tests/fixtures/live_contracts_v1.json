@@ -1,26 +1,26 @@
 {
-  "execution_identity_set": {
-    "version": "v1",
-    "profile_id": "gpt-live-function-bridge-v1",
-    "model": "gpt-live-1-codex",
-    "provider": "openai",
+  "experimental_gateway_config": {
+    "principal": "user:luka",
+    "realm": "family",
+    "factory_kind": "openai-gpt-live",
+    "factory_version": "v1",
+    "gate0_qualification": "gate0-v1",
     "auth_binding": {
-      "action": "set",
-      "value": {
-        "realm": "family",
-        "binding": "chatgpt-oauth",
-        "profile": "luka"
+      "realm": "family",
+      "binding": "chatgpt-oauth",
+      "profile": "luka"
+    },
+    "voice": "marin",
+    "execution_profiles": [
+      {
+        "profile_id": "homecore.reachy.open-room.v1",
+        "session_instructions": "You are Reachy's voice embodiment."
       }
-    }
+    ]
   },
-  "execution_identity_clear": {
+  "execution_identity": {
     "version": "v1",
-    "profile_id": "gpt-live-function-bridge-v1",
-    "model": "gpt-live-1-codex",
-    "provider": "openai",
-    "auth_binding": {
-      "action": "clear"
-    }
+    "profile_id": "homecore.reachy.open-room.v1"
   },
   "channel_handle": {
     "channel_id": "live-ch-1",
@@ -48,7 +48,7 @@
   "pending_channel_handle": {
     "channel_id": "live-ch-1",
     "target_identity": "identity:luka",
-    "execution_mode": "function_bridge",
+    "execution_mode": "client_context",
     "pending_receipt": "opaque-pending-receipt",
     "transport": {
       "transport": "webrtc",
@@ -73,7 +73,7 @@
   "active_channel_handle": {
     "channel_id": "live-ch-1",
     "target_identity": "identity:luka",
-    "execution_mode": "function_bridge",
+    "execution_mode": "client_context",
     "activation_receipt": "opaque-active-receipt"
   },
   "playback_owner_readiness": {
@@ -88,7 +88,7 @@
     "handle": {
       "channel_id": "live-ch-1",
       "target_identity": "identity:luka",
-      "execution_mode": "function_bridge",
+      "execution_mode": "client_context",
       "activation_receipt": "opaque-active-receipt"
     }
   },

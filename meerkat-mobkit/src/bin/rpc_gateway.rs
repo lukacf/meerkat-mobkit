@@ -186,6 +186,13 @@ enum GatewayLiveOption {
 
 #[cfg(feature = "experimental-gpt-live")]
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct GatewayExperimentalLiveExecutionProfile {
+    profile_id: String,
+    session_instructions: String,
+}
+
+#[cfg(feature = "experimental-gpt-live")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct GatewayExperimentalLiveOption {
     principal: String,
     realm: meerkat_core::RealmId,
@@ -193,6 +200,7 @@ struct GatewayExperimentalLiveOption {
     qualification: meerkat::ExperimentalLiveGate0QualificationVersion,
     binding: meerkat_core::AuthBindingRef,
     voice: String,
+    execution_profiles: Vec<GatewayExperimentalLiveExecutionProfile>,
 }
 
 /// `runtime_options.workgraph` wire forms. Booleans keep the original
@@ -1078,22 +1086,35 @@ mod tests {
     struct PublicationTestAnswerTransport;
 
     #[cfg(feature = "experimental-gpt-live")]
+    struct PublicationTestPendingBoundReady;
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[async_trait]
+    impl meerkat_live::ProviderWebrtcPendingBoundReadyResolver for PublicationTestPendingBoundReady {
+        async fn resolve(self: Box<Self>) -> Result<u64, meerkat_live::ProviderWebrtcBrokerError> {
+            Ok(0)
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
     #[async_trait]
     impl meerkat_live::LiveWebrtcAnswerTransport for PublicationTestAnswerTransport {
         async fn answer_admitted_offer(
             &self,
             offer: meerkat_live::LiveWebrtcAdmittedOffer,
         ) -> Result<meerkat_live::LiveWebrtcAnswerAccepted, meerkat_live::LiveWebrtcError> {
-            let answer = offer.into_provider_offer()?.into_seeded_answer(
-                "publication-answer".to_string(),
-                Arc::new(PublicationTestSideband),
-                0,
-            );
-            let (answer_sdp, _sideband, bound_ready) = answer.into_parts();
+            let answer = offer
+                .into_provider_offer()?
+                .into_pending_bound_ready_answer(
+                    "publication-answer".to_string(),
+                    Arc::new(PublicationTestSideband),
+                    Box::new(PublicationTestPendingBoundReady),
+                );
+            let (answer_sdp, _sideband, pending_bound_ready) = answer.into_parts();
             Ok(meerkat_live::LiveWebrtcAnswerAccepted {
                 answer_sdp,
                 answer_observation_sequence: 1,
-                bound_ready: Some(bound_ready),
+                pending_bound_ready: Some(pending_bound_ready),
             })
         }
 
@@ -1139,10 +1160,11 @@ mod tests {
     #[cfg(feature = "experimental-gpt-live")]
     #[async_trait]
     impl meerkat::surface::LiveWebrtcBoundReadyCustody for PublicationTestBoundReadyCustody {
-        async fn commit(mut self: Box<Self>) {
+        async fn commit(mut self: Box<Self>) -> Result<(), String> {
             if let Some(authority) = self.authority.take() {
                 let _ = authority.commit();
             }
+            Ok(())
         }
 
         async fn rollback(mut self: Box<Self>) -> Result<(), String> {
@@ -3220,7 +3242,11 @@ actions = ["agent.view"]
                             "binding": "chatgpt-oauth",
                             "profile": "luka"
                         },
-                        "voice": "marin"
+                        "voice": "marin",
+                        "execution_profiles": [{
+                            "profile_id": "homecore.reachy.open-room.v1",
+                            "session_instructions": "You are Reachy's voice embodiment."
+                        }]
                     }
                 }
             }),
@@ -3233,6 +3259,13 @@ actions = ["agent.view"]
         assert_eq!(experimental.binding.realm.as_str(), "family");
         assert_eq!(experimental.binding.binding.as_str(), "chatgpt-oauth");
         assert_eq!(experimental.voice, "marin");
+        assert_eq!(
+            experimental.execution_profiles,
+            vec![GatewayExperimentalLiveExecutionProfile {
+                profile_id: "homecore.reachy.open-room.v1".to_string(),
+                session_instructions: "You are Reachy's voice embodiment.".to_string(),
+            }]
+        );
         assert_eq!(options.live, GatewayLiveOption::Disabled);
 
         for invalid in [
@@ -3273,6 +3306,89 @@ actions = ["agent.view"]
                 "voice": "marin",
                 "instructions": "caller-owned prompt"
             }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "factory_kind": "private-live",
+                "factory_version": "v1",
+                "gate0_qualification": "gate0-v1",
+                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "voice": "marin",
+                "execution_profiles": {}
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "factory_kind": "private-live",
+                "factory_version": "v1",
+                "gate0_qualification": "gate0-v1",
+                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "voice": "marin",
+                "execution_profiles": [{"profile_id": " ", "session_instructions": "voice"}]
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "factory_kind": "private-live",
+                "factory_version": "v1",
+                "gate0_qualification": "gate0-v1",
+                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "voice": "marin",
+                "execution_profiles": [{"profile_id": "reachy", "session_instructions": " "}]
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "factory_kind": "private-live",
+                "factory_version": "v1",
+                "gate0_qualification": "gate0-v1",
+                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "voice": "marin",
+                "execution_profiles": [{
+                    "profile_id": "reachy",
+                    "session_instructions": "voice",
+                    "tools": []
+                }]
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "factory_kind": "private-live",
+                "factory_version": "v1",
+                "gate0_qualification": "gate0-v1",
+                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "voice": "marin",
+                "execution_profiles": [
+                    {"profile_id": "reachy", "session_instructions": "voice"},
+                    {"profile_id": " reachy ", "session_instructions": "other"}
+                ]
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "factory_kind": "private-live",
+                "factory_version": "v1",
+                "gate0_qualification": "gate0-v1",
+                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "voice": "marin",
+                "execution_profiles": [{
+                    "profile_id": meerkat::GPT_LIVE_CLIENT_CONTEXT_PROFILE_ID,
+                    "session_instructions": "override canonical policy"
+                }]
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "factory_kind": "private-live",
+                "factory_version": "v1",
+                "gate0_qualification": "gate0-v1",
+                "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                "voice": "marin",
+                "execution_profiles": [{
+                    "profile_id": meerkat::GPT_LIVE_FUNCTION_BRIDGE_PROFILE_ID,
+                    "session_instructions": "relabel FunctionBridge"
+                }]
+            }),
         ] {
             let error = parse_gateway_runtime_options(
                 &json!({"runtime_options": {"experimental_live": invalid}}),
@@ -3281,6 +3397,47 @@ actions = ["agent.view"]
             .err()
             .expect("invalid registration must fail");
             assert!(error.contains("experimental_live"), "{error}");
+        }
+
+        for forbidden in [
+            "mode",
+            "model",
+            "provider",
+            "tools",
+            "responses",
+            "capabilities",
+        ] {
+            let mut profile = json!({
+                "profile_id": "homecore.reachy.open-room.v1",
+                "session_instructions": "You are Reachy's voice embodiment."
+            });
+            profile
+                .as_object_mut()
+                .expect("profile fixture object")
+                .insert(forbidden.to_string(), json!("forbidden"));
+            let error = parse_gateway_runtime_options(
+                &json!({
+                    "runtime_options": {
+                        "experimental_live": {
+                            "principal": "user:luka",
+                            "realm": "family",
+                            "factory_kind": "private-live",
+                            "factory_version": "v1",
+                            "gate0_qualification": "gate0-v1",
+                            "auth_binding": {
+                                "realm": "family",
+                                "binding": "chatgpt-oauth"
+                            },
+                            "voice": "marin",
+                            "execution_profiles": [profile]
+                        }
+                    }
+                }),
+                None,
+            )
+            .err()
+            .expect("profile authority field must fail");
+            assert!(error.contains(forbidden), "{error}");
         }
     }
 
@@ -3302,6 +3459,10 @@ actions = ["agent.view"]
                 origin: meerkat_core::BindingOrigin::Configured,
             },
             voice: "marin".to_string(),
+            execution_profiles: vec![GatewayExperimentalLiveExecutionProfile {
+                profile_id: "homecore.reachy.open-room.v1".to_string(),
+                session_instructions: "You are Reachy's voice embodiment.".to_string(),
+            }],
         };
         let operator =
             gateway_experimental_live_operator(&experimental).expect("production operator profile");
@@ -3326,6 +3487,14 @@ actions = ["agent.view"]
             !capabilities.contains(&meerkat_contracts::LIVE_FUNCTION_BRIDGE_V1_CAPABILITY),
             "the production gateway must not advertise unqualified FunctionBridge",
         );
+        let named_capabilities = factory
+            .experimental_live_execution_feature_capabilities(
+                &realm,
+                &selected_factory,
+                "homecore.reachy.open-room.v1",
+            )
+            .expect("host-trusted named client-context qualification");
+        assert_eq!(named_capabilities, capabilities);
     }
 
     #[tokio::test]
@@ -3755,6 +3924,7 @@ fn parse_gateway_experimental_live_option(
         "gate0_qualification",
         "auth_binding",
         "voice",
+        "execution_profiles",
     ];
     let unsupported = object
         .keys()
@@ -3857,6 +4027,69 @@ fn parse_gateway_experimental_live_option(
             })?)
         }
     };
+    let execution_profiles = match object.get("execution_profiles") {
+        None => Vec::new(),
+        Some(value) => {
+            let profiles = value.as_array().ok_or_else(|| {
+                "runtime_options.experimental_live.execution_profiles must be an array".to_string()
+            })?;
+            let mut seen = BTreeSet::new();
+            let mut parsed = Vec::with_capacity(profiles.len());
+            for (index, value) in profiles.iter().enumerate() {
+                let profile_object = value.as_object().ok_or_else(|| {
+                    format!(
+                        "runtime_options.experimental_live.execution_profiles[{index}] must be an object"
+                    )
+                })?;
+                let profile_supported = ["profile_id", "session_instructions"];
+                let profile_unsupported = profile_object
+                    .keys()
+                    .filter(|key| !profile_supported.contains(&key.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !profile_unsupported.is_empty() {
+                    return Err(format!(
+                        "unsupported runtime_options.experimental_live.execution_profiles[{index}] fields: {}",
+                        profile_unsupported.join(", ")
+                    ));
+                }
+                let profile_string = |name: &str| -> Result<String, String> {
+                    profile_object
+                        .get(name)
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                        .ok_or_else(|| {
+                            format!(
+                                "runtime_options.experimental_live.execution_profiles[{index}].{name} must be a non-empty string"
+                            )
+                        })
+                };
+                let profile_id = profile_string("profile_id")?;
+                if [
+                    meerkat::GPT_LIVE_CLIENT_CONTEXT_PROFILE_ID,
+                    meerkat::GPT_LIVE_FUNCTION_BRIDGE_PROFILE_ID,
+                ]
+                .contains(&profile_id.as_str())
+                {
+                    return Err(format!(
+                        "runtime_options.experimental_live.execution_profiles[{index}].profile_id is reserved"
+                    ));
+                }
+                if !seen.insert(profile_id.clone()) {
+                    return Err(format!(
+                        "runtime_options.experimental_live.execution_profiles contains duplicate profile_id '{profile_id}'"
+                    ));
+                }
+                parsed.push(GatewayExperimentalLiveExecutionProfile {
+                    profile_id,
+                    session_instructions: profile_string("session_instructions")?,
+                });
+            }
+            parsed
+        }
+    };
     Ok(GatewayExperimentalLiveOption {
         principal,
         realm,
@@ -3869,6 +4102,7 @@ fn parse_gateway_experimental_live_option(
             origin: meerkat_core::BindingOrigin::Configured,
         },
         voice: required_string("voice")?,
+        execution_profiles,
     })
 }
 
@@ -3876,11 +4110,23 @@ fn parse_gateway_experimental_live_option(
 fn gateway_experimental_live_operator(
     experimental: &GatewayExperimentalLiveOption,
 ) -> Result<meerkat::ExperimentalLiveOperatorConfig, meerkat::ExperimentalLiveAdmissionError> {
-    meerkat::ExperimentalLiveOperatorConfig::new(
+    let mut operator = meerkat::ExperimentalLiveOperatorConfig::new(
         experimental.factory.clone(),
         experimental.qualification.clone(),
     )
-    .with_gpt_live_client_context_profile()
+    .with_gpt_live_client_context_profile()?;
+    for profile in &experimental.execution_profiles {
+        operator = operator.with_execution_profile_session_instructions(
+            profile.profile_id.clone(),
+            meerkat_core::LiveExecutionMode::ClientContext,
+            meerkat_core::LiveExecutionCapabilities {
+                function_bridge: false,
+                client_context: true,
+            },
+            profile.session_instructions.clone(),
+        )?;
+    }
+    Ok(operator)
 }
 
 fn parse_gateway_runtime_options(
@@ -10889,6 +11135,13 @@ external_addressable = true
                         agent_factory: live_agent_factory.clone(),
                         config_source: live_ctx.experimental_live_config_source(),
                         binding_authority,
+                        execution_identity: meerkat_core::SessionLlmIdentity {
+                            model: "gpt-live-1-codex".to_string(),
+                            provider: meerkat_core::Provider::OpenAI,
+                            self_hosted_server_id: None,
+                            provider_params: None,
+                            auth_binding: Some(experimental.binding.clone()),
+                        },
                         realm: experimental.realm.clone(),
                         factory_identity: experimental.factory.clone(),
                         transport: Arc::clone(&transport),

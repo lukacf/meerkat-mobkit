@@ -236,6 +236,14 @@ function explicitHostId(a: ConsoleAgent): string | null {
 }
 
 function findSpawnHost(a: ConsoleAgent, agents: ConsoleAgent[], commander: ConsoleAgent | null): ConsoleAgent | null {
+  const spawnedBy = a.labels?.spawned_by;
+  if (spawnedBy) {
+    const match = agents.find((candidate) =>
+      candidate.member_id !== a.member_id
+        && agentKeys(candidate).some((key) => referenceMatchesAgentKey(spawnedBy, key)),
+    );
+    if (match) return match;
+  }
   if (!isWorkerish(a)) return null;
   const explicitHost = explicitHostId(a);
   if (explicitHost) {

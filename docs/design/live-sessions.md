@@ -1,11 +1,13 @@
 # Live (realtime) member sessions through the gateway
 
-Status: in progress on `feat/live-sessions` (2026-07-09). Target: mobkit
-0.7.31+. Consumer shape: a LAN client (HomeCore's robot, a satellite
-process) opens a realtime audio/text channel to a MOB MEMBER (identity
-target) and converses; tool calls flow through the member's normal tool
-surface (callback bridge + gating); the conversation persists into the
-member's durable transcript.
+Status: experimental ClientContext integration candidate (2026-08-26).
+Consumer shape: a LAN client (HomeCore's robot or a satellite process) opens
+a realtime audio/text channel to a Mob member identity. The GPT Live endpoint
+owns conversation and transport only. When GPT Live initiates client
+delegation, Meerkat admits the exact canonical final transcript and runs work
+through a separate ordinary durable executor fork. Tools and callbacks belong
+to that executor, never to the voice endpoint. The canonical conversation
+persists through Meerkat's normal transcript authority.
 
 ## Upstream shape (meerkat 0.7.25, surveyed)
 
@@ -39,11 +41,13 @@ member's durable transcript.
   into the ONE canonical Session history through the same append-only save
   path as normal turns (so the Bug B-2 rollback fix in
   `ContinuitySessionStoreAdapter` covers live turns too).
-- Tool dispatch: `LiveToolDispatcher::dispatch_live_tool_call(session_id,
-  call)` → `dispatch_external_tool_call` → the session agent's NORMAL
-  external-tool dispatch. The gateway's `CallbackToolDispatcher` (and
-  composed recorder tools, and gating) apply to live turns unchanged. No
-  separate tool registry.
+- Ordinary live compatibility tool dispatch:
+  `LiveToolDispatcher::dispatch_live_tool_call(session_id, call)` ->
+  `dispatch_external_tool_call` -> the session agent's normal external-tool
+  dispatch. The gateway's `CallbackToolDispatcher`, composed recorder tools,
+  and gating apply to those ordinary live turns unchanged. This does not apply
+  to experimental GPT Live ClientContext, whose voice endpoint has no direct
+  tool dispatcher and uses a distinct durable executor fork.
 - Tokens: single-use, 60s TTL, pinned to (token, channel). Bootstrap
   returned by open: `{channel_id, transport: {type:"websocket", url,
   token}, capabilities, continuity}`. Continuity is TranscriptOnly in
@@ -130,11 +134,18 @@ experimental capability. The nested `execution_identity` request is versioned
 and strict. The caller does not select a provider-native delegation mode or
 provide a Responses model, bridge instructions, or tool declaration.
 
-The catalog-resolved mode is returned as `function_bridge` or
-`client_context`, backed independently by
-`live.execution.function_bridge.v1` and
-`live.execution.client_context.v1`. Those provider-neutral atoms are
-advertised only when the full shared Meerkat authority path is composed.
+The catalog-qualified shipping mode is `client_context`, backed by
+`live.execution.client_context.v1`. It configures `delegation.type = "client"`
+and sends no provider tools, Responses model, or Responses configuration. The
+voice model decides when to delegate through GPT Live's defined client
+delegation lifecycle. Meerkat then owns the canonical-transcript join,
+durable executor fork, bounded result, and exact
+`delegation.context.append` acknowledgement.
+
+`function_bridge` remains dormant, independently gated vocabulary. Current
+builds neither advertise nor select it because direct probes have not observed
+the raw Responses function-call carrier or settlement lifecycle. It never
+falls back silently to ClientContext.
 
 Experimental open returns `PendingLiveChannelHandle`, not an active channel.
 The pending receipt permits only playback-owner registration, status, WebRTC
@@ -170,17 +181,20 @@ explicit GPT-5.5 pins stay honored) — realtime capability is unchanged.
 
 ## Field-reported additions (mobkit 0.7.32)
 
-- **Catalog-owned instructions**: `mobkit/live/open` rejects caller-supplied
-  `instructions`. Experimental function-bridge instructions are selected by
-  Meerkat's qualified profile and are not configurable through MobKit RPC or
-  gateway startup options.
+- **Host-trusted voice profiles**: `mobkit/live/open` rejects caller-supplied
+  instructions, mode, model, provider, tools, Responses configuration, and
+  capability claims. A named profile selects host-owned session instructions;
+  it cannot introduce callback or direct-effect authority. The profile and
+  qualified ClientContext mode are not configurable through the untrusted open
+  request.
 - **Seed clamp (upstream ask 30 STOPGAP)**: providers cap live instructions
   at 65,536 tokens, so long member transcripts overflow the projected seed
   at open. `runtime_options.live.seed_max_chars` (object form) sets a
   gateway-wide serialized-char budget; per-open `seed_max_chars` overrides
-  it. Whole messages drop OLDEST-first; a projected root system message is
-  never dropped. Remove when meerkat ships a machine-owned seed-window
-  projection (ask 30).
+  it. Whole canonical conversation messages drop oldest-first. System and
+  SystemNotice authority text is excluded from experimental provider
+  commentary entirely. Remove the clamp when Meerkat ships a machine-owned
+  seed-window projection (ask 30).
 - **`mobkit/live/truncate`** (was deliberately unported in v1): barge-in
   cleanup — truncate an assistant item at the client-tracked playback
   cursor. Same machine-authority choreography as the sibling command
@@ -193,6 +207,15 @@ explicit GPT-5.5 pins stay honored) — realtime capability is unchanged.
 - Provider-native resume (upstream returns TranscriptOnly anyway).
 - Console UI affordance (phase 2, with the SDK methods).
 - A second listener/port: the WS mounts on the existing gateway HTTP app.
+
+## Separate generic durable delegation
+
+The ordinary agent-facing Mob tool roster also exposes `fork_off`. It is a
+provider-neutral durable fork-plus-bounded-run operation for tool-capable
+agents. It is not a GPT Live tool, imports no live protocol authority, and is
+not required for voice to function. The experimental voice coordinator and
+`fork_off` both reuse Meerkat's existing durable fork primitive through their
+own typed callers.
 
 ## Test plan
 

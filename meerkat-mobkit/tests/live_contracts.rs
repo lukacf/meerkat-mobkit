@@ -17,15 +17,13 @@ fn fixture() -> Value {
 
 #[test]
 fn execution_identity_v1_matches_shared_fixture() {
-    for key in ["execution_identity_set", "execution_identity_clear"] {
-        let expected = fixture()[key].clone();
-        let identity: LiveExecutionIdentityV1 =
-            serde_json::from_value(expected.clone()).expect("fixture identity must decode");
-        assert_eq!(
-            serde_json::to_value(identity).expect("identity must encode"),
-            expected
-        );
-    }
+    let expected = fixture()["execution_identity"].clone();
+    let identity: LiveExecutionIdentityV1 =
+        serde_json::from_value(expected.clone()).expect("fixture identity must decode");
+    assert_eq!(
+        serde_json::to_value(identity).expect("identity must encode"),
+        expected
+    );
 }
 
 #[test]
@@ -50,32 +48,13 @@ fn execution_identity_v1_rejects_unknown_fields_and_ambiguous_clear() {
         .is_err()
     );
 
-    let unknown_binding = json!({
-        "version": "v1",
-        "auth_binding": {
-            "action": "set",
-            "value": {"realm": "family", "binding": "oauth", "secret": "no"}
-        }
-    });
-    assert!(serde_json::from_value::<LiveExecutionIdentityV1>(unknown_binding).is_err());
-
-    let null_binding = json!({"version": "v1", "auth_binding": null});
-    assert!(serde_json::from_value::<LiveExecutionIdentityV1>(null_binding).is_err());
-
-    let clear_with_value = json!({
-        "version": "v1",
-        "auth_binding": {"action": "clear", "value": {"realm": "x", "binding": "y"}}
-    });
-    assert!(serde_json::from_value::<LiveExecutionIdentityV1>(clear_with_value).is_err());
-
     for invalid in [
-        json!({"model": "gpt-live-1-codex"}),
-        json!({"version": "v2", "model": "gpt-live-1-codex"}),
-        json!({"version": "v1", "model": null}),
-        json!({"version": "v1", "model": "  "}),
-        json!({"version": "v1", "provider": null}),
-        json!({"version": "v1", "self_hosted_server_id": null}),
-        json!({"version": "v1", "self_hosted_server_id": "  "}),
+        json!({"profile_id": "homecore.reachy.open-room.v1"}),
+        json!({"version": "v2", "profile_id": "homecore.reachy.open-room.v1"}),
+        json!({"version": "v1", "profile_id": "homecore.reachy.open-room.v1", "model": "gpt-live-1-codex"}),
+        json!({"version": "v1", "profile_id": "homecore.reachy.open-room.v1", "provider": "openai"}),
+        json!({"version": "v1", "profile_id": "homecore.reachy.open-room.v1", "self_hosted_server_id": "server"}),
+        json!({"version": "v1", "profile_id": "homecore.reachy.open-room.v1", "auth_binding": {"action": "clear"}}),
     ] {
         assert!(serde_json::from_value::<LiveExecutionIdentityV1>(invalid).is_err());
     }
@@ -87,7 +66,7 @@ fn live_open_rejects_legacy_model_or_provider_conflicts() {
         let mut params = legacy.as_object().expect("object").clone();
         params.insert(
             "execution_identity".to_string(),
-            fixture()["execution_identity_clear"].clone(),
+            fixture()["execution_identity"].clone(),
         );
         let error = parse_live_open_execution_identity(&Value::Object(params))
             .expect_err("legacy/new conflict must fail");
@@ -115,7 +94,7 @@ fn pending_and_active_handles_match_shared_fixtures() {
     let pending: PendingLiveChannelHandle =
         serde_json::from_value(fixture()["pending_channel_handle"].clone())
             .expect("pending handle must decode");
-    assert_eq!(pending.execution_mode, LiveExecutionMode::FunctionBridge);
+    assert_eq!(pending.execution_mode, LiveExecutionMode::ClientContext);
     assert_eq!(
         serde_json::to_value(&pending).expect("pending handle must encode"),
         fixture()["pending_channel_handle"]
@@ -200,6 +179,9 @@ fn strict_experimental_surface_is_identity_only_and_provider_neutral() {
         json!({"identity": "identity:luka", "responses_instructions": "delegate"}),
         json!({"identity": "identity:luka", "profile_id": "gpt-live-function-bridge-v1"}),
         json!({"identity": "identity:luka", "execution_profile": "function_bridge"}),
+        json!({"identity": "identity:luka", "auth_binding": {"realm": "family", "binding": "other"}}),
+        json!({"identity": "identity:luka", "self_hosted_server_id": "server"}),
+        json!({"identity": "identity:luka", "provider_params": {}}),
         json!({"identity": "identity:luka", "tools": []}),
         json!({"identity": "identity:luka", "instructions": "delegate"}),
     ] {

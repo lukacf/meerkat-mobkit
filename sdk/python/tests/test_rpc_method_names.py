@@ -1665,9 +1665,7 @@ async def test_live_open_typed_serializes_v1_and_returns_handle():
     opened = await handle.live_open_typed(
         "identity:reachy",
         LiveExecutionIdentityV1(
-            profile_id="gpt-live-function-bridge-v1",
-            model="gpt-live-1-codex",
-            provider="openai",
+            profile_id="homecore.reachy.open-room.v1",
         ),
     )
 
@@ -1681,9 +1679,7 @@ async def test_live_open_typed_serializes_v1_and_returns_handle():
             "identity": "identity:reachy",
             "execution_identity": {
                 "version": "v1",
-                "profile_id": "gpt-live-function-bridge-v1",
-                "model": "gpt-live-1-codex",
-                "provider": "openai",
+                "profile_id": "homecore.reachy.open-room.v1",
             },
         },
     )
@@ -1706,8 +1702,7 @@ async def test_live_open_typed_refuses_execution_identity_before_old_gateway_ope
         await handle.live_open_typed(
             "identity:reachy",
             LiveExecutionIdentityV1(
-                profile_id="gpt-live-function-bridge-v1",
-                model="gpt-live-1-codex",
+                profile_id="homecore.reachy.open-room.v1",
             ),
         )
 
@@ -1723,6 +1718,9 @@ async def test_live_open_typed_refuses_execution_identity_before_old_gateway_ope
         ("responses_model", "gpt-5.5"),
         ("responses_tools", []),
         ("responses_instructions", "delegate"),
+        ("auth_binding", {"realm": "family", "binding": "other"}),
+        ("self_hosted_server_id", "server"),
+        ("provider_params", {}),
         ("tools", []),
         ("instructions", "delegate"),
     ],
@@ -1737,9 +1735,7 @@ async def test_strict_live_open_rejects_catalog_and_responses_bridge_overrides(
         await handle.live_open_typed(
             "identity:reachy",
             LiveExecutionIdentityV1(
-                profile_id="gpt-live-function-bridge-v1",
-                model="gpt-live-1-codex",
-                provider="openai",
+                profile_id="homecore.reachy.open-room.v1",
             ),
             **{field: value},
         )
@@ -1772,9 +1768,7 @@ async def test_strict_live_open_refuses_missing_server_target_identity():
         await handle.live_open_typed(
             "caller-alias",
             LiveExecutionIdentityV1(
-                profile_id="gpt-live-function-bridge-v1",
-                model="gpt-live-1-codex",
-                provider="openai",
+                profile_id="homecore.reachy.open-room.v1",
             ),
         )
 
@@ -1865,9 +1859,7 @@ async def test_live_connect_orders_owner_readiness_answer_and_activation():
     active = await handle.live_connect(
         "identity:reachy",
         LiveExecutionIdentityV1(
-            profile_id="gpt-live-function-bridge-v1",
-            model="gpt-live-1-codex",
-            provider="openai",
+            profile_id="homecore.reachy.open-room.v1",
         ),
         Owner(),
         activation_poll_interval=0,
@@ -1979,9 +1971,7 @@ async def test_live_connect_aborts_and_closes_pending_channel_when_owner_is_revo
         await handle.live_connect(
             "identity:reachy",
             LiveExecutionIdentityV1(
-                profile_id="gpt-live-function-bridge-v1",
-                model="gpt-live-1-codex",
-                provider="openai",
+                profile_id="homecore.reachy.open-room.v1",
             ),
             Owner(),
             activation_poll_interval=0,

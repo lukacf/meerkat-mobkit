@@ -47,20 +47,14 @@ describe("experimental live gateway registration", () => {
           profile: "luka",
         },
         voice: "marin",
+        executionProfiles: [
+          {
+            profileId: "homecore.reachy.open-room.v1",
+            sessionInstructions: "You are Reachy's voice embodiment.",
+          },
+        ],
       }),
-      {
-        principal: "user:luka",
-        realm: "family",
-        factory_kind: "openai-gpt-live",
-        factory_version: "v1",
-        gate0_qualification: "gate0-v1",
-        auth_binding: {
-          realm: "family",
-          binding: "chatgpt-oauth",
-          profile: "luka",
-        },
-        voice: "marin",
-      },
+      fixture.experimental_gateway_config,
     );
   });
 
@@ -92,63 +86,111 @@ describe("experimental live gateway registration", () => {
       } as unknown as import("../src/live.js").ExperimentalLiveGatewayConfig),
     );
   });
+
+  it("rejects malformed, reserved, duplicate, and authority-bearing profiles", () => {
+    const base = {
+      principal: "user:luka",
+      realm: "family",
+      factoryKind: "openai-gpt-live",
+      factoryVersion: "v1",
+      gate0Qualification: "gate0-v1",
+      authBinding: { realm: "family", binding: "chatgpt-oauth" },
+      voice: "marin",
+    };
+    for (const executionProfiles of [
+      [{ profileId: " ", sessionInstructions: "voice" }],
+      [{ profileId: "reachy", sessionInstructions: " " }],
+      [
+        {
+          profileId: "openai.gpt-live-1-codex.client-context.v1",
+          sessionInstructions: "override canonical policy",
+        },
+      ],
+      [
+        {
+          profileId: "openai.gpt-live-1-codex.function-bridge.v1",
+          sessionInstructions: "relabel FunctionBridge",
+        },
+      ],
+      [
+        { profileId: "reachy", sessionInstructions: "voice" },
+        { profileId: " reachy ", sessionInstructions: "other" },
+      ],
+    ]) {
+      assert.throws(() =>
+        experimentalLiveGatewayConfigToWire({
+          ...base,
+          executionProfiles,
+        } as never),
+      );
+    }
+    assert.throws(() =>
+      experimentalLiveGatewayConfigToWire({
+        ...base,
+        executionProfiles: {},
+      } as never),
+    );
+    for (const field of [
+      "mode",
+      "model",
+      "provider",
+      "tools",
+      "responses",
+      "capabilities",
+    ]) {
+      assert.throws(() =>
+        experimentalLiveGatewayConfigToWire({
+          ...base,
+          executionProfiles: [
+            {
+              profileId: "reachy",
+              sessionInstructions: "voice",
+              [field]: "forbidden",
+            },
+          ],
+        } as never),
+      );
+    }
+  });
 });
 
 describe("live execution identity v1", () => {
-  it("serializes the shared set and clear fixtures", () => {
+  it("serializes the shared host-profile fixture", () => {
     assert.deepEqual(
       liveExecutionIdentityV1ToWire({
-        profileId: "gpt-live-function-bridge-v1",
-        model: "gpt-live-1-codex",
-        provider: "openai",
-        authBinding: {
-          action: "set",
-          value: { realm: "family", binding: "chatgpt-oauth", profile: "luka" },
-        },
+        profileId: "homecore.reachy.open-room.v1",
       }),
-      fixture.execution_identity_set,
-    );
-    assert.deepEqual(
-      liveExecutionIdentityV1ToWire({
-        profileId: "gpt-live-function-bridge-v1",
-        model: "gpt-live-1-codex",
-        provider: "openai",
-        authBinding: { action: "clear" },
-      }),
-      fixture.execution_identity_clear,
+      fixture.execution_identity,
     );
   });
 
   it("rejects unknown nested fields and legacy conflicts", () => {
     assert.throws(() =>
       liveExecutionIdentityV1ToWire({
-        profileId: "gpt-live-function-bridge-v1",
-        model: "gpt-live-1-codex",
+        profileId: "homecore.reachy.open-room.v1",
         extra: true,
       } as never),
     );
-    assert.throws(() =>
-      liveOpenExecutionIdentityParams(
-        {
-          profileId: "gpt-live-function-bridge-v1",
-          model: "gpt-live-1-codex",
-        },
-        { model: "legacy" },
-      ),
-    );
+    for (const [field, value] of [
+      ["model", "legacy"],
+      ["provider", "openai"],
+      ["auth_binding", { realm: "family", binding: "other" }],
+      ["self_hosted_server_id", "server"],
+      ["provider_params", {}],
+    ] as const) {
+      assert.throws(() =>
+        liveOpenExecutionIdentityParams(
+          { profileId: "homecore.reachy.open-room.v1" },
+          { [field]: value },
+        ),
+      );
+    }
     for (const input of [
       { profileId: "  " },
-      { model: null },
-      { model: "  " },
-      { provider: null },
-      { selfHostedServerId: null },
-      { selfHostedServerId: "  " },
-      {
-        authBinding: {
-          action: "set",
-          value: { realm: "family", binding: "chatgpt", profile: "  " },
-        },
-      },
+      { profileId: "homecore.reachy.open-room.v1", model: "gpt-live-1-codex" },
+      { profileId: "homecore.reachy.open-room.v1", provider: "openai" },
+      { profileId: "homecore.reachy.open-room.v1", selfHostedServerId: "server" },
+      { profileId: "homecore.reachy.open-room.v1", authBinding: { action: "clear" } },
     ]) {
       assert.throws(() => liveExecutionIdentityV1ToWire(input as never));
     }
@@ -190,7 +232,7 @@ describe("experimental live phase handles", () => {
     const readiness = parseLivePlaybackOwnerReadiness(
       fixture.playback_owner_readiness,
     );
-    assert.equal(pending.executionMode, "function_bridge");
+    assert.equal(pending.executionMode, "client_context");
     assert.equal(active.channelId, pending.channelId);
     assert.equal(readiness.channelId, pending.channelId);
     assert.notEqual(active.activationReceipt, pending.pendingReceipt);
