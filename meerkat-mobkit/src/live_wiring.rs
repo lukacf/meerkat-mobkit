@@ -606,9 +606,141 @@ mod ordinary_compat {
                 .map_err(|err| session_error_to_projection(err, session_id))
         }
 
+        // Assistant-playback authority, added by Meerkat 0.8.30's
+        // `LiveProjectionSink`. Transcribed from the canonical implementor
+        // (`ServiceLiveProjection` in meerkat/src/surface/live_projection.rs)
+        // rather than invented: this is a realtime voice path and playback
+        // admission decides which interaction a spoken response is attributed
+        // to. MobKit's sink holds the same `service` + `machine` pair, so the
+        // mapping is direct.
+        async fn admit_assistant_playback_target(
+            &self,
+            session_id: &SessionId,
+            channel_id: &meerkat_core::LiveChannelId,
+            provider_turn_ref: &str,
+            response_id: &str,
+            provider_item_id: &str,
+            content_index: u32,
+        ) -> Result<meerkat_live::LiveAssistantOutputAddress, LiveProjectionError> {
+            // The interaction sealed at Assistant TurnStarted is authoritative;
+            // a missing handle is a typed refusal, never a fresh interaction.
+            let handle = self
+                .machine
+                .live_assistant_output_handle_for_turn(session_id, channel_id, provider_turn_ref)
+                .ok_or_else(|| {
+                    LiveProjectionError::Rejected(
+                        "assistant playback target has no generated assistant-start handle"
+                            .to_string(),
+                    )
+                })?;
+            let target = self
+                .service
+                .admit_live_assistant_playback_target(
+                    session_id,
+                    channel_id.clone(),
+                    handle.interaction_id(),
+                    response_id.to_string(),
+                    provider_item_id.to_string(),
+                    content_index,
+                )
+                .await
+                .map_err(|err| session_error_to_projection(err, session_id))?;
+            if target.interaction_id() != handle.interaction_id() {
+                return Err(LiveProjectionError::Rejected(
+                    "assistant output handle did not match persisted target".to_string(),
+                ));
+            }
+            handle
+                .__bind_target(response_id, provider_item_id, content_index)
+                .map_err(|error| LiveProjectionError::Rejected(error.to_string()))?;
+            Ok(meerkat_live::LiveAssistantOutputAddress {
+                channel_id: channel_id.clone(),
+                output_id: handle.output_id().to_string(),
+                content_index,
+            })
+        }
+
+        async fn complete_assistant_playback(
+            &self,
+            session_id: &SessionId,
+            channel_id: &meerkat_core::LiveChannelId,
+            interaction_id: meerkat_core::InteractionId,
+            response_id: &str,
+            provider_item_id: &str,
+            content_index: u32,
+            stop_reason: meerkat_core::StopReason,
+            usage: meerkat_core::TurnUsage,
+        ) -> Result<(), LiveProjectionError> {
+            self.service
+                .commit_live_assistant_playback_complete(
+                    session_id,
+                    channel_id.clone(),
+                    interaction_id,
+                    response_id.to_string(),
+                    provider_item_id.to_string(),
+                    content_index,
+                    stop_reason,
+                    usage,
+                )
+                .await
+                .map(|_receipt| ())
+                .map_err(|err| session_error_to_projection(err, session_id))
+        }
+
+        async fn fail_assistant_output_publication(
+            &self,
+            session_id: &SessionId,
+            address: &meerkat_live::LiveAssistantOutputAddress,
+        ) -> Result<(), LiveProjectionError> {
+            // Publication of the sanitized handle failed, so the admitted
+            // output is revoked: resolve `Unmeasured`, discard the staged
+            // assistant content, and leave channel close to the host lifecycle.
+            let reservation = self
+                .machine
+                .reserve_live_assistant_output_handle(
+                    session_id,
+                    &address.channel_id,
+                    &address.output_id,
+                )
+                .await
+                .map_err(|error| LiveProjectionError::Rejected(error.to_string()))?;
+            let handle = reservation.handle();
+            let (response_id, item_id, content_index) = handle.__target().ok_or_else(|| {
+                LiveProjectionError::Rejected(
+                    "assistant output publication failure has no exact target".to_string(),
+                )
+            })?;
+            self.service
+                .commit_live_assistant_playback_truncation(
+                    session_id,
+                    address.channel_id.clone(),
+                    handle.interaction_id(),
+                    response_id.clone(),
+                    item_id,
+                    content_index,
+                    meerkat_core::LiveAssistantPlaybackEvidence::Unmeasured,
+                )
+                .await
+                .map_err(|error| session_error_to_projection(error, session_id))?;
+            self.machine
+                .commit_live_assistant_output_terminal(reservation)
+                .map_err(|error| LiveProjectionError::Rejected(error.to_string()))?;
+            self.service
+                .append_realtime_transcript_event_with_machine(
+                    self.machine.as_ref(),
+                    session_id,
+                    RealtimeTranscriptEvent::AssistantTurnInterrupted { response_id },
+                )
+                .await
+                .map(|_| ())
+                .map_err(|error| session_error_to_projection(error, session_id))
+        }
+
         async fn truncate_assistant_transcript(
             &self,
             session_id: &SessionId,
+            _channel_id: &meerkat_core::LiveChannelId,
+            _interaction_id: Option<meerkat_core::InteractionId>,
             provider_item_id: Option<&str>,
             _previous_item_id: Option<&str>,
             content_index: Option<u32>,
