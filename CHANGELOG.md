@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.26] - 2026-08-27
+
+Pairs with meerkat `0.8.30` (exact rev `5e229e0b8379ac162a6b3c69187d186b570535e9`),
+bound as an immutable Git rev across all 26 pin sites.
+
+### Added
+
+- **Experimental GPT Live channel surface** (`experimental-gpt-live`, off by
+  default). Realtime audio/live sessions route through the client context, with
+  a live surface in both SDKs (`sdk/typescript/src/live.ts`, Python live
+  contracts) and console replay wired to live subscription. The feature is
+  opt-in: a default-feature embedder acquires none of its dependency graph.
+- An exclusive session-identity config root declared by the gateway, so the
+  identity root a session resolves is stated rather than inherited ambiently.
+
+### Changed - BREAKING for host/SDK implementors
+
+- `resolve_record_by_session` is now **required** on `ContinuityStore`; its
+  `Ok(None)` default is gone, and both SDKs answer it. A store that silently
+  reported "no record" for a session it was holding made a resume look like a
+  first boot, and a default is exactly how an implementor inherited that
+  behaviour without choosing it. Hosts implementing the trait must add the
+  method; the compiler names every site.
+
+### Fixed
+
+- Persisted owner authority is published **before** mob prepare, so a revived
+  session's owner is registered when the lift happens instead of after it.
+- Persisted runtime authority converges before the bounded resume window, moving
+  memoized convergence work out of a budget it was exhausting on large rosters.
+- MobKit satisfies meerkat 0.8.30's now-compile-required committed-parent
+  projection seam. Wrappers holding an inner forward; genuinely non-persistent
+  doubles answer zero behind a fail-closed `supports_persistent_sessions()`
+  guard rather than a bare `Ok(0)`.
+
+### Security / advisories
+
+- RUSTSEC-2026-0150 (`audiopus_sys` 0.2.2 unmaintained) is waived with its scope
+  recorded in `deny.toml`. It is informational with no patched release, reachable
+  only under `experimental-gpt-live`, and its real exposure is a CMake 4 **build**
+  failure rather than a vulnerability. See the waiver for the 0.8.31 follow-up.
+
+### Note on the missing 0.8.24 and 0.8.25 entries
+
+`v0.8.24` and `v0.8.25` were tagged and published without changelog entries; the
+previous entry below is `0.8.23`. That gap is recorded here rather than papered
+over, and it is deliberately NOT reconstructed after the fact - anything written
+now would be inference about what shipped, not a record of it. For their actual
+contents, read the tags directly:
+
+    git log v0.8.23..v0.8.24
+    git log v0.8.24..v0.8.25
+
+Note also that this candidate's pre-bump commits self-reported `0.8.25` while
+differing from the published `v0.8.25` tree, which is why this release is
+`0.8.26` rather than a re-cut of `0.8.25`.
+
 ## [0.8.23] - 2026-08-25
 
 Pins meerkat `=0.8.28`, which carries three upstream fixes this release depends
