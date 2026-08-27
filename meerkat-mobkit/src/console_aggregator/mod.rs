@@ -5728,6 +5728,25 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MobSessionService for DelayedHistorySessionService {
+        // meerkat 0.8.30 made this REQUIRED. This double wraps an inner service
+        // and owns no session authority of its own, so it forwards - the same
+        // reasoning as `observe_session_resume_authority` above. Answering
+        // locally would report "projected nothing" while a persistent inner had
+        // real work owing, which is the silent-hole shape the required-method
+        // change exists to remove.
+        async fn enqueue_committed_parent_session_boundary_after_runtime_turn(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+            runtime_adapter: &meerkat_runtime::MeerkatMachine,
+        ) -> Result<usize, meerkat_core::service::SessionError> {
+            self.inner
+                .enqueue_committed_parent_session_boundary_after_runtime_turn(
+                    session_id,
+                    runtime_adapter,
+                )
+                .await
+        }
+
         async fn observe_session_resume_authority(
             &self,
             session_id: &meerkat_core::types::SessionId,
