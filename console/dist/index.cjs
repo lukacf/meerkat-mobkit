@@ -16362,9 +16362,16 @@ function isSpawnedDelegateLike(a, host) {
   return !group || group === role || group === "worker" || group === "delegate" || group.includes("helper");
 }
 function explicitHostId(a) {
-  return a.labels?.delegate_host_identity || a.labels?.host_identity || a.labels?.parent_identity || null;
+  return a.labels?.delegate_host_identity || a.labels?.host_identity || a.labels?.parent_identity || a.labels?.spawned_by || null;
 }
 function findSpawnHost(a, agents, commander) {
+  const spawnedBy = a.labels?.spawned_by;
+  if (spawnedBy) {
+    const match = agents.find(
+      (candidate) => candidate.member_id !== a.member_id && agentKeys(candidate).some((key) => referenceMatchesAgentKey(spawnedBy, key))
+    );
+    if (match) return match;
+  }
   if (!isWorkerish(a)) return null;
   const explicitHost = explicitHostId(a);
   if (explicitHost) {

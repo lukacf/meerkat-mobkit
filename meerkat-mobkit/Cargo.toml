@@ -12,6 +12,14 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
+[package.metadata.cargo-machete]
+# `meerkat-openai` is an OPTIONAL dependency that exists solely as a feature
+# forwarding edge - see `experimental-gpt-live = [... "meerkat-openai?/experimental-gpt-live"]`.
+# The `?` forwards the feature WITHOUT enabling the dependency, so there is no
+# `use meerkat_openai` anywhere and machete cannot see the reference. Removing
+# it would silently break the forward rather than fail loudly.
+ignored = ["meerkat-openai"]
+
 [lints]
 workspace = true
 
@@ -169,4 +177,3 @@ meerkat-mob = { version = "=0.8.30", git = "https://github.com/lukacf/meerkat.gi
 # tests (tests/gateway_live.rs) can observe the exact channel identity handed
 # to the provider lane without a provider socket or credential.
 meerkat = { version = "=0.8.30", git = "https://github.com/lukacf/meerkat.git", rev = "5e229e0b8379ac162a6b3c69187d186b570535e9", features = ["test-realtime-fixtures"] }
-meerkat-providers = { version = "=0.8.30", git = "https://github.com/lukacf/meerkat.git", rev = "5e229e0b8379ac162a6b3c69187d186b570535e9" }
