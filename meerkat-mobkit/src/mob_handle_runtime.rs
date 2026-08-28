@@ -343,6 +343,17 @@ impl ReplaySanitizingAgentLlmClient {
 
 #[async_trait]
 impl meerkat_core::AgentLlmClient for ReplaySanitizingAgentLlmClient {
+    // Forward the inner client's request-attempt authority. `AgentLlmClient`
+    // gives this method a DEFAULT returning `LegacySplit`, so a decorator that
+    // omits it compiles cleanly and silently downgrades every wrapped client.
+    // meerkat 0.8.31 rejects resume for a client reporting LegacySplit when the
+    // inner adapter is Unified: ob3 measured 72 identities marked Broken at boot
+    // on the candidate and 0 across three 0.8.30 runs. A decorator must report
+    // what it wraps, never what it is.
+    fn request_attempt_authority(&self) -> meerkat_core::RequestAttemptAuthority {
+        self.inner.request_attempt_authority()
+    }
+
     async fn stream_response(
         &self,
         messages: &[Message],
@@ -10032,6 +10043,62 @@ realm_profile = "worker-v2"
         assert_eq!(
             serde_json::to_value(&projected).expect("projected messages serialize"),
             serde_json::to_value(&seen).expect("seen messages serialize")
+        );
+    }
+
+    /// `ReplaySanitizingAgentLlmClient` must report the authority of the client
+    /// it wraps, not its own.
+    ///
+    /// Paired with `taint_observer_forwards_inner_authority` in
+    /// `memory::dispatch_taint`. BOTH production decorators need this and a fix
+    /// applied to only one passes the other's test - which is why there are two
+    /// tests rather than one, in the two files that hold the two wrappers.
+    ///
+    /// Covers wrapper CONSTRUCTION only. It does NOT cover the durable-resume
+    /// composition path, where ob3 measured the actual 72-identity failure: a
+    /// wrapper can forward correctly here and the resume path can still install
+    /// something that does not. That is verified downstream, not by this test.
+    #[test]
+    fn replay_sanitizer_forwards_inner_authority() {
+        #[derive(Debug)]
+        struct UnifiedInner;
+
+        #[async_trait]
+        impl meerkat_core::AgentLlmClient for UnifiedInner {
+            fn provider(&self) -> meerkat_core::Provider {
+                meerkat_core::Provider::OpenAI
+            }
+
+            fn model(&self) -> &'static str {
+                "gpt-5.5"
+            }
+
+            async fn stream_response(
+                &self,
+                _messages: &[meerkat_core::Message],
+                _tools: &[std::sync::Arc<meerkat_core::ToolDef>],
+                _max_tokens: u32,
+                _temperature: Option<f32>,
+                _provider_params: Option<
+                    &meerkat_core::lifecycle::run_primitive::ProviderParamsOverride,
+                >,
+            ) -> Result<meerkat_core::agent::LlmStreamResult, meerkat_core::AgentError>
+            {
+                unreachable!("authority forwarding never streams")
+            }
+
+            fn request_attempt_authority(&self) -> meerkat_core::RequestAttemptAuthority {
+                meerkat_core::RequestAttemptAuthority::Unified
+            }
+        }
+
+        let wrapped = ReplaySanitizingAgentLlmClient::new(std::sync::Arc::new(UnifiedInner));
+        assert_eq!(
+            meerkat_core::AgentLlmClient::request_attempt_authority(&wrapped),
+            meerkat_core::RequestAttemptAuthority::Unified,
+            "replay sanitizer reported its own authority instead of the wrapped \
+             client's; the trait default would have made this LegacySplit and \
+             silently downgraded every session it decorates",
         );
     }
 
