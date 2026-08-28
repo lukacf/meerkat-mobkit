@@ -1315,6 +1315,10 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, service)
             .with_mob_storage_provenance(mob_storage_provenance)
             .with_session_write_epochs(&session_write_epochs)
+            // The SAME facade handed to MeerkatMachine::persistent above.
+            // The durable-authority convergence memo is per-facade, so a
+            // different instance here would warm nothing.
+            .with_runtime_authority_prewarm(&runtime_store)
             // Resume-seam reads must carry the runtime store's archived
             // terminal (at 0.8.11 archive stamps the catalog/lifecycle row,
             // never the session body).
@@ -1402,6 +1406,10 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         // every launch hits). rpc_gateway.rs already had this call.
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
             .with_session_write_epochs(&session_write_epochs)
+            // The SAME facade handed to MeerkatMachine::persistent above.
+            // The durable-authority convergence memo is per-facade, so a
+            // different instance here would warm nothing.
+            .with_runtime_authority_prewarm(&runtime_store)
             .with_session_runtime_adapter(adapter.clone())
             .with_workgraph_service(workgraph_service.clone())
             .with_workgraph_admission_slot(workgraph_admission_slot);

@@ -166,6 +166,26 @@ impl SessionServiceHistoryExt for CheckpointerCancelProbeSessionService {
 
 #[async_trait::async_trait]
 impl MobSessionService for CheckpointerCancelProbeSessionService {
+    // meerkat 0.8.30 made this REQUIRED, replacing a default that
+    // answered "projected nothing" for any wrapper that did not
+    // override it. This wrapper owns no session authority - it
+    // decorates `inner` - so it forwards. Answering locally would
+    // report nothing owing while a persistent inner had real work,
+    // which is precisely the silent hole the required-method change
+    // exists to remove.
+    async fn enqueue_committed_parent_session_boundary_after_runtime_turn(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        runtime_adapter: &meerkat_runtime::MeerkatMachine,
+    ) -> Result<usize, SessionError> {
+        self.inner
+            .enqueue_committed_parent_session_boundary_after_runtime_turn(
+                session_id,
+                runtime_adapter,
+            )
+            .await
+    }
+
     // The verdict below is issued by `inner`, so the authority bundle it
     // carries must come from the SAME owner: the mob provisioner calls
     // `revalidate_session_resume_authority` on the service it holds (this

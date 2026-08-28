@@ -34,6 +34,24 @@ struct MockContinuityStore;
 
 #[async_trait]
 impl ContinuityStore for MockContinuityStore {
+    // The trait requires an explicit answer: a double that stayed
+    // silent used to assert an authoritative "no record" while
+    // meaning "I was never taught to answer", which is how a fix
+    // goes inert with every test still green.
+    async fn resolve_record_by_session(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<
+        Option<(
+            meerkat_mobkit::identity_first::ContinuityRecord,
+            meerkat_mobkit::identity_first::FencingToken,
+            meerkat_mobkit::identity_first::CheckpointVersion,
+        )>,
+        meerkat_mobkit::identity_first::ContinuityStoreError,
+    > {
+        Ok(None)
+    }
+
     async fn resolve_many(
         &self,
         identities: &[AgentIdentity],

@@ -358,6 +358,11 @@ class TestContinuityStoreProtocol:
             async def load_session_snapshot(self, session_id):
                 return None
 
+            async def resolve_record_by_session(self, session_id):
+                # Required by the protocol: an authoritative absence must be
+                # said out loud, not inherited from a missing method.
+                return None
+
             async def save_session_snapshot(
                 self, identity, session_id, generation, version,
                 fencing_token, snapshot,

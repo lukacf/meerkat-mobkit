@@ -1,7 +1,8 @@
 //! Console projection for agent-tool spawned mob members.
 //!
 //! Members spawned through the agent-facing mob tools (`mob_spawn_member`,
-//! `spawn_member`, `spawn_many_members`, and `delegate`'s implicit helpers)
+//! `spawn_member`, `spawn_many_members`, `fork_off`, and `delegate`'s implicit
+//! helpers)
 //! historically never reached the console: the spawn succeeded, the
 //! `initial_message` was delivered to the member, and no frame or identity
 //! metadata was ever written under the member's identity. Embedders had to
@@ -191,7 +192,7 @@ impl ConsoleSpawnSink {
 pub(crate) fn is_console_spawn_tool(name: &str) -> bool {
     matches!(
         name,
-        "mob_spawn_member" | "spawn_member" | "spawn_many_members" | "delegate"
+        "mob_spawn_member" | "spawn_member" | "spawn_many_members" | "delegate" | "fork_off"
     )
 }
 
@@ -672,6 +673,7 @@ mod tests {
             "spawn_member",
             "spawn_many_members",
             "delegate",
+            "fork_off",
         ] {
             assert!(is_console_spawn_tool(tool), "{tool} spawns members");
         }
@@ -775,6 +777,64 @@ mod tests {
         );
         assert_eq!(seed.spawned_by.as_deref(), Some("ops-lead"));
         assert_eq!(seed.via_tool, "mob_spawn_member");
+    }
+
+    #[tokio::test]
+    async fn fork_off_projects_retained_child_from_canonical_result() {
+        let args = json!({
+            "member_id": "durable-investigator",
+            "task": "Inspect the ledger"
+        });
+        let outcome = json!({
+            "output": "The ledger is consistent.",
+            "mob_id": "ob3",
+            "source_member_id": "ops-lead",
+            "agent_identity": "durable-investigator",
+            "member_ref": "opaque-ref",
+            "fork_session_id": "fork-session",
+            "turn_session_id": "fork-session",
+            "bounded_result": {
+                "label": "delegation",
+                "text": "The ledger is consistent.",
+                "status": "completed",
+                "truncated": false
+            }
+        });
+
+        let seeds = console_spawn_seeds(
+            "fork_off",
+            &args,
+            &outcome.to_string(),
+            Some("ob3/orchestrator/ops-lead"),
+        );
+        assert_eq!(seeds.len(), 1);
+        let seed = &seeds[0];
+        assert_eq!(seed.mob_id.as_deref(), Some("ob3"));
+        assert_eq!(seed.member_id, "durable-investigator");
+        assert_eq!(seed.initial_message, Some(json!("Inspect the ledger")));
+        assert_eq!(seed.spawned_by.as_deref(), Some("ops-lead"));
+        assert_eq!(seed.via_tool, "fork_off");
+
+        let store = ConsoleEventStore::new();
+        let sink = ConsoleSpawnSink::new(store.clone());
+        sink.project_spawned_member(seed).await;
+        let labels = store
+            .identity_labels("durable-investigator")
+            .await
+            .expect("retained child is registered in the normal console identity snapshot");
+        assert_eq!(
+            labels.get(SPAWNED_BY_LABEL).map(String::as_str),
+            Some("ops-lead")
+        );
+        assert_eq!(
+            labels.get(VIA_TOOL_LABEL).map(String::as_str),
+            Some("fork_off")
+        );
+        let replay = store.replay_all(None).await.expect("replay");
+        assert!(replay.iter().any(|event| {
+            event.identity == "durable-investigator"
+                && event.data["message"]["content"] == "Inspect the ledger"
+        }));
     }
 
     #[test]

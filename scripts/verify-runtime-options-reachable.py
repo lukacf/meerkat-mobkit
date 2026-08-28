@@ -21,7 +21,13 @@ GATEWAY = pathlib.Path(__file__).resolve().parent.parent / "meerkat-mobkit/src/b
 
 def main() -> int:
     src = GATEWAY.read_text(encoding="utf-8")
-    match = re.search(r"let supported = \[(.*?)\];", src, re.S)
+    function_start = src.find("fn parse_gateway_runtime_options(")
+    if function_start == -1:
+        print("FAIL: could not find parse_gateway_runtime_options", file=sys.stderr)
+        return 1
+    match = re.search(
+        r"let supported = \[(.*?)\];", src[function_start:], re.S
+    )
     if not match:
         print("FAIL: could not find the runtime_options allowlist", file=sys.stderr)
         return 1

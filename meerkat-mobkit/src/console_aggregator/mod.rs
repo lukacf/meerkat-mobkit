@@ -441,8 +441,12 @@ impl MobKitConsoleAggregator {
         let events_for_live = console_events.clone();
         let events_for_live_recovery = console_events.clone();
         let runtime_key_for_live = runtime_key.clone();
+        // Subscribe before spawning the projection task. If subscription is
+        // deferred into the task, an event can land after replay completes
+        // but before the task is first polled, leaving neither path able to
+        // observe it.
+        let mut live_rx = events_for_live.subscribe();
         tokio::spawn(async move {
-            let mut rx = events_for_live.subscribe();
             loop {
                 tokio::select! {
                     changed = shutdown_rx.changed() => {
@@ -451,7 +455,7 @@ impl MobKitConsoleAggregator {
                             break;
                         }
                     }
-                    received = rx.recv() => match received {
+                    received = live_rx.recv() => match received {
                         Ok(envelope) => {
                             let _ = project_console_event(
                                 inner.clone(),
@@ -5724,6 +5728,25 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MobSessionService for DelayedHistorySessionService {
+        // meerkat 0.8.30 made this REQUIRED. This double wraps an inner service
+        // and owns no session authority of its own, so it forwards - the same
+        // reasoning as `observe_session_resume_authority` above. Answering
+        // locally would report "projected nothing" while a persistent inner had
+        // real work owing, which is the silent-hole shape the required-method
+        // change exists to remove.
+        async fn enqueue_committed_parent_session_boundary_after_runtime_turn(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+            runtime_adapter: &meerkat_runtime::MeerkatMachine,
+        ) -> Result<usize, meerkat_core::service::SessionError> {
+            self.inner
+                .enqueue_committed_parent_session_boundary_after_runtime_turn(
+                    session_id,
+                    runtime_adapter,
+                )
+                .await
+        }
+
         async fn observe_session_resume_authority(
             &self,
             session_id: &meerkat_core::types::SessionId,

@@ -921,6 +921,7 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
                 | "member_status"
                 | "wire_members"
                 | "unwire_members"
+                | "fork_off"
         ) {
             let args = serde_json::from_str::<Value>(call.args.get()).map_err(|error| {
                 meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
@@ -1051,7 +1052,8 @@ fn raw_member_tool_arguments(tool_name: &str, args: &Value) -> Vec<(&'static str
         | "spawn_member"
         | "retire_member"
         | "force_cancel_member"
-        | "member_status" => {
+        | "member_status"
+        | "fork_off" => {
             candidates.push(("member_id", args.get("member_id").and_then(Value::as_str)));
         }
         "spawn_many_members" => {
@@ -4484,6 +4486,7 @@ macro_rules! delegate_mob_session_service {
 
         #[async_trait]
         impl MobSessionService for $wrapper {
+
             async fn load_session_for_resume(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -4541,6 +4544,24 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<meerkat_mob::SessionResumeAuthority, SessionError> {
                 self.inner
                     .observe_session_resume_authority(session_id)
+                    .await
+            }
+
+            // NOT cfg-gated on mobkit's own `experimental-gpt-live`. The trait
+            // requires this method whenever MEERKAT's feature is on, and
+            // `--all-targets` dev-dependency unification turns meerkat's on while
+            // mobkit's own flag stays off. Gating here on the mobkit flag deleted
+            // the impl exactly when the trait demanded it.
+            async fn enqueue_committed_parent_session_boundary_after_runtime_turn(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                runtime_adapter: &meerkat_runtime::MeerkatMachine,
+            ) -> Result<usize, SessionError> {
+                self.inner
+                    .enqueue_committed_parent_session_boundary_after_runtime_turn(
+                        session_id,
+                        runtime_adapter,
+                    )
                     .await
             }
 
@@ -5401,6 +5422,24 @@ impl MobSessionService for AfterCreateMobSessionService {
             .await
     }
 
+    // NOT cfg-gated on mobkit's own `experimental-gpt-live`. The trait
+    // requires this method whenever MEERKAT's feature is on, and
+    // `--all-targets` dev-dependency unification turns meerkat's on while
+    // mobkit's own flag stays off. Gating here on the mobkit flag deleted
+    // the impl exactly when the trait demanded it.
+    async fn enqueue_committed_parent_session_boundary_after_runtime_turn(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        runtime_adapter: &meerkat_runtime::MeerkatMachine,
+    ) -> Result<usize, SessionError> {
+        self.inner
+            .enqueue_committed_parent_session_boundary_after_runtime_turn(
+                session_id,
+                runtime_adapter,
+            )
+            .await
+    }
+
     async fn create_session_under_runtime_turn_boundary(
         &self,
         req: meerkat_core::service::CreateSessionRequest,
@@ -5875,6 +5914,19 @@ pub struct MobBootstrapSpec {
     /// (console session-history discovery); `None` means no such witness and
     /// callers must fall back to reading.
     pub(crate) session_write_epochs: Option<Arc<SessionSnapshotWriteEpochs>>,
+    /// The EXACT runtime-store facade meerkat will read through during an
+    /// explicit resume, supplied by compositions that build their own store
+    /// (see [`epoch_tracking_runtime_store_with_durable_projection`]).
+    ///
+    /// Identity-first resume converges each persisted session's stale durable
+    /// runtime authority lazily, on that facade's READ paths, which meerkat
+    /// calls back into while the bounded explicit-resume command is running.
+    /// Handing the SAME facade here lets the deferred-activation flow converge
+    /// those rows first, in the window where the mob is already parked
+    /// `Stopped`. It must be the same instance: the convergence memo lives on
+    /// the facade, so a second facade would warm nothing. `None` keeps the
+    /// pre-existing lazy-only behaviour.
+    pub(crate) runtime_authority_prewarm: Option<Arc<dyn meerkat_runtime::RuntimeStore>>,
     /// Committed-boundary heal authority for the identity-first continuity
     /// repair supervisor (2026-07-29 heal/re-Break incident). The stock
     /// persistent constructors record the concrete meerkat-backed recoverer;
@@ -5943,6 +5995,7 @@ impl MobBootstrapSpec {
             workgraph_admission_sidecar: None,
             resolved_storage: None,
             session_write_epochs: None,
+            runtime_authority_prewarm: None,
             committed_boundary_recoverer: None,
             dispatch_taint_slot,
             _ephemeral_dir: None,
@@ -6199,6 +6252,22 @@ impl MobBootstrapSpec {
             )))),
             archived_terminal_authority: None,
         });
+        self
+    }
+
+    /// Declare the runtime-store facade this composition will read through, so
+    /// a deferred identity-first activation can converge stale durable runtime
+    /// authority BEFORE the bounded explicit resume has to.
+    ///
+    /// Hand it the SAME `Arc` given to `MeerkatMachine::persistent`. The
+    /// convergence memo is per-facade, so a separately constructed facade
+    /// would leave the resume doing the identical work under its own budget -
+    /// which is the failure this exists to remove, not a lesser version of it.
+    pub fn with_runtime_authority_prewarm(
+        mut self,
+        store: &Arc<dyn meerkat_runtime::RuntimeStore>,
+    ) -> Self {
+        self.runtime_authority_prewarm = Some(Arc::clone(store));
         self
     }
 
@@ -7419,6 +7488,10 @@ pub struct MobRuntime {
     /// (persistent runtime-backed path only); see
     /// [`Self::session_document_write_epoch`].
     session_write_epochs: Option<Arc<SessionSnapshotWriteEpochs>>,
+    /// Runtime-store facade carried from the bootstrap spec, used to converge
+    /// persisted runtime authority while the mob is parked `Stopped`; see
+    /// [`Self::prewarm_persisted_runtime_authority`].
+    runtime_authority_prewarm: Option<Arc<dyn meerkat_runtime::RuntimeStore>>,
     /// Committed-boundary heal authority carried from the bootstrap spec so
     /// the identity-first wiring can inject it into the session bridge.
     committed_boundary_recoverer:
@@ -7472,6 +7545,42 @@ impl PendingMobActivation {
             ))),
         }
     }
+}
+
+/// The prewarm loop, independent of WHERE the authority read goes.
+///
+/// Split out from [`MobRuntime::prewarm_persisted_runtime_authority`] so the
+/// iteration contract is testable without standing up a 15-method
+/// `RuntimeStore` double: what matters here is that each session maps to
+/// exactly one `rt:session:` read, that the count reflects successes, and that
+/// a failing read is absorbed rather than propagated.
+async fn converge_persisted_runtime_authority<F, Fut>(
+    session_ids: &[meerkat_core::types::SessionId],
+    mut read_authority: F,
+) -> usize
+where
+    F: FnMut(meerkat_runtime::LogicalRuntimeId) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let mut read = 0usize;
+    for session_id in session_ids {
+        // The constructor owns the `rt:session:` convention; formatting it here
+        // would be a second spelling of the same fact.
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(session_id);
+        let observed = runtime_id.clone();
+        match read_authority(runtime_id).await {
+            Ok(()) => read += 1,
+            Err(error) => {
+                tracing::debug!(
+                    runtime_id = %observed,
+                    error = %error,
+                    "prewarming persisted runtime authority failed; the bounded resume \
+                     performs this read itself and owns the typed outcome"
+                );
+            }
+        }
+    }
+    read
 }
 
 impl MobRuntime {
@@ -7753,6 +7862,7 @@ impl MobRuntime {
                 workgraph_admission,
                 resolved_storage: spec.resolved_storage,
                 session_write_epochs: spec.session_write_epochs,
+                runtime_authority_prewarm: spec.runtime_authority_prewarm,
                 committed_boundary_recoverer: spec.committed_boundary_recoverer,
                 _ephemeral_dir: ephemeral_dir,
                 composition_authority: spec.composition_authority,
@@ -7785,6 +7895,7 @@ impl MobRuntime {
             workgraph_admission,
             resolved_storage: None,
             session_write_epochs: None,
+            runtime_authority_prewarm: None,
             committed_boundary_recoverer: None,
             _ephemeral_dir: None,
         }
@@ -7904,6 +8015,56 @@ impl MobRuntime {
         let epochs = self.session_write_epochs.as_ref()?;
         let session_id = meerkat_core::types::SessionId::parse(session_id_str).ok()?;
         Some(epochs.observe(&session_id))
+    }
+
+    /// Converge each supplied session's durable runtime authority BEFORE the
+    /// bounded explicit resume has to read it.
+    ///
+    /// [`SessionStoreBackedRuntimeStore`] repairs a durable row that orders
+    /// behind committed runtime authority LAZILY, on its read paths, and
+    /// memoizes every `runtime_id` it has already freshened. Those reads
+    /// otherwise land inside meerkat's explicit resume, which `MobHandle::resume`
+    /// bounds with `EXPLICIT_RESUME_RETIRE_TOTAL_TIMEOUT` - a single
+    /// per-member retire budget covering work that is O(members). On a large
+    /// roster the resume spends that whole budget proving convergence and the
+    /// caller is handed the retryable `SessionBusy` barrier
+    /// (`LifecycleOperationPending { intent: "explicit_resume" }`) with its own
+    /// operation still running.
+    ///
+    /// Waiting longer cannot rescue that. The operation retains the FIRST
+    /// caller's deadline (`ResumeOperationRegistry::get_or_insert` discards a
+    /// later one) and hands it to the actor, whose per-member checks refuse
+    /// against it at the next session boundary - so a retry observes an error
+    /// it merely waited longer for. The resume has to FIT the budget, which is
+    /// what this call buys.
+    ///
+    /// Because the repair is memoized, this is the SAME work moved rather than
+    /// extra work: run here, while the mob is deliberately parked `Stopped` for
+    /// continuity registration and nothing is bounded, the in-resume reads
+    /// become memo hits.
+    ///
+    /// Best-effort BY DESIGN. A read that fails here is not a resume failure:
+    /// the resume performs the identical read itself and owns the typed
+    /// outcome, so refusing the boot here would invent a failure the resume
+    /// might not have had. Returns how many sessions were read through the
+    /// shared facade, so a caller can log a prewarm that converged nothing
+    /// rather than leaving an absent effect indistinguishable from an
+    /// unconfigured one.
+    pub(crate) async fn prewarm_persisted_runtime_authority(
+        &self,
+        session_ids: &[meerkat_core::types::SessionId],
+    ) -> usize {
+        let Some(store) = self.runtime_authority_prewarm.as_ref() else {
+            return 0;
+        };
+        converge_persisted_runtime_authority(session_ids, |runtime_id| async move {
+            store
+                .load_session_boundary_authority(&runtime_id)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+        .await
     }
 
     pub async fn read_session_history(
@@ -8460,6 +8621,13 @@ mod tests {
         );
         assert_eq!(
             reserved_raw_member_tool_argument(
+                "fork_off",
+                &serde_json::json!({"member_id": "rt:worker:0"}),
+            ),
+            Some(("member_id", "rt:worker:0".to_string()))
+        );
+        assert_eq!(
+            reserved_raw_member_tool_argument(
                 "spawn_many_members",
                 &serde_json::json!({
                     "specs": [
@@ -8573,6 +8741,27 @@ mod tests {
             error
                 .to_string()
                 .contains("owned by the attached IdentityRuntime")
+        );
+
+        let child_collision = serde_json::value::RawValue::from_string(
+            serde_json::json!({
+                "member_id": "lead"
+            })
+            .to_string(),
+        )
+        .expect("raw args");
+        let error = dispatcher
+            .dispatch(meerkat_core::types::ToolCallView {
+                id: "fork-off-child-collision",
+                name: "fork_off",
+                args: &child_collision,
+            })
+            .await
+            .expect_err("registered child identity must fail before lower-plane dispatch");
+        assert!(
+            error
+                .to_string()
+                .contains("member_id 'lead' is owned by the attached IdentityRuntime")
         );
     }
 
@@ -8955,6 +9144,65 @@ builtins = true
         assert!(
             !mob_definition_may_use_image_generation(&definition),
             "inline profiles should not wire the image substrate unless a profile opts in"
+        );
+    }
+
+    /// Normalization is IDEMPOTENT at the byte level, proven rather than argued.
+    ///
+    /// Piece 2 normalizes each definition once, before both the pre-prepare owner
+    /// callback and MobRuntimeSpec construction. `MobRuntime::prepare` then
+    /// applies `auto_mark_declared_resume_overrides` again on its own copy. If
+    /// that second application changed anything, the callback and the runtime
+    /// would disagree about the definition - the byte-identity violation that got
+    /// the first wiring attempt rejected.
+    ///
+    /// An idempotency ARGUMENT is not evidence: a transform that happens to be
+    /// idempotent for the cases I construct is not idempotent. So this compares
+    /// exact serialized bytes.
+    ///
+    /// NON-VACUITY IS ASSERTED FIRST. If the first application changed nothing,
+    /// once-versus-twice would be trivially equal and this test would pass while
+    /// proving nothing about a transform that never fired. The fixture is chosen
+    /// so the first pass DOES mark declared overrides.
+    #[test]
+    fn definition_normalization_is_byte_identical_on_reapplication() {
+        let base = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "normalization-idempotence"
+
+[profiles.worker]
+model = "gpt-5.5"
+
+[profiles.worker.tools]
+builtins = true
+"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+
+        let raw_bytes = serde_json::to_vec(&base).unwrap_or_else(|e| panic!("{e}"));
+
+        // `base` is not read after this: raw_bytes was already taken from it,
+        // so move rather than clone.
+        let mut once = base;
+        auto_mark_declared_resume_overrides(&mut once);
+        let once_bytes = serde_json::to_vec(&once).unwrap_or_else(|e| panic!("{e}"));
+
+        assert_ne!(
+            raw_bytes, once_bytes,
+            "the fixture must be one the transform ACTUALLY changes, or once-vs-twice equality \
+             proves nothing about idempotence"
+        );
+
+        let mut twice = once.clone();
+        auto_mark_declared_resume_overrides(&mut twice);
+        let twice_bytes = serde_json::to_vec(&twice).unwrap_or_else(|e| panic!("{e}"));
+
+        assert_eq!(
+            once_bytes, twice_bytes,
+            "re-applying normalization must be byte-identical: prepare applies it again on its own \
+             copy, so any change here means the owner callback and the runtime disagree about the \
+             definition"
         );
     }
 
@@ -10437,6 +10685,30 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+        // meerkat 0.8.30 made `enqueue_committed_parent_session_boundary_after_runtime_turn`
+        // REQUIRED, deleting the default that returned `Unsupported` for a
+        // persistent profile and `Ok(0)` otherwise. That default is exactly how
+        // production wrappers silently inherited a hole that only a Turbo S
+        // execution red found. This double is non-persistent, so `Ok(0)` is the
+        // correct behaviour - but it is guarded rather than bare: a bare `Ok(0)`
+        // is indistinguishable at the call site from "projected nothing because
+        // there was nothing to project", so nothing could ever assert the
+        // difference if this double later became persistent.
+        async fn enqueue_committed_parent_session_boundary_after_runtime_turn(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+            _runtime_adapter: &meerkat_runtime::MeerkatMachine,
+        ) -> Result<usize, meerkat_core::service::SessionError> {
+            if self.supports_persistent_sessions() {
+                return Err(meerkat_core::service::SessionError::Unsupported(format!(
+                    "AbsorberInnerProbe became persistent and must project the committed \
+                     parent-session boundary through canonical session ownership \
+                     for {session_id}"
+                )));
+            }
+            Ok(0)
+        }
+
         // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
         // without a default, so that a PERSISTENT decorator cannot inherit a
         // composition that converges nothing and silently resume from stale
@@ -10910,6 +11182,17 @@ comms = true
             // answer and is deliberately left un-overridden here.
             Ok(meerkat_mob::SessionResumeAuthority::default())
         }
+        // NOT cfg-gated on mobkit's own `experimental-gpt-live`: the trait requires
+        // this whenever MEERKAT's feature is on, and --all-targets dev-dependency
+        // unification enables meerkat's while mobkit's own flag stays off.
+        async fn enqueue_committed_parent_session_boundary_after_runtime_turn(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+            _runtime_adapter: &meerkat_runtime::MeerkatMachine,
+        ) -> Result<usize, SessionError> {
+            self.record("enqueue_committed_parent_session_boundary_after_runtime_turn");
+            Ok(7)
+        }
         async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
             &self,
             _session_id: &meerkat_core::types::SessionId,
@@ -11017,6 +11300,64 @@ comms = true
                 "probe has no boundary authority",
             ))
         }
+    }
+
+    // Un-gated to match the impls it covers. The forwarding methods are no
+    // longer behind mobkit's own `experimental-gpt-live`, because the trait
+    // requires them whenever MEERKAT's feature is on and dev-dependency
+    // unification enables meerkat's independently. A gated test over un-gated
+    // code means the default build compiles the forwards and asserts nothing
+    // about them - which is the same silent-coverage shape the required-method
+    // change exists to remove.
+    #[tokio::test]
+    async fn mob_session_wrappers_forward_committed_parent_boundary_exactly_once() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let session_id = meerkat_core::types::SessionId::new();
+        let machine = Arc::new(meerkat_runtime::MeerkatMachine::ephemeral());
+
+        let pre_build = PreBuildMobSessionService {
+            inner: probe.clone(),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: Some(Arc::clone(&machine)),
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        };
+        assert_eq!(
+            MobSessionService::enqueue_committed_parent_session_boundary_after_runtime_turn(
+                &pre_build,
+                &session_id,
+                machine.as_ref(),
+            )
+            .await
+            .expect("pre-build wrapper must forward the sealed boundary"),
+            7,
+        );
+
+        let after_create = AfterCreateMobSessionService {
+            inner: probe.clone(),
+            after_hook: Arc::new(|_, _| Box::pin(async {})),
+        };
+        assert_eq!(
+            MobSessionService::enqueue_committed_parent_session_boundary_after_runtime_turn(
+                &after_create,
+                &session_id,
+                machine.as_ref(),
+            )
+            .await
+            .expect("after-create wrapper must forward the sealed boundary"),
+            7,
+        );
+
+        assert_eq!(
+            probe.calls(),
+            vec![
+                "enqueue_committed_parent_session_boundary_after_runtime_turn",
+                "enqueue_committed_parent_session_boundary_after_runtime_turn",
+            ],
+            "each wrapper must delegate exactly once and add no semantic step",
+        );
     }
 
     #[tokio::test]
@@ -15257,6 +15598,129 @@ image_generation = true
                 "failed spawns must not seed console chats"
             );
             assert!(store.identity_labels("worker-3").await.is_none());
+        }
+    }
+
+    /// The convergence pass that keeps a deferred identity-first activation
+    /// inside its bounded explicit resume (see
+    /// `MobRuntime::prewarm_persisted_runtime_authority`). Session ids here are
+    /// the real ones from the 2026-08-26 HomeCore resume trace.
+    mod persisted_runtime_authority_prewarm {
+        use std::sync::{Arc, Mutex};
+
+        const PARENT_ONE: &str = "019fd786-901e-7400-bed4-e96f6e8af375";
+        const WORKER_ONE: &str = "019fae11-4ce6-7480-8660-82c24213c62e";
+        const WORKER_TWO: &str = "019fae11-4e4d-7722-a44b-cade372f5833";
+
+        fn session(raw: &str) -> meerkat_core::types::SessionId {
+            meerkat_core::types::SessionId::parse(raw).expect("session id parses")
+        }
+
+        #[tokio::test]
+        async fn each_session_is_converged_once_under_the_runtime_id_the_resume_will_read() {
+            let roster = vec![session(PARENT_ONE), session(WORKER_ONE)];
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let recorder = Arc::clone(&seen);
+            let converged =
+                super::super::converge_persisted_runtime_authority(&roster, |runtime_id| {
+                    let recorder = Arc::clone(&recorder);
+                    async move {
+                        recorder
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(runtime_id.0.clone());
+                        Ok(())
+                    }
+                })
+                .await;
+            let seen = seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            assert_eq!(converged, 2);
+            // The spelling matters as much as the count: the resume reads
+            // through `LogicalRuntimeId::for_session`, so a prewarm that warmed
+            // any other spelling would leave the memo cold and the budget spent.
+            assert_eq!(
+                seen,
+                vec![
+                    format!("rt:session:{PARENT_ONE}"),
+                    format!("rt:session:{WORKER_ONE}"),
+                ],
+                "every rostered session must be converged exactly once, under the runtime-id \
+                 spelling the bounded resume will read"
+            );
+        }
+
+        #[tokio::test]
+        async fn the_count_reports_successes_and_a_failure_does_not_stop_the_pass() {
+            let roster = vec![
+                session(PARENT_ONE),
+                session(WORKER_ONE),
+                session(WORKER_TWO),
+            ];
+            let attempts = Arc::new(Mutex::new(0usize));
+            let counter = Arc::clone(&attempts);
+            let converged =
+                super::super::converge_persisted_runtime_authority(&roster, |runtime_id| {
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        *counter
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+                        if runtime_id.0.ends_with(WORKER_ONE) {
+                            Err("durable row unavailable".to_string())
+                        } else {
+                            Ok(())
+                        }
+                    }
+                })
+                .await;
+            let attempts = *attempts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Best-effort means CONTINUE, not abandon: short-circuiting on the
+            // first failure would leave every later session to converge inside
+            // the bounded resume, which is the whole defect.
+            assert_eq!(
+                attempts, 3,
+                "every session must be attempted even after one read fails"
+            );
+            // The discriminator against reporting `session_ids.len()`: that
+            // would claim a convergence that never happened, and an absent
+            // effect must not be indistinguishable from a successful one.
+            assert_eq!(
+                converged, 2,
+                "a failed read must not be counted as converged"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_wholly_unavailable_store_converges_nothing_without_failing_the_boot() {
+            let roster = vec![session(PARENT_ONE), session(WORKER_ONE)];
+            let attempts = Arc::new(Mutex::new(0usize));
+            let counter = Arc::clone(&attempts);
+            let converged =
+                super::super::converge_persisted_runtime_authority(&roster, |_runtime_id| {
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        *counter
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+                        Err("runtime store offline".to_string())
+                    }
+                })
+                .await;
+            assert_eq!(
+                *attempts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                2
+            );
+            // The resume performs the identical read itself and owns the typed
+            // outcome, so refusing here would invent a boot failure the resume
+            // might not have had.
+            assert_eq!(converged, 0);
         }
     }
 }

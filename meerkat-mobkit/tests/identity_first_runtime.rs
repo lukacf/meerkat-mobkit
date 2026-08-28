@@ -222,6 +222,24 @@ impl TransientBrokenContinuityStore {
 
 #[async_trait]
 impl ContinuityStore for TransientBrokenContinuityStore {
+    // The trait requires an explicit answer: a double that stayed
+    // silent used to assert an authoritative "no record" while
+    // meaning "I was never taught to answer", which is how a fix
+    // goes inert with every test still green.
+    async fn resolve_record_by_session(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<
+        Option<(
+            meerkat_mobkit::identity_first::ContinuityRecord,
+            meerkat_mobkit::identity_first::FencingToken,
+            meerkat_mobkit::identity_first::CheckpointVersion,
+        )>,
+        meerkat_mobkit::identity_first::ContinuityStoreError,
+    > {
+        Ok(None)
+    }
+
     async fn resolve_many(
         &self,
         identities: &[AgentIdentity],
@@ -824,6 +842,24 @@ impl CountingContinuityStore {
 
 #[async_trait]
 impl ContinuityStore for CountingContinuityStore {
+    // The trait requires an explicit answer: a double that stayed
+    // silent used to assert an authoritative "no record" while
+    // meaning "I was never taught to answer", which is how a fix
+    // goes inert with every test still green.
+    async fn resolve_record_by_session(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<
+        Option<(
+            meerkat_mobkit::identity_first::ContinuityRecord,
+            meerkat_mobkit::identity_first::FencingToken,
+            meerkat_mobkit::identity_first::CheckpointVersion,
+        )>,
+        meerkat_mobkit::identity_first::ContinuityStoreError,
+    > {
+        Ok(None)
+    }
+
     async fn resolve_many(
         &self,
         identities: &[AgentIdentity],
@@ -918,6 +954,24 @@ impl GatedStaleResolveContinuityStore {
 
 #[async_trait]
 impl ContinuityStore for GatedStaleResolveContinuityStore {
+    // The trait requires an explicit answer: a double that stayed
+    // silent used to assert an authoritative "no record" while
+    // meaning "I was never taught to answer", which is how a fix
+    // goes inert with every test still green.
+    async fn resolve_record_by_session(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<
+        Option<(
+            meerkat_mobkit::identity_first::ContinuityRecord,
+            meerkat_mobkit::identity_first::FencingToken,
+            meerkat_mobkit::identity_first::CheckpointVersion,
+        )>,
+        meerkat_mobkit::identity_first::ContinuityStoreError,
+    > {
+        Ok(None)
+    }
+
     async fn resolve_many(
         &self,
         identities: &[AgentIdentity],
@@ -1065,6 +1119,24 @@ impl IdentityScopedVersionStore {
 
 #[async_trait]
 impl ContinuityStore for IdentityScopedVersionStore {
+    // The trait requires an explicit answer: a double that stayed
+    // silent used to assert an authoritative "no record" while
+    // meaning "I was never taught to answer", which is how a fix
+    // goes inert with every test still green.
+    async fn resolve_record_by_session(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<
+        Option<(
+            meerkat_mobkit::identity_first::ContinuityRecord,
+            meerkat_mobkit::identity_first::FencingToken,
+            meerkat_mobkit::identity_first::CheckpointVersion,
+        )>,
+        meerkat_mobkit::identity_first::ContinuityStoreError,
+    > {
+        Ok(None)
+    }
+
     async fn resolve_many(
         &self,
         identities: &[AgentIdentity],
@@ -1158,6 +1230,24 @@ impl ContinuityStore for IdentityScopedVersionStore {
 
 #[async_trait]
 impl ContinuityStore for FaultyContinuityStore {
+    // The trait requires an explicit answer: a double that stayed
+    // silent used to assert an authoritative "no record" while
+    // meaning "I was never taught to answer", which is how a fix
+    // goes inert with every test still green.
+    async fn resolve_record_by_session(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<
+        Option<(
+            meerkat_mobkit::identity_first::ContinuityRecord,
+            meerkat_mobkit::identity_first::FencingToken,
+            meerkat_mobkit::identity_first::CheckpointVersion,
+        )>,
+        meerkat_mobkit::identity_first::ContinuityStoreError,
+    > {
+        Ok(None)
+    }
+
     async fn resolve_many(
         &self,
         identities: &[AgentIdentity],
@@ -1267,6 +1357,24 @@ impl ResolveProbeStore {
 
 #[async_trait]
 impl ContinuityStore for ResolveProbeStore {
+    // The trait requires an explicit answer: a double that stayed
+    // silent used to assert an authoritative "no record" while
+    // meaning "I was never taught to answer", which is how a fix
+    // goes inert with every test still green.
+    async fn resolve_record_by_session(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<
+        Option<(
+            meerkat_mobkit::identity_first::ContinuityRecord,
+            meerkat_mobkit::identity_first::FencingToken,
+            meerkat_mobkit::identity_first::CheckpointVersion,
+        )>,
+        meerkat_mobkit::identity_first::ContinuityStoreError,
+    > {
+        Ok(None)
+    }
+
     async fn resolve_many(
         &self,
         identities: &[AgentIdentity],
@@ -3366,6 +3474,24 @@ struct RollbackFailingContinuityStore {
 
 #[async_trait]
 impl ContinuityStore for RollbackFailingContinuityStore {
+    // The trait requires an explicit answer: a double that stayed
+    // silent used to assert an authoritative "no record" while
+    // meaning "I was never taught to answer", which is how a fix
+    // goes inert with every test still green.
+    async fn resolve_record_by_session(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<
+        Option<(
+            meerkat_mobkit::identity_first::ContinuityRecord,
+            meerkat_mobkit::identity_first::FencingToken,
+            meerkat_mobkit::identity_first::CheckpointVersion,
+        )>,
+        meerkat_mobkit::identity_first::ContinuityStoreError,
+    > {
+        Ok(None)
+    }
+
     async fn resolve_many(
         &self,
         identities: &[AgentIdentity],
@@ -4629,6 +4755,24 @@ async fn identity_first_runtime_lazy_snapshot_missing_record_stays_materializabl
 
     #[async_trait]
     impl ContinuityStore for SnapshotMissingStore {
+        // The trait requires an explicit answer: a double that stayed
+        // silent used to assert an authoritative "no record" while
+        // meaning "I was never taught to answer", which is how a fix
+        // goes inert with every test still green.
+        async fn resolve_record_by_session(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<
+            Option<(
+                meerkat_mobkit::identity_first::ContinuityRecord,
+                meerkat_mobkit::identity_first::FencingToken,
+                meerkat_mobkit::identity_first::CheckpointVersion,
+            )>,
+            meerkat_mobkit::identity_first::ContinuityStoreError,
+        > {
+            Ok(None)
+        }
+
         async fn resolve_many(
             &self,
             identities: &[AgentIdentity],
@@ -8201,6 +8345,24 @@ async fn identity_first_runtime_restore_flow_broken_fails_loudly() {
 
     #[async_trait]
     impl ContinuityStore for BrokenStore {
+        // The trait requires an explicit answer: a double that stayed
+        // silent used to assert an authoritative "no record" while
+        // meaning "I was never taught to answer", which is how a fix
+        // goes inert with every test still green.
+        async fn resolve_record_by_session(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<
+            Option<(
+                meerkat_mobkit::identity_first::ContinuityRecord,
+                meerkat_mobkit::identity_first::FencingToken,
+                meerkat_mobkit::identity_first::CheckpointVersion,
+            )>,
+            meerkat_mobkit::identity_first::ContinuityStoreError,
+        > {
+            Ok(None)
+        }
+
         async fn resolve_many(
             &self,
             identities: &[AgentIdentity],

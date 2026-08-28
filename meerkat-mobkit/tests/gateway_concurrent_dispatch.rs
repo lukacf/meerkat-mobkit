@@ -29,7 +29,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -103,6 +103,50 @@ impl Gateway {
             stdin: Some(stdin),
             lines: rx,
         }
+    }
+
+    /// Like [`Self::start`], but pipes stderr into a shared buffer so a test
+    /// can assert on the gateway's own tracing output. [`Self::start`]
+    /// discards it, which is right for every other test here.
+    fn start_capturing_stderr(filter: &str) -> (Self, Arc<Mutex<Vec<String>>>) {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_rpc_gateway"))
+            .arg("--persistent")
+            .env("RUST_LOG", filter)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn rpc_gateway");
+        let stdin = child.stdin.take().expect("gateway stdin");
+        let stdout = child.stdout.take().expect("gateway stdout");
+        let stderr = child.stderr.take().expect("gateway stderr");
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&captured);
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                let Ok(line) = line else { break };
+                sink.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(line);
+            }
+        });
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        (
+            Self {
+                child,
+                stdin: Some(stdin),
+                lines: rx,
+            },
+            captured,
+        )
     }
 
     fn send(&mut self, value: Value) {
@@ -823,6 +867,26 @@ fn answer_stateful_provider_callback_holding_builds(
                 states.insert(identity.to_string(), resolve_state);
             }
             Value::Object(states)
+        }
+        // Reference shape for the callback added in 547ea908. `null` is a
+        // GENUINE absence; a bound session answers with named fields so an
+        // implementor never has to know a tuple order. Before this existed the
+        // bridge inherited the trait's `Ok(None)` default and every
+        // owner-authority pass silently registered nothing.
+        "callback/continuity_store/resolve_record_by_session" => {
+            let session_id = params["session_id"].as_str().unwrap_or_default();
+            let records = state.records.borrow();
+            match records
+                .values()
+                .find(|record| record["session_id"].as_str() == Some(session_id))
+            {
+                Some(record) => json!({
+                    "record": record,
+                    "fencing_token": fencing_token,
+                    "checkpoint_version": record["checkpoint_version"].as_u64().unwrap_or(0),
+                }),
+                None => Value::Null,
+            }
         }
         "callback/continuity_store/upsert_continuity_record" => {
             let record = params["record"].clone();
@@ -1803,4 +1867,201 @@ fn adopted_and_applied_declaration_survives_a_real_process_restart() {
     // within the wedge backstop in this callback-hosted fixture, so wiring it
     // in would trade coverage for a 60-second hang. Covering it needs either a
     // respawn-capable fixture or a separate lane.
+}
+
+/// Owner-authority ordering on a persistent identity-first resume.
+///
+/// Three MobKit-owned invariants, each of which was broken in production and
+/// each verified on HomeCore's production clone before being written down here:
+///
+/// 1. Owner authority is PUBLISHED before `MobRuntime::prepare`, because
+///    prepare runs durable-tail recovery and refuses a head-canonical session
+///    whose owner has no authoritative registration - a deliberate refusal no
+///    retry clears. Registration after prepare cannot reach it.
+/// 2. That publication is NON-ZERO on a store that has records. It silently
+///    published nothing for every SDK-hosted continuity store until the
+///    bridge forwarded `resolve_record_by_session`, because the trait's
+///    `Ok(None)` default is a negative that reads as fact.
+/// 3. Durable-authority convergence happens in the parked window, BEFORE
+///    activation, so the bounded explicit resume does not spend its budget on
+///    O(members) work.
+///
+/// The counts are the discriminators, not the boot succeeding: on a
+/// single-identity roster the boot can succeed with any of these broken, which
+/// is exactly how the first two shipped. Asserted on the gateway's own log
+/// rather than by timing, because a wall-clock assertion here would measure
+/// runner load - this suite has flaked that way before.
+#[test]
+fn persistent_identity_first_resume_publishes_owner_authority_before_prepare() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let scratch_dir = tempfile::tempdir().expect("scratch dir");
+    let continuity = HostContinuityState::default();
+
+    let init_params = |id: &str| {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "mobkit/init",
+            "params": {
+                "persistent_state": state_dir.path(),
+                "mob_config": MOB_CONFIG,
+                "has_roster_provider": true,
+                "has_continuity_store": true,
+                "has_lease_provider": true,
+                "has_session_builder": true,
+                "scratch_dir": scratch_dir.path(),
+                // No `mob_storage` override: a persistent launch defaults to
+                // PERSISTENT mob storage, which is what makes the event log
+                // survive the restart. An in-memory mob store always boots with
+                // an empty log, never defers the lift, and cannot reach this.
+                "runtime_options": {
+                    "demo_llm": true,
+                    "identity_bootstrap_mode": { "mode": "lazy_materialize" }
+                }
+            }
+        })
+    };
+
+    // PHASE 1: create era. The turn is what mints the durable session and its
+    // continuity record; without it the resume has no owner to publish and the
+    // test would pass for the wrong reason.
+    let mut gateway = Gateway::start();
+    gateway.send(init_params("init1"));
+    let init = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    101,
+                );
+            },
+            |m| is_response_with_id(m, "init1"),
+        )
+        .expect("phase-1 init response");
+    assert!(
+        init["result"]["contract_version"].is_string(),
+        "phase-1 init failed: {init}"
+    );
+    let dispatch = dispatch_alpha_through_build(&mut gateway, &continuity, 101, "dispatch1");
+    assert!(
+        dispatch.get("result").is_some(),
+        "phase-1 dispatch must succeed so a durable session exists to resume: {dispatch}"
+    );
+    gateway.send(json!({
+        "jsonrpc": "2.0", "id": "shutdown1", "method": "mobkit/shutdown", "params": {}
+    }));
+    let shutdown = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| {
+                answer_stateful_provider_callback_holding_builds(
+                    gateway,
+                    message,
+                    &continuity,
+                    101,
+                );
+            },
+            |m| is_response_with_id(m, "shutdown1"),
+        )
+        .expect("phase-1 shutdown handshake");
+    assert_eq!(
+        shutdown["result"]["shutdown"], true,
+        "phase-1 must stop CLEANLY or phase 2 is testing something else: {shutdown}"
+    );
+    gateway.close_stdin();
+    gateway.wait_for_exit(WEDGE_BACKSTOP);
+    drop(gateway);
+    assert!(
+        !continuity.records.borrow().is_empty(),
+        "phase 1 must leave a continuity record, or the resume has no owner to publish and \
+         every count below would be trivially zero"
+    );
+
+    // PHASE 2: same state dir, same definition (persistent mob storage pins
+    // mob_config). This is the deferred identity-first resume.
+    let (mut gateway, stderr) =
+        Gateway::start_capturing_stderr("meerkat_mobkit=info,meerkat_mob=warn");
+    gateway.send(init_params("init2"));
+    let captured = || {
+        stderr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    };
+    const CONVERGED_MARK: &str = "converged persisted runtime authority before mob activation";
+    // SCOPE, STATED PLAINLY: this waits for the pre-activation sequence to
+    // complete and asserts ITS ordering and counts. It does NOT assert that
+    // activation finishes.
+    //
+    // Activation completion is blocked upstream: the explicit-resume budget is
+    // a single-member-retire timeout covering O(members) work, including host
+    // agent-build round-trips the platform cannot bound (~9s each on a real
+    // host, ~150s for a 17-member roster inside 30s). Meerkat is fixing that
+    // with progress-based patience. Asserting it here would make a MobKit test
+    // red for an upstream reason, and dropping the assertions below to make
+    // something green would hide the three defects they cover. So: assert what
+    // MobKit owns, and say what is missing rather than quietly narrowing.
+    let reached = gateway.wait_for(
+        WEDGE_BACKSTOP,
+        |gateway, message| {
+            answer_stateful_provider_callback_holding_builds(gateway, message, &continuity, 101);
+        },
+        |_| captured().iter().any(|line| line.contains(CONVERGED_MARK)),
+    );
+    let lines = captured();
+    assert!(
+        reached.is_some() || lines.iter().any(|line| line.contains(CONVERGED_MARK)),
+        "phase-2 resume never reached the pre-activation convergence stage within \
+         {WEDGE_BACKSTOP:?}; {} stderr lines:\n{}",
+        lines.len(),
+        lines.join("\n")
+    );
+
+    let count_after = |needle: &str, field: &str| -> Option<u64> {
+        lines
+            .iter()
+            .find(|line| line.contains(needle))
+            .and_then(|line| line.split(field).nth(1))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|value| value.parse::<u64>().ok())
+    };
+    let index_of = |needle: &str| lines.iter().position(|line| line.contains(needle));
+
+    const PUBLISHED: &str = "published persisted continuity owners before mob prepare";
+    const CONVERGED: &str = "converged persisted runtime authority before mob activation";
+
+    let published = count_after(PUBLISHED, "published=");
+    assert_eq!(
+        published,
+        Some(1),
+        "owner authority must be published before prepare for the one rostered identity; \
+         a zero here is the SDK-hosted inertia that shipped silently.\nstderr:\n{}",
+        lines.join("\n")
+    );
+    let converged = count_after(CONVERGED, "converged=");
+    assert!(
+        converged.is_some_and(|count| count > 0),
+        "durable authority must be converged in the parked window, before activation, or the \
+         bounded resume spends its budget on it. got {converged:?}\nstderr:\n{}",
+        lines.join("\n")
+    );
+
+    // Ordering is the invariant, not merely presence: publication AFTER prepare
+    // is exactly the arrangement that could not clear the durable-tail refusal.
+    let published_at = index_of(PUBLISHED).expect("publication line present");
+    let converged_at = index_of(CONVERGED).expect("convergence line present");
+    assert!(
+        published_at < converged_at,
+        "publication must precede convergence-and-activation: publication is a PREPARE-time \
+         precondition, convergence is an ACTIVATION-time one"
+    );
+
+    // Phase-2 init may still be in flight (see SCOPE above), so drop the pipe
+    // and reap rather than expecting a shutdown handshake.
+    gateway.close_stdin();
+    let _ = gateway.child.kill();
+    let _ = gateway.child.wait();
 }

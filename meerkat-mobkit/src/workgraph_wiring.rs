@@ -1952,6 +1952,30 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for AdmissionStoreProbe {
+        // meerkat 0.8.30 made `enqueue_committed_parent_session_boundary_after_runtime_turn`
+        // REQUIRED, deleting the default that returned `Unsupported` for a
+        // persistent profile and `Ok(0)` otherwise. That default is exactly how
+        // production wrappers silently inherited a hole that only a Turbo S
+        // execution red found. This double is non-persistent, so `Ok(0)` is the
+        // correct behaviour - but it is guarded rather than bare: a bare `Ok(0)`
+        // is indistinguishable at the call site from "projected nothing because
+        // there was nothing to project", so nothing could ever assert the
+        // difference if this double later became persistent.
+        async fn enqueue_committed_parent_session_boundary_after_runtime_turn(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+            _runtime_adapter: &meerkat_runtime::MeerkatMachine,
+        ) -> Result<usize, meerkat_core::service::SessionError> {
+            if self.supports_persistent_sessions() {
+                return Err(meerkat_core::service::SessionError::Unsupported(format!(
+                    "AdmissionStoreProbe became persistent and must project the committed \
+                     parent-session boundary through canonical session ownership \
+                     for {session_id}"
+                )));
+            }
+            Ok(0)
+        }
+
         // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
         // without a default, so that a PERSISTENT decorator cannot inherit a
         // composition that converges nothing and silently resume from stale
@@ -2156,6 +2180,30 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for SwitchableStore {
+        // meerkat 0.8.30 made `enqueue_committed_parent_session_boundary_after_runtime_turn`
+        // REQUIRED, deleting the default that returned `Unsupported` for a
+        // persistent profile and `Ok(0)` otherwise. That default is exactly how
+        // production wrappers silently inherited a hole that only a Turbo S
+        // execution red found. This double is non-persistent, so `Ok(0)` is the
+        // correct behaviour - but it is guarded rather than bare: a bare `Ok(0)`
+        // is indistinguishable at the call site from "projected nothing because
+        // there was nothing to project", so nothing could ever assert the
+        // difference if this double later became persistent.
+        async fn enqueue_committed_parent_session_boundary_after_runtime_turn(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+            _runtime_adapter: &meerkat_runtime::MeerkatMachine,
+        ) -> Result<usize, meerkat_core::service::SessionError> {
+            if self.supports_persistent_sessions() {
+                return Err(meerkat_core::service::SessionError::Unsupported(format!(
+                    "SwitchableStore became persistent and must project the committed \
+                     parent-session boundary through canonical session ownership \
+                     for {session_id}"
+                )));
+            }
+            Ok(0)
+        }
+
         // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
         // without a default, so that a PERSISTENT decorator cannot inherit a
         // composition that converges nothing and silently resume from stale

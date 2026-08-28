@@ -72,6 +72,47 @@ impl CompatRollbackContinuityStore {
 
 #[async_trait]
 impl ContinuityStore for CompatRollbackContinuityStore {
+    /// Reverse lookup: the record whose session matches, with its fence and
+    /// checkpoint version.
+    ///
+    /// meerkat/mobkit made this REQUIRED rather than defaulting to `Ok(None)`,
+    /// because a store that silently answers "no record" for a session it is
+    /// in fact holding makes a resume look like a first boot. A default is
+    /// exactly how a conformance reference would inherit that lie.
+    ///
+    /// DELIBERATE DIVERGENCE FROM `LocalContinuityStore`, stated rather than
+    /// hidden: the SQLite store returns the SUBSTRATE'S CURRENT checkpoint
+    /// version - the max across session snapshots and continuity heads -
+    /// because the record's own stamp trails it whenever writes landed after
+    /// the last checkpoint. This in-memory compat store keeps no per-snapshot
+    /// checkpoint version, so it cannot compute that maximum and returns the
+    /// record's own stamp. Callers that need substrate-current semantics must
+    /// not treat this reference as equivalent on that axis.
+    async fn resolve_record_by_session(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<
+        Option<(
+            ContinuityRecord,
+            FencingToken,
+            meerkat_mobkit::identity_first::CheckpointVersion,
+        )>,
+        ContinuityStoreError,
+    > {
+        let inner = self.lock();
+        Ok(inner
+            .records
+            .values()
+            .find(|stored| &stored.record.session_id == session_id)
+            .map(|stored| {
+                (
+                    stored.record.clone(),
+                    FencingToken::new(stored.fence),
+                    stored.record.checkpoint_version,
+                )
+            }))
+    }
+
     async fn resolve_many(
         &self,
         identities: &[AgentIdentity],

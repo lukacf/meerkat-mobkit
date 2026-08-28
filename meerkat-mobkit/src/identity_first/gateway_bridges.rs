@@ -28,9 +28,10 @@ use super::contracts::{
 };
 use super::types::{
     AgentBuildContext, AgentBuildDraft, AgentIdentity, CheckpointVersion, ContinuityGeneration,
-    ContinuityResolveState, ContinuityStoreError, CustomizerError, DurableAgentSpec, FencingToken,
-    LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult, LocalExternalToolOverlay,
-    ManagedPeerEdge, RosterContext, RosterError, SessionSnapshot, TopologyContext, TopologyError,
+    ContinuityRecord, ContinuityResolveState, ContinuityStoreError, CustomizerError,
+    DurableAgentSpec, FencingToken, LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult,
+    LocalExternalToolOverlay, ManagedPeerEdge, RosterContext, RosterError, SessionSnapshot,
+    TopologyContext, TopologyError,
 };
 use crate::mob_handle_runtime::SessionCreatedContext;
 
@@ -92,6 +93,56 @@ impl ContinuityStore for GatewayContinuityStore {
             serde_json::from_value(result)
                 .map_err(|e| ContinuityStoreError::Io(format!("deserialize resolve_many: {e}")))?;
         Ok(map)
+    }
+
+    /// Forward the by-session record lookup instead of inheriting the
+    /// trait's `Ok(None)` default.
+    ///
+    /// The default is a negative that READS AS FACT: "this session has no
+    /// bound record" is indistinguishable from "this store cannot answer".
+    /// Both owner-authority passes - the pre-prepare publication and the
+    /// post-prepare registration - treat absence as ordinary and skip, which
+    /// is right for a never-persisted identity and catastrophic for a store
+    /// that simply was not asked. Inheriting the default therefore made owner
+    /// pre-registration silently INERT for every SDK-hosted continuity store,
+    /// so those hosts could not clear the prepare-time durable-tail refusal at
+    /// all. Two hosts were in that class before this landed.
+    ///
+    /// A host that does not implement the callback now surfaces a transport
+    /// error, which both callers log, rather than a silent false negative.
+    async fn resolve_record_by_session(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<(ContinuityRecord, FencingToken, CheckpointVersion)>, ContinuityStoreError>
+    {
+        let params = json!({ "session_id": session_id.to_string() });
+        let result = self
+            .bridge
+            .call(
+                "callback/continuity_store/resolve_record_by_session",
+                params,
+            )
+            .await
+            .map_err(ContinuityStoreError::Io)?;
+        if result.is_null() {
+            return Ok(None);
+        }
+        // Named fields rather than a positional triple: an SDK implementor
+        // should not have to know the tuple order to answer correctly.
+        #[derive(serde::Deserialize)]
+        struct BoundRecord {
+            record: ContinuityRecord,
+            fencing_token: u64,
+            checkpoint_version: u64,
+        }
+        let bound: BoundRecord = serde_json::from_value(result).map_err(|e| {
+            ContinuityStoreError::Io(format!("deserialize resolve_record_by_session: {e}"))
+        })?;
+        Ok(Some((
+            bound.record,
+            FencingToken::new(bound.fencing_token),
+            CheckpointVersion::new(bound.checkpoint_version),
+        )))
     }
 
     async fn load_session_snapshot(
