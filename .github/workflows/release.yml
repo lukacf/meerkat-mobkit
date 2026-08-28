@@ -23,6 +23,10 @@ on:
         type: string
 
 permissions:
+  # `actions: read` lets require_ci_green list ci.yml runs. A permissions block
+  # sets every unlisted scope to none, so omitting it makes the gate fail closed
+  # on an API 403 rather than on a real red - a refusal for the wrong reason.
+  actions: read
   contents: write
   id-token: write
   attestations: write
@@ -38,8 +42,124 @@ env:
 #                           used only to dispatch the docs-owner workflow
 
 jobs:
+  # MobKit's release path had no CI gate at all: release_validate had no `needs`,
+  # so a tag on any commit published without anyone checking that commit was ever
+  # green. Tonight (v0.8.26) the check was done by hand. This refuses instead.
+  #
+  # It REFUSES rather than WAITS. The release goal is tag-to-registries from an
+  # already-merged-green exact-main, so a poll would only ever burn the budget on
+  # a precondition that should already hold. Waiting would also convert "this
+  # commit was never verified" into "this is taking a while", which is the wrong
+  # thing to be patient about.
+  require_ci_green:
+    name: Require green exact-main CI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve release commit
+        id: release_ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_sha="$(git rev-parse HEAD)"
+          echo "Release commit: ${release_sha}"
+          echo "sha=${release_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Refuse unless exact-main CI is already green for this commit
+        id: ci_run
+        uses: actions/github-script@v7
+        env:
+          RELEASE_SHA: ${{ steps.release_ref.outputs.sha }}
+          IS_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+          REGISTRY_DRY_RUN: ${{ github.event.inputs.registry_dry_run }}
+          RELEASE_TAG_INPUT: ${{ github.event.inputs.release_tag }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const ref = process.env.RELEASE_SHA;
+
+            // A dispatch with no release_tag and dry-run on publishes NOTHING:
+            // build_binaries and publish_github_release are skipped by their own
+            // `if`, and the SDK and registry jobs run only to exercise
+            // `python -m build`, `twine check` and `npm publish --dry-run`.
+            // Gating it would skip release_validate and silently retire those
+            // three checks - which is precisely what #340 kept `always()` for.
+            // Verification gates PUBLICATION, and there is none here to gate.
+            if (
+              process.env.IS_DISPATCH === "true" &&
+              process.env.REGISTRY_DRY_RUN === "true" &&
+              !process.env.RELEASE_TAG_INPUT
+            ) {
+              core.info(
+                "Dry-run dispatch with no release_tag: nothing is published, " +
+                  "so there is no publication to gate. Skipping the CI check."
+              );
+              return;
+            }
+
+            // No pagination: the head_sha filter bounds this to attempts on a
+            // single commit, which is 1-3 runs. If that ever stops being true,
+            // page it rather than trusting a truncated first page.
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: "ci.yml",
+              branch: "main",
+              event: "push",
+              head_sha: ref,
+              per_page: 100,
+            });
+
+            // Re-filter client-side. The API treats these as hints, and a run
+            // from another branch or event answers a different question than
+            // "was this exact commit green on main".
+            const runs = data.workflow_runs.filter(
+              (run) =>
+                run.head_sha === ref &&
+                run.head_branch === "main" &&
+                run.event === "push"
+            );
+
+            if (runs.length === 0) {
+              core.setFailed(
+                `No exact-main CI run exists for release commit ${ref}.\n` +
+                  `A tag is not evidence. Push this commit to main, let ci.yml ` +
+                  `run to a green terminal state, then re-run this release.`
+              );
+              return;
+            }
+
+            core.info(
+              runs
+                .map((run) => `CI attempt ${run.run_attempt}: ${run.status}/${run.conclusion || "pending"} (${run.html_url})`)
+                .join("\n")
+            );
+
+            const success = runs.find(
+              (run) => run.status === "completed" && run.conclusion === "success"
+            );
+            if (!success) {
+              core.setFailed(
+                `Release commit ${ref} has ${runs.length} exact-main CI run(s), ` +
+                  `none completed successfully. Fix the red or wait for the ` +
+                  `in-flight run to finish, then re-run this release. Do not ` +
+                  `re-run CI to obtain a second opinion on the same tree.`
+              );
+              return;
+            }
+
+            core.info(`Release commit ${ref} has green exact-main CI: ${success.html_url}`);
+            core.setOutput("run_id", String(success.id));
+            core.setOutput("run_attempt", String(success.run_attempt));
+
   release_validate:
     name: Validate release state
+    needs: [require_ci_green]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -235,6 +355,17 @@ jobs:
             fi
             echo "packaged dist/${artifact}"
           done
+
+      # Binaries carry provenance naming the commit they were built from. The
+      # release path consumes that digest: a tag whose object differs from an
+      # artifact's sourceRepositoryDigest publishes bytes the tag does not name,
+      # and every job still reads green. meerkat v0.8.30 shipped that way - its
+      # Linux x86 archives were built from main two commits past the tag - and
+      # the divergence was only visible because the attestation recorded it.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
