@@ -23,6 +23,7 @@ const net = require("node:net");
 const { chromium } = require("playwright");
 
 const T = require("./memory-testids.cjs");
+const { exampleBackendSpec } = require("./example-backend.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 const screenshotDir = fs.mkdtempSync(path.join(os.tmpdir(), "memory-e2e-"));
@@ -115,9 +116,10 @@ async function startSeededGateway(accessMode) {
   const port = await reservePort();
   const addr = `127.0.0.1:${port}`;
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "memory-e2e-state-"));
+  const backendSpec = exampleBackendSpec(repoRoot, "memory_console_reference");
   const backend = spawn(
-    path.join(repoRoot, "scripts", "repo-cargo"),
-    ["run", "-p", "meerkat-mobkit", "--example", "memory_console_reference"],
+    backendSpec.command,
+    backendSpec.args,
     {
       cwd: repoRoot,
       env: {

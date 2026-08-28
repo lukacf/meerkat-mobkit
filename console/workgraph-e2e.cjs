@@ -22,6 +22,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const { setTimeout: sleep } = require("node:timers/promises");
 const net = require("node:net");
 const { chromium } = require("playwright");
+const { exampleBackendSpec } = require("./example-backend.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 const screenshotDir = fs.mkdtempSync(path.join(os.tmpdir(), "workgraph-e2e-"));
@@ -294,9 +295,10 @@ async function main() {
   const port = await reservePort();
   const addr = `127.0.0.1:${port}`;
   const baseUrl = `http://${addr}`;
+  const backendSpec = exampleBackendSpec(repoRoot, "workgraph_console_reference");
   const backend = spawn(
-    path.join(repoRoot, "scripts", "repo-cargo"),
-    ["run", "-p", "meerkat-mobkit", "--example", "workgraph_console_reference"],
+    backendSpec.command,
+    backendSpec.args,
     {
       cwd: repoRoot,
       env: {

@@ -8,6 +8,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { setTimeout: sleep } = require("node:timers/promises");
 const { chromium } = require("playwright");
+const { exampleBackendSpec } = require("./example-backend.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 
@@ -890,9 +891,10 @@ async function runReferenceBrowserProof() {
   const baseUrl = `http://${addr}`;
   const observedRequests = [];
 
+  const backendSpec = exampleBackendSpec(repoRoot, "library_mode_reference");
   const backend = spawn(
-    path.join(repoRoot, "scripts", "repo-cargo"),
-    ["run", "-p", "meerkat-mobkit", "--example", "library_mode_reference"],
+    backendSpec.command,
+    backendSpec.args,
     {
       cwd: repoRoot,
       env: { ...process.env, MOBKIT_REF_ADDR: addr },

@@ -74,7 +74,7 @@ start_server() {
     INCIDENT_COMMAND_CENTER_MEMORY_DIR="$STATE_DIR/memory" \
     RUST_LANE_ID="$RUST_LANE_ID" \
     CARGO_INCREMENTAL="$CARGO_INCREMENTAL" \
-    ./scripts/repo-cargo run -p meerkat-mobkit --example incident_command_center \
+    "${INCIDENT_COMMAND_CENTER_CMD[@]}" \
       >>"$STATE_DIR/server.log" 2>&1
   ) &
   SERVER_PID=$!
@@ -91,10 +91,33 @@ echo "[incident-topology] building the stock embedded console"
 echo "[incident-topology] ensuring Playwright dependencies"
 (cd "$ROOT/examples" && npm ci --silent --no-fund --no-audit)
 
-echo "[incident-topology] building the deterministic Rust example"
-(cd "$ROOT" && RUST_LANE_ID="$RUST_LANE_ID" CARGO_INCREMENTAL="$CARGO_INCREMENTAL" \
-  ./scripts/repo-cargo build -p meerkat-mobkit \
-    --example incident_command_center --bin mcp_fixture)
+# MOBKIT_EXAMPLE_BIN_DIR lets CI build the meerkat-mobkit dependency graph once
+# in a dedicated job and hand the binaries here, instead of every consumer
+# compiling the same graph. Unset - the local default - is unchanged.
+#
+# Not a cargo warm-up: `cargo run --example` recomputes freshness from
+# target/.fingerprint, so a bare prebuilt binary would be rebuilt and ignored.
+# The script has to exec the binary directly.
+if [[ -n "${MOBKIT_EXAMPLE_BIN_DIR:-}" ]]; then
+  INCIDENT_COMMAND_CENTER_CMD=("${MOBKIT_EXAMPLE_BIN_DIR}/incident_command_center")
+  # Fail rather than silently rebuild. A fallback would still pass, just slowly,
+  # so a mis-wired artifact download would look like a successful compile-once
+  # run and the measurement would be quietly wrong.
+  for required in incident_command_center mcp_fixture; do
+    if [[ ! -x "${MOBKIT_EXAMPLE_BIN_DIR}/${required}" ]]; then
+      echo "[incident-topology] MOBKIT_EXAMPLE_BIN_DIR=${MOBKIT_EXAMPLE_BIN_DIR} is set but ${required} is missing or not executable" >&2
+      exit 1
+    fi
+  done
+  export PATH="${MOBKIT_EXAMPLE_BIN_DIR}:${PATH}"
+  echo "[incident-topology] using prebuilt binaries from ${MOBKIT_EXAMPLE_BIN_DIR}"
+else
+  INCIDENT_COMMAND_CENTER_CMD=(./scripts/repo-cargo run -p meerkat-mobkit --example incident_command_center)
+  echo "[incident-topology] building the deterministic Rust example"
+  (cd "$ROOT" && RUST_LANE_ID="$RUST_LANE_ID" CARGO_INCREMENTAL="$CARGO_INCREMENTAL" \
+    ./scripts/repo-cargo build -p meerkat-mobkit \
+      --example incident_command_center --bin mcp_fixture)
+fi
 
 mkdir -p "$ARTIFACT_DIR"
 echo "[incident-topology] browser artifacts: $ARTIFACT_DIR"
