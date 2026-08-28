@@ -8,6 +8,7 @@ const { setTimeout: sleep } = require("node:timers/promises");
 const { JSDOM } = require("jsdom");
 
 const { createConsoleApp } = require("./index.cjs");
+const { exampleBackendSpec } = require("./example-backend.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 
@@ -92,9 +93,10 @@ async function runSmoke() {
   const addr = `127.0.0.1:${port}`;
   const baseUrl = `http://${addr}`;
 
+  const backendSpec = exampleBackendSpec(repoRoot, "library_mode_reference");
   const backend = spawn(
-    path.join(repoRoot, "scripts", "repo-cargo"),
-    ["run", "-p", "meerkat-mobkit", "--example", "library_mode_reference"],
+    backendSpec.command,
+    backendSpec.args,
     {
       cwd: repoRoot,
       env: { ...process.env, MOBKIT_REF_ADDR: addr },
