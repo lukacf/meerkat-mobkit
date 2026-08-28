@@ -101,6 +101,26 @@ jobs:
         env:
           OPENAI_API_KEY: mobkit-ci-bootstrap-only-not-a-secret
 
+  # The console lane was one serial job whose two heaviest steps accounted for
+  # 22.3 of its ~38 minutes, while all nine npm check scripts took 0.0m each.
+  # Measured per-step on run 33165647168 (main 90fc6513, console 37m51s of a
+  # 37m59s run - 99.6%):
+  #
+  #     12.0m  fixtures:console-customization     -> console-fixtures
+  #     10.3m  incident topology acceptance       -> console-acceptance
+  #      2.7m  e2e:browser                        }
+  #      2.3m  memory_console_reference build     }  stay here
+  #      2.1m  library_mode_reference build       }
+  #      0.0m  the nine check scripts             }
+  #
+  # Splitting "fast checks from slow e2e" would have bought nothing, because the
+  # checks are already free. These three run in parallel, so wall clock is the
+  # longest job rather than the sum.
+  #
+  # Each job pays its own npm ci and rust-cache restore, so total runner minutes
+  # rise while wall clock falls. That is the trade, not a free win.
+  #
+  # All three are named in `gate`. A job absent from `gate` is not a gate.
   console:
     name: console
     runs-on: ubuntu-latest
@@ -121,11 +141,54 @@ jobs:
       - run: npm --prefix console run topology:adapter --silent
       - run: npm --prefix console run topology:components --silent
       - run: npm --prefix console run components:reuse --silent
-      - run: npm --prefix console run fixtures:console-customization --silent
       - run: npm --prefix console run embedded:freshness --silent
       - run: npm --prefix console exec -- playwright install --with-deps chromium
       - run: scripts/repo-cargo build -p meerkat-mobkit --example library_mode_reference
       - run: npm --prefix console run e2e:browser --silent
+      # Seeded memory-console lane (deterministic; the LIVE lane
+      # e2e:memory:live is creds-gated acceptance and never runs in CI).
+      # CARGO_INCREMENTAL=0 guards the known rustc ICE, same as flow-editor.
+      - run: CARGO_INCREMENTAL=0 scripts/repo-cargo build -p meerkat-mobkit --example memory_console_reference
+      - run: npm --prefix console run e2e:memory --silent
+      # Seeded workgraph graph-view lane (deterministic, same harness shape).
+      - run: CARGO_INCREMENTAL=0 scripts/repo-cargo build -p meerkat-mobkit --example workgraph_console_reference
+      - run: npm --prefix console run e2e:workgraph --silent
+
+  # Needs Rust but NOT playwright: the script bundles with esbuild, runs
+  # `node --test`, then `cargo test -p meerkat-mobkit --test
+  # console_customization_fixtures`, which is where its 12 minutes go.
+  console-fixtures:
+    name: console-fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm --prefix console ci --silent --no-fund --no-audit
+      - run: npm --prefix console run fixtures:console-customization --silent
+
+  # Needs playwright (it captures screenshots) and builds its OWN example -
+  # incident_command_center plus mcp_fixture - so it does not depend on
+  # library_mode_reference or on any step left in `console`.
+  console-acceptance:
+    name: console-acceptance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm --prefix console ci --silent --no-fund --no-audit
+      - run: npm --prefix console exec -- playwright install --with-deps chromium
       - name: Stock incident topology acceptance
         run: examples/001-incident-command-center-pack/topology_examples.sh
       - name: Upload incident topology screenshots
@@ -136,14 +199,6 @@ jobs:
           path: output/playwright/incident-topology-*.png
           if-no-files-found: warn
           retention-days: 7
-      # Seeded memory-console lane (deterministic; the LIVE lane
-      # e2e:memory:live is creds-gated acceptance and never runs in CI).
-      # CARGO_INCREMENTAL=0 guards the known rustc ICE, same as flow-editor.
-      - run: CARGO_INCREMENTAL=0 scripts/repo-cargo build -p meerkat-mobkit --example memory_console_reference
-      - run: npm --prefix console run e2e:memory --silent
-      # Seeded workgraph graph-view lane (deterministic, same harness shape).
-      - run: CARGO_INCREMENTAL=0 scripts/repo-cargo build -p meerkat-mobkit --example workgraph_console_reference
-      - run: npm --prefix console run e2e:workgraph --silent
 
   flow-editor:
     name: flow-editor
@@ -178,7 +233,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [fmt-lint, test, test-python, console, flow-editor, audit]
+    needs: [fmt-lint, test, test-python, console, console-fixtures, console-acceptance, flow-editor, audit]
     runs-on: ubuntu-latest
     steps:
       - name: Check job results
@@ -187,6 +242,8 @@ jobs:
                 "${{ needs.test.result }}" != "success" ||
                 "${{ needs.test-python.result }}" != "success" ||
                 "${{ needs.console.result }}" != "success" ||
+                "${{ needs.console-fixtures.result }}" != "success" ||
+                "${{ needs.console-acceptance.result }}" != "success" ||
                 "${{ needs.flow-editor.result }}" != "success" ||
                 "${{ needs.audit.result }}" != "success" ]]; then
             echo "One or more jobs failed or were cancelled."
@@ -194,6 +251,8 @@ jobs:
             echo "  test:         ${{ needs.test.result }}"
             echo "  test-python:  ${{ needs.test-python.result }}"
             echo "  console:      ${{ needs.console.result }}"
+            echo "  console-fixtures:   ${{ needs.console-fixtures.result }}"
+            echo "  console-acceptance: ${{ needs.console-acceptance.result }}"
             echo "  flow-editor:  ${{ needs.flow-editor.result }}"
             echo "  audit:        ${{ needs.audit.result }}"
             exit 1
