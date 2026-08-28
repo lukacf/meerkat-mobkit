@@ -1,6 +1,21 @@
 [package]
 name = "mobkit-store-conformance"
 description = "Storage conformance harness for MobKit store backends (continuity, console timeline, event log, binary blobs, agent memory)"
+# Not published, recorded as a fact rather than a preference: `cargo publish`
+# refuses this crate outright because its `meerkat-mobkit` dependency is a path
+# with no version. It has also never been published at any version - crates.io
+# returns 404 on the crate itself, not merely on a version - and ob3, whom the
+# storage-unification plan named as the intended consumer, confirmed they have
+# never consumed it by any route.
+#
+# This is not a decision that the archived intent was superseded. ob3 built
+# their first store-level harness on 2026-08-28 and may adopt this suite; they
+# can trial it as a git dependency on tag v0.8.26, which resolves despite the
+# versionless path dep because cargo clones the whole repo. If that trial shows
+# a real requirement, publishing means fixing the dependency first and then
+# adding it to release.yml - at which point this line comes out and the gate
+# in scripts/verify-crate-publication.py starts asserting the new answer.
+publish = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true
