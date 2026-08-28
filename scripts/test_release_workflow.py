@@ -76,8 +76,12 @@ def evaluate_condition(expression: str, **context) -> bool:
         expression.replace("&&", " and ")
         .replace("||", " or ")
         .replace("always()", "True")
-        .replace("!", " not ")
     )
+    # `!=` must survive as `!=`. A blanket `!` -> ` not ` rewrite turns it into
+    # ` not =` and raises SyntaxError, so any condition using inequality could
+    # not be evaluated at all - publish_docs is the only one that does, and it
+    # was therefore untested until the CI-gate tests reached it.
+    translated = re.sub(r"!(?!=)", " not ", translated)
     # Flatten dotted contexts BEFORE rewriting startsWith, or the rewrite's own
     # `.startswith` gets flattened into the identifier too.
     translated = re.sub(r"\b(github|needs)((?:\.[A-Za-z_][A-Za-z0-9_]*)+)",
@@ -94,6 +98,75 @@ def evaluate_condition(expression: str, **context) -> bool:
     if missing:
         raise AssertionError(f"condition references unsupplied names: {sorted(missing)}")
     return bool(eval(translated, {"__builtins__": {}}, dict(context)))
+
+
+def ci_gate_script() -> str:
+    """The require_ci_green github-script body, extracted verbatim."""
+    lines = RELEASE_WORKFLOW.read_text().splitlines()
+    step = lines.index("      - name: Refuse unless exact-main CI is already green for this commit")
+    start = lines.index("          script: |", step)
+    body: list[str] = []
+    for line in lines[start + 1 :]:
+        if line and not line.startswith("            "):
+            break
+        body.append(line[12:] if line else "")
+    return "\n".join(body)
+
+
+def run_ci_gate(runs, release_sha="deadbeef", *, is_dispatch=False,
+                registry_dry_run="", release_tag=""):
+    """Execute the gate under node against a stubbed workflow-run listing.
+
+    The gate's decision lives in JavaScript, so asserting on its source text
+    cannot distinguish "requires success" from "requires completion" - exactly
+    the mutation that a string assertion lets through. This runs the real body.
+    """
+    harness = """
+const RUNS = %s;
+const calls = [];
+const core = {
+  info() {},
+  setFailed(message) { calls.push({ kind: "setFailed", message }); },
+  setOutput(name, value) { calls.push({ kind: "setOutput", name, value }); },
+};
+const context = { repo: { owner: "lukacf", repo: "meerkat-mobkit" } };
+const github = {
+  rest: { actions: { listWorkflowRuns: async () => ({ data: { workflow_runs: RUNS } }) } },
+};
+process.env.RELEASE_SHA = %s;
+process.env.IS_DISPATCH = %s;
+process.env.REGISTRY_DRY_RUN = %s;
+process.env.RELEASE_TAG_INPUT = %s;
+(async () => {
+%s
+})().then(() => console.log(JSON.stringify(calls)));
+""" % (
+        json.dumps(runs),
+        json.dumps(release_sha),
+        json.dumps("true" if is_dispatch else "false"),
+        json.dumps(registry_dry_run),
+        json.dumps(release_tag),
+        ci_gate_script(),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "gate.mjs"
+        script.write_text(harness)
+        out = subprocess.run(
+            ["node", str(script)], capture_output=True, text=True, check=True
+        )
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def workflow_permissions_without_comments() -> str:
+    """The permissions block with comment lines removed.
+
+    Asserting on raw text matched the explanatory comment above the key, so
+    deleting `actions: read` left the test green. The prose is not the config.
+    """
+    head = RELEASE_WORKFLOW.read_text().split("jobs:", 1)[0]
+    return "\n".join(
+        line for line in head.splitlines() if not line.strip().startswith("#")
+    )
 
 
 class NpmReleaseWorkflowTests(unittest.TestCase):
@@ -384,6 +457,166 @@ class SdkPublicationOrderingTests(unittest.TestCase):
         self.assertIn("publish_sdk_packages:", block)
         self.assertNotIn("publish_registries:", block)
         self.assertNotIn("Publish Rust crate", block)
+
+
+class ExactMainCiGateTests(unittest.TestCase):
+    """The release path must refuse a commit that was never green on main.
+
+    Before `require_ci_green`, `release_validate` had no `needs` at all, so a
+    tag published without anyone checking the commit. v0.8.26 was gated by hand.
+    A hand check is not a control: it is present exactly when someone remembers.
+
+    These evaluate the real `if:` expressions under a context where the gate
+    failed, rather than asserting that the string "require_ci_green" appears
+    somewhere. A job can name the gate in `needs` and still run anyway - three
+    of these jobs carry `always()`, which is precisely what makes `needs` stop
+    being a gate on its own.
+    """
+
+    # A gate failure SKIPS release_validate; it does not fail it. Every guard
+    # downstream is written against 'success', so 'skipped' is the value that
+    # actually occurs and the one worth testing.
+    GATE_FAILED = dict(
+        github_ref="refs/tags/v0.8.27",
+        github_event_name="push",
+        github_event_inputs_publish_release_packages="",
+        github_event_inputs_registry_dry_run="",
+        github_event_inputs_release_tag="",
+        needs_release_validate_result="skipped",
+        needs_build_binaries_result="skipped",
+        needs_publish_github_release_result="skipped",
+        needs_publish_registries_result="skipped",
+        needs_publish_sdk_packages_result="skipped",
+    )
+
+    def test_no_publishing_job_runs_when_the_ci_gate_did_not_pass(self):
+        for job in (
+            "publish_sdk_packages",
+            "publish_registries",
+            "publish_docs",
+        ):
+            with self.subTest(job=job):
+                self.assertFalse(
+                    evaluate_condition(job_condition(job), **self.GATE_FAILED)
+                )
+
+    def test_the_dry_run_lane_cannot_bypass_the_ci_gate(self):
+        # publish_sdk_packages and publish_registries carry a dry-run disjunct
+        # that deliberately tolerates skipped binaries. That disjunct must not
+        # also tolerate a skipped CI gate, or a dispatch would route around it.
+        for job in ("publish_sdk_packages", "publish_registries"):
+            with self.subTest(job=job):
+                self.assertFalse(
+                    evaluate_condition(
+                        job_condition(job),
+                        github_ref="refs/heads/main",
+                        github_event_name="workflow_dispatch",
+                        github_event_inputs_publish_release_packages="true",
+                        github_event_inputs_registry_dry_run="true",
+                        github_event_inputs_release_tag="",
+                        needs_release_validate_result="skipped",
+                        needs_build_binaries_result="skipped",
+                        needs_publish_github_release_result="skipped",
+                        needs_publish_sdk_packages_result="skipped",
+                    )
+                )
+
+    def test_release_validate_waits_on_the_gate_rather_than_merely_coexisting(self):
+        block = job_block("release_validate")
+        self.assertIn("needs: [require_ci_green]", block)
+
+    def test_the_gate_refuses_rather_than_polls(self):
+        # A poll converts "this commit was never verified" into "this is taking
+        # a while", and burns the release budget on a precondition that should
+        # already hold. If someone reintroduces waiting, this should fail.
+        block = job_block("require_ci_green")
+        self.assertIn("Refuse unless exact-main CI is already green", block)
+        self.assertNotIn("setTimeout", block)
+
+    def test_the_gate_can_read_workflow_runs(self):
+        # A `permissions:` block sets every unlisted scope to none, so without
+        # `actions: read` the gate fails on an API 403 - a refusal for a reason
+        # unrelated to CI, which reads identical to a real red at a glance.
+        self.assertIn("actions: read", workflow_permissions_without_comments())
+
+    def test_a_green_exact_main_run_is_accepted(self):
+        calls = run_ci_gate(
+            [{"head_sha": "deadbeef", "head_branch": "main", "event": "push",
+              "status": "completed", "conclusion": "success",
+              "run_attempt": 1, "id": 42, "html_url": "u"}]
+        )
+        self.assertEqual([c["kind"] for c in calls].count("setFailed"), 0)
+        self.assertIn("setOutput", [c["kind"] for c in calls])
+
+    def test_a_completed_but_failed_run_is_refused(self):
+        # THE assertion of the whole gate. Dropping `conclusion === "success"`
+        # leaves a check that accepts any terminal state, including failure.
+        calls = run_ci_gate(
+            [{"head_sha": "deadbeef", "head_branch": "main", "event": "push",
+              "status": "completed", "conclusion": "failure",
+              "run_attempt": 1, "id": 42, "html_url": "u"}]
+        )
+        self.assertEqual([c["kind"] for c in calls], ["setFailed"])
+
+    def test_a_commit_with_no_exact_main_run_is_refused(self):
+        self.assertEqual([c["kind"] for c in run_ci_gate([])], ["setFailed"])
+
+    def test_a_pull_request_run_on_the_same_sha_is_not_accepted(self):
+        # The v0.8.26 shape: the PR head was green on pull_request and had zero
+        # push-to-main runs. A merge-result run answers a different question.
+        calls = run_ci_gate(
+            [{"head_sha": "deadbeef", "head_branch": "codex/x", "event": "pull_request",
+              "status": "completed", "conclusion": "success",
+              "run_attempt": 1, "id": 42, "html_url": "u"}]
+        )
+        self.assertEqual([c["kind"] for c in calls], ["setFailed"])
+
+    def test_a_pure_dry_run_dispatch_is_not_gated(self):
+        # Nothing is published on this lane, so there is no publication to
+        # verify. Gating it would skip release_validate and silently retire
+        # `python -m build`, `twine check` and `npm publish --dry-run` - the
+        # exact three checks #340 kept `always()` in order to preserve.
+        calls = run_ci_gate(
+            [], is_dispatch=True, registry_dry_run="true", release_tag=""
+        )
+        self.assertEqual(calls, [])
+
+    def test_the_dry_run_carve_out_does_not_cover_a_real_asset_dispatch(self):
+        # release_tag set means publish_github_release uploads real assets even
+        # with registry_dry_run on. That is a publication and must be gated.
+        calls = run_ci_gate(
+            [], is_dispatch=True, registry_dry_run="true", release_tag="v0.8.27"
+        )
+        self.assertEqual([c["kind"] for c in calls], ["setFailed"])
+
+    def test_the_dry_run_carve_out_does_not_cover_a_real_registry_dispatch(self):
+        calls = run_ci_gate(
+            [], is_dispatch=True, registry_dry_run="false", release_tag=""
+        )
+        self.assertEqual([c["kind"] for c in calls], ["setFailed"])
+
+    def test_the_dry_run_carve_out_does_not_cover_a_tag_push(self):
+        # A tag push is never a dispatch, so the carve-out must not reach it
+        # even if the dry-run input is somehow populated.
+        calls = run_ci_gate(
+            [], is_dispatch=False, registry_dry_run="true", release_tag=""
+        )
+        self.assertEqual([c["kind"] for c in calls], ["setFailed"])
+
+    def test_an_in_flight_run_is_refused_rather_than_awaited(self):
+        calls = run_ci_gate(
+            [{"head_sha": "deadbeef", "head_branch": "main", "event": "push",
+              "status": "in_progress", "conclusion": None,
+              "run_attempt": 1, "id": 42, "html_url": "u"}]
+        )
+        self.assertEqual([c["kind"] for c in calls], ["setFailed"])
+
+    def test_the_gate_requires_main_and_push_not_merely_the_sha(self):
+        # A pull_request run on the same SHA is a different question: it tests
+        # the merge result, not the commit as it lands on main.
+        block = job_block("require_ci_green")
+        self.assertIn('run.head_branch === "main"', block)
+        self.assertIn('run.event === "push"', block)
 
 
 if __name__ == "__main__":
