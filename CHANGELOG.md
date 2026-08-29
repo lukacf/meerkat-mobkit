@@ -88,11 +88,26 @@ nothing.
 
 - **The MobKit shutdown wedge remains open.** A graceful stop can fail to
   converge in `shutdown_runtime_unregister`, escalating SIGTERM to SIGKILL.
-  It is a **race**, not a deterministic trigger: measured on a 161-identity
-  fleet across pins whose `.rs` content is byte-identical, the same code hung
-  twice, ran clean once, and hung again. The conditions that were thought to be
-  a required conjunction only make the race likely. Rate is being measured;
-  ob3 holds the reproducer.
+  It is a **race**, not a deterministic trigger. ob3 measured 4 hangs in 6 runs
+  on identical 0.8.31 Rust, alternating clean and hung across runs with the same
+  dataset shape, phases and spawn count. The conditions previously believed to
+  be a required conjunction only raise the probability.
+
+  **That rate is fleet-shape-specific, not a general one.** On a second
+  production fleet running real traffic, HomeCore measured **79 restarts, 79
+  clean**, with no shutdown gap approaching their 480s launchd `ExitTimeOut`.
+  Do not read "4 in 6" as the odds that any given graceful stop hangs. The
+  leading candidate for the differential is proximity in time between a turn and
+  the shutdown: ob3 drives spawn and turn in a tight scripted sequence and stops
+  immediately, where HomeCore's turns arrive minutes or hours before a restart.
+  That is a hypothesis, not a finding. Both reproducers are held by their
+  owners.
+
+  Two consequences worth carrying forward. Any regression test for this must
+  **repeat rather than sample** - a single green run has about a 1 in 3 chance
+  of meaning nothing. And the teardown retry count is **not** a severity
+  signal: across two independent measurement sets the highest count (209, and
+  earlier 161) sat on the only *clean* run each time.
 
   The lease release should survive it, on structural grounds rather than
   measurement: `shutdown_runtime_unregister` is a `meerkat-mob` runtime-actor

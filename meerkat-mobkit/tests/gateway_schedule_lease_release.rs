@@ -38,6 +38,12 @@
 //!     rpc_gateway       FAILS, on the exact assertion, first try
 //!     mobkit_gateway    PASSES, 7 runs out of 7
 //!
+//! Fixed, it is green on repeats rather than on a sample: 6 local runs out of 6,
+//! plus both tests inside the full CI suite (0.8s and 2.4s there, against a 60s
+//! acquisition budget). ob3 measured the neighbouring shutdown race at 4 hangs
+//! in 6 runs on identical Rust, so a single green run on any gateway teardown
+//! path is worth about as much as a coin flip; repeat, do not sample.
+//!
 //! So only the `rpc_gateway` leg is a mutation-proven guard for this defect.
 //! Under `mobkit_gateway`'s teardown the signalled supervisor evidently does
 //! get polled in time, and `Drop` releases the lease anyway - which is luck
@@ -170,6 +176,15 @@ impl GatewayCase {
 }
 
 /// Boot one gateway, prove it holds the lease, SIGTERM it, prove it released.
+///
+/// Every bound below is sized against nextest's hard ceiling for this profile
+/// (`slow-timeout = { period = "60s", terminate-after = 5 }`, so 300s), not
+/// picked for comfort. A test killed at 300s reports a nextest timeout, which
+/// REPLACES this test's own self-describing message with one that names
+/// nothing. Worst-case path: 90 + 60 + 60 + 20 = 230s. Do not raise one of
+/// these without subtracting from another or adding a per-binary
+/// `slow-timeout` override - a bigger poll that gets guillotined buys nothing.
+/// See the `gateway_schedule_lease_release` note in `.config/nextest.toml`.
 fn assert_releases_lease_on_graceful_exit(case: GatewayCase) {
     let workspace = TempDir::new().expect("workspace tempdir");
     let state = TempDir::new().expect("state tempdir");
@@ -213,13 +228,13 @@ fn assert_releases_lease_on_graceful_exit(case: GatewayCase) {
         let _ = reader.read_line(&mut line);
         let _ = tx.send(line);
     });
-    let line = match rx.recv_timeout(Duration::from_mins(2)) {
+    let line = match rx.recv_timeout(Duration::from_secs(90)) {
         Ok(line) => line,
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
             panic!(
-                "[{}] no mobkit/init answer within 2 minutes: {}",
+                "[{}] no mobkit/init answer within 90s: {}",
                 case.label, error
             );
         }
@@ -236,7 +251,7 @@ fn assert_releases_lease_on_graceful_exit(case: GatewayCase) {
     // Leg 1. Without this the test is unfalsifiable: a gateway that never
     // acquired a lease also reads owner_id NULL at the end, and leg 2 would
     // pass while observing nothing.
-    let acquired = poll_until(Duration::from_secs(30), || {
+    let acquired = poll_until(Duration::from_mins(1), || {
         lease_owner(&schedule_db).is_some()
     });
     if !acquired {
@@ -270,10 +285,10 @@ fn assert_releases_lease_on_graceful_exit(case: GatewayCase) {
     // separate fact. Polling the row rather than gating on exit keeps a
     // shutdown wedge (an open, unrelated investigation) from masquerading as a
     // lease leak, and vice versa.
-    let released = poll_until(Duration::from_secs(90), || {
+    let released = poll_until(Duration::from_mins(1), || {
         lease_owner(&schedule_db).is_none()
     });
-    let exited = poll_until(Duration::from_secs(30), || {
+    let exited = poll_until(Duration::from_secs(20), || {
         matches!(child.try_wait(), Ok(Some(_)))
     });
     let owner = lease_owner(&schedule_db);

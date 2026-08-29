@@ -39,7 +39,7 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 heavy-runtime = { max-threads = 2 }
 
 [[profile.default.overrides]]
-filter = 'package(meerkat-mobkit) & (binary(routing_delivery) + binary(list_runs) + binary(list_flows_run_flow) + binary(mob_events_cursor_persistence) + binary(mob_events_query_ledger) + binary(mob_events_streaming) + binary(access_control) + binary(unified_console) + binary(repair_queue_carry) + binary(mobkit_gateway_bootstrap) + binary(gateway_concurrent_dispatch))'
+filter = 'package(meerkat-mobkit) & (binary(routing_delivery) + binary(list_runs) + binary(list_flows_run_flow) + binary(mob_events_cursor_persistence) + binary(mob_events_query_ledger) + binary(mob_events_streaming) + binary(access_control) + binary(unified_console) + binary(repair_queue_carry) + binary(mobkit_gateway_bootstrap) + binary(gateway_concurrent_dispatch) + binary(gateway_schedule_lease_release))'
 test-group = 'heavy-runtime'
 retries = 2
 
@@ -64,6 +64,30 @@ retries = 2
 # in 42.7s total. That is the aggregate-load starvation this group exists for, and
 # the alternative - raising the 45s bound - would weaken a real timeout to hide a
 # scheduling problem.
+
+# `gateway_schedule_lease_release` joined 2026-08-29. Same shape as
+# `mobkit_gateway_bootstrap` above and strictly heavier: it spawns a real gateway
+# process, waits for `mobkit/init`, then polls a SQLite row across a SIGTERM. It
+# does that once per binary, for both gateways.
+#
+# Its bounds are sized against this profile's hard ceiling, not picked for
+# comfort. `slow-timeout = { period = "60s", terminate-after = 5 }` kills any test
+# at 300s and reports a nextest timeout, which would REPLACE the test's own
+# self-describing failure ("lease still held by Some(...)" / "never held the
+# lease") with a verdict that names nothing. So the worst-case path has to fit
+# underneath it with room:
+#
+#     init answer        90s   (bootstrap's 45s x2; that bound is what timed out
+#                               under load and drove it into this group)
+#     lease acquired     60s
+#     lease released     60s
+#     process exited     20s
+#                       ----
+#     worst case        230s   against a 300s kill
+#
+# Raising any one of these past that budget trades a legible failure for an
+# illegible one. If CI ever needs more time, the honest move is a per-binary
+# slow-timeout override, not a bigger poll that gets guillotined anyway.
 
 # `access_control` joined the family 2026-07-09: its tests each boot a full
 # reference-app runtime, and under peak suite load on 4-core CI runners two
