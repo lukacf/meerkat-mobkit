@@ -15,10 +15,26 @@
 //!   default (meerkat/src/service_factory.rs `build_agent`), and
 //!   `AgentBuildConfig.hook_engine_override` is set only by the standalone
 //!   facade builder (meerkat/src/agent_builder.rs:187) - never reachable
-//!   from `MobSessionService` member creates. Re-audit those seams when a
-//!   hook slot lands upstream; this module then collapses onto it. The
-//!   sanctioned per-build seam that IS synchronous with the loop is
+//!   from `MobSessionService` member creates. The sanctioned per-build seam
+//!   that IS synchronous with the loop is
 //!   `SessionBuildOptions.agent_llm_client_decorator`.
+//!
+//!   THIS MODULE DOES NOT COLLAPSE ONTO THE HOOK POINTS THAT LANDED. An
+//!   earlier version of this comment said "re-audit those seams when a hook
+//!   slot lands upstream; this module then collapses onto it". Six slots
+//!   landed in meerkat 0.8.31 - RuntimeInputAccepted, RuntimeInputRejected,
+//!   RuntimeInputDeduplicated, PeerIngressCommitted and two more - and they
+//!   are POST-COMMIT OBSERVE-ONLY, which is the one thing this module cannot
+//!   use. meerkat's own hooks reference says it plainly: "Post-commit hooks
+//!   are not synchronous policy seams. They cannot close an in-turn race or
+//!   gate a same-turn write. Keep using synchronous points such as
+//!   `PostToolExecution` when policy must join the agent loop before it
+//!   advances."
+//!
+//!   Closing an in-turn race is this module's entire purpose, so the correct
+//!   upstream target remains a SYNCHRONOUS hook carrier reachable from a mob
+//!   member build - `PostToolExecution` with a hook-engine slot on
+//!   `SessionBuildOptions`. Until that exists, the decorator seam stays.
 //! - [`TaintObservingLlmClient`] therefore wraps the member's final
 //!   agent-facing LLM client. Before delegating each call it classifies the
 //!   tool results newly present in the request - joining the tool name

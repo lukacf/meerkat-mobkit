@@ -189,12 +189,45 @@ impl ConsoleSpawnSink {
 
 /// Tool names whose successful outcomes spawn mob members that should be
 /// projected into the console.
+///
+/// # This vocabulary is meerkat's, and MobKit only restates it
+///
+/// These names are defined upstream on `AgentMobToolSurface`. MobKit has no
+/// compile-time access to them - they are private consts in
+/// `meerkat-mob-mcp` - so this list is a RESTATEMENT, and a restatement of
+/// someone else's vocabulary goes stale silently. When meerkat adds a mob tool
+/// that spawns members, nothing here fails: the spawn succeeds, the projection
+/// is skipped, and the console simply shows no member. An operator reads that
+/// as "the tool did not spawn", which sends them upstream instead of to this
+/// list.
+///
+/// That is not hypothetical. `council` landed in meerkat 0.8.31 as a
+/// first-class agent mob tool beside `delegate` and `fork_off`; it is absent
+/// here deliberately, because its participants live in a temporary mob that is
+/// destroyed before the tool returns, and projecting them would write durable
+/// console rows for members that no longer exist.
+///
+/// [`MOB_SPAWN_TOOL_VOCABULARY`] is the single source for this crate, and
+/// `console_spawn_vocabulary_is_pinned` forces a human decision whenever it
+/// changes. Neither can detect a NEW upstream tool on their own - closing that
+/// needs meerkat to export the surface's tool names, which is an upstream ask
+/// rather than something MobKit can assert from here.
 pub(crate) fn is_console_spawn_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "mob_spawn_member" | "spawn_member" | "spawn_many_members" | "delegate" | "fork_off"
-    )
+    MOB_SPAWN_TOOL_VOCABULARY.contains(&name)
 }
+
+/// Every meerkat mob tool MobKit treats as spawning console-visible members.
+///
+/// Single source of truth for this crate. Consumers that need a NARROWER set
+/// must document why and assert their subset against this list, so a name that
+/// exists in neither is a typo rather than a silent no-op.
+pub(crate) const MOB_SPAWN_TOOL_VOCABULARY: &[&str] = &[
+    "mob_spawn_member",
+    "spawn_member",
+    "spawn_many_members",
+    "delegate",
+    "fork_off",
+];
 
 /// Identity of the spawning agent derived from its comms name. Mob member
 /// comms names are `{mob_id}/{role}/{identity}` (meerkat-mob 0.6); the
@@ -663,6 +696,34 @@ mod tests {
         assert!(
             !labels.contains_key(SPAWNED_BY_LABEL),
             "unknown spawner must not fall back to a caller-supplied lineage claim"
+        );
+    }
+
+    /// Pins the vocabulary so a change is a DECISION, not a diff nobody reads.
+    ///
+    /// This cannot detect a new tool added UPSTREAM - meerkat's tool names are
+    /// private consts and MobKit cannot see them. What it does is force whoever
+    /// edits this list to state, in a failing test, that they considered
+    /// whether the new tool spawns console-visible members. `council` is the
+    /// worked example: it IS a spawn tool upstream and is deliberately absent
+    /// here, and that absence should stay a decision rather than becoming an
+    /// oversight the next time someone reads the list.
+    #[test]
+    fn console_spawn_vocabulary_is_pinned() {
+        assert_eq!(
+            MOB_SPAWN_TOOL_VOCABULARY,
+            [
+                "mob_spawn_member",
+                "spawn_member",
+                "spawn_many_members",
+                "delegate",
+                "fork_off",
+            ],
+            "the console spawn vocabulary changed. If you ADDED a tool, confirm \
+             it spawns members that should be projected AND that its argument \
+             shape is handled. If you REMOVED one, confirm nothing still \
+             projects through it. `council` is intentionally absent: its \
+             participants are destroyed before the tool returns.",
         );
     }
 

@@ -1673,7 +1673,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
     // Start schedule delivery only after identity-first attachment. The host
     // owns a snapshot of the authority Arc, so starting it before this point
     // would permanently reject every generated `rt:*` target.
-    let (_schedule_host, _schedule_watchdog) = if let Some((
+    let (schedule_host, _schedule_watchdog) = if let Some((
         schedule_service,
         mob_target_registry,
         service,
@@ -1806,6 +1806,29 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         }
         () = stdin_guard => {}
         () = meerkat_mobkit::shutdown_signal::shutdown_signal() => {}
+    }
+
+    // Release the schedule executor lease on the graceful path.
+    //
+    // `ScheduleHostHandle::shutdown` is what calls
+    // `driver.release_executor_lease()`. Dropping the handle only SIGNALS the
+    // supervisor; tokio gives no guarantee that the woken supervisor is polled
+    // between main's completion and runtime teardown, so the release may never
+    // run. Both gateways previously bound `_schedule_host` and relied on Drop,
+    // which left the lease row held: measured on a production store as all four
+    // of owner_id / lease_token / acquired_at_ms / expires_at_ms still set 57s
+    // past a CLEAN exit.
+    //
+    // Cost of leaving it held, from `shutdown_signal`: the replacement process
+    // gets `AcquireScheduleExecutorLeaseOutcome::Busy`, its tick returns without
+    // calling `claim_due_occurrences`, and SCHEDULES DO NOT FIRE for up to
+    // `lease_duration` (60s) after every restart. The claim watchdog cannot see
+    // it - its overdue threshold is longer than the window.
+    //
+    // This runs BEFORE `composition.shutdown()` because releasing the lease is a
+    // store write, and the composition teardown is what closes the store.
+    if let Some(schedule_host) = schedule_host {
+        schedule_host.shutdown().await;
     }
 
     let shutdown = composition

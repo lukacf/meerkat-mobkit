@@ -32,6 +32,32 @@ pub enum DeclaredToolCategory {
     WebSearch,
 }
 
+/// First-party mob tool names that the `mob_` prefix does not cover.
+///
+/// This is a PRESENCE classifier: "does this live catalog prove the mob
+/// capability surface is wired?" It is deliberately NOT the same set as
+/// `console_spawn::MOB_SPAWN_TOOL_VOCABULARY`, which answers a different
+/// question ("did this tool call create a member the console must render?").
+/// Every retire/wire/status name below proves the surface is present but
+/// spawns nothing, and the two sets are free to diverge further. Do not
+/// unify them.
+///
+/// Widening this list only ever removes false `Gap` decisions, so a name that
+/// is genuinely part of the mob surface belongs here even when it co-occurs
+/// with a `mob_`-prefixed sibling in every catalog seen so far.
+pub(crate) const MOB_UNPREFIXED_TOOL_NAMES: &[&str] = &[
+    "spawn_member",
+    "spawn_many_members",
+    "retire_member",
+    "wire_members",
+    "unwire_members",
+    "list_members",
+    "member_status",
+    "force_cancel_member",
+    "fork_off",
+    "delegate",
+];
+
 impl DeclaredToolCategory {
     pub const ALL: [Self; 9] = [
         Self::Builtins,
@@ -94,18 +120,7 @@ impl DeclaredToolCategory {
                 .any(|name| name.starts_with("meerkat_schedule_")),
             Self::WorkGraph => names.iter().any(|name| name.starts_with("workgraph_")),
             Self::Mob => names.iter().any(|name| {
-                matches!(
-                    name.as_str(),
-                    "spawn_member"
-                        | "spawn_many_members"
-                        | "retire_member"
-                        | "wire_members"
-                        | "unwire_members"
-                        | "list_members"
-                        | "member_status"
-                        | "force_cancel_member"
-                        | "fork_off"
-                ) || name.starts_with("mob_")
+                MOB_UNPREFIXED_TOOL_NAMES.contains(&name.as_str()) || name.starts_with("mob_")
             }),
             Self::ImageGeneration => contains("generate_image"),
             Self::WebSearch => contains("web_search"),
@@ -442,6 +457,43 @@ mod tests {
             declared.iter().collect::<Vec<_>>(),
             DeclaredToolCategory::ALL
         );
+    }
+
+    #[test]
+    fn mob_presence_vocabulary_is_pinned() {
+        // This list restates meerkat's mob tool surface. MobKit cannot see a
+        // rename upstream: a dropped name does not fail to compile, it turns
+        // into a false `Gap` decision that parks a healthy member. Changing
+        // this set must be a decision someone made, not a diff someone made.
+        assert_eq!(
+            MOB_UNPREFIXED_TOOL_NAMES,
+            &[
+                "spawn_member",
+                "spawn_many_members",
+                "retire_member",
+                "wire_members",
+                "unwire_members",
+                "list_members",
+                "member_status",
+                "force_cancel_member",
+                "fork_off",
+                "delegate",
+            ],
+            "the mob presence vocabulary changed. Confirm against meerkat's \
+             mob tool surface that the new set is what upstream actually \
+             exposes, then update this assertion deliberately."
+        );
+    }
+
+    #[test]
+    fn delegate_alone_proves_the_mob_surface_is_present() {
+        // `delegate` is a first-party mob tool. Before 0.8.28 the classifier
+        // missed it: a catalog carrying only `delegate` read as a Gap against
+        // a declared Mob category. Latent rather than live, because meerkat
+        // enables the mob tools as a group and `mob_`-prefixed siblings have
+        // always co-occurred - but the classifier should not depend on that.
+        let names = BTreeSet::from(["delegate".to_string()]);
+        assert!(DeclaredToolCategory::Mob.is_present_in(&names));
     }
 
     #[test]

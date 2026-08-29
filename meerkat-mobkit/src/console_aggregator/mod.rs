@@ -4413,6 +4413,10 @@ fn outgoing_comms_tool_call_frames_from_assistant(
     frames
 }
 
+/// The subset of [`crate::console_spawn::MOB_SPAWN_TOOL_VOCABULARY`] whose
+/// argument shapes `spawn_initial_messages_from_tool_args` can read.
+const SPAWN_INITIAL_MESSAGE_TOOLS: &[&str] = &["mob_spawn_member", "spawn_member"];
+
 fn spawn_initial_message_frames_from_assistant(
     runtime_key: &str,
     parent_identity: &str,
@@ -4424,7 +4428,19 @@ fn spawn_initial_message_frames_from_assistant(
 ) -> Vec<NewConsoleFrame> {
     let mut frames = Vec::new();
     for (tool_idx, tool) in assistant.tool_calls().enumerate() {
-        if tool.name != "mob_spawn_member" && tool.name != "spawn_member" {
+        // DELIBERATELY NARROWER than
+        // `console_spawn::MOB_SPAWN_TOOL_VOCABULARY`. This path feeds
+        // `spawn_initial_messages_from_tool_args`, which understands the
+        // single-record and `specs`/`members` argument shapes those two tools
+        // use. `delegate`, `fork_off` and `spawn_many_members` also spawn, but
+        // their argument shapes are not what that parser reads, so accepting
+        // them here would produce empty or wrong initial-message frames rather
+        // than more of them.
+        //
+        // Asserted as a genuine SUBSET by
+        // `spawn_initial_message_tools_are_a_documented_subset`, so a typo here
+        // is a test failure rather than a branch that never fires.
+        if !SPAWN_INITIAL_MESSAGE_TOOLS.contains(&tool.name) {
             continue;
         }
         let Ok(args) = serde_json::from_str::<Value>(tool.args.get()) else {
@@ -5326,6 +5342,20 @@ fn runtime_registry_lock_error() -> ConsoleLogError {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::large_futures, clippy::panic)]
 mod tests {
+    /// The initial-message tools must be a genuine subset of the crate-wide
+    /// spawn vocabulary. Catches a typo, which would otherwise be a `continue`
+    /// that silently never fires for any real tool.
+    #[test]
+    fn spawn_initial_message_tools_are_a_documented_subset() {
+        for name in super::SPAWN_INITIAL_MESSAGE_TOOLS {
+            assert!(
+                crate::console_spawn::MOB_SPAWN_TOOL_VOCABULARY.contains(name),
+                "{name} is not in MOB_SPAWN_TOOL_VOCABULARY - either a typo here \
+                 or a tool the crate does not otherwise recognise as spawning",
+            );
+        }
+    }
+
     /// Regression: a session that keeps failing backfill must collapse to ONE
     /// gap frame. The dedupe key is stable per (runtime, identity, session) —
     /// independent of wall-clock — so repeated failures don't mint a fresh

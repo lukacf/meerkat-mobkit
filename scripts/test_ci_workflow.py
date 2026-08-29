@@ -30,6 +30,22 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertEqual(len(commands), 1, commands)
         self.assertIn(" --no-fail-fast", commands[0])
 
+    def test_decorator_authority_gate_actually_runs_in_ci(self):
+        """A structural gate nobody invokes is a control that cannot fail.
+
+        `verify-decorator-authority.py` exists because a decorator omitting
+        `request_attempt_authority` compiles clean, warns nothing, and stranded
+        72 identities downstream. If it is ever dropped from `fmt-lint` the
+        defect class goes unwatched again with no other signal, so pin the
+        invocation here rather than trusting that the file's presence means it
+        runs.
+        """
+        block = job_block("fmt-lint")
+        self.assertIn(
+            "- run: python3 scripts/verify-decorator-authority.py",
+            block,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

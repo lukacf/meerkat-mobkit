@@ -5,6 +5,159 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.28] - 2026-08-29
+
+Pairs with meerkat `0.8.31` (tag `v0.8.31`, commit
+`83d5be6d75ebdf9a54106bf7b102617fb8114669`) - unchanged from 0.8.27. All 25 pin
+sites are byte-identical to the 0.8.27 release commit; this train carries no
+upstream movement.
+
+The backlog this release clears was known during 0.8.27 and left out of it. The
+0.8.31 deadline was meerkat's, not MobKit's, so holding these items back bought
+nothing.
+
+### Fixed
+
+- **A graceful gateway exit now releases the schedule executor lease.** Both
+  gateway binaries bound `_schedule_host` and relied on `Drop`. Dropping a
+  `ScheduleHostHandle` only *signals* the supervisor; only
+  `ScheduleHostHandle::shutdown().await` calls
+  `driver.release_executor_lease()`, and tokio gives no guarantee the woken
+  supervisor is polled between main's completion and runtime teardown. Measured
+  on a production store: `owner_id`, `lease_token`, `acquired_at_ms` and
+  `expires_at_ms` all still set 57s past **gateway exit**. (That observation was
+  originally reported as following a graceful shutdown; its owner has since
+  corrected it. The exit was driven by stdin EOF, so it observed the `Drop` path
+  rather than a graceful one. The row reading is unaffected, and both paths run
+  the same teardown in `main`. Direct evidence for the graceful path is this
+  release's own mutation test, below, which SIGTERMs the binary.) The
+  replacement process
+  then gets `AcquireScheduleExecutorLeaseOutcome::Busy`, its tick returns
+  without claiming due occurrences, and **schedules do not fire for up to the
+  60s lease duration after every restart**. Nothing surfaced this: the claim
+  watchdog's overdue threshold is longer than the window, and the old code
+  compiled clean with no warning. The release now runs before
+  `composition.shutdown()`, because releasing the lease is a store write and
+  composition teardown is what closes the store.
+- **`delegate` now counts as evidence that the mob tool surface is present.**
+  `DeclaredToolCategory::Mob` matched nine exact names plus the `mob_` prefix
+  and missed `delegate`, so a catalog carrying only `delegate` read as a `Gap`
+  against a declared Mob category and parked a healthy member. Latent rather
+  than live: meerkat enables the mob tools as a group and a `mob_`-prefixed
+  sibling has always co-occurred, so no spurious park was ever observed. The
+  classifier should not depend on that.
+
+### Added
+
+- **The decorator-authority defect class is watched by a gate rather than by
+  memory.** `scripts/verify-decorator-authority.py` enumerates every
+  `impl AgentLlmClient`, classifies production from `#[cfg(test)]` structurally,
+  and fails any production decorator missing `request_attempt_authority`. This
+  is the 0.8.27 defect that stranded 72 identities while compiling clean; the
+  per-wrapper unit tests cover the wrappers that exist, and this covers the ones
+  that do not exist yet. It runs in the `fmt-lint` CI job and on pre-push, and a
+  contract test in `scripts/test_ci_workflow.py` pins that invocation - a
+  structural gate nobody runs is a control that cannot fail.
+- A subprocess regression test for the schedule lease
+  (`tests/gateway_schedule_lease_release.rs`), covering both binaries. It
+  asserts that the running gateway holds the lease and then that a SIGTERM exit
+  releases it; without the first assertion a gateway that never acquired a lease
+  would also end with `owner_id` NULL and the test would pass while observing
+  nothing.
+
+  Reverting the fix and re-running is honest about what each leg is worth:
+  `rpc_gateway` fails on the exact assertion first try, and `mobkit_gateway`
+  passes 7 runs out of 7. Only the `rpc_gateway` leg is a mutation-proven guard.
+  Under `mobkit_gateway`'s teardown the signalled supervisor does get polled in
+  time and `Drop` releases the lease anyway - which is luck the harness cannot
+  remove, not a property the code states, so the explicit call stays in both
+  binaries. The `mobkit_gateway` leg is kept for the harder regression (a lease
+  never released at all) and is documented in the test as not proving the
+  narrower one.
+
+### Changed
+
+- The three hardcoded mob tool-name lists are now named constants that state the
+  question each one answers: `MOB_SPAWN_TOOL_VOCABULARY` (did this call create a
+  member the console must render?), `SPAWN_INITIAL_MESSAGE_TOOLS` (a documented
+  subset whose argument shapes the initial-message extractor understands), and
+  `MOB_UNPREFIXED_TOOL_NAMES` (does this catalog prove the mob surface is
+  wired?). They are deliberately **not** unified: they answer different
+  questions and are free to diverge. Each carries a pinning test that forces a
+  human decision rather than accepting a diff.
+- `memory::dispatch_taint`'s module doc no longer claims the module collapses
+  onto an upstream hook slot once one lands. Hook points did land upstream and
+  this module does not collapse onto them: meerkat's own reference states that
+  post-commit hooks are not synchronous policy seams.
+
+### Not in this release
+
+- **The shutdown wedge remains open, and it is not MobKit's code.** A graceful
+  stop can fail to converge in `shutdown_runtime_unregister`, escalating SIGTERM
+  to SIGKILL. The symbols live upstream: `shutdown_runtime_unregister_observers`
+  is defined and driven in `meerkat-mob/src/runtime/actor.rs`, as is the
+  `shutdown session binding teardown failed` warning. Both are absent from
+  `meerkat-mobkit` entirely, which only calls into them through
+  `UnifiedRuntime::shutdown()`. Earlier notes, including mine, put this in
+  MobKit's own teardown; that attribution was wrong.
+
+  **It is not a regression.** ob3 reproduced it on meerkat 0.8.29 / MobKit
+  0.8.24 - their current production pins - with the same harness, phases and a
+  freshly cloned dataset. Across three pin pairs on the same arm: 0.8.29/0.8.24
+  hung, 0.8.30/0.8.26 hung 2 of 2, 0.8.31/0.8.27 hung 4 of 6. It predates all of
+  them, and no CHANGELOG should carry it as new in 0.8.30, 0.8.31 or here.
+
+  It went unseen because the harness could not express it: before 2026-08-28 the
+  twin's `Server.kill()` escalated SIGTERM to SIGKILL after 30s, silently and
+  without an assertion, while a healthy shutdown on that fleet takes 74 to 92
+  seconds. Every shutdown was killed at 30s and wedged and healthy runs looked
+  identical - green. The defect is old; the instrument that can see it is days
+  old.
+
+  It is a **race**, not a deterministic trigger: ob3 measured 4 hangs in 6 runs
+  on identical 0.8.31 Rust, alternating clean and hung with the same dataset
+  shape, phases and spawn count. The conditions previously believed to form a
+  required conjunction only raise the probability.
+
+  **Do not read "4 in 6" as the odds that any given graceful stop hangs.** It is
+  a conditional rate under adversarial setup: every one of those runs booted 161
+  identities, drove a real OpenAI turn, a real Anthropic turn and a spawn, then
+  SIGTERMed immediately with no idle period. ob3 also corroborated it in real
+  production: 6 of 9 pod shutdowns in a 30-day window did not complete, with a
+  control ruling out log loss.
+
+  **There is no second-fleet counter-datum.** An earlier draft of this entry
+  cited a second fleet's 79 clean restarts. Its owner retracted that measurement
+  outright: the sample was from July, on versions no longer running, under a
+  since-replaced deploy path. Their instrument then stopped emitting in mid-July
+  - startup and shutdown lines disappeared together, which is a logging change
+  rather than a behaviour change - so that fleet's current shutdown behaviour is
+  simply **unobserved**, in either direction. It is withdrawn rather than
+  weakened, and nothing here rests on it.
+
+  So no fleet-shape hypothesis is offered either. The one previously carried
+  here - fleet size, 17 identities against 161 - existed only to explain a
+  discrepancy between two fleets, and it does not survive the discrepancy being
+  withdrawn. The reproducer is held by its owner.
+
+  Two consequences worth carrying forward. Any regression test for this must
+  **repeat rather than sample** - a single green run has roughly a 1 in 3 chance
+  of meaning nothing under ob3's conditions. And the teardown retry count is
+  **not** a severity signal: across two independent measurement sets the highest
+  count (209, and earlier 161) sat on the only *clean* run each time.
+
+  This release's lease fix is a different defect and almost certainly does not
+  address this one. The lease release should nonetheless survive a wedged run,
+  on structural grounds rather than measurement: `GatewayComposition::shutdown`
+  is what calls `state.runtime.shutdown()`, and the lease release is placed
+  before that call, with everything in between either bounded (the inflight
+  drain, by `GATEWAY_RPC_DRAIN_TIMEOUT`) or non-awaiting. That ordering was
+  chosen for an unrelated reason - the release is a store write and composition
+  teardown closes the store - so the independence is a consequence, not a design
+  goal, and it has not been observed against ob3's reproducer.
+
+  Named here so it is explicitly outstanding rather than silently dropped.
+
 ## [0.8.27] - 2026-08-29
 
 Pairs with meerkat `0.8.31` (tag `v0.8.31`, commit

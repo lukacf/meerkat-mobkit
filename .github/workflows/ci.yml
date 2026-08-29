@@ -25,6 +25,7 @@ jobs:
       - run: scripts/repo-cargo fmt --all -- --check
       - run: scripts/verify-version-parity.sh
       - run: python3 scripts/verify-runtime-options-reachable.py
+      - run: python3 scripts/verify-decorator-authority.py
       - run: python3 scripts/test_ci_workflow.py
       - run: python3 scripts/test_release_version_scripts.py
       - run: python3 scripts/test_release_workflow.py
