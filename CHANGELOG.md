@@ -25,7 +25,13 @@ nothing.
   `driver.release_executor_lease()`, and tokio gives no guarantee the woken
   supervisor is polled between main's completion and runtime teardown. Measured
   on a production store: `owner_id`, `lease_token`, `acquired_at_ms` and
-  `expires_at_ms` all still set 57s past a clean exit. The replacement process
+  `expires_at_ms` all still set 57s past **gateway exit**. (That observation was
+  originally reported as following a graceful shutdown; its owner has since
+  corrected it. The exit was driven by stdin EOF, so it observed the `Drop` path
+  rather than a graceful one. The row reading is unaffected, and both paths run
+  the same teardown in `main`. Direct evidence for the graceful path is this
+  release's own mutation test, below, which SIGTERMs the binary.) The
+  replacement process
   then gets `AcquireScheduleExecutorLeaseOutcome::Busy`, its tick returns
   without claiming due occurrences, and **schedules do not fire for up to the
   60s lease duration after every restart**. Nothing surfaced this: the claim
