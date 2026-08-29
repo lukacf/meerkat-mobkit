@@ -86,39 +86,49 @@ nothing.
 
 ### Not in this release
 
-- **The MobKit shutdown wedge remains open.** A graceful stop can fail to
-  converge in `shutdown_runtime_unregister`, escalating SIGTERM to SIGKILL.
-  It is a **race**, not a deterministic trigger. ob3 measured 4 hangs in 6 runs
-  on identical 0.8.31 Rust, alternating clean and hung across runs with the same
-  dataset shape, phases and spawn count. The conditions previously believed to
-  be a required conjunction only raise the probability.
+- **The shutdown wedge remains open, and it is not MobKit's code.** A graceful
+  stop can fail to converge in `shutdown_runtime_unregister`, escalating SIGTERM
+  to SIGKILL. The symbols live upstream: `shutdown_runtime_unregister_observers`
+  is defined and driven in `meerkat-mob/src/runtime/actor.rs`, as is the
+  `shutdown session binding teardown failed` warning. Both are absent from
+  `meerkat-mobkit` entirely, which only calls into them through
+  `UnifiedRuntime::shutdown()`. Earlier notes, including mine, put this in
+  MobKit's own teardown; that attribution was wrong.
 
-  **That rate is fleet-shape-specific, not a general one.** On a second
-  production fleet running real traffic, HomeCore measured **79 restarts, 79
-  clean**, with no shutdown gap approaching their 480s launchd `ExitTimeOut`.
-  Do not read "4 in 6" as the odds that any given graceful stop hangs. The
-  leading candidate for the differential is proximity in time between a turn and
-  the shutdown: ob3 drives spawn and turn in a tight scripted sequence and stops
-  immediately, where HomeCore's turns arrive minutes or hours before a restart.
-  That is a hypothesis, not a finding. Both reproducers are held by their
-  owners.
+  Whether it is a **regression** is unknown and is being measured against
+  meerkat 0.8.29 / MobKit 0.8.24. Nothing here should be read as claiming it is
+  new in this pair.
+
+  It is a **race**, not a deterministic trigger: ob3 measured 4 hangs in 6 runs
+  on identical 0.8.31 Rust, alternating clean and hung with the same dataset
+  shape, phases and spawn count. The conditions previously believed to form a
+  required conjunction only raise the probability.
+
+  **Do not read "4 in 6" as the odds that any given graceful stop hangs.** It is
+  a conditional rate under adversarial setup: every one of those runs booted 161
+  identities, drove a real OpenAI turn, a real Anthropic turn and a spawn, then
+  SIGTERMed immediately with no idle period. On a second production fleet
+  running real traffic, HomeCore measured **79 restarts, 79 clean**, with no
+  shutdown gap approaching their 480s launchd `ExitTimeOut`. That is closer to a
+  base rate. Candidate axes for the differential are proximity in time between a
+  turn and the shutdown, and fleet size (17 identities against 161). Both are
+  hypotheses, not findings. Each reproducer is held by its owner.
 
   Two consequences worth carrying forward. Any regression test for this must
-  **repeat rather than sample** - a single green run has about a 1 in 3 chance
-  of meaning nothing. And the teardown retry count is **not** a severity
-  signal: across two independent measurement sets the highest count (209, and
-  earlier 161) sat on the only *clean* run each time.
+  **repeat rather than sample** - a single green run has roughly a 1 in 3 chance
+  of meaning nothing under ob3's conditions. And the teardown retry count is
+  **not** a severity signal: across two independent measurement sets the highest
+  count (209, and earlier 161) sat on the only *clean* run each time.
 
-  The lease release should survive it, on structural grounds rather than
-  measurement: `shutdown_runtime_unregister` is a `meerkat-mob` runtime-actor
-  intent, `GatewayComposition::shutdown` is what calls `state.runtime.shutdown()`,
-  and the lease release is placed before that call. Everything between the
-  shutdown signal and the release is either bounded (the inflight drain, by
-  `GATEWAY_RPC_DRAIN_TIMEOUT`) or non-awaiting. So a run that wedges in runtime
-  teardown has already handed the executor lease back. That ordering was chosen
-  for a different reason - the release is a store write and composition teardown
-  closes the store - so the independence is a consequence, not a design goal,
-  and it has not been observed against ob3's reproducer.
+  This release's lease fix is a different defect and almost certainly does not
+  address this one. The lease release should nonetheless survive a wedged run,
+  on structural grounds rather than measurement: `GatewayComposition::shutdown`
+  is what calls `state.runtime.shutdown()`, and the lease release is placed
+  before that call, with everything in between either bounded (the inflight
+  drain, by `GATEWAY_RPC_DRAIN_TIMEOUT`) or non-awaiting. That ordering was
+  chosen for an unrelated reason - the release is a store write and composition
+  teardown closes the store - so the independence is a consequence, not a design
+  goal, and it has not been observed against ob3's reproducer.
 
   Named here so it is explicitly outstanding rather than silently dropped.
 
