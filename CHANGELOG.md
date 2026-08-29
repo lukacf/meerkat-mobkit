@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.27] - 2026-08-29
+
+Pairs with meerkat `0.8.31` (tag `v0.8.31`, commit
+`83d5be6d75ebdf9a54106bf7b102617fb8114669`), bound to the published registry
+release across all **25** pin sites (20 in `meerkat-mobkit`, 5 in
+`mobkit-store-conformance`).
+
+The 0.8.26 entry below says "26 pin sites". That number is wrong; it has been 25
+in both directions, measured out of the transitional git-rev state and again
+here. Correcting it in place would rewrite a shipped entry, so it is corrected
+here instead.
+
+### Fixed
+
+- **Agent-LLM decorators no longer downgrade the clients they wrap.**
+  `AgentLlmClient::request_attempt_authority` carries a default returning
+  `LegacySplit`, so MobKit's decorators silently reported their own authority
+  instead of forwarding the inner client's - compiling cleanly, with no error,
+  warning or test failure. Meerkat 0.8.31 rejects `materialize resume` for a
+  client reporting `LegacySplit` over a `Unified` adapter, which stranded every
+  identity resuming a durable session. Measured downstream on a cloned
+  production store: 72 identities marked Broken at boot before the fix, 0 after,
+  against 0 on three separate 0.8.30 runs. Addressing a stranded identity did
+  not recover it, because addressing triggers the resume that is rejected.
+  Both production decorators - `ReplaySanitizingAgentLlmClient` and
+  `TaintObservingLlmClient` - now forward. One contract test per wrapper, each
+  using a non-default inner so forwarding is distinguishable from inheriting.
+
+### Changed
+
+- Repinned all 25 exact meerkat pins from `=0.8.30` to `=0.8.31`. Resolution is
+  asserted rather than assumed: 35 meerkat packages, all from crates.io, none
+  from git, none off-version.
+- `ProviderBindingConfig` gained `credential_account`; MobKit's single
+  construction site supplies `None`, which is behaviour-preserving.
+
+### Added
+
+- **The release path refuses a commit that was never green on main.** A
+  `require_ci_green` job now gates the whole release DAG; previously
+  `release_validate` had no `needs` at all, so a tag published from any commit
+  and nothing checked it. It refuses rather than waits, and the dry-run lane is
+  deliberately exempt because it publishes nothing.
+- **Binaries carry build provenance.** `attest-build-provenance` over `dist/*`;
+  the workflow granted `attestations: write` and never attested anything.
+- **Every workspace member's publish status is explicit.**
+  `verify-crate-publication.py` fails unless each member is either published by
+  `release.yml` or declares `publish = false`, deriving the published set from
+  the workflow rather than restating it.
+- e2e suites can execute a prebuilt example via `MOBKIT_EXAMPLE_BIN_DIR` instead
+  of invoking cargo. Set nowhere; behaviour is unchanged.
+
+### CI
+
+- Split the serial `console` job into `console`, `console-fixtures` and
+  `console-acceptance`. Two steps accounted for 22.3 of its ~38 minutes while
+  all nine npm check scripts took 0.0m each, so separating "fast checks" from
+  "slow e2e" would have bought nothing. All three are named in `gate`.
+
 ## [0.8.26] - 2026-08-27
 
 Pairs with meerkat `0.8.30` (exact rev `5e229e0b8379ac162a6b3c69187d186b570535e9`),
