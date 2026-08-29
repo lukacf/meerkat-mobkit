@@ -5,6 +5,108 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.28] - 2026-08-29
+
+Pairs with meerkat `0.8.31` (tag `v0.8.31`, commit
+`83d5be6d75ebdf9a54106bf7b102617fb8114669`) - unchanged from 0.8.27. All 25 pin
+sites are byte-identical to the 0.8.27 release commit; this train carries no
+upstream movement.
+
+The backlog this release clears was known during 0.8.27 and left out of it. The
+0.8.31 deadline was meerkat's, not MobKit's, so holding these items back bought
+nothing.
+
+### Fixed
+
+- **A graceful gateway exit now releases the schedule executor lease.** Both
+  gateway binaries bound `_schedule_host` and relied on `Drop`. Dropping a
+  `ScheduleHostHandle` only *signals* the supervisor; only
+  `ScheduleHostHandle::shutdown().await` calls
+  `driver.release_executor_lease()`, and tokio gives no guarantee the woken
+  supervisor is polled between main's completion and runtime teardown. Measured
+  on a production store: `owner_id`, `lease_token`, `acquired_at_ms` and
+  `expires_at_ms` all still set 57s past a clean exit. The replacement process
+  then gets `AcquireScheduleExecutorLeaseOutcome::Busy`, its tick returns
+  without claiming due occurrences, and **schedules do not fire for up to the
+  60s lease duration after every restart**. Nothing surfaced this: the claim
+  watchdog's overdue threshold is longer than the window, and the old code
+  compiled clean with no warning. The release now runs before
+  `composition.shutdown()`, because releasing the lease is a store write and
+  composition teardown is what closes the store.
+- **`delegate` now counts as evidence that the mob tool surface is present.**
+  `DeclaredToolCategory::Mob` matched nine exact names plus the `mob_` prefix
+  and missed `delegate`, so a catalog carrying only `delegate` read as a `Gap`
+  against a declared Mob category and parked a healthy member. Latent rather
+  than live: meerkat enables the mob tools as a group and a `mob_`-prefixed
+  sibling has always co-occurred, so no spurious park was ever observed. The
+  classifier should not depend on that.
+
+### Added
+
+- **The decorator-authority defect class is watched by a gate rather than by
+  memory.** `scripts/verify-decorator-authority.py` enumerates every
+  `impl AgentLlmClient`, classifies production from `#[cfg(test)]` structurally,
+  and fails any production decorator missing `request_attempt_authority`. This
+  is the 0.8.27 defect that stranded 72 identities while compiling clean; the
+  per-wrapper unit tests cover the wrappers that exist, and this covers the ones
+  that do not exist yet. It runs in the `fmt-lint` CI job and on pre-push, and a
+  contract test in `scripts/test_ci_workflow.py` pins that invocation - a
+  structural gate nobody runs is a control that cannot fail.
+- A subprocess regression test for the schedule lease
+  (`tests/gateway_schedule_lease_release.rs`), covering both binaries. It
+  asserts that the running gateway holds the lease and then that a SIGTERM exit
+  releases it; without the first assertion a gateway that never acquired a lease
+  would also end with `owner_id` NULL and the test would pass while observing
+  nothing.
+
+  Reverting the fix and re-running is honest about what each leg is worth:
+  `rpc_gateway` fails on the exact assertion first try, and `mobkit_gateway`
+  passes 7 runs out of 7. Only the `rpc_gateway` leg is a mutation-proven guard.
+  Under `mobkit_gateway`'s teardown the signalled supervisor does get polled in
+  time and `Drop` releases the lease anyway - which is luck the harness cannot
+  remove, not a property the code states, so the explicit call stays in both
+  binaries. The `mobkit_gateway` leg is kept for the harder regression (a lease
+  never released at all) and is documented in the test as not proving the
+  narrower one.
+
+### Changed
+
+- The three hardcoded mob tool-name lists are now named constants that state the
+  question each one answers: `MOB_SPAWN_TOOL_VOCABULARY` (did this call create a
+  member the console must render?), `SPAWN_INITIAL_MESSAGE_TOOLS` (a documented
+  subset whose argument shapes the initial-message extractor understands), and
+  `MOB_UNPREFIXED_TOOL_NAMES` (does this catalog prove the mob surface is
+  wired?). They are deliberately **not** unified: they answer different
+  questions and are free to diverge. Each carries a pinning test that forces a
+  human decision rather than accepting a diff.
+- `memory::dispatch_taint`'s module doc no longer claims the module collapses
+  onto an upstream hook slot once one lands. Hook points did land upstream and
+  this module does not collapse onto them: meerkat's own reference states that
+  post-commit hooks are not synchronous policy seams.
+
+### Not in this release
+
+- **The MobKit shutdown wedge remains open.** A graceful stop can fail to
+  converge in `shutdown_runtime_unregister`, escalating SIGTERM to SIGKILL.
+  It is a **race**, not a deterministic trigger: measured on a 161-identity
+  fleet across pins whose `.rs` content is byte-identical, the same code hung
+  twice, ran clean once, and hung again. The conditions that were thought to be
+  a required conjunction only make the race likely. Rate is being measured;
+  ob3 holds the reproducer.
+
+  The lease release should survive it, on structural grounds rather than
+  measurement: `shutdown_runtime_unregister` is a `meerkat-mob` runtime-actor
+  intent, `GatewayComposition::shutdown` is what calls `state.runtime.shutdown()`,
+  and the lease release is placed before that call. Everything between the
+  shutdown signal and the release is either bounded (the inflight drain, by
+  `GATEWAY_RPC_DRAIN_TIMEOUT`) or non-awaiting. So a run that wedges in runtime
+  teardown has already handed the executor lease back. That ordering was chosen
+  for a different reason - the release is a store write and composition teardown
+  closes the store - so the independence is a consequence, not a design goal,
+  and it has not been observed against ob3's reproducer.
+
+  Named here so it is explicitly outstanding rather than silently dropped.
+
 ## [0.8.27] - 2026-08-29
 
 Pairs with meerkat `0.8.31` (tag `v0.8.31`, commit

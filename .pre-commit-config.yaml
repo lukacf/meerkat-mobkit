@@ -55,6 +55,18 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
+  # On push: every production AgentLlmClient decorator forwards
+  # request_attempt_authority (the trait default silently reports LegacySplit).
+  - repo: local
+    hooks:
+      - id: decorator-authority
+        name: decorator authority forwarding
+        entry: python3 scripts/verify-decorator-authority.py
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
   # On push: clippy on changed crates only (falls back to workspace for root manifest changes)
   - repo: local
     hooks:
