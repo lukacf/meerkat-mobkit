@@ -1520,6 +1520,14 @@ fn install_agent_mob_tools(
     session_service: Arc<dyn MobSessionService>,
     workgraph_service: Option<meerkat::WorkGraphService>,
     default_llm_client_slot: Option<SharedDefaultLlmClientSlot>,
+    // Durable temporary-council store, when the host resolved one.
+    //
+    // `MobMcpState` defaults this to an in-memory implementation, so `None`
+    // preserves the pre-0.8.29 behaviour exactly: councils stay process-bound
+    // and do not survive a restart. Supplying one is what makes
+    // `TemporaryCouncilStore::list_unfinished` able to see anything after a
+    // reboot, which is the whole point of the recovery path.
+    council_store: Option<Arc<dyn meerkat_mob::store::TemporaryCouncilStore>>,
 ) -> (
     Arc<meerkat_mob_mcp::MobMcpState>,
     ImplicitDelegateRetirementOverrides,
@@ -1535,6 +1543,9 @@ fn install_agent_mob_tools(
     let mut state =
         meerkat_mob_mcp::MobMcpState::new(session_service, meerkat_mob::MobControlPrincipal::Owner)
             .with_workgraph_service(workgraph_service);
+    if let Some(council_store) = council_store {
+        state = state.with_temporary_council_store(council_store);
+    }
     if let Some(base_store) = state.realm_profile_store().cloned()
         && let Some(store) = DefinitionSeededRealmProfileStore::new(definition, base_store)
     {
@@ -6073,6 +6084,9 @@ impl MobBootstrapSpec {
             Arc::clone(&self.session_service),
             self.workgraph_service.clone(),
             None,
+            // No `store_path` in this builder path, so no durable council
+            // store: councils stay process-bound, exactly as before.
+            None,
         );
         self.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         self.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
@@ -6487,6 +6501,10 @@ impl MobBootstrapSpec {
             Arc::clone(&session_service),
             Some(workgraph_service.clone()),
             Some(session_llm_default_client_slot),
+            // Ephemeral mob, ephemeral councils. Writing a durable council
+            // database from a mob that keeps nothing else would leave records
+            // behind that no later boot of this mob can claim.
+            None,
         );
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
@@ -6928,6 +6946,12 @@ impl MobBootstrapSpec {
             Arc::clone(&session_service),
             workgraph_service.clone(),
             Some(session_llm_default_client_slot),
+            // Persistent mob: councils become durable, so a restart can see
+            // unfinished records through `list_unfinished` instead of losing
+            // them with the process.
+            crate::council_wiring::open_council_store(
+                &crate::council_wiring::council_db_for_store_path(&store_path),
+            ),
         );
         let mut spec = Self::new(definition, storage, session_service);
         spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
@@ -7225,6 +7249,13 @@ impl MobBootstrapSpec {
             Arc::clone(&session_service),
             Some(workgraph_service.clone()),
             Some(session_llm_default_client_slot),
+            // Persistent mob: councils become durable here too. This site
+            // shares an argument shape with the ephemeral constructor, which
+            // is how it first received the ephemeral arm - it compiled clean
+            // and would have left persistent councils process-bound.
+            crate::council_wiring::open_council_store(
+                &crate::council_wiring::council_db_for_store_path(&store_path),
+            ),
         );
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
@@ -10385,6 +10416,49 @@ realm_profile = "worker-v2"
 
     /// Verify that persistent_with_hook wraps the session service with
     /// PreBuildMobSessionService (hook is Some).
+    /// Every `install_agent_mob_tools` call inside a PERSISTENT constructor
+    /// must supply a durable council store, and every ephemeral one must not.
+    ///
+    /// This is a source-shape assertion because the defect it guards compiled
+    /// clean: two call sites share an argument shape, patching by pattern put
+    /// the ephemeral `None` into `persistent_with_hook`, and nothing failed.
+    /// A persistent mob would have kept process-bound councils, losing
+    /// unfinished records on every restart with no signal at all.
+    #[test]
+    fn persistent_constructors_supply_a_durable_council_store() {
+        let source = include_str!("mob_handle_runtime.rs");
+        let lines: Vec<&str> = source.lines().collect();
+
+        let mut enclosing = "";
+        let mut seen: Vec<(&str, bool)> = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if line.starts_with("    pub fn ") || line.starts_with("    fn ") {
+                enclosing = trimmed
+                    .trim_start_matches("pub ")
+                    .trim_start_matches("fn ")
+                    .split('(')
+                    .next()
+                    .unwrap_or("");
+            }
+            if trimmed.starts_with(") = install_agent_mob_tools(") {
+                let window = lines[index..(index + 24).min(lines.len())].join("\n");
+                seen.push((enclosing, window.contains("open_council_store")));
+            }
+        }
+
+        assert_eq!(seen.len(), 4, "call-site count changed: {seen:?}");
+        for (function, durable) in &seen {
+            let expected = function.contains("persistent");
+            assert_eq!(
+                *durable,
+                expected,
+                "{function} should {} supply a durable council store",
+                if expected { "" } else { "NOT" },
+            );
+        }
+    }
+
     #[test]
     fn persistent_with_hook_wraps_session_service() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));

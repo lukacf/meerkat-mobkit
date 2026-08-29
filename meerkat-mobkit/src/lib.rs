@@ -20,6 +20,7 @@ pub mod console_config;
 pub mod console_contracts;
 pub(crate) mod console_spawn;
 pub mod contact_directory;
+pub mod council_wiring;
 pub mod decisions;
 pub mod fork;
 pub mod gateway_composition;

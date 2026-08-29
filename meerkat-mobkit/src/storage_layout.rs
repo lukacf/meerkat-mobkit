@@ -55,6 +55,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::peer_keys::KEY_FILE_NAME;
+use crate::council_wiring::COUNCIL_STORE_FILE;
 use crate::schedule_wiring::SCHEDULE_STORE_FILE;
 use crate::workgraph_wiring::WORKGRAPH_STORE_FILE;
 
@@ -94,11 +95,12 @@ pub enum DatabaseSlot {
     Console,
     AgentMemory,
     EventLog,
+    Council,
 }
 
 impl DatabaseSlot {
     /// Every slot, in the order the layout summary reports them.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Sessions,
         Self::Runtime,
         Self::Schedule,
@@ -108,6 +110,7 @@ impl DatabaseSlot {
         Self::Console,
         Self::AgentMemory,
         Self::EventLog,
+        Self::Council,
     ];
 
     /// The canonical file (or directory) name for this slot.
@@ -122,6 +125,7 @@ impl DatabaseSlot {
             Self::Console => CANONICAL_CONSOLE_DB_FILE_NAME,
             Self::AgentMemory => CANONICAL_AGENT_MEMORY_DIR_NAME,
             Self::EventLog => EVENT_LOG_DB_FILE_NAME,
+            Self::Council => COUNCIL_STORE_FILE,
         }
     }
 
@@ -133,7 +137,9 @@ impl DatabaseSlot {
             Self::Metadata => &["mobkit_metadata.sqlite"],
             Self::Console => &["mobkit_console.sqlite"],
             Self::AgentMemory => &["agent-memory-sqlite"],
-            Self::Runtime | Self::Schedule | Self::Workgraph | Self::EventLog => &[],
+            Self::Runtime | Self::Schedule | Self::Workgraph | Self::EventLog | Self::Council => {
+                &[]
+            }
         }
     }
 }
@@ -150,6 +156,7 @@ impl Display for DatabaseSlot {
             Self::Console => "console",
             Self::AgentMemory => "agent-memory",
             Self::EventLog => "event-log",
+            Self::Council => "council",
         };
         f.write_str(name)
     }
@@ -433,6 +440,16 @@ impl MobKitStorageLayout {
     /// The workgraph store database. One spelling everywhere — infallible.
     pub fn workgraph_db(&self) -> PathBuf {
         self.state_dir.join(WORKGRAPH_STORE_FILE)
+    }
+
+    /// The temporary-council store database.
+    ///
+    /// MobKit owns this path rather than letting meerkat's
+    /// `with_persistent_storage_root` pick one, so the council store enters
+    /// MobKit's own slot authority (doctor, migrate, health) instead of
+    /// existing as a durable file nothing here enumerates.
+    pub fn council_db(&self) -> PathBuf {
+        self.state_dir.join(COUNCIL_STORE_FILE)
     }
 
     /// Canonical Meerkat-level detached-job database inherited by MobKit's
