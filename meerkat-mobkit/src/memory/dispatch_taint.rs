@@ -221,6 +221,17 @@ impl TaintObservingLlmClient {
 
 #[async_trait::async_trait]
 impl AgentLlmClient for TaintObservingLlmClient {
+    // Forward the inner client's request-attempt authority. `AgentLlmClient`
+    // gives this method a DEFAULT returning `LegacySplit`, so a decorator that
+    // omits it compiles cleanly and silently downgrades every wrapped client.
+    // meerkat 0.8.31 rejects resume for a client reporting LegacySplit when the
+    // inner adapter is Unified: ob3 measured 72 identities marked Broken at boot
+    // on the candidate and 0 across three 0.8.30 runs. A decorator must report
+    // what it wraps, never what it is.
+    fn request_attempt_authority(&self) -> meerkat_core::RequestAttemptAuthority {
+        self.inner.request_attempt_authority()
+    }
+
     async fn stream_response(
         &self,
         messages: &[Message],
@@ -585,5 +596,74 @@ mod tests {
         let mut req = req;
         attach_member_taint_decorator(&mut req, &DispatchTaintSlot::default());
         assert!(req.build.is_none(), "non-member requests stay untouched");
+    }
+}
+
+/// Every production `AgentLlmClient` decorator must report the authority of the
+/// client it wraps, not its own.
+///
+/// `AgentLlmClient::request_attempt_authority` has a DEFAULT returning
+/// `LegacySplit`. A decorator that omits it therefore compiles cleanly and
+/// silently downgrades everything it wraps - no error, no warning, no test
+/// failure. meerkat 0.8.31 rejects `materialize resume` for a client reporting
+/// LegacySplit over a Unified adapter, which ob3 measured as 72 identities
+/// marked Broken at boot on the candidate against 0 on three 0.8.30 runs.
+///
+/// This test exists because the compiler cannot express that requirement. It
+/// covers the wrappers that exist today; a NEW decorator added later inherits
+/// the same default and is not caught here. That gap is structural and tracked
+/// separately - do not read this test as protecting future wrappers.
+#[cfg(test)]
+mod request_attempt_authority_forwarding {
+    use super::*;
+    use std::sync::Arc;
+
+    /// An inner client reporting the NON-default authority, so a wrapper that
+    /// drops the call is distinguishable from one that forwards it. A double
+    /// returning `LegacySplit` would make this test pass either way.
+    #[derive(Debug)]
+    struct UnifiedInner;
+
+    #[async_trait::async_trait]
+    impl AgentLlmClient for UnifiedInner {
+        fn provider(&self) -> meerkat_core::Provider {
+            meerkat_core::Provider::OpenAI
+        }
+
+        fn model(&self) -> &'static str {
+            "gpt-5.5"
+        }
+
+        async fn stream_response(
+            &self,
+            _messages: &[Message],
+            _tools: &[Arc<ToolDef>],
+            _max_tokens: u32,
+            _temperature: Option<f32>,
+            _provider_params: Option<&ProviderParamsOverride>,
+        ) -> Result<meerkat_core::agent::LlmStreamResult, meerkat_core::AgentError> {
+            unreachable!("authority forwarding never streams")
+        }
+
+        fn request_attempt_authority(&self) -> meerkat_core::RequestAttemptAuthority {
+            meerkat_core::RequestAttemptAuthority::Unified
+        }
+    }
+
+    #[test]
+    fn taint_observer_forwards_inner_authority() {
+        let inner = Arc::new(UnifiedInner);
+        let wrapped = TaintObservingLlmClient::new(
+            inner,
+            "authority-forwarding".to_string(),
+            DispatchTaintSlot::default(),
+        );
+        assert_eq!(
+            wrapped.request_attempt_authority(),
+            meerkat_core::RequestAttemptAuthority::Unified,
+            "decorator reported its own authority instead of the wrapped client's; \
+             the default would have made this LegacySplit and silently downgraded \
+             every session it decorates",
+        );
     }
 }
