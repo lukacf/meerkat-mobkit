@@ -116,11 +116,21 @@ nothing.
   **Do not read "4 in 6" as the odds that any given graceful stop hangs.** It is
   a conditional rate under adversarial setup: every one of those runs booted 161
   identities, drove a real OpenAI turn, a real Anthropic turn and a spawn, then
-  SIGTERMed immediately with no idle period. On a second production fleet
-  running real traffic, HomeCore measured **79 restarts, 79 clean**, with no
-  shutdown gap approaching their 480s launchd `ExitTimeOut`. That is closer to a
-  base rate. Candidate axes for the differential are proximity in time between a
-  turn and the shutdown, and fleet size (17 identities against 161). Both are
+  SIGTERMed immediately with no idle period. ob3 also corroborated it in real
+  production: 6 of 9 pod shutdowns in a 30-day window did not complete, with a
+  control ruling out log loss.
+
+  A second fleet (HomeCore) reports 79 restarts with no app-level shutdown
+  failure and no gap approaching their 480s launchd `ExitTimeOut`. Its owner
+  qualified that number themselves and the qualification matters: the bracket
+  measures an ASGI application's lifespan, not `runtime.shutdown()`, and their
+  gateway runs as a separate process, so it **cannot distinguish "no wedge
+  occurred" from "a wedge would have been invisible to this instrument"**. Read
+  it as absence of app-level failures, not as a second fleet failing to
+  reproduce.
+
+  Candidate axes for any differential are proximity in time between a turn and
+  the shutdown, and fleet size (17 identities against 161). Both are
   hypotheses, not findings. Each reproducer is held by its owner.
 
   Two consequences worth carrying forward. Any regression test for this must
