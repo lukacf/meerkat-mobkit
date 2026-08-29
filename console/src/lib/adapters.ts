@@ -4298,6 +4298,13 @@ export function mapFramesToTimelineEntries(
   const entries: ConversationTimelineEntry[] = [];
   const workGraphNamesByCallId = workGraphToolNamesByCallId(orderedFrames);
   const councilArgs = councilArgsByCallId(orderedFrames);
+  // One card per council, not one per result-bearing frame. Both
+  // `tool_result_received` and `tool_execution_completed` can carry the
+  // sealed result, and each parses into an entry with the same
+  // `council:{id}` key - pushing both duplicates the card and collides the
+  // React key. The workgraph fold avoids this by anchoring per card; a
+  // council is a single call, so a seen-set is enough.
+  const emittedCouncilIds = new Set<string>();
   const toolBlocks = buildToolBlocks(orderedFrames, workGraphNamesByCallId);
   const workGraphEntriesByAnchor = buildWorkGraphEntries(agent, orderedFrames, workGraphNamesByCallId);
   const peerRegistry = buildPeerRegistry(orderedFrames);
@@ -4528,6 +4535,8 @@ export function mapFramesToTimelineEntries(
     if (isCouncilToolFrame(frame)) {
       const councilCard = councilEntryFromFrame(frame, agentIdentity(agent), councilArgs);
       if (councilCard) {
+        if (emittedCouncilIds.has(councilCard.councilId)) continue;
+        emittedCouncilIds.add(councilCard.councilId);
         flushPendingReasoning(true);
         flushPendingText();
         entries.push(councilCard);

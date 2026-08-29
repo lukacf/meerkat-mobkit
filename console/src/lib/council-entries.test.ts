@@ -8,6 +8,7 @@ import {
   councilStatusFromExitReason,
   isCouncilToolFrame,
 } from "./council-entries";
+import { conversationEntryText } from "@console-core";
 import type { ConsoleFrame } from "../types";
 
 const IDENTITY = { id: "planner", label: "Planner", role: "assistant" as const };
@@ -227,4 +228,38 @@ test("a replayed council is marked, so a cached answer is not read as a fresh on
   (payload as Record<string, unknown>).replayed = true;
   const entry = councilEntryFromFrame(resultFrame(payload), IDENTITY);
   assert.equal(entry?.replayed, true);
+});
+
+test("copy text is not empty - the card renders fine while copy silently yielded nothing", () => {
+  // Regression: ConversationTimelineEntry falls through to
+  // `copyText || text || blocks`, and a council entry has none of the three.
+  // The card looked correct, which is what made the empty copy easy to miss.
+  const entry = councilEntryFromFrame(resultFrame(sealedResult()), IDENTITY);
+  assert.ok(entry);
+  const text = conversationEntryText(entry);
+  assert.notEqual(text, "");
+  assert.ok(text.includes("completed"));
+});
+
+test("an artifact claim stays marked as a claim in COPIED text", () => {
+  // Pasting a bare uri into a ticket is exactly how an unverified claim
+  // becomes a fact somewhere it cannot be challenged.
+  const payload = sealedResult();
+  const result = (payload as Record<string, unknown>).result as Record<string, unknown>;
+  result.merge = { kind: "bounded_text_summary", text: "done", artifacts: [{ uri: "blob://x" }] };
+  const entry = councilEntryFromFrame(resultFrame(payload), IDENTITY);
+  assert.ok(entry);
+  assert.ok(conversationEntryText(entry).includes("claimed artifact: blob://x"));
+});
+
+test("both result-bearing frame events parse, which is why the adapter must dedupe", () => {
+  // tool_result_received AND tool_execution_completed can each carry the
+  // sealed result and each yields the SAME `council:{id}` key. Pushing both
+  // duplicates the card and collides the React key; the adapter holds a
+  // seen-set. This pins the precondition that makes that necessary.
+  const ids = ["tool_result_received", "tool_execution_completed"].map((event) => {
+    const frame = resultFrame(sealedResult(), { id: event, event });
+    return councilEntryFromFrame(frame, IDENTITY)?.id;
+  });
+  assert.deepEqual(ids, ["council:c-1", "council:c-1"]);
 });

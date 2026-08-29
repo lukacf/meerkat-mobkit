@@ -11,6 +11,7 @@ import { ConversationRichContent } from "./conversation-rich-content";
 import { ConversationConnectionEventView } from "./conversation-connection-event";
 import { FlowRunCard, type FlowRunRestoreHandler } from "./flow-run-card";
 import { SummaryCard } from "./summary-card";
+import { CouncilCard } from "./council-card";
 import { WorkGraphCard, type WorkGraphCardActions } from "./work-graph-card";
 import { CopyButton } from "../copy-button";
 import type { IconRenderer } from "../shared";
@@ -68,6 +69,15 @@ export function ConversationMessageView({
         onRestore={onFlowRunRestore}
       />
     );
+  }
+
+  if (entry.kind === "council") {
+    // The shared render path, not just ChatPane. Without this branch a council
+    // entry falls through to the generic message render and shows NOTHING,
+    // because it carries no text and no blocks - the card would appear in the
+    // app that wires it explicitly and vanish in every other consumer of
+    // ConversationPane.
+    return <CouncilCard entry={entry} Icon={Icon} />;
   }
 
   if (entry.kind === "workgraph") {

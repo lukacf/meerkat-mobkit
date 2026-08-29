@@ -439,6 +439,32 @@ export function conversationEntryText(entry: ConversationTimelineEntry): string 
       .join("\n");
   }
 
+  if (entry.kind === "council") {
+    // Without this branch a council entry falls through to
+    // `copyText || text || blocks`, and it has none of the three - so copy and
+    // transcript surfaces silently yield an empty string. The card renders
+    // fine, which is what makes the absence easy to miss.
+    const participantLines = entry.participants.map((row) => (
+      `${row.role}: ${row.targetIdentity}${row.seated ? "" : " (never seated)"}`
+    ));
+    const exchangeLines = entry.exchanges.map((row) => (
+      `r${row.round + 1} ${row.targetIdentity} — ${row.status}${row.text ? `: ${row.text}` : ""}`
+    ));
+    return [
+      `${entry.topic} (${entry.exitReason}, ${entry.roundsCompleted} rounds)`,
+      entry.exitDetail || "",
+      entry.mergeText || "",
+      ...participantLines,
+      ...exchangeLines,
+      ...(entry.exchangeOverflowCount
+        ? [`+${entry.exchangeOverflowCount} more exchanges`]
+        : []),
+      // Claims stay marked as claims in copied text too: pasting a bare uri
+      // into a ticket is exactly how an unverified claim becomes a fact.
+      ...(entry.artifactClaims || []).map((row) => `claimed artifact: ${row.uri}`),
+    ].filter(Boolean).join("\n");
+  }
+
   if (entry.kind === "workgraph") {
     const itemLines = entry.items.map((item) => (
       `${"  ".repeat(item.depth)}${item.title} — ${item.status.replace(/_/g, " ")}`

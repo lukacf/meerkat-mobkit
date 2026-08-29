@@ -1104,6 +1104,21 @@ function conversationEntryText(entry) {
     const rowLines = entry.rows.map((row) => `${row.label}: ${row.caption}`);
     return [entry.flowName, entry.objective || "", ...rowLines, entry.outcome || ""].filter(Boolean).join("\n");
   }
+  if (entry.kind === "council") {
+    const participantLines = entry.participants.map((row) => `${row.role}: ${row.targetIdentity}${row.seated ? "" : " (never seated)"}`);
+    const exchangeLines = entry.exchanges.map((row) => `r${row.round + 1} ${row.targetIdentity} \u2014 ${row.status}${row.text ? `: ${row.text}` : ""}`);
+    return [
+      `${entry.topic} (${entry.exitReason}, ${entry.roundsCompleted} rounds)`,
+      entry.exitDetail || "",
+      entry.mergeText || "",
+      ...participantLines,
+      ...exchangeLines,
+      ...entry.exchangeOverflowCount ? [`+${entry.exchangeOverflowCount} more exchanges`] : [],
+      // Claims stay marked as claims in copied text too: pasting a bare uri
+      // into a ticket is exactly how an unverified claim becomes a fact.
+      ...(entry.artifactClaims || []).map((row) => `claimed artifact: ${row.uri}`)
+    ].filter(Boolean).join("\n");
+  }
   if (entry.kind === "workgraph") {
     const itemLines = entry.items.map((item) => `${"  ".repeat(item.depth)}${item.title} \u2014 ${item.status.replace(/_/g, " ")}`);
     const attentionLines = entry.attention.map((row) => `${row.mode}: ${row.statusLabel}${row.targetLabel ? ` \u2192 ${row.targetLabel}` : ""}`);
@@ -2786,10 +2801,10 @@ function isNamespacedKind(kind) {
 var import_jsx_runtime4 = require("react/jsx-runtime");
 
 // ../packages/console-components/src/conversation/conversation-pane.tsx
-var import_react6 = require("react");
+var import_react7 = require("react");
 
 // ../packages/console-components/src/conversation/conversation-message-view.tsx
-var import_react5 = require("react");
+var import_react6 = require("react");
 
 // ../packages/console-components/src/conversation/conversation-rich-content.tsx
 var import_react2 = require("react");
@@ -3349,10 +3364,223 @@ var import_jsx_runtime8 = require("react/jsx-runtime");
 // ../packages/console-components/src/conversation/summary-card.tsx
 var import_jsx_runtime9 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/work-graph-card.tsx
+// ../packages/console-components/src/conversation/council-card.tsx
 var import_react4 = require("react");
 var import_jsx_runtime10 = require("react/jsx-runtime");
 var CARD_STATUS_LABEL = {
+  completed: "Concluded",
+  bounded: "Stopped at budget",
+  failed: "Failed",
+  pending: "Unsettled"
+};
+var EXCHANGE_STATUS_LABEL = {
+  pending: "No terminal observed",
+  completed: "Done",
+  failed: "Failed"
+};
+var collapsedCouncilCards = /* @__PURE__ */ new Set();
+function rememberFlag(registry, key, value) {
+  if (value) registry.add(key);
+  else registry.delete(key);
+}
+function exchangeStatusLabel(status) {
+  return EXCHANGE_STATUS_LABEL[status] || status.replace(/_/g, " ");
+}
+function exitReasonLabel(reason) {
+  return reason.replace(/_/g, " ");
+}
+function ParticipantRow({ row }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(
+    "li",
+    {
+      className: `cc-council__participant${row.seated ? "" : " is-unseated"}`,
+      "data-participant-order": row.order,
+      "data-seated": row.seated ? "true" : "false",
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__participant-role", children: row.role }),
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__participant-identity", children: row.targetIdentity }),
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: "cc-council__participant-source", children: [
+          "from ",
+          row.sourceIdentity
+        ] }),
+        row.seated ? null : (
+          // An unseated slot is the usual cause of participant_seating_failed;
+          // it is stated rather than left as an absence for the reader to spot.
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__participant-unseated", children: "never seated" })
+        )
+      ]
+    }
+  );
+}
+function ExchangeRow({ row }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(
+    "li",
+    {
+      className: `cc-council__exchange is-${row.status}`,
+      "data-exchange-status": row.status,
+      "data-round": row.round,
+      "data-sequence": row.sequence,
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: "cc-council__exchange-round", children: [
+          "r",
+          row.round + 1
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__exchange-identity", children: row.targetIdentity }),
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: `cc-council__exchange-status is-${row.status}`, children: exchangeStatusLabel(row.status) }),
+        row.text ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__exchange-text", children: row.text }) : null,
+        row.truncated ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__exchange-truncated", title: "Truncated by the receiver bound", children: "truncated" }) : null
+      ]
+    }
+  );
+}
+function ArtifactClaimRow({ row }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("li", { className: "cc-council__claim", "data-claim-uri": row.uri, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__claim-badge", children: "claimed" }),
+    /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__claim-uri", children: row.uri }),
+    row.mediaType ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__claim-media", children: row.mediaType }) : null,
+    row.digest ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__claim-digest", children: row.digest.slice(0, 12) }) : null
+  ] });
+}
+function CouncilCard({
+  entry,
+  Icon: Icon3
+}) {
+  const [collapsed, setCollapsedState] = (0, import_react4.useState)(() => collapsedCouncilCards.has(entry.id));
+  const setCollapsed = (update) => {
+    setCollapsedState((value) => {
+      const next = update(value);
+      rememberFlag(collapsedCouncilCards, entry.id, next);
+      return next;
+    });
+  };
+  const seated = entry.participants.filter((row) => row.seated).length;
+  const claims = entry.artifactClaims || [];
+  const debts = entry.cleanupDebts || [];
+  const hasBody = entry.participants.length > 0 || entry.exchanges.length > 0 || claims.length > 0 || Boolean(entry.mergeText);
+  return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(
+    "section",
+    {
+      className: `cc-council is-${entry.status}${collapsed ? " is-collapsed" : ""}`,
+      "data-council-card": "",
+      "data-council-id": entry.councilId,
+      "data-status": entry.status,
+      "data-exit-reason": entry.exitReason,
+      "data-testid": `council-card:${entry.councilId}`,
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("header", { className: "cc-council__header", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__mark", "aria-hidden": "true", children: Icon3 ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(Icon3, { name: "i-branch" }) : "\u25CE" }),
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "cc-council__heading", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__title", children: entry.topic }),
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: "cc-council__meta", children: [
+              entry.participants.length,
+              " participant",
+              entry.participants.length === 1 ? "" : "s",
+              " \xB7 ",
+              entry.roundsCompleted,
+              " round",
+              entry.roundsCompleted === 1 ? "" : "s",
+              " \xB7 ",
+              entry.exchanges.length + (entry.exchangeOverflowCount || 0),
+              " exchange",
+              entry.exchanges.length + (entry.exchangeOverflowCount || 0) === 1 ? "" : "s"
+            ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+            "span",
+            {
+              className: `cc-council__badge is-${entry.status}`,
+              title: `exit_reason: ${entry.exitReason}`,
+              children: CARD_STATUS_LABEL[entry.status]
+            }
+          ),
+          entry.replayed ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+            "span",
+            {
+              className: "cc-council__replayed",
+              title: "Answered from an existing sealed result; no new council ran",
+              children: "replayed"
+            }
+          ) : null,
+          hasBody ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+            "button",
+            {
+              type: "button",
+              className: "cc-council__toggle",
+              "aria-expanded": !collapsed,
+              onClick: () => setCollapsed((value) => !value),
+              children: collapsed ? "Show" : "Hide"
+            }
+          ) : null
+        ] }),
+        entry.status === "failed" || entry.status === "pending" ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("p", { className: "cc-council__failure", role: "note", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__failure-reason", children: exitReasonLabel(entry.exitReason) }),
+          entry.exitDetail ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__failure-detail", children: entry.exitDetail }) : null
+        ] }) : null,
+        debts.length > 0 || entry.cleanupBudgetExhausted ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("p", { className: "cc-council__cleanup", role: "note", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__cleanup-label", children: "cleanup outstanding" }),
+          entry.cleanupBudgetExhausted ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__cleanup-budget", children: "budget exhausted" }) : null,
+          debts.map((debt) => /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: "cc-council__cleanup-debt", children: [
+            debt.subject,
+            ": ",
+            debt.detail
+          ] }, `${debt.subject}:${debt.detail}`))
+        ] }) : null,
+        collapsed || !hasBody ? null : /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "cc-council__body", children: [
+          entry.mergeText ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "cc-council__merge", "data-merge-kind": entry.mergeKind || "", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__merge-label", children: entry.mergeFinalizer ? `Summary by ${entry.mergeFinalizer}` : "Summary" }),
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("p", { className: "cc-council__merge-text", children: entry.mergeText }),
+            entry.mergeTruncated ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__merge-truncated", children: "truncated" }) : null
+          ] }) : null,
+          entry.mergeKind === "no_merge" && !entry.mergeText ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("p", { className: "cc-council__no-merge", children: "Observation only: the merge policy returned provenance and confirmation, no content." }) : null,
+          entry.participants.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "cc-council__section", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: "cc-council__section-label", children: [
+              "Participants (",
+              seated,
+              "/",
+              entry.participants.length,
+              " seated)"
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("ul", { className: "cc-council__participants", children: entry.participants.map((row) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(ParticipantRow, { row }, row.order)) })
+          ] }) : null,
+          entry.exchanges.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "cc-council__section", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__section-label", children: "Exchanges" }),
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("ul", { className: "cc-council__exchanges", children: entry.exchanges.map((row) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(ExchangeRow, { row }, `${row.round}:${row.sequence}`)) }),
+            entry.exchangeOverflowCount ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: "cc-council__overflow", children: [
+              "+",
+              entry.exchangeOverflowCount,
+              " more exchange",
+              entry.exchangeOverflowCount === 1 ? "" : "s"
+            ] }) : null
+          ] }) : null,
+          claims.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "cc-council__section", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__section-label", children: "Artifact claims (reported by participants, not verified)" }),
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("ul", { className: "cc-council__claims", children: claims.map((row) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(ArtifactClaimRow, { row }, row.uri)) })
+          ] }) : null,
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "cc-council__footer", children: [
+            entry.durability ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+              "span",
+              {
+                className: "cc-council__durability",
+                title: entry.durability === "process_bound" ? "Process-bound: this council does not survive a gateway restart" : "Durable: recorded in the realm orchestration store",
+                children: entry.durability.replace(/_/g, " ")
+              }
+            ) : null,
+            entry.truncatedExchangeCount ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: "cc-council__truncated-count", children: [
+              entry.truncatedExchangeCount,
+              " truncated"
+            ] }) : null,
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-council__id", children: entry.councilId })
+          ] })
+        ] })
+      ]
+    }
+  );
+}
+
+// ../packages/console-components/src/conversation/work-graph-card.tsx
+var import_react5 = require("react");
+var import_jsx_runtime11 = require("react/jsx-runtime");
+var CARD_STATUS_LABEL2 = {
   active: "Active",
   blocked: "Blocked",
   completed: "Done",
@@ -3369,7 +3597,7 @@ var ITEM_STATUS_LABEL = {
 };
 var expandedWorkGraphItems = /* @__PURE__ */ new Set();
 var collapsedWorkGraphCards = /* @__PURE__ */ new Set();
-function rememberFlag(registry, key, value) {
+function rememberFlag2(registry, key, value) {
   if (value) registry.add(key);
   else registry.delete(key);
 }
@@ -3396,11 +3624,11 @@ function ItemRow({
   row,
   actions
 }) {
-  const [expanded, setExpandedState] = (0, import_react4.useState)(() => expandedWorkGraphItems.has(row.itemId));
+  const [expanded, setExpandedState] = (0, import_react5.useState)(() => expandedWorkGraphItems.has(row.itemId));
   const setExpanded = (update) => {
     setExpandedState((value) => {
       const next = update(value);
-      rememberFlag(expandedWorkGraphItems, row.itemId, next);
+      rememberFlag2(expandedWorkGraphItems, row.itemId, next);
       return next;
     });
   };
@@ -3409,7 +3637,7 @@ function ItemRow({
   const canClaim = Boolean(actions?.onClaim) && row.status === "open" && !row.ownerLabel;
   const canClose = Boolean(actions?.onClose) && !terminal && row.status !== "blocked";
   const dueDay = formatDay(row.dueAt);
-  return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)(
     "li",
     {
       className: `cc-work-graph__item is-${row.status}${expanded ? " is-expanded" : ""}`,
@@ -3417,8 +3645,8 @@ function ItemRow({
       "data-item-status": row.status,
       "data-revision": row.revision,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "cc-work-graph__item-line", style: { paddingLeft: `${row.depth * 18}px` }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "cc-work-graph__item-line", style: { paddingLeft: `${row.depth * 18}px` }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)(
             "button",
             {
               type: "button",
@@ -3428,17 +3656,17 @@ function ItemRow({
               onClick: hasDetail ? () => setExpanded((value) => !value) : void 0,
               "data-testid": `workgraph-item:${row.itemId}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: `cc-work-graph__dot is-${row.status}`, "aria-hidden": "true" }),
-                /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__item-title", children: row.title }),
-                row.priority && row.priority !== "medium" ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: `cc-work-graph__chip is-priority-${row.priority}`, children: row.priority }) : null,
-                row.ownerLabel ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__chip is-owner", title: `Owned by ${row.ownerLabel}`, children: row.ownerLabel }) : null,
-                row.blocked ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__chip is-blocked", children: "blocked" }) : null,
-                dueDay ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__chip is-due", title: "Due date", children: dueDay }) : null,
-                hasDetail ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__item-chevron", "aria-hidden": "true", children: expanded ? "\u25BE" : "\u25B8" }) : /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__item-status", children: itemStatusLabel(row.status) })
+                /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: `cc-work-graph__dot is-${row.status}`, "aria-hidden": "true" }),
+                /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__item-title", children: row.title }),
+                row.priority && row.priority !== "medium" ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: `cc-work-graph__chip is-priority-${row.priority}`, children: row.priority }) : null,
+                row.ownerLabel ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__chip is-owner", title: `Owned by ${row.ownerLabel}`, children: row.ownerLabel }) : null,
+                row.blocked ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__chip is-blocked", children: "blocked" }) : null,
+                dueDay ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__chip is-due", title: "Due date", children: dueDay }) : null,
+                hasDetail ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__item-chevron", "aria-hidden": "true", children: expanded ? "\u25BE" : "\u25B8" }) : /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__item-status", children: itemStatusLabel(row.status) })
               ]
             }
           ),
-          canClaim ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+          canClaim ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
             "button",
             {
               type: "button",
@@ -3452,7 +3680,7 @@ function ItemRow({
               children: "Claim"
             }
           ) : null,
-          canClose ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+          canClose ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
             "button",
             {
               type: "button",
@@ -3467,9 +3695,9 @@ function ItemRow({
             }
           ) : null
         ] }),
-        hasDetail && expanded ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "cc-work-graph__item-detail", style: { marginLeft: `${row.depth * 18 + 25}px` }, children: [
-          row.description ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("p", { className: "cc-work-graph__item-description", children: row.description }) : null,
-          row.alsoUnder && row.alsoUnder.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(
+        hasDetail && expanded ? /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "cc-work-graph__item-detail", style: { marginLeft: `${row.depth * 18 + 25}px` }, children: [
+          row.description ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("p", { className: "cc-work-graph__item-description", children: row.description }) : null,
+          row.alsoUnder && row.alsoUnder.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)(
             "p",
             {
               className: "cc-work-graph__item-also-under",
@@ -3480,15 +3708,15 @@ function ItemRow({
               ]
             }
           ) : null,
-          row.labels && row.labels.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "cc-work-graph__item-labels", children: row.labels.map((label) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__chip is-label", children: label }, label)) }) : null,
-          row.evidence && row.evidence.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("ul", { className: "cc-work-graph__evidence", children: row.evidence.map((line, index) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("li", { children: line }, `${line}-${index}`)) }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "cc-work-graph__item-meta", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { children: itemStatusLabel(row.status) }),
-            typeof row.revision === "number" ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { children: [
+          row.labels && row.labels.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "cc-work-graph__item-labels", children: row.labels.map((label) => /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__chip is-label", children: label }, label)) }) : null,
+          row.evidence && row.evidence.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("ul", { className: "cc-work-graph__evidence", children: row.evidence.map((line, index) => /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("li", { children: line }, `${line}-${index}`)) }) : null,
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "cc-work-graph__item-meta", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { children: itemStatusLabel(row.status) }),
+            typeof row.revision === "number" ? /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("span", { children: [
               "rev ",
               row.revision
             ] }) : null,
-            row.updatedAt ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { children: [
+            row.updatedAt ? /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("span", { children: [
               "updated ",
               formatDay(row.updatedAt),
               " ",
@@ -3555,17 +3783,17 @@ function AttentionRow({
       onClick: () => actions.onAttentionReassign?.(bindingInput)
     });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)(
     "li",
     {
       className: `cc-work-graph__attention-row${attentionIsPaused(row) ? " is-paused" : ""}`,
       "data-workgraph-binding": row.bindingId,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: `cc-work-graph__mode is-${row.mode}`, children: row.mode }),
-        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__attention-status", children: row.statusLabel }),
-        row.targetLabel ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__attention-target", title: "Attention target", children: row.targetLabel }) : null,
-        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__attention-spacer" }),
-        buttons.map((button) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: `cc-work-graph__mode is-${row.mode}`, children: row.mode }),
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__attention-status", children: row.statusLabel }),
+        row.targetLabel ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__attention-target", title: "Attention target", children: row.targetLabel }) : null,
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__attention-spacer" }),
+        buttons.map((button) => /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
           "button",
           {
             type: "button",
@@ -3590,11 +3818,11 @@ function WorkGraphCard({
   actions = null
 }) {
   const uiStateKey = entry.uiStateKey || entry.id;
-  const [collapsed, setCollapsedState] = (0, import_react4.useState)(() => collapsedWorkGraphCards.has(uiStateKey));
+  const [collapsed, setCollapsedState] = (0, import_react5.useState)(() => collapsedWorkGraphCards.has(uiStateKey));
   const setCollapsed = (update) => {
     setCollapsedState((value) => {
       const next = update(value);
-      rememberFlag(collapsedWorkGraphCards, uiStateKey, next);
+      rememberFlag2(collapsedWorkGraphCards, uiStateKey, next);
       return next;
     });
   };
@@ -3603,7 +3831,7 @@ function WorkGraphCard({
   const hasBody = entry.items.length > 0 || entry.attention.length > 0 || Boolean(entry.recentEvents && entry.recentEvents.length > 0);
   const revisionByItemId = new Map(entry.items.map((row) => [row.itemId, row.revision]));
   const goalRevisionFor = (row) => row.itemId != null ? revisionByItemId.get(row.itemId) : void 0;
-  return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)(
     "section",
     {
       className: `cc-work-graph is-${entry.status}${collapsed ? " is-collapsed" : ""}`,
@@ -3612,13 +3840,13 @@ function WorkGraphCard({
       "data-status": entry.status,
       "data-testid": `workgraph-card:${entry.rootId}`,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("header", { className: "cc-work-graph__header", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__mark", "aria-hidden": "true", children: Icon3 ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(Icon3, { name: "i-cube" }) : "\u25C8" }),
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "cc-work-graph__heading", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__title", children: entry.title }),
-            entry.objective ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__objective", children: entry.objective }) : null
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("header", { className: "cc-work-graph__header", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__mark", "aria-hidden": "true", children: Icon3 ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(Icon3, { name: "i-cube" }) : "\u25C8" }),
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "cc-work-graph__heading", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__title", children: entry.title }),
+            entry.objective ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__objective", children: entry.objective }) : null
           ] }),
-          total > 0 ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(
+          total > 0 ? /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)(
             "div",
             {
               className: "cc-work-graph__progress",
@@ -3628,20 +3856,20 @@ function WorkGraphCard({
               "aria-valuenow": completed,
               "aria-label": `${completed} of ${total} work items completed`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: "cc-work-graph__progress-count", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("span", { className: "cc-work-graph__progress-count", children: [
                   completed,
                   "/",
                   total
                 ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__progress-track", children: /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__progress-fill", style: { width: `${percent}%` } }) })
+                /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__progress-track", children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__progress-fill", style: { width: `${percent}%` } }) })
               ]
             }
           ) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: `cc-work-graph__badge is-${entry.status}`, children: [
-            entry.status === "active" ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "cc-work-graph__pulse", "aria-hidden": "true" }) : null,
-            CARD_STATUS_LABEL[entry.status]
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("span", { className: `cc-work-graph__badge is-${entry.status}`, children: [
+            entry.status === "active" ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "cc-work-graph__pulse", "aria-hidden": "true" }) : null,
+            CARD_STATUS_LABEL2[entry.status]
           ] }),
-          entry.lastActionFailed ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+          entry.lastActionFailed ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
             "span",
             {
               className: "cc-work-graph__last-failed",
@@ -3650,7 +3878,7 @@ function WorkGraphCard({
               children: "\u2717"
             }
           ) : null,
-          hasBody ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+          hasBody ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
             "button",
             {
               type: "button",
@@ -3663,9 +3891,9 @@ function WorkGraphCard({
             }
           ) : null
         ] }),
-        !collapsed && entry.items.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("ul", { className: "cc-work-graph__items", children: [
-          entry.items.map((row) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(ItemRow, { row, actions }, row.itemId)),
-          typeof entry.itemOverflowCount === "number" && entry.itemOverflowCount > 0 ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(
+        !collapsed && entry.items.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("ul", { className: "cc-work-graph__items", children: [
+          entry.items.map((row) => /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(ItemRow, { row, actions }, row.itemId)),
+          typeof entry.itemOverflowCount === "number" && entry.itemOverflowCount > 0 ? /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)(
             "li",
             {
               className: "cc-work-graph__overflow",
@@ -3678,7 +3906,7 @@ function WorkGraphCard({
             }
           ) : null
         ] }) : null,
-        !collapsed && entry.attention.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("ul", { className: "cc-work-graph__attention", children: entry.attention.map((row) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+        !collapsed && entry.attention.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("ul", { className: "cc-work-graph__attention", children: entry.attention.map((row) => /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
           AttentionRow,
           {
             row,
@@ -3687,242 +3915,29 @@ function WorkGraphCard({
           },
           row.bindingId
         )) }) : null,
-        !collapsed && entry.recentEvents && entry.recentEvents.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "cc-work-graph__events", children: entry.recentEvents.map((line, index) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "cc-work-graph__event", children: line }, `${line}-${index}`)) }) : null
+        !collapsed && entry.recentEvents && entry.recentEvents.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "cc-work-graph__events", children: entry.recentEvents.map((line, index) => /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "cc-work-graph__event", children: line }, `${line}-${index}`)) }) : null
       ]
     }
   );
 }
 
 // ../packages/console-components/src/conversation/conversation-message-view.tsx
-var import_jsx_runtime11 = require("react/jsx-runtime");
-
-// ../packages/console-components/src/conversation/conversation-message-group.tsx
 var import_jsx_runtime12 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/turn-diff-card.tsx
+// ../packages/console-components/src/conversation/conversation-message-group.tsx
 var import_jsx_runtime13 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/conversation-transcript.tsx
+// ../packages/console-components/src/conversation/turn-diff-card.tsx
 var import_jsx_runtime14 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/conversation-pane.tsx
+// ../packages/console-components/src/conversation/conversation-transcript.tsx
 var import_jsx_runtime15 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/console-conversation-panel.tsx
+// ../packages/console-components/src/conversation/conversation-pane.tsx
 var import_jsx_runtime16 = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/council-card.tsx
-var import_react7 = require("react");
+// ../packages/console-components/src/conversation/console-conversation-panel.tsx
 var import_jsx_runtime17 = require("react/jsx-runtime");
-var CARD_STATUS_LABEL2 = {
-  completed: "Concluded",
-  bounded: "Stopped at budget",
-  failed: "Failed",
-  pending: "Unsettled"
-};
-var EXCHANGE_STATUS_LABEL = {
-  pending: "No terminal observed",
-  completed: "Done",
-  failed: "Failed"
-};
-var collapsedCouncilCards = /* @__PURE__ */ new Set();
-function rememberFlag2(registry, key, value) {
-  if (value) registry.add(key);
-  else registry.delete(key);
-}
-function exchangeStatusLabel(status) {
-  return EXCHANGE_STATUS_LABEL[status] || status.replace(/_/g, " ");
-}
-function exitReasonLabel(reason) {
-  return reason.replace(/_/g, " ");
-}
-function ParticipantRow({ row }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)(
-    "li",
-    {
-      className: `cc-council__participant${row.seated ? "" : " is-unseated"}`,
-      "data-participant-order": row.order,
-      "data-seated": row.seated ? "true" : "false",
-      children: [
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__participant-role", children: row.role }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__participant-identity", children: row.targetIdentity }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("span", { className: "cc-council__participant-source", children: [
-          "from ",
-          row.sourceIdentity
-        ] }),
-        row.seated ? null : (
-          // An unseated slot is the usual cause of participant_seating_failed;
-          // it is stated rather than left as an absence for the reader to spot.
-          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__participant-unseated", children: "never seated" })
-        )
-      ]
-    }
-  );
-}
-function ExchangeRow({ row }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)(
-    "li",
-    {
-      className: `cc-council__exchange is-${row.status}`,
-      "data-exchange-status": row.status,
-      "data-round": row.round,
-      "data-sequence": row.sequence,
-      children: [
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("span", { className: "cc-council__exchange-round", children: [
-          "r",
-          row.round + 1
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__exchange-identity", children: row.targetIdentity }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: `cc-council__exchange-status is-${row.status}`, children: exchangeStatusLabel(row.status) }),
-        row.text ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__exchange-text", children: row.text }) : null,
-        row.truncated ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__exchange-truncated", title: "Truncated by the receiver bound", children: "truncated" }) : null
-      ]
-    }
-  );
-}
-function ArtifactClaimRow({ row }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { className: "cc-council__claim", "data-claim-uri": row.uri, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__claim-badge", children: "claimed" }),
-    /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__claim-uri", children: row.uri }),
-    row.mediaType ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__claim-media", children: row.mediaType }) : null,
-    row.digest ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__claim-digest", children: row.digest.slice(0, 12) }) : null
-  ] });
-}
-function CouncilCard({
-  entry,
-  Icon: Icon3
-}) {
-  const [collapsed, setCollapsedState] = (0, import_react7.useState)(() => collapsedCouncilCards.has(entry.id));
-  const setCollapsed = (update) => {
-    setCollapsedState((value) => {
-      const next = update(value);
-      rememberFlag2(collapsedCouncilCards, entry.id, next);
-      return next;
-    });
-  };
-  const seated = entry.participants.filter((row) => row.seated).length;
-  const claims = entry.artifactClaims || [];
-  const debts = entry.cleanupDebts || [];
-  const hasBody = entry.participants.length > 0 || entry.exchanges.length > 0 || claims.length > 0 || Boolean(entry.mergeText);
-  return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)(
-    "section",
-    {
-      className: `cc-council is-${entry.status}${collapsed ? " is-collapsed" : ""}`,
-      "data-council-card": "",
-      "data-council-id": entry.councilId,
-      "data-status": entry.status,
-      "data-exit-reason": entry.exitReason,
-      "data-testid": `council-card:${entry.councilId}`,
-      children: [
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("header", { className: "cc-council__header", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__mark", "aria-hidden": "true", children: Icon3 ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(Icon3, { name: "i-branch" }) : "\u25CE" }),
-          /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "cc-council__heading", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__title", children: entry.topic }),
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("span", { className: "cc-council__meta", children: [
-              entry.participants.length,
-              " participant",
-              entry.participants.length === 1 ? "" : "s",
-              " \xB7 ",
-              entry.roundsCompleted,
-              " round",
-              entry.roundsCompleted === 1 ? "" : "s",
-              " \xB7 ",
-              entry.exchanges.length + (entry.exchangeOverflowCount || 0),
-              " exchange",
-              entry.exchanges.length + (entry.exchangeOverflowCount || 0) === 1 ? "" : "s"
-            ] })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-            "span",
-            {
-              className: `cc-council__badge is-${entry.status}`,
-              title: `exit_reason: ${entry.exitReason}`,
-              children: CARD_STATUS_LABEL2[entry.status]
-            }
-          ),
-          entry.replayed ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-            "span",
-            {
-              className: "cc-council__replayed",
-              title: "Answered from an existing sealed result; no new council ran",
-              children: "replayed"
-            }
-          ) : null,
-          hasBody ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-            "button",
-            {
-              type: "button",
-              className: "cc-council__toggle",
-              "aria-expanded": !collapsed,
-              onClick: () => setCollapsed((value) => !value),
-              children: collapsed ? "Show" : "Hide"
-            }
-          ) : null
-        ] }),
-        entry.status === "failed" || entry.status === "pending" ? /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("p", { className: "cc-council__failure", role: "note", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__failure-reason", children: exitReasonLabel(entry.exitReason) }),
-          entry.exitDetail ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__failure-detail", children: entry.exitDetail }) : null
-        ] }) : null,
-        debts.length > 0 || entry.cleanupBudgetExhausted ? /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("p", { className: "cc-council__cleanup", role: "note", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__cleanup-label", children: "cleanup outstanding" }),
-          entry.cleanupBudgetExhausted ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__cleanup-budget", children: "budget exhausted" }) : null,
-          debts.map((debt) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("span", { className: "cc-council__cleanup-debt", children: [
-            debt.subject,
-            ": ",
-            debt.detail
-          ] }, `${debt.subject}:${debt.detail}`))
-        ] }) : null,
-        collapsed || !hasBody ? null : /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "cc-council__body", children: [
-          entry.mergeText ? /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "cc-council__merge", "data-merge-kind": entry.mergeKind || "", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__merge-label", children: entry.mergeFinalizer ? `Summary by ${entry.mergeFinalizer}` : "Summary" }),
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("p", { className: "cc-council__merge-text", children: entry.mergeText }),
-            entry.mergeTruncated ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__merge-truncated", children: "truncated" }) : null
-          ] }) : null,
-          entry.mergeKind === "no_merge" && !entry.mergeText ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("p", { className: "cc-council__no-merge", children: "Observation only: the merge policy returned provenance and confirmation, no content." }) : null,
-          entry.participants.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "cc-council__section", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("span", { className: "cc-council__section-label", children: [
-              "Participants (",
-              seated,
-              "/",
-              entry.participants.length,
-              " seated)"
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "cc-council__participants", children: entry.participants.map((row) => /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(ParticipantRow, { row }, row.order)) })
-          ] }) : null,
-          entry.exchanges.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "cc-council__section", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__section-label", children: "Exchanges" }),
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "cc-council__exchanges", children: entry.exchanges.map((row) => /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(ExchangeRow, { row }, `${row.round}:${row.sequence}`)) }),
-            entry.exchangeOverflowCount ? /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("span", { className: "cc-council__overflow", children: [
-              "+",
-              entry.exchangeOverflowCount,
-              " more exchange",
-              entry.exchangeOverflowCount === 1 ? "" : "s"
-            ] }) : null
-          ] }) : null,
-          claims.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "cc-council__section", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__section-label", children: "Artifact claims (reported by participants, not verified)" }),
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "cc-council__claims", children: claims.map((row) => /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(ArtifactClaimRow, { row }, row.uri)) })
-          ] }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "cc-council__footer", children: [
-            entry.durability ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-              "span",
-              {
-                className: "cc-council__durability",
-                title: entry.durability === "process_bound" ? "Process-bound: this council does not survive a gateway restart" : "Durable: recorded in the realm orchestration store",
-                children: entry.durability.replace(/_/g, " ")
-              }
-            ) : null,
-            entry.truncatedExchangeCount ? /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("span", { className: "cc-council__truncated-count", children: [
-              entry.truncatedExchangeCount,
-              " truncated"
-            ] }) : null,
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "cc-council__id", children: entry.councilId })
-          ] })
-        ] })
-      ]
-    }
-  );
-}
 
 // ../packages/console-components/src/dock/console-dock.tsx
 var import_react8 = require("react");
@@ -9568,6 +9583,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   const entries = [];
   const workGraphNamesByCallId = workGraphToolNamesByCallId(orderedFrames);
   const councilArgs = councilArgsByCallId(orderedFrames);
+  const emittedCouncilIds = /* @__PURE__ */ new Set();
   const toolBlocks = buildToolBlocks(orderedFrames, workGraphNamesByCallId);
   const workGraphEntriesByAnchor = buildWorkGraphEntries(agent, orderedFrames, workGraphNamesByCallId);
   const peerRegistry = buildPeerRegistry(orderedFrames);
@@ -9779,6 +9795,8 @@ ${text.trimStart()}`;
     if (isCouncilToolFrame(frame)) {
       const councilCard = councilEntryFromFrame(frame, agentIdentity(agent), councilArgs);
       if (councilCard) {
+        if (emittedCouncilIds.has(councilCard.councilId)) continue;
+        emittedCouncilIds.add(councilCard.councilId);
         flushPendingReasoning(true);
         flushPendingText();
         entries.push(councilCard);
