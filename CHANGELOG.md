@@ -120,18 +120,17 @@ nothing.
   production: 6 of 9 pod shutdowns in a 30-day window did not complete, with a
   control ruling out log loss.
 
-  A second fleet (HomeCore) reports 79 restarts with no app-level shutdown
-  failure and no gap approaching their 480s launchd `ExitTimeOut`. Its owner
-  qualified that number themselves and the qualification matters: the bracket
-  measures an ASGI application's lifespan, not `runtime.shutdown()`, and their
-  gateway runs as a separate process, so it **cannot distinguish "no wedge
-  occurred" from "a wedge would have been invisible to this instrument"**. Read
-  it as absence of app-level failures, not as a second fleet failing to
-  reproduce.
+  **There is no second-fleet counter-datum.** An earlier draft of this entry
+  cited a second fleet's 79 clean restarts. Its owner retracted that measurement
+  outright: the sample was from July, on versions no longer running, under a
+  since-replaced deploy path, and the fleet has emitted no graceful-shutdown
+  marker at all in the current era. It is withdrawn rather than weakened, and
+  nothing here rests on it.
 
-  Candidate axes for any differential are proximity in time between a turn and
-  the shutdown, and fleet size (17 identities against 161). Both are
-  hypotheses, not findings. Each reproducer is held by its owner.
+  So no fleet-shape hypothesis is offered either. The one previously carried
+  here - fleet size, 17 identities against 161 - existed only to explain a
+  discrepancy between two fleets, and it does not survive the discrepancy being
+  withdrawn. The reproducer is held by its owner.
 
   Two consequences worth carrying forward. Any regression test for this must
   **repeat rather than sample** - a single green run has roughly a 1 in 3 chance
