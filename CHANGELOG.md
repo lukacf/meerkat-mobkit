@@ -123,9 +123,11 @@ nothing.
   **There is no second-fleet counter-datum.** An earlier draft of this entry
   cited a second fleet's 79 clean restarts. Its owner retracted that measurement
   outright: the sample was from July, on versions no longer running, under a
-  since-replaced deploy path, and the fleet has emitted no graceful-shutdown
-  marker at all in the current era. It is withdrawn rather than weakened, and
-  nothing here rests on it.
+  since-replaced deploy path. Their instrument then stopped emitting in mid-July
+  - startup and shutdown lines disappeared together, which is a logging change
+  rather than a behaviour change - so that fleet's current shutdown behaviour is
+  simply **unobserved**, in either direction. It is withdrawn rather than
+  weakened, and nothing here rests on it.
 
   So no fleet-shape hypothesis is offered either. The one previously carried
   here - fleet size, 17 identities against 161 - existed only to explain a
