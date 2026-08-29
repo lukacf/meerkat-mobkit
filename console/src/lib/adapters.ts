@@ -1,3 +1,8 @@
+import {
+  councilArgsByCallId,
+  councilEntryFromFrame,
+  isCouncilToolFrame,
+} from "./council-entries";
 import type {
   ActivityFilterPreset,
   ConsoleActivityPulseItem,
@@ -4292,6 +4297,14 @@ export function mapFramesToTimelineEntries(
     : frames;
   const entries: ConversationTimelineEntry[] = [];
   const workGraphNamesByCallId = workGraphToolNamesByCallId(orderedFrames);
+  const councilArgs = councilArgsByCallId(orderedFrames);
+  // One card per council, not one per result-bearing frame. Both
+  // `tool_result_received` and `tool_execution_completed` can carry the
+  // sealed result, and each parses into an entry with the same
+  // `council:{id}` key - pushing both duplicates the card and collides the
+  // React key. The workgraph fold avoids this by anchoring per card; a
+  // council is a single call, so a seen-set is enough.
+  const emittedCouncilIds = new Set<string>();
   const toolBlocks = buildToolBlocks(orderedFrames, workGraphNamesByCallId);
   const workGraphEntriesByAnchor = buildWorkGraphEntries(agent, orderedFrames, workGraphNamesByCallId);
   const peerRegistry = buildPeerRegistry(orderedFrames);
@@ -4511,6 +4524,31 @@ export function mapFramesToTimelineEntries(
         entries.push(imageEntry);
       }
       continue;
+    }
+
+    // Council tool frames render as one inline card per council - never as
+    // generic tool rows. A council is a single synchronous call, so the card
+    // is emitted at the frame carrying the sealed result; the request frames
+    // are suppressed but contribute the topic via `councilArgs`. When the
+    // result cannot be parsed no card is emitted and the call falls back to
+    // an ordinary tool row rather than vanishing from the conversation.
+    if (isCouncilToolFrame(frame)) {
+      const councilCard = councilEntryFromFrame(frame, agentIdentity(agent), councilArgs);
+      if (councilCard) {
+        if (emittedCouncilIds.has(councilCard.councilId)) continue;
+        emittedCouncilIds.add(councilCard.councilId);
+        flushPendingReasoning(true);
+        flushPendingText();
+        entries.push(councilCard);
+        continue;
+      }
+      const councilRecord = frame.data && typeof frame.data === "object"
+        ? frame.data as Record<string, unknown>
+        : null;
+      // Suppress the request-side frames regardless: they carry no result to
+      // fall back to, and leaving them would render a bare "council" tool row
+      // beside the card built from the completion frame.
+      if (!councilRecord || councilRecord.result === undefined) continue;
     }
 
     // WorkGraph tool frames render as one evolving inline card per goal/root

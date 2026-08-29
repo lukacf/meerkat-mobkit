@@ -8275,3 +8275,58 @@ test("legacy console-interaction ids keep the text heuristic (same interaction, 
   const replyEntries = entries.filter((e) => entryVisibleTestText(e).includes("Same reply."));
   assert.equal(replyEntries.length, 1, JSON.stringify(entries, null, 2));
 });
+
+test("a council emits ONE card even when two frames each carry the sealed result", () => {
+  // Regression: tool_result_received AND tool_execution_completed can each
+  // carry the result, and each parses to the same `council:{id}` key. Without
+  // a dedupe the adapter pushed both - duplicate cards and a colliding React
+  // key. Reverting the dedupe must fail HERE; the fold tests only pin that
+  // both frames parse, which is the precondition, not the behaviour.
+  const sealed = {
+    result: {
+      council_id: "c-dupe",
+      exit_reason: { reason: "completed" },
+      rounds_completed: 1,
+      participants: [],
+      exchanges: [],
+      merge: { kind: "no_merge" },
+    },
+    cleanup: { debts: [] },
+    replayed: false,
+  };
+  const entries = mapFramesToTimelineEntries(
+    { agent_id: "planner", member_id: "planner", label: "Planner", kind: "identity" },
+    [
+      {
+        id: "evt-1",
+        event: "tool_call",
+        data: {
+          name: "council",
+          tool_call_id: "call-1",
+          arguments: JSON.stringify({ topic: "Ship or hold?", participants: [] }),
+        },
+      },
+      {
+        id: "evt-2",
+        event: "tool_result_received",
+        data: { name: "council", tool_call_id: "call-1", result: sealed },
+      },
+      {
+        id: "evt-3",
+        event: "tool_execution_completed",
+        data: { name: "council", tool_call_id: "call-1", result: sealed },
+      },
+    ] as never,
+  );
+
+  const councils = entries.filter((entry) => entry.kind === "council");
+  assert.equal(councils.length, 1, "exactly one council card");
+  assert.equal(new Set(councils.map((entry) => entry.id)).size, 1);
+  // The topic comes from the CALL frame, so the fold must still see it.
+  assert.equal((councils[0] as { topic: string }).topic, "Ship or hold?");
+  // And no bare "council" tool row survives beside the card.
+  const toolRows = entries.filter((entry) => (
+    entry.kind === "message" && JSON.stringify(entry).includes('"name":"council"')
+  ));
+  assert.equal(toolRows.length, 0, "the raw council tool call is suppressed");
+});

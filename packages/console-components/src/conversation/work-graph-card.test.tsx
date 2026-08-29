@@ -1,9 +1,10 @@
+import React from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { vi } from "vitest";
 
 import type { ConversationWorkGraphEntry } from "@console-core";
 
-import { WorkGraphCard } from "./work-graph-card";
+import { WorkGraphCard, __workGraphCardUiState } from "./work-graph-card";
 
 function entryFixture(overrides: Partial<ConversationWorkGraphEntry> = {}): ConversationWorkGraphEntry {
   return {
@@ -59,13 +60,19 @@ function entryFixture(overrides: Partial<ConversationWorkGraphEntry> = {}): Conv
 }
 
 describe("WorkGraphCard", () => {
+  beforeEach(() => {
+    __workGraphCardUiState.reset();
+  });
+
   test("renders the goal header, progress, status badge, item tree, and attention modes", () => {
     render(<WorkGraphCard entry={entryFixture()} />);
 
     const card = screen.getByTestId("workgraph-card:goal-1");
     expect(card).toHaveAttribute("data-status", "active");
     expect(card).toHaveAttribute("data-root-id", "goal-1");
-    expect(screen.getByText("Release 0.7.30")).toBeInTheDocument();
+    expect(card.querySelector(".cc-work-graph__title")).toHaveTextContent("Release 0.7.30");
+    // The same title also appears as the root item row, which is why a bare
+    // getByText is ambiguous here - assert the header slot, not "somewhere".
     expect(screen.getByText("Ship WorkGraph end to end")).toBeInTheDocument();
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "1");
     expect(screen.getByText("1/3")).toBeInTheDocument();
@@ -86,7 +93,7 @@ describe("WorkGraphCard", () => {
     );
     expect(screen.getByTestId("workgraph-card:goal-1")).toHaveAttribute("data-status", "completed");
     expect(container.querySelector(".cc-work-graph__pulse")).toBeNull();
-    expect(screen.getByText("Done")).toBeInTheDocument();
+    expect(container.querySelector(".cc-work-graph__badge")).toHaveTextContent("Done");
   });
 
   test("renders blocked state with blocked markers", () => {

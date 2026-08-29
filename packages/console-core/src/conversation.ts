@@ -217,11 +217,121 @@ export interface ConversationWorkGraphEntry extends ConversationTimelineEntryBas
   lastUpdatedAt?: string;
 }
 
+/// Terminal classification of one council, derived from the sealed result's
+/// `exit_reason` tag. This is deliberately COARSER than the wire enum: the
+/// card shows an operator whether the council produced a usable answer, and
+/// the exact typed reason is rendered as detail text underneath.
+///
+/// `bounded` is separated from `failed` on purpose. A council that stopped on
+/// `max_exchanges_reached` or `deadline_exceeded` ran correctly and produced
+/// real exchanges - it hit a budget the caller set. Rendering that the same
+/// red as a seating failure would teach operators to ignore the colour.
+export type CouncilCardStatus = "completed" | "bounded" | "failed" | "pending";
+
+/// One participant slot, from the result's non-secret provenance.
+///
+/// There is deliberately NO action affordance on this row. Council
+/// participants are forked contexts that are destroyed before the tool
+/// returns, so by the time this card renders there is nothing addressable
+/// left - a button here would offer to act on something that no longer
+/// exists.
+export interface ConversationCouncilParticipantRow {
+  order: number;
+  role: string;
+  sourceMobId: string;
+  sourceIdentity: string;
+  targetIdentity: string;
+  /// False means the slot was acquired but never seated - the usual cause of
+  /// a `participant_seating_failed` exit.
+  seated: boolean;
+}
+
+/// One bounded exchange receipt, in council order.
+export interface ConversationCouncilExchangeRow {
+  round: number;
+  sequence: number;
+  participantOrder: number;
+  targetIdentity: string;
+  /// Wire `outcome.status`: pending | completed | failed. `pending` is not a
+  /// transient render state - a receipt left pending is what a coordinator
+  /// crash looks like, so the card must show it rather than hide it.
+  status: "pending" | "completed" | "failed";
+  /// Committed bounded text for a completed exchange, or the typed detail for
+  /// a failed one.
+  text?: string;
+  /// The receiver bound truncated this exchange's text.
+  truncated?: boolean;
+}
+
+/// A participant-reported artifact location.
+///
+/// Rendered as an UNVERIFIED CLAIM, never as an artifact. meerkat's own type
+/// says it plainly: the council performs no store lookup, no fetch and no
+/// existence check, so presenting it as a resolved handle would assert
+/// something nobody verified. The card shows the uri as inert text with an
+/// explicit "claimed" affordance and never links it.
+export interface ConversationCouncilArtifactClaimRow {
+  uri: string;
+  mediaType?: string | null;
+  digest?: string | null;
+  byteLen?: number | null;
+}
+
+/// One completed `council` tool call rendered as an in-conversation card.
+///
+/// Unlike the workgraph card this is NOT an evolving aggregate: a council is
+/// a single synchronous tool call that seats participants, runs bounded
+/// exchanges, merges and tears down before returning. The card therefore
+/// renders one call's request and sealed result, anchored at that frame.
+export interface ConversationCouncilEntry extends ConversationTimelineEntryBase {
+  kind: "council";
+  /// Validated council identity (`serde(transparent)` string on the wire).
+  councilId: string;
+  /// The decision or question the council examined, from the call arguments.
+  topic: string;
+  status: CouncilCardStatus;
+  /// Wire `exit_reason.reason`, verbatim, for operators who need the exact
+  /// typed variant rather than the coarse status.
+  exitReason: string;
+  /// Human-readable detail carried by the failing `exit_reason` variants.
+  exitDetail?: string | null;
+  roundsCompleted: number;
+  participants: ConversationCouncilParticipantRow[];
+  exchanges: ConversationCouncilExchangeRow[];
+  /// Exchanges hidden by the render cap. Hidden rows still count in the
+  /// header totals.
+  exchangeOverflowCount?: number;
+  /// Merge-back kind (`no_merge` | `bounded_text_summary` | ...) and its
+  /// bounded text, when the policy produced one.
+  mergeKind?: string;
+  mergeText?: string | null;
+  mergeFinalizer?: string | null;
+  mergeTruncated?: boolean;
+  /// Participant-reported artifact locations. See the row type: claims, not
+  /// artifacts.
+  artifactClaims?: ConversationCouncilArtifactClaimRow[];
+  truncatedExchangeCount?: number;
+  /// `durable` | `process_bound`. A process-bound council does not survive a
+  /// gateway restart, which the card states rather than implying permanence.
+  durability?: string | null;
+  /// True when the call was answered from an existing sealed result rather
+  /// than by running a new council (idempotency replay).
+  replayed?: boolean;
+  /// Unpaid cleanup obligations. A council can seal a perfectly good result
+  /// and still fail to tear its temporary mob down, so this is reported
+  /// separately from `status` and never folded into it.
+  cleanupDebts?: { subject: string; detail: string }[];
+  /// The bounded cleanup budget expired with work outstanding.
+  cleanupBudgetExhausted?: boolean;
+  concludedAt?: string | null;
+}
+
 export type ConversationTimelineEntry =
   | ConversationMessageEntry
   | ConversationSummaryEntry
   | ConversationFlowRunEntry
-  | ConversationWorkGraphEntry;
+  | ConversationWorkGraphEntry
+  | ConversationCouncilEntry;
 
 export interface ConversationTimelineGroup {
   id: string;
@@ -327,6 +437,32 @@ export function conversationEntryText(entry: ConversationTimelineEntry): string 
     return [entry.flowName, entry.objective || "", ...rowLines, entry.outcome || ""]
       .filter(Boolean)
       .join("\n");
+  }
+
+  if (entry.kind === "council") {
+    // Without this branch a council entry falls through to
+    // `copyText || text || blocks`, and it has none of the three - so copy and
+    // transcript surfaces silently yield an empty string. The card renders
+    // fine, which is what makes the absence easy to miss.
+    const participantLines = entry.participants.map((row) => (
+      `${row.role}: ${row.targetIdentity}${row.seated ? "" : " (never seated)"}`
+    ));
+    const exchangeLines = entry.exchanges.map((row) => (
+      `r${row.round + 1} ${row.targetIdentity} — ${row.status}${row.text ? `: ${row.text}` : ""}`
+    ));
+    return [
+      `${entry.topic} (${entry.exitReason}, ${entry.roundsCompleted} rounds)`,
+      entry.exitDetail || "",
+      entry.mergeText || "",
+      ...participantLines,
+      ...exchangeLines,
+      ...(entry.exchangeOverflowCount
+        ? [`+${entry.exchangeOverflowCount} more exchanges`]
+        : []),
+      // Claims stay marked as claims in copied text too: pasting a bare uri
+      // into a ticket is exactly how an unverified claim becomes a fact.
+      ...(entry.artifactClaims || []).map((row) => `claimed artifact: ${row.uri}`),
+    ].filter(Boolean).join("\n");
   }
 
   if (entry.kind === "workgraph") {

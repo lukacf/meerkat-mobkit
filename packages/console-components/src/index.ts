@@ -6,6 +6,7 @@ export { ConversationPane } from "./conversation/conversation-pane";
 export { ConversationRichContent } from "./conversation/conversation-rich-content";
 export { ConversationTranscript } from "./conversation/conversation-transcript";
 export type { FlowRunRestoreHandler } from "./conversation/flow-run-card";
+export { CouncilCard, __councilCardUiState } from "./conversation/council-card";
 export { WorkGraphCard, __workGraphCardUiState } from "./conversation/work-graph-card";
 export type { WorkGraphCardActions } from "./conversation/work-graph-card";
 export { ConsoleDock } from "./dock/console-dock";

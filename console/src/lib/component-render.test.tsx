@@ -100,6 +100,57 @@ test("alternate shell renders non-sidebar navigation with MobKit transcript and 
   assert.match(html, /Send to the selected MobKit target/);
 });
 
+test("council entries render as cards through the SHARED transcript, not only in ChatPane", () => {
+  // Regression: ConversationMessageView is the shared render path (group ->
+  // transcript -> pane). Without a council branch there, the card appeared in
+  // the app that wires it explicitly and rendered NOTHING in every other
+  // consumer - a council entry carries no text and no blocks, so the generic
+  // message fallback is empty.
+  const councilEntry: ConversationTimelineEntry = {
+    kind: "council",
+    id: "council:c-1",
+    identity: { id: "planner", label: "Planner", role: "assistant" },
+    councilId: "c-1",
+    topic: "Ship or hold 0.8.28?",
+    status: "failed",
+    exitReason: "exchange_failed",
+    exitDetail: "round 2 · provider timeout",
+    roundsCompleted: 1,
+    participants: [
+      {
+        order: 0,
+        role: "critic",
+        sourceMobId: "m1",
+        sourceIdentity: "alice",
+        targetIdentity: "alice#fork",
+        seated: true,
+      },
+    ],
+    exchanges: [],
+  };
+
+  const html = renderToStaticMarkup(
+    <ConversationTranscript
+      viewState={{
+        conversationId: "fixture",
+        entries: [councilEntry],
+        groups: groupConversationTimelineEntries([councilEntry]),
+        turnDiff: null,
+        emptyState: null,
+      }}
+    />,
+  );
+
+  assert.match(html, /data-council-card/);
+  assert.match(html, /data-council-id="c-1"/);
+  assert.match(html, /data-status="failed"/);
+  assert.match(html, /Ship or hold 0\.8\.28\?/);
+  // The typed reason and its detail must survive the shared path too.
+  assert.match(html, /provider timeout/);
+  // Observational by construction: no operator affordances anywhere.
+  assert.doesNotMatch(html, /council-action:/);
+});
+
 test("workgraph entries render as cards through the shared transcript, with action buttons gated on callbacks", () => {
   const workGraphEntry: ConversationTimelineEntry = {
     kind: "workgraph",
