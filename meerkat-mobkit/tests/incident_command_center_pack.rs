@@ -1039,6 +1039,11 @@ comms = true
     realm.binding.insert(
         "local-self-hosted".to_string(),
         meerkat_core::ProviderBindingConfig {
+            // meerkat 0.8.31 added this field. `None` is the behaviour-preserving
+            // value: ProviderBindingConfig::credential_identity falls back to
+            // AuthCredentialIdentity::from_auth_binding when the account is absent,
+            // which is exactly what this binding did before the field existed.
+            credential_account: None,
             backend_profile: "local-self-hosted-backend".to_string(),
             auth_profile: "local-self-hosted-auth".to_string(),
             default_model: Some("route-test:latest".to_string()),
