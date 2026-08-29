@@ -54,6 +54,7 @@ export default defineConfig({
     globals: true,
     include: [
       "packages/console-core/src/dock.test.ts",
+      "packages/console-components/src/conversation/council-card.test.tsx",
       "packages/console-components/src/topology/data.test.ts",
       "packages/console-components/src/dock/browser-dock-target-host.test.tsx",
       "packages/console-components/src/topology/dense-graph-map.test.ts",

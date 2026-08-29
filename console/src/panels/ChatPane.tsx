@@ -2,13 +2,19 @@ import React from "react";
 import type {
   ConversationTimelineEntry,
   ConversationRichBlock,
+  ConversationCouncilEntry,
   ConversationWorkGraphEntry,
 } from "@console-core";
 import {
   conversationEntryText,
   conversationRichBlocksToText,
 } from "@console-core";
-import { ConversationRichContent, WorkGraphCard, type WorkGraphCardActions } from "@console-components";
+import {
+  ConversationRichContent,
+  CouncilCard,
+  WorkGraphCard,
+  type WorkGraphCardActions,
+} from "@console-components";
 import type { ConsoleAgent } from "../types";
 import {
   composerImageFileKey,
@@ -64,7 +70,7 @@ const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "i
 const MAX_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
-type MsgKind = "origin" | "user" | "agent" | "tool" | "thought" | "gate" | "workgraph";
+type MsgKind = "origin" | "user" | "agent" | "tool" | "thought" | "gate" | "workgraph" | "council";
 
 interface Msg {
   id: string;
@@ -75,6 +81,7 @@ interface Msg {
   text?: string;
   blocks?: ConversationRichBlock[];
   workGraphEntry?: ConversationWorkGraphEntry;
+  councilEntry?: ConversationCouncilEntry;
   workedFor?: string;
   workedForCopyText?: string;
 }
@@ -265,6 +272,18 @@ function flattenEntry(entry: ConversationTimelineEntry): Msg[] {
       time: formatTime(entry.createdAt),
       createdAt: entry.createdAt,
       text: `${entry.title} (+${entry.plus}/-${entry.minus})`,
+    }];
+  }
+
+  if (entry.kind === "council") {
+    return [{
+      id: entry.id,
+      kind: "council",
+      time: formatTime(entry.createdAt),
+      createdAt: entry.createdAt,
+      // Copy/transcript surfaces read `text`; rendering goes through the card.
+      text: conversationEntryText(entry),
+      councilEntry: entry,
     }];
   }
 
@@ -1054,6 +1073,12 @@ export function ChatPane({
                   {(m.kind === "user" || m.kind === "agent") && (
                     <CopyInlineButton label={`Copy ${m.kind === "user" ? "message" : "turn"}`} text={msgCopyText(m)} />
                   )}
+                  {m.kind === "council" && m.councilEntry ? (
+                    // No actions prop: council participants are destroyed
+                    // before the tool returns, so the card is observational
+                    // by construction.
+                    <CouncilCard entry={m.councilEntry} />
+                  ) : null}
                   {m.kind === "workgraph" && m.workGraphEntry ? (
                     <WorkGraphCard entry={m.workGraphEntry} actions={workGraphActions} />
                   ) : m.blocks && m.blocks.length > 0 ? (
