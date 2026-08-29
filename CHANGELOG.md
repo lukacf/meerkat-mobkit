@@ -95,9 +95,18 @@ nothing.
   `UnifiedRuntime::shutdown()`. Earlier notes, including mine, put this in
   MobKit's own teardown; that attribution was wrong.
 
-  Whether it is a **regression** is unknown and is being measured against
-  meerkat 0.8.29 / MobKit 0.8.24. Nothing here should be read as claiming it is
-  new in this pair.
+  **It is not a regression.** ob3 reproduced it on meerkat 0.8.29 / MobKit
+  0.8.24 - their current production pins - with the same harness, phases and a
+  freshly cloned dataset. Across three pin pairs on the same arm: 0.8.29/0.8.24
+  hung, 0.8.30/0.8.26 hung 2 of 2, 0.8.31/0.8.27 hung 4 of 6. It predates all of
+  them, and no CHANGELOG should carry it as new in 0.8.30, 0.8.31 or here.
+
+  It went unseen because the harness could not express it: before 2026-08-28 the
+  twin's `Server.kill()` escalated SIGTERM to SIGKILL after 30s, silently and
+  without an assertion, while a healthy shutdown on that fleet takes 74 to 92
+  seconds. Every shutdown was killed at 30s and wedged and healthy runs looked
+  identical - green. The defect is old; the instrument that can see it is days
+  old.
 
   It is a **race**, not a deterministic trigger: ob3 measured 4 hangs in 6 runs
   on identical 0.8.31 Rust, alternating clean and hung with the same dataset
