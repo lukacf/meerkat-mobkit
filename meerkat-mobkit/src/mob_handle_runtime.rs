@@ -8390,7 +8390,7 @@ pub struct IdentityRoutingStatusSnapshot {
 /// Why a routing status could not be produced.
 ///
 /// These are deliberately distinct rather than one stringly failure. A fleet
-/// sweep over materialized identities hits `IdentityNotAddressed` for every
+/// sweep over materialized identities hits `NoCurrentSession` for every
 /// identity that has not been addressed yet - that is the EXPECTED post-restart
 /// state, not a defect - while `SessionNotHeld` is a real one. Collapsing them
 /// leaves a caller with a refusal it cannot act on.
@@ -8399,10 +8399,25 @@ pub enum RoutingStatusUnavailable {
     /// The session service is absent, or exposes no runtime adapter. This is a
     /// configuration property of the runtime, not a property of the identity.
     RuntimeUnsupported,
-    /// The identity resolved to no session. Identity-first materializes without
-    /// activating, so this is the normal state for an identity that has been
-    /// materialized but never addressed.
-    IdentityNotAddressed,
+    /// The roster read returned no current session for this identity.
+    ///
+    /// Named for the fact observed, not for a cause inferred from it. MobKit's
+    /// `member_status` answers an UNKNOWN member with a well-formed "unknown"
+    /// status carrying no session rather than an error, so this one observation
+    /// covers two different situations that this surface genuinely cannot tell
+    /// apart:
+    ///
+    ///  - an identity that was materialized but never addressed (identity-first
+    ///    activates on address, so this is the normal post-restart state), and
+    ///  - an identity that does not exist at all, including a typo.
+    ///
+    /// An earlier spelling of this variant asserted the first of those. It was
+    /// wrong for the second, and a caller sweeping a fleet would have read a
+    /// mistyped identity as legitimately unaddressed. Distinguishing them would
+    /// need a roster read that reports absence as absence; that is a property of
+    /// `member_status`, not of routing status, and is deliberately not papered
+    /// over here.
+    NoCurrentSession,
     /// The mob could not resolve the member at all. This is a ROSTER failure,
     /// not a statement about any session: keeping it separate stops an unknown
     /// member from being reported as if meerkat had lost a session it held.
@@ -8430,7 +8445,7 @@ impl RoutingStatusUnavailable {
     pub fn reason_code(&self) -> &'static str {
         match self {
             Self::RuntimeUnsupported => "runtime_unsupported",
-            Self::IdentityNotAddressed => "identity_not_addressed",
+            Self::NoCurrentSession => "no_current_session",
             Self::MemberLookupFailed(_) => "member_lookup_failed",
             Self::SessionNotHeld(_) => "session_not_held",
             Self::UpstreamReadFailed(_) => "upstream_read_failed",
@@ -8445,9 +8460,10 @@ impl std::fmt::Display for RoutingStatusUnavailable {
             Self::RuntimeUnsupported => {
                 f.write_str("model routing status requires a runtime-backed session service")
             }
-            Self::IdentityNotAddressed => f.write_str(
-                "identity has no session yet; identity-first activates on address, so a \
-                 materialized identity has no routing status until it is addressed",
+            Self::NoCurrentSession => f.write_str(
+                "the roster reports no current session for this identity; it may have been \
+                 materialized and never addressed, or it may not exist at all - this surface \
+                 cannot tell those apart",
             ),
             Self::MemberLookupFailed(err) => {
                 write!(f, "the mob could not resolve this member: {err}")
@@ -8554,7 +8570,7 @@ pub async fn model_routing_status_for_member(
         .await
         .map_err(|err| RoutingStatusUnavailable::MemberLookupFailed(err.to_string()))?;
     let Some(session_id) = status.current_session_id else {
-        return Err(RoutingStatusUnavailable::IdentityNotAddressed);
+        return Err(RoutingStatusUnavailable::NoCurrentSession);
     };
     model_routing_status_for_session(session_service, member_id, session_id).await
 }

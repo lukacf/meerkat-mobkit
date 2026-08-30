@@ -1785,12 +1785,15 @@ export class MobHandle {
    *
    * Rejects if the runtime machine does not hold the session. The rejection
    * carries a machine-readable `reason` in its error data
-   * (`runtime_unsupported`, `identity_not_addressed`, `member_lookup_failed`,
+   * (`runtime_unsupported`, `no_current_session`, `member_lookup_failed`,
    * `session_not_held`, `upstream_read_failed`, `invalid_identity`) so a
-   * fleet sweep can classify an identity rather than only fail it. Note that
-   * an identity that has been materialized but never addressed has no session
-   * and therefore no routing status: that is `identity_not_addressed`, and it
-   * is the expected state after a restart, not a defect.
+   * fleet sweep can classify an identity rather than only fail it.
+   *
+   * `no_current_session` covers BOTH an identity that was materialized and
+   * never addressed (the normal state after a restart, not a defect) AND an
+   * identity that does not exist at all. This surface cannot distinguish them,
+   * so a sweep must assert it received a status for every identity it expected
+   * rather than merely that nothing threw.
    */
   async identityRoutingStatus(identity: string): Promise<IdentityRoutingStatusResult> {
     return parseIdentityRoutingStatusResult(

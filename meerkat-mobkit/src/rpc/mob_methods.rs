@@ -2116,7 +2116,7 @@ pub(super) async fn handle_identity_resolved_tools(
 /// Render a routing-status failure with a machine-readable `reason` so a caller
 /// sweeping a fleet can classify each identity instead of only failing it.
 ///
-/// `identity_not_addressed` is the expected state for a materialized identity
+/// `no_current_session` is the expected state for a materialized identity
 /// that has never been addressed, and must stay distinguishable from
 /// `session_not_held`, which is a genuine defect.
 fn routing_status_error_response(

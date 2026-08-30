@@ -1328,7 +1328,7 @@ async fn routing_status_is_reachable_on_both_planes_and_its_failure_is_classifia
 
     let reasons = [
         "runtime_unsupported",
-        "identity_not_addressed",
+        "no_current_session",
         "member_lookup_failed",
         "session_not_held",
         "upstream_read_failed",
@@ -1447,14 +1447,14 @@ async fn routing_status_is_reachable_on_both_planes_and_its_failure_is_classifia
     // `member_status` for an unknown member with a WELL-FORMED "unknown"
     // status carrying no session rather than an error, so an identity that
     // does not exist is indistinguishable here from one that exists and has
-    // never been addressed. Both report `identity_not_addressed`. That is a
+    // never been addressed. Both report `no_current_session`. That is a
     // real limitation of the roster read, recorded here so it is a documented
     // property rather than a surprise to a caller sweeping a fleet: a typo'd
     // identity reports the same reason as a legitimately unaddressed one.
     for (plane, reason) in [("console", &refusals[0]), ("stdin", &refusals[1])] {
         assert_eq!(
-            reason, "identity_not_addressed",
-            "{plane} plane: an identity with no session must report identity_not_addressed"
+            reason, "no_current_session",
+            "{plane} plane: an identity with no session must report no_current_session"
         );
     }
     assert_eq!(

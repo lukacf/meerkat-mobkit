@@ -123,7 +123,7 @@ async def _assert_security_shell_surface(handle) -> None:
 
 _ROUTING_STATUS_REASONS = {
     "runtime_unsupported",
-    "identity_not_addressed",
+    "no_current_session",
     "member_lookup_failed",
     "session_not_held",
     "upstream_read_failed",

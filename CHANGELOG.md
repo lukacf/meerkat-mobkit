@@ -47,11 +47,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   | `reason` | Derived from |
   |----------|--------------|
   | `runtime_unsupported` | the session service exposes no runtime adapter |
-  | `identity_not_addressed` | MobKit's roster resolves the member, and it has no session |
+  | `no_current_session` | the roster reports no current session (see below) |
   | `member_lookup_failed` | the mob could not resolve the member at all |
   | `session_not_held` | a session resolved **and** meerkat answered `NotFound` |
   | `upstream_read_failed` | a session resolved and the read failed some other way |
   | `invalid_identity` | no usable identity was supplied |
+
+  `no_current_session` is named for the fact observed, not a cause inferred from
+  it. MobKit's `member_status` answers an unknown member with a well-formed
+  "unknown" status carrying no session rather than an error, so this one
+  observation covers **both** an identity materialized but never addressed (the
+  normal state at boot) **and** an identity that does not exist at all,
+  including a typo. This surface cannot distinguish them, so a caller sweeping a
+  fleet must assert it received a status for every identity it expected rather
+  than merely that nothing raised. Distinguishing them would need a roster read
+  that reports absence as absence; that belongs to `member_status`, and is
+  deliberately not papered over here. An earlier spelling of this reason
+  asserted the first case and was wrong for the second.
 
   `session_not_held` is matched on the `RuntimeDriverError::NotFound` **variant**,
   never on message text. Because that error is `#[non_exhaustive]`, every other
@@ -61,9 +73,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   mean "the read failed" would fire that escalation on states that are not
   missing sessions at all.
 
-  Mutation-proven rather than merely green: removing either dispatch arm, the
-  typed error payload, the ABAC classifier entry, or the `NotFound` narrowing
-  each turns a specific test red. An earlier sweep was **discarded** as
+  Mutation-proven rather than merely green, on every surface. On the Rust side,
+  removing either dispatch arm, the typed error payload, the ABAC classifier
+  entry, or the `NotFound` narrowing each turns a specific test red. The
+  TypeScript contract test is executed rather than typechecked, and detects a
+  wrong RPC method name, a parser reading camelCase instead of the wire's
+  snake_case, and a coerced-away `session_provider`. The gateway-backed Python
+  test was confirmed to **execute** rather than skip, by building `rpc_gateway`
+  and then breaking the SDK method name to watch it go red. An earlier sweep was **discarded** as
   worthless - its three "failures" were rustc ICEs in `identity_first/runtime.rs`
   under incremental compilation, so the tests never ran. A build that breaks is
   not a test that detects.

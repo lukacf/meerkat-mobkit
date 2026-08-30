@@ -618,7 +618,7 @@ identity rather than only fail it:
 | `reason` | Meaning |
 |----------|---------|
 | `runtime_unsupported` | The session service exposes no runtime adapter. Configuration, not state. |
-| `identity_not_addressed` | MobKit's roster resolves the member but it has no session. Expected at boot. |
+| `no_current_session` | The roster reports no current session. **Covers two cases this surface cannot distinguish:** an identity materialized but never addressed (the normal state at boot), and an identity that does not exist at all. A caller must not read this as proof the identity exists. |
 | `member_lookup_failed` | The mob could not resolve the member at all. A roster failure, not a session claim. |
 | `session_not_held` | A session resolved **and** meerkat answered `NotFound` for it. A real defect. |
 | `upstream_read_failed` | A session resolved and the upstream read failed some other way. Diagnoses nothing. |
@@ -633,7 +633,7 @@ because that error is `#[non_exhaustive]`, every other upstream failure lands in
 {"code": -32000,
  "message": "routing_status unavailable: ...",
  "data": {"kind": "routing_status_unavailable",
-          "reason": "identity_not_addressed",
+          "reason": "no_current_session",
           "identity": "domain:security"}}
 ```
 
