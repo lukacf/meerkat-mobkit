@@ -19,6 +19,10 @@ export { TopologyPanel } from "./topology/topology-panel";
 export { edgeKey as topologyEdgeKey } from "./topology/data";
 export { topologyAuthorityRevisionToken } from "@console-core";
 export { ConsoleWorkbench } from "./workbench/console-workbench";
+// The ONE clipboard owner. It was package-internal, which is how a second
+// implementation came to be written in `console/src/lib/` instead: a helper you
+// cannot import is a helper you rewrite.
+export { copyTextToClipboard } from "./shared";
 export type { IconRenderer } from "./shared";
 export type { ConsoleActivityRailProps } from "./activity/console-activity-rail";
 export type { ConversationEmptyStateProps } from "./conversation/conversation-empty-state";

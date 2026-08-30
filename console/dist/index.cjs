@@ -3014,10 +3014,6 @@ function renderBlock(block, index, Icon3, displayNormalization = true) {
   return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { children: thinking }, `thinking-${index}`);
 }
 var PEER_TOOL_NAMES = /* @__PURE__ */ new Set(["send_request", "send_message", "send_response"]);
-function copyText(text) {
-  navigator.clipboard?.writeText(text).catch(() => {
-  });
-}
 function formatJsonIfPossible(text) {
   const trimmed = text.trim();
   if (!trimmed) return text;
@@ -3094,20 +3090,33 @@ function peerDetailRows(block) {
   ].filter(Boolean);
 }
 function CopyBtn({ text, label = "Copy" }) {
-  const [copied, setCopied] = (0, import_react2.useState)(false);
+  const [outcome, setOutcome] = (0, import_react2.useState)("idle");
+  const resetTimer = (0, import_react2.useRef)(null);
+  (0, import_react2.useEffect)(
+    () => () => {
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+    },
+    []
+  );
+  const mark = outcome === "copied" ? "\u2713" : outcome === "failed" ? "\u2717" : "\u2398";
+  const title = outcome === "copied" ? "Copied" : outcome === "failed" ? "Copy failed" : label;
   return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
     "button",
     {
       className: "cc-tool-call__copy",
       type: "button",
-      title: label,
+      title,
+      "aria-label": title,
+      "data-copy-outcome": outcome === "idle" ? void 0 : outcome,
       onClick: (e) => {
         e.stopPropagation();
-        copyText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
+        void copyTextToClipboard(text).then((ok) => {
+          setOutcome(ok ? "copied" : "failed");
+          if (resetTimer.current) clearTimeout(resetTimer.current);
+          resetTimer.current = setTimeout(() => setOutcome("idle"), 1500);
+        });
       },
-      children: copied ? "\u2713" : "\u2398"
+      children: mark
     }
   );
 }
@@ -19052,31 +19061,38 @@ function CopyInlineButton({
   label,
   className = ""
 }) {
-  const [copied, setCopied] = import_react31.default.useState(false);
+  const [outcome, setOutcome] = import_react31.default.useState("idle");
+  const resetTimer = import_react31.default.useRef(null);
+  import_react31.default.useEffect(
+    () => () => {
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+    },
+    []
+  );
   const disabled = !text.trim();
   async function copy() {
     if (disabled) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1400);
-    } catch {
-    }
+    const ok = await copyTextToClipboard(text);
+    setOutcome(ok ? "copied" : "failed");
+    if (resetTimer.current) clearTimeout(resetTimer.current);
+    resetTimer.current = setTimeout(() => setOutcome("idle"), 1400);
   }
+  const title = outcome === "copied" ? "Copied" : outcome === "failed" ? "Copy failed" : label;
   return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
     "button",
     {
-      "aria-label": copied ? "Copied" : label,
+      "aria-label": title,
       className: `msg__copy ${className}`,
-      "data-copied": copied ? "true" : void 0,
+      "data-copied": outcome === "copied" ? "true" : void 0,
+      "data-copy-outcome": outcome === "idle" ? void 0 : outcome,
       disabled,
       onClick: (event) => {
         event.stopPropagation();
         void copy();
       },
-      title: copied ? "Copied" : label,
+      title,
       type: "button",
-      children: copied ? "\u2713" : "\u2398"
+      children: outcome === "copied" ? "\u2713" : outcome === "failed" ? "\u2717" : "\u2398"
     }
   );
 }
