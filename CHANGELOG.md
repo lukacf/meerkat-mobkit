@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`mobkit/identity/routing_status` exposes meerkat's typed model-routing
+  status per identity.** The result is
+  `meerkat_core::image_generation::SessionModelRoutingStatus` verbatim
+  (`WireSessionModelRoutingStatus` is a type alias to it), flattened under
+  `identity` and `session_id`. MobKit declares **no mirror type**: a second
+  declaration of an upstream shape is a second place for it to drift, so the
+  payload cannot disagree with meerkat's contract.
+
+  The fact this carries that nothing else does is `session_provider`, the typed
+  provider of the session's current LLM identity. Meerkat documents re-deriving
+  a provider from the effective model string as silently wrong for models owned
+  by a custom `ModelRegistry`; an absent `session_provider` means the machine
+  has no hydrated session LLM identity yet, and is **not** an invitation to
+  re-derive one.
+
+  Wired on **both** dispatch planes - the stdin JSON-RPC router in `rpc.rs` and
+  the HTTP console's own match in `http_console.rs` - plus the console ABAC
+  classifier (`ACTION_AGENT_VIEW`, the same grant as `identity/resolved_tools`),
+  both capability advertisements, and the Python and TypeScript SDKs. The
+  classifier entry is not optional bookkeeping: an unmapped console method
+  returns `None` from `console_rpc_access_requirements`, which makes the access
+  gate short-circuit to *allowed* and the capability filter advertise it to
+  everyone. Omitting it produces no compile error and no test failure.
+
+  **This method requires a resolved session.** Identity-first materializes an
+  identity without activating it, so an identity that has been materialized but
+  never addressed has no session and therefore no routing status. That is
+  structural - the status is per-session machine state - and it is the expected
+  state after a restart, not a defect. A fleet sweep must address before reading
+  and label its coverage post-address.
+
+  Failures carry a machine-readable `reason` so a sweep can classify an identity
+  rather than only fail it. Each reason is derived from a fact MobKit actually
+  observed, never inferred from a single upstream error:
+
+  | `reason` | Derived from |
+  |----------|--------------|
+  | `runtime_unsupported` | the session service exposes no runtime adapter |
+  | `identity_not_addressed` | MobKit's roster resolves the member, and it has no session |
+  | `member_lookup_failed` | the mob could not resolve the member at all |
+  | `session_not_held` | a session resolved **and** meerkat answered `NotFound` |
+  | `upstream_read_failed` | a session resolved and the read failed some other way |
+  | `invalid_identity` | no usable identity was supplied |
+
+  `session_not_held` is matched on the `RuntimeDriverError::NotFound` **variant**,
+  never on message text. Because that error is `#[non_exhaustive]`, every other
+  upstream failure - `NotReady`, `Destroyed`, `RecoveryCorruption`, and anything
+  added upstream later - lands in `upstream_read_failed`, which deliberately
+  diagnoses nothing. A consumer escalates on `session_not_held`; widening it to
+  mean "the read failed" would fire that escalation on states that are not
+  missing sessions at all.
+
+  Mutation-proven rather than merely green: removing either dispatch arm, the
+  typed error payload, the ABAC classifier entry, or the `NotFound` narrowing
+  each turns a specific test red. An earlier sweep was **discarded** as
+  worthless - its three "failures" were rustc ICEs in `identity_first/runtime.rs`
+  under incremental compilation, so the tests never ran. A build that breaks is
+  not a test that detects.
+
 ## [0.8.28] - 2026-08-29
 
 Pairs with meerkat `0.8.31` (tag `v0.8.31`, commit

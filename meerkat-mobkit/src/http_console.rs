@@ -24,7 +24,8 @@ use meerkat_mob::{
 
 use crate::mob_handle_runtime::{
     is_recoverable_lifecycle_cleanup_error, member_entry_to_json,
-    model_capabilities_for_member_entry, model_capabilities_for_role, resolved_tools_for_member,
+    model_capabilities_for_member_entry, model_capabilities_for_role,
+    model_routing_status_for_member, model_routing_status_for_session, resolved_tools_for_member,
     resolved_tools_for_session, topology_restore_failed_peer_ids, topology_restore_warning_json,
 };
 use serde_json::{Value, json};
@@ -1873,6 +1874,7 @@ fn console_rpc_access_requirements(
         "mobkit/get_member"
         | "mobkit/member_status"
         | "mobkit/identity/resolved_tools"
+        | "mobkit/identity/routing_status"
         | "mobkit/inspect_identity"
         | "mobkit/status_identity"
         | "mobkit/console/inspect_identity" => one(ACTION_AGENT_VIEW, target),
@@ -1886,6 +1888,30 @@ fn console_rpc_access_requirements(
         }
         _ => None,
     }
+}
+
+/// Console-plane twin of `rpc::mob_methods::routing_status_error_response`.
+/// The two planes carry separate dispatch, so the discriminated `reason` has to
+/// be produced on both or a console caller gets a strictly worse answer than an
+/// RPC caller for the same identity.
+fn routing_status_error_value(
+    response_id: Value,
+    identity: &str,
+    err: &crate::mob_handle_runtime::RoutingStatusUnavailable,
+) -> Value {
+    response_value(
+        response_id,
+        None,
+        Some(JsonRpcError {
+            code: -32000,
+            message: format!("routing_status unavailable: {err}"),
+            data: Some(json!({
+                "kind": "routing_status_unavailable",
+                "reason": err.reason_code(),
+                "identity": identity,
+            })),
+        }),
+    )
 }
 
 fn memory_panel_scope_param(params: &Value) -> Option<String> {
@@ -5205,6 +5231,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 "mobkit/find_members",
                 "mobkit/member_status",
                 "mobkit/identity/resolved_tools",
+                "mobkit/identity/routing_status",
                 "mobkit/blob/get",
                 "mobkit/wait_ready",
                 "mobkit/flow_status",
@@ -7802,6 +7829,63 @@ async fn handle_console_runtime_rpc_with_visibility(
                     None,
                 ),
                 Err(err) => internal_error(response_id, format!("resolved_tools failed: {err}")),
+            }
+        }
+        // The console plane carries its own dispatch; a method wired only in
+        // `rpc.rs` is unreachable from the browser console, which is where
+        // this status is actually read.
+        "mobkit/identity/routing_status" => {
+            let Some(identity) = request
+                .params
+                .get("identity")
+                .or_else(|| request.params.get("member_id"))
+                .and_then(Value::as_str)
+            else {
+                return invalid_params(response_id, "identity required");
+            };
+            let identity = crate::member_comms_id::runtime_alias_str(identity).into_owned();
+            if let Some(error) = stale_runtime_alias_json_rpc_error(
+                "identity_routing_status",
+                identity_runtime.as_ref(),
+                &identity,
+            )
+            .await
+            {
+                return response_value(response_id, None, Some(error));
+            }
+            if let Some(identity_runtime) = identity_runtime.as_ref()
+                && let Ok(parsed) = crate::identity_first::AgentIdentity::parse(&identity)
+                && let Ok(status) = identity_runtime.status(&parsed).await
+                && let Some(session_id) = status.session_id
+            {
+                return match model_routing_status_for_session(
+                    runtime.session_service(),
+                    &identity,
+                    session_id,
+                )
+                .await
+                {
+                    Ok(snapshot) => response_value(
+                        response_id,
+                        Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
+                        None,
+                    ),
+                    Err(err) => routing_status_error_value(response_id, &identity, &err),
+                };
+            }
+            match model_routing_status_for_member(
+                &runtime.handle(),
+                runtime.session_service(),
+                &identity,
+            )
+            .await
+            {
+                Ok(snapshot) => response_value(
+                    response_id,
+                    Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
+                    None,
+                ),
+                Err(err) => routing_status_error_value(response_id, &identity, &err),
             }
         }
         "mobkit/force_cancel_member" => {
@@ -10824,6 +10908,32 @@ comms = true
                 "{method} must remain unmounted on HTTP"
             );
         }
+    }
+
+    /// An unmapped console method FAILS OPEN. `console_rpc_access_requirements`
+    /// returns `None`, `console_rpc_access_violation` short-circuits on that
+    /// `None` and allows the call, and the capabilities filter treats `None` as
+    /// "advertise to everyone". So forgetting a classifier entry produces no
+    /// compile error, no test failure, and a method silently exempt from ABAC.
+    /// Routing status exposes which model and provider an identity is on, so it
+    /// belongs behind the same per-agent view grant as the other identity reads.
+    #[test]
+    fn routing_status_is_gated_by_the_same_agent_view_grant_as_its_siblings() {
+        let alias = "rt:gate:main:0";
+        let params = json!({ "identity": alias });
+        assert_eq!(
+            super::console_rpc_access_requirements("mobkit/identity/routing_status", &params),
+            Some(vec![(ACTION_AGENT_VIEW, Some(alias.to_string()))]),
+            "routing_status must not become an unmapped console read: an unmapped method is \
+             exempt from the access gate AND advertised to every caller"
+        );
+        // Pinned against its sibling rather than asserted alone: these two reads
+        // expose the same class of per-identity fact and must not drift apart.
+        assert_eq!(
+            super::console_rpc_access_requirements("mobkit/identity/routing_status", &params),
+            super::console_rpc_access_requirements("mobkit/identity/resolved_tools", &params),
+            "routing_status and resolved_tools must carry identical access requirements"
+        );
     }
 
     #[test]

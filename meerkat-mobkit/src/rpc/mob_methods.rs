@@ -11,8 +11,9 @@ use serde_json::Value;
 use crate::blob_store::is_valid_blob_id_value;
 use crate::mob_handle_runtime::{
     assert_member_accepts_images, is_recoverable_lifecycle_cleanup_error, member_entry_to_json,
-    resolved_tools_for_member, resolved_tools_for_session, send_message_on_mob_with_mode,
-    topology_restore_failed_peer_ids, topology_restore_warning_json,
+    model_routing_status_for_member, model_routing_status_for_session, resolved_tools_for_member,
+    resolved_tools_for_session, send_message_on_mob_with_mode, topology_restore_failed_peer_ids,
+    topology_restore_warning_json,
 };
 use crate::unified_runtime::UnifiedRuntime;
 
@@ -2097,6 +2098,114 @@ pub(super) async fn handle_identity_resolved_tools(
                         data: None,
                     }),
                 },
+            }
+        }
+        _ => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "Invalid params: identity required".to_string(),
+                data: None,
+            }),
+        },
+    }
+}
+
+/// Render a routing-status failure with a machine-readable `reason` so a caller
+/// sweeping a fleet can classify each identity instead of only failing it.
+///
+/// `identity_not_addressed` is the expected state for a materialized identity
+/// that has never been addressed, and must stay distinguishable from
+/// `session_not_held`, which is a genuine defect.
+fn routing_status_error_response(
+    response_id: Value,
+    identity: &str,
+    err: &crate::mob_handle_runtime::RoutingStatusUnavailable,
+) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: None,
+        error: Some(JsonRpcError {
+            code: -32000,
+            message: format!("routing_status unavailable: {err}"),
+            data: Some(serde_json::json!({
+                "kind": "routing_status_unavailable",
+                "reason": err.reason_code(),
+                "identity": identity,
+            })),
+        }),
+    }
+}
+
+/// `mobkit/identity/routing_status` - meerkat's typed per-session model
+/// routing status, addressed by MobKit identity.
+///
+/// Structurally identical to [`handle_identity_resolved_tools`]: resolve the
+/// identity through the identity runtime when one is bound, otherwise fall
+/// back to the mob handle's member status. What differs is the failure
+/// posture. Routing status is a machine read, and meerkat returns `NotFound`
+/// for a session its runtime machine does not hold; that error is propagated
+/// verbatim instead of being softened into an empty status, because an empty
+/// status is indistinguishable on the wire from a legitimately pre-hydration
+/// one (see `model_routing_status_for_session`).
+pub(super) async fn handle_identity_routing_status(
+    runtime: &UnifiedRuntime,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let identity = params
+        .get("identity")
+        .or_else(|| params.get("member_id"))
+        .and_then(Value::as_str);
+    match identity {
+        Some(identity) if !identity.is_empty() => {
+            let identity = crate::member_comms_id::runtime_alias_str(identity).into_owned();
+            let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
+            if let Some(response) =
+                stale_runtime_alias_error_response(identity_runtime, &identity, response_id.clone())
+                    .await
+            {
+                return response;
+            }
+            if let Some(identity_runtime) = identity_runtime
+                && let Ok(parsed) = crate::identity_first::AgentIdentity::parse(&identity)
+                && let Ok(status) = identity_runtime.status(&parsed).await
+                && let Some(session_id) = status.session_id
+            {
+                return match model_routing_status_for_session(
+                    runtime.mob_runtime().session_service(),
+                    &identity,
+                    session_id,
+                )
+                .await
+                {
+                    Ok(snapshot) => JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
+                        error: None,
+                    },
+                    Err(err) => routing_status_error_response(response_id, &identity, &err),
+                };
+            }
+            match model_routing_status_for_member(
+                &runtime.mob_handle(),
+                runtime.mob_runtime().session_service(),
+                &identity,
+            )
+            .await
+            {
+                Ok(snapshot) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
+                    error: None,
+                },
+                Err(err) => routing_status_error_response(response_id, &identity, &err),
             }
         }
         _ => JsonRpcResponse {

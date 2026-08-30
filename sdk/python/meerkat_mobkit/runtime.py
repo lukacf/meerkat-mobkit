@@ -3233,6 +3233,21 @@ class MobHandle:
         )
         return IdentityResolvedToolsResult.from_dict(raw)
 
+    async def identity_routing_status(self, identity: str):
+        """Return meerkat's typed model-routing status for an identity's session.
+
+        Raises through the transport if the runtime machine does not hold the
+        session; an absent status is deliberately not softened into an empty
+        one, because an empty status is indistinguishable on the wire from a
+        genuinely pre-hydration session.
+        """
+        from .types import IdentityRoutingStatusResult
+        raw = await self._runtime._rpc(
+            "mobkit/identity/routing_status",
+            {"identity": identity},
+        )
+        return IdentityRoutingStatusResult.from_dict(raw)
+
     async def force_cancel_member(self, member_id: str) -> None:
         """Force-cancel a running member immediately."""
         await self._runtime._rpc("mobkit/force_cancel_member", {"member_id": member_id})

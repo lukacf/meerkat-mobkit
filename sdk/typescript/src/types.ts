@@ -1368,6 +1368,57 @@ export function parseIdentityResolvedToolsResult(raw: unknown): IdentityResolved
   };
 }
 
+/**
+ * Model routing status from `mobkit/identity/routing_status`.
+ *
+ * Relays meerkat's `SessionModelRoutingStatus` unchanged. The override
+ * summaries stay as opaque records on purpose: re-declaring meerkat's
+ * `ScopedModelOverrideSummary` here would create a second owner of a shape this
+ * SDK only forwards.
+ */
+export interface IdentityRoutingStatusResult {
+  readonly identity: string;
+  readonly sessionId: string;
+  readonly baselineModel: string;
+  readonly effectiveModel: string;
+  /**
+   * Typed provider of the session's current LLM identity.
+   *
+   * `null` means the runtime machine has no hydrated session LLM identity yet
+   * (pre-hydration). It is NOT a signal to re-derive a provider from
+   * `effectiveModel`: meerkat documents that re-derivation as silently wrong
+   * for models owned by a custom `ModelRegistry`, which is precisely why this
+   * field is carried typed rather than inferred.
+   */
+  readonly sessionProvider: string | null;
+  readonly activeTurnOverride: Record<string, unknown> | null;
+  readonly activeOperationOverride: Record<string, unknown> | null;
+  readonly pendingSwitchTurn: Record<string, unknown> | null;
+}
+
+export function parseIdentityRoutingStatusResult(
+  raw: unknown,
+): IdentityRoutingStatusResult {
+  const d = asRecord(raw);
+  const optObject = (key: string): Record<string, unknown> | null => {
+    const value = d[key];
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  };
+  return {
+    identity: String(d.identity ?? ""),
+    sessionId: String(d.session_id ?? ""),
+    baselineModel: String(d.baseline_model ?? ""),
+    effectiveModel: String(d.effective_model ?? ""),
+    sessionProvider:
+      typeof d.session_provider === "string" ? d.session_provider : null,
+    activeTurnOverride: optObject("active_turn_override"),
+    activeOperationOverride: optObject("active_operation_override"),
+    pendingSwitchTurn: optObject("pending_switch_turn"),
+  };
+}
+
 export function parseRichMemberSnapshot(raw: unknown): RichMemberSnapshot {
   const d = asRecord(raw);
   return {

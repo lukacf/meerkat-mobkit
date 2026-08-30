@@ -1285,6 +1285,211 @@ fn assert_no_reserved_member_identity(value: &Value, path: &str) {
 /// under which the get_member defect survived a full green suite. It also reaches
 /// further than a gateway binary - any embedder merging mobkit_console_router
 /// exposes this method, which OB3 pointed out after measuring their own tree.
+/// `mobkit/identity/routing_status` must be REACHABLE on both planes, and its
+/// negative must be CLASSIFIABLE.
+///
+/// Two separate properties, and neither is provable by a serialization test:
+///
+///  1. MobKit carries two independent dispatchers - the stdin JSON-RPC router
+///     in `rpc.rs` and the HTTP console's own match in `http_console.rs`. A
+///     method wired in one is silently absent from the other, which is how
+///     MobKit has shipped unreachable surfaces before. `-32601` here is the
+///     failure this test exists to catch, so it is asserted directly rather
+///     than via `error.is_null()`: this fixture's member has no live session,
+///     so an ERROR is the expected answer and "no error" would be the wrong
+///     property to demand.
+///
+///  2. That error must carry a machine-readable `reason`. OB3 sweeps a fleet
+///     of materialized identities, where "no session yet" is the EXPECTED
+///     state at boot and "the machine does not hold a resolved session" is a
+///     real defect. A bare -32000 collapses those into one unusable verdict.
+#[tokio::test]
+async fn routing_status_is_reachable_on_both_planes_and_its_failure_is_classifiable()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let fixture = build_runtime_fixture().await;
+    let durable = "gate:main";
+    let encoded = meerkat_mobkit::member_comms_id::mob_member_id(durable);
+
+    let handle = fixture.runtime.mob_handle();
+    let mut spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        encoded.to_string(),
+        Some("Routing-status fixture.".into()),
+        None,
+        None,
+    );
+    spec.runtime_mode = Some(MobRuntimeMode::TurnDriven);
+    handle.spawn_spec(spec).await?;
+
+    let app = fixture
+        .runtime
+        .build_reference_app_router(decision_state(false));
+    let rpc = |id: &str, method: &str, params: Value| json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+
+    let reasons = [
+        "runtime_unsupported",
+        "identity_not_addressed",
+        "member_lookup_failed",
+        "session_not_held",
+        "upstream_read_failed",
+        "invalid_identity",
+    ];
+    let assert_typed_refusal = |plane: &str, response: &Value, expect_identity: &str| {
+        assert_eq!(
+            response["error"]["data"]["kind"],
+            json!("routing_status_unavailable"),
+            "{plane} plane refused without the typed discriminator, so a caller cannot tell \
+             'not addressed yet' from a real defect: {response:#?}"
+        );
+        let reason = response["error"]["data"]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            reasons.contains(&reason.as_str()),
+            "{plane} plane returned an unknown reason {reason:?}; the discriminator is a \
+             closed set callers branch on: {response:#?}"
+        );
+        assert_eq!(
+            response["error"]["data"]["identity"],
+            json!(expect_identity),
+            "{plane} plane must echo the identity it refused for: {response:#?}"
+        );
+        reason
+    };
+
+    let both_planes = async |request: &Value| -> Result<
+        (Value, Value),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let console = post_console_rpc(&app, request).await;
+        let stdin_raw = meerkat_mobkit::rpc::handle_unified_rpc_json(
+            &fixture.runtime,
+            &request.to_string(),
+            Duration::from_secs(5),
+            None,
+            None,
+        )
+        .await;
+        Ok((console, serde_json::from_str(&stdin_raw)?))
+    };
+
+    // ---- part A: a member the mob actually spawned ----
+    let (console, stdin) = both_planes(&rpc(
+        "routing",
+        "mobkit/identity/routing_status",
+        json!({ "identity": durable }),
+    ))
+    .await?;
+
+    for (plane, response) in [("console", &console), ("stdin", &stdin)] {
+        assert_ne!(
+            response["error"]["code"],
+            json!(-32601),
+            "{plane} plane does not dispatch mobkit/identity/routing_status at all. The two \
+             planes carry separate matches; wiring only one ships a method the other surface \
+             cannot reach: {response:#?}"
+        );
+        // Deliberately tolerant about WHICH of the two happens: whether this
+        // fixture's member has a hydrated session is not this test's subject,
+        // and hard-asserting success would make it fail under load for a
+        // reason unrelated to the property. What is NOT tolerated is an
+        // untyped refusal.
+        if response["error"].is_null() {
+            assert_eq!(
+                response["result"]["identity"],
+                json!(durable),
+                "{response:#?}"
+            );
+            assert!(
+                response["result"]["session_id"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty()),
+                "{plane} plane answered without naming the session it read: {response:#?}"
+            );
+            assert!(
+                response["result"]["baseline_model"].is_string(),
+                "{plane} plane answered without a baseline model: {response:#?}"
+            );
+        } else {
+            assert_typed_refusal(plane, response, durable);
+        }
+    }
+
+    // ---- part B: an identity the mob has never heard of ----
+    //
+    // This half is why the test is worth running. Part A's member resolves a
+    // real status, so on its own it exercises ONLY the success branch and a
+    // mutation stripping the typed error payload passes unnoticed - which is
+    // exactly what a mutation sweep caught here. An unknown identity cannot
+    // resolve a session, so this drives the refusal path deterministically.
+    let unknown = "gate:no-such-member";
+    let (console_unknown, stdin_unknown) = both_planes(&rpc(
+        "routing-unknown",
+        "mobkit/identity/routing_status",
+        json!({ "identity": unknown }),
+    ))
+    .await?;
+
+    let mut refusals = Vec::new();
+    for (plane, response) in [("console", &console_unknown), ("stdin", &stdin_unknown)] {
+        assert_ne!(response["error"]["code"], json!(-32601), "{response:#?}");
+        assert!(
+            !response["error"].is_null(),
+            "{plane} plane produced a routing status for an identity the mob never had. A \
+             plausible status for a member nobody looked up is worse than a refusal: \
+             {response:#?}"
+        );
+        refusals.push(assert_typed_refusal(plane, response, unknown));
+    }
+
+    // Pinned exactly, not just as set membership. MobKit's roster answers
+    // `member_status` for an unknown member with a WELL-FORMED "unknown"
+    // status carrying no session rather than an error, so an identity that
+    // does not exist is indistinguishable here from one that exists and has
+    // never been addressed. Both report `identity_not_addressed`. That is a
+    // real limitation of the roster read, recorded here so it is a documented
+    // property rather than a surprise to a caller sweeping a fleet: a typo'd
+    // identity reports the same reason as a legitimately unaddressed one.
+    for (plane, reason) in [("console", &refusals[0]), ("stdin", &refusals[1])] {
+        assert_eq!(
+            reason, "identity_not_addressed",
+            "{plane} plane: an identity with no session must report identity_not_addressed"
+        );
+    }
+    assert_eq!(
+        refusals[0], refusals[1],
+        "the planes disagree about why routing status is unavailable:\n  console: \
+         {console_unknown:#?}\n  stdin: {stdin_unknown:#?}"
+    );
+
+    // Advertisement, on both planes. A dispatchable method nothing advertises
+    // is discoverable only by guessing.
+    let console_caps = post_console_rpc(&app, &rpc("caps", "mobkit/capabilities", json!({}))).await;
+    let stdin_caps_raw = meerkat_mobkit::rpc::handle_unified_rpc_json(
+        &fixture.runtime,
+        &rpc("caps", "mobkit/capabilities", json!({})).to_string(),
+        Duration::from_secs(5),
+        None,
+        None,
+    )
+    .await;
+    let stdin_caps: Value = serde_json::from_str(&stdin_caps_raw)?;
+    for (plane, caps) in [("console", &console_caps), ("stdin", &stdin_caps)] {
+        let methods = caps["result"]["methods"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{plane} capabilities must list methods: {caps:#?}"));
+        assert!(
+            methods
+                .iter()
+                .any(|method| method == "mobkit/identity/routing_status"),
+            "{plane} plane dispatches routing_status but does not advertise it: {methods:#?}"
+        );
+    }
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn member_status_accepts_the_runtime_alias_its_own_surfaces_hand_out()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

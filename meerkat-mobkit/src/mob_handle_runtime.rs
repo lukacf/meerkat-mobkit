@@ -8367,6 +8367,198 @@ pub async fn resolved_tools_for_session(
     })
 }
 
+/// Per-identity model-routing status, as owned by meerkat's runtime machine.
+///
+/// The `routing` payload is `meerkat_core::image_generation::SessionModelRoutingStatus`
+/// verbatim - meerkat's own `WireSessionModelRoutingStatus` is a type alias to
+/// that struct, so flattening it here keeps MobKit's wire shape identical to
+/// meerkat's published contract with no MobKit-side mirror to drift.
+///
+/// Read `routing.session_provider == None` as "the machine has no hydrated
+/// session LLM identity yet" (pre-hydration). It is NOT an invitation to
+/// re-derive a provider from `effective_model` through a catalog: meerkat
+/// documents that re-derivation as silently wrong for `ModelRegistry`-owned
+/// custom models, which is the entire reason the typed field exists.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct IdentityRoutingStatusSnapshot {
+    pub identity: String,
+    pub session_id: String,
+    #[serde(flatten)]
+    pub routing: meerkat_core::image_generation::SessionModelRoutingStatus,
+}
+
+/// Why a routing status could not be produced.
+///
+/// These are deliberately distinct rather than one stringly failure. A fleet
+/// sweep over materialized identities hits `IdentityNotAddressed` for every
+/// identity that has not been addressed yet - that is the EXPECTED post-restart
+/// state, not a defect - while `SessionNotHeld` is a real one. Collapsing them
+/// leaves a caller with a refusal it cannot act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoutingStatusUnavailable {
+    /// The session service is absent, or exposes no runtime adapter. This is a
+    /// configuration property of the runtime, not a property of the identity.
+    RuntimeUnsupported,
+    /// The identity resolved to no session. Identity-first materializes without
+    /// activating, so this is the normal state for an identity that has been
+    /// materialized but never addressed.
+    IdentityNotAddressed,
+    /// The mob could not resolve the member at all. This is a ROSTER failure,
+    /// not a statement about any session: keeping it separate stops an unknown
+    /// member from being reported as if meerkat had lost a session it held.
+    MemberLookupFailed(String),
+    /// A session was resolved AND meerkat answered `RuntimeDriverError::NotFound`
+    /// for it. Only this exact pairing earns this verdict. Unlike the absences
+    /// above, it is a defect.
+    SessionNotHeld(String),
+    /// A session was resolved and the upstream read failed some OTHER way.
+    ///
+    /// `RuntimeDriverError` is `#[non_exhaustive]`: `NotReady`, `Destroyed`,
+    /// `RecoveryCorruption` and any variant added later are real conditions that
+    /// are NOT "the machine does not hold this session". Asserting a cause we
+    /// did not observe would be the same class of fabrication the typed
+    /// `session_provider` exists to prevent, so this variant deliberately
+    /// diagnoses nothing and just carries the upstream text.
+    UpstreamReadFailed(String),
+    /// The caller supplied no usable identity.
+    InvalidIdentity(&'static str),
+}
+
+impl RoutingStatusUnavailable {
+    /// Stable discriminator for the JSON-RPC error payload. Callers classify on
+    /// this, never on the message text.
+    pub fn reason_code(&self) -> &'static str {
+        match self {
+            Self::RuntimeUnsupported => "runtime_unsupported",
+            Self::IdentityNotAddressed => "identity_not_addressed",
+            Self::MemberLookupFailed(_) => "member_lookup_failed",
+            Self::SessionNotHeld(_) => "session_not_held",
+            Self::UpstreamReadFailed(_) => "upstream_read_failed",
+            Self::InvalidIdentity(_) => "invalid_identity",
+        }
+    }
+}
+
+impl std::fmt::Display for RoutingStatusUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RuntimeUnsupported => {
+                f.write_str("model routing status requires a runtime-backed session service")
+            }
+            Self::IdentityNotAddressed => f.write_str(
+                "identity has no session yet; identity-first activates on address, so a \
+                 materialized identity has no routing status until it is addressed",
+            ),
+            Self::MemberLookupFailed(err) => {
+                write!(f, "the mob could not resolve this member: {err}")
+            }
+            Self::SessionNotHeld(err) => {
+                write!(f, "runtime machine does not hold this session: {err}")
+            }
+            Self::UpstreamReadFailed(err) => {
+                write!(f, "the routing-status read failed upstream: {err}")
+            }
+            Self::InvalidIdentity(msg) => f.write_str(msg),
+        }
+    }
+}
+
+/// Classify an upstream routing-status read failure.
+///
+/// Named rather than inlined so the rule is testable on its own: only
+/// `RuntimeDriverError::NotFound` may become `SessionNotHeld`. `RuntimeDriverError`
+/// is `#[non_exhaustive]`, so a wildcard is required anyway - and the wildcard is
+/// the point. `NotReady`, `Destroyed`, `RecoveryCorruption` and any variant added
+/// upstream later are real conditions that are NOT "the machine does not hold this
+/// session", and must not be reported as one.
+fn classify_routing_status_read_error(
+    err: meerkat_runtime::RuntimeDriverError,
+) -> RoutingStatusUnavailable {
+    match err {
+        meerkat_runtime::RuntimeDriverError::NotFound { .. } => {
+            RoutingStatusUnavailable::SessionNotHeld(err.to_string())
+        }
+        other => RoutingStatusUnavailable::UpstreamReadFailed(other.to_string()),
+    }
+}
+
+/// Read the machine-owned routing status for one already-resolved session.
+///
+/// This is a `SessionServiceRuntimeExt` read through the service's runtime
+/// adapter. Two absences are deliberately distinguished rather than collapsed
+/// into an empty-but-plausible status:
+///
+/// - no session service, or a service with no runtime adapter, is
+///   `InvalidInput` ("unavailable on this runtime"), and
+/// - a session the adapter's machine has never seen surfaces meerkat's own
+///   `RuntimeControlPlaneError::NotFound` through `MobRuntimeError`.
+///
+/// That second case matters. `project_model_routing_status` fills
+/// `baseline_model` with `unwrap_or_default()` and leaves `session_provider`
+/// at `None`, and both of those fields are `skip_serializing_if`, so a status
+/// for an unknown session would serialize byte-identically to a status for a
+/// genuinely pre-hydration session. Meerkat errors instead of returning that
+/// default (dispatch_control.rs, `SessionModelRoutingStatus` arm), so this
+/// helper must propagate rather than soften it - degrading to a default here
+/// would manufacture exactly the indistinguishable pair meerkat avoided.
+pub async fn model_routing_status_for_session(
+    session_service: Option<&Arc<dyn MobSessionService>>,
+    identity: &str,
+    session_id: meerkat_core::types::SessionId,
+) -> Result<IdentityRoutingStatusSnapshot, RoutingStatusUnavailable> {
+    let Some(session_service) = session_service else {
+        return Err(RoutingStatusUnavailable::RuntimeUnsupported);
+    };
+    let Some(runtime_adapter) = session_service.runtime_adapter() else {
+        return Err(RoutingStatusUnavailable::RuntimeUnsupported);
+    };
+    let routing =
+        meerkat_runtime::service_ext::SessionServiceRuntimeExt::session_model_routing_status(
+            runtime_adapter.as_ref(),
+            &session_id,
+        )
+        .await
+        // Match the VARIANT, never the message text. `RuntimeControlPlaneError::NotFound`
+        // lowers to `RuntimeDriverError::NotFound` through
+        // `driver_error_from_control_plane_error`, so the one condition that means
+        // "the machine does not hold this session" is structurally observable.
+        // Everything else - including variants added upstream after this was written
+        // - falls through undiagnosed rather than being asserted as a missing session.
+        .map_err(classify_routing_status_read_error)?;
+    Ok(IdentityRoutingStatusSnapshot {
+        identity: identity.to_string(),
+        session_id: session_id.to_string(),
+        routing,
+    })
+}
+
+/// Resolve an identity to its current session through the mob handle, then
+/// read that session's routing status. Mirrors `resolved_tools_for_member`.
+pub async fn model_routing_status_for_member(
+    handle: &MobHandle,
+    session_service: Option<&Arc<dyn MobSessionService>>,
+    member_id: &str,
+) -> Result<IdentityRoutingStatusSnapshot, RoutingStatusUnavailable> {
+    if member_id.trim().is_empty() {
+        return Err(RoutingStatusUnavailable::InvalidIdentity(
+            "identity must not be empty",
+        ));
+    }
+    let mid = crate::member_comms_id::mob_member_id(member_id);
+    // A member the mob does not know is not the same as a member with no
+    // session, and neither is a session meerkat lost. Three distinct facts,
+    // three distinct reasons: flattening any pair of them hands a fleet sweep
+    // a verdict it cannot act on.
+    let status = handle
+        .member_status(&mid)
+        .await
+        .map_err(|err| RoutingStatusUnavailable::MemberLookupFailed(err.to_string()))?;
+    let Some(session_id) = status.current_session_id else {
+        return Err(RoutingStatusUnavailable::IdentityNotAddressed);
+    };
+    model_routing_status_for_session(session_service, member_id, session_id).await
+}
+
 pub async fn resolved_tools_for_member(
     handle: &MobHandle,
     session_service: Option<&Arc<dyn MobSessionService>>,
@@ -10437,6 +10629,54 @@ realm_profile = "worker-v2"
     /// the ephemeral `None` into `persistent_with_hook`, and nothing failed.
     /// A persistent mob would have kept process-bound councils, losing
     /// unfinished records on every restart with no signal at all.
+    /// Only `NotFound` may be reported as "the machine does not hold this
+    /// session". Every other upstream failure must degrade to a reason that
+    /// diagnoses nothing.
+    ///
+    /// This is the constraint that makes the discriminator worth having: a
+    /// consumer sweeping a fleet treats `session_not_held` as a defect to
+    /// escalate. If a transient `NotReady` or a `Destroyed` runtime also
+    /// rendered as `session_not_held`, that escalation would fire on states
+    /// that are not missing sessions at all.
+    ///
+    /// Asserted as a POSITIVE mapping per variant rather than as "the code
+    /// contains a match": a comment claiming the rule cannot fail, and a
+    /// source-shape check would pass against a wildcard that swallowed
+    /// everything.
+    #[test]
+    fn only_a_notfound_earns_the_session_not_held_verdict() {
+        use meerkat_runtime::RuntimeDriverError;
+
+        let not_found = RuntimeDriverError::NotFound {
+            runtime_id: meerkat_runtime::LogicalRuntimeId::new("session:probe"),
+        };
+        assert_eq!(
+            super::classify_routing_status_read_error(not_found).reason_code(),
+            "session_not_held",
+            "a genuine NotFound is the one condition that means the machine does not hold \
+             the session"
+        );
+
+        // The negative half. Without it, a wildcard mapping EVERYTHING to
+        // session_not_held would still satisfy the assertion above.
+        for other in [
+            RuntimeDriverError::Destroyed,
+            RuntimeDriverError::ValidationFailed {
+                reason: "probe".to_string(),
+            },
+            RuntimeDriverError::RecoveryCorruption {
+                reason: "probe".to_string(),
+            },
+        ] {
+            let rendered = format!("{other}");
+            assert_eq!(
+                super::classify_routing_status_read_error(other).reason_code(),
+                "upstream_read_failed",
+                "{rendered:?} is not a missing session and must not be reported as one"
+            );
+        }
+    }
+
     #[test]
     fn persistent_constructors_supply_a_durable_council_store() {
         let source = include_str!("mob_handle_runtime.rs");
