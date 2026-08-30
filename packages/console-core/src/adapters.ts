@@ -635,9 +635,6 @@ function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
       const rightInteraction = right.frame.interactionId?.trim() || "";
       const leftGroupTs = transcriptGroupTimestamp(left.frame);
       const rightGroupTs = transcriptGroupTimestamp(right.frame);
-      if (leftGroupTs !== rightGroupTs) {
-        return leftGroupTs - rightGroupTs;
-      }
       if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
         const leftStarts = isInteractionStartEvent(left.frame.event);
         const rightStarts = isInteractionStartEvent(right.frame.event);
@@ -645,11 +642,21 @@ function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
           return leftStarts ? -1 : 1;
         }
       }
-      // A frame missing its own timestamp must NOT jump to the end of its
-      // interaction. Reasoning frames frequently arrive without a timestamp; with
-      // a MAX_SAFE_INTEGER fallback they sort after the answer text and render
-      // "thinking" at the end of the turn. Fall back to the interaction's group
-      // timestamp so the frame keeps its chronological position.
+      // OWN timestamp first; the interaction's group timestamp is only a
+      // FALLBACK for frames carrying none. See the twin in
+      // `console/src/lib/adapters.ts` for the full rationale.
+      //
+      // Comparing group START times first returned before own timestamps were
+      // ever consulted, so frames in different interactions never had their own
+      // timestamps compared. That is right while interactions do not overlap
+      // and wrong the moment they do - which is precisely what a mid-turn steer
+      // creates, since a steer is minted as its own interaction while the
+      // running turn's frames keep the original id. Everything the turn
+      // produced after the steer rendered above it, permanently.
+      //
+      // The fallback must stay: reasoning frames often arrive with no
+      // timestamp, and a MAX_SAFE_INTEGER default would render "thinking" at
+      // the end of the turn.
       const leftTs = typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : leftGroupTs;
       const rightTs = typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : rightGroupTs;
       if (leftTs !== rightTs) {

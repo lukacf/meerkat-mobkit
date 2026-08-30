@@ -7108,9 +7108,6 @@ function sortFramesForTranscript(frames) {
     const rightInteraction = right.frame.interactionId?.trim() || "";
     const leftGroupTs = transcriptGroupTimestamp(left.frame);
     const rightGroupTs = transcriptGroupTimestamp(right.frame);
-    if (leftGroupTs !== rightGroupTs) {
-      return leftGroupTs - rightGroupTs;
-    }
     if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
       const leftStarts = isInteractionStartEvent(left.frame.event);
       const rightStarts = isInteractionStartEvent(right.frame.event);
