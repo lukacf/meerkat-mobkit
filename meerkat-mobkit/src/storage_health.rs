@@ -376,6 +376,13 @@ pub enum StorageResolutionError {
     Blob(BlobStoreResolutionError),
     RuntimeStore(RuntimeStoreResolutionError),
     JobStore(JobStoreResolutionError),
+    /// A durable council store that exists on disk and cannot be read.
+    ///
+    /// Absent is NOT this - an absent store is the ordinary first-boot case
+    /// and degrades quietly. This variant exists because meerkat's council
+    /// custody recovery surfaces read/decode failure as a typed refusal, and
+    /// swallowing it here would hide the signal that path exists to raise.
+    Council(crate::council_wiring::CouncilStoreError),
 }
 
 impl std::fmt::Display for StorageResolutionError {
@@ -384,11 +391,18 @@ impl std::fmt::Display for StorageResolutionError {
             Self::Blob(error) => error.fmt(f),
             Self::RuntimeStore(error) => error.fmt(f),
             Self::JobStore(error) => error.fmt(f),
+            Self::Council(error) => error.fmt(f),
         }
     }
 }
 
 impl std::error::Error for StorageResolutionError {}
+
+impl From<crate::council_wiring::CouncilStoreError> for StorageResolutionError {
+    fn from(error: crate::council_wiring::CouncilStoreError) -> Self {
+        Self::Council(error)
+    }
+}
 
 impl From<BlobStoreResolutionError> for StorageResolutionError {
     fn from(error: BlobStoreResolutionError) -> Self {

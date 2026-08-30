@@ -1857,7 +1857,10 @@ impl UnifiedRuntimeBuilder {
                     crate::storage_health::BlobStoreResolutionError::OpenFailed { .. },
                 )
                 | crate::storage_health::StorageResolutionError::RuntimeStore(_)
-                | crate::storage_health::StorageResolutionError::JobStore(_) => {
+                | crate::storage_health::StorageResolutionError::JobStore(_)
+                // An unreadable council store is the same class: a durable slot
+                // present on disk that refused at composition time.
+                | crate::storage_health::StorageResolutionError::Council(_) => {
                     UnifiedRuntimeBuilderError::Io(error.to_string())
                 }
             })?
