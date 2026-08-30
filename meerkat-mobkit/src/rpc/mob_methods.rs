@@ -2129,14 +2129,73 @@ fn routing_status_error_response(
         id: response_id,
         result: None,
         error: Some(JsonRpcError {
-            code: -32000,
+            code: routing_status_error_code(err),
             message: format!("routing_status unavailable: {err}"),
-            data: Some(serde_json::json!({
-                "kind": "routing_status_unavailable",
-                "reason": err.reason_code(),
-                "identity": identity,
-            })),
+            data: Some(routing_status_error_data(identity, err)),
         }),
+    }
+}
+
+/// A malformed request is `-32602` (invalid params); everything else is a
+/// server-side `-32000`. The two codes carry the SAME `data` shape on purpose,
+/// so a caller branches on `data.reason` uniformly and never has to pair a
+/// reason with a code to interpret it.
+pub(crate) fn routing_status_error_code(
+    err: &crate::mob_handle_runtime::RoutingStatusUnavailable,
+) -> i64 {
+    match err {
+        crate::mob_handle_runtime::RoutingStatusUnavailable::InvalidIdentity(_) => -32602,
+        _ => -32000,
+    }
+}
+
+pub(crate) fn routing_status_error_data(
+    identity: &str,
+    err: &crate::mob_handle_runtime::RoutingStatusUnavailable,
+) -> Value {
+    serde_json::json!({
+        "kind": "routing_status_unavailable",
+        "reason": err.reason_code(),
+        "identity": identity,
+    })
+}
+
+/// ONE owner of "is this request's identity parameter usable", shared by both
+/// dispatch planes.
+///
+/// Previously each plane rejected a missing or empty identity inline with an
+/// untyped `-32602` whose `data` was `None`, and the two planes did not even
+/// agree with each other. The consequence was worse than inconsistency:
+/// `invalid_identity` was documented as a member of the closed reason set and
+/// was UNREACHABLE through either surface, because both handlers refused before
+/// anything could construct it. A reason a caller can never observe is not part
+/// of a contract.
+///
+/// Returns the runtime-alias-decoded identity on success. Empty and missing are
+/// distinguished by message but share the `invalid_identity` reason, because
+/// what a caller does about them is the same.
+pub(crate) fn routing_status_identity_param(
+    params: &Value,
+) -> Result<String, (String, crate::mob_handle_runtime::RoutingStatusUnavailable)> {
+    use crate::mob_handle_runtime::RoutingStatusUnavailable;
+    let supplied = params
+        .get("identity")
+        .or_else(|| params.get("member_id"))
+        .and_then(Value::as_str);
+    match supplied {
+        Some(identity) if !identity.trim().is_empty() => {
+            Ok(crate::member_comms_id::runtime_alias_str(identity).into_owned())
+        }
+        // Echo back exactly what was supplied, including the empty string, so
+        // the caller can tell "I sent an empty identity" from "I sent none".
+        Some(identity) => Err((
+            identity.to_string(),
+            RoutingStatusUnavailable::InvalidIdentity("identity must not be empty"),
+        )),
+        None => Err((
+            String::new(),
+            RoutingStatusUnavailable::InvalidIdentity("identity required"),
+        )),
     }
 }
 
@@ -2157,67 +2216,53 @@ pub(super) async fn handle_identity_routing_status(
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
-    let identity = params
-        .get("identity")
-        .or_else(|| params.get("member_id"))
-        .and_then(Value::as_str);
-    match identity {
-        Some(identity) if !identity.is_empty() => {
-            let identity = crate::member_comms_id::runtime_alias_str(identity).into_owned();
-            let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
-            if let Some(response) =
-                stale_runtime_alias_error_response(identity_runtime, &identity, response_id.clone())
-                    .await
-            {
-                return response;
-            }
-            if let Some(identity_runtime) = identity_runtime
-                && let Ok(parsed) = crate::identity_first::AgentIdentity::parse(&identity)
-                && let Ok(status) = identity_runtime.status(&parsed).await
-                && let Some(session_id) = status.session_id
-            {
-                return match model_routing_status_for_session(
-                    runtime.mob_runtime().session_service(),
-                    &identity,
-                    session_id,
-                )
-                .await
-                {
-                    Ok(snapshot) => JsonRpcResponse {
-                        jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id,
-                        result: Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
-                        error: None,
-                    },
-                    Err(err) => routing_status_error_response(response_id, &identity, &err),
-                };
-            }
-            match model_routing_status_for_member(
-                &runtime.mob_handle(),
-                runtime.mob_runtime().session_service(),
-                &identity,
-            )
-            .await
-            {
-                Ok(snapshot) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
-                    error: None,
-                },
-                Err(err) => routing_status_error_response(response_id, &identity, &err),
-            }
+    let identity = match routing_status_identity_param(params) {
+        Ok(identity) => identity,
+        Err((supplied, err)) => {
+            return routing_status_error_response(response_id, &supplied, &err);
         }
-        _ => JsonRpcResponse {
+    };
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
+    if let Some(response) =
+        stale_runtime_alias_error_response(identity_runtime, &identity, response_id.clone()).await
+    {
+        return response;
+    }
+    if let Some(identity_runtime) = identity_runtime
+        && let Ok(parsed) = crate::identity_first::AgentIdentity::parse(&identity)
+        && let Ok(status) = identity_runtime.status(&parsed).await
+        && let Some(session_id) = status.session_id
+    {
+        return match model_routing_status_for_session(
+            runtime.mob_runtime().session_service(),
+            &identity,
+            session_id,
+        )
+        .await
+        {
+            Ok(snapshot) => JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
+                error: None,
+            },
+            Err(err) => routing_status_error_response(response_id, &identity, &err),
+        };
+    }
+    match model_routing_status_for_member(
+        &runtime.mob_handle(),
+        runtime.mob_runtime().session_service(),
+        &identity,
+    )
+    .await
+    {
+        Ok(snapshot) => JsonRpcResponse {
             jsonrpc: JSONRPC_VERSION.to_string(),
             id: response_id,
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32602,
-                message: "Invalid params: identity required".to_string(),
-                data: None,
-            }),
+            result: Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
+            error: None,
         },
+        Err(err) => routing_status_error_response(response_id, &identity, &err),
     }
 }
 

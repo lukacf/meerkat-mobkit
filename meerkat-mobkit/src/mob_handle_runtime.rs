@@ -8560,7 +8560,20 @@ pub async fn model_routing_status_for_member(
             "identity must not be empty",
         ));
     }
-    let mid = crate::member_comms_id::mob_member_id(member_id);
+    // `roster_member_id_for_supplied_id`, NOT `mob_member_id`. Since the
+    // stable-identity lowering the roster is keyed by the encoded DURABLE
+    // identity, so a CURRENT runtime alias (`rt:{identity}:{generation}`)
+    // handed straight to `mob_member_id` builds a roster key nobody owns. That
+    // does not fail loudly: `member_status` answers with a well-formed
+    // "unknown" status carrying no session, and this method would report
+    // `no_current_session` for a perfectly healthy addressed member. The
+    // normalizer's own doc names this exact trap, and both sibling surfaces
+    // (`http_console.rs` member_status, `rpc/mob_methods.rs`) already route
+    // through it.
+    //
+    // Lookup is normalized; the SUPPLIED identity is what gets echoed in the
+    // snapshot below, so a caller still sees the spelling it asked with.
+    let mid = crate::member_comms_id::roster_member_id_for_supplied_id(member_id);
     // A member the mob does not know is not the same as a member with no
     // session, and neither is a session meerkat lost. Three distinct facts,
     // three distinct reasons: flattening any pair of them hands a fleet sweep

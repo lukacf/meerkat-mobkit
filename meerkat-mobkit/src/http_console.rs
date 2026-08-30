@@ -1899,17 +1899,19 @@ fn routing_status_error_value(
     identity: &str,
     err: &crate::mob_handle_runtime::RoutingStatusUnavailable,
 ) -> Value {
+    // Code AND payload come from the stdin plane's owners rather than being
+    // spelled again here. The two planes previously disagreed about the
+    // malformed-request case, which is precisely the divergence that having two
+    // dispatchers invites.
     response_value(
         response_id,
         None,
         Some(JsonRpcError {
-            code: -32000,
+            code: crate::rpc::mob_methods::routing_status_error_code(err),
             message: format!("routing_status unavailable: {err}"),
-            data: Some(json!({
-                "kind": "routing_status_unavailable",
-                "reason": err.reason_code(),
-                "identity": identity,
-            })),
+            data: Some(crate::rpc::mob_methods::routing_status_error_data(
+                identity, err,
+            )),
         }),
     )
 }
@@ -7835,15 +7837,13 @@ async fn handle_console_runtime_rpc_with_visibility(
         // `rpc.rs` is unreachable from the browser console, which is where
         // this status is actually read.
         "mobkit/identity/routing_status" => {
-            let Some(identity) = request
-                .params
-                .get("identity")
-                .or_else(|| request.params.get("member_id"))
-                .and_then(Value::as_str)
-            else {
-                return invalid_params(response_id, "identity required");
-            };
-            let identity = crate::member_comms_id::runtime_alias_str(identity).into_owned();
+            let identity =
+                match crate::rpc::mob_methods::routing_status_identity_param(&request.params) {
+                    Ok(identity) => identity,
+                    Err((supplied, err)) => {
+                        return routing_status_error_value(response_id, &supplied, &err);
+                    }
+                };
             if let Some(error) = stale_runtime_alias_json_rpc_error(
                 "identity_routing_status",
                 identity_runtime.as_ref(),

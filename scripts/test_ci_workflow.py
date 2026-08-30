@@ -70,11 +70,38 @@ class CiWorkflowTests(unittest.TestCase):
 
         `needs` alone does not gate: with `if: always()` the gate runs
         regardless, so a job missing from the result comparison is advisory
-        only. Both lists must name the same jobs.
+        only.
+
+        Correspondence ALONE is not enough, and this test asserted only that
+        until review caught it: deleting a job from `needs` and from the
+        comparison together keeps the two lists in agreement, so the job goes
+        on running and gates nothing while this test stays green. The roster
+        below is therefore a floor - every gating job must be present - and the
+        correspondence check runs on top of it.
         """
         block = job_block("gate")
         needs = block.split("needs: [", 1)[1].split("]", 1)[0]
         listed = {name.strip() for name in needs.split(",")}
+
+        must_gate = {
+            "fmt-lint",
+            "test",
+            "test-python",
+            "test-typescript",
+            "console",
+            "console-fixtures",
+            "console-acceptance",
+            "flow-editor",
+            "audit",
+        }
+        missing = must_gate - listed
+        self.assertFalse(
+            missing,
+            f"these jobs must gate the suite and are absent from `needs`: "
+            f"{sorted(missing)}. Removing a job from both lists keeps them "
+            f"consistent while silently making it advisory.",
+        )
+
         for name in listed:
             self.assertIn(
                 'needs.%s.result }}" != "success"' % name,

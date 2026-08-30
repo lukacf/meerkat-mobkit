@@ -1463,6 +1463,101 @@ async fn routing_status_is_reachable_on_both_planes_and_its_failure_is_classifia
          {console_unknown:#?}\n  stdin: {stdin_unknown:#?}"
     );
 
+    // ---- part C: the CURRENT runtime alias must reach the same member ----
+    //
+    // Since the stable-identity lowering the roster is keyed by the encoded
+    // DURABLE identity, so handing a current `rt:{identity}:{generation}` alias
+    // straight to `mob_member_id` builds a roster key nobody owns. That does not
+    // fail loudly - `member_status` answers with a well-formed "unknown" status
+    // carrying no session - so the surface reports `no_current_session` for a
+    // healthy addressed member. A false absence is worse than an error here,
+    // because a fleet sweep counts it as "not addressed yet" and moves on.
+    //
+    // Asserted against the DURABLE spelling's own answer rather than in
+    // isolation: the property is that both spellings reach one member, which a
+    // standalone assertion on the alias cannot express.
+    let (console_alias, stdin_alias) = both_planes(&rpc(
+        "routing-alias",
+        "mobkit/identity/routing_status",
+        json!({ "identity": format!("rt:{durable}:0") }),
+    ))
+    .await?;
+
+    for (plane, aliased, direct) in [
+        ("console", &console_alias, &console),
+        ("stdin", &stdin_alias, &stdin),
+    ] {
+        let direct_reason = direct["error"]["data"]["reason"].as_str();
+        let alias_reason = aliased["error"]["data"]["reason"].as_str();
+        assert_eq!(
+            alias_reason, direct_reason,
+            "{plane} plane answers the runtime alias differently from the durable identity \
+             it denotes. If the durable spelling resolves and the alias reports \
+             no_current_session, the lookup was not normalized through \
+             roster_member_id_for_supplied_id and a healthy member reads as unaddressed:\n  \
+             alias:  {aliased:#?}\n  direct: {direct:#?}"
+        );
+        if aliased["error"].is_null() {
+            assert_eq!(
+                aliased["result"]["session_id"], direct["result"]["session_id"],
+                "{plane} plane resolved the alias to a DIFFERENT session than the durable \
+                 identity: {aliased:#?}"
+            );
+            // The caller gets back the spelling it asked with; normalization is
+            // a lookup detail and must not rewrite the answer.
+            assert_eq!(
+                aliased["result"]["identity"],
+                json!(format!("rt:{durable}:0")),
+                "{plane} plane must echo the supplied identity, not the normalized one: \
+                 {aliased:#?}"
+            );
+        }
+    }
+
+    // ---- part D: malformed ingress is typed, and identical on both planes ----
+    //
+    // `invalid_identity` was documented as a member of the closed reason set
+    // while being UNREACHABLE: each plane refused a missing or empty identity
+    // inline with an untyped -32602 carrying no data, and the two planes did not
+    // agree with each other. A reason a caller can never observe is not part of
+    // a contract, so both cases are pinned here on both planes.
+    for (case, params) in [("empty", json!({ "identity": "" })), ("missing", json!({}))] {
+        let (console_bad, stdin_bad) = both_planes(&rpc(
+            "routing-bad",
+            "mobkit/identity/routing_status",
+            params,
+        ))
+        .await?;
+        for (plane, response) in [("console", &console_bad), ("stdin", &stdin_bad)] {
+            assert!(
+                !response["error"].is_null(),
+                "{plane} plane accepted a {case} identity: {response:#?}"
+            );
+            assert_eq!(
+                response["error"]["code"],
+                json!(-32602),
+                "a malformed request is invalid-params, not a server error \
+                 ({plane}, {case}): {response:#?}"
+            );
+            assert_eq!(
+                response["error"]["data"]["kind"],
+                json!("routing_status_unavailable"),
+                "{plane} plane refused a {case} identity untyped, so a caller cannot branch \
+                 on it the way it branches on every other refusal: {response:#?}"
+            );
+            assert_eq!(
+                response["error"]["data"]["reason"],
+                json!("invalid_identity"),
+                "{plane}/{case} must surface the documented reason: {response:#?}"
+            );
+        }
+        assert_eq!(
+            console_bad["error"]["data"], stdin_bad["error"]["data"],
+            "the planes disagree about a {case} identity:\n  console: {console_bad:#?}\n  \
+             stdin: {stdin_bad:#?}"
+        );
+    }
+
     // Advertisement, on both planes. A dispatchable method nothing advertises
     // is discoverable only by guessing.
     let console_caps = post_console_rpc(&app, &rpc("caps", "mobkit/capabilities", json!({}))).await;
