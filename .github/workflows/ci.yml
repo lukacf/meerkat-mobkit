@@ -221,6 +221,22 @@ jobs:
       - run: npm --prefix flow-editor run test:browser-source --silent
       - run: npm --prefix flow-editor run test:browser-interactions --silent
 
+  # The TypeScript SDK suite ran nowhere. 705 tests across 20 files existed and
+  # gated nothing, so a wrong RPC method name or a parser reading the wrong wire
+  # keys reached npm with only a typecheck behind it - and a typecheck cannot see
+  # either. `validate` is typecheck + build + test in that order because most of
+  # these tests import the built `dist/`, not `src/`.
+  test-typescript:
+    name: test-typescript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm --prefix sdk/typescript ci --silent --no-fund --no-audit
+      - run: npm --prefix sdk/typescript run validate --silent
+
   audit:
     name: audit
     runs-on: ubuntu-latest
@@ -234,7 +250,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [fmt-lint, test, test-python, console, console-fixtures, console-acceptance, flow-editor, audit]
+    needs: [fmt-lint, test, test-python, test-typescript, console, console-fixtures, console-acceptance, flow-editor, audit]
     runs-on: ubuntu-latest
     steps:
       - name: Check job results
@@ -242,6 +258,7 @@ jobs:
           if [[ "${{ needs.fmt-lint.result }}" != "success" ||
                 "${{ needs.test.result }}" != "success" ||
                 "${{ needs.test-python.result }}" != "success" ||
+                "${{ needs.test-typescript.result }}" != "success" ||
                 "${{ needs.console.result }}" != "success" ||
                 "${{ needs.console-fixtures.result }}" != "success" ||
                 "${{ needs.console-acceptance.result }}" != "success" ||
@@ -251,6 +268,7 @@ jobs:
             echo "  fmt-lint:     ${{ needs.fmt-lint.result }}"
             echo "  test:         ${{ needs.test.result }}"
             echo "  test-python:  ${{ needs.test-python.result }}"
+          echo "  test-typescript:    ${{ needs.test-typescript.result }}"
             echo "  console:      ${{ needs.console.result }}"
             echo "  console-fixtures:   ${{ needs.console-fixtures.result }}"
             echo "  console-acceptance: ${{ needs.console-acceptance.result }}"

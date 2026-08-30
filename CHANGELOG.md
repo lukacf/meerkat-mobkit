@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **CI now runs the TypeScript SDK suite.** It ran nowhere. 705 tests across 20
+  files existed and gated nothing: no job touched `sdk/typescript`, and the only
+  Makefile reference is `publish-dry-run-typescript`, which builds and packs
+  without testing. A wrong RPC method name, or a parser reading camelCase where
+  the gateway sends snake_case, reached npm behind a typecheck that cannot see
+  either.
+
+  Found by applying the reviewer's own standard to this release's TypeScript
+  contract test: having just been asked to prove the gateway-backed Python test
+  executes rather than skips, the same question asked of the new TS test
+  produced "it never runs in CI at all".
+
+  The job runs `validate` (typecheck, then build, then test) rather than `test`,
+  because most of these tests import the built `dist/` and `test` alone fails
+  with `ERR_MODULE_NOT_FOUND`. It is wired into `gate`'s result comparison, not
+  merely into `needs` - with `if: always()` a job listed only in `needs` is
+  advisory and cannot fail the suite. Two contract tests in
+  `scripts/test_ci_workflow.py` pin both halves, and both are mutation-checked:
+  downgrading the step to `typecheck`, or dropping the job from the result
+  comparison, each turn one red.
+
+
 - **`mobkit/identity/routing_status` exposes meerkat's typed model-routing
   status per identity.** The result is
   `meerkat_core::image_generation::SessionModelRoutingStatus` verbatim

@@ -46,6 +46,44 @@ class CiWorkflowTests(unittest.TestCase):
             block,
         )
 
+    def test_typescript_sdk_suite_actually_runs_in_ci(self):
+        """705 TypeScript tests existed and gated nothing.
+
+        No job ran `sdk/typescript` at all: the only Makefile reference is
+        `publish-dry-run-typescript`, which builds and packs without testing.
+        So a wrong RPC method name, or a parser reading camelCase where the
+        gateway sends snake_case, reached npm behind a typecheck that cannot
+        see either. Pin the invocation rather than the job's existence - a job
+        that stops running its tests looks identical to one that passes.
+
+        `validate` and not `test`: most of these tests import the built
+        `dist/`, so `test` alone fails with ERR_MODULE_NOT_FOUND.
+        """
+        block = job_block("test-typescript")
+        self.assertIn(
+            "- run: npm --prefix sdk/typescript run validate --silent",
+            block,
+        )
+
+    def test_gate_requires_every_job_it_lists(self):
+        """A job absent from `gate` can fail without failing the check suite.
+
+        `needs` alone does not gate: with `if: always()` the gate runs
+        regardless, so a job missing from the result comparison is advisory
+        only. Both lists must name the same jobs.
+        """
+        block = job_block("gate")
+        needs = block.split("needs: [", 1)[1].split("]", 1)[0]
+        listed = {name.strip() for name in needs.split(",")}
+        for name in listed:
+            self.assertIn(
+                'needs.%s.result }}" != "success"' % name,
+                block,
+                f"{name} is in `needs` but its result is never compared, so it "
+                f"cannot fail the gate",
+            )
+
+
 
 if __name__ == "__main__":
     unittest.main()
