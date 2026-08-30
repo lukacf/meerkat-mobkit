@@ -6949,9 +6949,15 @@ impl MobBootstrapSpec {
             // Persistent mob: councils become durable, so a restart can see
             // unfinished records through `list_unfinished` instead of losing
             // them with the process.
+            // Refuse the boot on an UNREADABLE store rather than degrading:
+            // an unreadable custody store is not an empty one, and meerkat's
+            // council recovery surfaces read/decode failure as a typed refusal.
+            // Silently falling back to in-memory here would swallow that
+            // signal at the boundary. An ABSENT store is still the ordinary
+            // first-boot case and still degrades quietly.
             crate::council_wiring::open_council_store(
                 &crate::council_wiring::council_db_for_store_path(&store_path),
-            ),
+            )?,
         );
         let mut spec = Self::new(definition, storage, session_service);
         spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
@@ -7253,9 +7259,16 @@ impl MobBootstrapSpec {
             // shares an argument shape with the ephemeral constructor, which
             // is how it first received the ephemeral arm - it compiled clean
             // and would have left persistent councils process-bound.
-            crate::council_wiring::open_council_store(
-                &crate::council_wiring::council_db_for_store_path(&store_path),
-            ),
+            // Ephemeral runtime-backed mob: councils stay IN-MEMORY.
+            //
+            // This site previously took a durable store, which contradicted
+            // the documented design and shipped in 0.8.29-dev. It shares an
+            // argument shape with the persistent constructor, and the guard
+            // that was meant to catch exactly that mis-assignment could not
+            // see this function at all - it is `pub(crate) fn`, which the
+            // guard's detection missed, so the site was attributed to the
+            // preceding `persistent_*` function and read as correct.
+            None,
         );
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
@@ -10433,10 +10446,30 @@ realm_profile = "worker-v2"
         let mut seen: Vec<(&str, bool)> = Vec::new();
         for (index, line) in lines.iter().enumerate() {
             let trimmed = line.trim_start();
-            if line.starts_with("    pub fn ") || line.starts_with("    fn ") {
+            // Method-level fn at EXACTLY four spaces, in every visibility and
+            // asyncness spelling. The first version of this guard matched only
+            // `    pub fn ` and `    fn `, so it could not see
+            // `pub(crate) fn ephemeral_runtime_backed_with_provider_stores` -
+            // it silently kept the PREVIOUS function's name, attributed that
+            // site to the preceding `persistent_*` constructor, and passed
+            // while a durable store was wired into an ephemeral one. A guard
+            // that cannot see a call site does not report it missing; it
+            // reports someone else's.
+            let is_method_fn = line.starts_with("    ")
+                && !line.starts_with("     ")
+                && (trimmed.starts_with("fn ")
+                    || trimmed.starts_with("async fn ")
+                    || trimmed.starts_with("pub fn ")
+                    || trimmed.starts_with("pub async fn ")
+                    || trimmed.starts_with("pub(crate) fn ")
+                    || trimmed.starts_with("pub(crate) async fn ")
+                    || trimmed.starts_with("pub(super) fn ")
+                    || trimmed.starts_with("pub(super) async fn "));
+            if is_method_fn {
                 enclosing = trimmed
-                    .trim_start_matches("pub ")
-                    .trim_start_matches("fn ")
+                    .rsplit(" fn ")
+                    .next()
+                    .unwrap_or("")
                     .split('(')
                     .next()
                     .unwrap_or("");
@@ -10448,6 +10481,16 @@ realm_profile = "worker-v2"
         }
 
         assert_eq!(seen.len(), 4, "call-site count changed: {seen:?}");
+        // Every site must have resolved to a NAMED function. An empty name
+        // means the detection above failed to see a `fn` line and silently
+        // attributed the site to whatever came before - which is exactly how
+        // the ephemeral/durable mix-up passed review.
+        for (function, _) in &seen {
+            assert!(
+                !function.is_empty(),
+                "a call site resolved to no enclosing function: {seen:?}"
+            );
+        }
         for (function, durable) in &seen {
             let expected = function.contains("persistent");
             assert_eq!(
