@@ -5,6 +5,108 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **CI now runs the TypeScript SDK suite.** It ran nowhere. 705 tests across 20
+  files existed and gated nothing: no job touched `sdk/typescript`, and the only
+  Makefile reference is `publish-dry-run-typescript`, which builds and packs
+  without testing. A wrong RPC method name, or a parser reading camelCase where
+  the gateway sends snake_case, reached npm behind a typecheck that cannot see
+  either.
+
+  Found by applying the reviewer's own standard to this release's TypeScript
+  contract test: having just been asked to prove the gateway-backed Python test
+  executes rather than skips, the same question asked of the new TS test
+  produced "it never runs in CI at all".
+
+  The job runs `validate` (typecheck, then build, then test) rather than `test`,
+  because most of these tests import the built `dist/` and `test` alone fails
+  with `ERR_MODULE_NOT_FOUND`. It is wired into `gate`'s result comparison, not
+  merely into `needs` - with `if: always()` a job listed only in `needs` is
+  advisory and cannot fail the suite. Two contract tests in
+  `scripts/test_ci_workflow.py` pin both halves, and both are mutation-checked:
+  downgrading the step to `typecheck`, or dropping the job from the result
+  comparison, each turn one red.
+
+
+- **`mobkit/identity/routing_status` exposes meerkat's typed model-routing
+  status per identity.** The result is
+  `meerkat_core::image_generation::SessionModelRoutingStatus` verbatim
+  (`WireSessionModelRoutingStatus` is a type alias to it), flattened under
+  `identity` and `session_id`. MobKit declares **no mirror type**: a second
+  declaration of an upstream shape is a second place for it to drift, so the
+  payload cannot disagree with meerkat's contract.
+
+  The fact this carries that nothing else does is `session_provider`, the typed
+  provider of the session's current LLM identity. Meerkat documents re-deriving
+  a provider from the effective model string as silently wrong for models owned
+  by a custom `ModelRegistry`; an absent `session_provider` means the machine
+  has no hydrated session LLM identity yet, and is **not** an invitation to
+  re-derive one.
+
+  Wired on **both** dispatch planes - the stdin JSON-RPC router in `rpc.rs` and
+  the HTTP console's own match in `http_console.rs` - plus the console ABAC
+  classifier (`ACTION_AGENT_VIEW`, the same grant as `identity/resolved_tools`),
+  both capability advertisements, and the Python and TypeScript SDKs. The
+  classifier entry is not optional bookkeeping: an unmapped console method
+  returns `None` from `console_rpc_access_requirements`, which makes the access
+  gate short-circuit to *allowed* and the capability filter advertise it to
+  everyone. Omitting it produces no compile error and no test failure.
+
+  **This method requires a resolved session.** Identity-first materializes an
+  identity without activating it, so an identity that has been materialized but
+  never addressed has no session and therefore no routing status. That is
+  structural - the status is per-session machine state - and it is the expected
+  state after a restart, not a defect. A fleet sweep must address before reading
+  and label its coverage post-address.
+
+  Failures carry a machine-readable `reason` so a sweep can classify an identity
+  rather than only fail it. Each reason is derived from a fact MobKit actually
+  observed, never inferred from a single upstream error:
+
+  | `reason` | Derived from |
+  |----------|--------------|
+  | `runtime_unsupported` | the session service exposes no runtime adapter |
+  | `no_current_session` | the roster reports no current session (see below) |
+  | `member_lookup_failed` | the mob could not resolve the member at all |
+  | `session_not_held` | a session resolved **and** meerkat answered `NotFound` |
+  | `upstream_read_failed` | a session resolved and the read failed some other way |
+  | `invalid_identity` | no usable identity was supplied |
+
+  `no_current_session` is named for the fact observed, not a cause inferred from
+  it. MobKit's `member_status` answers an unknown member with a well-formed
+  "unknown" status carrying no session rather than an error, so this one
+  observation covers **both** an identity materialized but never addressed (the
+  normal state at boot) **and** an identity that does not exist at all,
+  including a typo. This surface cannot distinguish them, so a caller sweeping a
+  fleet must assert it received a status for every identity it expected rather
+  than merely that nothing raised. Distinguishing them would need a roster read
+  that reports absence as absence; that belongs to `member_status`, and is
+  deliberately not papered over here. An earlier spelling of this reason
+  asserted the first case and was wrong for the second.
+
+  `session_not_held` is matched on the `RuntimeDriverError::NotFound` **variant**,
+  never on message text. Because that error is `#[non_exhaustive]`, every other
+  upstream failure - `NotReady`, `Destroyed`, `RecoveryCorruption`, and anything
+  added upstream later - lands in `upstream_read_failed`, which deliberately
+  diagnoses nothing. A consumer escalates on `session_not_held`; widening it to
+  mean "the read failed" would fire that escalation on states that are not
+  missing sessions at all.
+
+  Mutation-proven rather than merely green, on every surface. On the Rust side,
+  removing either dispatch arm, the typed error payload, the ABAC classifier
+  entry, or the `NotFound` narrowing each turns a specific test red. The
+  TypeScript contract test is executed rather than typechecked, and detects a
+  wrong RPC method name, a parser reading camelCase instead of the wire's
+  snake_case, and a coerced-away `session_provider`. The gateway-backed Python
+  test was confirmed to **execute** rather than skip, by building `rpc_gateway`
+  and then breaking the SDK method name to watch it go red. An earlier sweep was **discarded** as
+  worthless - its three "failures" were rustc ICEs in `identity_first/runtime.rs`
+  under incremental compilation, so the tests never ran. A build that breaks is
+  not a test that detects.
+
 ## [0.8.28] - 2026-08-29
 
 Pairs with meerkat `0.8.31` (tag `v0.8.31`, commit

@@ -1197,6 +1197,51 @@ class MobpackToolsCatalogResult:
 
 
 @dataclass(frozen=True)
+class IdentityRoutingStatusResult:
+    """Model routing status from mobkit/identity/routing_status.
+
+    Relays meerkat's ``SessionModelRoutingStatus`` unchanged. The override
+    summaries are kept as raw dicts on purpose: re-declaring meerkat's
+    ``ScopedModelOverrideSummary`` / ``SwitchTurnRequestSummary`` here would
+    create a second owner of a shape this SDK only forwards.
+    """
+
+    identity: str
+    session_id: str
+    baseline_model: str
+    effective_model: str
+    #: Typed provider of the session's current LLM identity.
+    #:
+    #: ``None`` means the runtime machine has no hydrated session LLM identity
+    #: yet (pre-hydration). It is NOT a signal to re-derive a provider from
+    #: ``effective_model``: meerkat documents that re-derivation as silently
+    #: wrong for models owned by a custom ``ModelRegistry``, which is the whole
+    #: reason this field is carried typed rather than inferred.
+    session_provider: str | None
+    active_turn_override: dict[str, Any] | None
+    active_operation_override: dict[str, Any] | None
+    pending_switch_turn: dict[str, Any] | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> IdentityRoutingStatusResult:
+        def _opt_obj(key: str) -> dict[str, Any] | None:
+            value = data.get(key)
+            return dict(value) if isinstance(value, dict) else None
+
+        provider = data.get("session_provider")
+        return cls(
+            identity=str(data.get("identity", "")),
+            session_id=str(data.get("session_id", "")),
+            baseline_model=str(data.get("baseline_model", "")),
+            effective_model=str(data.get("effective_model", "")),
+            session_provider=str(provider) if provider is not None else None,
+            active_turn_override=_opt_obj("active_turn_override"),
+            active_operation_override=_opt_obj("active_operation_override"),
+            pending_switch_turn=_opt_obj("pending_switch_turn"),
+        )
+
+
+@dataclass(frozen=True)
 class IdentityResolvedToolsResult:
     """Resolved per-identity tool surface from mobkit/identity/resolved_tools."""
     identity: str

@@ -112,6 +112,7 @@ import {
   parseMobRun,
   parseRichMemberSnapshot,
   parseIdentityResolvedToolsResult,
+  parseIdentityRoutingStatusResult,
   parseHelperResult,
   parseMobRunSnapshot,
   parseCrossMobContactEntry,
@@ -197,6 +198,7 @@ import {
   type MobRun,
   type RichMemberSnapshot,
   type IdentityResolvedToolsResult,
+  type IdentityRoutingStatusResult,
   type HelperResult,
   type MobRunSnapshot,
   type CrossMobContactEntry,
@@ -1775,6 +1777,27 @@ export class MobHandle {
   async identityResolvedToolsDetail(identity: string): Promise<IdentityResolvedToolsResult> {
     return parseIdentityResolvedToolsResult(
       await this._runtime._rpc("mobkit/identity/resolved_tools", { identity }),
+    );
+  }
+
+  /**
+   * Meerkat's typed model-routing status for an identity's live session.
+   *
+   * Rejects if the runtime machine does not hold the session. The rejection
+   * carries a machine-readable `reason` in its error data
+   * (`runtime_unsupported`, `no_current_session`, `member_lookup_failed`,
+   * `session_not_held`, `upstream_read_failed`, `invalid_identity`) so a
+   * fleet sweep can classify an identity rather than only fail it.
+   *
+   * `no_current_session` covers BOTH an identity that was materialized and
+   * never addressed (the normal state after a restart, not a defect) AND an
+   * identity that does not exist at all. This surface cannot distinguish them,
+   * so a sweep must assert it received a status for every identity it expected
+   * rather than merely that nothing threw.
+   */
+  async identityRoutingStatus(identity: string): Promise<IdentityRoutingStatusResult> {
+    return parseIdentityRoutingStatusResult(
+      await this._runtime._rpc("mobkit/identity/routing_status", { identity }),
     );
   }
 

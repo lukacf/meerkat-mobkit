@@ -1965,6 +1965,7 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/peer_pubkey",
                 "mobkit/member_status",
                 "mobkit/identity/resolved_tools",
+                "mobkit/identity/routing_status",
                 "mobkit/force_cancel_member",
                 "mobkit/spawn_helper",
                 "mobkit/fork_helper",
@@ -3392,6 +3393,24 @@ async fn handle_unified_rpc_json_inner(
                 "the identity status read and the session tool-scope snapshot",
                 response_id.clone(),
                 mob_methods::handle_identity_resolved_tools(
+                    runtime,
+                    identity_ctx.map(|ctx| &ctx.runtime),
+                    response_id,
+                    &request.params,
+                ),
+            )
+            .await
+        }
+        // Same deadline posture as `resolved_tools`: this crosses the
+        // identity-runtime status read and then a runtime-machine command,
+        // so it can queue behind a member's in-flight turn exactly the way
+        // OB3 observed for `resolved_tools`.
+        "mobkit/identity/routing_status" => {
+            with_read_deadline(
+                "mobkit/identity/routing_status",
+                "the identity status read and the session model-routing status",
+                response_id.clone(),
+                mob_methods::handle_identity_routing_status(
                     runtime,
                     identity_ctx.map(|ctx| &ctx.runtime),
                     response_id,

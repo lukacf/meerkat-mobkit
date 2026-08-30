@@ -888,6 +888,52 @@ async def test_identity_resolved_tools_detail_rpc_name():
 
 
 @pytest.mark.asyncio
+async def test_identity_routing_status_rpc_name():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/identity/routing_status": {
+            "identity": "domain:security",
+            "session_id": "sid-1",
+            "baseline_model": "gpt-5.6-sol",
+            "effective_model": "gpt-5.6-sol",
+            "session_provider": "openai",
+        }
+    })
+    result = await handle.identity_routing_status("domain:security")
+    assert calls[0][0] == "mobkit/identity/routing_status"
+    assert calls[0][1] == {"identity": "domain:security"}
+    assert result.identity == "domain:security"
+    assert result.session_id == "sid-1"
+    assert result.baseline_model == "gpt-5.6-sol"
+    assert result.effective_model == "gpt-5.6-sol"
+    assert result.session_provider == "openai"
+    # The optional override summaries are absent on the wire, not empty dicts.
+    assert result.active_turn_override is None
+    assert result.pending_switch_turn is None
+
+
+@pytest.mark.asyncio
+async def test_identity_routing_status_absent_provider_stays_none():
+    """An ABSENT session_provider must decode to None, never to a string.
+
+    session_provider is Option + skip_serializing_if upstream, so a
+    pre-hydration session simply omits the key. Coercing that to "" or "None"
+    would make a caller's provider comparison silently pass against a value
+    that was never read.
+    """
+    handle, _calls = make_mock_mob_handle({
+        "mobkit/identity/routing_status": {
+            "identity": "domain:security",
+            "session_id": "sid-1",
+            "baseline_model": "claude-fable-5",
+            "effective_model": "claude-fable-5",
+        }
+    })
+    result = await handle.identity_routing_status("domain:security")
+    assert result.session_provider is None
+    assert result.baseline_model == "claude-fable-5"
+
+
+@pytest.mark.asyncio
 async def test_force_cancel_member_rpc_name():
     handle, calls = make_mock_mob_handle()
     await handle.force_cancel_member("w1")

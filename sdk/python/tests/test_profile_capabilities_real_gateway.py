@@ -121,6 +121,46 @@ async def _assert_security_shell_surface(handle) -> None:
     assert tools.isdisjoint(_BROAD_BUILTIN_TOOLS)
 
 
+_ROUTING_STATUS_REASONS = {
+    "runtime_unsupported",
+    "no_current_session",
+    "member_lookup_failed",
+    "session_not_held",
+    "upstream_read_failed",
+    "invalid_identity",
+}
+
+
+async def _assert_routing_status_is_reachable_through_a_real_gateway(handle) -> None:
+    """End-to-end reachability for mobkit/identity/routing_status.
+
+    Deliberately NOT asserting a particular provider: this fixture does not
+    control whether the member has been addressed, and routing status is
+    per-session state. What it does pin is the whole chain through a real
+    gateway binary - SDK method exists, method is dispatched (not -32601),
+    and the answer conforms to the contract either way.
+
+    Both branches are correct outcomes, so both are accepted; what is NOT
+    accepted is an untyped failure, which is what a caller sweeping a fleet
+    cannot act on.
+    """
+    try:
+        status = await handle.identity_routing_status("domain:security")
+    except RpcError as err:
+        assert err.data is not None, (
+            f"routing_status must fail with typed data a caller can branch on: {err}"
+        )
+        assert err.data.get("kind") == "routing_status_unavailable", err.data
+        assert err.data.get("reason") in _ROUTING_STATUS_REASONS, err.data
+        assert err.data.get("identity") == "domain:security", err.data
+        return
+    assert status.identity == "domain:security"
+    assert status.session_id
+    # An ABSENT provider must stay None rather than becoming a string; a
+    # comparison against a coerced "" would pass without reading anything.
+    assert status.session_provider is None or isinstance(status.session_provider, str)
+
+
 async def _assert_stale_runtime_id_rejected(
     handle,
     stale_runtime_id: str,
@@ -141,6 +181,7 @@ async def _assert_stale_runtime_id_rejected(
     await assert_stale(lambda: handle.get_member(stale_runtime_id))
     await assert_stale(lambda: handle.member_status(stale_runtime_id))
     await assert_stale(lambda: handle.identity_resolved_tools(stale_runtime_id))
+    await assert_stale(lambda: handle.identity_routing_status(stale_runtime_id))
     await assert_stale(lambda: handle.send(stale_runtime_id, "should not deliver"))
     await assert_stale(lambda: handle.retire_member(stale_runtime_id))
     await assert_stale(lambda: handle.respawn_member(stale_runtime_id))
@@ -179,6 +220,7 @@ async def test_real_gateway_reset_reprofile_materializes_shell_tools(tmp_path):
         assert security_status.agent_runtime_id != old_runtime_id
         await _assert_stale_runtime_id_rejected(handle, old_runtime_id, stale_label)
         await _assert_security_shell_surface(handle)
+        await _assert_routing_status_is_reachable_through_a_real_gateway(handle)
 
         await runtime.shutdown()
         runtime = await _build_runtime(mob_toml, state_dir, roster)
@@ -186,6 +228,10 @@ async def test_real_gateway_reset_reprofile_materializes_shell_tools(tmp_path):
         resumed_status = await runtime.status("domain:security")
         assert resumed_status.profile == "security"
         await _assert_security_shell_surface(handle)
+        # Read it again AFTER a full gateway restart: this is the shape a fleet
+        # sweep actually runs, and a method that only works pre-restart would
+        # pass the call above and still be useless post-resume.
+        await _assert_routing_status_is_reachable_through_a_real_gateway(handle)
 
         await runtime.reset("domain:plain")
         assert "shell" not in await handle.identity_resolved_tools("domain:plain")
