@@ -51,6 +51,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   so reusing the helper there would add a cross-package dependency purely to
   share a utility. It needs a decision about where a shared helper lives.
 
+- **A steer no longer pins to the bottom of the transcript while its own turn
+  streams over it.** Reported from a live console: a message typed while the
+  agent was working stayed at the bottom while output produced after it kept
+  appearing above. In the report a tool result stamped `22:24:21` rendered above
+  a message stamped `22:23:54`.
+
+  The transcript was not sorted by timestamp. `sortFramesForTranscript` compared
+  the two frames' interaction GROUP START times and returned before own
+  timestamps were ever consulted, so frames in different interactions never had
+  their own timestamps compared at all. A steer is minted as its own interaction
+  while the running turn's in-flight frames keep the original id - the active
+  interaction is only reassigned by `run_started`, and a steer merely joins the
+  pending queue - so the turn's earlier group start pinned everything it
+  produced afterwards above the steer, permanently.
+
+  Group-start ordering keeps an interaction's frames contiguous, which is right
+  whenever interactions do not overlap and wrong the moment they do. Ordering by
+  own timestamp costs nothing in the ordinary case, because contiguity falls out
+  of chronology for free when interactions do not overlap.
+
+  The same-interaction start-event rule deliberately still runs BEFORE the
+  timestamp comparison: promoting own-timestamp above it broke an existing test
+  by name, which pins that within one interaction an `interaction_started`
+  stamped later than a `text_delta` must still render first. Only the
+  cross-interaction group substitution is removed. The group timestamp also
+  remains the fallback for frames carrying none, since reasoning frames often
+  arrive without one and would otherwise render at the end of the turn.
+
+  Fixed in both copies; `packages/console-core/src/adapters.ts` carries a
+  structurally identical twin that differs only by a trailing comment, so a
+  byte-level search for the duplicate does not find it.
+
+  Neither property had any test coverage: nothing constructed two interleaved
+  interactions and asserted rendered order. Two tests added, one for the
+  reported defect and one guarding the opposite regression so this cannot later
+  be "fixed" by abandoning grouping. Mutation-proven: restoring the group-min
+  comparison turns the steer test red and only that test.
+
 
 ### Added
 
