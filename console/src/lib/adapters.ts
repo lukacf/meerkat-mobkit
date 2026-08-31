@@ -654,9 +654,6 @@ function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
       const rightInteraction = right.frame.interactionId?.trim() || "";
       const leftGroupTs = transcriptGroupTimestamp(left.frame);
       const rightGroupTs = transcriptGroupTimestamp(right.frame);
-      if (leftGroupTs !== rightGroupTs) {
-        return leftGroupTs - rightGroupTs;
-      }
       if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
         const leftStarts = isInteractionStartEvent(left.frame.event);
         const rightStarts = isInteractionStartEvent(right.frame.event);
@@ -664,12 +661,36 @@ function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
           return leftStarts ? -1 : 1;
         }
       }
-      // A frame missing its own timestamp must NOT jump to the end of its
-      // interaction. Reasoning frames frequently arrive without a timestamp; with
-      // a MAX_SAFE_INTEGER fallback they sort after the answer text and render
-      // "thinking" at the end of the turn. Fall back to the interaction's group
-      // timestamp so the frame keeps its chronological position; eventSortRank and
-      // arrival order then break ties (reasoning before text).
+      // OWN timestamp first, with the interaction's group timestamp only as a
+      // FALLBACK for frames that carry none.
+      //
+      // This used to compare the two frames' INTERACTION GROUP START times
+      // first, and return before own timestamps were ever consulted - so for
+      // two frames in different interactions their own timestamps were never
+      // compared at all. That keeps an interaction's frames contiguous, which
+      // is right whenever interactions do not overlap. It lies when they do.
+      //
+      // A mid-turn steer is exactly that overlap. The steer is minted as its
+      // OWN interaction (console_aggregator mints a fresh id for every console
+      // send), while the running turn's in-flight frames keep the original id -
+      // `active_interaction_by_identity` is only reassigned by `run_started`,
+      // and a steer merely joins the pending queue. So the turn's group start
+      // stayed earlier than the steer forever, and every frame the turn
+      // produced AFTER the steer still rendered ABOVE it. The operator saw
+      // their message pinned to the bottom while output streamed in over it.
+      //
+      // Ordering by own timestamp costs nothing when interactions do not
+      // overlap: contiguity falls out of chronology for free. When they do
+      // overlap, chronology is the honest answer and contiguity is not
+      // available in any case.
+      //
+      // The fallback is load-bearing and must stay. Reasoning frames frequently
+      // arrive with no timestamp; a MAX_SAFE_INTEGER default would sort them
+      // after the answer text and render "thinking" at the end of the turn.
+      // Falling back to the group timestamp keeps such a frame at its
+      // interaction's start, where it ties with `interaction_started` (which
+      // holds that same group minimum by construction) and the start-event rule
+      // below then orders them.
       const leftTs = typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : leftGroupTs;
       const rightTs = typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : rightGroupTs;
       if (leftTs !== rightTs) {

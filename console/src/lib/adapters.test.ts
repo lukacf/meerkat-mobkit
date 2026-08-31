@@ -8330,3 +8330,140 @@ test("a council emits ONE card even when two frames each carry the sealed result
   ));
   assert.equal(toolRows.length, 0, "the raw council tool call is suppressed");
 });
+
+// A MID-TURN STEER. The operator types while the agent is still working, and
+// everything the agent produces afterwards must render BELOW that message.
+//
+// The frames below reproduce the real shape rather than a convenient one: a
+// steer is minted as its OWN interaction (the aggregator mints a fresh id for
+// every console send), while the running turn's in-flight frames keep the
+// ORIGINAL id, because `active_interaction_by_identity` is only reassigned by
+// `run_started` and a steer merely joins the pending queue.
+//
+// That is the case the transcript sort used to get wrong: it compared the two
+// frames' interaction GROUP START times and returned before own timestamps were
+// ever consulted, so the turn's later frames inherited the turn's earlier start
+// and sorted above the steer permanently.
+test("a mid-turn steer renders before the frames its own turn produced after it", () => {
+  const STEER_MS = 1_779_405_500_000;
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "calendar",
+      member_id: "calendar",
+      label: "calendar",
+      kind: "identity",
+    },
+    [
+      {
+        id: "turn-start",
+        cursor: "console:1",
+        event: "interaction_started",
+        timestampMs: STEER_MS - 60_000,
+        interactionId: "turn-0",
+        data: { content: "check the attendance records" },
+      },
+      {
+        id: "before",
+        cursor: "console:2",
+        event: "tool_call_requested",
+        timestampMs: STEER_MS - 30_000,
+        interactionId: "turn-0",
+        data: { id: "call-before", name: "get_activities_by_date", args: {} },
+      },
+      // The operator's steer: its own interaction, later than the turn's start.
+      {
+        id: "steer",
+        cursor: "console:3",
+        event: "user_input",
+        timestampMs: STEER_MS,
+        interactionId: "steer-1",
+        data: { content: "fyi these were the fixes", status: "accepted" },
+      },
+      // Still the ORIGINAL turn, produced AFTER the steer. This is the frame
+      // that used to jump above it.
+      {
+        id: "after",
+        cursor: "console:4",
+        event: "tool_call_requested",
+        timestampMs: STEER_MS + 27_000,
+        interactionId: "turn-0",
+        data: { id: "call-after", name: "get_activities_by_date", args: {} },
+      },
+    ],
+    { renderInteractionStartsAsUser: true, renderTextDeltas: true },
+  );
+
+  const order = entries.map((entry) => entry.id);
+  const steerIndex = order.findIndex((id) => String(id).includes("steer"));
+  const afterIndex = order.findIndex((id) => String(id).includes("after"));
+  const beforeIndex = order.findIndex((id) => String(id).includes("before"));
+
+  assert.ok(steerIndex >= 0, `the steer must render at all: ${JSON.stringify(order)}`);
+  assert.ok(afterIndex >= 0, `the post-steer frame must render: ${JSON.stringify(order)}`);
+  assert.ok(beforeIndex >= 0, `the pre-steer frame must render: ${JSON.stringify(order)}`);
+
+  // The property the operator actually asked for.
+  assert.ok(
+    afterIndex > steerIndex,
+    `a frame produced 27s AFTER the steer rendered ABOVE it. The operator's message is \
+pinned to the bottom while the turn streams over it. order=${JSON.stringify(order)}`,
+  );
+  // The other half: the steer must not be dragged to the top either. Ordering
+  // by own timestamp has to keep the turn's EARLIER frames above it.
+  assert.ok(
+    beforeIndex < steerIndex,
+    `a frame produced 30s BEFORE the steer rendered below it: order=${JSON.stringify(order)}`,
+  );
+});
+
+// Contiguity is not sacrificed when interactions do NOT overlap. Ordering by
+// own timestamp gives grouping for free in the ordinary case, so this pins that
+// the fix above did not trade one defect for another.
+test("two sequential interactions stay contiguous when they do not overlap", () => {
+  const BASE = 1_779_405_600_000;
+  const entries = mapFramesToTimelineEntries(
+    { agent_id: "calendar", member_id: "calendar", label: "calendar", kind: "identity" },
+    [
+      {
+        id: "a-start",
+        cursor: "console:1",
+        event: "interaction_started",
+        timestampMs: BASE,
+        interactionId: "turn-a",
+        data: { content: "first question" },
+      },
+      {
+        id: "a-tool",
+        cursor: "console:2",
+        event: "tool_call_requested",
+        timestampMs: BASE + 1_000,
+        interactionId: "turn-a",
+        data: { id: "call-a", name: "lookup", args: {} },
+      },
+      {
+        id: "b-start",
+        cursor: "console:3",
+        event: "interaction_started",
+        timestampMs: BASE + 10_000,
+        interactionId: "turn-b",
+        data: { content: "second question" },
+      },
+      {
+        id: "b-tool",
+        cursor: "console:4",
+        event: "tool_call_requested",
+        timestampMs: BASE + 11_000,
+        interactionId: "turn-b",
+        data: { id: "call-b", name: "lookup", args: {} },
+      },
+    ],
+    { renderInteractionStartsAsUser: true, renderTextDeltas: true },
+  );
+
+  const order = entries.map((entry) => String(entry.id));
+  const idx = (needle: string) => order.findIndex((id) => id.includes(needle));
+  assert.ok(
+    idx("a-start") < idx("a-tool") && idx("a-tool") < idx("b-start") && idx("b-start") < idx("b-tool"),
+    `non-overlapping interactions must stay grouped and in order: ${JSON.stringify(order)}`,
+  );
+});
