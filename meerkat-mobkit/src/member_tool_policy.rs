@@ -410,6 +410,33 @@ mod tests {
     }
 
     #[test]
+    fn brain_swap_exact_grant_allows_and_missing_grant_obeys_default_deny() {
+        const BRAIN_SWAP: &str = "brain_swap";
+
+        let granted = installed(policy(1, "member-a", BRAIN_SWAP));
+        let granted_snapshot = granted.snapshot(&policy_id()).expect("snapshot");
+        assert!(matches!(
+            granted_snapshot.evaluate(&request("member-a", BRAIN_SWAP)),
+            ToolConsequenceVerdict::Allow
+        ));
+
+        let missing = policy(1, "member-a", "shell");
+        assert!(
+            missing.default_deny,
+            "a policy minted through new() must be default-deny"
+        );
+        let denied = installed(missing);
+        let denied_snapshot = denied.snapshot(&policy_id()).expect("snapshot");
+        match denied_snapshot.evaluate(&request("member-a", BRAIN_SWAP)) {
+            ToolConsequenceVerdict::Deny(denial) => {
+                assert_eq!(denial.code, DENIAL_CODE_NO_GRANT);
+                assert!(denial.message.contains(BRAIN_SWAP), "{}", denial.message);
+            }
+            other => panic!("expected a typed denial, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn the_provider_refuses_a_revision_rollback() {
         let provider = installed(policy(7, "member-a", "shell"));
         let error = provider
