@@ -621,3 +621,181 @@ async fn repair_refuses_disposal_when_the_resume_source_is_absent() {
     );
     drop(gate_tx);
 }
+
+/// A queued input that NEVER RAN must never be reported as COMPLETED, and must
+/// survive a destructive retire in a state a caller can still act on.
+///
+/// The distinction this protects is the one meerkat's own enum documents: a host
+/// reading a terminal outcome is asking *why its work did not run*, and
+/// `Consumed` answers that question with something that never happened. The
+/// dangerous failure is not "the input was lost" - the sibling test above
+/// already pins that it is carried - it is "the input was silently marked
+/// done".
+///
+/// WHAT I LEARNED WRITING THIS, recorded because it corrects the obligation as
+/// filed. I set out to assert `Abandoned { reason: NeverExecuted }` and the
+/// premise was wrong twice over:
+///
+///  - `retire_runtime` does NOT abandon a queued input. It leaves it `Queued`
+///    with no terminal outcome, deliberately, because identity-first repair
+///    CARRIES pending ingress into the healed successor. That is the fix the
+///    sibling test above exists to protect; abandoning here would re-introduce
+///    the defect it guards.
+///  - the abandoning teardowns (`Reset` / `Stopped`) are unreachable in this
+///    state: reset is guard-rejected from `Running`, and a wedged turn is
+///    precisely what holds the runtime `Running`. `NeverExecuted` itself has one
+///    production producer - a run created then refused - which needs a
+///    store-commit failure and is not drivable from a black-box harness.
+///
+/// So the reachable, meaningful MobKit contract is the anti-fabrication one
+/// asserted below. `InputAbandonReason::NeverExecuted` remains covered only by
+/// meerkat's driver-level tests, and this must not be recorded as covering it.
+#[tokio::test]
+async fn a_queued_input_that_never_ran_terminalizes_as_abandoned_not_consumed() {
+    let (gate_tx, gate_rx) = watch::channel(true);
+    let harness = build_harness(gate_rx).await;
+    let machine = harness.machine.as_ref();
+
+    // Seed one completed turn so the durable row exists, same as the siblings.
+    harness
+        .bridge
+        .deliver(
+            &harness.runtime_id,
+            &meerkat_core::ContentInput::Text("seed turn".to_string()),
+        )
+        .await
+        .expect("seed turn delivery");
+    wait_until(
+        "the seed turn to complete",
+        Duration::from_secs(20),
+        || async {
+            let ran = harness
+                .prompts
+                .lock()
+                .expect("prompt record lock")
+                .iter()
+                .any(|prompt| prompt.contains("seed turn"));
+            ran && SessionServiceRuntimeExt::list_active_inputs(machine, &harness.session_id)
+                .await
+                .map(|active| active.is_empty())
+                .unwrap_or(false)
+        },
+    )
+    .await;
+
+    // Wedge the member so nothing behind it can start.
+    gate_tx.send(false).expect("close gate");
+    harness
+        .bridge
+        .deliver(
+            &harness.runtime_id,
+            &meerkat_core::ContentInput::Text("wedged".to_string()),
+        )
+        .await
+        .expect("wedged turn delivery");
+    wait_until(
+        "the wedged turn to bind the runtime",
+        Duration::from_secs(10),
+        || async {
+            !SessionServiceRuntimeExt::list_active_inputs(machine, &harness.session_id)
+                .await
+                .map(|active| active.is_empty())
+                .unwrap_or(true)
+        },
+    )
+    .await;
+
+    // Snapshot BEFORE queuing so the queued input is identified by DIFFERENCE
+    // rather than by assuming an ordering the runtime does not promise.
+    let before: Vec<_> = SessionServiceRuntimeExt::list_active_inputs(machine, &harness.session_id)
+        .await
+        .expect("active inputs readable");
+
+    harness
+        .bridge
+        .deliver(
+            &harness.runtime_id,
+            &meerkat_core::ContentInput::Text("queued behind the wedge".to_string()),
+        )
+        .await
+        .expect("queued delivery");
+
+    let queued_id = {
+        let mut found = None;
+        for _ in 0..100 {
+            let after = SessionServiceRuntimeExt::list_active_inputs(machine, &harness.session_id)
+                .await
+                .expect("active inputs readable");
+            if let Some(id) = after.iter().find(|id| !before.contains(id)) {
+                found = Some((*id).clone());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        found.expect("the queued input must appear as active behind the wedge")
+    };
+
+    // It must never have run: the gate is still closed, so no prompt for it.
+    assert!(
+        !harness
+            .prompts
+            .lock()
+            .expect("prompt record lock")
+            .iter()
+            .any(|prompt| prompt.contains("queued behind the wedge")),
+        "precondition: the queued input must NOT have executed, or this test is \
+         asserting about a different lifecycle than the one it names"
+    );
+
+    // Tear the runtime down. Retire is the destructive path and is legal
+    // from Running; reset is not, because the wedged turn holds the runtime
+    // there - which is exactly the state a never-ran queued input lives in.
+    SessionServiceRuntimeExt::retire_runtime(machine, &harness.session_id)
+        .await
+        .expect("retire must terminalize pending inputs");
+
+    let state = SessionServiceRuntimeExt::input_state(machine, &harness.session_id, &queued_id)
+        .await
+        .expect("input state readable")
+        .expect("the queued input must still have a durable row after teardown");
+
+    let outcome = state.seed.terminal_outcome.clone();
+
+    // THE LOAD-BEARING ASSERTION. A `Queued` phase is what makes the input
+    // recoverable, and it is mutually exclusive with any completion verdict:
+    // a `Consumed` outcome cannot coexist with a non-terminal phase. So this
+    // one line carries both halves - "not lost" and "not reported done".
+    assert_eq!(
+        state.seed.phase,
+        meerkat_runtime::InputLifecycleState::Queued,
+        "a never-run queued input must remain queued and recoverable across a \
+         destructive retire, not be disposed of, terminalized, or marked done: \
+         {state:?}"
+    );
+
+    // Consistency guard, and stated honestly: on this path `terminal_outcome`
+    // is always `None`, so this cannot fire today and is NOT live coverage of
+    // the not-Consumed property - the phase assertion above is. It exists to
+    // catch a future change that sets a terminal outcome while leaving the
+    // phase non-terminal, which would be an internally inconsistent row that
+    // the phase check alone would pass.
+    assert!(
+        !matches!(
+            outcome,
+            Some(meerkat_runtime::InputTerminalOutcome::Consumed)
+        ),
+        "terminal outcome Consumed on a {:?} phase is an inconsistent row: {outcome:?}",
+        state.seed.phase
+    );
+
+    // The precondition restated as a postcondition: still never ran.
+    assert!(
+        !harness
+            .prompts
+            .lock()
+            .expect("prompt record lock")
+            .iter()
+            .any(|prompt| prompt.contains("queued behind the wedge")),
+        "the queued input must still not have executed after the retire"
+    );
+}

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A never-run queued input is pinned against being reported as completed.**
+  All three consumers had reported NULL coverage on this clause. The test drives
+  a real wedged member, queues an input behind it, destroys the runtime with a
+  retire, and asserts on the durable row.
+
+  Writing it corrected the obligation as filed, in two ways worth recording.
+  `retire_runtime` does **not** abandon a queued input - it leaves it `Queued`
+  with no terminal outcome, deliberately, because identity-first repair carries
+  pending ingress into the healed successor; abandoning there would re-introduce
+  the defect the neighbouring test guards. And the abandoning teardowns
+  (`Reset` / `Stopped`) are unreachable in that state, since reset is
+  guard-rejected from `Running` and a wedged turn is exactly what holds the
+  runtime `Running`. `InputAbandonReason::NeverExecuted` itself has one
+  production producer - a run created then refused - which needs a store-commit
+  failure and is not drivable from a black-box harness, so it remains covered
+  only by meerkat's driver-level tests. This is deliberately **not** recorded as
+  covering that clause.
+
+  Mutation-checked, which changed the test: flipping the expected phase and
+  selecting the wrong input id each turn it red, but neutering the
+  `terminal_outcome.is_none()` assertion did **not** - it was redundant given
+  the phase check, and the `Consumed` guard is vacuous on a path where the
+  outcome is always `None`. The redundant assertion was removed and the
+  remaining guard is labelled in-place as a consistency check rather than live
+  coverage, so nobody reads it as protection it does not provide.
+
 ### Fixed
 
 - **The console copy button lied on plain http, and one of the two still did.**
