@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING for hosts that supply `application_tool_policies`: a compiled
+  artifact whose `member_identity` values name no roster row is now refused at
+  install instead of accepted.** The grant lookup is exact string equality
+  against `MobMemberBinding.member`, which Meerkat sets from the member's
+  `AgentIdentity` - the ENCODED DURABLE identity. Nothing decodes either side.
+  An artifact compiled against any other id space therefore matches no member at
+  all, and since `validate()` forces `default_deny` true, that policy denies
+  every tool for every member the moment it binds.
+
+  Two id spaces are now refused by name, each with the id to compile instead:
+  the encoded agent RUNTIME id (`mk--rt_cdomain_ccalendar_c0`) and an
+  unencoded durable identity (`domain:calendar`). Both were reachable before
+  and neither failed loudly.
+
+  This is fail-closed in a direction that can stop a boot: a host holding a
+  wrong-id-space artifact upgrades from "gateway starts, policy inert" to
+  "gateway refuses to start". That is deliberate. The state it replaces is a
+  126KB artifact that is reviewed, deployed, and either inert or total, with no
+  surface that distinguishes those two - because `Allow` emits no observation
+  and only `Deny` reaches the observer, so an operator's only evidence is an
+  absence that reads identically either way.
+
+  Found by HomeCore on 2026-08-31: 17 members compiled as the encoded runtime
+  id, `default_deny = true`, 120 grants each, and three ungranted tools
+  executing successfully with zero denials fleet-wide. Confirmed against their
+  live continuity store rather than only against source - all 17 stored
+  `MobMemberBinding.member` values are the encoded durable identity, and all 17
+  declared tokens diverge from them. OB3 independently hit the same
+  two-id-space trap the same night on event subscription, where the wrong space
+  yields silence rather than an error. `member_comms_id.rs` already documented
+  the conversion as producing "binding detail that no longer names a roster row
+  at all" and warned that a site keeping it "does not fail loudly". This is the
+  place where it now does.
+
+  The two defects were cancelling, which is why warning would have been the
+  wrong shape: with nothing Provider-bound the wrong ids were harmless, and a
+  well-meaning "turn the policy on" change would have denied every tool for
+  every identity in the household at once.
+
+- **`mobkit_gateway` refuses `application_tool_policies` instead of silently
+  dropping it.** Only `rpc_gateway` builds the application tool-policy
+  registry. `mobkit_gateway`'s `InitParams` carries no `deny_unknown_fields`, so
+  the key was discarded by serde: a host that compiled, reviewed and deployed an
+  artifact against that binary got no registry, no error and no warning. That is
+  the same "looks deployed, does nothing" state as above, one layer up and on
+  the other binary. The refusal names `rpc_gateway` as where the parameter takes
+  effect, so it is a redirection rather than a dead end.
+
 ### Added
 
 - **`UnifiedRuntime::shutdown_horizon()` makes the shutdown budget discoverable

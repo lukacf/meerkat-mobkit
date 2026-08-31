@@ -126,14 +126,70 @@ impl CompiledPolicyProvider {
         }
     }
 
+    /// Refuse a `member_identity` that cannot name a roster row.
+    ///
+    /// The grant lookup in [`CompiledPolicySnapshot::evaluate`] is exact string
+    /// equality against `MobMemberBinding.member`, and Meerkat sets that from
+    /// the member's `AgentIdentity` - the ENCODED DURABLE identity
+    /// (`meerkat-mob` build.rs, `member: agent_identity.as_str()`, whose very
+    /// next statement requires `comms_name()` to validate). Neither side
+    /// decodes. So an artifact compiled against any other id space matches no
+    /// member at all, and because `validate()` forces `default_deny` true, that
+    /// policy denies EVERY tool for EVERY member the moment it is bound.
+    ///
+    /// Install is the only loud moment available. What this prevents is not a
+    /// wrong verdict but an artifact that is accepted, looks deployed, and is
+    /// either inert (nothing bound) or total (something bound) - two states no
+    /// surface distinguishes, because `Allow` emits no observation and only
+    /// `Deny` reaches the observer.
+    ///
+    /// The exact production shape, HomeCore 2026-08-31: 17 members compiled as
+    /// `mk--rt_cdomain_ccalendar_c0`, the encoded AGENT RUNTIME ID.
+    /// [`crate::member_comms_id::roster_member_id_for_identity`] documents that
+    /// conversion as producing "binding detail that no longer names a roster
+    /// row at all", and warns it "does not fail loudly". Here it does.
+    fn validate_member_identity(member_identity: &str) -> Result<(), String> {
+        if member_identity.is_empty() {
+            return Err("is empty".to_string());
+        }
+        let decoded = crate::member_comms_id::runtime_alias_str(member_identity);
+        if crate::member_comms_id::is_reserved_generated_alias(member_identity) {
+            return Err(
+                match crate::member_comms_id::durable_identity_from_runtime_alias(decoded.as_ref())
+                {
+                    Some(durable) => format!(
+                        "names the agent RUNTIME id '{}', which is binding detail and matches no \
+                         roster row; compile the encoded durable identity '{}' instead",
+                        decoded,
+                        crate::member_comms_id::mob_member_id_str(&durable)
+                    ),
+                    None => format!(
+                        "names the reserved '{decoded}' runtime namespace, which matches no roster \
+                         row"
+                    ),
+                },
+            );
+        }
+        let canonical = crate::member_comms_id::mob_member_id_str(decoded.as_ref()).into_owned();
+        if canonical != member_identity {
+            return Err(format!(
+                "is not a canonical roster member id; the encoded form of '{decoded}' is \
+                 '{canonical}'"
+            ));
+        }
+        Ok(())
+    }
+
     /// Install a compiled policy, refusing any revision that is not a forward
     /// move for its policy id.
     ///
-    /// Rejects three things: a policy belonging to another provider, a revision
-    /// below one already accepted, and a repeat of an accepted revision whose
-    /// bytes differ. The last one matters because a silent content swap under a
-    /// stable revision would make the digest the only evidence, and nothing
-    /// downstream re-checks it.
+    /// Rejects four things: a policy belonging to another provider, a
+    /// `member_identity` that names no roster row (see
+    /// [`Self::validate_member_identity`]), a revision below one already
+    /// accepted, and a repeat of an accepted revision whose bytes differ. The
+    /// last one matters because a silent content swap under a stable revision
+    /// would make the digest the only evidence, and nothing downstream
+    /// re-checks it.
     pub fn accept(
         &self,
         policy: CompiledApplicationToolPolicy,
@@ -145,6 +201,17 @@ impl CompiledPolicyProvider {
                     policy.provider_id, self.provider_id
                 ),
             });
+        }
+
+        for member in &policy.members {
+            if let Err(reason) = Self::validate_member_identity(&member.member_identity) {
+                return Err(ToolConsequenceFailure::EvaluationFailed {
+                    reason: format!(
+                        "compiled policy '{}' revision {} declares member_identity '{}' which {reason}",
+                        policy.policy_id, policy.revision.0, member.member_identity
+                    ),
+                });
+            }
         }
 
         let mut accepted = self
@@ -409,6 +476,121 @@ mod tests {
         ));
     }
 
+    /// The exact 17-member shape HomeCore compiled on 2026-08-31: the encoded
+    /// AGENT RUNTIME ID rather than the encoded durable identity. Every one of
+    /// these matches no roster row, so under the forced `default_deny` the
+    /// policy would deny every tool for every member the moment it bound.
+    #[test]
+    fn an_encoded_runtime_id_is_refused_and_the_message_names_the_right_id() {
+        let provider = Arc::new(CompiledPolicyProvider::new(
+            provider_id(),
+            PolicyProviderGeneration(1),
+        ));
+        let error = provider
+            .accept(
+                CompiledApplicationToolPolicy::new(
+                    provider_id(),
+                    policy_id(),
+                    PolicyRevision(1),
+                    source(),
+                    grants_for("mk--rt_cdomain_ccalendar_c0", "shell"),
+                )
+                .expect("the artifact itself is well formed; only the id space is wrong"),
+            )
+            .expect_err("an encoded runtime id must be refused");
+
+        let ToolConsequenceFailure::EvaluationFailed { reason } = &error else {
+            panic!("expected EvaluationFailed, got {error:?}");
+        };
+        // The refusal has to be actionable, which means naming the id to
+        // compile INSTEAD - a message that only says "wrong" leaves the caller
+        // to rediscover the encoding.
+        assert!(
+            reason.contains("'mk--domain_ccalendar'"),
+            "the refusal must name the encoded DURABLE identity: {reason}"
+        );
+        assert!(
+            reason.contains("RUNTIME"),
+            "the refusal must say what was supplied: {reason}"
+        );
+        assert_eq!(
+            provider.accepted_revision(&policy_id()),
+            None,
+            "a refused artifact must not be half-installed"
+        );
+    }
+
+    /// The other direction of the same mistake: the durable identity, correct,
+    /// but not encoded. This is what a compiler reading our own roster JSON
+    /// would emit if it skipped `mob_member_id_str`.
+    #[test]
+    fn an_unencoded_durable_identity_is_refused_with_its_encoding() {
+        let provider = Arc::new(CompiledPolicyProvider::new(
+            provider_id(),
+            PolicyProviderGeneration(1),
+        ));
+        let error = provider
+            .accept(
+                CompiledApplicationToolPolicy::new(
+                    provider_id(),
+                    policy_id(),
+                    PolicyRevision(1),
+                    source(),
+                    grants_for("domain:calendar", "shell"),
+                )
+                .expect("well formed artifact"),
+            )
+            .expect_err("a raw durable identity must be refused");
+        let ToolConsequenceFailure::EvaluationFailed { reason } = &error else {
+            panic!("expected EvaluationFailed, got {error:?}");
+        };
+        assert!(
+            reason.contains("mk--domain_ccalendar"),
+            "the refusal must name the encoding: {reason}"
+        );
+    }
+
+    /// The positive control the two refusals are only meaningful against: the
+    /// id space the gate actually compares installs AND evaluates. Without this
+    /// arm the checks above are satisfied by a validator that refuses
+    /// everything.
+    #[test]
+    fn the_encoded_durable_identity_installs_and_evaluates() {
+        let roster = crate::member_comms_id::mob_member_id_str("domain:calendar").into_owned();
+        assert_eq!(
+            roster, "mk--domain_ccalendar",
+            "this test is only meaningful if it pins the encoding it claims"
+        );
+        let provider = installed(
+            CompiledApplicationToolPolicy::new(
+                provider_id(),
+                policy_id(),
+                PolicyRevision(1),
+                source(),
+                grants_for(&roster, "shell"),
+            )
+            .expect("well formed artifact"),
+        );
+        let snapshot = provider.snapshot(&policy_id()).expect("snapshot");
+        assert!(matches!(
+            snapshot.evaluate(&request(&roster, "shell")),
+            ToolConsequenceVerdict::Allow
+        ));
+        assert!(matches!(
+            snapshot.evaluate(&request(&roster, "network")),
+            ToolConsequenceVerdict::Deny(_)
+        ));
+    }
+
+    /// A bare name that needs no encoding is already canonical and must keep
+    /// installing - the check rejects a wrong id SPACE, not every id that does
+    /// not carry the marker.
+    #[test]
+    fn a_plain_component_member_id_is_still_accepted() {
+        let provider = installed(policy(1, "member-a", "shell"));
+        assert_eq!(provider.accepted_revision(&policy_id()), Some(1));
+    }
+
     #[test]
     fn brain_swap_exact_grant_allows_and_missing_grant_obeys_default_deny() {
         const BRAIN_SWAP: &str = "brain_swap";
@@ -561,6 +743,37 @@ mod tests {
             .map(|provider| provider.provider_id().as_str())
             .collect();
         assert_eq!(ids, vec!["homecore", "some-other-author"]);
+    }
+
+    /// The gateway calls `providers_from_canonical_payloads`, not `accept`.
+    /// Every other refusal test here drives `accept` directly, and the only
+    /// existing coverage of this function feeds it a PASSING id - so without
+    /// this arm the refusal could be real at the unit level and unreachable
+    /// from the one entry point a boot actually uses.
+    #[test]
+    fn the_gateways_own_entry_point_refuses_a_wrong_id_space_artifact() {
+        let payload = CompiledApplicationToolPolicy::new(
+            PolicyProviderId::new("homecore").expect("provider id"),
+            PolicyId::new("household-tools").expect("policy id"),
+            PolicyRevision(1),
+            source(),
+            grants_for("mk--rt_cdomain_ccalendar_c0", "shell"),
+        )
+        .expect("well formed artifact")
+        .canonical_json()
+        .expect("canonical json");
+
+        let error = match providers_from_canonical_payloads(&[payload]) {
+            Ok(_) => panic!("the gateway entry point must refuse a wrong-id-space artifact"),
+            Err(error) => error,
+        };
+        let ToolConsequenceFailure::EvaluationFailed { reason } = &error else {
+            panic!("expected EvaluationFailed, got {error:?}");
+        };
+        assert!(
+            reason.contains("'mk--domain_ccalendar'"),
+            "the boot refusal must carry the id to compile instead: {reason}"
+        );
     }
 
     #[test]
