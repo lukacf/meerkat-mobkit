@@ -115,6 +115,19 @@ struct InitParams {
     /// model, which in practice never fires. Validated at init through
     /// [`meerkat_mobkit::parse_compaction_policy`].
     compaction: Option<Value>,
+    /// Present ONLY so it can be refused.
+    ///
+    /// `mobkit_gateway` does not build the application tool-policy registry;
+    /// `rpc_gateway` does. `InitParams` carries no `deny_unknown_fields`, so
+    /// without this field serde drops the key and a host that compiled,
+    /// reviewed and deployed an artifact gets no registry, no error and no
+    /// warning - the exact "looks deployed, does nothing" state the
+    /// wrong-id-space refusal in `member_tool_policy` exists to prevent, one
+    /// layer up and on the other binary. Refusing is not a narrower feature
+    /// than implementing it here; it is the difference between a host knowing
+    /// and not knowing.
+    #[serde(default)]
+    application_tool_policies: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -699,6 +712,14 @@ fn parse_init_request(line: &str) -> anyhow::Result<(Value, InitParams)> {
     }
     let params = raw.get("params").cloned().unwrap_or_else(|| json!({}));
     let parsed: InitParams = serde_json::from_value(params).context("invalid init params")?;
+    if parsed.application_tool_policies.is_some() {
+        return Err(anyhow!(
+            "application_tool_policies is not implemented by mobkit_gateway; it takes effect only \
+             on the rpc_gateway binary. Refusing rather than ignoring: a silently dropped policy \
+             arms nothing while looking deployed, and the only later evidence would be an absence \
+             of denials, which is what an armed and fully granted policy also produces"
+        ));
+    }
     Ok((raw.get("id").cloned().unwrap_or(Value::Null), parsed))
 }
 
@@ -1881,6 +1902,53 @@ mod tests {
                 "dependency warnings must still pass"
             );
         });
+        Ok(())
+    }
+
+    /// The other binary implements `application_tool_policies`; this one must
+    /// not pretend to. `InitParams` has no `deny_unknown_fields`, so before
+    /// this refusal the key was dropped in silence.
+    #[test]
+    fn init_refuses_application_tool_policies_rather_than_dropping_them() {
+        let line = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "mobkit/init",
+            "params": {
+                "application_tool_policies": ["{}"]
+            }
+        })
+        .to_string();
+
+        let error = parse_init_request(&line)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(
+            !error.is_empty(),
+            "a supplied application tool policy must not be silently dropped"
+        );
+        // The refusal has to name the binary that DOES implement it, or the
+        // host is told "no" with nowhere to go.
+        assert!(
+            error.contains("rpc_gateway"),
+            "the refusal must name where the parameter works: {error}"
+        );
+    }
+
+    /// The negative half: absence is still absence. A refusal that fired on
+    /// every boot would be indistinguishable from one that works.
+    #[test]
+    fn an_absent_application_tool_policies_key_still_boots() -> anyhow::Result<()> {
+        let line = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "mobkit/init",
+            "params": { "console_read_only": true }
+        })
+        .to_string();
+        let (_id, params) = parse_init_request(&line)?;
+        assert!(params.application_tool_policies.is_none());
         Ok(())
     }
 
