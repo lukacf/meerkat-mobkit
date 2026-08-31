@@ -166,6 +166,38 @@ impl UnifiedRuntime {
         })
     }
 
+    /// How long [`Self::shutdown`] may legitimately take.
+    ///
+    /// **Bound your wait on this, not on a generic stage timeout.** Shutdown
+    /// covers two provider-callback windows, runtime event and mob drains,
+    /// bounded RPC/HTTP/stdout phases, and process-reap margin. A caller that
+    /// gives it less is not detecting a hang - it is interrupting work the
+    /// runtime is bounded to finish, and abandoning the wait does not stop it:
+    /// the shutdown keeps running while the caller proceeds to exit, which is
+    /// how cleanup gets killed mid-flight.
+    ///
+    /// This exists because the number was already published, documented and
+    /// arithmetically asserted - and two independent consumers still bounded it
+    /// 4x and 11x too tightly on the same night (2026-08-31), each by applying
+    /// an ordinary host stage timeout. A `pub const` in a module they had no
+    /// reason to open was not discoverable at the point of use. This method is
+    /// reachable from the value they already hold and are about to shut down.
+    ///
+    /// The stdio surface has always advertised its horizon over the wire via
+    /// `stdio_shutdown_horizon_ms`; this is the embedder's equivalent.
+    ///
+    /// ```no_run
+    /// # async fn example(runtime: meerkat_mobkit::UnifiedRuntime) {
+    /// tokio::time::timeout(runtime.shutdown_horizon(), runtime.shutdown())
+    ///     .await
+    ///     .expect("shutdown exceeded its own published horizon");
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn shutdown_horizon(&self) -> Duration {
+        crate::gateway_composition::GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT
+    }
+
     pub async fn shutdown(&self) -> UnifiedRuntimeShutdownReport {
         self.shutting_down.store(true, Ordering::SeqCst);
         // The liveness probe is observation only. Abort it before anything
@@ -1152,6 +1184,37 @@ mod retired_supervisor_cleanup_tests {
                 join_failed: 1,
                 pending: 0
             }
+        );
+    }
+}
+
+#[cfg(test)]
+mod shutdown_horizon_tests {
+    /// The published shutdown horizon must not silently collapse.
+    ///
+    /// `shutdown_horizon()` returns
+    /// `gateway_composition::GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT` directly - one
+    /// expression, so accessor-vs-constant divergence is visible in the diff
+    /// rather than needing a test. What a diff does NOT make obvious is the
+    /// constant shrinking, and that is what this guards.
+    ///
+    /// It matters because the failure is asymmetric. Two independent consumers
+    /// bounded this budget 4x and 11x too tightly on the same night
+    /// (2026-08-31) while it was merely a documented `pub const`. Now that the
+    /// runtime advertises it, an embedder who sizes their wait on the
+    /// advertised figure is stranded if it drops beneath what shutdown
+    /// actually needs - and they would be MORE confident while being wrong,
+    /// because they asked.
+    #[test]
+    fn the_published_shutdown_horizon_does_not_silently_collapse() {
+        const ADVERTISED: std::time::Duration =
+            crate::gateway_composition::GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT;
+        assert!(
+            ADVERTISED.as_secs() >= 300,
+            "the published shutdown horizon collapsed to {ADVERTISED:?}. It \
+             covers two provider-callback windows plus drains and reap margin; \
+             shrinking it below that strands every embedder that sized their \
+             wait on the advertised figure"
         );
     }
 }

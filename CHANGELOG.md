@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`UnifiedRuntime::shutdown_horizon()` makes the shutdown budget discoverable
+  to embedders.** The number was already published, documented, and
+  arithmetically asserted - and on 2026-08-31 two independent consumers still
+  bounded it far too tightly, each by applying an ordinary host stage timeout:
+  30s against the Python SDK's 337s, and 120s against this crate's 312s. Neither
+  was careless. A `pub const` in a module they had no reason to open was not
+  discoverable at the point of use.
+
+  The stdio surface has always advertised its horizon over the wire via
+  `stdio_shutdown_horizon_ms`. Embedders now have the equivalent, reachable from
+  the value they already hold and are about to shut down:
+
+  ```rust
+  tokio::time::timeout(runtime.shutdown_horizon(), runtime.shutdown()).await
+  ```
+
+  The doc states the consequence that makes it matter: abandoning the wait does
+  not stop the work. `shutdown()` keeps running while the caller proceeds to
+  exit, which is how cleanup gets killed mid-flight - and is why an
+  executor lease could still be held after a "graceful" shutdown even with the
+  0.8.28 release fix present.
+
+  Guarded by a test that fails if the horizon collapses, because the failure is
+  asymmetric: an embedder who sizes their wait on an advertised figure that has
+  silently shrunk is stranded *and* more confident, precisely because they asked.
+
+
 ### Fixed
 
 - **`identity_first_send_does_not_park_mob_actor_until_turn_completion` no
