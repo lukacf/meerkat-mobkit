@@ -1060,15 +1060,53 @@ impl UnifiedRuntime {
                             "identity-first flow provisioner is no longer available".to_string(),
                         )
                     })?;
-                    runtime
+                    // ATTRIBUTION. This barrier materializes the whole
+                    // registered identity set, and its spawns are recorded as
+                    // ordinary fleet materialization - they carry no source
+                    // naming the flow trigger that caused them. A consumer
+                    // measuring a slow flow trigger therefore sees a
+                    // materialization burst in their telemetry with nothing
+                    // linking the two, which is how a 358-second trigger read
+                    // as a hang rather than as work (OB3, 2026-08-31: 144
+                    // spawns, 17 -> 161, the entire identity count).
+                    //
+                    // The scope itself is not fixable here: `FlowTargetProvisioner`
+                    // is `Fn() -> ...` with no flow argument, so this callback
+                    // cannot know which flow, which roles, or which identities
+                    // are actually required. Narrowing it needs the upstream
+                    // hook to carry flow context. Until then the least this can
+                    // do is SAY what it is about to do, and how much.
+                    tracing::info!(
+                        cause = "flow_target_provisioning",
+                        "identity-first flow barrier is materializing every registered \
+                         identity before the flow run id is minted; cost is O(fleet), \
+                         not O(flow targets)"
+                    );
+                    let started = std::time::Instant::now();
+                    let outcome = runtime
                         .materialize_all_required_tracked()
                         .await
-                        .map(|_| ())
+                        .map(|records| records.len())
                         .map_err(|error| {
                             MobError::Internal(format!(
                                 "identity-first flow materialization failed: {error}"
                             ))
-                        })
+                        });
+                    match &outcome {
+                        Ok(materialized) => tracing::info!(
+                            materialized = *materialized,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            cause = "flow_target_provisioning",
+                            "identity-first flow barrier complete"
+                        ),
+                        Err(error) => tracing::warn!(
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            cause = "flow_target_provisioning",
+                            %error,
+                            "identity-first flow barrier failed"
+                        ),
+                    }
+                    outcome.map(|_| ())
                 })
             }));
     }

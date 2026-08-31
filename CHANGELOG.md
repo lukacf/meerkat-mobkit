@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The identity-first flow barrier now names itself in the log.** Triggering a
+  flow on an identity-first runtime materializes the ENTIRE registered identity
+  set before the run id is minted, and those spawns were recorded as ordinary
+  fleet materialization with nothing linking them to the flow that caused them.
+  A consumer measuring a slow trigger saw a materialization burst and no
+  connection between the two - which is how a 358-second trigger read as a hang
+  rather than as work (OB3, 2026-08-31: 144 spawns, 17 to 161, their entire
+  identity count).
+
+  The barrier now logs its cause on entry and its `materialized` count plus
+  `elapsed_ms` on completion, so the most expensive consequence of triggering a
+  flow is visible as a consequence of triggering a flow.
+
+  **This is observability only; the cost is unchanged.** The scope cannot be
+  fixed in MobKit: `FlowTargetProvisioner` is `Fn() -> ...` with no flow
+  argument, so the callback cannot know which flow, which roles, or which
+  identities are actually required. Upstream's own
+  `ensure_flow_targets_provisioned` scopes correctly by role because it has the
+  flow; this hook does not. Narrowing it needs the upstream signature to carry
+  flow context, and the timing - upstream invokes the barrier before minting the
+  run id - is upstream's ordering. Both are filed there rather than worked
+  around here.
+
+
 - **A never-run queued input is pinned against being reported as completed.**
   All three consumers had reported NULL coverage on this clause. The test drives
   a real wedged member, queues an input behind it, destroys the runtime with a
