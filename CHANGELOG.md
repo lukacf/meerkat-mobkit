@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`identity_first_send_does_not_park_mob_actor_until_turn_completion` no
+  longer hard-fails on loaded CI runners.** It budgeted 250ms against a 2s turn
+  and failed twice in two days with `Elapsed` - the missed-deadline signature of
+  a load flake, not of a parked loop - on PRs that changed no Rust at all. The
+  binary has no retry group, so each occurrence was a red build.
+
+  The property under test is "this acks at INGRESS rather than at turn
+  completion", and its discriminator is the RATIO: a parked actor blocks until
+  the turn finishes, so the test has teeth only while the budget sits well below
+  the turn. The test never waits for the turn to end - it stops the mob while it
+  is still running - so lengthening the turn costs no wall clock. Now 3s against
+  a 30s turn: the same discriminator with ten times the margin, and the test
+  still completes in ~0.1s.
+
+  The relationship is now named (`TURN_DELAY`, `INGRESS_BUDGET`) and asserted in
+  the test itself, so a later edit cannot quietly shrink the turn or grow the
+  budget until it passes for everyone including a parked loop. Verified by
+  collapsing the ratio, which fires the guard with its own explanation.
+
 ### Added
 
 - **The identity-first flow barrier now names itself in the log.** Triggering a
