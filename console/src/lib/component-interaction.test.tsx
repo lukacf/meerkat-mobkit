@@ -1131,3 +1131,131 @@ test("ConsoleSidebar rows expose content-derived accessible names (no aria-label
     dom.window.close();
   }
 });
+
+/**
+ * `navigator.clipboard` exists ONLY in a SECURE CONTEXT - https, or localhost.
+ * The console is routinely served over plain http on a LAN address
+ * (http://<host>:8080/console), and there it is `undefined`.
+ *
+ * The secure-context trigger is in these test names deliberately: the defect is
+ * invisible on localhost, which is exactly where a copy button gets tested, so
+ * the next person must not be able to "verify" it in the one environment where
+ * it cannot reproduce.
+ */
+async function withPlainHttpDom(
+  execCommandResult: boolean | (() => boolean),
+  body: (ctx: { rootElement: Element; dom: JSDOM; copyCalls: string[] }) => Promise<void>,
+) {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+  // A navigator WITHOUT `clipboard`: the plain-http shape. Not a navigator whose
+  // clipboard rejects - that is a different branch and it was never the bug.
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { userAgent: "plain-http-test" },
+  });
+
+  const copyCalls: string[] = [];
+  (dom.window.document as unknown as { execCommand: (c: string) => boolean }).execCommand = (
+    command: string,
+  ) => {
+    copyCalls.push(command);
+    return typeof execCommandResult === "function" ? execCommandResult() : execCommandResult;
+  };
+
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  try {
+    // AWAIT inside the scope. The copy handler is async, so its `setState`
+    // lands after the click returns - and React resolves update priority off
+    // `window`. Restoring the globals first makes the state update throw
+    // instead of rendering, which looks like a component bug and is not one.
+    await body({ rootElement, dom, copyCalls });
+  } finally {
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    if (previousNavigator) {
+      Object.defineProperty(globalThis, "navigator", previousNavigator);
+    } else {
+      delete (globalThis as { navigator?: unknown }).navigator;
+    }
+  }
+}
+
+const TOOL_CALL_FIXTURE = {
+  type: "tool-call" as const,
+  toolCallId: "call-1",
+  name: "get_activities_by_date",
+  arguments: "{\"date\":\"2026-02-02\"}",
+  result: "ok",
+  status: "success" as const,
+};
+
+test("tool-call copy over plain http, where navigator.clipboard is undefined, copies via the fallback and earns its checkmark", async () => {
+  let root: ReturnType<typeof createRoot> | null = null;
+  let copyButton: Element | null = null;
+  let calls: string[] = [];
+
+  await withPlainHttpDom(true, async ({ rootElement, copyCalls }) => {
+    calls = copyCalls;
+    root = createRoot(rootElement);
+    flushSync(() => {
+      root!.render(<ConversationRichContent blocks={[TOOL_CALL_FIXTURE]} />);
+    });
+    copyButton = rootElement.querySelector(".cc-tool-call__copy");
+    assert.ok(copyButton, "the tool-call header must render a copy button");
+    (copyButton as HTMLElement).click();
+    // The handler awaits the copy result before marking anything.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(
+      copyCalls,
+      ["copy"],
+      "the execCommand fallback must be the path taken on plain http",
+    );
+    assert.equal(copyButton!.textContent, "✓");
+    assert.equal(copyButton!.getAttribute("aria-label"), "Copied");
+    assert.equal(copyButton!.getAttribute("data-copy-outcome"), "copied");
+    // Unmount inside the scope too: React needs `window` to tear down.
+    root!.unmount();
+  });
+  assert.deepEqual(calls, ["copy"]);
+});
+
+test("tool-call copy over plain http shows a FAILURE mark rather than an unearned checkmark when no clipboard path works", async () => {
+  // The regression this file exists for. Previously the handler ran
+  // `navigator.clipboard?.writeText(text).catch(...)`, which SHORT-CIRCUITS the
+  // whole optional chain when `clipboard` is undefined - `.catch` never runs,
+  // nothing throws - and then called `setCopied(true)` unconditionally. Every
+  // LAN user got a checkmark and an unchanged clipboard, and pasted whatever
+  // was there before.
+  let root: ReturnType<typeof createRoot> | null = null;
+  let copyButton: Element | null = null;
+
+  await withPlainHttpDom(false, async ({ rootElement }) => {
+    root = createRoot(rootElement);
+    flushSync(() => {
+      root!.render(<ConversationRichContent blocks={[TOOL_CALL_FIXTURE]} />);
+    });
+    copyButton = rootElement.querySelector(".cc-tool-call__copy");
+    assert.ok(copyButton);
+    (copyButton as HTMLElement).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.notEqual(
+      copyButton!.textContent,
+      "✓",
+      "a failed copy must never render the success mark - a silent lie is worse than an error",
+    );
+    assert.equal(copyButton!.textContent, "✗");
+    assert.equal(copyButton!.getAttribute("aria-label"), "Copy failed");
+    assert.equal(copyButton!.getAttribute("data-copy-outcome"), "failed");
+    root!.unmount();
+  });
+});

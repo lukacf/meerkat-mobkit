@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The console copy button lied on plain http, and one of the two still did.**
+  `navigator.clipboard` exists only in a secure context - https, or localhost -
+  and the console is routinely served over plain http on a LAN address, where it
+  is `undefined`.
+
+  ChatPane called `navigator.clipboard.writeText(...)` directly; it threw before
+  reaching the clipboard, into a `catch {}` that existed to keep a clipboard
+  error from breaking the hover affordance. The button did nothing, silently,
+  for every LAN user.
+
+  The tool-call button on the shared conversation path was worse. It ran
+  `navigator.clipboard?.writeText(text).catch(() => {})`, and with `clipboard`
+  undefined the optional chain short-circuits the **whole** expression - `.catch`
+  is never reached, nothing throws - after which `setCopied(true)` ran
+  unconditionally. It showed a checkmark having copied nothing, so the user
+  pasted whatever was already on the clipboard. A silent lie is worse than a
+  visible failure.
+
+  Both now use `copyTextToClipboard`, which already existed in
+  `packages/console-components/src/shared.ts` with an `execCommand` fallback and
+  a boolean return. It was package-internal and unexported, which is how a
+  second implementation came to be written elsewhere: a helper you cannot import
+  is a helper you rewrite. Exported rather than duplicated, so one owner remains.
+  Both buttons now show an explicit failure mark with matching `aria-label` and
+  `title`.
+
+  Also fixed: both leaked their reset timer into an unmounted tree, where React
+  reads `window` before discovering the update is a no-op and therefore throws
+  rather than no-opping.
+
+  Tested with real clicks against a navigator carrying no `clipboard` - the
+  plain-http shape, not a clipboard that rejects, which is a different branch and
+  was never the bug. The secure-context trigger is in the test names because the
+  defect is invisible on localhost, which is exactly where a copy button gets
+  tested. Mutation-proven: restoring the original call plus the unconditional
+  success mark turns both new tests red.
+
+  `packages/flow-editor-components` carries the same raw call in two places and
+  is deliberately untouched: it declares no dependency on `console-components`,
+  so reusing the helper there would add a cross-package dependency purely to
+  share a utility. It needs a decision about where a shared helper lives.
+
+
 ### Added
 
 - **CI now runs the TypeScript SDK suite.** It ran nowhere. 705 tests across 20

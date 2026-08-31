@@ -16,7 +16,9 @@ import {
   type ConversationRichThinkingBlock,
 } from "@console-core";
 
-import { cloneElement, useState, type KeyboardEvent, type ReactElement } from "react";
+import { cloneElement, useEffect, useRef, useState, type KeyboardEvent, type ReactElement } from "react";
+
+import { copyTextToClipboard } from "../shared";
 
 import { ChangeStatPair } from "./change-stat-pair";
 import { CopyButton } from "../copy-button";
@@ -245,9 +247,15 @@ function renderBlock(
 
 const PEER_TOOL_NAMES = new Set(["send_request", "send_message", "send_response"]);
 
-function copyText(text: string) {
-  navigator.clipboard?.writeText(text).catch(() => {});
-}
+// `navigator.clipboard` exists ONLY in a secure context - https, or localhost.
+// The console is routinely opened over plain http on a LAN address, and there
+// this expression short-circuits the WHOLE optional chain: `.catch` never runs,
+// nothing throws, and the caller's `setCopied(true)` executed unconditionally.
+// The button showed a checkmark having copied nothing, which is worse than an
+// error - the user pastes whatever was already on the clipboard.
+//
+// Removed in favour of the shared `copyTextToClipboard`, which falls back to
+// `document.execCommand` and reports whether it actually worked.
 
 /// Pretty-print JSON-shaped strings into a 2-space-indented form so
 /// the expanded peer/tool body shows readable params instead of one
@@ -350,15 +358,39 @@ function peerDetailRows(block: ConversationRichToolCallBlock): Array<{ label: st
 }
 
 function CopyBtn({ text, label = "Copy" }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
+  const [outcome, setOutcome] = useState<"idle" | "copied" | "failed">("idle");
+  // The reset timer must not outlive the component. An uncleared timer fires
+  // into an unmounted tree, and React reads `window` to resolve update priority
+  // before it discovers the update is a no-op - so on a torn-down DOM it throws
+  // rather than quietly doing nothing.
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+    },
+    [],
+  );
+  const mark = outcome === "copied" ? "✓" : outcome === "failed" ? "✗" : "⎘";
+  const title = outcome === "copied" ? "Copied" : outcome === "failed" ? "Copy failed" : label;
   return (
     <button
       className="cc-tool-call__copy"
       type="button"
-      title={label}
-      onClick={(e) => { e.stopPropagation(); copyText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+      title={title}
+      aria-label={title}
+      data-copy-outcome={outcome === "idle" ? undefined : outcome}
+      onClick={(e) => {
+        e.stopPropagation();
+        // Await the RESULT. The previous version marked success before the
+        // copy could have happened, so the mark carried no information.
+        void copyTextToClipboard(text).then((ok) => {
+          setOutcome(ok ? "copied" : "failed");
+          if (resetTimer.current) clearTimeout(resetTimer.current);
+          resetTimer.current = setTimeout(() => setOutcome("idle"), 1500);
+        });
+      }}
     >
-      {copied ? "✓" : "⎘"}
+      {mark}
     </button>
   );
 }

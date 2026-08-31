@@ -13,6 +13,7 @@ import {
   ConversationRichContent,
   CouncilCard,
   WorkGraphCard,
+  copyTextToClipboard,
   type WorkGraphCardActions,
 } from "@console-components";
 import type { ConsoleAgent } from "../types";
@@ -567,35 +568,53 @@ function CopyInlineButton({
   label: string;
   className?: string;
 }) {
-  const [copied, setCopied] = React.useState(false);
+  const [outcome, setOutcome] = React.useState<"idle" | "copied" | "failed">("idle");
+  // Cleared on unmount: an uncleared reset timer fires into a torn-down tree,
+  // and React touches `window` before it notices the update is a no-op.
+  const resetTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(
+    () => () => {
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+    },
+    [],
+  );
   const disabled = !text.trim();
 
+  // NOT `navigator.clipboard` directly. That API exists only in a SECURE
+  // CONTEXT - https, or localhost - and the console is routinely reached over
+  // plain http on a LAN address, where it is `undefined` and
+  // `navigator.clipboard.writeText(...)` throws before touching the clipboard.
+  // The throw landed in a catch that swallowed it to protect the hover
+  // affordance, so the button did nothing, silently, for every LAN user.
+  //
+  // `copyTextToClipboard` is the shared owner: the async API when genuinely
+  // available, a `document.execCommand` fallback otherwise, and it returns
+  // whether it worked so this button can be honest about the outcome.
   async function copy() {
     if (disabled) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1400);
-    } catch {
-      // Clipboard can be unavailable in some browser contexts; no-op keeps
-      // the hover affordance from breaking the conversation.
-    }
+    const ok = await copyTextToClipboard(text);
+    setOutcome(ok ? "copied" : "failed");
+    if (resetTimer.current) clearTimeout(resetTimer.current);
+    resetTimer.current = setTimeout(() => setOutcome("idle"), 1400);
   }
+
+  const title = outcome === "copied" ? "Copied" : outcome === "failed" ? "Copy failed" : label;
 
   return (
     <button
-      aria-label={copied ? "Copied" : label}
+      aria-label={title}
       className={`msg__copy ${className}`}
-      data-copied={copied ? "true" : undefined}
+      data-copied={outcome === "copied" ? "true" : undefined}
+      data-copy-outcome={outcome === "idle" ? undefined : outcome}
       disabled={disabled}
       onClick={(event) => {
         event.stopPropagation();
         void copy();
       }}
-      title={copied ? "Copied" : label}
+      title={title}
       type="button"
     >
-      {copied ? "✓" : "⎘"}
+      {outcome === "copied" ? "✓" : outcome === "failed" ? "✗" : "⎘"}
     </button>
   );
 }
