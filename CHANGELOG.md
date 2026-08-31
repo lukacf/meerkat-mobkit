@@ -9,6 +9,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`identity_first_send_does_not_park_mob_actor_until_turn_completion` no
+  longer hard-fails on loaded CI runners.** It budgeted 250ms against a 2s turn
+  and failed twice in two days with `Elapsed` - the missed-deadline signature of
+  a load flake, not of a parked loop - on PRs that changed no Rust at all. The
+  binary has no retry group, so each occurrence was a red build.
+
+  The property under test is "this acks at INGRESS rather than at turn
+  completion", and its discriminator is the RATIO: a parked actor blocks until
+  the turn finishes, so the test has teeth only while the budget sits well below
+  the turn. The test never waits for the turn to end - it stops the mob while it
+  is still running - so lengthening the turn costs no wall clock. Now 3s against
+  a 30s turn: the same discriminator with ten times the margin, and the test
+  still completes in ~0.1s.
+
+  The relationship is now named (`TURN_DELAY`, `INGRESS_BUDGET`) and asserted in
+  the test itself, so a later edit cannot quietly shrink the turn or grow the
+  budget until it passes for everyone including a parked loop. Verified by
+  collapsing the ratio, which fires the guard with its own explanation.
+
+### Added
+
+- **The identity-first flow barrier now names itself in the log.** Triggering a
+  flow on an identity-first runtime materializes the ENTIRE registered identity
+  set before the run id is minted, and those spawns were recorded as ordinary
+  fleet materialization with nothing linking them to the flow that caused them.
+  A consumer measuring a slow trigger saw a materialization burst and no
+  connection between the two - which is how a 358-second trigger read as a hang
+  rather than as work (OB3, 2026-08-31: 144 spawns, 17 to 161, their entire
+  identity count).
+
+  The barrier now logs its cause on entry and its `materialized` count plus
+  `elapsed_ms` on completion, so the most expensive consequence of triggering a
+  flow is visible as a consequence of triggering a flow.
+
+  **This is observability only; the cost is unchanged.** The scope cannot be
+  fixed in MobKit: `FlowTargetProvisioner` is `Fn() -> ...` with no flow
+  argument, so the callback cannot know which flow, which roles, or which
+  identities are actually required. Upstream's own
+  `ensure_flow_targets_provisioned` scopes correctly by role because it has the
+  flow; this hook does not. Narrowing it needs the upstream signature to carry
+  flow context, and the timing - upstream invokes the barrier before minting the
+  run id - is upstream's ordering. Both are filed there rather than worked
+  around here.
+
+
+- **A never-run queued input is pinned against being reported as completed.**
+  All three consumers had reported NULL coverage on this clause. The test drives
+  a real wedged member, queues an input behind it, destroys the runtime with a
+  retire, and asserts on the durable row.
+
+  Writing it corrected the obligation as filed, in two ways worth recording.
+  `retire_runtime` does **not** abandon a queued input - it leaves it `Queued`
+  with no terminal outcome, deliberately, because identity-first repair carries
+  pending ingress into the healed successor; abandoning there would re-introduce
+  the defect the neighbouring test guards. And the abandoning teardowns
+  (`Reset` / `Stopped`) are unreachable in that state, since reset is
+  guard-rejected from `Running` and a wedged turn is exactly what holds the
+  runtime `Running`. `InputAbandonReason::NeverExecuted` itself has one
+  production producer - a run created then refused - which needs a store-commit
+  failure and is not drivable from a black-box harness, so it remains covered
+  only by meerkat's driver-level tests. This is deliberately **not** recorded as
+  covering that clause.
+
+  Mutation-checked, which changed the test: flipping the expected phase and
+  selecting the wrong input id each turn it red, but neutering the
+  `terminal_outcome.is_none()` assertion did **not** - it was redundant given
+  the phase check, and the `Consumed` guard is vacuous on a path where the
+  outcome is always `None`. The redundant assertion was removed and the
+  remaining guard is labelled in-place as a consistency check rather than live
+  coverage, so nobody reads it as protection it does not provide.
+
+### Fixed
+
 - **The console copy button lied on plain http, and one of the two still did.**
   `navigator.clipboard` exists only in a secure context - https, or localhost -
   and the console is routinely served over plain http on a LAN address, where it

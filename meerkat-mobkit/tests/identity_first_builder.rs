@@ -1656,6 +1656,20 @@ async fn identity_first_builder_reset_reprofiles_with_roster_context() {
 
 #[tokio::test]
 async fn identity_first_send_does_not_park_mob_actor_until_turn_completion() {
+    // The discriminator is the RATIO, not either number. A parked actor blocks
+    // until the turn completes, so the test only has teeth while
+    // INGRESS_BUDGET is meaningfully below TURN_DELAY. Named here, and asserted
+    // below, so a later edit cannot quietly shrink the turn or grow the budget
+    // until the test passes for everyone including a parked loop.
+    const TURN_DELAY: Duration = Duration::from_secs(30);
+    const INGRESS_BUDGET: Duration = Duration::from_secs(3);
+    assert!(
+        INGRESS_BUDGET.as_millis() * 5 <= TURN_DELAY.as_millis(),
+        "this test discriminates only while the ingress budget is well under the \
+         turn duration: a parked actor waits {TURN_DELAY:?}, so a budget of \
+         {INGRESS_BUDGET:?} must stay far below it"
+    );
+
     let tmp = tempfile::tempdir().unwrap();
     let roster = Arc::new(StubRosterProvider::new(vec![durable_spec("agent:alpha")]));
 
@@ -1667,9 +1681,11 @@ async fn identity_first_send_does_not_park_mob_actor_until_turn_completion() {
             .roster_provider(roster)
             .scratch_dir(tmp.path())
             .identity_runtime_instance_id("builder-slow-send-test")
-            .default_llm_client(Arc::new(SlowTurnClient {
-                delay: Duration::from_secs(2),
-            }))
+            // The turn is deliberately far longer than the budgets below. This
+            // test never waits for it to finish - it stops the mob while the
+            // turn is still running - so a longer delay costs no wall clock and
+            // buys margin. See the budget comment below.
+            .default_llm_client(Arc::new(SlowTurnClient { delay: TURN_DELAY }))
             .build(),
     )
     .await
@@ -1679,8 +1695,20 @@ async fn identity_first_send_does_not_park_mob_actor_until_turn_completion() {
         .identity_runtime()
         .expect("identity runtime should be exposed")
         .clone();
+    // 3s against a 30s turn, not 250ms against a 2s turn.
+    //
+    // The property under test is "this acks at INGRESS rather than at turn
+    // completion", and the discriminator is that it returns while the turn is
+    // still running - not that it returns within any particular wall clock. A
+    // parked actor would block for the full 30s, so 3s still fails it decisively
+    // while tolerating an order of magnitude more scheduling noise.
+    //
+    // At 250ms against a 2s turn this hard-failed twice on loaded CI runners
+    // (2026-08-30/31, PRs #367 and #372) with `Elapsed` - the missed-deadline
+    // signature of a load flake, not of a parked loop. The binary has no retry
+    // group, so each occurrence was a red build.
     tokio::time::timeout(
-        Duration::from_millis(250),
+        INGRESS_BUDGET,
         identity_runtime.send(
             &AgentIdentity::parse("agent:alpha").unwrap(),
             &meerkat_core::ContentInput::Text("start slow turn".to_string()),
@@ -1691,7 +1719,7 @@ async fn identity_first_send_does_not_park_mob_actor_until_turn_completion() {
     .expect("identity send should be accepted");
 
     Box::pin(tokio::time::timeout(
-        Duration::from_millis(250),
+        INGRESS_BUDGET,
         runtime
             .mob_handle()
             .spawn_spec(meerkat_mob::SpawnMemberSpec::from_wire(
