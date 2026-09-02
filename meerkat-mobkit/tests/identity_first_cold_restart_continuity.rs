@@ -20,7 +20,7 @@
 //! in-process recovery boundary; this one covers the cold restart.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -854,4 +854,236 @@ async fn never_persisted_continuity_head_fresh_spawns_instead_of_wedging() {
         }
         other => panic!("expected Ready after the fresh fallback, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Whole-member materialisation diff: RESUMED must equal FRESH.
+//
+// The class this guards has five measured instances across three trains:
+// tool categories (0.8.20), tooling override (0.8.21-0.8.25), system prompt
+// (a resumed member kept a stale persona; a child was shown her brother's
+// records), brain_swap staging on resume, and #1079's persistence tools on CLI
+// resume. Every one was "resume reads the creation-time stamp for X while
+// fresh reads the current definition for X", and respawn could not cure any of
+// them because the durable identity carried the stale value.
+//
+// A catalog-only check catches four of five and CANNOT catch the prompt one,
+// so this compares the whole materialised member as the model actually
+// received it: the captured `LlmRequest` is the strongest oracle available,
+// because it sits downstream of every projection seam. Fields are compared by
+// NAME and the difference is printed by name - a count hid the 0.8.20 defect
+// and two matchers each missed a real tool within twenty minutes.
+// ---------------------------------------------------------------------------
+
+/// What the model was actually handed for one member, on one boot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MaterialisedMember {
+    model: String,
+    system_prompt: Option<String>,
+    tool_names: BTreeSet<String>,
+}
+
+impl MaterialisedMember {
+    /// Typed extraction from the captured request JSON. Deserializing back into
+    /// `LlmRequest` and walking fields means no JSON-path guessing, and a wire
+    /// change upstream fails here loudly instead of silently extracting nothing.
+    fn from_captured_request(json: &str) -> Self {
+        let request: LlmRequest =
+            serde_json::from_str(json).expect("captured request must deserialize as LlmRequest");
+        let system_prompt = request.messages.iter().find_map(|message| match message {
+            meerkat_core::Message::System(system) => Some(system.content.clone()),
+            _ => None,
+        });
+        Self {
+            model: request.model,
+            system_prompt,
+            tool_names: request
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str().to_string())
+                .collect(),
+        }
+    }
+}
+
+/// Field-by-field difference, one human-readable line per differing field.
+/// Empty means identical. Tool names report the SET DIFFERENCE in both
+/// directions, never a count.
+fn materialisation_diff(fresh: &MaterialisedMember, resumed: &MaterialisedMember) -> Vec<String> {
+    let mut differences = Vec::new();
+    if fresh.model != resumed.model {
+        differences.push(format!(
+            "model: fresh={:?} resumed={:?}",
+            fresh.model, resumed.model
+        ));
+    }
+    if fresh.system_prompt != resumed.system_prompt {
+        differences.push(format!(
+            "system_prompt: fresh={} chars, resumed={} chars (contents differ)",
+            fresh.system_prompt.as_deref().map_or(0, str::len),
+            resumed.system_prompt.as_deref().map_or(0, str::len),
+        ));
+    }
+    if fresh.tool_names != resumed.tool_names {
+        let only_fresh: Vec<&String> = fresh.tool_names.difference(&resumed.tool_names).collect();
+        let only_resumed: Vec<&String> = resumed.tool_names.difference(&fresh.tool_names).collect();
+        differences.push(format!(
+            "tool_names: only_fresh={only_fresh:?} only_resumed={only_resumed:?}"
+        ));
+    }
+    differences
+}
+
+/// Falsifiability control for the diff itself: a check that cannot fire proves
+/// nothing, so this hand-builds two members that differ in exactly two fields
+/// and asserts the diff names BOTH fields and nothing else, then asserts
+/// identical members produce no lines.
+#[test]
+fn materialisation_diff_names_exactly_the_fields_that_changed() {
+    let fresh = MaterialisedMember {
+        model: "gpt-5.5".to_string(),
+        system_prompt: Some("persona v2".to_string()),
+        tool_names: ["send", "peers", "memory_recall"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    };
+    let mut resumed = fresh.clone();
+    resumed.tool_names.remove("memory_recall");
+    resumed.system_prompt = Some("persona v1".to_string());
+
+    let lines = materialisation_diff(&fresh, &resumed);
+    assert_eq!(lines.len(), 2, "exactly two fields changed: {lines:?}");
+    assert!(
+        lines.iter().any(|line| line.starts_with("system_prompt:")),
+        "the prompt change must be named: {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("tool_names:") && line.contains("memory_recall")),
+        "the missing tool must be named, not counted: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.starts_with("model:")),
+        "an unchanged field must not be reported: {lines:?}"
+    );
+    assert!(
+        materialisation_diff(&fresh, &fresh).is_empty(),
+        "identical members must produce no lines"
+    );
+}
+
+/// A cold-restarted (RESUMED) member must be materialised identically to the
+/// FRESH member the same definition produced: same model, same projected
+/// system prompt, same tool catalog - as the model actually received them.
+#[tokio::test]
+async fn identity_first_cold_restart_resumed_member_matches_fresh_materialisation() {
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state_path = temp.path().join("state");
+    let mob_id = unique_cold_restart_mob_id();
+    let alice = id("personal:alice");
+    let roster = vec![spec(
+        "personal:alice",
+        AgentAddressability::Addressable,
+        "personal",
+    )];
+
+    // --- Boot 1: FRESH materialisation ---
+    let fresh = {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(&state_path, &mob_id, capture.clone()).await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 1)");
+        assert!(
+            matches!(
+                result.outcomes.get(&alice).expect("alice outcome"),
+                RestoreOutcome::Created { .. }
+            ),
+            "first boot must CREATE, or this test is not comparing fresh against resumed"
+        );
+        identity_rt
+            .send(
+                &alice,
+                &meerkat_core::ContentInput::Text("materialisation probe, boot 1".to_string()),
+            )
+            .await
+            .expect("send boot-1 turn");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while capture.count() < 1 {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the boot-1 turn to reach the LLM"
+            );
+            sleep(Duration::from_millis(100)).await;
+        }
+        let request = capture.last().expect("a boot-1 request was captured");
+        sleep(Duration::from_millis(500)).await;
+        unified.shutdown().await;
+        MaterialisedMember::from_captured_request(&request)
+    };
+
+    // --- Boot 2: RESUMED materialisation, same store, same definition ---
+    let resumed = {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(&state_path, &mob_id, capture.clone()).await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 2)");
+        assert!(
+            matches!(
+                result.outcomes.get(&alice).expect("alice outcome"),
+                RestoreOutcome::Resumed { .. }
+            ),
+            "second boot must RESUME, or this test is not comparing fresh against resumed"
+        );
+        identity_rt
+            .send(
+                &alice,
+                &meerkat_core::ContentInput::Text("materialisation probe, boot 2".to_string()),
+            )
+            .await
+            .expect("send boot-2 turn");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while capture.count() < 1 {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the boot-2 turn to reach the LLM"
+            );
+            sleep(Duration::from_millis(100)).await;
+        }
+        let request = capture.last().expect("a boot-2 request was captured");
+        sleep(Duration::from_millis(500)).await;
+        unified.shutdown().await;
+        MaterialisedMember::from_captured_request(&request)
+    };
+
+    // The positive half: the check must be looking at something. A member with
+    // no tools and no prompt would compare equal trivially.
+    assert!(
+        !fresh.tool_names.is_empty(),
+        "the fresh member carried no tools; the comparison would be vacuous"
+    );
+    assert!(
+        fresh.system_prompt.is_some(),
+        "the fresh member carried no system prompt; the comparison would be vacuous"
+    );
+
+    let differences = materialisation_diff(&fresh, &resumed);
+    assert!(
+        differences.is_empty(),
+        "resumed member diverged from fresh materialisation of the same definition:\n  {}",
+        differences.join("\n  ")
+    );
 }
