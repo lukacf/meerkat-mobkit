@@ -462,12 +462,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   roster text other members read through the `peers` tool and peer-added
   notifications, never part of the member's own prompt, which meerkat
   assembles from the profile's `skills` (`[skills.<id>] source = "inline"` or
-  a path). Text typed under the old label therefore never reached the model,
-  and the "profile prompt skeleton" button filled the roster blurb with a
-  mandate template. The section title now reads "PEER DESCRIPTION", the
-  placeholder and the skeleton tooltip say what the text is for and where the
-  prompt actually lives, and the starter member's own description no longer
-  promises a prompt. The editor document key `systemPrompt` (and its
+  a path). Text typed under the old label therefore never reached the model.
+  The section title now reads "PEER DESCRIPTION", the placeholder says what
+  the text is for and where the prompt actually lives, and the starter
+  member's own description no longer promises a prompt. The "APPLY SKELETON"
+  button's behaviour is not changed: the bundled client's
+  `memberPromptSkeleton` still inserts a second-person mandate template with
+  operating rules ("You are <name>, a member of a Meerkat mob...") into this
+  peer-facing field, so its tooltip now says exactly that and tells the author
+  to rewrite the text as a description before exporting; replacing the
+  template with peer-facing text is a client bundle change and is not in this
+  release. The editor document key `systemPrompt` (and its
   `system_prompt` import alias) is unchanged, so saved editor documents and
   the bundled client keep round-tripping; the mapping is documented at the
   projection and export sites. MobKit's own test fixtures modelled the same

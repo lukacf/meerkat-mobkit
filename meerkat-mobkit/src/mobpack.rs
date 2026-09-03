@@ -2237,10 +2237,13 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         // legacy `systemPrompt` member key: roster text other members read
         // through the `peers` tool and peer-added notifications. It never
         // enters this member's own system prompt, which meerkat assembles
-        // from the profile's `skills`.
+        // from the profile's `skills`. `apply_skeleton_title` describes what
+        // the bundled client's `memberPromptSkeleton` actually inserts (a
+        // second-person mandate template, unchanged); it must not promise
+        // peer-facing text until that template is rewritten.
         "system_prompt_title": "PEER DESCRIPTION",
         "apply_skeleton_label": "APPLY SKELETON",
-        "apply_skeleton_title": "Fill the peer description with a role skeleton built from this member's name, role, and output schema",
+        "apply_skeleton_title": "Insert the bundled starter template: a second-person mandate with operating rules ('You are <name>, a member of a Meerkat mob...'). It lands in this peer-facing description, not in the member's prompt, so rewrite it as a description of this member before exporting.",
         "system_prompt_placeholder": "Describe this member's role for its peers. Exported as the profile peer_description and shown to other members through the peers tool and peer-added notifications; it is not this member's system prompt, which comes from the profile skills.",
         "output_schema_title": "OUTPUT SCHEMA",
         "schema_none_label": "— none —",
@@ -34270,7 +34273,7 @@ depends_on_mode = "all"
         assert_eq!(
             mob_definition["editor_agent_detail_view"]["apply_skeleton_title"],
             json!(
-                "Fill the peer description with a role skeleton built from this member's name, role, and output schema"
+                "Insert the bundled starter template: a second-person mandate with operating rules ('You are <name>, a member of a Meerkat mob...'). It lands in this peer-facing description, not in the member's prompt, so rewrite it as a description of this member before exporting."
             )
         );
         assert_eq!(
