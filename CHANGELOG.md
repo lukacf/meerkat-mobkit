@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Identity-first boot registration now says how long each identity took.**
+  `register_persisted_continuity_owners` logs one INFO per identity with the
+  three step durations (roster resolve, continuity lookup, owner publish) and
+  one summary line. On 2026-09-03 a production fleet's registration phase went
+  from 49 s to 170 s for 17 identities with this code byte-identical, and the
+  loop logged nothing, so nobody could name the slow step from the logs. Now
+  the first launch does.
+
 - **Autonomous-host members no longer lose the whole turn to memory injection.**
   meerkat refuses injected context on `runtime_mode = "autonomous_host"`
   ("autonomous inbox delivery carries no user-channel work boundary"), and
