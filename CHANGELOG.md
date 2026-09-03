@@ -315,6 +315,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   preflight failure (nothing touched) instead of a silent retire.
   Gateway-subprocess regression added.
 
+- **A turn's terminal frame belongs to that turn.** Session-history backfill
+  re-emitted every committed assistant step as an `interaction_complete`
+  frame, including tool-only steps (a tool call with no text), whose
+  `result: ""` has no live twin: meerkat emits `text_complete` only for
+  non-empty text and the run's own terminal carries the final answer. Every
+  tool-only step therefore landed on the timeline as an empty completion with
+  `source.kind = session_history`, stamped with the SAME interaction id as the
+  live turn and a timestamp between the turn's `run_started` and its answer
+  (reproduced 2026-09-03 against `rpc_gateway` with claude-sonnet-4-6: one
+  empty completion per tool-calling turn). A kind-driven client closed the
+  turn before the answer arrived; the reported "later sends complete instantly
+  with an empty interaction_complete" is this frame. History never emits a
+  text-less `interaction_complete` now: a tool-only step projects as the live
+  edge's `tool_call_requested` frames (collapsing with a live twin on the
+  tool_use_id, rendering call and result as a pair on a history-only rebuild),
+  and a silent step projects nothing. Two attribution defects in the live
+  projection went with it: `run_started` matching read a `prompt` field that
+  meerkat's `RunStarted` never carried (it carries `input.content`), so a run
+  always bound to the queue front regardless of which send it started; and a
+  runtime-minted `interaction_complete`, `interaction_failed` or
+  `interaction_callback_pending` (peer, flow-step and schedule inputs mint
+  their own ids) was attributed to whichever console send was pending. Those
+  terminals now attribute only when `payload.interaction_id` names a reserved
+  console interaction, which they then close; otherwise they project with
+  `interaction_id: null`. Exact-pinned hosts no longer observe empty
+  `session_history` completions; hosts that already excluded that source kind
+  see no change. Full-runtime two-send regression with a scripted
+  tool-then-text LLM, in both live and history-rebuild projection modes.
+
+- **An idempotent replay on the identity-first console door no longer runs a
+  second turn.** Resending an existing `idempotency_key` with identical
+  content returned the original acceptance (`status: delivered`, instantly)
+  AND dispatched a whole new LLM turn whose frames were stamped with the old
+  interaction id: `console_send_identity_first` spawned the dispatch
+  unconditionally because the reservation gave no fresh-versus-existing
+  signal (the member-addressed `send` path returned early on
+  `AppendDisposition::Existing` all along). Reproduced 2026-09-03: four
+  `run_started` for three sends.
+  `MobKitConsoleAggregator::reserve_identity_first_interaction` now returns
+  the typed `IdentityFirstReservation` (`Fresh` / `Existing`) and the door
+  dispatches only `Fresh`; a same-key different-content resend is still the
+  `-32009` idempotency conflict. The per-send live projection the door started
+  alongside the always-on event forwarder is gone: it encoded the runtime
+  incarnation id into a member alias that does not exist, so it never attached
+  and logged one `WARN ... mob member not found` per send. Rust API change for
+  embedders that call the reservation directly.
+
 ## [0.8.31] - 2026-09-04
 
 ### Changed

@@ -8,12 +8,10 @@ use axum::response::{IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
-use futures::StreamExt;
 use futures::future::join_all;
 use meerkat_contracts::WireRuntimeBinding;
 use meerkat_core::ContentInput;
 use meerkat_core::comms::TrustedPeerDescriptor;
-use meerkat_core::event::agent_event_type;
 use meerkat_mob::MobState;
 use meerkat_mob::ids::{AgentIdentity, AgentRuntimeId, FenceToken, MobId};
 use meerkat_mob::launch::MemberLaunchMode;
@@ -71,7 +69,6 @@ use crate::runtime::{
     resolve_authorized_console_auth_from_token,
 };
 use crate::runtime::{RuntimeMetadataTable, labels_to_json_value};
-use crate::types::{EventEnvelope, UnifiedEvent};
 use crate::unified_runtime::console_events::ConsoleEventStore;
 use crate::unified_runtime::mob_events::MobEventsStore;
 use crate::unified_runtime::{EventLogStore, EventQuery};
@@ -876,7 +873,6 @@ async fn console_send_handler(
         return match Box::pin(console_send_with_identity_first_fallback(
             aggregator,
             identity_runtime.clone(),
-            state.runtime.as_ref(),
             state.console_events.as_ref(),
             request,
         ))
@@ -907,7 +903,6 @@ async fn console_send_handler(
 async fn console_send_with_identity_first_fallback(
     aggregator: &MobKitConsoleAggregator,
     identity_runtime: Arc<crate::identity_first::IdentityRuntime>,
-    runtime: Option<&MobRuntime>,
     console_events: Option<&ConsoleEventStore>,
     request: ConsoleSendRequest,
 ) -> Result<crate::console_aggregator::ConsoleInteractionAccepted, ConsoleSendError> {
@@ -915,7 +910,6 @@ async fn console_send_with_identity_first_fallback(
     match Box::pin(console_send_identity_first(
         aggregator,
         identity_runtime,
-        runtime,
         console_events,
         request,
     ))
@@ -931,7 +925,6 @@ async fn console_send_with_identity_first_fallback(
 async fn console_send_identity_first(
     aggregator: &MobKitConsoleAggregator,
     identity_runtime: Arc<crate::identity_first::IdentityRuntime>,
-    runtime: Option<&MobRuntime>,
     console_events: Option<&ConsoleEventStore>,
     mut request: ConsoleSendRequest,
 ) -> Result<crate::console_aggregator::ConsoleInteractionAccepted, ConsoleSendError> {
@@ -992,10 +985,19 @@ async fn console_send_identity_first(
         .agent_runtime_id
         .as_ref()
         .map(|id| id.as_str().to_string());
-    let accepted = Box::pin(
+    let accepted = match Box::pin(
         aggregator.reserve_identity_first_interaction(request.clone(), session_id.as_deref()),
     )
-    .await?;
+    .await?
+    {
+        // An idempotent replay: the original acceptance is the answer, and the
+        // turn it names already ran (or is running). Dispatching again would
+        // run a second turn whose frames land under this interaction id.
+        crate::console_aggregator::IdentityFirstReservation::Existing(accepted) => {
+            return Ok(accepted);
+        }
+        crate::console_aggregator::IdentityFirstReservation::Fresh(accepted) => accepted,
+    };
 
     if let Some(events) = console_events {
         events
@@ -1008,20 +1010,6 @@ async fn console_send_identity_first(
             )
             .await
             .map_err(ConsoleSendError::State)?;
-    }
-
-    if let (Some(runtime), Some(events), Some(runtime_member_id)) = (
-        runtime,
-        console_events.cloned(),
-        runtime_member_id.as_deref(),
-    ) {
-        start_identity_first_console_live_projection(
-            runtime,
-            events,
-            identity.as_str(),
-            runtime_member_id,
-        )
-        .await;
     }
 
     if handling_mode == meerkat_core::types::HandlingMode::Steer {
@@ -1160,60 +1148,6 @@ async fn console_send_identity_first(
         }
     });
     Ok(accepted)
-}
-
-async fn start_identity_first_console_live_projection(
-    runtime: &MobRuntime,
-    console_events: ConsoleEventStore,
-    identity: &str,
-    runtime_member_id: &str,
-) {
-    let identity = identity.to_string();
-    let runtime_member_id = runtime_member_id.to_string();
-    let mut stream = match runtime
-        .handle()
-        .subscribe_agent_events(&crate::member_comms_id::mob_member_id(
-            runtime_member_id.as_str(),
-        ))
-        .await
-    {
-        Ok(stream) => stream,
-        Err(err) => {
-            tracing::warn!(
-                identity = %identity,
-                runtime_member_id = %runtime_member_id,
-                error = %err,
-                "console identity-first live projection could not subscribe to agent events"
-            );
-            return;
-        }
-    };
-
-    tokio::spawn(async move {
-        while let Some(envelope) = stream.next().await {
-            let event_type = agent_event_type(&envelope.payload).to_string();
-            let unified = EventEnvelope {
-                event_id: format!("evt-agent-{}", envelope.event_id),
-                source: "agent".to_string(),
-                timestamp_ms: envelope.timestamp_ms,
-                event: UnifiedEvent::Agent {
-                    agent_id: runtime_member_id.clone(),
-                    event_type: event_type.clone(),
-                    // Console wire shape, not the raw 0.7 event: keeps the
-                    // derived `result` text (and `tool_call_id` mirror) that
-                    // the embedded console's adapters and image-frame
-                    // projection consume.
-                    payload: Some(crate::mob_handle_runtime::console_agent_event_payload(
-                        &envelope.payload,
-                    )),
-                },
-            };
-            console_events.project_unified_event(&unified).await;
-            if matches!(event_type.as_str(), "run_completed" | "run_failed") {
-                break;
-            }
-        }
-    });
 }
 
 fn parse_identity_first_handling_mode(
@@ -5910,7 +5844,6 @@ async fn handle_console_runtime_rpc_with_visibility(
                 return match Box::pin(console_send_with_identity_first_fallback(
                     aggregator,
                     identity_runtime.clone(),
-                    Some(runtime),
                     console_events.as_ref(),
                     send_request,
                 ))
@@ -13944,7 +13877,6 @@ comms = true
         let accepted = console_send_identity_first(
             &aggregator,
             runtime.clone(),
-            Some(&mob_runtime),
             Some(&events),
             crate::console_aggregator::ConsoleSendRequest {
                 identity: identity.as_str().to_string(),
@@ -14021,7 +13953,6 @@ comms = true
         let accepted = console_send_with_identity_first_fallback(
             &aggregator,
             identity_runtime,
-            Some(&mob_runtime),
             Some(&events),
             crate::console_aggregator::ConsoleSendRequest {
                 identity: "agent:member-only".to_string(),
@@ -14108,7 +14039,6 @@ comms = true
             console_send_identity_first(
                 &aggregator,
                 runtime,
-                None,
                 None,
                 crate::console_aggregator::ConsoleSendRequest {
                     identity: identity.as_str().to_string(),
@@ -14202,7 +14132,6 @@ comms = true
                 &aggregator,
                 runtime,
                 None,
-                None,
                 crate::console_aggregator::ConsoleSendRequest {
                     identity: identity.as_str().to_string(),
                     content: serde_json::to_value(meerkat_core::ContentInput::Text(
@@ -14223,6 +14152,154 @@ comms = true
             deliver_calls.load(Ordering::SeqCst),
             1,
             "steer delivery should have reached the bridge before the console response waits"
+        );
+        Ok(())
+    }
+
+    /// An identical-content resend of an existing idempotency key is a
+    /// replay: it answers with the original acceptance and runs NOTHING.
+    /// Before the fix the identity-first door answered with the old
+    /// acceptance AND dispatched a whole new turn stamped with the old
+    /// interaction id (reproduced 2026-09-03: 4 `run_started` for 3 sends).
+    #[tokio::test]
+    async fn identity_first_console_send_replay_returns_the_original_acceptance_without_a_second_dispatch()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let identity = AgentIdentity::parse("agent:replay-console")?;
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:replay-console:0")?,
+            session_id: meerkat_core::types::SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let handling_modes = Arc::new(Mutex::new(Vec::new()));
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-replay-send-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(Arc::new(RecordingIdentityBridge {
+                session_id: record.session_id.clone(),
+                handling_modes: handling_modes.clone(),
+            })),
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from("default"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                    placement: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(record),
+                Some(LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(7),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let events = ConsoleEventStore::new();
+        let request = crate::console_aggregator::ConsoleSendRequest {
+            identity: identity.as_str().to_string(),
+            content: serde_json::to_value(meerkat_core::ContentInput::Text(
+                "hello once".to_string(),
+            ))?,
+            origin: "test".to_string(),
+            idempotency_key: "idem-replay".to_string(),
+            handling_mode: None,
+        };
+        let first = console_send_identity_first(
+            &aggregator,
+            runtime.clone(),
+            Some(&events),
+            request.clone(),
+        )
+        .await?;
+        // The first send dispatches: a positive observable before any count.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if handling_modes
+                    .lock()
+                    .map(|modes| !modes.is_empty())
+                    .unwrap_or(false)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .map_err(|_| "the first send must reach the bridge")?;
+
+        let replay = console_send_identity_first(
+            &aggregator,
+            runtime.clone(),
+            Some(&events),
+            request.clone(),
+        )
+        .await?;
+        assert_eq!(
+            replay.interaction_id, first.interaction_id,
+            "a replay answers with the original interaction"
+        );
+        assert_eq!(replay.input_frame_id, first.input_frame_id);
+
+        // Give a wrongly spawned second dispatch time to reach the bridge.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let deliveries = handling_modes
+            .lock()
+            .map(|modes| modes.len())
+            .map_err(|_| "handling modes mutex poisoned")?;
+        assert_eq!(deliveries, 1, "a replay must not dispatch a second turn");
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some(identity.as_str().to_string()),
+                ..ConsoleTimelineQuery::default()
+            })
+            .await?;
+        assert_eq!(
+            page.frames
+                .iter()
+                .filter(|frame| frame.kind == "user_input")
+                .count(),
+            1,
+            "a replay appends no second input frame: {:#?}",
+            page.frames
+        );
+
+        // Same key, different content is still the typed conflict.
+        let conflict = console_send_identity_first(
+            &aggregator,
+            runtime,
+            Some(&events),
+            crate::console_aggregator::ConsoleSendRequest {
+                content: serde_json::to_value(meerkat_core::ContentInput::Text(
+                    "hello twice".to_string(),
+                ))?,
+                ..request
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                conflict,
+                Err(super::ConsoleSendError::IdempotencyConflict(ref key)) if key == "idem-replay"
+            ),
+            "{conflict:?}"
         );
         Ok(())
     }
@@ -14281,7 +14358,6 @@ comms = true
         let accepted = console_send_identity_first(
             &aggregator,
             runtime,
-            None,
             None,
             crate::console_aggregator::ConsoleSendRequest {
                 identity: identity.as_str().to_string(),
