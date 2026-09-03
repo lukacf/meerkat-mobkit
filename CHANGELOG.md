@@ -294,6 +294,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   that built before still builds. Observable to hosts that print the error:
   the `TomlParse` text changed. Unit tests cover each rule in both polarities.
 
+- **`mobkit/reset_all` now resets every registered identity instead of
+  retiring the whole roster.** The console handler chose reset-versus-retire
+  by membership in the baseline member-spec slot, which only the
+  non-identity-first `UnifiedRuntime::reconcile` populates. On every shipped
+  gateway that slot is empty, so each registered identity fell into the retire
+  arm: the call answered `reset: []` and `retired_delegates: [every identity]`,
+  the timeline carried one `identity_retired` frame per identity and no
+  `identity_reset`, and the operator's fleet was gone (reproduced 2026-09-03
+  against `rpc_gateway` with two identities; the gateway process itself
+  survived, so the reported exit had another cause). The reset set is now
+  every identity the identity runtime knows: each goes through
+  `reset_tracked` (generation advance, session-bridge requirement, stale-alias
+  preflight), and the baseline slot only decides the fate of members with no
+  registered identity. Raw delegates and live-only members stay on the retire
+  path. Exact-pinned hosts that call `reset_all` previously observed a
+  fleet-wide retire; they now observe a per-identity reset with
+  `identity_reset` lifecycle frames, and a registered identity on a runtime
+  without a session bridge is a typed `identity_reset_requires_session_bridge`
+  preflight failure (nothing touched) instead of a silent retire.
+  Gateway-subprocess regression added.
+
 ## [0.8.31] - 2026-09-04
 
 ### Changed

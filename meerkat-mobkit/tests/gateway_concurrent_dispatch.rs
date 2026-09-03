@@ -27,7 +27,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -2064,4 +2065,563 @@ fn persistent_identity_first_resume_publishes_owner_authority_before_prepare() {
     gateway.close_stdin();
     let _ = gateway.child.kill();
     let _ = gateway.child.wait();
+}
+
+// ---------------------------------------------------------------------------
+// mobkit/reset_all on an identity-first gateway (item R7)
+// ---------------------------------------------------------------------------
+
+/// Roster for the reset_all regression: two registered identities on the
+/// `default` profile.
+const RESET_ALL_IDENTITIES: [&str; 2] = ["agent:alpha", "agent:beta"];
+
+/// Host-side state for the reset_all regression: continuity records with the
+/// fencing token they were upserted under, session snapshots, and a token
+/// counter. Unlike [`HostContinuityState`] this mints a FRESH fencing token
+/// per acquisition: the reset path re-acquires the lease the identity already
+/// holds, and a real lease provider answers that with a newer token.
+struct ResetAllHostState {
+    /// identity -> (latest `ContinuityRecord` JSON, fencing token of the upsert)
+    records: RefCell<BTreeMap<String, (Value, u64)>>,
+    /// session id -> latest `SessionSnapshot` JSON
+    snapshots: RefCell<BTreeMap<String, Value>>,
+    next_fencing_token: Cell<u64>,
+}
+
+impl ResetAllHostState {
+    fn new() -> Self {
+        Self {
+            records: RefCell::new(BTreeMap::new()),
+            snapshots: RefCell::new(BTreeMap::new()),
+            next_fencing_token: Cell::new(101),
+        }
+    }
+}
+
+/// Stateful provider answerer for [`RESET_ALL_IDENTITIES`]. The init below
+/// declares no session builder, so the gateway builds the demo agents itself
+/// and `callback/build_agent` never arrives; every other host verb is answered
+/// from [`ResetAllHostState`].
+fn answer_reset_all_host_callbacks(
+    gateway: &mut Gateway,
+    message: &Value,
+    host: &ResetAllHostState,
+) {
+    let Some(method) = message.get("method").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(id) = message.get("id").cloned() else {
+        return;
+    };
+    let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+
+    let result = match method {
+        "callback/roster_provider/roster" => Value::Array(
+            RESET_ALL_IDENTITIES
+                .iter()
+                .map(|identity| {
+                    json!({
+                        "identity": identity,
+                        "profile": "default",
+                        "addressability": "addressable",
+                        "display_name": null,
+                        "labels": {},
+                        "context": null,
+                        "additional_instructions": []
+                    })
+                })
+                .collect(),
+        ),
+        "callback/topology_provider/compute_edges" => json!([]),
+        "callback/continuity_store/resolve_many" => {
+            let records = host.records.borrow();
+            let mut states = serde_json::Map::new();
+            for identity in params["identities"].as_array().into_iter().flatten() {
+                let identity = identity.as_str().expect("identity string");
+                let resolve_state = match records.get(identity) {
+                    Some((record, _)) => json!({ "state": "ready", "record": record }),
+                    None => json!({ "state": "uninitialized" }),
+                };
+                states.insert(identity.to_string(), resolve_state);
+            }
+            Value::Object(states)
+        }
+        "callback/continuity_store/resolve_record_by_session" => {
+            let session_id = params["session_id"].as_str().unwrap_or_default();
+            let records = host.records.borrow();
+            match records
+                .values()
+                .find(|(record, _)| record["session_id"].as_str() == Some(session_id))
+            {
+                Some((record, fencing_token)) => json!({
+                    "record": record,
+                    "fencing_token": fencing_token,
+                    "checkpoint_version": record["checkpoint_version"].as_u64().unwrap_or(0),
+                }),
+                None => Value::Null,
+            }
+        }
+        "callback/continuity_store/upsert_continuity_record" => {
+            let record = params["record"].clone();
+            let identity = record["identity"]
+                .as_str()
+                .expect("upserted record identity")
+                .to_string();
+            let fencing_token = params["fencing_token"]
+                .as_u64()
+                .expect("upsert carries a fencing token");
+            host.records
+                .borrow_mut()
+                .insert(identity, (record, fencing_token));
+            Value::Null
+        }
+        "callback/continuity_store/delete_continuity_record" => {
+            let identity = params["identity"].as_str().expect("record identity");
+            host.records.borrow_mut().remove(identity);
+            Value::Null
+        }
+        "callback/continuity_store/save_session_snapshot" => {
+            let session_id = params["session_id"]
+                .as_str()
+                .expect("snapshot session id")
+                .to_string();
+            host.snapshots
+                .borrow_mut()
+                .insert(session_id, params["snapshot"].clone());
+            Value::Null
+        }
+        "callback/continuity_store/load_session_snapshot" => {
+            let session_id = params["session_id"].as_str().expect("snapshot session id");
+            host.snapshots
+                .borrow()
+                .get(session_id)
+                .cloned()
+                .unwrap_or(Value::Null)
+        }
+        "callback/continuity_store/delete_session_snapshot_if_current_revision" => {
+            let session_id = params["session_id"].as_str().expect("snapshot session id");
+            Value::Bool(host.snapshots.borrow_mut().remove(session_id).is_some())
+        }
+        "callback/lease_provider/acquire_leases" => {
+            let mut acquisitions = serde_json::Map::new();
+            for identity in params["identities"].as_array().into_iter().flatten() {
+                let identity = identity.as_str().expect("identity string");
+                let fencing_token = host.next_fencing_token.get();
+                host.next_fencing_token.set(fencing_token + 1);
+                acquisitions.insert(
+                    identity.to_string(),
+                    json!({
+                        "result": "acquired",
+                        "identity": identity,
+                        "fencing_token": fencing_token,
+                        "ttl": 600_000
+                    }),
+                );
+            }
+            Value::Object(acquisitions)
+        }
+        "callback/lease_provider/renew_leases" => {
+            let mut renewals = serde_json::Map::new();
+            for grant in params["grants"].as_array().into_iter().flatten() {
+                let identity = grant["identity"].as_str().expect("grant identity");
+                renewals.insert(
+                    identity.to_string(),
+                    json!({
+                        "result": "renewed",
+                        "identity": identity,
+                        "fencing_token": grant["fencing_token"],
+                        "ttl": grant["ttl"]
+                    }),
+                );
+            }
+            Value::Object(renewals)
+        }
+        "callback/lease_provider/release_leases" => Value::Null,
+        // Any new optional callback verb gets a null acknowledgement so it
+        // cannot wedge this harness (mirrors the stateful answerer above).
+        _ => Value::Null,
+    };
+    gateway.send(json!({ "jsonrpc": "2.0", "id": id, "result": result }));
+}
+
+/// One HTTP exchange against the gateway's console door.
+struct HttpReply {
+    status: u16,
+    body: String,
+}
+
+/// Minimal blocking HTTP/1.1 client over [`TcpStream`]. This suite has no
+/// HTTP dependency and the console door is plain JSON over HTTP, so this is
+/// enough: one request per connection, `Connection: close`, body read to EOF,
+/// chunked transfer decoded if the server chose it.
+fn http_request(base_url: &str, method: &str, path: &str, body: Option<&str>) -> HttpReply {
+    let authority = base_url
+        .strip_prefix("http://")
+        .unwrap_or_else(|| panic!("http base url must be plain http: {base_url}"))
+        .trim_end_matches('/');
+    let mut stream = TcpStream::connect(authority).expect("connect to gateway http door");
+    stream
+        .set_read_timeout(Some(WEDGE_BACKSTOP))
+        .expect("http read timeout");
+    let body = body.unwrap_or("");
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .expect("write http request");
+    stream.flush().expect("flush http request");
+    let mut raw = Vec::new();
+    stream
+        .read_to_end(&mut raw)
+        .expect("read http response to eof");
+    let header_end = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap_or_else(|| {
+            panic!(
+                "malformed http response (no header terminator): {}",
+                String::from_utf8_lossy(&raw)
+            )
+        });
+    let head = String::from_utf8_lossy(&raw[..header_end]).into_owned();
+    let payload = &raw[header_end + 4..];
+    let status_line = head.lines().next().unwrap_or_default();
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or_else(|| panic!("malformed http status line: {status_line}"));
+    let chunked = head.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.starts_with("transfer-encoding:") && lower.contains("chunked")
+    });
+    let body_bytes = if chunked {
+        decode_chunked_body(payload)
+    } else {
+        payload.to_vec()
+    };
+    HttpReply {
+        status,
+        body: String::from_utf8_lossy(&body_bytes).into_owned(),
+    }
+}
+
+fn decode_chunked_body(mut rest: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let line_end = rest
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .expect("chunk size line terminator");
+        let size_line = String::from_utf8_lossy(&rest[..line_end]).into_owned();
+        let size =
+            usize::from_str_radix(size_line.split(';').next().unwrap_or_default().trim(), 16)
+                .unwrap_or_else(|_| panic!("malformed chunk size: {size_line}"));
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            break;
+        }
+        out.extend_from_slice(&rest[..size]);
+        rest = &rest[size + 2..];
+    }
+    out
+}
+
+/// Issue one console RPC over HTTP while keeping the stdin callback loop
+/// alive. The handler behind `/console/rpc` round-trips host callbacks (lease
+/// acquire, continuity upsert, snapshot save) over stdout, so the POST must
+/// not run on the thread that answers them or the two wait on each other.
+fn console_rpc_while_answering_callbacks(
+    gateway: &mut Gateway,
+    base_url: &str,
+    request: Value,
+    mut answer: impl FnMut(&mut Gateway, &Value),
+) -> Value {
+    let method = request["method"].as_str().unwrap_or_default().to_string();
+    let base_url = base_url.to_string();
+    let body = serde_json::to_string(&request).expect("console rpc json");
+    let (reply_tx, reply_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let reply = http_request(&base_url, "POST", "/console/rpc", Some(&body));
+        let _ = reply_tx.send(reply);
+    });
+    let start = Instant::now();
+    loop {
+        match reply_rx.try_recv() {
+            Ok(reply) => {
+                assert_eq!(
+                    reply.status, 200,
+                    "console rpc {method} must answer 200: {}",
+                    reply.body
+                );
+                return serde_json::from_str(&reply.body).unwrap_or_else(|err| {
+                    panic!(
+                        "console rpc {method} body is not json ({err}): {}",
+                        reply.body
+                    )
+                });
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                panic!("http thread for console rpc {method} died without a reply")
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        assert!(
+            start.elapsed() < WEDGE_BACKSTOP,
+            "console rpc {method} did not answer within {WEDGE_BACKSTOP:?}"
+        );
+        match gateway.lines.recv_timeout(Duration::from_millis(50)) {
+            Ok(line) => {
+                if let Ok(message) = serde_json::from_str::<Value>(line.trim()) {
+                    answer(gateway, &message);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("gateway stdout closed while console rpc {method} was in flight")
+            }
+        }
+    }
+}
+
+/// `mobkit/status_identity` for every identity in [`RESET_ALL_IDENTITIES`],
+/// keyed by identity.
+fn reset_all_identity_statuses(
+    gateway: &mut Gateway,
+    host: &ResetAllHostState,
+    tag: &str,
+) -> BTreeMap<String, Value> {
+    let mut statuses = BTreeMap::new();
+    for identity in RESET_ALL_IDENTITIES {
+        let request_id = format!("status-{tag}-{identity}");
+        gateway.send(json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "mobkit/status_identity",
+            "params": { "identity": identity }
+        }));
+        let response = gateway
+            .wait_for(
+                WEDGE_BACKSTOP,
+                |gateway, message| answer_reset_all_host_callbacks(gateway, message, host),
+                |m| is_response_with_id(m, &request_id),
+            )
+            .unwrap_or_else(|| panic!("status_identity response for {identity} ({tag})"));
+        assert_eq!(
+            response["error"],
+            Value::Null,
+            "status_identity for {identity} ({tag}) failed: {response:#?}"
+        );
+        statuses.insert(identity.to_string(), response["result"].clone());
+    }
+    statuses
+}
+
+/// Item R7: `mobkit/reset_all` on an identity-first gateway RESETS every
+/// registered identity and keeps the process alive.
+///
+/// Before this the handler chose reset-versus-retire by membership in the
+/// baseline member-spec slot, which only the non-identity-first
+/// `UnifiedRuntime::reconcile` populates. On every shipped gateway that slot
+/// is empty, so every registered identity fell into the retire arm: the body
+/// read `reset: []`, `retired_delegates: [agent:alpha, agent:beta]`, the
+/// timeline carried two `identity_retired` frames and no `identity_reset`,
+/// and the operator's fleet was gone (reproduced 2026-09-03 against this
+/// binary). The reported process exit did not reproduce; liveness is asserted
+/// here anyway because it is the other half of the report and nothing else
+/// pins it.
+///
+/// Every assertion is a positive observable: the body lists both identities
+/// under `reset`, one `identity_reset` frame per identity is on the timeline,
+/// the continuity generation of each identity is 1 with a new runtime id, and
+/// `/healthz` answers after the call.
+#[test]
+fn reset_all_resets_every_registered_identity_and_keeps_the_gateway_alive() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let scratch_dir = tempfile::tempdir().expect("scratch dir");
+    let host = ResetAllHostState::new();
+    let (mut gateway, stderr) = Gateway::start_capturing_stderr("meerkat_mobkit=info");
+    let captured = || {
+        stderr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .join("\n")
+    };
+
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "init",
+        "method": "mobkit/init",
+        "params": {
+            "persistent_state": state_dir.path(),
+            "mob_config": MOB_CONFIG,
+            "has_roster_provider": true,
+            "has_continuity_store": true,
+            "has_lease_provider": true,
+            "scratch_dir": scratch_dir.path(),
+            "runtime_options": {
+                "demo_llm": true,
+                // Both identities must be LIVE before the call, so the reset
+                // path (not a dormant no-op) is what runs.
+                "identity_bootstrap_mode": { "mode": "eager_materialize" },
+                // The console door defaults to requiring an app bearer token;
+                // this test speaks to it directly.
+                "console_require_app_auth": false
+            }
+        }
+    }));
+    let init = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| answer_reset_all_host_callbacks(gateway, message, &host),
+            |m| is_response_with_id(m, "init"),
+        )
+        .expect("init response");
+    assert!(
+        init["result"]["contract_version"].is_string(),
+        "init failed: {init}\nstderr:\n{}",
+        captured()
+    );
+    let base_url = init["result"]["http_base_url"]
+        .as_str()
+        .unwrap_or_else(|| panic!("init result must carry http_base_url: {init}"))
+        .to_string();
+
+    let before = reset_all_identity_statuses(&mut gateway, &host, "before");
+    for identity in RESET_ALL_IDENTITIES {
+        assert_eq!(
+            before[identity]["state"],
+            json!("active"),
+            "{identity} must be active before reset_all, or the reset path is not what runs: {before:#?}"
+        );
+        assert_eq!(
+            before[identity]["generation"],
+            json!(0),
+            "{identity} must start at generation 0: {before:#?}"
+        );
+    }
+
+    let reset_all = console_rpc_while_answering_callbacks(
+        &mut gateway,
+        &base_url,
+        json!({ "jsonrpc": "2.0", "id": "reset-all", "method": "mobkit/reset_all", "params": {} }),
+        |gateway, message| answer_reset_all_host_callbacks(gateway, message, &host),
+    );
+    assert_eq!(
+        reset_all["error"],
+        Value::Null,
+        "reset_all must succeed for both registered identities: {reset_all:#?}\nstderr:\n{}",
+        captured()
+    );
+    let result = &reset_all["result"];
+    assert_eq!(
+        result["reset"],
+        json!(RESET_ALL_IDENTITIES),
+        "every registered identity must be RESET, not retired: {reset_all:#?}"
+    );
+    assert_eq!(
+        result["retired_delegates"],
+        json!([]),
+        "a registered identity is never a retire target for reset_all: {reset_all:#?}"
+    );
+    assert_eq!(
+        result["failed"],
+        json!([]),
+        "reset_all reported failures: {reset_all:#?}\nstderr:\n{}",
+        captured()
+    );
+
+    // The other half of the report: the process is still there and serving.
+    assert!(
+        gateway
+            .child
+            .try_wait()
+            .expect("poll gateway exit")
+            .is_none(),
+        "rpc_gateway exited after reset_all\nstderr:\n{}",
+        captured()
+    );
+    let health = http_request(&base_url, "GET", "/healthz", None);
+    assert_eq!(
+        health.status, 200,
+        "/healthz must answer after reset_all: {}",
+        health.body
+    );
+    assert_eq!(health.body.trim(), "ok", "/healthz body after reset_all");
+
+    // The lifecycle the console shows: one identity_reset per identity, and
+    // not a single identity_retired anywhere on the timeline.
+    let timeline = console_rpc_while_answering_callbacks(
+        &mut gateway,
+        &base_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "timeline",
+            "method": "mobkit/console/query_timeline",
+            "params": { "limit": 400 }
+        }),
+        |gateway, message| answer_reset_all_host_callbacks(gateway, message, &host),
+    );
+    let frames = timeline["result"]["frames"]
+        .as_array()
+        .unwrap_or_else(|| panic!("query_timeline must return frames: {timeline:#?}"));
+    for identity in RESET_ALL_IDENTITIES {
+        let reset_frames = frames
+            .iter()
+            .filter(|frame| frame["kind"] == "identity_reset" && frame["identity"] == identity)
+            .count();
+        assert_eq!(
+            reset_frames, 1,
+            "exactly one identity_reset lifecycle frame for {identity}: {frames:#?}"
+        );
+    }
+    let retired_frames = frames
+        .iter()
+        .filter(|frame| frame["kind"] == "identity_retired")
+        .count();
+    assert_eq!(
+        retired_frames, 0,
+        "reset_all must not retire any registered identity: {frames:#?}"
+    );
+
+    // The durable fact: each identity is still registered, live, one
+    // generation further, under a new incarnation.
+    let after = reset_all_identity_statuses(&mut gateway, &host, "after");
+    for identity in RESET_ALL_IDENTITIES {
+        assert_eq!(
+            after[identity]["state"],
+            json!("active"),
+            "{identity} must be active again after reset_all: {after:#?}"
+        );
+        assert_eq!(
+            after[identity]["generation"],
+            json!(1),
+            "{identity} must have advanced to generation 1: {after:#?}"
+        );
+        assert_ne!(
+            after[identity]["agent_runtime_id"], before[identity]["agent_runtime_id"],
+            "{identity} must run under a new incarnation after reset_all: before {:#?} after {:#?}",
+            before[identity], after[identity]
+        );
+    }
+
+    gateway.send(json!({
+        "jsonrpc": "2.0", "id": "shutdown", "method": "mobkit/shutdown", "params": {}
+    }));
+    let shutdown = gateway
+        .wait_for(
+            WEDGE_BACKSTOP,
+            |gateway, message| answer_reset_all_host_callbacks(gateway, message, &host),
+            |m| is_response_with_id(m, "shutdown"),
+        )
+        .expect("shutdown handshake after reset_all");
+    assert_eq!(
+        shutdown["result"]["shutdown"], true,
+        "gateway must still shut down cleanly after reset_all: {shutdown}"
+    );
+    gateway.close_stdin();
+    gateway.wait_for_exit(WEDGE_BACKSTOP);
 }
