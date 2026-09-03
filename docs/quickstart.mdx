@@ -31,9 +31,11 @@ icon: "rocket"
   executable. Download `mobkit-rpc-gateway-<version>-<target>.tar.gz` for Unix
   or macOS, or `mobkit-rpc-gateway-<version>-<target>.zip` for Windows, from
   [GitHub Releases](https://github.com/lukacf/meerkat-mobkit/releases) and
-  extract its `rpc_gateway` binary (`rpc_gateway.exe` on Windows). The Linux
-  archives are built against glibc 2.31 (Debian 11) and load on any
-  distribution with glibc 2.31 or newer. For a source build, run
+  extract its `rpc_gateway` binary (`rpc_gateway.exe` on Windows). Linux
+  archives published after v0.8.30 are built against glibc 2.31 (Debian 11)
+  and load on any distribution with glibc 2.31 or newer; the v0.8.30 Linux
+  archives were built on Ubuntu 24.04 and need glibc 2.39. For a source
+  build, run
   `./scripts/repo-cargo build -p meerkat-mobkit --bin rpc_gateway --locked`,
   then run `./scripts/repo-cargo --print-env`; the debug binary is at
   `<CARGO_TARGET_DIR>/debug/rpc_gateway`. Pass the extracted or built path to
@@ -184,9 +186,10 @@ await luka.send_and_wait("What's happening today?", timeout=60)
 **Profiles are templates; members are declared.** The `[profiles.*]` tables in
 `MOB_TOML` produce no members on their own: the identities your roster returns
 (or `ensure_member` names) are the only members that exist, and nothing spawns
-one member per profile for you. The roster callback receives the parsed
-definition as `context["mob_definition"]`, so a profile-shaped crew is one loop
-over `definition["profiles"]`; see
+one member per profile for you. The roster callback's `context` argument is
+empty on both SDKs (the gateway sends the definition, the SDK dispatchers do
+not pass it through), so a profile-shaped crew is one loop over the
+`[profiles.*]` of your own parsed `MOB_TOML`; see
 [Profiles are templates](/concepts/roster#profiles-are-templates-members-are-declared).
 If the definition declares `[wiring]` (`auto_wire_orchestrator` or
 `role_wiring`), call `rt.mob_handle().reconcile_edges()` after boot and after

@@ -39,19 +39,36 @@ spawn anywhere is `mobkit_gateway`'s no-config fallback, which ensures a single
 `definition.json` exists; a workspace definition with an empty
 `identity_roster` boots with no members at all.
 
-The roster callback receives the definition it is rostering for
-(`RosterContext.mob_definition`, serialized as the `mob_definition` key of the
-`context` argument; on `rpc_gateway` it is always the definition the gateway
-booted with). A host that wants a profile-shaped crew derives it there:
+The roster callback does not hand you the definition. On `rpc_gateway` the
+gateway sends `callback/roster_provider/roster` with the serialized
+`RosterContext` (`mob_definition`, always the definition the gateway booted
+with, and `previous_identities`) as the request params, but the Python and
+TypeScript SDK dispatchers pass the provider `params["context"]`, a key the
+gateway does not send. The `context` argument your `roster(context)` receives
+is therefore an empty dict or object on both SDKs, and
+`context["mob_definition"]` raises `KeyError`. A host that wants a
+profile-shaped crew derives it from the definition it already holds, the same
+`mob.toml` text it passes to `.mob_inline(...)` (HomeCore builds its roster the
+same way, from its own parsed config, and ignores `context`):
 
 ```python
+import tomllib
+
 from meerkat_mobkit import DurableAgentSpec
+
+DEFINITION = tomllib.loads(MOB_TOML)  # the text passed to .mob_inline(MOB_TOML)
+
+
+def orchestrator_profile(definition):
+    # `[mob] orchestrator = "lead"` or `[mob.orchestrator] profile = "lead"`
+    orchestrator = definition["mob"].get("orchestrator")
+    return orchestrator.get("profile") if isinstance(orchestrator, dict) else orchestrator
+
 
 class ProfileShapedRoster:
     # One durable identity per profile; the orchestrator is addressable.
     async def roster(self, context):
-        definition = context["mob_definition"]
-        orchestrator = (definition.get("orchestrator") or {}).get("profile")
+        orchestrator = orchestrator_profile(DEFINITION)
         return [
             DurableAgentSpec(
                 identity=f"{profile_name}:main",
@@ -60,7 +77,7 @@ class ProfileShapedRoster:
                     "addressable" if profile_name == orchestrator else "internal_only"
                 ),
             )
-            for profile_name in definition["profiles"]
+            for profile_name in DEFINITION.get("profiles", {})
         ]
 ```
 

@@ -309,6 +309,14 @@ sequential command loop and are bounded by the `-32017` read budget. See
 [Profiles are templates](/concepts/roster#profiles-are-templates-members-are-declared)
 for why none of these methods spawn members from `[profiles.*]` on their own.
 
+On `rpc_gateway` the roster itself comes from the SDK host. The gateway sends
+`callback/roster_provider/roster` with the serialized `RosterContext`
+(`mob_definition`, `previous_identities`) as the request params and expects a
+`DurableAgentSpec[]` reply. The Python and TypeScript dispatchers hand the
+provider `params.context`, which the gateway does not send, so the provider's
+`context` argument is empty on both SDKs; derive a profile-shaped roster from
+the host's own parsed definition, as the section linked above shows.
+
 | Method | Params | Result |
 |--------|--------|--------|
 | `mobkit/list_members` | none | `MobMemberListEntry[]`, including `retiring` rows; terminal rows are filtered |
@@ -467,7 +475,7 @@ The response includes `interaction_id` and `identity`. The multipart JSON-RPC en
 
 `idempotency_key` must be unique per send (the bundled console mints one per
 send). Replaying a key with identical content returns the earlier interaction's
-acceptance, whose turn has already completed; replaying it with different
+acceptance, whether or not that turn has finished; replaying it with different
 content is refused with `-32009` (`idempotency_conflict`, HTTP 409 on the REST
 form). The key is not cleared by a member respawn.
 
@@ -498,7 +506,12 @@ Console surface only (`POST /console/rpc`; mutating; ABAC action
 aggregator-only console (no runtime attached) refuses it with `data.kind =
 "unsupported_reset_all_surface"` rather than retiring anything. It resets every
 console-visible identity in one pass and never exits the gateway process: a
-slow `reset_all` is a long request, not a restart.
+slow `reset_all` is a long request, not a restart. The designed exits are
+elsewhere, and differ per binary: `rpc_gateway` ends when the SDK closes its
+stdin (EOF), on SIGINT or SIGTERM, or through the SDK's shutdown handshake;
+`mobkit_gateway` keeps serving HTTP after its stdin closes and ends only on
+SIGINT or SIGTERM or when its HTTP server task ends. Both stdin behaviours are
+test-pinned (`tests/gateway_concurrent_dispatch.rs`).
 
 The pass is sequential, one identity at a time:
 
@@ -902,7 +915,9 @@ SDK method names are the RPC names with the `mobkit/workgraph/` prefix
 dropped, in `snake_case` for Python (`workgraph_snapshot` through
 `workgraph_attention_prune`, plus `workgraph_add_evidence` and
 `workgraph_escalate_policy`) and `camelCase` for TypeScript.
-`attention/break_glass_reassign` is deliberately in neither SDK.
+`attention/break_glass_reassign` is deliberately in neither SDK, and
+`mobkit/workgraph/facts` (the cursor-tail projection behind the SSE wake
+stream) has no SDK wrapper either.
 
 ---
 

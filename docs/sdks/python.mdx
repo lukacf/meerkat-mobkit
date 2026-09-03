@@ -282,7 +282,8 @@ print(snapshot.agent_identity, snapshot.state)
 # Find members by label
 members = await handle.find_members("owner", "user-123")
 
-# Re-run discovery and reconcile the roster
+# Reconcile the named modules (routing, delivery). This does not touch the
+# roster; identity roster reconciliation is rt.reconcile().
 result = await handle.reconcile(["routing", "delivery"])
 
 # Call an MCP tool on a loaded module
@@ -561,9 +562,11 @@ resume). The gateway pre-fills `SessionBuildOptions` before it calls you:
 | `resume_session_id` | The resumed session's id on a resume; `None` on a mint |
 
 Read `profile_name`, do not assign it. There is no way to select a profile
-from `build_agent`: the gateway applies only `additional_instructions`,
-`labels`, `resume_session_id`, and the registered `tools` from what you
-return, and ignores a host-set `profile_name`. Per-profile tools are therefore
+from `build_agent`: the gateway applies only `additional_instructions` (mint
+builds only; on a resume they are ignored with a warning, because a resume
+inherits the persisted prompt state), `labels`, `resume_session_id`, and the
+registered `tools` from what you return, and ignores a host-set
+`profile_name`. Per-profile tools are therefore
 one builder that branches on the pre-filled value:
 
 ```python
