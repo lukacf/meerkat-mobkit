@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A real-API end-to-end lane (`make e2e-live`).** Boots the real
+  `rpc_gateway` through the Python SDK, runs real Anthropic turns, and asserts
+  positive observables that only exist if the whole chain worked: a
+  surface=turn injection-ledger row when `per_turn_injection` is omitted (with
+  an explicit-off negative control in the same run), a hydrated
+  `routing_status` whose `session_provider` matches the profile declaration,
+  and a non-empty `resolved_tools` set read after the turn completes. The lane
+  is skipped unless `MOBKIT_E2E_LIVE=1`; once requested, a missing key or
+  binary is a failure, never a skip. Nightly workflow `e2e-live.yml` (needs the
+  `ANTHROPIC_API_KEY` repository secret; fails loudly without it).
+
 ### Fixed
 
 - **The gateway no longer carries its own default for

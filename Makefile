@@ -11,7 +11,7 @@ NC     := \033[0m
 
 # ── meta ──────────────────────────────────────────────────────
 
-.PHONY: all build release test test-python test-flow-editor test-flow-editor-rkat test-flow-editor-rkat-deploy test-all lint fmt fmt-check \
+.PHONY: e2e-live all build release test test-python test-flow-editor test-flow-editor-rkat test-flow-editor-rkat-deploy test-all lint fmt fmt-check \
         audit bright-line memory-evals ci ci-smoke check doc doc-open coverage clean \
         install-hooks uninstall-hooks pre-commit-all update outdated \
         verify-version-parity bump-sdk-versions publish-dry-run-python \
@@ -46,6 +46,16 @@ test-python: ## Run Python SDK tests
 		test -x "$$gateway_bin" || { echo "missing freshly built rpc_gateway at $$gateway_bin" >&2; exit 1; }; \
 		MOBKIT_GATEWAY_BIN="$$gateway_bin" PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -q
 	@echo "$(GREEN)Python SDK tests passed.$(NC)"
+
+e2e-live: ## Real-API end-to-end lane: real rpc_gateway + Python SDK + real Anthropic turns (needs ANTHROPIC_API_KEY)
+	@echo "$(YELLOW)Running real-API e2e lane…$(NC)"
+	@test -n "$${ANTHROPIC_API_KEY:-$${RKAT_ANTHROPIC_API_KEY:-}}" || { echo "e2e-live: ANTHROPIC_API_KEY (or RKAT_ANTHROPIC_API_KEY) is not set; refusing to run a lane that would skip" >&2; exit 1; }
+	CARGO_INCREMENTAL=0 $(CARGO) build -p meerkat-mobkit --bin rpc_gateway --locked
+	@gateway_target_dir="$$($(CARGO) --print-env | awk -F= '$$1 == "CARGO_TARGET_DIR" { print substr($$0, index($$0, "=") + 1) }')"; \
+		gateway_bin="$$gateway_target_dir/debug/rpc_gateway"; \
+		test -x "$$gateway_bin" || { echo "missing freshly built rpc_gateway at $$gateway_bin" >&2; exit 1; }; \
+		MOBKIT_E2E_LIVE=1 MOBKIT_GATEWAY_BIN="$$gateway_bin" PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/e2e_live -q -rA
+	@echo "$(GREEN)Real-API e2e lane passed.$(NC)"
 
 test-flow-editor: ## Run Flow Editor source, projection, visual, browser, and embedded freshness contracts
 	@echo "$(YELLOW)Running Flow Editor tests…$(NC)"
