@@ -575,6 +575,8 @@ class MobKitRuntime:
             runtime_options["gating_config_path"] = self._config.gating_config_path
         if self._config.access_config_path:
             runtime_options["access_config_path"] = self._config.access_config_path
+        if self._config.meerkat_config_path:
+            runtime_options["meerkat_config_path"] = self._config.meerkat_config_path
         if self._config.workgraph_enabled is not None:
             runtime_options["workgraph"] = self._config.workgraph_enabled
         if self._config.routing_config_path:

@@ -175,6 +175,12 @@ struct GatewayRuntimeOptions {
     /// i.e. effectively "never compact"). See
     /// [`meerkat_mobkit::compaction_policy`].
     compaction: Option<meerkat_core::config::CompactionRuntimeConfig>,
+    /// `runtime_options.meerkat_config_path`: the meerkat host `config.toml`
+    /// every gateway-built agent starts from, loaded once at init. This is
+    /// the only ingress for `[self_hosted]`, `[realm]` and `[models]`, which
+    /// meerkat keeps in the host config rather than in `mob.toml`. A missing
+    /// or malformed file refuses init; `None` keeps `Config::default()`.
+    host_config: Option<Config>,
 }
 
 /// `runtime_options.live` wire forms: `true` mounts the live WebSocket
@@ -372,18 +378,24 @@ impl Default for GatewayRuntimeOptions {
             composition_authority:
                 meerkat_mobkit::mob_composition_manifest::CompositionAuthority::default(),
             compaction: None,
+            host_config: None,
         }
     }
 }
 
 /// The `meerkat::Config` every gateway-built agent is constructed from.
 ///
+/// It starts from the host `config.toml` named by
+/// `runtime_options.meerkat_config_path` when one was declared (the only door
+/// for `[self_hosted]`, `[realm]` and `[models]`), else `Config::default()`,
+/// and the gateway's own overlays are layered on top of it.
+///
 /// This is where the gateway's session-compaction policy becomes real:
 /// meerkat's `AgentFactory::build_agent` builds its `DefaultCompactor` from
 /// `config.compaction`, so an un-declared policy here is what leaves the
 /// gateway on meerkat's model-aware `context_window * 4 / 5` trigger.
 fn gateway_agent_config(options: &GatewayRuntimeOptions) -> Config {
-    let mut config = Config::default();
+    let mut config = options.host_config.clone().unwrap_or_default();
     if let Some(address) = options.member_comms_address.as_ref() {
         config.comms.mode = meerkat_core::CommsRuntimeMode::Tcp;
         config.comms.address = Some(address.clone());
@@ -404,6 +416,64 @@ fn gateway_agent_config(options: &GatewayRuntimeOptions) -> Config {
         }
     }
     config
+}
+
+/// The init-time model check, delegated to meerkat-mob's `validate_definition`
+/// and narrowed to `DiagnosticCode::UnknownModel`.
+///
+/// meerkat's rule is the documented one (`rkat mob validate`): a profile
+/// model is acceptable when it is catalogued, defined under this definition's
+/// own `[models.<id>]`, or provider-annotated (`provider = "self_hosted"`
+/// with a `self_hosted_server_id`, for one). The check this replaced compared
+/// the model string against the static catalog alone, so it refused every
+/// `[models.<id>]` custom model and every self-hosted alias before the mob
+/// existed, while `MobBuilder::create` would have accepted them. Only this
+/// one diagnostic is adopted at init on purpose: the rest of the set
+/// (`MissingSkillRef`, wiring, flows) is meerkat's to refuse at create time,
+/// and adopting it here would newly refuse existing hosts' definitions.
+///
+/// The "Did you mean" hint over catalog ids is kept for the fall-through
+/// case, because the common cause is still a dated model id such as
+/// `claude-sonnet-4-5-20250514` for `claude-sonnet-4-5`.
+fn unknown_model_init_error(definition: &MobDefinition) -> Option<String> {
+    let diagnostic = meerkat_mob::validate_definition(definition)
+        .into_iter()
+        .find(|diagnostic| diagnostic.code == meerkat_mob::DiagnosticCode::UnknownModel)?;
+    let model = diagnostic
+        .location
+        .as_deref()
+        .and_then(|location| location.strip_prefix("profiles.")?.strip_suffix(".model"))
+        .and_then(|name| {
+            definition
+                .profiles
+                .get(&meerkat_mob::ProfileName::from(name))
+        })
+        .and_then(|binding| binding.as_inline())
+        .map(|profile| profile.model.as_str());
+    let hint = model.map(catalog_model_hint).unwrap_or_default();
+    Some(format!("{}{hint}", diagnostic.message))
+}
+
+/// `. Did you mean one of: ...?` over catalog ids that share a three-segment
+/// prefix with `model` in either direction; empty when nothing is close.
+fn catalog_model_hint(model: &str) -> String {
+    let prefix = model.split('-').take(3).collect::<Vec<_>>().join("-");
+    let mut suggestions: Vec<&str> = meerkat_models::catalog::catalog()
+        .iter()
+        .filter(|entry| {
+            entry.id.starts_with(&prefix)
+                || model.starts_with(&entry.id.split('-').take(3).collect::<Vec<_>>().join("-"))
+        })
+        .map(|entry| entry.id)
+        .collect();
+    suggestions.sort_unstable();
+    suggestions.dedup();
+    suggestions.truncate(5);
+    if suggestions.is_empty() {
+        String::new()
+    } else {
+        format!(". Did you mean one of: {}?", suggestions.join(", "))
+    }
 }
 
 #[derive(Default)]
@@ -1088,6 +1158,164 @@ mod tests {
             );
             assert!(err.contains(needle), "{err} should mention '{needle}'");
         }
+    }
+
+    const HOST_CONFIG_FIXTURE: &str = r#"
+[self_hosted.servers.local]
+transport = "openai_compatible"
+base_url = "http://127.0.0.1:11434"
+api_style = "chat_completions"
+
+[self_hosted.models.gemma-4-31b]
+server = "local"
+remote_model = "gemma4:31b"
+
+[models.house-model]
+provider = "openai"
+
+[realm.global]
+default_binding = "local"
+"#;
+
+    /// `runtime_options.meerkat_config_path` must pass the allowlist AND its
+    /// tables must reach the `meerkat::Config` every agent is built from, with
+    /// the gateway's own overlays still layered on top. Asserts the loaded
+    /// VALUES, not the absence of an error: an allowlist entry with a handler
+    /// that dropped the file would pass an is_ok() check.
+    #[test]
+    fn meerkat_config_path_reaches_the_agent_config_under_the_gateway_overlays() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, HOST_CONFIG_FIXTURE).expect("write host config");
+
+        let options = parse_gateway_runtime_options(
+            &json!({
+                "runtime_options": {
+                    "meerkat_config_path": path.to_string_lossy().to_string(),
+                    "member_comms_address": "127.0.0.1:0",
+                    "compaction": { "auto_compact_threshold": 120_000 }
+                }
+            }),
+            None,
+        )
+        .expect("meerkat_config_path must pass the allowlist");
+        let config = gateway_agent_config(&options);
+        assert_eq!(
+            config
+                .self_hosted
+                .models
+                .get("gemma-4-31b")
+                .map(|model| model.server.as_str()),
+            Some("local"),
+            "[self_hosted.models] must reach the agent config"
+        );
+        assert!(config.self_hosted.servers.contains_key("local"));
+        assert!(
+            config.models.custom.contains_key("house-model"),
+            "[models.<id>] must reach the agent config"
+        );
+        assert!(
+            config.realm.contains_key("global"),
+            "[realm] must reach the agent config"
+        );
+        // The gateway overlays are layered on top of the host config, not
+        // replaced by it.
+        assert_eq!(config.comms.mode, meerkat_core::CommsRuntimeMode::Tcp);
+        assert_eq!(config.compaction.auto_compact_threshold, 120_000);
+        assert!(config.compaction.auto_compact_threshold_explicit);
+
+        // Silence stays silence: no declared path, no host tables.
+        let quiet = parse_gateway_runtime_options(&json!({ "runtime_options": {} }), None)
+            .expect("empty options");
+        assert!(quiet.host_config.is_none());
+        assert!(gateway_agent_config(&quiet).self_hosted.models.is_empty());
+    }
+
+    /// A missing or malformed host config is an init refusal that names the
+    /// option and the file, never a silent `Config::default()`.
+    #[test]
+    fn meerkat_config_path_refuses_missing_malformed_and_untyped_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let malformed = dir.path().join("broken.toml");
+        std::fs::write(&malformed, "[self_hosted\n").expect("write");
+        for (value, needle) in [
+            (
+                json!(dir.path().join("absent.toml").to_string_lossy().to_string()),
+                "absent.toml",
+            ),
+            (json!(malformed.to_string_lossy().to_string()), "is invalid"),
+            (json!(7), "must be a string path"),
+            (json!("   "), "must not be empty"),
+        ] {
+            let params = json!({ "runtime_options": { "meerkat_config_path": value } });
+            let err = match parse_gateway_runtime_options(&params, None) {
+                Err(err) => err,
+                Ok(_) => panic!("expected rejection for {params}"),
+            };
+            assert!(
+                err.contains("runtime_options.meerkat_config_path"),
+                "{err} should name the option"
+            );
+            assert!(err.contains(needle), "{err} should mention '{needle}'");
+        }
+    }
+
+    /// The init model check is meerkat's rule, not a bare catalog lookup: a
+    /// `[models.<id>]` custom model and a provider-annotated self-hosted alias
+    /// both pass (they are what `MobBuilder::create` accepts), while a dated
+    /// catalog id is still refused with the typo hint and a nonsense id is
+    /// refused without one.
+    #[test]
+    fn init_model_check_follows_meerkat_validate_definition_and_keeps_the_hint() {
+        let custom = MobDefinition::from_toml(
+            "[mob]\nid = \"m\"\n\n[profiles.w]\nmodel = \"house-model\"\n\n\
+             [models.house-model]\nprovider = \"openai\"\n",
+        )
+        .expect("custom model definition");
+        assert_eq!(
+            unknown_model_init_error(&custom),
+            None,
+            "[models.<id>] must pass init"
+        );
+
+        let self_hosted = MobDefinition::from_toml(
+            "[mob]\nid = \"m\"\n\n[profiles.w]\nmodel = \"gemma-4-31b\"\n\
+             provider = \"self_hosted\"\nself_hosted_server_id = \"local\"\n",
+        )
+        .expect("self-hosted definition");
+        assert_eq!(
+            unknown_model_init_error(&self_hosted),
+            None,
+            "a provider-annotated self-hosted alias must pass init"
+        );
+
+        let catalogued =
+            MobDefinition::from_toml("[mob]\nid = \"m\"\n\n[profiles.w]\nmodel = \"gpt-5.5\"\n")
+                .expect("catalogued definition");
+        assert_eq!(unknown_model_init_error(&catalogued), None);
+
+        let dated = MobDefinition::from_toml(
+            "[mob]\nid = \"m\"\n\n[profiles.w]\nmodel = \"claude-sonnet-4-5-20250514\"\n",
+        )
+        .expect("a dated id parses");
+        let message =
+            unknown_model_init_error(&dated).expect("a dated catalog id must be refused at init");
+        assert!(message.contains("claude-sonnet-4-5-20250514"), "{message}");
+        assert!(message.contains("profiles.w"), "{message}");
+        assert!(
+            message.contains("Did you mean one of:") && message.contains("claude-sonnet-4-5"),
+            "{message}"
+        );
+
+        let unknown = MobDefinition::from_toml(
+            "[mob]\nid = \"m\"\n\n[profiles.w]\nmodel = \"no-such-model-anywhere\"\n",
+        )
+        .expect("an unknown id parses");
+        let message = unknown_model_init_error(&unknown).expect("an unknown model must be refused");
+        assert!(
+            !message.contains("Did you mean"),
+            "no hint when nothing is close: {message}"
+        );
     }
 
     /// M4: `runtime_store` accepts only the explicit in-memory declaration;
@@ -4483,6 +4711,7 @@ fn parse_gateway_runtime_options(
         "declare_spec_update",
         "compaction",
         "session_identity_config_root",
+        "meerkat_config_path",
     ];
     let unsupported = runtime_options
         .keys()
@@ -4514,6 +4743,24 @@ fn parse_gateway_runtime_options(
         // is the authority on whether the material is usable. Re-deriving that
         // rule here would make MobKit a second authority on the same fact.
         parsed.session_identity_config_root = Some(PathBuf::from(root));
+    }
+    if let Some(value) = runtime_options.get("meerkat_config_path") {
+        let path = value.as_str().ok_or_else(|| {
+            "runtime_options.meerkat_config_path must be a string path".to_string()
+        })?;
+        if path.trim().is_empty() {
+            return Err("runtime_options.meerkat_config_path must not be empty".to_string());
+        }
+        // Loaded here, not lazily at build time: an unreadable or malformed
+        // host config is an init refusal (-32602) naming the file, never a
+        // silent fall back to `Config::default()` that would resurface as
+        // "self-hosted model is not registered" at the first member build.
+        parsed.host_config = Some(
+            meerkat_mobkit::gateway_composition::load_gateway_host_config(std::path::Path::new(
+                path,
+            ))
+            .map_err(|error| format!("runtime_options.meerkat_config_path: {error}"))?,
+        );
     }
     if let Some(memory_config) = runtime_options.get("memory_config") {
         parsed.runtime_options.memory_backend = Some(parse_gateway_memory_config(
@@ -9296,45 +9543,20 @@ external_addressable = true
     let image_generation = mob_definition_may_use_image_generation(&definition);
     let shell = mob_definition_may_use_shell(&definition);
 
-    // Validate profile model names against the catalog.
-    // A wrong model name (e.g., "claude-sonnet-4-5-20250514" instead of "claude-sonnet-4-5")
-    // silently fails at LLM call time with no observable error. Catch it here.
+    // A `[self_hosted]` or `[realm]` table in mob.toml is dropped by the
+    // definition parser and would only show up later as a member that cannot
+    // build. Refuse it here, naming the option that carries host config.
+    if let Err(table) =
+        meerkat_mobkit::gateway_composition::refuse_host_config_tables_in_mob_toml(mob_config_toml)
     {
-        let catalog = meerkat_models::catalog::catalog();
-        let known_models: std::collections::HashSet<&str> =
-            catalog.iter().map(|entry| entry.id).collect();
+        fail_init(&request_id, -32602, table.to_string());
+    }
 
-        for (profile_name, binding) in &definition.profiles {
-            let Some(profile) = binding.as_inline() else {
-                continue; // Realm refs are resolved at runtime, not validated here.
-            };
-            if !known_models.contains(profile.model.as_str()) {
-                let model = &profile.model;
-                // Find similar model names for the error hint
-                let prefix = model.split('-').take(3).collect::<Vec<_>>().join("-");
-                let mut suggestions: Vec<&str> = known_models
-                    .iter()
-                    .filter(|m| {
-                        m.starts_with(&prefix)
-                            || model
-                                .starts_with(&m.split('-').take(3).collect::<Vec<_>>().join("-"))
-                    })
-                    .copied()
-                    .collect();
-                suggestions.sort_unstable();
-                suggestions.truncate(5);
-                let hint = if suggestions.is_empty() {
-                    String::new()
-                } else {
-                    format!(". Did you mean one of: {}?", suggestions.join(", "))
-                };
-                fail_init(
-                    &request_id,
-                    -32602,
-                    format!("Profile '{profile_name}' uses unknown model '{model}'{hint}"),
-                );
-            }
-        }
+    // Fail-fast model resolution by meerkat's own rule (catalogued, or
+    // `[models.<id>]`-defined, or provider-annotated), with the catalog typo
+    // hint kept for the dated-id case; see `unknown_model_init_error`.
+    if let Some(message) = unknown_model_init_error(&definition) {
+        fail_init(&request_id, -32602, message);
     }
 
     let (modules, pre_spawn) = parse_gateway_modules(&params);

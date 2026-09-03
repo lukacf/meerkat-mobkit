@@ -251,6 +251,22 @@ class TestBuilderChain:
 
         assert params["runtime_options"]["console_config_path"] == str(console_toml)
 
+    def test_meerkat_config_defaults_to_omitted(self):
+        params = MobKitRuntime(MobKit.builder()._config)._build_init_params()
+
+        assert "meerkat_config_path" not in params["runtime_options"]
+
+    def test_meerkat_config_sets_runtime_option(self, tmp_path):
+        config_toml = tmp_path / ".rkat" / "config.toml"
+        b = MobKit.builder().meerkat_config(config_toml)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["meerkat_config_path"] == str(config_toml)
+
+    def test_meerkat_config_rejects_empty_path(self):
+        with pytest.raises(ValueError, match="must not be empty"):
+            MobKit.builder().meerkat_config("  ")
+
     def test_workgraph_defaults_to_omitted(self):
         b = MobKit.builder()
         params = MobKitRuntime(b._config)._build_init_params()

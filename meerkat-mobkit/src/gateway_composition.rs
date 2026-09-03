@@ -124,7 +124,7 @@
 //! `spec.resolved_storage` / `spec.binary_blob_store` /
 //! `spec.committed_boundary_recoverer` assignments.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -591,6 +591,148 @@ pub fn parse_control_listen_arg(args: &[String]) -> Result<Option<ControlListenA
 }
 
 // ---------------------------------------------------------------------------
+// Host configuration ingress
+// ---------------------------------------------------------------------------
+
+/// A top-level `mob.toml` table that belongs to meerkat's HOST config
+/// (`config.toml`), not to the mob definition.
+///
+/// `MobDefinition::from_toml` deserializes without `deny_unknown_fields`, so a
+/// `[self_hosted]` or `[realm]` table written into `mob.toml` was dropped in
+/// silence, and the first self-hosted member then died at build time with
+/// "self-hosted model '..' is not registered in config", two layers away from
+/// the file that caused it. Both gateways refuse the table at init instead
+/// and name the option that carries the host config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostConfigTableInMobToml {
+    /// `[self_hosted]`: serving endpoints and model aliases.
+    SelfHosted,
+    /// `[realm]`: backend, auth and binding profiles.
+    Realm,
+}
+
+impl HostConfigTableInMobToml {
+    /// Every table this check refuses, in the order it reports them.
+    pub const ALL: [Self; 2] = [Self::SelfHosted, Self::Realm];
+
+    /// The table name as written in TOML.
+    pub fn table(self) -> &'static str {
+        match self {
+            Self::SelfHosted => "self_hosted",
+            Self::Realm => "realm",
+        }
+    }
+}
+
+impl std::fmt::Display for HostConfigTableInMobToml {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "mob.toml declares a top-level [{table}] table, which is meerkat host configuration \
+             that the mob definition parser ignores; move it into the meerkat config.toml and \
+             point the gateway at that file: runtime_options.meerkat_config_path on rpc_gateway, \
+             or the meerkat_config_path init param (default <workspace>/.rkat/config.toml) on \
+             mobkit_gateway",
+            table = self.table()
+        )
+    }
+}
+
+impl std::error::Error for HostConfigTableInMobToml {}
+
+/// Refuse `[self_hosted]` and `[realm]` at the top level of a `mob.toml`
+/// document.
+///
+/// Runs on the RAW text, because by the time a typed `MobDefinition` exists
+/// the tables are already gone. Text that is not valid TOML is accepted here:
+/// `MobDefinition::from_toml` owns that verdict and reports it with its own
+/// message, and both gateways run it first.
+pub fn refuse_host_config_tables_in_mob_toml(
+    mob_toml: &str,
+) -> Result<(), HostConfigTableInMobToml> {
+    let Ok(toml::Value::Table(document)) = toml::from_str::<toml::Value>(mob_toml) else {
+        return Ok(());
+    };
+    match HostConfigTableInMobToml::ALL
+        .into_iter()
+        .find(|table| document.contains_key(table.table()))
+    {
+        Some(table) => Err(table),
+        None => Ok(()),
+    }
+}
+
+/// Why a meerkat host `config.toml` could not become a gateway's agent
+/// config. Both binaries refuse init on it: an operator who pointed the
+/// gateway at a file expects that file in force, and booting from
+/// `Config::default()` instead would resurface as an unexplained
+/// "self-hosted model is not registered in config" at the first member build.
+#[derive(Debug)]
+pub enum GatewayHostConfigError {
+    /// The file could not be read.
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// The file is not a valid meerkat config document.
+    Parse {
+        path: PathBuf,
+        source: meerkat::ConfigError,
+    },
+}
+
+impl std::fmt::Display for GatewayHostConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Read { path, source } => {
+                write!(
+                    f,
+                    "failed to read meerkat config {}: {source}",
+                    path.display()
+                )
+            }
+            Self::Parse { path, source } => {
+                write!(f, "meerkat config {} is invalid: {source}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for GatewayHostConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Read { source, .. } => Some(source),
+            Self::Parse { source, .. } => Some(source),
+        }
+    }
+}
+
+/// Load a meerkat host `config.toml` as the base config for every agent a
+/// gateway builds.
+///
+/// One explicit file, merged over `Config::default()` with meerkat's own
+/// file-merge semantics (`Config::merge_toml_str`, the step `Config::load`
+/// applies to a discovered `.rkat/config.toml`). No directory walk and no
+/// home-directory fallback: the gateway is handed a path, so what it loads is
+/// exactly what the operator named. This is what carries `[self_hosted]`,
+/// `[realm]` and `[models]` to `FactoryAgentBuilder`; the caller layers the
+/// gateway's own overlays (comms transport, compaction policy) on top.
+pub fn load_gateway_host_config(path: &Path) -> Result<meerkat::Config, GatewayHostConfigError> {
+    let text = std::fs::read_to_string(path).map_err(|source| GatewayHostConfigError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut config = meerkat::Config::default();
+    config
+        .merge_toml_str(&text)
+        .map_err(|source| GatewayHostConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok(config)
+}
+
+// ---------------------------------------------------------------------------
 // Schedule firing host
 // ---------------------------------------------------------------------------
 
@@ -841,6 +983,125 @@ mod tests {
                 maintenance_verbs: false,
             }
         );
+    }
+
+    const HOST_CONFIG_FIXTURE: &str = r#"
+[self_hosted]
+default_model = "gemma-4-31b"
+
+[self_hosted.servers.local]
+transport = "openai_compatible"
+base_url = "http://127.0.0.1:11434"
+api_style = "chat_completions"
+
+[self_hosted.models.gemma-4-31b]
+server = "local"
+remote_model = "gemma4:31b"
+
+[models.house-model]
+provider = "openai"
+
+[realm.global]
+default_binding = "local"
+"#;
+
+    /// The host config's `[self_hosted]`, `[models]` and `[realm]` tables must
+    /// arrive in the loaded `Config`: nothing else in either gateway can
+    /// supply them (`TomlDefinition` drops the first and last, and the
+    /// registry refuses `[models.<id>] provider = "self_hosted"`).
+    #[test]
+    fn host_config_carries_self_hosted_models_and_realm_tables()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, HOST_CONFIG_FIXTURE)?;
+
+        let config = load_gateway_host_config(&path)?;
+
+        assert_eq!(
+            config
+                .self_hosted
+                .models
+                .get("gemma-4-31b")
+                .map(|model| model.server.as_str()),
+            Some("local")
+        );
+        assert!(config.self_hosted.servers.contains_key("local"));
+        assert_eq!(
+            config.self_hosted.default_model.as_deref(),
+            Some("gemma-4-31b")
+        );
+        assert_eq!(
+            config
+                .models
+                .custom
+                .get("house-model")
+                .map(|model| model.provider == meerkat_core::Provider::OpenAI),
+            Some(true)
+        );
+        assert!(config.realm.contains_key("global"));
+        Ok(())
+    }
+
+    /// A named file that cannot be read or parsed is a typed refusal that
+    /// names the path, never a silent `Config::default()`.
+    #[test]
+    fn host_config_refuses_missing_and_malformed_files_by_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let missing = dir.path().join("absent.toml");
+        let error = load_gateway_host_config(&missing).err();
+        assert!(
+            matches!(&error, Some(GatewayHostConfigError::Read { path, .. }) if path == &missing),
+            "{error:?}"
+        );
+        assert!(
+            error
+                .map(|error| error.to_string())
+                .unwrap_or_default()
+                .contains("absent.toml")
+        );
+
+        let malformed = dir.path().join("broken.toml");
+        std::fs::write(&malformed, "[self_hosted\n")?;
+        let error = load_gateway_host_config(&malformed).err();
+        assert!(
+            matches!(&error, Some(GatewayHostConfigError::Parse { path, .. }) if path == &malformed),
+            "{error:?}"
+        );
+        Ok(())
+    }
+
+    /// `TomlDefinition` has no `deny_unknown_fields`, so the two host-config
+    /// tables vanish from a parsed definition without a diagnostic. The raw
+    /// check must name the table and the option that carries the host config,
+    /// and must leave every table that DOES belong in mob.toml alone.
+    #[test]
+    fn mob_toml_host_config_tables_are_refused_by_name() {
+        let self_hosted = "[mob]\nid = \"m\"\n\n[self_hosted.servers.local]\n\
+                           base_url = \"http://127.0.0.1:11434\"\n";
+        assert_eq!(
+            refuse_host_config_tables_in_mob_toml(self_hosted),
+            Err(HostConfigTableInMobToml::SelfHosted)
+        );
+        let realm = "[mob]\nid = \"m\"\n\n[realm.global]\ndefault_binding = \"local\"\n";
+        assert_eq!(
+            refuse_host_config_tables_in_mob_toml(realm),
+            Err(HostConfigTableInMobToml::Realm)
+        );
+        for table in HostConfigTableInMobToml::ALL {
+            let message = table.to_string();
+            assert!(
+                message.contains(&format!("[{}]", table.table())),
+                "{message}"
+            );
+            assert!(message.contains("meerkat_config_path"), "{message}");
+        }
+        let ordinary = "[mob]\nid = \"m\"\n\n[profiles.w]\nmodel = \"house-model\"\n\n\
+                        [models.house-model]\nprovider = \"openai\"\n";
+        assert_eq!(refuse_host_config_tables_in_mob_toml(ordinary), Ok(()));
+        // Invalid TOML is the definition parser's verdict, not this check's.
+        assert_eq!(refuse_host_config_tables_in_mob_toml("[mob\n"), Ok(()));
     }
 
     #[tokio::test]

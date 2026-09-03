@@ -103,6 +103,20 @@ describe("MobKitBuilder chainable methods", () => {
     assert.equal(builder._config.accessConfigPath, "config/access.toml");
   });
 
+  it("meerkatConfig() sets meerkatConfigPath and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.meerkatConfig(".rkat/config.toml");
+    assert.equal(result, builder);
+    assert.equal(builder._config.meerkatConfigPath, ".rkat/config.toml");
+  });
+
+  it("meerkatConfig() rejects an empty path", () => {
+    assert.throws(
+      () => MobKit.builder().meerkatConfig("  "),
+      /meerkatConfig path must not be empty/,
+    );
+  });
+
   it("consoleAuthRequired() sets consoleRequireAppAuth and returns this", () => {
     const builder = MobKit.builder();
     const result = builder.consoleAuthRequired(false);
@@ -273,6 +287,7 @@ describe("MobKitBuilder default config", () => {
     assert.equal(cfg.errorCallback, null);
     assert.equal(cfg.eventLog, null);
     assert.equal(cfg.consoleConfigPath, null);
+    assert.equal(cfg.meerkatConfigPath, null);
     assert.equal(cfg.consoleRequireAppAuth, null);
     assert.equal(cfg.consoleReadOnly, null);
     assert.equal(cfg.consoleFetchTimeoutMs, null);
@@ -324,6 +339,7 @@ describe("MobKitBuilder method chaining", () => {
       .mob("mob.toml")
       .gateway("/bin/gw")
       .consoleConfig("console.toml")
+      .meerkatConfig("host/config.toml")
       .consoleAuthRequired(false)
       .consoleReadOnly(true)
       .consoleFetchTimeoutMs(120_000)
@@ -340,6 +356,7 @@ describe("MobKitBuilder method chaining", () => {
     assert.equal(builder._config.mobConfigPath, "mob.toml");
     assert.equal(builder._config.gatewayBin, "/bin/gw");
     assert.equal(builder._config.consoleConfigPath, "console.toml");
+    assert.equal(builder._config.meerkatConfigPath, "host/config.toml");
     assert.equal(builder._config.consoleRequireAppAuth, false);
     assert.equal(builder._config.consoleReadOnly, true);
     assert.equal(builder._config.consoleFetchTimeoutMs, 120_000);

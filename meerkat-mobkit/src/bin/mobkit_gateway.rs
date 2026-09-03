@@ -114,6 +114,13 @@ struct InitParams {
     /// model, which in practice never fires. Validated at init through
     /// [`meerkat_mobkit::parse_compaction_policy`].
     compaction: Option<Value>,
+    /// Meerkat host `config.toml` for every agent this gateway builds: the
+    /// `[self_hosted]`, `[realm]` and `[models]` tables meerkat keeps out of
+    /// `mob.toml`. Absent, `<workspace>/.rkat/config.toml` is adopted when it
+    /// exists; otherwise agents build from meerkat's default config as
+    /// before. A named file that is missing or malformed refuses init. A
+    /// relative path resolves against the launch directory.
+    meerkat_config_path: Option<PathBuf>,
     /// Present ONLY so it can be refused.
     ///
     /// `mobkit_gateway` does not build the application tool-policy registry;
@@ -210,6 +217,7 @@ fn conventional_paths(workspace_root: &Path) -> ConventionalPaths {
         workspace_root.join("config"),
         workspace_root.join("deployment"),
     )
+    .with_meerkat_config_from_workspace(workspace_root)
 }
 
 fn collect_recursive_files(root: &Path, files: &mut Vec<PathBuf>) {
@@ -320,6 +328,13 @@ fn config_fingerprint(
         files.push(path.clone());
     }
     files.extend(paths.schedule_files.clone());
+    // The host config is baked into every agent (self-hosted aliases, realm
+    // bindings, custom models), so a changed or re-pointed config.toml must
+    // not resume a runtime built from the old one. `.rkat/` is outside the
+    // scanned config roots below, so it rides here by name.
+    if let Some(path) = &paths.meerkat_config_toml {
+        files.push(path.clone());
+    }
     if definition_json.exists() {
         files.push(definition_json);
     }
@@ -437,6 +452,11 @@ fn load_definition(
             .with_context(|| format!("failed to read {}", path.display()))?;
         let definition = MobDefinition::from_toml(&text)
             .with_context(|| format!("failed to parse {}", path.display()))?;
+        // The definition parser drops `[self_hosted]` and `[realm]` without a
+        // diagnostic; refuse them by name (the typed message names
+        // `meerkat_config_path` as the file that carries them).
+        meerkat_mobkit::gateway_composition::refuse_host_config_tables_in_mob_toml(&text)
+            .map_err(|table| anyhow!("{}: {table}", path.display()))?;
         return Ok((definition, true));
     }
 
@@ -453,6 +473,27 @@ fn load_definition(
     Ok((minimal_definition(&runtime_id)?, false))
 }
 
+/// The `meerkat::Config` every agent this gateway builds starts from: the
+/// host `config.toml` when one was resolved (the only carrier of
+/// `[self_hosted]`, `[realm]` and `[models]`), else meerkat's default, with
+/// the gateway's compaction declaration layered on top. One producer for both
+/// launch arms, so the persistent and ephemeral paths cannot drift on which
+/// tables reach the factory.
+fn gateway_agent_config(
+    host_config: Option<&Config>,
+    compaction: Option<&meerkat_core::config::CompactionRuntimeConfig>,
+) -> anyhow::Result<Config> {
+    let mut config = host_config.cloned().unwrap_or_default();
+    if let Some(policy) = compaction {
+        // The compaction slot of this config is what meerkat's
+        // `AgentFactory::build_agent` turns into the session compactor; an
+        // absent declaration inherits the model-aware `context_window * 4 / 5`
+        // trigger.
+        meerkat_mobkit::apply_compaction_policy(&mut config, policy).map_err(|e| anyhow!("{e}"))?;
+    }
+    Ok(config)
+}
+
 /// Returns (session_service, runtime_adapter, binary_blob_store).
 ///
 /// The runtime adapter is supplied separately from the session service so
@@ -466,6 +507,7 @@ fn build_persistent_session_service(
     context_root: Option<PathBuf>,
     image_generation: bool,
     realm_id: &str,
+    host_config: Option<&Config>,
     compaction: Option<&meerkat_core::config::CompactionRuntimeConfig>,
 ) -> anyhow::Result<PersistentSessionServiceParts> {
     let store_dir = layout.state_dir().to_path_buf();
@@ -543,14 +585,7 @@ fn build_persistent_session_service(
         factory = factory.context_root(context_root);
     }
 
-    // The compaction slot of this config is what meerkat's
-    // `AgentFactory::build_agent` turns into the session compactor; an
-    // absent declaration inherits the model-aware `context_window * 4 / 5`
-    // trigger.
-    let mut config = Config::default();
-    if let Some(policy) = compaction {
-        meerkat_mobkit::apply_compaction_policy(&mut config, policy).map_err(|e| anyhow!("{e}"))?;
-    }
+    let config = gateway_agent_config(host_config, compaction)?;
     let mut builder = FactoryAgentBuilder::new(factory, config);
     builder.default_blob_store = Some(blob_store.clone());
     // Attach meerkat's per-session schedule tools so members whose profile sets
@@ -1255,7 +1290,23 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         None => env_bool("MOBKIT_CONSOLE_READ_ONLY")?.unwrap_or(false),
     };
 
-    let paths = conventional_paths(&workspace_root);
+    let mut paths = conventional_paths(&workspace_root);
+    // An explicit init param wins over the workspace convention. The
+    // effective path rides `paths` so the resume fingerprint and the loader
+    // below read the same file.
+    if let Some(explicit) = params.meerkat_config_path.clone() {
+        paths.meerkat_config_toml = Some(explicit);
+    }
+    // Loaded before the registry lookup so a bad file refuses init instead of
+    // resuming or creating a runtime built from `Config::default()`.
+    let host_config = paths
+        .meerkat_config_toml
+        .as_deref()
+        .map(|path| {
+            meerkat_mobkit::gateway_composition::load_gateway_host_config(path)
+                .map_err(|error| anyhow!("init params: meerkat_config_path: {error}"))
+        })
+        .transpose()?;
     let key = config_fingerprint(
         &workspace_root,
         realm,
@@ -1328,6 +1379,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
             context_root.clone(),
             image_generation,
             &runtime_id,
+            host_config.as_ref(),
             compaction_policy.as_ref(),
         )?;
         // Pair the schedule wiring with a clone of the runtime adapter so the
@@ -1418,13 +1470,9 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         if let Some(ref ctx) = context_root {
             factory = factory.context_root(ctx.clone());
         }
-        // Same seam as the persistent arm: this config's compaction slot is
-        // the session compactor meerkat installs for every ephemeral member.
-        let mut config = Config::default();
-        if let Some(policy) = compaction_policy.as_ref() {
-            meerkat_mobkit::apply_compaction_policy(&mut config, policy)
-                .map_err(|e| anyhow!("{e}"))?;
-        }
+        // Same producer as the persistent arm: host config first, the
+        // compaction declaration on top.
+        let config = gateway_agent_config(host_config.as_ref(), compaction_policy.as_ref())?;
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_blob_store = Some(blob_store);
         // The default TUX launch is ephemeral: a memory-backed workgraph
@@ -2033,6 +2081,143 @@ mod tests {
         assert_eq!(state.bigquery.dataset, "tux_local");
         assert_eq!(state.bigquery.table, "runtime_events");
         assert!(state.modules.is_empty());
+    }
+
+    #[test]
+    fn init_params_parse_meerkat_config_path() -> anyhow::Result<()> {
+        let line = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "mobkit/init",
+            "params": { "meerkat_config_path": "/etc/homecore/config.toml" }
+        })
+        .to_string();
+
+        let (_id, params) = parse_init_request(&line)?;
+
+        assert_eq!(
+            params.meerkat_config_path.as_deref(),
+            Some(Path::new("/etc/homecore/config.toml"))
+        );
+        Ok(())
+    }
+
+    const HOST_CONFIG_FIXTURE: &str = "[self_hosted.servers.local]\n\
+                                       transport = \"openai_compatible\"\n\
+                                       base_url = \"http://127.0.0.1:11434\"\n\
+                                       api_style = \"chat_completions\"\n\n\
+                                       [self_hosted.models.gemma-4-31b]\n\
+                                       server = \"local\"\n\
+                                       remote_model = \"gemma4:31b\"\n";
+
+    /// The host config is baked into every agent, so the resume key must
+    /// change when its content changes or when it is dropped; otherwise a
+    /// re-pointed config.toml resumes a runtime built from the old one (the
+    /// dead-knob failure the compaction key already guards against).
+    /// `.rkat/` is outside the scanned config roots, so this only holds
+    /// because the path is pushed by name.
+    #[test]
+    fn config_fingerprint_changes_with_meerkat_host_config() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let rkat = temp.path().join(".rkat");
+        fs::create_dir_all(&rkat)?;
+        let config_toml = rkat.join("config.toml");
+        fs::write(&config_toml, HOST_CONFIG_FIXTURE)?;
+        let paths = conventional_paths(temp.path());
+        assert_eq!(
+            paths.meerkat_config_toml.as_deref(),
+            Some(config_toml.as_path()),
+            "the workspace .rkat/config.toml must be adopted by convention"
+        );
+        let fingerprint = |paths: &ConventionalPaths| {
+            config_fingerprint(
+                temp.path(),
+                None,
+                false,
+                "tux-auto",
+                false,
+                false,
+                temp.path(),
+                temp.path(),
+                temp.path(),
+                None,
+                None,
+                None,
+                paths,
+            )
+        };
+
+        let first = fingerprint(&paths)?;
+        fs::write(&config_toml, HOST_CONFIG_FIXTURE.replace("11434", "8000"))?;
+        let second = fingerprint(&paths)?;
+        assert_ne!(
+            first, second,
+            "a changed host config must not resume the previous runtime"
+        );
+
+        let mut without = paths.clone();
+        without.meerkat_config_toml = None;
+        assert_ne!(
+            fingerprint(&without)?,
+            second,
+            "dropping the host config must not resume a runtime built with it"
+        );
+        Ok(())
+    }
+
+    /// One producer for both launch arms: the host config's tables reach the
+    /// factory config and the compaction declaration still pins on top.
+    #[test]
+    fn gateway_agent_config_layers_compaction_over_the_host_config() -> anyhow::Result<()> {
+        let mut host = Config::default();
+        host.merge_toml_str(HOST_CONFIG_FIXTURE)?;
+        let pinned = meerkat_mobkit::parse_compaction_policy(&json!({
+            "auto_compact_threshold": 120_000
+        }))
+        .map_err(|e| anyhow!("{e}"))?;
+
+        let config = gateway_agent_config(Some(&host), Some(&pinned))?;
+
+        assert_eq!(
+            config
+                .self_hosted
+                .models
+                .get("gemma-4-31b")
+                .map(|model| model.server.as_str()),
+            Some("local")
+        );
+        assert_eq!(config.compaction.auto_compact_threshold, 120_000);
+        assert!(config.compaction.auto_compact_threshold_explicit);
+
+        let defaulted = gateway_agent_config(None, None)?;
+        assert!(defaulted.self_hosted.models.is_empty());
+        Ok(())
+    }
+
+    /// `[self_hosted]` in the workspace mob.toml is refused at load with the
+    /// typed message that names the file carrying host config, not dropped.
+    #[test]
+    fn load_definition_refuses_host_config_tables_in_mob_toml() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let config = temp.path().join("config");
+        fs::create_dir_all(&config)?;
+        fs::write(
+            config.join("mob.toml"),
+            "[mob]\nid = \"m\"\n\n[profiles.w]\nmodel = \"gpt-5.5\"\n\n\
+             [self_hosted.servers.local]\nbase_url = \"http://127.0.0.1:11434\"\n",
+        )?;
+        let paths = conventional_paths(temp.path());
+
+        let error = load_definition(temp.path(), "fingerprint", &paths)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+
+        assert!(
+            error.contains("[self_hosted]") && error.contains("meerkat_config_path"),
+            "{error}"
+        );
+        Ok(())
     }
 
     #[test]

@@ -367,6 +367,26 @@ describe("MobKitRuntime", () => {
     );
   });
 
+  it("builds meerkat_config_path runtime option", () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._config.meerkatConfigPath = "/etc/homecore/config.toml";
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal(
+      params.runtime_options.meerkat_config_path,
+      "/etc/homecore/config.toml",
+    );
+  });
+
+  it("omits meerkat_config_path runtime option when unset", () => {
+    const { rt } = createMockRuntime();
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal("meerkat_config_path" in params.runtime_options, false);
+  });
+
   it("builds agent_memory runtime option", () => {
     const { rt } = createMockRuntime();
     (rt as any)._config.agentMemoryConfig = {

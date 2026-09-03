@@ -113,6 +113,7 @@ export interface MobKitBuilderConfig {
   runtimeStore: unknown;
   consoleConfigPath: string | null;
   accessConfigPath: string | null;
+  meerkatConfigPath: string | null;
   consoleRequireAppAuth: boolean | null;
   consoleReadOnly: boolean | null;
   consoleFetchTimeoutMs: number | null;
@@ -152,6 +153,7 @@ function defaultConfig(): MobKitBuilderConfig {
     runtimeStore: null,
     consoleConfigPath: null,
     accessConfigPath: null,
+    meerkatConfigPath: null,
     consoleRequireAppAuth: null,
     consoleReadOnly: null,
     consoleFetchTimeoutMs: null,
@@ -277,6 +279,27 @@ export class MobKitBuilder {
    */
   accessControl(configPath: string): this {
     this._config.accessConfigPath = configPath;
+    return this;
+  }
+
+  /**
+   * Load a meerkat host `config.toml` into every agent the gateway builds.
+   *
+   * Emitted as `runtime_options.meerkat_config_path`. This is the only door
+   * for the tables meerkat keeps in its host config rather than in
+   * `mob.toml`: `[self_hosted]` (servers and model aliases), `[realm]`
+   * (backend, auth and binding profiles) and `[models]`. The gateway reads
+   * the file once at init and refuses a missing or malformed file; it also
+   * refuses a `mob.toml` that carries `[self_hosted]` or `[realm]` at top
+   * level, so a table in the wrong file is an error rather than a silent
+   * drop. Opt-in: without this call the gateway builds from meerkat's default
+   * config as before. Mirrors the Python builder's `meerkat_config(path)`.
+   */
+  meerkatConfig(configPath: string): this {
+    if (!configPath.trim()) {
+      throw new Error("meerkatConfig path must not be empty");
+    }
+    this._config.meerkatConfigPath = configPath;
     return this;
   }
 

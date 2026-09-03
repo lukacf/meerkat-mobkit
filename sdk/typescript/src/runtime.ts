@@ -771,6 +771,9 @@ export class MobKitRuntime {
     if (this._config.accessConfigPath) {
       runtimeOptions.access_config_path = this._config.accessConfigPath;
     }
+    if (this._config.meerkatConfigPath) {
+      runtimeOptions.meerkat_config_path = this._config.meerkatConfigPath;
+    }
     if (this._config.consoleRequireAppAuth !== null) {
       runtimeOptions.console_require_app_auth =
         this._config.consoleRequireAppAuth;

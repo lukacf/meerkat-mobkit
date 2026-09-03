@@ -27,6 +27,7 @@ class MobKitBuilderConfig:
     console_config_path: str | None = None
     gating_config_path: str | None = None
     access_config_path: str | None = None
+    meerkat_config_path: str | None = None
     workgraph_enabled: bool | str | None = None
     routing_config_path: str | None = None
     host_runnables: list[str] = field(default_factory=list)
@@ -196,6 +197,25 @@ class MobKitBuilder:
         ``config/access.toml``) access control is off entirely.
         """
         self._config.access_config_path = config_path
+        return self
+
+    def meerkat_config(self, path: str | Path) -> MobKitBuilder:
+        """Load a meerkat host ``config.toml`` into every agent the gateway builds.
+
+        Emitted as ``runtime_options.meerkat_config_path``. This is the only door
+        for the tables meerkat keeps in its host config rather than in
+        ``mob.toml``: ``[self_hosted]`` (servers and model aliases), ``[realm]``
+        (backend, auth and binding profiles) and ``[models]``. The gateway reads
+        the file once at init and refuses a missing or malformed file; it also
+        refuses a ``mob.toml`` that carries ``[self_hosted]`` or ``[realm]`` at
+        top level, so a table in the wrong file is an error rather than a silent
+        drop. Opt-in: without this call the gateway builds from meerkat's default
+        config as before. Mirrors the TypeScript builder's ``meerkatConfig``.
+        """
+        text = str(path)
+        if not text.strip():
+            raise ValueError("meerkat_config path must not be empty")
+        self._config.meerkat_config_path = text
         return self
 
     def experimental_live(
