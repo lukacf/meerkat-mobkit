@@ -1,15 +1,12 @@
 //! OB3 cutover regression (2026-07-29): model and provider are a COHERENT
 //! PAIR, never independently masked on resume.
 //!
-//! Incident shape: a definition edit moved a profile's `model` to another
-//! provider's catalog entry with no `provider` key declared. The auto-marked
-//! resume override applied the profile MODEL while the durable PROVIDER
-//! survived, minting an invalid pair — (claude-fable-5, openai) — that the
-//! model registry rejected typed on every resume, degrading the fleet's
-//! channels. Required behavior: the pair is derived from the declared model
-//! via the meerkat-models catalog and applied atomically, or neither field
-//! applies (durable truth wins whole) with the unified resume-divergence
-//! line as the tripwire.
+//! Incident shape: an explicit operator resume override moved a profile's
+//! `model` to another provider's catalog entry with no `provider` key declared.
+//! Applying only the model while the durable provider survived minted an invalid
+//! pair — (claude-fable-5, openai). Required behavior: an explicit model/provider
+//! mask is completed and applied atomically; without an explicit mask durable
+//! truth wins whole.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeMap;
@@ -253,14 +250,14 @@ async fn boot(
 
 /// THE incident shape, end to end: boot 1 creates the member on
 /// `gpt-5.5` (durable provider: openai). Boot 2's definition moves the
-/// profile to `claude-opus-4-8` with NO provider key. The resume must apply
-/// the (model, provider) pair atomically — provider derived from the
-/// catalog — and succeed onto the same durable session with the transcript
-/// intact. Before the pair-coherence fix this resume was REJECTED typed
+/// profile to `claude-opus-4-8` with an explicit model/provider resume mask
+/// and NO provider key. The resume must apply the pair atomically — provider
+/// derived from the catalog — and succeed onto the same durable session with
+/// the transcript intact. Before the pair-coherence fix this resume was REJECTED typed
 /// ("model 'claude-opus-4-8' is registered for provider 'anthropic', not
 /// provider 'openai'") because only the model was applied.
 #[tokio::test(flavor = "multi_thread")]
-async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
+async fn explicit_model_override_resumes_with_catalog_derived_pair() {
     let temp = tempfile::TempDir::new().expect("temp dir");
     let state_path = temp.path().join("state");
     let alice = id("personal:alice");
@@ -309,13 +306,17 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
     }
 
     // --- Boot 2: SAME store, definition edited to a model owned by another
-    // provider, with no provider key. The pair must move together. ---
+    // provider, with no provider key but explicit operator resume authority.
+    // The pair must move together. ---
     {
         let capture = CaptureClient::default();
         let (unified, identity_rt) = boot(
             &state_path,
             capture.clone(),
-            definition("pair-coherence", "model = \"claude-opus-4-8\""),
+            definition(
+                "pair-coherence",
+                "model = \"claude-opus-4-8\"\nresume_overrides = [\"model\", \"provider\"]",
+            ),
             "pair-coherence-rt",
         )
         .await;
@@ -336,7 +337,7 @@ async fn model_only_definition_edit_resumes_with_catalog_derived_pair() {
                 );
             }
             other => panic!(
-                "a model-only definition edit must RESUME with the catalog-derived pair \
+                "an explicit model override must RESUME with the catalog-derived pair \
                  (the OB3 rejected-resume regression), got: {other:?}"
             ),
         }

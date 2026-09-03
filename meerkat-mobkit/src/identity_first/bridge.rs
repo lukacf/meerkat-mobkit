@@ -2819,17 +2819,16 @@ impl MobSessionBridge {
     /// Resume-divergence tripwire: when the durable session restores a
     /// model/provider different from the profile's declaration and no
     /// `resume_overrides` mask covers the field, say so at INFO — once per
-    /// identity per boot. Declared-field auto-mark
-    /// (`crate::mob_handle_runtime::auto_mark_declared_resume_overrides`)
-    /// makes the mask cover declared fields on inline profiles, so the only
-    /// case that can fire today is an inline profile whose declared model
-    /// resolves no coherent provider (unknown model / derived self-hosted or
-    /// other without a binding). Realm-ref profiles do NOT fire:
-    /// `base_profile_for_spec` resolves inline bindings only, and the
-    /// `RealmProfileStore` is not threaded into this bridge, so a realm
-    /// profile edit that loses to durable metadata is currently silent
-    /// (tracked follow-up: thread the realm store and resolve declarations
-    /// via `MobDefinition::resolve_profile`).
+    /// identity per boot. Ordinary inline profiles intentionally remain
+    /// unmasked so durable routing changes such as a realized `brain_swap`
+    /// survive cold restart. Explicit model/provider masks are normalized as a
+    /// coherent pair by
+    /// `crate::mob_handle_runtime::auto_mark_declared_resume_overrides`.
+    /// Realm-ref profiles do NOT fire: `base_profile_for_spec` resolves inline
+    /// bindings only, and the `RealmProfileStore` is not threaded into this
+    /// bridge, so a realm profile edit that loses to durable metadata is
+    /// currently silent (tracked follow-up: thread the realm store and resolve
+    /// declarations via `MobDefinition::resolve_profile`).
     ///
     /// Never fails the resume: metadata read faults are skipped at debug.
     async fn log_unmasked_resume_divergence(

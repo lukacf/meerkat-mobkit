@@ -551,6 +551,7 @@ fn extract_member_authority(kind: &MobEventKind) -> Option<MobEventMemberAuthori
 fn event_kind_label(kind: &MobEventKind) -> &'static str {
     match kind {
         MobEventKind::MobCreated { .. } => "mob_created",
+        MobEventKind::MobDefinitionUpdated { .. } => "mob_definition_updated",
         MobEventKind::MobOwnerBridgeSessionBound { .. } => "mob_owner_bridge_session_bound",
         MobEventKind::MobCompleted => "mob_completed",
         MobEventKind::MobDestroying => "mob_destroying",
@@ -773,6 +774,9 @@ pub(crate) fn extract_structural_fields(
         | MobEventKind::ExternalPeerUnwired { local, .. } => {
             (None, None, Some(decode_member_id(local.as_str())))
         }
+        // Definition-epoch replacement: carries the new definition and epoch,
+        // none of the structural (run, step, member) coordinates.
+        MobEventKind::MobDefinitionUpdated { .. } => (None, None, None),
         // MobOwnerBridgeSessionBound is mob-scoped (owner bridge binding):
         // it carries no run/step/member structural fields.
         MobEventKind::MobCreated { .. }
@@ -817,6 +821,52 @@ mod tests {
             mob_id: MobId::from("test-mob"),
             kind,
         }
+    }
+
+    /// `event_kind_label`'s doc claims it matches the serde wire form
+    /// (`tag = "type", rename_all = "snake_case"`), and nothing verified that
+    /// claim - the exhaustive match catches a MISSING arm at compile time, but
+    /// a mislabeled one ships silently and desynchronizes the console/SDK
+    /// event surface from the wire. Serde itself is the oracle here: serialize
+    /// the variant, read its `type` tag, compare. Covers the new
+    /// `MobDefinitionUpdated` arm plus controls on both unit and struct shapes.
+    #[test]
+    fn event_kind_label_matches_the_serde_wire_tag() {
+        let cases = vec![
+            MobEventKind::MobDefinitionUpdated {
+                epoch: 2,
+                definition: Box::new(meerkat_mob::MobDefinition::explicit("label-oracle")),
+            },
+            MobEventKind::MobCreated {
+                definition: Box::new(meerkat_mob::MobDefinition::explicit("label-oracle")),
+            },
+            MobEventKind::MobCompleted,
+            MobEventKind::MobReset,
+        ];
+        for kind in cases {
+            let wire = serde_json::to_value(&kind).expect("event kind serializes");
+            let tag = wire
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .expect("serde form carries a type tag");
+            assert_eq!(
+                event_kind_label(&kind),
+                tag,
+                "label diverged from the serde wire tag for {kind:?}"
+            );
+        }
+    }
+
+    /// The definition-epoch event carries no run/step/member coordinates; a
+    /// wrong extraction here would attach epoch changes to a phantom member or
+    /// run in every console timeline.
+    #[test]
+    fn definition_updated_extracts_no_structural_fields() {
+        let kind = MobEventKind::MobDefinitionUpdated {
+            epoch: 2,
+            definition: Box::new(meerkat_mob::MobDefinition::explicit("fields-oracle")),
+        };
+        assert_eq!(extract_structural_fields(&kind), (None, None, None));
     }
 
     #[tokio::test]

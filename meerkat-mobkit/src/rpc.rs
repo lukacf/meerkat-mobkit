@@ -1726,9 +1726,10 @@ fn parse_console_read_budget(raw: Option<&str>) -> Duration {
 /// hang into a typed error naming the arm and the seam it was awaiting.
 ///
 /// Only pure reads may route through here. Abandoning the future drops the
-/// reply oneshot of an in-flight `send_actor_command` or session-service read
-/// at worst: the command still executes on the loop and its reply send fails
-/// silently, which for a read leaves nothing half-applied. Mutation and
+/// reply oneshot of an in-flight `send_actor_command` or session-service read.
+/// Meerkat skips queued member-list and member-status observations whose reply
+/// receiver has closed; an observation already executing may finish, and other
+/// pure reads may still execute before their reply send fails. Mutation and
 /// lifecycle arms - and reads that run inside a member authority transaction,
 /// such as `cross_mob/peer_info` - keep their own semantics and MUST NOT be
 /// wrapped.

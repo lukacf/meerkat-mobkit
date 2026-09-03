@@ -147,17 +147,17 @@ struct GatewayRuntimeOptions {
     /// persistent_state launch, so this exists for launches that would rather
     /// keep an editable mob_config than durable mob state: a persistent mob
     /// storage pins the definition, because Meerkat refuses a definition that
-    /// disagrees with the persisted spec store.
+    /// disagrees with the canonical event-log definition.
     mob_storage_ephemeral: bool,
     /// `runtime_options.declare_spec_update = {"expected_revision": N}`: an
-    /// explicit operator declaration that the persisted mob spec now matches the
-    /// definition this launch supplies.
+    /// explicit operator declaration that advances the canonical mob definition
+    /// to the definition this launch supplies.
     ///
     /// The door through the pinned-`mob_config` refusal. Present only on the
     /// activation that intends to move the pin - it is a declared transition, not
     /// a mode. Compare-and-swapped on `expected_revision`, so an activation that
     /// names a revision the store has moved past is refused rather than
-    /// overwriting a spec the operator never saw.
+    /// overwriting a definition the operator never saw.
     declare_spec_update: Option<u64>,
     /// `runtime_options.mob_composition = {"authority": "candidate"}`: this
     /// launch does NOT speak for the durable composition, so it neither creates
@@ -820,8 +820,13 @@ mod tests {
         );
 
         let declared = parse_gateway_runtime_options(
-            &json!({ "runtime_options": { "declare_spec_update": { "expected_revision": 7 } } }),
-            None,
+            &json!({
+                "mob_config": "[mob]\nid = \"declared\"",
+                "runtime_options": {
+                    "declare_spec_update": { "expected_revision": 7 }
+                }
+            }),
+            Some(std::path::Path::new("/durable-state")),
         )
         .expect("declare_spec_update must pass the allowlist");
         assert_eq!(
@@ -829,6 +834,19 @@ mod tests {
             Some(7),
             "the declared revision must reach the parsed options"
         );
+        let candidate_update = parse_gateway_runtime_options(
+            &json!({
+                "mob_config": "[mob]\nid = \"declared\"",
+                "runtime_options": {
+                    "mob_composition": { "authority": "candidate" },
+                    "declare_spec_update": { "expected_revision": 7 }
+                }
+            }),
+            Some(std::path::Path::new("/durable-state")),
+        )
+        .err()
+        .expect("a candidate launch must not mutate canonical definition authority");
+        assert!(candidate_update.contains("requires an authoritative mob_composition"));
 
         // Default stays authoritative and undeclared, so a launch that says
         // nothing keeps the protection rather than silently losing it.
@@ -839,6 +857,71 @@ mod tests {
             meerkat_mobkit::mob_composition_manifest::CompositionAuthority::Authoritative
         );
         assert_eq!(quiet.declare_spec_update, None);
+    }
+
+    #[test]
+    fn declared_spec_update_requires_exact_durable_authoritative_inputs() {
+        let parse = |params: Value, persistent: bool| {
+            parse_gateway_runtime_options(
+                &params,
+                persistent.then(|| std::path::Path::new("/durable-state")),
+            )
+        };
+
+        let missing_state = parse(
+            json!({
+                "mob_config": "[mob]\nid = \"declared\"",
+                "runtime_options": {
+                    "declare_spec_update": { "expected_revision": 7 }
+                }
+            }),
+            false,
+        )
+        .err()
+        .expect("an ephemeral launch has no durable definition authority to update");
+        assert!(missing_state.contains("requires persistent_state"));
+
+        let missing_definition = parse(
+            json!({
+                "runtime_options": {
+                    "declare_spec_update": { "expected_revision": 7 }
+                }
+            }),
+            true,
+        )
+        .err()
+        .expect("the built-in fallback definition must never become update content");
+        assert!(missing_definition.contains("explicit mob_config"));
+
+        let ephemeral_mob_storage = parse(
+            json!({
+                "mob_config": "[mob]\nid = \"declared\"",
+                "runtime_options": {
+                    "mob_storage": { "storage": "memory" },
+                    "declare_spec_update": { "expected_revision": 7 }
+                }
+            }),
+            true,
+        )
+        .err()
+        .expect("in-memory mob storage pins no definition");
+        assert!(ephemeral_mob_storage.contains("requires persistent mob storage"));
+
+        let extra_declaration_field = parse(
+            json!({
+                "mob_config": "[mob]\nid = \"declared\"",
+                "runtime_options": {
+                    "declare_spec_update": {
+                        "expected_revision": 7,
+                        "accept_current": true
+                    }
+                }
+            }),
+            true,
+        )
+        .err()
+        .expect("unknown declaration fields must not be silently ignored");
+        assert!(extra_declaration_field.contains("declare_spec_update fields: accept_current"));
     }
 
     /// The identity-root door must REACH the parsed options, and its absence
@@ -4559,6 +4642,38 @@ fn parse_gateway_runtime_options(
     if let Some(decisions) = parsed.decisions.as_mut() {
         decisions.console.ui = parsed.console_ui.clone();
     }
+    if parsed.declare_spec_update.is_some()
+        && !parsed.composition_authority.speaks_for_composition()
+    {
+        return Err(
+            "runtime_options.declare_spec_update requires an authoritative mob_composition; a \
+             candidate launch cannot mutate durable definition authority"
+                .to_string(),
+        );
+    }
+    if parsed.declare_spec_update.is_some() {
+        if persistent_state.is_none() {
+            return Err(
+                "runtime_options.declare_spec_update requires persistent_state so the canonical \
+                 mob definition survives restart"
+                    .to_string(),
+            );
+        }
+        if parsed.mob_storage_ephemeral {
+            return Err(
+                "runtime_options.declare_spec_update requires persistent mob storage; in-memory \
+                 mob storage pins no definition to update"
+                    .to_string(),
+            );
+        }
+        if params.get("mob_config").and_then(Value::as_str).is_none() {
+            return Err(
+                "runtime_options.declare_spec_update requires an explicit mob_config; the gateway \
+                 fallback definition is not operator-declared update content"
+                    .to_string(),
+            );
+        }
+    }
     Ok(parsed)
 }
 
@@ -4769,6 +4884,17 @@ fn parse_gateway_declare_spec_update(value: &Value) -> Result<u64, String> {
         "runtime_options.declare_spec_update must be a JSON object with an expected_revision"
             .to_string()
     })?;
+    let unsupported = object
+        .keys()
+        .filter(|key| key.as_str() != "expected_revision")
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.declare_spec_update fields: {}",
+            unsupported.join(", ")
+        ));
+    }
     // Required, not defaulted. A declaration without the revision it was made
     // against is not a declaration - it is "accept whatever is there", which is
     // indistinguishable from having no pin.
@@ -9631,13 +9757,12 @@ external_addressable = true
                 ),
             };
             // The door through the pinned-mob_config refusal, taken only when
-            // THIS activation declares it. Runs before the mob is built, so the
-            // upstream definition/spec-store sync sees the declared spec rather
-            // than refusing and leaving the operator to discover the door from
-            // an error message.
+            // THIS activation declares it. Runs before the mob is built and
+            // advances Meerkat's canonical definition epoch through the same
+            // MobStorage instance that will resume below.
             if let Some(expected_revision) = gateway_options.declare_spec_update {
                 match meerkat_mobkit::spec_update_ceremony::declare_spec_update(
-                    &storage_layout.event_log_db(),
+                    &pair.0,
                     definition.id.as_str(),
                     &definition,
                     expected_revision,
@@ -9652,6 +9777,8 @@ external_addressable = true
                             mob_id = %receipt.mob_id,
                             previous_revision = receipt.previous_revision,
                             committed_revision = receipt.committed_revision,
+                            projection_revision = receipt.projection_revision,
+                            event_cursor = receipt.event_cursor,
                             declared_fields = ?receipt.declared_fields,
                             "operator-declared mob spec update committed"
                         );

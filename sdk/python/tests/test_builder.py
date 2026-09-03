@@ -26,6 +26,62 @@ class TestBuilderChain:
         b = MobKit.builder().mob("config/mob.toml")
         assert b._config.mob_config_path == "config/mob.toml"
 
+    def test_definition_update_defaults_to_omitted(self):
+        params = MobKitRuntime(MobKit.builder()._config)._build_init_params()
+
+        assert "declare_spec_update" not in params["runtime_options"]
+        assert "mob_composition" not in params["runtime_options"]
+
+    def test_definition_update_reaches_authoritative_runtime_options(self):
+        b = (
+            MobKit.builder()
+            .mob_inline("[mob]\nid = 'home'\n")
+            .persistent_state("/var/lib/homecore")
+            .declare_spec_update(7)
+        )
+        b._validate()
+
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["mob_config"] == "[mob]\nid = 'home'\n"
+        assert params["persistent_state"] == "/var/lib/homecore"
+        assert params["runtime_options"]["mob_composition"] == {
+            "authority": "authoritative"
+        }
+        assert params["runtime_options"]["declare_spec_update"] == {
+            "expected_revision": 7
+        }
+
+    @pytest.mark.parametrize("revision", [-1, -7])
+    def test_definition_update_rejects_negative_revision(self, revision):
+        with pytest.raises(ValueError, match="non-negative integer"):
+            MobKit.builder().declare_spec_update(revision)
+
+    @pytest.mark.parametrize("revision", [True, 1.5, "7", None])
+    def test_definition_update_rejects_non_integer_revision(self, revision):
+        with pytest.raises(TypeError, match="non-negative integer"):
+            MobKit.builder().declare_spec_update(revision)
+
+    def test_definition_update_requires_replacement_definition(self):
+        b = (
+            MobKit.builder()
+            .persistent_state("/var/lib/homecore")
+            .declare_spec_update(1)
+        )
+
+        with pytest.raises(ValueError, match=r"requires mob\(\) or mob_inline\(\)"):
+            b._validate()
+
+    def test_definition_update_requires_durable_state(self):
+        b = (
+            MobKit.builder()
+            .mob_inline("[mob]\nid = 'home'\n")
+            .declare_spec_update(1)
+        )
+
+        with pytest.raises(ValueError, match=r"requires persistent_state\(\)"):
+            b._validate()
+
     def test_identity_bootstrap_mode_defaults_to_omitted(self):
         b = MobKit.builder()
         params = MobKitRuntime(b._config)._build_init_params()

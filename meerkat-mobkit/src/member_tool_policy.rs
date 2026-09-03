@@ -593,7 +593,10 @@ mod tests {
 
     #[test]
     fn brain_swap_exact_grant_allows_and_missing_grant_obeys_default_deny() {
-        const BRAIN_SWAP: &str = "brain_swap";
+        // Consume Meerkat's exported constant rather than a fourth hardcoded
+        // literal: if upstream ever renames the tool, this test breaks loudly
+        // instead of pinning grants for a tool that no longer exists.
+        const BRAIN_SWAP: &str = meerkat_tools::builtin::brain_swap::BRAIN_SWAP_TOOL_NAME;
 
         let granted = installed(policy(1, "member-a", BRAIN_SWAP));
         let granted_snapshot = granted.snapshot(&policy_id()).expect("snapshot");

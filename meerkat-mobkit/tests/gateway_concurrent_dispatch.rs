@@ -1440,17 +1440,17 @@ fn persistent_mob_storage_refuses_changed_definition_on_the_same_state_dir() {
         .as_str()
         .unwrap_or_else(|| panic!("phase-2 must be refused with a typed error: {init}"));
     assert!(
-        message.contains("diverges from the composition this storage was created for"),
+        message.contains("supplied mob definition diverges from the canonical definition"),
         "the refusal must be the composition-divergence error, not an internal store \
          mismatch: {message}"
     );
     assert!(
-        message.contains("profiles"),
+        message.contains("profiles.default.tools.workgraph"),
         "the refusal must name the diverged field so the operator can act: {message}"
     );
     assert!(
-        message.contains("create a new mob storage path"),
-        "the refusal must state a remedy: {message}"
+        message.contains("advance it through the declared definition-update ceremony"),
+        "the refusal must state the sanctioned remedy: {message}"
     );
 }
 

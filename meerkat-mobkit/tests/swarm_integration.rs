@@ -31,7 +31,10 @@ use meerkat_core::{
     SessionServiceControlExt, SessionServiceHistoryExt, SessionSummary, SessionView,
     StartTurnRequest, StreamError,
 };
-use meerkat_mob::{MobDefinition, MobId, MobSessionService, MobState, MobStorage};
+use meerkat_mob::{
+    AgentIdentity, MobDefinition, MobId, MobSessionService, MobState, MobStorage, ProfileName,
+    SpawnMemberSpec,
+};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConfigResolutionError, ConsolePolicy, DiscoverySpec, EventEnvelope,
     LifecycleStage, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, MobkitRuntimeError,
@@ -65,10 +68,14 @@ struct UnifiedRuntimeFixture {
     runtime: UnifiedRuntime,
 }
 
+type SessionReadGate = (oneshot::Sender<()>, oneshot::Receiver<()>);
+
 #[derive(Clone)]
 struct CheckpointerCancelProbeSessionService {
     inner: Arc<dyn MobSessionService>,
     cancel_calls: Arc<AtomicUsize>,
+    read_calls: Arc<AtomicUsize>,
+    next_read_gate: Arc<std::sync::Mutex<Option<SessionReadGate>>>,
 }
 
 impl CheckpointerCancelProbeSessionService {
@@ -76,11 +83,29 @@ impl CheckpointerCancelProbeSessionService {
         Self {
             inner,
             cancel_calls: Arc::new(AtomicUsize::new(0)),
+            read_calls: Arc::new(AtomicUsize::new(0)),
+            next_read_gate: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
     fn cancel_calls(&self) -> usize {
         self.cancel_calls.load(Ordering::SeqCst)
+    }
+
+    fn read_calls(&self) -> usize {
+        self.read_calls.load(Ordering::SeqCst)
+    }
+
+    fn block_next_read(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let replaced = self
+            .next_read_gate
+            .lock()
+            .expect("read gate mutex")
+            .replace((entered_tx, release_rx));
+        assert!(replaced.is_none(), "only one read gate may be armed");
+        (entered_rx, release_tx)
     }
 }
 
@@ -118,7 +143,17 @@ impl SessionService for CheckpointerCancelProbeSessionService {
             .await
     }
 
+    async fn has_live_session(&self, id: &SessionId) -> Result<bool, SessionError> {
+        self.inner.has_live_session(id).await
+    }
+
     async fn read(&self, id: &SessionId) -> Result<SessionView, SessionError> {
+        self.read_calls.fetch_add(1, Ordering::SeqCst);
+        let gate = self.next_read_gate.lock().expect("read gate mutex").take();
+        if let Some((entered_tx, release_rx)) = gate {
+            let _ = entered_tx.send(());
+            let _ = release_rx.await;
+        }
         self.inner.read(id).await
     }
 
@@ -238,6 +273,21 @@ impl MobSessionService for CheckpointerCancelProbeSessionService {
     ) -> Result<RunResult, SessionError> {
         self.inner
             .create_session_under_runtime_turn_boundary(req)
+            .await
+    }
+
+    async fn create_session_with_actor_witness_under_runtime_turn_boundary(
+        &self,
+        req: CreateSessionRequest,
+        resume_preparation: Option<meerkat_mob::SessionResumePreparationReceipt>,
+        actor_witness_slot: &meerkat_session::LiveSessionActorWitnessSlot,
+    ) -> Result<RunResult, SessionError> {
+        self.inner
+            .create_session_with_actor_witness_under_runtime_turn_boundary(
+                req,
+                resume_preparation,
+                actor_witness_slot,
+            )
             .await
     }
 
@@ -487,6 +537,139 @@ async fn build_unified_runtime_fixture_with_agent_events(
         _temp_dir: temp_dir,
         runtime,
     }
+}
+
+#[tokio::test]
+async fn timed_out_member_status_requests_shed_abandoned_actor_observations() {
+    const SATURATED_REQUESTS: usize = 8;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let probe = Arc::new(CheckpointerCancelProbeSessionService::new(
+        build_phase1_session_service(&temp_dir),
+    ));
+    let session_service: Arc<dyn MobSessionService> = probe.clone();
+    let runtime = Arc::new(
+        UnifiedRuntime::bootstrap(
+            build_phase1_mob_spec_with_session_service(session_service),
+            MobKitConfig {
+                modules: vec![],
+                discovery: DiscoverySpec {
+                    namespace: "timed-out-member-status".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            },
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("bootstrap unified runtime"),
+    );
+    let member_id = AgentIdentity::from("timeout-worker");
+    runtime
+        .mob_handle()
+        .spawn_spec(SpawnMemberSpec::new(
+            ProfileName::from("worker"),
+            member_id.clone(),
+        ))
+        .await
+        .expect("spawn timeout worker");
+
+    tokio::time::pause();
+    let (head_entered_rx, release_head_tx) = probe.block_next_read();
+    let status_request = |id| {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "mobkit/member_status",
+            "params": {"member_id": member_id.as_str()},
+        })
+        .to_string()
+    };
+    let spawn_request = |runtime: Arc<UnifiedRuntime>, request: String| {
+        let (started_tx, started_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            meerkat_mobkit::rpc::handle_unified_rpc_json(
+                runtime.as_ref(),
+                &request,
+                Duration::from_secs(1),
+                None,
+                None,
+            )
+            .await
+        });
+        (started_rx, task)
+    };
+
+    let (_, head_request) = spawn_request(Arc::clone(&runtime), status_request(0));
+    head_entered_rx
+        .await
+        .expect("head request must enter the actor-owned session read");
+    assert_eq!(probe.read_calls(), 1, "only the head read has executed");
+
+    let mut saturated = Vec::with_capacity(SATURATED_REQUESTS);
+    for id in 1..=SATURATED_REQUESTS {
+        let (started_rx, task) = spawn_request(Arc::clone(&runtime), status_request(id));
+        started_rx.await.expect("request task must start");
+        saturated.push(task);
+    }
+
+    for task in saturated {
+        let response = task.await.expect("saturated request task");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("typed admission response");
+        assert_eq!(response["error"]["code"], json!(-32000), "{response:#?}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("observation_lane_saturated")),
+            "{response:#?}"
+        );
+    }
+
+    tokio::time::advance(Duration::from_secs(31)).await;
+    let head_response = head_request.await.expect("head request task");
+    let head_response: serde_json::Value =
+        serde_json::from_str(&head_response).expect("typed timeout response");
+    assert_eq!(
+        head_response["error"]["code"],
+        json!(meerkat_mobkit::rpc::CONSOLE_READ_TIMEOUT_CODE),
+        "{head_response:#?}"
+    );
+    assert_eq!(
+        head_response["error"]["data"]["kind"],
+        json!("console_read_timeout"),
+        "{head_response:#?}"
+    );
+    assert_eq!(
+        probe.read_calls(),
+        1,
+        "the saturated observation lane must not execute any additional session reads"
+    );
+
+    let _ = release_head_tx.send(());
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    let (live_started_rx, live_request) =
+        spawn_request(Arc::clone(&runtime), status_request(SATURATED_REQUESTS + 1));
+    live_started_rx.await.expect("live request task must start");
+    let live_response: serde_json::Value =
+        serde_json::from_str(&live_request.await.expect("live request task"))
+            .expect("live member-status response");
+    assert!(live_response["error"].is_null(), "{live_response:#?}");
+    assert_eq!(
+        probe.read_calls(),
+        2,
+        "the head executes once, abandoned observations execute zero times, and the live request executes once"
+    );
+
+    tokio::time::resume();
+    runtime
+        .mob_handle()
+        .stop()
+        .await
+        .expect("stop timeout test mob");
 }
 
 #[tokio::test]
