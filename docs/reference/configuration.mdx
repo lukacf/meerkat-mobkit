@@ -114,6 +114,7 @@ The stock SDK gateway (`rpc_gateway`) consumes the `runtime_options` object of `
 | `runtime_store` | Object | Declares the runtime store's durability. The store (`runtime.sqlite` — session resume, archive, retire) is persistent SQLite by default; the only accepted declaration is `{ "storage": "memory" }`, after which sessions do not survive gateway restart. A failed SQLite open without this declaration is a startup error (`-32014`), never a silent in-memory fallback. |
 | `declare_spec_update` | Object | One-shot canonical mob-definition compare-and-swap. `{ "expected_revision": N }` applies the `mob_config` supplied in the same `mobkit/init` request only when the durable definition is still at `N`. The launch must be authoritative and use persistent mob storage. Exact replay converges; stale revision or successor-content disagreement refuses initialization with typed storage error `-32014`. |
 | `compaction` | Object | Declares the host-level session-compaction policy for every agent the gateway builds: `auto_compact_threshold` (tokens, non-zero), `recent_turn_budget`, `max_summary_tokens`, `min_turns_between_compactions`. A compactor is always installed; this declares *when it fires*. **Omitting `auto_compact_threshold` inherits Meerkat's model-aware default — `context_window * 4 / 5`, i.e. ~840,000 tokens on a million-token model such as `gpt-5.6-sol`, which in practice never fires and resends the full transcript every turn.** Declaring the key pins it. A mob profile's own `auto_compact_threshold` still wins per member. Unknown keys and a zero threshold fail initialization. |
+| `workgraph` | Boolean or directory string | WorkGraph construction switch, default `true`. `false` disables the store, the member `workgraph_*` tools, the attention overlays and the `mobkit/workgraph/*` RPCs; a non-empty string is an explicit directory for the durable store (`workgraph.sqlite3` is created inside it); any other value fails initialization. Python `.workgraph(enabled)` and TypeScript `.workgraph(enabled)` take `true`, `false` or the directory string; an unused setter sends nothing and the gateway default applies. Store placement per launch mode, the auto-issued namespace grant and the memory-backed fallback are in [WorkGraph](#workgraph). |
 
 Unsupported nested fields fail initialization with `-32602` instead of being silently ignored.
 
@@ -230,6 +231,77 @@ Declarations that reach neither identity plane arm nothing, because there is no
 identity plane to migrate on. See
 [roster and member lifecycle](/concepts/roster#role-migration) for the operator
 view of the refusal.
+
+## Mob profile tools (`[profiles.*.tools]`)
+
+The mob definition (`.mob("config/mob.toml")`, or the `mob_config` string of
+`mobkit/init`) is Meerkat's `MobDefinition`. Each
+`[profiles.<name>.tools]` table is meerkat-mob's `ToolConfig`, and every
+boolean in it defaults to `false`. The table has no unknown-key check, so a
+misspelled key (`comm = true`) is dropped and the flag it meant to set stays
+`false`.
+
+```toml
+[profiles.assistant.tools]
+comms = true
+builtins = true
+workgraph = true
+schedule = true
+```
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `comms` | `false` | **Must be `true` for every profile a member spawns from.** A member's durable identity, roster occupancy check, wiring, peer messaging and supervisor bridge are all keyed on its comms name, and the peer-messaging tools are composed whenever a member has one, so there is no honest member without comms: Meerkat refuses `comms = false`, and an omitted key, at build time with `MobError::WiringError`: `profile '<name>' has tools.comms=false; mob meerkats require comms=true`. On the worker plane `mobkit/ensure_member` answers `-32602` with `ensure_member failed: wiring error: ...` and creates no roster entry; on the identity plane the identity reconciles to outcome `broken` (`EmbodimentFailed`, the message as its detail), `mobkit/status_identity_bootstrap` carries it as `error`, and the continuity repair task retries what is a static configuration error. To keep a member from messaging peers, leave `comms = true` and set `read_only = true` (`send_message` is denied, `peers` stays permitted) or deny the tools through a per-spawn tool access policy. Mobpack validation does not flag this; it fails at spawn. |
+| `builtins` | `false` | Meerkat's built-in tools (task, blob, patch, datetime, web search and similar). When `workgraph` is `false` and `builtins` is `true`, the `task-workflow` skill is preloaded. |
+| `shell` | `false` | The shell execution tool. Never read-only: nothing classifies a command line, so `read_only = true` denies it outright. |
+| `memory` | `false` | Memory and semantic-search tools. |
+| `workgraph` | `false` | The realm-scoped `workgraph_*` tools; preloads the `workgraph-workflow` skill. The namespace grant the tools need is issued by the gateway, not the host (see [WorkGraph](#workgraph)). |
+| `mob` | `false` | Mob management tools (spawn, retire, wire, unwire, list). Without a host-supplied authority context the member is granted spawn authority over every profile in the definition. |
+| `schedule` | `false` | Durable schedule tools (create, list, update, pause, resume, delete). |
+| `image_generation` | `false` | Image generation tools; the profile's `image_generation_provider` names the backend. |
+| `read_only` | `false` | An enforcement declaration, not prompt guidance: a tool call executes only when its owning dispatcher declares it read-only, and the declaration wins over any per-spawn tool access policy. The category booleans above still decide what the model sees; this decides what may run. Provider-native tools, MCP tools and `shell` are outside the guarantee. |
+| `mcp` | `[]` | MCP server names this profile may use from the mob-wide default external-tools provider; an empty list means the full host surface. |
+| `mcp_servers` | `[]` | Declarative MCP server configs durable on the profile, so a revived member recomposes the same MCP tools that built it. |
+| `rust_bundles` | `[]` | Names of Rust tool bundles registered at mob construction. Not serializable; re-register them on resume. |
+
+The `mob-communication` skill is preloaded for every member regardless of these
+flags. Agent-side spawns that inherit the parent's tool filter open every
+category, including `comms`, before the inherited allow-list is applied, so the
+`comms` refusal is a host-spawn (`mobkit/ensure_member`) behaviour; an agent
+spawn of a `comms = false` profile silently runs with comms on.
+
+## WorkGraph
+
+`rpc_gateway` constructs a realm-scoped `WorkGraphService` on every launch
+unless `runtime_options.workgraph` is `false` (the default is `true`, so a
+launch that never mentions the key has one). The service backs the member
+`workgraph_*` tools, the mob-executor attention overlays and the
+`mobkit/workgraph/*` RPCs.
+
+| Launch | `workgraph: true` (default) | `workgraph: "<dir>"` |
+|--------|-----------------------------|----------------------|
+| With `persistent_state` | Durable `SqliteWorkGraphStore` at `<persistent_state>/workgraph.sqlite3`, the `workgraph` storage slot. If the store fails to open, the slot reports `degraded` and WorkGraph is disabled for that launch; nothing falls back to memory. | Durable store at `<dir>/workgraph.sqlite3`, created if needed, same open-failure posture. |
+| Without `persistent_state` | Memory-backed `MemoryWorkGraphStore`, reported as a declared-ephemeral slot: goals, work items and attention bindings do not survive a gateway restart. On an identity-first launch that persists through an SDK-hosted continuity store the gateway logs one WARN line naming this, because everything else about that launch is durable. | Durable store at `<dir>/workgraph.sqlite3`; the directory form exists for exactly this case. |
+
+`mobkit_gateway` has no switch: its persistent mode attaches the durable store
+from the workspace state dir (same degraded posture on open failure) and its
+default ephemeral launch is memory-backed.
+
+**The namespace grant is issued by the gateway, not the host.** Meerkat
+refuses to build an agent that has WorkGraph tools and no host-issued
+`WorkGraphNamespaceGrant`. Whenever MobKit installs the tools it takes the
+grant from the service it just built, so the grant names the same scope the
+tools are pinned to: realm `mob.<mob definition id>` (Meerkat's canonical mob
+realm, the one every other realm-scoped store for the mob uses; if it cannot
+be formed the raw id is used and Meerkat's own validation names both realms)
+and namespace `default`. Every `workgraph_*` tool call has its `realm_id` and
+`namespace` arguments overwritten with that scope and `all_namespaces`
+removed, so a member cannot wander into another mob's graph. The meerkat
+WorkGraph guide's "embedding hosts must issue the grant in the agent build" is
+a Rust-embedder instruction; SDK hosts have nothing to issue. The tools stay
+per-profile: a member sees them only when its profile sets
+`tools.workgraph = true`, while the `mobkit/workgraph/*` RPCs are available
+whenever the service exists.
 
 ## Storage layout and durability
 
@@ -373,6 +445,48 @@ That transfers runtime ownership to supervised identity mutations, so a
 disconnected request cannot cancel a cross-mob operation between its commit
 and rollback points. The borrowed dispatcher fails identity-owned cross-mob
 mutations closed because it cannot provide that ownership guarantee.
+
+### `mobkit_gateway` identity roster
+
+`identity_roster` is a top-level `mobkit/init` param of `mobkit_gateway`
+(typed `InitParams`), the standalone counterpart of the SDK roster provider
+that `rpc_gateway` reaches through `.roster(...)` callbacks; `rpc_gateway` has
+no `identity_roster` key. It is an array of `DurableAgentSpec` objects and seeds the
+desired identity roster for `identity_first: true` (the default):
+
+```json
+{
+  "identity_roster": [
+    { "identity": "personal:alice", "profile": "alpha" },
+    {
+      "identity": "domain:security",
+      "profile": "security",
+      "display_name": "Security",
+      "labels": { "console_group": "Internal" },
+      "runtime_mode_override": "turn_driven"
+    }
+  ]
+}
+```
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `identity` | yes | `AgentIdentity` (`<kind>:<name>`), the durable identity key. |
+| `profile` | yes | A `[profiles.<name>]` of the mob definition. |
+| `addressability` | no | `addressable` (default; accepts `send`) or `internal_only` (`dispatch` only). |
+| `display_name`, `labels`, `context`, `additional_instructions` | no | Console name, string labels, opaque JSON app context, extra prompt instructions. |
+| `initial_message`, `runtime_mode_override` | no | The kickoff turn and the per-identity `autonomous_host` / `turn_driven` override, as on the SDK `DurableAgentSpec`. |
+| `backend`, `binding`, `placement` | no | Backend kind, runtime binding and exact Meerkat host placement; a placement never degrades to local. |
+
+At boot the seed becomes the `MutableRosterProvider` and `restore_flow` runs
+over it: the roster is validated, continuity is resolved for every listed
+identity, and each non-Broken identity is created or resumed. Omitting the
+param is an empty seed, so the gateway starts with no identities and
+`mobkit/ensure_member` adds them at runtime (it upserts the same provider). The
+seed is boot-scoped like `role_migrations`: it is never persisted, and an
+identity missing from the next boot's seed is not restored on that boot (its
+continuity record is untouched). Under `identity_first: false` the param is
+parsed and ignored, not refused.
 
 ## ConsoleUiConfig
 
@@ -591,10 +705,30 @@ LocalJsonMemoryBackendConfig {
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `state_path` | `String` | Local JSON state file persisting the operational assertion ledger |
-| `health_check_endpoint` | `Option<String>` | Optional HTTP base URL health-gated at bootstrap (`GET /v1/health`); no ledger data is ever sent to it |
+| `state_path` | `String` | Local JSON file holding the operational assertion ledger (`mobkit/memory/*`). Runtime-owned: read once at bootstrap into memory, and rewritten wholesale (the whole state to `<state_path>.tmp`, then renamed over the file) on every `mobkit/memory/index`. Not a shared append log; see below. |
+| `health_check_endpoint` | `Option<String>` | Optional HTTP base URL probed with `GET /v1/health` at the bootstrap load and before every persist; a failed probe refuses that load or persist. No ledger data is ever sent to it |
 
 For SDK builds that boot through `rpc_gateway`, `state_path` is derived from `.persistent_state(path)` as `<path>/memory-ledger-state.json`; callers provide only `backend: "local_json"` (and optionally `health_check_endpoint`). The legacy `ElephantMemoryBackendConfig` / `backend: "elephant"` shape is deprecated: it was always local JSON persistence plus a health check — no data ever reached Elephant — and it converts to this config on load. Real Elephant integration is the wire-boundary provider described in `docs/design/memory-hub-roadmap.md`.
+
+**Ownership of the assertion ledger.** The file is a snapshot of runtime
+state, not a log that other writers may append to. `MobkitRuntimeHandle` loads
+it exactly once at bootstrap and keeps assertions and conflicts in memory as
+the authority; every `mobkit/memory/index` (host calls, and the Steward's
+conflict signals when `agent_memory.steward` is enabled) serializes the entire
+in-memory state and atomically replaces the file, with no re-read, lock or
+modification check. A direct edit is therefore invisible until the next boot
+and overwritten by the next flush; single-writer is a convention MobKit does
+not enforce with a lock. Retention is capped at 4,096 assertions, oldest
+evicted first, at index time and at load. At load, a structurally malformed
+file (an entry missing `assertion_id`, `entity`, `topic`, `store`, `fact` or
+`indexed_at_ms`) refuses the boot with `MobkitRuntimeError::MemoryBackend`,
+while a well-formed entry whose entity, topic or store is not canonical, or
+whose fact is empty, is dropped without a diagnostic. Append through
+`mobkit/memory/index`, Python `MobHandle.memory_index(...)`, TypeScript
+`handle.memoryIndex(...)`, or Rust `MobkitRuntimeHandle::memory_index` /
+`UnifiedRuntime::memory_index`; there is no agent-facing tool, so a host that
+wants members to write exposes one over the handle. This ledger is distinct
+from the `agent_memory` injection and turn-surface ledgers below.
 
 ## Agent memory injection
 

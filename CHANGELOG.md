@@ -127,6 +127,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The configuration reference now states four rules hosts were discovering
+  at spawn time or by reading source.** `docs/reference/configuration.mdx`
+  gains a `[profiles.*.tools]` table: every flag defaults to `false`, and
+  `comms` must be `true` because Meerkat keys a member's identity, wiring and
+  peer messaging on its comms name and refuses `comms = false` (or an omitted
+  key) with `profile '<name>' has tools.comms=false; mob meerkats require
+  comms=true`, which `mobkit/ensure_member` reports as `-32602` on the worker
+  plane and as outcome `broken` on the identity plane. The assertion ledger's
+  `state_path` row now says what the file is: a runtime-owned snapshot loaded
+  once at bootstrap and rewritten wholesale on every `mobkit/memory/index`
+  (host calls and enabled Steward conflict signals alike), not a shared
+  append log, with the 4,096-assertion cap and the load-time refusal and drop
+  rules. A WorkGraph section documents the `runtime_options.workgraph`
+  default, the store placement per launch mode including the memory-backed
+  fallback without `persistent_state`, and that the `WorkGraphNamespaceGrant`
+  (realm `mob.<id>`, namespace `default`) is issued by the gateway, never by
+  the host. The `mobkit_gateway` `identity_roster` init param, shipped
+  undocumented, gets its shape and boot-scoped semantics.
+  `docs/sdks/typescript.mdx` documents `.onError(...)` beside the gateway
+  logging section. Documentation only; no behaviour changed.
+
 - **`mobkit_gateway` exits after SIGINT/SIGTERM even when stdin is still
   open.** With stdin held open (a terminal, or a parent process holding the
   pipe), a signalled `mobkit_gateway` completed its graceful shutdown and then
