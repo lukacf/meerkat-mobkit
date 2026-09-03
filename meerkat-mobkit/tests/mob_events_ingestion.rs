@@ -75,6 +75,13 @@ fn representative_mob_event_kinds_project_with_kind_label() {
     assert_eq!(m.kind, "mob_created");
     assert_eq!(m.run_id, None);
 
+    let m = project(MobEventKind::MobDefinitionUpdated {
+        epoch: 2,
+        definition: Box::new(sample_definition()),
+    });
+    assert_eq!(m.kind, "mob_definition_updated");
+    assert_eq!(m.run_id, None);
+
     assert_eq!(project(MobEventKind::MobCompleted).kind, "mob_completed");
     assert_eq!(project(MobEventKind::MobReset).kind, "mob_reset");
 

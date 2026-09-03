@@ -5,9 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.8.29] - 2026-09-03
+
+Pairs with Meerkat `0.8.32` (annotated tag object
+`5c4bb88c9fea0183ad161fd0114443f31f1e9aa1`, commit
+`ed9fb06b2d93089ae2ede51874a136807f479108`) across all 25 exact dependency
+pins.
 
 ### Changed
+
+- **Declared mob-definition updates now advance Meerkat's canonical definition
+  epoch.** `runtime_options.declare_spec_update` routes through the typed
+  `MobStorage::update_definition(expected_revision, definition)` CAS seam instead
+  of rewriting the spec projection. Exact retries converge, stale revisions and
+  authority/projection disagreement remain typed refusals, and an added profile
+  survives runtime restart. The composition manifest remains immutable creation
+  provenance rather than a second mutable definition authority. Python hosts can
+  invoke the one-shot ceremony through
+  `MobKit.builder().declare_spec_update(expected_revision)`, using the builder's
+  `mob(...)` or `mob_inline(...)` definition as the replacement. Authoritative
+  resumes are bound to a storage-minted definition snapshot, so a concurrent
+  epoch between preflight and replay refuses instead of booting unsupplied
+  content. **BREAKING for direct Rust callers:** the `spec_update_ceremony`
+  functions now require `&MobStorage` instead of a database path, and
+  `mob_composition_manifest::verify_before_resume` requires the canonical
+  definition witness. A path cannot prove whether event and projection stores
+  share Meerkat's atomic bundle, so preserving the old signatures would make
+  split/custom storage capable of advancing only one side of authority.
+
+- **Ordinary inline profile model/provider declarations no longer become
+  synthetic resume overrides.** Durable routing decisions, including a realized
+  permanent `brain_swap`, now survive cold restart unless the host explicitly
+  lists `model` or `provider` in `resume_overrides`. Explicit masks remain
+  operator authority and are still completed to a coherent model/provider pair.
+  Definition-epoch updates that only add profiles therefore leave existing
+  members' durable routing identities unchanged.
 
 - **BREAKING for hosts that supply `application_tool_policies`: a compiled
   artifact whose `member_identity` values name no roster row is now refused at

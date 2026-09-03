@@ -1,18 +1,18 @@
 //! MobKit-owned composition provenance for a persistent mob storage path.
 //!
 //! Mob storage is event-sourced: a non-empty event log already carries the
-//! `MobCreated` definition, and [`meerkat_mob::MobBuilder::for_resume`] takes
-//! only the storage - there is structurally no way to pass a fresh definition
-//! into a resume. That is correct for the event log's own authority, but it
-//! means a bare resume branch would silently boot the definition recorded at
-//! first create even after the operator edited their config. The boot would
-//! look healthy: right member count, right phases, wrong composition.
+//! `MobCreated` definition. Authoritative MobKit launches bind resume to a
+//! storage-minted definition snapshot through
+//! [`meerkat_mob::MobBuilder::for_resume_verified`]; the supplied host definition
+//! remains a preflight comparison, never an alternate runtime authority. A bare
+//! unverified resume would silently boot the definition recorded in storage even
+//! after the operator edited their config. The boot would look healthy: right
+//! member count, right phases, wrong composition.
 //!
-//! This module records what composition the storage path was created for, so a
-//! resume can refuse before the mob actuates rather than after it misbehaves.
-//! It records *provenance*, not a second semantic definition: the event log
-//! stays the sole authority for what the mob is, and this file only answers
-//! "was this storage created for the composition I was just handed?".
+//! This module records what composition the storage path was created for and
+//! whether that creator spoke for the durable composition. On resume, the
+//! supplied definition is compared with the event log's current canonical
+//! definition. The manifest remains provenance, not mutable semantic authority.
 //!
 //! Comparison is structural rather than digest-based, deliberately. A digest
 //! can only report "different", while the recorded definition can name which
@@ -46,6 +46,11 @@ pub struct MobCompositionManifest {
     /// the accurate reading of an absent field rather than a fallback.
     #[serde(default)]
     pub created_by_authority: CompositionAuthority,
+    /// Whether this manifest was written with the released synthesized profile
+    /// normalization. Absent on old manifests; new writers always serialize
+    /// `false` so their own development version cannot imply legacy provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_synthesized_profile_normalization: Option<bool>,
 }
 
 /// Where the manifest lives for a given mob storage path: beside it, with the
@@ -75,8 +80,8 @@ pub enum MobCompositionProvenanceError {
         found: u32,
         supported: u32,
     },
-    /// The supplied composition differs from the one the storage was created
-    /// for.
+    /// The supplied composition differs from the current canonical definition
+    /// in the storage.
     Divergent {
         manifest: PathBuf,
         fields: Vec<String>,
@@ -142,11 +147,10 @@ impl std::fmt::Display for MobCompositionProvenanceError {
             ),
             Self::Divergent { manifest, fields } => write!(
                 f,
-                "the supplied mob definition diverges from the composition this storage \
-                 was created for, in: {} (a resume cannot apply a new definition - the \
-                 event log's MobCreated definition is authoritative - so booting would \
-                 silently run the composition recorded at {}; revert the change, or \
-                 create a new mob storage path for the new composition)",
+                "the supplied mob definition diverges from the canonical definition in this \
+                 storage, in: {} (booting would silently run the event-log definition rather \
+                 than the supplied composition; revert the change or advance it through the \
+                 declared definition-update ceremony; storage provenance is recorded at {})",
                 fields.join(", "),
                 manifest.display()
             ),
@@ -207,6 +211,7 @@ pub(crate) fn record_on_create(
         created_by_mobkit: env!("CARGO_PKG_VERSION").to_string(),
         definition: definition.clone(),
         created_by_authority,
+        legacy_synthesized_profile_normalization: Some(false),
     };
     let bytes = serde_json::to_vec_pretty(&record).map_err(|err| {
         MobCompositionProvenanceError::NotRecorded {
@@ -228,18 +233,110 @@ pub(crate) fn record_on_create(
     })
 }
 
+/// Provenance result for one exact released-profile compatibility check.
+pub(crate) enum LegacyDefinitionResume {
+    /// A released-version manifest proves the legacy representation.
+    Recorded,
+}
+
+/// Verify the exact profile representation synthesized by MobKit 0.8.9–0.8.28.
+///
+/// This is deliberately narrower than ordinary definition comparison:
+/// compatibility is available only for epoch 1 and only when a manifest proves
+/// an old writer. A missing manifest cannot distinguish an old store from
+/// recovery surgery on a current one, so it remains fail-closed. New stores
+/// cannot use this path to turn an explicit operator unmask edit into a silent
+/// no-op.
+pub(crate) fn verify_legacy_synthesized_definition_before_resume(
+    mob_storage_path: &Path,
+    authority_epoch: u64,
+    authoritative: &MobDefinition,
+    supplied: &MobDefinition,
+    legacy_supplied: &MobDefinition,
+) -> Result<LegacyDefinitionResume, MobCompositionProvenanceError> {
+    let manifest = manifest_path(mob_storage_path);
+    if authority_epoch != 1 {
+        return verify_authoritative_definition(&manifest, authoritative, supplied)
+            .map(|()| LegacyDefinitionResume::Recorded);
+    }
+    let bytes = match std::fs::read(&manifest) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return verify_authoritative_definition(&manifest, authoritative, supplied)
+                .map(|()| LegacyDefinitionResume::Recorded);
+        }
+        Err(err) => {
+            return Err(MobCompositionProvenanceError::Unreadable {
+                manifest,
+                message: err.to_string(),
+            });
+        }
+    };
+    let version = serde_json::from_slice::<ManifestVersionProbe>(&bytes)
+        .map(|probe| probe.manifest_version)
+        .map_err(|err| MobCompositionProvenanceError::Malformed {
+            manifest: manifest.clone(),
+            message: err.to_string(),
+        })?;
+    if version != MANIFEST_VERSION {
+        return Err(MobCompositionProvenanceError::UnsupportedVersion {
+            manifest,
+            found: version,
+            supported: MANIFEST_VERSION,
+        });
+    }
+    let record = serde_json::from_slice::<MobCompositionManifest>(&bytes).map_err(|err| {
+        MobCompositionProvenanceError::Malformed {
+            manifest: manifest.clone(),
+            message: err.to_string(),
+        }
+    })?;
+    if !record.created_by_authority.speaks_for_composition() {
+        return Err(MobCompositionProvenanceError::CreatedByRehearsal {
+            manifest,
+            storage: mob_storage_path.to_path_buf(),
+        });
+    }
+    let released_writer = match record.legacy_synthesized_profile_normalization {
+        Some(value) => value,
+        None => is_synthesizing_release(&record.created_by_mobkit),
+    };
+    if !released_writer {
+        return verify_authoritative_definition(&manifest, authoritative, supplied)
+            .map(|()| LegacyDefinitionResume::Recorded);
+    }
+    verify_authoritative_definition(&manifest, authoritative, legacy_supplied)?;
+    Ok(LegacyDefinitionResume::Recorded)
+}
+
+fn is_synthesizing_release(version: &str) -> bool {
+    let mut parts = version.split('.');
+    let Some(major) = parts.next().and_then(|part| part.parse::<u64>().ok()) else {
+        return false;
+    };
+    let Some(minor) = parts.next().and_then(|part| part.parse::<u64>().ok()) else {
+        return false;
+    };
+    let Some(patch) = parts.next().and_then(|part| part.parse::<u64>().ok()) else {
+        return false;
+    };
+    parts.next().is_none() && major == 0 && minor == 8 && (9..29).contains(&patch)
+}
+
 /// Verify a non-empty storage path was created for the supplied composition.
 ///
 /// Called on the resume branch, before the builder is constructed, so every
 /// refusal lands before the mob can actuate.
 pub fn verify_before_resume(
     mob_storage_path: &Path,
+    authoritative: &MobDefinition,
     supplied: &MobDefinition,
 ) -> Result<(), MobCompositionProvenanceError> {
     let manifest = manifest_path(mob_storage_path);
     let bytes = match std::fs::read(&manifest) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            verify_authoritative_definition(&manifest, authoritative, supplied)?;
             return Err(MobCompositionProvenanceError::Missing {
                 manifest,
                 storage: mob_storage_path.to_path_buf(),
@@ -284,12 +381,7 @@ pub fn verify_before_resume(
             storage: mob_storage_path.to_path_buf(),
         });
     }
-    let fields = diverged_definition_fields(&record.definition, supplied);
-    if fields.is_empty() {
-        Ok(())
-    } else {
-        Err(MobCompositionProvenanceError::Divergent { manifest, fields })
-    }
+    verify_authoritative_definition(&manifest, authoritative, supplied)
 }
 
 /// Version-only view, so an unreadable *body* and an unjudgeable *schema* stay
@@ -299,43 +391,20 @@ struct ManifestVersionProbe {
     manifest_version: u32,
 }
 
-/// Rewrite the manifest after an operator declared a spec update.
-///
-/// Separate from [`record_on_create`] on purpose, even though the write is the
-/// same shape: this one runs against a manifest that ALREADY EXISTS and is being
-/// deliberately superseded, which is a different authorization story from
-/// recording a fresh composition. Keeping them apart means a create path can
-/// never silently overwrite an existing manifest by calling the wrong function.
-/// The creating authority is PRESERVED, not reset. A declared update supersedes
-/// the composition, never the provenance: if a rehearsal launch created this
-/// store, no operator declaration can make the promoted composition take effect
-/// on it, because a resume still replays the rehearsal `MobCreated`. Defaulting
-/// to authoritative here would launder exactly that store into one that
-/// verifies clean.
-pub(crate) fn record_declared_update(
-    mob_storage_path: &Path,
-    declared: &MobDefinition,
+fn verify_authoritative_definition(
+    manifest: &Path,
+    authoritative: &MobDefinition,
+    supplied: &MobDefinition,
 ) -> Result<(), MobCompositionProvenanceError> {
-    let created_by_authority = read_recorded_authority(mob_storage_path);
-    record_on_create(mob_storage_path, declared, created_by_authority)
-}
-
-/// The authority recorded beside this storage, for callers that must not reset
-/// it.
-///
-/// An unreadable or absent manifest reads as `Authoritative`. That is the safe
-/// direction here and only here: this is called on the declared-update path,
-/// which already refused unless a manifest was pinned, so the fallback is
-/// unreachable in practice, and treating an unreadable manifest as a rehearsal
-/// would refuse every future boot of a store whose provenance is merely
-/// damaged.
-fn read_recorded_authority(mob_storage_path: &Path) -> CompositionAuthority {
-    let manifest = manifest_path(mob_storage_path);
-    std::fs::read(&manifest)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<MobCompositionManifest>(&bytes).ok())
-        .map(|record| record.created_by_authority)
-        .unwrap_or_default()
+    let fields = diverged_definition_fields(authoritative, supplied);
+    if fields.is_empty() {
+        Ok(())
+    } else {
+        Err(MobCompositionProvenanceError::Divergent {
+            manifest: manifest.to_path_buf(),
+            fields,
+        })
+    }
 }
 
 /// Which definition fields differ, as dotted PATHS rather than top-level keys.

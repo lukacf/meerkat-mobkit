@@ -37,6 +37,7 @@ class MobKitBuilderConfig:
     modules: list[dict[str, Any]] = field(default_factory=list)
     extra_routes: Any | None = None
     persistent_state: str | None = None
+    declare_spec_update_expected_revision: int | None = None
     # Identity-first provider fields (REQ-44)
     continuity_store: Any | None = None
     lease_provider: Any | None = None
@@ -572,11 +573,31 @@ class MobKitBuilder:
         """Enable persistent state at the given path.
 
         When set, the gateway creates SQLite-backed session/runtime state,
-        MobKit metadata, console logs, and binary blob storage under this
-        directory. Mob storage remains in-memory. When not set, the gateway
-        uses an ephemeral session service.
+        canonical mob definition and events, MobKit metadata, console logs,
+        and binary blob storage under this directory. When not set, the
+        gateway uses ephemeral stores.
         """
         self._config.persistent_state = path
+        return self
+
+    def declare_spec_update(self, expected_revision: int) -> MobKitBuilder:
+        """Apply this boot's mob definition as a one-shot revision-pinned update.
+
+        The definition supplied by :meth:`mob` or :meth:`mob_inline` is compared
+        and swapped against the canonical definition in :meth:`persistent_state`.
+        ``expected_revision`` must be the revision observed before constructing
+        the replacement definition. Exact replay converges; a stale revision or
+        different content at the successor revision raises the typed
+        ``StorageResolutionError`` during ``build()``.
+
+        Use this only on the activation that is authorized to change the
+        definition. Later ordinary restarts should omit the declaration.
+        """
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+            raise TypeError("expected_revision must be a non-negative integer")
+        if expected_revision < 0:
+            raise ValueError("expected_revision must be a non-negative integer")
+        self._config.declare_spec_update_expected_revision = expected_revision
         return self
 
     def continuity_store(self, provider: Any) -> MobKitBuilder:
@@ -728,6 +749,20 @@ class MobKitBuilder:
             raise ValueError(
                 "mob() and mob_inline() are mutually exclusive"
             )
+        if self._config.declare_spec_update_expected_revision is not None:
+            if not (
+                self._config.mob_config_path
+                or self._config.mob_config_inline
+            ):
+                raise ValueError(
+                    "declare_spec_update() requires mob() or mob_inline() to "
+                    "supply the replacement definition"
+                )
+            if not self._config.persistent_state:
+                raise ValueError(
+                    "declare_spec_update() requires persistent_state() because "
+                    "ephemeral mob storage has no durable definition to update"
+                )
         if (
             self._config.identity_bootstrap_mode is not None
             and self._config.roster_provider is None

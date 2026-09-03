@@ -7,17 +7,47 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
-use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
-use meerkat_mobkit::mob_composition_manifest::{
-    MobCompositionProvenanceError, MobStorageProvenance, persistent_mob_storage,
+use meerkat_core::image_generation::{
+    SwitchTurnDuration, SwitchTurnIntent, SwitchTurnOrigin, SwitchTurnReasonTextDisposition,
+    SwitchTurnRequestId,
 };
-use meerkat_mobkit::mob_handle_runtime::MobRuntimeError;
-use meerkat_mobkit::{MobBootstrapOptions, MobBootstrapSpec, MobRuntime};
+use meerkat_core::lifecycle::RunId;
+use meerkat_core::lifecycle::core_executor::BoundSessionCommit;
+use meerkat_core::lifecycle::run_primitive::ModelId;
+use meerkat_core::session::model_routing_control::SessionModelRoutingControlRecord;
+use meerkat_core::{SessionLlmIdentity, SessionStore};
+use meerkat_mob::event::MobEventKind;
+use meerkat_mob::ids::ProfileName;
+use meerkat_mob::store::{InMemoryMobSpecStore, MobEventStore, MobSpecStore, SqliteMobStores};
+use meerkat_mob::{
+    MobBuilder, MobDefinition, MobDefinitionProjectionHealth, MobDefinitionProjectionMismatchKind,
+    MobStorage, SpawnMemberSpec,
+};
+use meerkat_mobkit::identity_first::orchestrator::RestoreOutcome;
+use meerkat_mobkit::identity_first::{
+    AgentAddressability, AgentIdentity as MobKitAgentIdentity, AgentRuntimeServices,
+    ContinuityStore, DurabilityPolicy, DurableAgentSpec, IdentityFirstRuntimeContext,
+    IdentityRuntime, IdentityRuntimeConfig, LocalContinuityStore, LocalLeaseProvider,
+    MobSessionBridge, MutableRosterProvider,
+};
+use meerkat_mobkit::mob_composition_manifest::{
+    MobCompositionManifest, MobCompositionProvenanceError, MobStorageProvenance, manifest_path,
+    persistent_mob_storage,
+};
+use meerkat_mobkit::mob_handle_runtime::{MobRuntimeError, auto_mark_declared_resume_overrides};
+use meerkat_mobkit::spec_update_ceremony::{SpecUpdateError, declare_spec_update};
+use meerkat_mobkit::{
+    DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, MobRuntime, UnifiedRuntime,
+};
+use meerkat_runtime::store::{PreparedWholeBlobSnapshotCas, WholeBlobSnapshotCasOutcome};
+use meerkat_runtime::{LogicalRuntimeId, RuntimeStore};
 
 fn definition_with(profiles: &str) -> MobDefinition {
     MobDefinition::from_toml(profiles).expect("parse mob definition")
@@ -68,6 +98,63 @@ comms = true
     ))
 }
 
+fn overwrite_definition_projection(mob_path: &Path, definition: &MobDefinition, revision: u64) {
+    let connection = rusqlite::Connection::open(mob_path).expect("open mob projection");
+    let projected = serde_json::to_vec(&serde_json::json!({
+        "definition": definition,
+        "revision": revision,
+    }))
+    .expect("serialize projected definition");
+    connection
+        .execute(
+            "UPDATE mob_specs SET spec_json = ?1 WHERE mob_id = ?2",
+            rusqlite::params![projected, definition.id.as_str()],
+        )
+        .expect("overwrite projected definition");
+}
+
+fn routing_definition_for(
+    mob_id: &str,
+    model: &str,
+    explicit_identity_override: bool,
+    add_worker: bool,
+) -> MobDefinition {
+    let resume_overrides = if explicit_identity_override {
+        "resume_overrides = [\"model\", \"provider\"]\n"
+    } else {
+        ""
+    };
+    let worker = if add_worker {
+        format!(
+            r#"
+[profiles.worker]
+model = "{model}"
+external_addressable = true
+
+[profiles.worker.tools]
+comms = true
+"#
+        )
+    } else {
+        String::new()
+    };
+    definition_with(&format!(
+        r#"
+[mob]
+id = "{mob_id}"
+
+[profiles.lead]
+model = "{model}"
+{resume_overrides}external_addressable = true
+runtime_mode = "turn_driven"
+
+[profiles.lead.tools]
+comms = true
+{worker}
+"#
+    ))
+}
+
 fn options() -> MobBootstrapOptions {
     MobBootstrapOptions {
         allow_ephemeral_sessions: true,
@@ -76,10 +163,444 @@ fn options() -> MobBootstrapOptions {
     }
 }
 
+async fn boot_unified(
+    mob_path: &Path,
+    state_root: &Path,
+    definition: MobDefinition,
+) -> (UnifiedRuntime, Arc<IdentityRuntime>) {
+    std::fs::create_dir_all(state_root).expect("state root");
+    let session_store = Arc::new(
+        meerkat_store::SqliteSessionStore::open(state_root.join("sessions.sqlite3"))
+            .expect("open session store"),
+    );
+    let (storage, provenance) =
+        persistent_mob_storage(mob_path.to_path_buf()).expect("open persistent mob storage");
+    let spec = MobBootstrapSpec::persistent(
+        definition,
+        storage,
+        state_root.to_path_buf(),
+        16,
+        session_store,
+    )
+    .expect("compose persistent MobKit stores")
+    .with_mob_storage_provenance(provenance)
+    .with_options(options());
+    let mut runtime = UnifiedRuntime::bootstrap(
+        spec,
+        MobKitConfig {
+            modules: Vec::new(),
+            discovery: DiscoverySpec {
+                namespace: "definition-epoch-routing".to_string(),
+                modules: Vec::new(),
+            },
+            pre_spawn: Vec::new(),
+        },
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("bootstrap unified runtime");
+    let roster = vec![DurableAgentSpec {
+        identity: MobKitAgentIdentity::parse("lead-1").expect("valid MobKit agent identity"),
+        profile: ProfileName::from("lead"),
+        addressability: AgentAddressability::Addressable,
+        display_name: None,
+        labels: BTreeMap::new(),
+        context: None,
+        additional_instructions: Vec::new(),
+        initial_message: None,
+        runtime_mode_override: None,
+        backend: None,
+        binding: None,
+        placement: None,
+    }];
+    let continuity_store = Arc::new(
+        LocalContinuityStore::open(state_root.join("identity-continuity.sqlite3"))
+            .expect("open identity continuity store"),
+    );
+    let identity_runtime = Arc::new(
+        IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: continuity_store as Arc<dyn ContinuityStore>,
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "definition-epoch-routing-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(Arc::new(MobSessionBridge::with_session_service(
+                runtime.mob_handle(),
+                runtime
+                    .mob_runtime()
+                    .session_service()
+                    .cloned()
+                    .expect("persistent runtime has a session service"),
+            ))),
+            default_timeout: None,
+        })
+        .with_runtime_services(AgentRuntimeServices::new(runtime.mob_handle())),
+    );
+    let context = Arc::new(IdentityFirstRuntimeContext::new(
+        identity_runtime.clone(),
+        Arc::new(MutableRosterProvider::new(roster.clone())),
+        None,
+        None,
+        Some(runtime.mob_handle().definition().clone()),
+    ));
+    let restored = runtime
+        .install_and_bootstrap_identity_first_context(context, &roster)
+        .await
+        .expect("activate and restore identity-first runtime");
+    let outcome = restored
+        .outcomes
+        .get(&roster[0].identity)
+        .expect("lead-1 restore outcome");
+    assert!(
+        matches!(
+            outcome,
+            RestoreOutcome::Created { .. } | RestoreOutcome::Resumed { .. }
+        ),
+        "lead-1 must be materialized, got {outcome:?}"
+    );
+    (runtime, identity_runtime)
+}
+
+async fn assert_member_model(
+    runtime: &UnifiedRuntime,
+    identity_runtime: &IdentityRuntime,
+    expected_model: &str,
+    expected_provider: meerkat_core::Provider,
+) {
+    let status = identity_runtime
+        .status(&MobKitAgentIdentity::parse("lead-1").expect("valid MobKit agent identity"))
+        .await
+        .expect("read lead-1 identity status");
+    let session_id = status
+        .session_id
+        .expect("lead-1 must retain its bridge session");
+    let session_service = runtime
+        .mob_runtime()
+        .session_service()
+        .expect("persistent runtime has a session service");
+    let persisted = session_service
+        .load_persisted_session_metadata(&session_id)
+        .await
+        .expect("read persisted session metadata")
+        .expect("persisted session exists");
+    let metadata = persisted
+        .session_metadata
+        .expect("persisted session carries LLM identity metadata");
+    assert_eq!(metadata.model, expected_model);
+    assert_eq!(metadata.provider, expected_provider);
+}
+
+async fn member_session_id(identity_runtime: &IdentityRuntime) -> meerkat_core::SessionId {
+    identity_runtime
+        .status(&MobKitAgentIdentity::parse("lead-1").expect("valid MobKit agent identity"))
+        .await
+        .expect("read lead-1 identity status")
+        .session_id
+        .expect("lead-1 must retain its bridge session")
+}
+
+struct RealizedRoutingFixture {
+    request_id: SwitchTurnRequestId,
+    originating_run_id: RunId,
+}
+
+fn routing_intent(target_model: &str) -> SwitchTurnIntent {
+    SwitchTurnIntent {
+        target_model: ModelId::new(target_model),
+        duration: SwitchTurnDuration::UntilChanged,
+        origin: SwitchTurnOrigin::Model {
+            reason: SwitchTurnReasonTextDisposition::NotProvided,
+        },
+    }
+}
+
+async fn install_realized_routing_fixture(
+    state_root: &Path,
+    session_id: &meerkat_core::SessionId,
+    target_model: &str,
+) -> RealizedRoutingFixture {
+    let runtime_store =
+        meerkat_runtime::store::SqliteRuntimeStore::new(state_root.join("runtime.sqlite"))
+            .expect("open authoritative runtime store for routing fixture");
+    let runtime_id = LogicalRuntimeId::for_session(session_id);
+    let committed = runtime_store
+        .load_committed_whole_blob_snapshot(&runtime_id)
+        .await
+        .expect("load authoritative session for routing fixture")
+        .expect("routing fixture authority exists");
+    let mut session = committed.session().clone();
+    let mut metadata = session
+        .try_session_metadata()
+        .expect("decode session metadata")
+        .expect("session carries LLM metadata");
+    assert_eq!(metadata.provider, meerkat_core::Provider::Anthropic);
+
+    let request_id = SwitchTurnRequestId::new(uuid::Uuid::new_v4());
+    let originating_run_id = RunId::new();
+    let intent = routing_intent(target_model);
+    session
+        .append_model_routing_control_record(
+            SessionModelRoutingControlRecord::request(
+                request_id,
+                originating_run_id.clone(),
+                intent.clone(),
+            )
+            .expect("construct durable brain-swap request"),
+        )
+        .expect("append durable brain-swap request");
+    let applied_identity = SessionLlmIdentity {
+        model: target_model.to_string(),
+        provider: meerkat_core::Provider::OpenAI,
+        self_hosted_server_id: None,
+        provider_params: None,
+        auth_binding: None,
+    };
+    session
+        .append_model_routing_control_record(
+            SessionModelRoutingControlRecord::ModelRoutingIntentRealized {
+                request_id,
+                originating_run_id: originating_run_id.clone(),
+                intent,
+                applied_identity: Box::new(applied_identity.clone()),
+            },
+        )
+        .expect("append matching realized brain-swap terminal");
+    metadata.apply_llm_identity(&applied_identity);
+    session
+        .set_session_metadata(metadata)
+        .expect("persist applied routing identity");
+
+    let prepared = PreparedWholeBlobSnapshotCas::prepare(
+        committed.authority().clone(),
+        BoundSessionCommit::sealed(Arc::new(session.clone()))
+            .expect("seal routing fixture session"),
+    )
+    .expect("prepare routing fixture authority CAS");
+    assert!(matches!(
+        runtime_store
+            .commit_prepared_whole_blob_snapshot_cas(&runtime_id, prepared)
+            .await
+            .expect("commit routing fixture authority CAS"),
+        WholeBlobSnapshotCasOutcome::Committed(_)
+    ));
+
+    let session_store =
+        meerkat_store::SqliteSessionStore::open(state_root.join("sessions.sqlite3"))
+            .expect("open session projection for routing fixture");
+    session_store
+        .save(&session)
+        .await
+        .expect("project realized routing fixture");
+
+    RealizedRoutingFixture {
+        request_id,
+        originating_run_id,
+    }
+}
+
+async fn assert_realized_routing_history(
+    state_root: &Path,
+    session_id: &meerkat_core::SessionId,
+    fixture: &RealizedRoutingFixture,
+    target_model: &str,
+) {
+    let store = meerkat_store::SqliteSessionStore::open(state_root.join("sessions.sqlite3"))
+        .expect("open session store for routing assertion");
+    let session = store
+        .load(session_id)
+        .await
+        .expect("load session for routing assertion")
+        .expect("routing assertion session exists");
+    let records = session.model_routing_control().records();
+    assert_eq!(
+        records.len(),
+        2,
+        "routing history must remain one Requested plus one Realized"
+    );
+    assert!(matches!(
+        &records[0],
+        SessionModelRoutingControlRecord::ModelRoutingIntentRequested {
+            request_id,
+            originating_run_id,
+            intent,
+        } if request_id == &fixture.request_id
+            && originating_run_id == &fixture.originating_run_id
+            && intent.target_model == ModelId::new(target_model)
+    ));
+    assert!(matches!(
+        &records[1],
+        SessionModelRoutingControlRecord::ModelRoutingIntentRealized {
+            request_id,
+            originating_run_id,
+            intent,
+            applied_identity,
+        } if request_id == &fixture.request_id
+            && originating_run_id == &fixture.originating_run_id
+            && intent.target_model == ModelId::new(target_model)
+            && applied_identity.model == target_model
+            && applied_identity.provider == meerkat_core::Provider::OpenAI
+    ));
+}
+
+async fn commit_member_turn(identity_runtime: &IdentityRuntime, prompt: &str) {
+    identity_runtime
+        .send_awaiting_commit(
+            &MobKitAgentIdentity::parse("lead-1").expect("valid MobKit agent identity"),
+            &meerkat_core::ContentInput::Text(prompt.to_string()),
+        )
+        .await
+        .expect("complete member turn");
+}
+
 async fn session_service(session_root: &Path) -> Arc<dyn meerkat_mob::MobSessionService> {
     std::fs::create_dir_all(session_root).expect("session root");
     let factory = AgentFactory::new(session_root).comms(true);
     Arc::new(build_ephemeral_service(factory, Config::default(), 16))
+}
+
+/// Resume precedence is explicit, not declaration-driven:
+///
+/// 1. create on Anthropic A, then install the same typed Requested+Realized
+///    routing history and applied OpenAI B identity that a committed brain swap
+///    owns, through the public Session and SessionStore authorities,
+/// 2. prove two ordinary unmasked A cold resumes keep B and its exact history,
+/// 3. advance an epoch that only adds a profile and prove B still survives, and
+/// 4. explicitly mask A and prove operator authority intentionally wins without
+///    rewriting the settled routing history.
+#[tokio::test]
+async fn durable_routing_survives_ordinary_profiles_and_profile_only_definition_epochs() {
+    const MOB_ID: &str = "definition-epoch-routing";
+    const MODEL_A: &str = "claude-opus-4-8";
+    const MODEL_B: &str = "gpt-5.5";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite3");
+    let state_root = temp.path().join("state");
+
+    let (first, first_identity) = boot_unified(
+        &mob_path,
+        &state_root,
+        routing_definition_for(MOB_ID, MODEL_A, false, false),
+    )
+    .await;
+    commit_member_turn(&first_identity, "commit model A").await;
+    let session_id = member_session_id(&first_identity).await;
+    assert_member_model(
+        &first,
+        &first_identity,
+        MODEL_A,
+        meerkat_core::Provider::Anthropic,
+    )
+    .await;
+    first.shutdown().await;
+
+    let fixture = install_realized_routing_fixture(&state_root, &session_id, MODEL_B).await;
+    let (second, second_identity) = boot_unified(
+        &mob_path,
+        &state_root,
+        routing_definition_for(MOB_ID, MODEL_A, false, false),
+    )
+    .await;
+    commit_member_turn(
+        &second_identity,
+        "ordinary model A profile must retain durable B",
+    )
+    .await;
+    assert_member_model(
+        &second,
+        &second_identity,
+        MODEL_B,
+        meerkat_core::Provider::OpenAI,
+    )
+    .await;
+    assert_realized_routing_history(&state_root, &session_id, &fixture, MODEL_B).await;
+    second.shutdown().await;
+
+    let (third, third_identity) = boot_unified(
+        &mob_path,
+        &state_root,
+        routing_definition_for(MOB_ID, MODEL_A, false, false),
+    )
+    .await;
+    commit_member_turn(
+        &third_identity,
+        "ordinary model A profile must retain durable B",
+    )
+    .await;
+    assert_member_model(
+        &third,
+        &third_identity,
+        MODEL_B,
+        meerkat_core::Provider::OpenAI,
+    )
+    .await;
+    assert_realized_routing_history(&state_root, &session_id, &fixture, MODEL_B).await;
+    third.shutdown().await;
+
+    let storage = MobStorage::persistent(&mob_path).expect("reopen mob storage");
+    declare_spec_update(
+        &storage,
+        MOB_ID,
+        &routing_definition_for(MOB_ID, MODEL_A, false, true),
+        1,
+    )
+    .await
+    .expect("add worker profile");
+    drop(storage);
+    let (fourth, fourth_identity) = boot_unified(
+        &mob_path,
+        &state_root,
+        routing_definition_for(MOB_ID, MODEL_A, false, true),
+    )
+    .await;
+    assert_realized_routing_history(&state_root, &session_id, &fixture, MODEL_B).await;
+    commit_member_turn(&fourth_identity, "profile-only epoch must retain durable B").await;
+    assert_member_model(
+        &fourth,
+        &fourth_identity,
+        MODEL_B,
+        meerkat_core::Provider::OpenAI,
+    )
+    .await;
+    assert!(
+        fourth
+            .mob_handle()
+            .definition()
+            .profiles
+            .contains_key(&ProfileName::from("worker")),
+        "the profile-only epoch must be the one that resumed"
+    );
+    fourth.shutdown().await;
+
+    let storage = MobStorage::persistent(&mob_path).expect("reopen mob storage");
+    declare_spec_update(
+        &storage,
+        MOB_ID,
+        &routing_definition_for(MOB_ID, MODEL_A, true, true),
+        2,
+    )
+    .await
+    .expect("declare explicit return to model A");
+    drop(storage);
+    let (fifth, fifth_identity) = boot_unified(
+        &mob_path,
+        &state_root,
+        routing_definition_for(MOB_ID, MODEL_A, true, true),
+    )
+    .await;
+    commit_member_turn(
+        &fifth_identity,
+        "explicit operator mask must restore model A",
+    )
+    .await;
+    assert_member_model(
+        &fifth,
+        &fifth_identity,
+        MODEL_A,
+        meerkat_core::Provider::Anthropic,
+    )
+    .await;
+    assert_realized_routing_history(&state_root, &session_id, &fixture, MODEL_B).await;
+    fifth.shutdown().await;
 }
 
 /// Boot against a persistent mob path, declaring provenance the way the stock
@@ -404,6 +925,864 @@ async fn changed_definition_refuses_instead_of_booting_stale() {
     }
 }
 
+#[tokio::test]
+async fn released_synthesized_profile_definition_resumes_unchanged_operator_config() {
+    const MOB_ID: &str = "legacy-synthesized-profile-resume";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite3");
+    let session_root = temp.path().join("sessions");
+    let mut supplied = base_definition_for(MOB_ID);
+    supplied
+        .profiles
+        .get_mut(&ProfileName::from("lead"))
+        .and_then(meerkat_mob::ProfileBinding::as_inline_mut)
+        .expect("inline lead profile")
+        .provider_params = Some(
+        meerkat_core::lifecycle::run_primitive::ProviderParamsOverride {
+            temperature: Some(0.2),
+            ..Default::default()
+        },
+    );
+    let mut released = supplied.clone();
+    let profile = released
+        .profiles
+        .get_mut(&ProfileName::from("lead"))
+        .and_then(meerkat_mob::ProfileBinding::as_inline_mut)
+        .expect("inline lead profile");
+    profile.provider = Some(meerkat_core::Provider::OpenAI);
+    profile.resume_overrides = vec![
+        meerkat_mob::ResumeOverrideField::Model,
+        meerkat_mob::ResumeOverrideField::Provider,
+        meerkat_mob::ResumeOverrideField::ProviderParams,
+    ];
+
+    let first = boot(&mob_path, &session_root, released.clone())
+        .await
+        .expect("create using the released synthesized representation");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown released runtime");
+    drop(first);
+    let manifest_path = manifest_path(&mob_path);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).expect("read manifest"))
+            .expect("decode manifest");
+    let manifest = manifest.as_object_mut().expect("manifest object");
+    manifest.insert(
+        "created_by_mobkit".to_string(),
+        serde_json::Value::String("0.8.28".to_string()),
+    );
+    manifest.remove("legacy_synthesized_profile_normalization");
+    std::fs::write(
+        manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("encode released manifest"),
+    )
+    .expect("remove field absent from released manifests");
+
+    let resumed = boot(&mob_path, &session_root, supplied)
+        .await
+        .expect("unchanged operator config must resume a pre-0.8.29 durable mob");
+    assert_eq!(
+        resumed.handle().definition(),
+        &released,
+        "resume must still build the exact canonical event-log definition"
+    );
+    resumed
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown resumed runtime");
+}
+
+#[tokio::test]
+async fn manifestless_released_definition_refuses_without_vintage_proof() {
+    const MOB_ID: &str = "legacy-manifestless-profile-resume";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite3");
+    let session_root = temp.path().join("sessions");
+    let supplied = base_definition_for(MOB_ID);
+    let mut released = supplied.clone();
+    let profile = released
+        .profiles
+        .get_mut(&ProfileName::from("lead"))
+        .and_then(meerkat_mob::ProfileBinding::as_inline_mut)
+        .expect("inline lead profile");
+    profile.provider = Some(meerkat_core::Provider::OpenAI);
+    profile.resume_overrides = vec![
+        meerkat_mob::ResumeOverrideField::Model,
+        meerkat_mob::ResumeOverrideField::Provider,
+    ];
+
+    let first = boot(&mob_path, &session_root, released.clone())
+        .await
+        .expect("create released runtime");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown released runtime");
+    drop(first);
+    std::fs::remove_file(manifest_path(&mob_path)).expect("remove manifest to model old storage");
+
+    assert!(matches!(
+        boot(&mob_path, &session_root, supplied).await,
+        Err(MobRuntimeError::CompositionProvenance(
+            MobCompositionProvenanceError::Divergent { .. }
+        ))
+    ));
+    assert!(
+        !manifest_path(&mob_path).exists(),
+        "an unproven legacy representation must not mint provenance"
+    );
+}
+
+#[tokio::test]
+async fn current_writer_does_not_treat_explicit_unmask_as_legacy_equivalence() {
+    const MOB_ID: &str = "current-explicit-unmask";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite3");
+    let session_root = temp.path().join("sessions");
+    let supplied = base_definition_for(MOB_ID);
+    let mut explicitly_masked = supplied.clone();
+    let profile = explicitly_masked
+        .profiles
+        .get_mut(&ProfileName::from("lead"))
+        .and_then(meerkat_mob::ProfileBinding::as_inline_mut)
+        .expect("inline lead profile");
+    profile.provider = Some(meerkat_core::Provider::OpenAI);
+    profile.resume_overrides = vec![
+        meerkat_mob::ResumeOverrideField::Model,
+        meerkat_mob::ResumeOverrideField::Provider,
+    ];
+
+    let first = boot(&mob_path, &session_root, explicitly_masked)
+        .await
+        .expect("create explicitly masked runtime");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown explicitly masked runtime");
+    drop(first);
+
+    let manifest_path = manifest_path(&mob_path);
+    let manifest: MobCompositionManifest =
+        serde_json::from_slice(&std::fs::read(&manifest_path).expect("read current manifest"))
+            .expect("decode current manifest");
+    assert_eq!(
+        manifest.legacy_synthesized_profile_normalization,
+        Some(false),
+        "current writers must explicitly exclude their stores from legacy fallback"
+    );
+
+    assert!(matches!(
+        boot(&mob_path, &session_root, supplied).await,
+        Err(MobRuntimeError::CompositionProvenance(
+            MobCompositionProvenanceError::Divergent { .. }
+        ))
+    ));
+}
+
+#[tokio::test]
+async fn declared_definition_epoch_adds_profile_and_survives_runtime_restart() {
+    const MOB_ID: &str = "definition-epoch-restart";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite3");
+    let session_root = temp.path().join("sessions");
+    let initial = base_definition_for(MOB_ID);
+    let updated = diverged_definition_for(MOB_ID);
+    let mut canonical_updated = updated.clone();
+    auto_mark_declared_resume_overrides(&mut canonical_updated);
+
+    let first = boot(&mob_path, &session_root, initial.clone())
+        .await
+        .expect("create initial runtime");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown initial runtime");
+    drop(first);
+
+    let (storage, _) =
+        persistent_mob_storage(mob_path.clone()).expect("reopen persistent mob storage");
+    let receipt = declare_spec_update(&storage, MOB_ID, &updated, 1)
+        .await
+        .expect("advance canonical definition epoch");
+    assert_eq!(receipt.previous_revision, 1);
+    assert_eq!(receipt.committed_revision, 2);
+    assert_eq!(receipt.projection_revision, 2);
+    drop(storage);
+
+    let resumed = boot(&mob_path, &session_root, updated.clone())
+        .await
+        .expect("resume updated canonical definition");
+    assert!(
+        resumed
+            .handle()
+            .definition()
+            .profiles
+            .contains_key(&ProfileName::from("worker")),
+        "the added profile must survive a real MobKit runtime drop and resume"
+    );
+    let events = resumed
+        .handle()
+        .events()
+        .replay_all()
+        .await
+        .expect("replay canonical mob events");
+    let update_events = events
+        .iter()
+        .filter(|event| matches!(event.kind, MobEventKind::MobDefinitionUpdated { .. }))
+        .collect::<Vec<_>>();
+    let created_events = events
+        .iter()
+        .filter(|event| matches!(event.kind, MobEventKind::MobCreated { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        created_events.len(),
+        1,
+        "epoch 1 must remain the singular canonical MobCreated event"
+    );
+    assert!(matches!(
+        &created_events[0].kind,
+        MobEventKind::MobCreated { definition } if definition.as_ref() == &initial
+    ));
+    assert_eq!(
+        update_events.len(),
+        1,
+        "the ceremony must append exactly one canonical definition update"
+    );
+    assert_eq!(update_events[0].cursor, receipt.event_cursor);
+    assert_eq!(update_events[0].cursor, created_events[0].cursor + 1);
+    assert!(matches!(
+        &update_events[0].kind,
+        MobEventKind::MobDefinitionUpdated { epoch: 2, definition }
+            if definition.as_ref() == &canonical_updated
+    ));
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event.kind, MobEventKind::MobCompleted)),
+        "a definition update must not fabricate lifecycle completion"
+    );
+    resumed
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown resumed runtime");
+    drop(resumed);
+
+    let storage = MobStorage::persistent(&mob_path).expect("inspect persistent mob storage");
+    assert_eq!(
+        storage
+            .created_definition()
+            .await
+            .expect("read canonical definition"),
+        Some(canonical_updated)
+    );
+    assert!(matches!(
+        storage
+            .definition_projection_health()
+            .await
+            .expect("read definition projection health"),
+        Some(MobDefinitionProjectionHealth::Healthy {
+            authority_epoch: 2,
+            projection_revision: 2,
+        })
+    ));
+}
+
+#[tokio::test]
+async fn released_projection_only_profile_update_is_atomically_repaired_and_resumes() {
+    const MOB_ID: &str = "definition-epoch-released-residue";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite3");
+    let session_root = temp.path().join("sessions");
+    let initial = base_definition_for(MOB_ID);
+    let updated = diverged_definition_for(MOB_ID);
+    let mut canonical_updated = updated.clone();
+    auto_mark_declared_resume_overrides(&mut canonical_updated);
+
+    let first = boot(&mob_path, &session_root, initial)
+        .await
+        .expect("create initial runtime");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown initial runtime");
+    drop(first);
+
+    overwrite_definition_projection(&mob_path, &canonical_updated, 2);
+    let storage = MobStorage::persistent(&mob_path).expect("reopen released mob state");
+    assert!(matches!(
+        storage
+            .definition_projection_health()
+            .await
+            .expect("read released projection health"),
+        Some(MobDefinitionProjectionHealth::Diverged {
+            authority_epoch: 1,
+            projection_revision: 2,
+            kind: MobDefinitionProjectionMismatchKind::ProjectionAhead,
+        })
+    ));
+
+    let wrong_revision = declare_spec_update(&storage, MOB_ID, &updated, 2)
+        .await
+        .expect_err("only the released expected-revision witness may repair residue");
+    assert!(matches!(
+        wrong_revision,
+        SpecUpdateError::DefinitionProjectionDisagreement {
+            authority_epoch: 1,
+            projection_revision: 2,
+            kind: MobDefinitionProjectionMismatchKind::ProjectionAhead,
+            ..
+        }
+    ));
+
+    let receipt = declare_spec_update(&storage, MOB_ID, &updated, 1)
+        .await
+        .expect("repair released projection-only residue");
+    assert_eq!(receipt.previous_revision, 1);
+    assert_eq!(receipt.committed_revision, 2);
+    assert_eq!(receipt.projection_revision, 2);
+    assert!(matches!(
+        storage
+            .definition_projection_health()
+            .await
+            .expect("read repaired projection health"),
+        Some(MobDefinitionProjectionHealth::Healthy {
+            authority_epoch: 2,
+            projection_revision: 2,
+        })
+    ));
+    drop(storage);
+
+    let resumed = boot(&mob_path, &session_root, updated)
+        .await
+        .expect("resume repaired released definition");
+    assert!(
+        resumed
+            .handle()
+            .definition()
+            .profiles
+            .contains_key(&ProfileName::from("worker")),
+        "the profile persisted by the released updater must survive repair and resume"
+    );
+    let events = resumed
+        .handle()
+        .events()
+        .replay_all()
+        .await
+        .expect("replay repaired canonical events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                &event.kind,
+                MobEventKind::MobDefinitionUpdated {
+                    epoch: 2,
+                    definition,
+                } if definition.as_ref() == &canonical_updated
+            ))
+            .count(),
+        1,
+        "repair must append exactly one canonical epoch-2 event"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event.kind, MobEventKind::MobCompleted)),
+        "repair must not fabricate lifecycle completion"
+    );
+    resumed
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown repaired runtime");
+}
+
+#[tokio::test]
+async fn non_released_projection_ahead_shape_remains_refused() {
+    const MOB_ID: &str = "definition-epoch-non-released-residue";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite3");
+    let session_root = temp.path().join("sessions");
+    let initial = base_definition_for(MOB_ID);
+    let updated = diverged_definition_for(MOB_ID);
+    let mut canonical_updated = updated.clone();
+    auto_mark_declared_resume_overrides(&mut canonical_updated);
+
+    let first = boot(&mob_path, &session_root, initial.clone())
+        .await
+        .expect("create initial runtime");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown initial runtime");
+    drop(first);
+
+    overwrite_definition_projection(&mob_path, &canonical_updated, 3);
+    let storage = MobStorage::persistent(&mob_path).expect("reopen divergent mob state");
+    let error = declare_spec_update(&storage, MOB_ID, &updated, 1)
+        .await
+        .expect_err("projection-ahead shapes outside exact released residue must refuse");
+    assert!(matches!(
+        error,
+        SpecUpdateError::DefinitionProjectionDisagreement {
+            authority_epoch: 1,
+            projection_revision: 3,
+            kind: MobDefinitionProjectionMismatchKind::ProjectionAhead,
+            ..
+        }
+    ));
+    assert_eq!(
+        storage
+            .created_definition()
+            .await
+            .expect("read canonical definition"),
+        Some(initial)
+    );
+    drop(storage);
+    let connection = rusqlite::Connection::open(&mob_path).expect("inspect canonical events");
+    let event_count: u64 = connection
+        .query_row("SELECT COUNT(*) FROM mob_events", [], |row| row.get(0))
+        .expect("count canonical events");
+    assert_eq!(event_count, 1, "refusal must not mint authority");
+}
+
+async fn assert_sqlite_event_custom_spec_residue_refuses(
+    mob_id: &str,
+    custom_projection_matches_declared: bool,
+) {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite3");
+    let session_root = temp.path().join("sessions");
+    let initial = base_definition_for(mob_id);
+    let updated = diverged_definition_for(mob_id);
+    let mut canonical_updated = updated.clone();
+    auto_mark_declared_resume_overrides(&mut canonical_updated);
+
+    let first = boot(&mob_path, &session_root, initial.clone())
+        .await
+        .expect("create paired SQLite mob");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown paired SQLite mob");
+    drop(first);
+    overwrite_definition_projection(&mob_path, &canonical_updated, 2);
+
+    let sqlite = SqliteMobStores::open(&mob_path).expect("open split SQLite event authority");
+    let events = Arc::new(sqlite.event_store());
+    let specs = Arc::new(InMemoryMobSpecStore::new());
+    let mut custom_projection = canonical_updated.clone();
+    if !custom_projection_matches_declared {
+        let lead = custom_projection
+            .profiles
+            .get(&ProfileName::from("lead"))
+            .expect("lead profile")
+            .clone();
+        custom_projection
+            .profiles
+            .insert(ProfileName::from("reviewer"), lead);
+    }
+    assert_eq!(
+        specs
+            .put_spec(&initial.id, &initial, None)
+            .await
+            .expect("seed custom spec projection"),
+        1
+    );
+    assert_eq!(
+        specs
+            .put_spec(&custom_projection.id, &custom_projection, Some(1))
+            .await
+            .expect("model custom projection-only update"),
+        2
+    );
+    let custom_projection_before = specs
+        .get_spec(&custom_projection.id)
+        .await
+        .expect("read custom spec projection")
+        .expect("custom spec projection exists");
+    let sqlite_projection_before = sqlite
+        .spec_store()
+        .get_spec(&canonical_updated.id)
+        .await
+        .expect("read internal SQLite projection")
+        .expect("internal SQLite projection exists");
+    let event_cursor_before = events.latest_cursor().await.expect("read event cursor");
+    let event_count_before = events
+        .replay_all()
+        .await
+        .expect("read canonical events")
+        .len();
+    let storage = MobStorage::custom(
+        events.clone(),
+        Arc::new(sqlite.run_store()),
+        specs.clone(),
+        Arc::new(sqlite.identity_store()),
+        Arc::new(sqlite.identity_status_store()),
+    );
+
+    let error = declare_spec_update(&storage, mob_id, &updated, 1)
+        .await
+        .expect_err("SQLite-event/custom-spec bundles cannot repair projection residue");
+    assert!(matches!(
+        error,
+        SpecUpdateError::DefinitionProjectionDisagreement {
+            authority_epoch: 1,
+            projection_revision: 2,
+            kind: MobDefinitionProjectionMismatchKind::ProjectionAhead,
+            ..
+        }
+    ));
+    assert_eq!(
+        events.latest_cursor().await.expect("reread event cursor"),
+        event_cursor_before,
+        "split-store refusal must not advance the canonical event cursor"
+    );
+    assert_eq!(
+        events
+            .replay_all()
+            .await
+            .expect("reread canonical events")
+            .len(),
+        event_count_before,
+        "split-store refusal must not append a canonical event"
+    );
+    assert_eq!(
+        specs
+            .get_spec(&custom_projection.id)
+            .await
+            .expect("reread custom spec projection")
+            .expect("custom spec projection remains"),
+        custom_projection_before,
+        "split-store refusal must not move the custom projection"
+    );
+    assert_eq!(
+        sqlite
+            .spec_store()
+            .get_spec(&canonical_updated.id)
+            .await
+            .expect("reread internal SQLite projection")
+            .expect("internal SQLite projection remains"),
+        sqlite_projection_before,
+        "split-store refusal must not move the internal SQLite projection"
+    );
+    assert_eq!(
+        storage
+            .created_definition()
+            .await
+            .expect("read canonical definition"),
+        Some(initial),
+        "split-store refusal must not advance canonical authority"
+    );
+}
+
+#[tokio::test]
+async fn exact_sqlite_event_custom_spec_residue_remains_fail_closed() {
+    assert_sqlite_event_custom_spec_residue_refuses(
+        "definition-epoch-split-store-exact-residue",
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn mismatched_sqlite_event_custom_spec_residue_remains_fail_closed() {
+    assert_sqlite_event_custom_spec_residue_refuses(
+        "definition-epoch-split-store-mismatched-residue",
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn stale_definition_update_refuses_and_exact_retry_converges() {
+    const MOB_ID: &str = "definition-epoch-cas";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite3");
+    let session_root = temp.path().join("sessions");
+    let initial = base_definition_for(MOB_ID);
+    let updated = diverged_definition_for(MOB_ID);
+
+    let first = boot(&mob_path, &session_root, initial)
+        .await
+        .expect("create initial runtime");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown initial runtime");
+    drop(first);
+
+    let storage = MobStorage::persistent(&mob_path).expect("reopen persistent mob storage");
+    let committed = declare_spec_update(&storage, MOB_ID, &updated, 1)
+        .await
+        .expect("first update");
+    let retry = declare_spec_update(&storage, MOB_ID, &updated, 1)
+        .await
+        .expect("exact retry must converge");
+    assert_eq!(retry.committed_revision, 2);
+    assert_eq!(retry.projection_revision, 2);
+    assert_eq!(retry.event_cursor, committed.event_cursor);
+
+    let mut stale_successor = updated.clone();
+    let lead = stale_successor
+        .profiles
+        .get(&ProfileName::from("lead"))
+        .expect("lead profile")
+        .clone();
+    stale_successor
+        .profiles
+        .insert(ProfileName::from("reviewer"), lead);
+    let error = declare_spec_update(&storage, MOB_ID, &stale_successor, 1)
+        .await
+        .expect_err("stale concurrent update must refuse");
+    assert!(matches!(
+        error,
+        SpecUpdateError::RevisionMoved {
+            proposed_at: 1,
+            found: 2,
+            ..
+        }
+    ));
+    drop(storage);
+
+    let resumed = boot(&mob_path, &session_root, updated)
+        .await
+        .expect("resume exact retry result");
+    let events = resumed
+        .handle()
+        .events()
+        .replay_all()
+        .await
+        .expect("replay canonical mob events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event.kind,
+                MobEventKind::MobDefinitionUpdated { epoch: 2, .. }
+            ))
+            .count(),
+        1,
+        "an exact retry must not append a second canonical event"
+    );
+    resumed
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown resumed runtime");
+}
+
+#[tokio::test]
+async fn concurrent_definition_epoch_refuses_a_stale_verified_resume() {
+    const MOB_ID: &str = "definition-epoch-resume-race";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite3");
+    let session_root = temp.path().join("sessions");
+    let initial = base_definition_for(MOB_ID);
+    let updated = diverged_definition_for(MOB_ID);
+
+    let first = boot(&mob_path, &session_root, initial)
+        .await
+        .expect("create initial runtime");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown initial runtime");
+    drop(first);
+
+    let storage = MobStorage::persistent(&mob_path).expect("reopen persistent mob storage");
+    let stale_snapshot = storage
+        .created_definition_snapshot()
+        .await
+        .expect("read canonical definition snapshot")
+        .expect("canonical definition exists");
+    assert_eq!(stale_snapshot.epoch(), 1);
+    let stale_event_cursor = stale_snapshot.event_cursor();
+    let receipt = declare_spec_update(&storage, MOB_ID, &updated, 1)
+        .await
+        .expect("advance definition after preflight");
+
+    let result = MobBuilder::for_resume_verified(storage.clone(), stale_snapshot)
+        .with_session_service(session_service(&session_root).await)
+        .allow_ephemeral_sessions(true)
+        .resume()
+        .await;
+    let error = match result {
+        Err(error) => error,
+        Ok(handle) => {
+            handle
+                .shutdown()
+                .await
+                .expect("stop unexpectedly resumed mob");
+            panic!("a resume bound to the stale definition snapshot actuated")
+        }
+    };
+    assert!(matches!(
+        error,
+        meerkat_mob::MobError::MobDefinitionAuthorityChanged {
+            expected_epoch: 1,
+            expected_event_cursor,
+            actual_epoch: Some(2),
+            actual_event_cursor: Some(actual_cursor),
+            ..
+        } if expected_event_cursor == stale_event_cursor
+            && actual_cursor == receipt.event_cursor
+    ));
+
+    drop(storage);
+    let connection = rusqlite::Connection::open(&mob_path).expect("inspect canonical events");
+    let (event_count, latest_cursor): (u64, u64) = connection
+        .query_row("SELECT COUNT(*), MAX(cursor) FROM mob_events", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .expect("count canonical events after stale refusal");
+    assert_eq!(
+        latest_cursor, receipt.event_cursor,
+        "stale verified resume must append no event"
+    );
+    assert_eq!(
+        event_count, 2,
+        "only MobCreated and the declared MobDefinitionUpdated may exist"
+    );
+}
+
+#[tokio::test]
+async fn injected_epoch_failure_leaves_no_resume_visible_split_authority() {
+    const MOB_ID: &str = "definition-epoch-atomic";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite3");
+    let session_root = temp.path().join("sessions");
+    let initial = base_definition_for(MOB_ID);
+    let updated = diverged_definition_for(MOB_ID);
+
+    let first = boot(&mob_path, &session_root, initial.clone())
+        .await
+        .expect("create initial runtime");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown initial runtime");
+    drop(first);
+
+    let storage = MobStorage::persistent(&mob_path).expect("reopen persistent mob storage");
+    let connection = rusqlite::Connection::open(&mob_path).expect("open fault injector");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_definition_projection
+                     BEFORE UPDATE OF spec_json ON mob_specs
+                     BEGIN
+                       SELECT RAISE(ABORT, 'forced projection failure');
+                     END;",
+        )
+        .expect("install projection failure");
+    let error = declare_spec_update(&storage, MOB_ID, &updated, 1)
+        .await
+        .expect_err("injected projection failure must fail the update");
+    assert!(matches!(error, SpecUpdateError::UpdateFailed { .. }));
+    connection
+        .execute_batch("DROP TRIGGER fail_definition_projection;")
+        .expect("remove projection failure");
+    drop(connection);
+    let stored = storage
+        .created_definition()
+        .await
+        .expect("read canonical definition")
+        .expect("canonical definition");
+    assert_eq!(stored.id, initial.id);
+    assert!(!stored.profiles.contains_key(&ProfileName::from("worker")));
+    assert!(matches!(
+        storage
+            .definition_projection_health()
+            .await
+            .expect("read definition projection health"),
+        Some(MobDefinitionProjectionHealth::Healthy {
+            authority_epoch: 1,
+            projection_revision: 1,
+        })
+    ));
+    drop(storage);
+
+    let resumed = boot(&mob_path, &session_root, initial)
+        .await
+        .expect("the pre-update definition remains resume-valid");
+    assert!(
+        !resumed
+            .handle()
+            .definition()
+            .profiles
+            .contains_key(&ProfileName::from("worker"))
+    );
+    resumed
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown resumed runtime");
+}
+
+#[tokio::test]
+async fn projection_content_disagreement_is_a_typed_refusal() {
+    const MOB_ID: &str = "definition-epoch-disagreement";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mob_path = temp.path().join("mob.sqlite3");
+    let session_root = temp.path().join("sessions");
+    let initial = base_definition_for(MOB_ID);
+    let updated = diverged_definition_for(MOB_ID);
+
+    let first = boot(&mob_path, &session_root, initial)
+        .await
+        .expect("create initial runtime");
+    first
+        .handle()
+        .shutdown()
+        .await
+        .expect("shutdown initial runtime");
+    drop(first);
+
+    let connection = rusqlite::Connection::open(&mob_path).expect("open disagreement injector");
+    let mut projected = updated.clone();
+    auto_mark_declared_resume_overrides(&mut projected);
+    connection
+        .execute(
+            "UPDATE mob_specs SET spec_json = ?1 WHERE mob_id = ?2",
+            (
+                serde_json::to_vec(&serde_json::json!({
+                    "definition": projected,
+                    "revision": 1,
+                }))
+                .expect("serialize stored spec"),
+                MOB_ID,
+            ),
+        )
+        .expect("inject projection disagreement");
+    drop(connection);
+
+    let storage = MobStorage::persistent(&mob_path).expect("reopen persistent mob storage");
+    let error = declare_spec_update(&storage, MOB_ID, &updated, 1)
+        .await
+        .expect_err("content disagreement must refuse before mutation");
+    assert!(matches!(
+        error,
+        SpecUpdateError::DefinitionProjectionDisagreement {
+            authority_epoch: 1,
+            projection_revision: 1,
+            kind: MobDefinitionProjectionMismatchKind::DefinitionMismatch,
+            ..
+        }
+    ));
+}
 /// Durable storage supplied through the PUBLIC bootstrap API with a non-empty
 /// event log and no provenance declaration must fail closed, not resume
 /// unverified.
