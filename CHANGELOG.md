@@ -92,7 +92,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   envelope. "At head" means the committed session's current transcript
   revision, not the revision at the last rewrite commit: every live row has
   messages appended after its last compaction. Envelope currency compares
-  normalised documents (`updated_at` is a write timestamp, not debt) and the
+  normalised documents (`updated_at` is a write timestamp, not debt; the
+  three metadata keys the head carries in its own columns - transcript
+  history, rewrite-prefix authority, realtime transcript state - are a
+  representation difference, not debt) and the
   equal arm logs at INFO when it projects, naming the differing keys with
   metadata one level deep. Regression: envelope debt on a row at head, with
   messages appended after the compaction, clears with zero chain walks.

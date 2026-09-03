@@ -2071,6 +2071,19 @@ impl SessionStoreBackedRuntimeStore {
     /// `updated_at` is a write timestamp, not a durable fact.
     const ENVELOPE_CURRENCY_IGNORED_KEYS: &'static [&'static str] = &["updated_at"];
 
+    /// Metadata keys the head-canonical shape carries in its own head columns
+    /// (transcript history graph, rewrite-prefix authority, realtime event
+    /// prefix) and therefore strips from the head's metadata cell - the
+    /// mirror of meerkat-core's `head_metadata_cell_carries_key`. A committed
+    /// document always has them and a slim row never does; that is a
+    /// representation difference, not debt (production run-7: 12 rows in
+    /// perpetual "debt" on `realtime_transcript_state`, ~5 s no-op save each).
+    const HEAD_OWNED_METADATA_KEYS: &'static [&'static str] = &[
+        meerkat_core::SESSION_TRANSCRIPT_HISTORY_STATE_KEY,
+        meerkat_core::SESSION_TRANSCRIPT_REWRITE_PREFIX_AUTHORITY_KEY,
+        meerkat_core::SESSION_REALTIME_TRANSCRIPT_STATE_KEY,
+    ];
+
     /// `None` when the two persisted session documents agree on every durable
     /// envelope fact; otherwise the differing keys (metadata reported one
     /// level deep as `metadata.<key>`, capped) for the envelope-currency INFO
@@ -2102,6 +2115,9 @@ impl SessionStoreBackedRuntimeStore {
                     if key == "metadata" =>
                 {
                     for inner in a.keys().chain(b.keys()) {
+                        if Self::HEAD_OWNED_METADATA_KEYS.contains(&inner.as_str()) {
+                            continue;
+                        }
                         if a.get(inner) != b.get(inner) {
                             keys.push(format!("metadata.{inner}"));
                         }
@@ -14098,6 +14114,21 @@ comms = true
             SessionStoreBackedRuntimeStore::envelope_debt_keys(durable, metadata_debt).as_deref(),
             Some("metadata.b,metadata.c"),
             "metadata debt is named one level deep"
+        );
+        let head_owned_only = br#"{"id":"s","updated_at":"x","metadata":{"a":1,"b":2,"realtime_transcript_state":{"seq":9},"session_transcript_history_state_v1":{"g":1}}}"#;
+        assert_eq!(
+            SessionStoreBackedRuntimeStore::envelope_debt_keys(durable, head_owned_only),
+            None,
+            "keys the head carries in its own columns are a representation difference, not debt"
+        );
+        assert_eq!(
+            SessionStoreBackedRuntimeStore::HEAD_OWNED_METADATA_KEYS,
+            &[
+                "session_transcript_history_state_v1",
+                "session_transcript_rewrite_prefix_authority_v1",
+                "realtime_transcript_state"
+            ],
+            "pin the mirrored key set; meerkat-core's head_metadata_cell_carries_key is private"
         );
         let field_debt = br#"{"id":"t","updated_at":"x","metadata":{"a":1,"b":2}}"#;
         assert_eq!(
