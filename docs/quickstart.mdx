@@ -31,8 +31,9 @@ icon: "rocket"
   executable. Download `mobkit-rpc-gateway-<version>-<target>.tar.gz` for Unix
   or macOS, or `mobkit-rpc-gateway-<version>-<target>.zip` for Windows, from
   [GitHub Releases](https://github.com/lukacf/meerkat-mobkit/releases) and
-  extract its `rpc_gateway` binary (`rpc_gateway.exe` on Windows). For a source
-  build, run
+  extract its `rpc_gateway` binary (`rpc_gateway.exe` on Windows). The Linux
+  archives are built against glibc 2.31 (Debian 11) and load on any
+  distribution with glibc 2.31 or newer. For a source build, run
   `./scripts/repo-cargo build -p meerkat-mobkit --bin rpc_gateway --locked`,
   then run `./scripts/repo-cargo --print-env`; the debug binary is at
   `<CARGO_TARGET_DIR>/debug/rpc_gateway`. Pass the extracted or built path to

@@ -440,6 +440,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and logged one `WARN ... mob member not found` per send. Rust API change for
   embedders that call the reservation directly.
 
+- **Prebuilt Linux gateway binaries load on glibc 2.31 and newer.** The
+  `*-unknown-linux-gnu` release legs built directly on `ubuntu-latest`
+  (Ubuntu 24.04, glibc 2.39) and nothing read the produced binary, so the
+  v0.8.30 `mobkit-rpc-gateway` and `mobkit-gateway` archives carried a hard
+  `GLIBC_2.39` version requirement (`pidfd_spawnp`/`pidfd_getpid`) and the
+  loader refused them on Debian bookworm (2.36), Ubuntu 22.04 (2.35) and
+  bullseye (2.31); only trixie and Ubuntu 24.04 could run them. The Linux legs
+  now build inside `docker.io/library/buildpack-deps:bullseye`, the image
+  meerkat's release lane uses, so both products ship one 2.31 floor, and the
+  new `scripts/check-linux-release-binary-portability.sh` reads every produced
+  binary before packaging and fails the release on any glibc reference above
+  the floor or any dynamic OpenSSL dependency (the gateway's TLS is rustls).
+  The Linux cache key names the container so a host-built target directory is
+  not restored into it. macOS and Windows legs are unchanged. Hosts that
+  download the Linux archives gain the wider set of loadable distributions and
+  observe no other change; the quickstart now states the floor.
+
 - **The Flow Editor's Agent Editor no longer labels the peer description
   "SYSTEM PROMPT".** The field it edits is the profile `peer_description`:
   roster text other members read through the `peers` tool and peer-added
