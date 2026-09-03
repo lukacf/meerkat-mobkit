@@ -2014,9 +2014,19 @@ struct SessionStoreBackedRuntimeStore {
     /// check per runtime per process suffices, and the set is bounded by the
     /// runtimes this process activates.
     freshened: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Committed->durable reconciliation walks this store instance has run.
+    /// One boot walking the same unchanged row twice is the defect this
+    /// counts; tests read it as the positive observable of a re-walk.
+    reconciliation_walks: std::sync::atomic::AtomicU64,
 }
 
 impl SessionStoreBackedRuntimeStore {
+    /// Committed->durable reconciliation walks this instance has run.
+    pub fn reconciliation_walk_count(&self) -> u64 {
+        self.reconciliation_walks
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn new(
         inner: Arc<dyn meerkat_runtime::RuntimeStore>,
         session_store: Arc<dyn SessionStore>,
@@ -2028,6 +2038,7 @@ impl SessionStoreBackedRuntimeStore {
             mint_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
             projection_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
             freshened: std::sync::Mutex::new(std::collections::HashSet::new()),
+            reconciliation_walks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -2042,6 +2053,7 @@ impl SessionStoreBackedRuntimeStore {
             mint_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
             projection_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
             freshened: std::sync::Mutex::new(std::collections::HashSet::new()),
+            reconciliation_walks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -2060,6 +2072,7 @@ impl SessionStoreBackedRuntimeStore {
             mint_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
             projection_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
             freshened: std::sync::Mutex::new(std::collections::HashSet::new()),
+            reconciliation_walks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -2346,8 +2359,43 @@ impl SessionStoreBackedRuntimeStore {
                     ))
                 })
         };
-        let durable_order = order_of(&durable)?;
         let committed_order = order_of(committed.session())?;
+        // The head-canonical durable read is SLIM by design: local_store's
+        // materialize_slim_in_txn attaches no transcript history, so the
+        // durable Session reports rewrite generation 0 whatever its head row
+        // adopted, and a probe reading the generation off the Session orders
+        // the row behind on every boot after the first projection landed
+        // (HomeCore gen 119: 16 identical re-walks per launch). The head row
+        // is the generation authority - SessionHead::rewrite_count advances
+        // 1:1 with each adopted commit - so read it there, and use the
+        // session's own history only when the row carries one.
+        let durable_carries_history = durable
+            .transcript_history_state_shared()
+            .map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                    "durable transcript history for runtime-authority freshness probe: {e}"
+                ))
+            })?
+            .is_some();
+        let durable_head_store = if durable_carries_history {
+            None
+        } else {
+            Arc::clone(session_store).as_incremental()
+        };
+        let durable_generation = match durable_head_store {
+            Some(head_store) => head_store
+                .load_head(&session_id)
+                .await
+                .map_err(|e| {
+                    meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                        "durable session head read for runtime-authority freshness probe: {e}"
+                    ))
+                })?
+                .map(|head| head.rewrite_count)
+                .unwrap_or(0),
+            None => order_of(&durable)?.0,
+        };
+        let durable_order = (durable_generation, durable.messages().len());
         if durable_order == committed_order {
             // Equal (generation, message-count) order is necessary but NOT
             // sufficient for freshness: a session-store restore from a
@@ -2398,7 +2446,17 @@ impl SessionStoreBackedRuntimeStore {
                     "durable session encode for envelope-currency probe: {e}"
                 ))
             })?;
-            let committed_bytes = committed.session().to_persisted_bytes().map_err(|e| {
+            // A slim durable row carries no transcript history state; compare
+            // the envelopes like for like or this debt never clears and every
+            // boot re-projects an identical row.
+            let committed_bytes = if durable_carries_history {
+                committed.session().to_persisted_bytes()
+            } else {
+                let mut envelope = committed.session().clone();
+                envelope.clear_transcript_history_state();
+                envelope.to_persisted_bytes()
+            }
+            .map_err(|e| {
                 meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
                     "committed session encode for envelope-currency probe: {e}"
                 ))
@@ -2425,6 +2483,8 @@ impl SessionStoreBackedRuntimeStore {
             // adopting durable content into the runtime store is exactly the
             // resurrection it exists to prevent. A reconciliation failure
             // fails the probe typed (retryable), never a torn mark-fresh.
+            self.reconciliation_walks
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             tracing::info!(
                 runtime_id = %runtime_id,
                 session_id = %session_id,
@@ -13673,6 +13733,165 @@ comms = true
     /// detect the debt (persisted-encoding comparison) and complete the
     /// projection on a plain freshness pass instead of marking fresh over
     /// it.
+    /// HomeCore gen 119, in process: a head-canonical durable row whose head
+    /// adopted the committed rewrite generation must NOT order behind on the
+    /// next boot. Leg A is genuinely behind (durable is the pre-rewrite
+    /// prefix) and walks once; leg B is a fresh store over the same bytes and
+    /// must walk zero times. Before the head read, B re-walked the whole
+    /// chain because the slim durable Session reports generation 0.
+    #[tokio::test]
+    async fn head_canonical_row_at_committed_generation_does_not_rewalk_on_next_boot() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let continuity: Arc<dyn crate::identity_first::ContinuityStore> = Arc::new(
+            crate::identity_first::LocalContinuityStore::open(dir.path().join("continuity.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let adapter = Arc::new(crate::identity_first::ContinuitySessionStoreAdapter::new(
+            Arc::clone(&continuity),
+        ));
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(dir.path().join("runtime.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let mut base = meerkat_core::Session::new();
+        for text in ["opening", "second"] {
+            base.push(meerkat_core::Message::User(
+                meerkat_core::types::UserMessage::text(text),
+            ));
+        }
+        let mut committed = base.clone();
+        committed.push(meerkat_core::Message::User(
+            meerkat_core::types::UserMessage::text("third"),
+        ));
+        let parent_revision = committed
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        committed
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 3 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::types::UserMessage::text("compacted summary"),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("boot-probe compaction"),
+                Some("gen119-rewalk-regression".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+        let committed_generation = committed
+            .transcript_rewrite_generation()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(committed_generation, 1, "one adopted rewrite commit");
+
+        let identity = crate::identity_first::AgentIdentity::parse("domain:gen119-rewalk")
+            .unwrap_or_else(|error| panic!("{error}"));
+        crate::identity_first::ContinuityStore::upsert_continuity_record(
+            continuity.as_ref(),
+            &crate::identity_first::ContinuityRecord {
+                identity: identity.clone(),
+                agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                    "rt:domain:gen119-rewalk:0",
+                )
+                .unwrap_or_else(|error| panic!("{error}")),
+                session_id: base.id().clone(),
+                generation: crate::identity_first::ContinuityGeneration::new(0),
+                checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+            },
+            crate::identity_first::FencingToken::new(1),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+        adapter
+            .register_session(
+                base.id(),
+                crate::identity_first::SessionRuntimeState {
+                    identity,
+                    generation: crate::identity_first::ContinuityGeneration::new(0),
+                    fencing_token: crate::identity_first::FencingToken::new(1),
+                    checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let session_store: Arc<dyn SessionStore> = adapter;
+        session_store
+            .save(&base)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(base.id());
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        committed
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // Leg A: the durable row IS behind (pre-rewrite prefix); one walk
+        // proves the chain and projects the committed row onto the head.
+        let store_a =
+            SessionStoreBackedRuntimeStore::new(Arc::clone(&inner), Arc::clone(&session_store));
+        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&store_a, &runtime_id)
+            .await
+            .unwrap_or_else(|error| panic!("leg A: {error}"));
+        assert_eq!(
+            store_a.reconciliation_walk_count(),
+            1,
+            "leg A walks exactly once: the durable row is genuinely behind"
+        );
+        let head_store = Arc::clone(&session_store)
+            .as_incremental()
+            .unwrap_or_else(|| panic!("the continuity adapter exposes its head reads"));
+        let head = head_store
+            .load_head(base.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the projection must leave a head row"));
+        assert_eq!(
+            head.rewrite_count, committed_generation,
+            "the projection lands the committed generation on the head row"
+        );
+        let slim = session_store
+            .load(base.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must survive"));
+        assert_eq!(
+            slim.transcript_rewrite_generation()
+                .unwrap_or_else(|error| panic!("{error}")),
+            0,
+            "precondition: the head-canonical read is slim and reports no generation \
+             on the Session itself; the probe must read the head row, not this"
+        );
+
+        // Leg B: the next boot over the same bytes. Nothing changed, so
+        // nothing may walk.
+        let store_b =
+            SessionStoreBackedRuntimeStore::new(Arc::clone(&inner), Arc::clone(&session_store));
+        meerkat_runtime::RuntimeStore::load_committed_whole_blob_snapshot(&store_b, &runtime_id)
+            .await
+            .unwrap_or_else(|error| panic!("leg B: {error}"));
+        assert_eq!(
+            store_b.reconciliation_walk_count(),
+            0,
+            "leg B must not re-walk a row whose head already carries the committed generation"
+        );
+        let head_after = head_store
+            .load_head(base.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the head row must survive leg B"));
+        assert_eq!(
+            head_after.rewrite_count, committed_generation,
+            "leg B leaves the head generation where leg A put it"
+        );
+    }
+
     #[tokio::test]
     async fn equal_revision_envelope_debt_clears_on_plain_freshness_pass() {
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));

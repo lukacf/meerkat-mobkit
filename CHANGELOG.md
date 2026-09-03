@@ -59,6 +59,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The runtime-authority freshness probe no longer re-walks a reconciled row
+  on every boot.** The head-canonical durable read is slim by design and
+  reports rewrite generation 0 on the `Session`, while its head row carries
+  the adopted generation. The probe compared the Session's 0 against the
+  committed generation, so every identity with a compaction history ordered
+  "behind" on every launch after the first projection landed and re-ran the
+  full committed->durable chain walk (production: 16 serial walks, ~170 s,
+  before `ResumeLifecycle`, then the 30 s explicit-resume watchdog). The probe
+  now reads the durable generation from `SessionHead::rewrite_count`, which
+  advances 1:1 with each adopted commit, and compares a slim row's envelope
+  like for like so the equal arm does not re-project forever.
+  `SessionStoreBackedRuntimeStore::reconciliation_walk_count()` exposes the
+  walks a store instance ran; the regression drives HomeCore's A->B shape
+  in process and asserts leg A walks once and leg B walks zero times.
+
 - **SDK identity-first sends now run MobKit delivery preparation exactly once.**
   `handle.send()` / `mobkit/send_message` previously let the stable identity
   roster row win as a raw mob member, bypassing `prepare_member_delivery` and
