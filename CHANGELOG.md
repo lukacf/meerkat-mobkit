@@ -65,6 +65,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The pre-resume runtime-authority probe no longer serialises documents or
+  re-digests transcripts, and the 17 prewarm probes run concurrently.** A
+  real-process sample on the 0.8.31 candidate put ~2.2 s per member into the
+  freshness probe - two full serialisations of a ~1.2 MB session to feed an
+  envelope byte compare, plus one transcript digest to re-derive a revision the
+  head row already stores - run serially for 17 members, ~35 s before
+  `ResumeLifecycle` (0.8.28: 48.7 s). The probe now takes a slim row's rewrite
+  generation and transcript revision from its head row, compares envelope
+  facts typed (version, creation time, metadata minus head-owned keys) with no
+  serialisation, and `prewarm_persisted_runtime_authority` runs up to 8 probes
+  at once.
+
 - **The runtime-authority freshness probe no longer re-walks a reconciled row
   on every boot.** The head-canonical durable read is slim by design and
   reports rewrite generation 0 on the `Session`, while its head row carries
