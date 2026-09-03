@@ -7476,9 +7476,9 @@ impl IdentityRuntime {
                 entry.continuity.as_ref().map(|c| c.session_id.to_string()),
                 entry.continuity.as_ref().map(|c| c.generation.get()),
                 interaction_id_for_delivery(&entry.spec, interaction_id),
-                // meerkat's default when the profile omits runtime_mode is
-                // AutonomousHost, which cannot carry injected context.
-                entry.spec.runtime_mode_override.unwrap_or_default(),
+                // Resolved as meerkat resolves it at spawn (override, profile,
+                // default); AutonomousHost cannot carry injected context.
+                self.effective_runtime_mode(&entry.spec),
             )
         };
         let (content_to_deliver, injected_context) = self
@@ -7723,6 +7723,34 @@ impl IdentityRuntime {
             .map(|outcome| (outcome.admission.fencing_token, outcome.admission.durable))
     }
 
+    /// The runtime mode a member actually runs in, resolved exactly as
+    /// meerkat-mob resolves it at spawn: the roster's explicit override wins,
+    /// else the profile's `runtime_mode`, else meerkat's default
+    /// (`AutonomousHost`). Reading only the override - as the first cut of the
+    /// autonomous-host skip did - treated every member whose roster provider
+    /// set nothing as autonomous, and skipped ambient memory on `turn_driven`
+    /// profiles fleet-wide. Two sources of one fact; this is the one meerkat
+    /// uses.
+    ///
+    /// A profile bound by realm reference (not inline) has no mode MobKit can
+    /// read here and resolves to the default; that is a documented limitation,
+    /// not a guess dressed as knowledge.
+    fn effective_runtime_mode(&self, spec: &DurableAgentSpec) -> meerkat_mob::MobRuntimeMode {
+        // The mob definition reaches this runtime through the reset-roster
+        // context the gateway installs at boot; a host that installs none has
+        // given MobKit no profile table to read, and resolves to the default.
+        let source = self
+            .reset_roster_source
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        effective_runtime_mode(
+            source
+                .as_ref()
+                .and_then(|source| source.mob_definition.as_ref()),
+            spec,
+        )
+    }
+
     /// The ONE delivery preparation both member doors run (task #54): the
     /// send door always had it; the dispatch door previously delivered raw,
     /// so internal dispatches (schedules foremost) skipped defanging, taint
@@ -7853,7 +7881,7 @@ impl IdentityRuntime {
                 runtime_id,
                 entry.continuity.as_ref().map(|c| c.session_id.to_string()),
                 entry.continuity.as_ref().map(|c| c.generation.get()),
-                entry.spec.runtime_mode_override.unwrap_or_default(),
+                self.effective_runtime_mode(&entry.spec),
             )
         };
 
@@ -14640,5 +14668,112 @@ mod bootstrap_failure_attribution_tests {
             "pass one's cause must not survive into pass two: {entry_error}"
         );
         Ok(())
+    }
+}
+
+/// See [`IdentityRuntime::effective_runtime_mode`]. Free so it can be pinned
+/// without a runtime: the resolution order is the contract.
+pub(crate) fn effective_runtime_mode(
+    definition: Option<&meerkat_mob::MobDefinition>,
+    spec: &DurableAgentSpec,
+) -> meerkat_mob::MobRuntimeMode {
+    if let Some(mode) = spec.runtime_mode_override {
+        return mode;
+    }
+    definition
+        .and_then(|definition| definition.profiles.get(&spec.profile))
+        .and_then(|binding| binding.as_inline())
+        .map(|profile| profile.runtime_mode)
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod effective_runtime_mode_tests {
+    use super::*;
+
+    fn spec(profile: &str, override_mode: Option<meerkat_mob::MobRuntimeMode>) -> DurableAgentSpec {
+        DurableAgentSpec {
+            identity: AgentIdentity::parse("identity:probe").expect("valid identity"),
+            profile: meerkat_mob::ProfileName::from(profile),
+            addressability: AgentAddressability::Addressable,
+            display_name: None,
+            labels: Default::default(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: None,
+            runtime_mode_override: override_mode,
+            backend: None,
+            binding: None,
+            placement: None,
+        }
+    }
+
+    fn definition() -> meerkat_mob::MobDefinition {
+        meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "mode-probe"
+
+[profiles.driven]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+
+[profiles.omitted]
+model = "gpt-5.5"
+"#,
+        )
+        .expect("definition parses")
+    }
+
+    /// The contract, in meerkat's order: override, else profile, else default.
+    /// The first cut of the autonomous-host skip read only the override and
+    /// skipped memory on every turn_driven profile whose roster set nothing.
+    #[test]
+    fn profile_runtime_mode_is_honoured_when_the_roster_sets_no_override() {
+        let definition = definition();
+        assert_eq!(
+            effective_runtime_mode(Some(&definition), &spec("driven", None)),
+            meerkat_mob::MobRuntimeMode::TurnDriven,
+            "a turn_driven profile with no roster override must resolve turn_driven"
+        );
+        assert_eq!(
+            effective_runtime_mode(Some(&definition), &spec("omitted", None)),
+            meerkat_mob::MobRuntimeMode::AutonomousHost,
+            "a profile that omits runtime_mode resolves to meerkat's default"
+        );
+    }
+
+    #[test]
+    fn roster_override_wins_over_the_profile() {
+        let definition = definition();
+        assert_eq!(
+            effective_runtime_mode(
+                Some(&definition),
+                &spec("driven", Some(meerkat_mob::MobRuntimeMode::AutonomousHost)),
+            ),
+            meerkat_mob::MobRuntimeMode::AutonomousHost
+        );
+        assert_eq!(
+            effective_runtime_mode(
+                Some(&definition),
+                &spec("omitted", Some(meerkat_mob::MobRuntimeMode::TurnDriven)),
+            ),
+            meerkat_mob::MobRuntimeMode::TurnDriven
+        );
+    }
+
+    #[test]
+    fn unknown_profile_or_missing_definition_resolves_to_the_default() {
+        let definition = definition();
+        assert_eq!(
+            effective_runtime_mode(Some(&definition), &spec("nope", None)),
+            meerkat_mob::MobRuntimeMode::default()
+        );
+        assert_eq!(
+            effective_runtime_mode(None, &spec("driven", None)),
+            meerkat_mob::MobRuntimeMode::default(),
+            "with no definition installed MobKit has no profile table; default, documented"
+        );
     }
 }
