@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed - BREAKING for host/SDK implementors
+
+- **The dead `.discovery()` / `.pre_spawn()` builder knobs are gone from both
+  gateway SDKs.** Python `MobKitBuilder.discovery(callback)` /
+  `.pre_spawn(callback)` and TypeScript `.discovery()` / `.preSpawn()` stored
+  the callback on the builder config and nothing ever read it: `_bootstrap`
+  registered continuity, lease, roster, topology and customizer callbacks only,
+  `mobkit/init` carried no field for it, and neither gateway binary has a
+  discovery callback protocol (the Rust `Discovery` trait is a classic-plane
+  bootstrap hook that only an in-process Rust builder can install). The knobs
+  were born dead in v0.2 and `docs/sdks/python.mdx` listed them as a working
+  "Discovery callback (mob-level)", so an SDK host following the page got no
+  boot spawn and no error. Wiring them would mean a new callback family in
+  Rust and both SDKs for a plane the identity roster already covers, so they
+  are removed instead. Breaking only in the sense that a call now raises
+  `AttributeError` / is a TypeScript compile error where it used to be
+  accepted and dropped; no host that saw members spawn was using them. Boot
+  membership is declared through `.roster(provider)` (identity plane) or
+  `ensure_member` (worker plane); `[profiles.*]` are templates and spawn
+  nothing by themselves. The docs page now says so.
+
 ### Added
 
 - **Gateways can bind a non-loopback address, and refuse to unless told

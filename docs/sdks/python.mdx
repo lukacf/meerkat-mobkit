@@ -329,7 +329,7 @@ rt = await (
     MobKit.builder()
     .mob("config/mob.toml")
     .session_service(my_builder, my_store)
-    .discovery(discover_fn)
+    .roster(my_roster)
     .gateway("./rpc_gateway")
     .build()
 )
@@ -351,8 +351,6 @@ rt = await (
 | `.identity_bootstrap_mode(mode)` | Eager, lazy, or bounded background-warm identity materialization; requires `.roster(...)` |
 | `.role_migrations(declarations)` | Authorize durable member role migrations for THIS boot. Takes an iterable of `RoleMigrationDeclaration` dataclasses or equivalent `identity` / `from_role` dicts, validating either form; a conflicting pair for one identity raises `ValueError`, an identical repeat is accepted, and leaving the setter unused emits no `role_migrations` init-params key at all |
 | `.session_service(builder, store)` | Session agent builder and optional store |
-| `.discovery(callback)` | Discovery callback (mob-level) |
-| `.pre_spawn(callback)` | Pre-spawn callback |
 | `.gating(path)` | Gating config path |
 | `.routing(path)` | Routing config path |
 | `.event_log(config)` | Operational event log declaration (`event_log.memory()` / `event_log.null()`) |
@@ -367,6 +365,13 @@ rt = await (
 | `.gateway(bin_path)` | Path to rpc_gateway binary |
 | `.modules(specs)` | Module specifications |
 | `.build()` | Build and connect the runtime |
+
+Boot-time membership is declared, never derived: a member exists only once a
+`.roster(provider)` names it (identity plane) or `ensure_member` creates it
+(worker plane); `[profiles.*]` in mob.toml are role templates and spawn
+nothing on their own. The former `.discovery(callback)` and
+`.pre_spawn(callback)` builder methods were removed: they stored the callback
+and never transmitted it, so no boot spawn ever came from them.
 
 External identity providers follow the Rust gateway's authoritative path: set
 `.continuity_store(provider)`, `.lease_provider(provider)`, and

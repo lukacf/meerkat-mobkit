@@ -36,8 +36,6 @@ function createMockRuntime(): {
     mobConfigPath: null,
     sessionBuilder: null,
     sessionStore: null,
-    discoveryCallback: null,
-    preSpawnCallback: null,
     errorCallback: null,
     eventLog: null,
     consoleConfigPath: null,

@@ -8,7 +8,7 @@
  * const rt = await MobKit.builder()
  *   .mob("config/mob.toml")
  *   .sessionService(builder, store)
- *   .discovery(discoverFn)
+ *   .roster(myRoster)
  *   .build();
  *
  * const handle = rt.mobHandle();
@@ -106,8 +106,6 @@ export interface MobKitBuilderConfig {
   mobConfigPath: string | null;
   sessionBuilder: SessionAgentBuilder | null;
   sessionStore: unknown;
-  discoveryCallback: unknown;
-  preSpawnCallback: unknown;
   errorCallback: ErrorCallback | null;
   eventLog: unknown;
   runtimeStore: unknown;
@@ -149,8 +147,6 @@ function defaultConfig(): MobKitBuilderConfig {
     mobConfigPath: null,
     sessionBuilder: null,
     sessionStore: null,
-    discoveryCallback: null,
-    preSpawnCallback: null,
     errorCallback: null,
     eventLog: null,
     runtimeStore: null,
@@ -213,16 +209,6 @@ export class MobKitBuilder {
   sessionService(builder: SessionAgentBuilder, store?: unknown): this {
     this._config.sessionBuilder = builder;
     this._config.sessionStore = store ?? null;
-    return this;
-  }
-
-  discovery(callback: unknown): this {
-    this._config.discoveryCallback = callback;
-    return this;
-  }
-
-  preSpawn(callback: unknown): this {
-    this._config.preSpawnCallback = callback;
     return this;
   }
 

@@ -637,3 +637,26 @@ class TestConventionDefaults:
         b = MobKit.builder().mob("config/mob.toml").gating("custom/gating.toml")
         b._apply_convention_defaults()
         assert b._config.gating_config_path == "custom/gating.toml"
+
+
+class TestRemovedBootKnobs:
+    """`.discovery()` / `.pre_spawn()` were stored and never transmitted (dead
+    since v0.2). A call must now refuse loudly instead of being accepted and
+    dropped, and the config carries no slot for them."""
+
+    def test_discovery_is_not_a_builder_method(self):
+        with pytest.raises(AttributeError, match="discovery"):
+            MobKit.builder().discovery(lambda ctx: [])
+
+    def test_pre_spawn_is_not_a_builder_method(self):
+        with pytest.raises(AttributeError, match="pre_spawn"):
+            MobKit.builder().pre_spawn(lambda: {})
+
+    def test_config_has_no_dead_callback_slots(self):
+        from dataclasses import fields
+
+        names = {f.name for f in fields(MobKit.builder()._config)}
+        assert "discovery_callback" not in names
+        assert "pre_spawn_callback" not in names
+        # The live boot-membership knob is still there.
+        assert "roster_provider" in names

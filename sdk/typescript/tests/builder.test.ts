@@ -47,22 +47,6 @@ describe("MobKitBuilder chainable methods", () => {
     assert.equal(builder._config.sessionStore, null);
   });
 
-  it("discovery() sets discoveryCallback and returns this", () => {
-    const builder = MobKit.builder();
-    const cb = () => {};
-    const result = builder.discovery(cb);
-    assert.equal(result, builder);
-    assert.equal(builder._config.discoveryCallback, cb);
-  });
-
-  it("preSpawn() sets preSpawnCallback and returns this", () => {
-    const builder = MobKit.builder();
-    const cb = () => {};
-    const result = builder.preSpawn(cb);
-    assert.equal(result, builder);
-    assert.equal(builder._config.preSpawnCallback, cb);
-  });
-
   it("onError() sets errorCallback and returns this", () => {
     const builder = MobKit.builder();
     const cb = () => {};
@@ -308,8 +292,6 @@ describe("MobKitBuilder default config", () => {
     assert.equal(cfg.mobConfigPath, null);
     assert.equal(cfg.sessionBuilder, null);
     assert.equal(cfg.sessionStore, null);
-    assert.equal(cfg.discoveryCallback, null);
-    assert.equal(cfg.preSpawnCallback, null);
     assert.equal(cfg.errorCallback, null);
     assert.equal(cfg.eventLog, null);
     assert.equal(cfg.consoleConfigPath, null);
@@ -404,5 +386,24 @@ describe("MobKitBuilder method chaining", () => {
     assert.equal(builder._config.maxSessions, 320);
     assert.equal(builder._config.gatewayTimeoutMs, 300_000);
     assert.deepEqual(builder._config.modules, [{ id: "a" }]);
+  });
+});
+
+describe("MobKitBuilder removed boot knobs", () => {
+  // discovery() / preSpawn() were stored and never transmitted (dead since
+  // v0.2). The method must be gone so a caller fails loudly at the call site
+  // instead of being accepted and dropped, and the config has no slot for it.
+  it("discovery() and preSpawn() are not builder methods", () => {
+    const builder = MobKit.builder() as unknown as Record<string, unknown>;
+    assert.equal(typeof builder.discovery, "undefined");
+    assert.equal(typeof builder.preSpawn, "undefined");
+  });
+
+  it("the config carries no dead callback slots", () => {
+    const cfg = MobKit.builder()._config as unknown as Record<string, unknown>;
+    assert.equal("discoveryCallback" in cfg, false);
+    assert.equal("preSpawnCallback" in cfg, false);
+    // The live boot-membership knob is still there.
+    assert.equal("rosterProvider" in cfg, true);
   });
 });

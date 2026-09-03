@@ -15,8 +15,6 @@ class MobKitBuilderConfig:
     mob_config_inline: str | None = None
     session_builder: Any | None = None
     session_store: Any | None = None
-    discovery_callback: Any | None = None
-    pre_spawn_callback: Any | None = None
     error_callback: Any | None = None
     job_credential_resolver: Any | None = None
     event_log: Any | None = None
@@ -65,7 +63,7 @@ class MobKitBuilder:
             MobKit.builder()
             .mob("config/mob.toml")
             .session_service(builder, store)
-            .discovery(discover_fn)
+            .roster(my_roster)
             .build()
         )
     """
@@ -89,14 +87,6 @@ class MobKitBuilder:
     def session_service(self, builder: Any, store: Any = None) -> MobKitBuilder:
         self._config.session_builder = builder
         self._config.session_store = store
-        return self
-
-    def discovery(self, callback: Any) -> MobKitBuilder:
-        self._config.discovery_callback = callback
-        return self
-
-    def pre_spawn(self, callback: Any) -> MobKitBuilder:
-        self._config.pre_spawn_callback = callback
         return self
 
     def event_log(self, config: Any = None, *, storage: Any = None, **kwargs: Any) -> MobKitBuilder:
