@@ -7456,7 +7456,13 @@ impl IdentityRuntime {
         // traffic, another delivery's completion can also satisfy the wait.
         // Waiting too little beats the failure this replaces (waiting forever).
         let completion_baseline = self.rebase_completion_cursor(identity, token);
-        let (runtime_id, memory_session_key, memory_generation, bridge_interaction_id) = {
+        let (
+            runtime_id,
+            memory_session_key,
+            memory_generation,
+            bridge_interaction_id,
+            memory_runtime_mode,
+        ) = {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
@@ -7470,6 +7476,9 @@ impl IdentityRuntime {
                 entry.continuity.as_ref().map(|c| c.session_id.to_string()),
                 entry.continuity.as_ref().map(|c| c.generation.get()),
                 interaction_id_for_delivery(&entry.spec, interaction_id),
+                // meerkat's default when the profile omits runtime_mode is
+                // AutonomousHost, which cannot carry injected context.
+                entry.spec.runtime_mode_override.unwrap_or_default(),
             )
         };
         let (content_to_deliver, injected_context) = self
@@ -7479,6 +7488,7 @@ impl IdentityRuntime {
                 memory_session_key.as_deref(),
                 memory_generation,
                 handling_mode == HandlingMode::Steer,
+                memory_runtime_mode,
             )
             .await?;
 
@@ -7736,6 +7746,7 @@ impl IdentityRuntime {
         memory_session_key: Option<&str>,
         memory_generation: Option<u64>,
         steer: bool,
+        runtime_mode: meerkat_mob::MobRuntimeMode,
     ) -> Result<(meerkat_core::ContentInput, Vec<meerkat_core::ContentInput>), IdentityRuntimeError>
     {
         if steer {
@@ -7750,6 +7761,18 @@ impl IdentityRuntime {
                     }
                 }
                 let defanged = injector.defang_inbound(identity, content);
+                // meerkat refuses injected context on autonomous-host members
+                // ("autonomous inbox delivery carries no user-channel work
+                // boundary"), and a refusal there is the WHOLE turn, not just the
+                // memory. Defang still runs - it is an inbound threat regardless of
+                // mode - but recall is skipped, typed, so the zero names itself.
+                if runtime_mode == meerkat_mob::MobRuntimeMode::AutonomousHost {
+                    injector.note_turn_skip(
+                        identity,
+                        crate::memory::coordinator::TurnInjectionSkip::RuntimeModeAutonomousHost,
+                    );
+                    return Ok((defanged, Vec::new()));
+                }
                 let injected_context = injector
                     .inject_for_turn(identity, memory_session_key, &defanged)
                     .await
@@ -7812,7 +7835,7 @@ impl IdentityRuntime {
         // Same pre-delivery baseline contract as the send path — see
         // `send_with_mode_and_interaction_with_expected_member_alias`.
         let completion_baseline = self.rebase_completion_cursor(identity, token);
-        let (is_durable, runtime_id, memory_session_key, memory_generation) = {
+        let (is_durable, runtime_id, memory_session_key, memory_generation, memory_runtime_mode) = {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
@@ -7830,6 +7853,7 @@ impl IdentityRuntime {
                 runtime_id,
                 entry.continuity.as_ref().map(|c| c.session_id.to_string()),
                 entry.continuity.as_ref().map(|c| c.generation.get()),
+                entry.spec.runtime_mode_override.unwrap_or_default(),
             )
         };
 
@@ -7844,6 +7868,7 @@ impl IdentityRuntime {
                 memory_session_key.as_deref(),
                 memory_generation,
                 false,
+                memory_runtime_mode,
             )
             .await?;
         // Task #50 fail-closed matrix, validated BEFORE bridge admission:

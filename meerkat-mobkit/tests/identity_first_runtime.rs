@@ -6957,7 +6957,14 @@ async fn internal_dispatch_runs_delivery_preparation_and_ledgers_turn_injection(
         .upsert_continuity_record(&record, FencingToken::new(0))
         .await
         .unwrap();
-    let roster = vec![make_spec("triage:main")];
+    // turn_driven: meerkat refuses injected context on autonomous-host members
+    // (its default mode), and since 0.8.31 MobKit skips recall typed for that
+    // mode instead of letting the bridge refuse the turn. This test is about
+    // the injection path, so it runs the one mode that can carry it; the
+    // autonomous-host sibling below pins the skip.
+    let mut spec = make_spec("triage:main");
+    spec.runtime_mode_override = Some(meerkat_mob::MobRuntimeMode::TurnDriven);
+    let roster = vec![spec];
     let result = restore_flow(&runtime, &roster, None, None).await.unwrap();
     assert!(
         !matches!(result.outcomes.get(&id).unwrap(), RestoreOutcome::Broken(_)),
@@ -7008,6 +7015,91 @@ async fn internal_dispatch_runs_delivery_preparation_and_ledgers_turn_injection(
                 )
         }),
         "a durable surface=Turn injection row must exist: {log:?}"
+    );
+}
+
+/// The autonomous-host sibling of the test above. meerkat's default runtime
+/// mode cannot carry injected context ("autonomous inbox delivery carries no
+/// user-channel work boundary"), and on 0.8.30 the identity door surfaced that
+/// as a refused turn. MobKit now skips recall at the delivery seam, typed
+/// (`runtime_mode_autonomous_host`): the delivery still happens, with EMPTY
+/// injected context, and no surface=Turn ledger row is written. Defang is not
+/// exercised here (the input carries no envelope); the defang tests below pin
+/// that it runs regardless of mode.
+#[tokio::test]
+async fn internal_dispatch_on_autonomous_host_skips_injection_typed() {
+    let memory_dir = tempfile::tempdir().unwrap();
+    let memory_store =
+        Arc::new(meerkat_mobkit::SqliteAgentMemoryStore::open(memory_dir.path()).unwrap());
+    let provider: Arc<dyn meerkat_mobkit::AgentMemoryProvider> = memory_store.clone();
+    let id = make_identity("triage:auto");
+    provider
+        .remember(
+            "default",
+            &id,
+            meerkat_mobkit::NewAgentMemory {
+                title: "Deploy policy".to_string(),
+                body: "Deploys are frozen on Fridays.".to_string(),
+                tags: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    let injector = AgentMemoryRuntimeInjector::new(
+        provider,
+        meerkat_mobkit::AgentMemoryConfig {
+            selection: AgentMemorySelection::Always,
+            ..meerkat_mobkit::AgentMemoryConfig::default()
+        },
+    );
+
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
+    runtime.set_agent_memory(Some(injector)).await;
+
+    let record = make_record("triage:auto", 0, 0);
+    store
+        .upsert_continuity_record(&record, FencingToken::new(0))
+        .await
+        .unwrap();
+    // make_spec leaves runtime_mode_override None: meerkat's default, autonomous_host.
+    let roster = vec![make_spec("triage:auto")];
+    let result = restore_flow(&runtime, &roster, None, None).await.unwrap();
+    assert!(
+        !matches!(result.outcomes.get(&id).unwrap(), RestoreOutcome::Broken(_)),
+        "restore must succeed for the dispatch to reach the bridge"
+    );
+
+    let input = DispatchInput {
+        content: meerkat_core::ContentInput::Text("what is the deploy policy?".to_string()),
+        origin: DispatchOrigin::Scheduler,
+        correlation_id: None,
+        idempotency_key: None,
+    };
+    runtime.dispatch(&id, &input).await.unwrap();
+
+    // Delivered, but with nothing injected: the turn proceeds without memory.
+    let contexts = bridge.delivered_injected_context.lock().await.clone();
+    assert_eq!(contexts.len(), 1, "exactly one delivery expected");
+    assert!(
+        contexts[0].is_empty(),
+        "an autonomous-host member must receive no injected context: {contexts:?}"
+    );
+    // And the ledger records no Turn-surface offer for it.
+    let log = meerkat_mobkit::StewardStore::injection_log(memory_store.as_ref(), "default", 16)
+        .await
+        .unwrap();
+    assert!(
+        !log.iter().any(|entry| {
+            entry.identity == "triage:auto"
+                && matches!(
+                    entry.surface,
+                    meerkat_mobkit::memory::InjectionSurface::Turn
+                )
+        }),
+        "no surface=Turn row may exist for an autonomous-host member: {log:?}"
     );
 }
 

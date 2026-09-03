@@ -706,6 +706,16 @@ impl AgentMemoryRuntimeInjector {
     /// Assemble the ambient per-turn recall as a separate `injected_context`
     /// body (meerkat 0.7.12 ask 1). Returns the vector to deliver alongside
     /// the user message; empty means inject nothing. See
+    /// Record a per-turn skip decided at the delivery seam (see
+    /// [`RecallCoordinator::note_skip`]).
+    pub fn note_turn_skip(
+        &self,
+        identity: &AgentIdentity,
+        reason: crate::memory::coordinator::TurnInjectionSkip,
+    ) {
+        self.coordinator.note_skip(identity, reason);
+    }
+
     /// [`RecallCoordinator::inject_for_turn`].
     pub async fn inject_for_turn(
         &self,
