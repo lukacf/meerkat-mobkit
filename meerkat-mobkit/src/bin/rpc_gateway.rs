@@ -2274,6 +2274,90 @@ actions = ["agent.view"]
         assert_eq!(agent_memory.path, tmp.path().join("agent-memory"));
     }
 
+    /// HomeCore's exact call shape (`.agent_memory(selection="contextual",
+    /// max_entries=3)`), which for two months yielded 10,283 build-surface
+    /// injections and zero turn-surface rows: the object form omitted
+    /// `per_turn_injection` and the gateway supplied its own "off" while the
+    /// library default was Budgeted. The gateway must not carry a default of
+    /// its own.
+    #[test]
+    fn gateway_runtime_options_per_turn_injection_omitted_uses_the_library_default() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "selection": "contextual", "max_entries": 3 }
+            }
+        });
+
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+
+        // One default per policy.
+        assert_eq!(
+            agent_memory.config.per_turn_injection,
+            meerkat_mobkit::AgentMemoryPerTurnInjection::default()
+        );
+        // And that default is the documented one. If this line goes red the
+        // library default moved; the CHANGELOG owes consumers a line, not this
+        // test a weaker assertion.
+        assert_eq!(
+            agent_memory.config.per_turn_injection,
+            meerkat_mobkit::AgentMemoryPerTurnInjection::Budgeted
+        );
+        // The boolean form must agree with the object form.
+        let boolean = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "agent_memory": true } }),
+            Some(tmp.path()),
+        )
+        .expect("runtime options")
+        .agent_memory
+        .expect("agent memory options");
+        assert_eq!(
+            boolean.config.per_turn_injection,
+            agent_memory.config.per_turn_injection
+        );
+    }
+
+    #[test]
+    fn gateway_runtime_options_per_turn_injection_explicit_values_and_refusals() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let parse = |value: serde_json::Value| {
+            parse_gateway_runtime_options(
+                &json!({ "runtime_options": { "agent_memory": { "per_turn_injection": value } } }),
+                Some(tmp.path()),
+            )
+        };
+        assert_eq!(
+            parse(json!("off"))
+                .expect("off parses")
+                .agent_memory
+                .expect("agent memory")
+                .config
+                .per_turn_injection,
+            meerkat_mobkit::AgentMemoryPerTurnInjection::Off
+        );
+        assert_eq!(
+            parse(json!(" budgeted "))
+                .expect("budgeted parses, trimmed")
+                .agent_memory
+                .expect("agent memory")
+                .config
+                .per_turn_injection,
+            meerkat_mobkit::AgentMemoryPerTurnInjection::Budgeted
+        );
+        let Err(unknown) = parse(json!("sometimes")) else {
+            panic!("an unknown per_turn_injection value must be refused");
+        };
+        assert!(unknown.contains("got 'sometimes'"), "{unknown}");
+        // A non-string used to fall through `as_str()` to the literal default and
+        // silently mean "off"; it is now a typed refusal naming the two values.
+        let Err(non_string) = parse(json!(true)) else {
+            panic!("a non-string per_turn_injection must be refused, not read as off");
+        };
+        assert!(non_string.contains("must be a string"), "{non_string}");
+    }
+
     #[test]
     fn agent_memory_census_slot_covers_both_store_kinds() {
         let tmp = tempfile::tempdir().expect("temp dir");
@@ -5332,19 +5416,31 @@ fn parse_gateway_agent_memory_config(
                 .to_string(),
         ),
     };
-    let per_turn_injection = match object
-        .get("per_turn_injection")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .unwrap_or("off")
-    {
-        "off" => meerkat_mobkit::AgentMemoryPerTurnInjection::Off,
-        "budgeted" => meerkat_mobkit::AgentMemoryPerTurnInjection::Budgeted,
-        other => {
-            return Err(format!(
-                "runtime_options.agent_memory.per_turn_injection must be 'off' or 'budgeted' (got '{other}')"
-            ));
-        }
+    // One default per policy, and the library owns it. A literal "off" here
+    // forked the policy for two months (2026-07-01 .. 0.8.30): the library
+    // switched its default to Budgeted when injected-context delivery became
+    // echo-safe, the boolean form (`agent_memory: true`) followed it through
+    // AgentMemoryConfig::default(), and the object form silently did not. Every
+    // SDK client that passed an object and trusted the documented default got
+    // zero turn-surface injections. Deriving the fallback from the library
+    // means the next default change cannot fork again.
+    let per_turn_injection = match object.get("per_turn_injection") {
+        None => meerkat_mobkit::AgentMemoryPerTurnInjection::default(),
+        Some(value) => match value.as_str().map(str::trim) {
+            Some("off") => meerkat_mobkit::AgentMemoryPerTurnInjection::Off,
+            Some("budgeted") => meerkat_mobkit::AgentMemoryPerTurnInjection::Budgeted,
+            Some(other) => {
+                return Err(format!(
+                    "runtime_options.agent_memory.per_turn_injection must be 'off' or 'budgeted' (got '{other}')"
+                ));
+            }
+            None => {
+                return Err(
+                    "runtime_options.agent_memory.per_turn_injection must be a string: 'off' or 'budgeted'"
+                        .to_string(),
+                );
+            }
+        },
     };
     let defang_inbound = match object.get("defang_inbound") {
         None => true,

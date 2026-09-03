@@ -823,7 +823,7 @@ not part of composition.
 |---|---|---|---|---|
 | Build-time (`customize_build` → `additional_instructions`) | Behavioral protocol + composed **index** (budget ~8 KB) + selected bodies for orientation | materialize / resume / respawn / reset | system prompt (`Message::System`) | **yes** (excluded from indexing — verified) |
 | On-demand | `memory` tool (records), `memory_search` (session), each advertised in the index | agent-initiated | tool results | **yes** (excluded — verified) |
-| Per-turn ambient bodies | Lexically recalled record bodies, provenance-labeled, staleness-phrased | non-Steer sends | **off by default** until an echo-safe delivery path exists (upstream ask 1 - see coupling note below); opt-in `budgeted` mode meanwhile | no (that's why it defaults off) |
+| Per-turn ambient bodies | Lexically recalled record bodies, provenance-labeled, staleness-phrased | non-Steer sends | **budgeted by default** since 2026-07-01, when the echo-safe injected-context delivery path landed (before that off (upstream ask 1 - see coupling note below); opt-in `budgeted` mode meanwhile | no (that's why it defaults off) |
 
 This is the P0 posture change that actually fixes D1 rather than bounding it:
 every *default* surface is a message class meerkat already excludes from
@@ -831,7 +831,10 @@ compaction indexing (verified in `followups.md` §1). Ambient per-turn push — 
 one echo-unsafe surface — is demoted to an explicit opt-in
 (`agent_memory.per_turn_injection = "off" | "budgeted"`) carrying the full budget
 ladder and dedup below, and its default flips to on only when delivery is
-echo-safe. **Coupling note (important):** upstream ask 1 alone is not sufficient.
+echo-safe. (It did, on 2026-07-01. The gateway parser carried its own literal
+`off` fallback for the object form until 0.8.31 and silently kept every
+object-form client on the old default; it now derives the fallback from the
+library default so one default governs both forms.) **Coupling note (important):** upstream ask 1 alone is not sufficient.
 Today mobkit *fuses* the injection into the user's own message text
 (`ContentInput` has no role field), and meerkat's exclusion seam is per-message —
 a role class on the fused message would either exclude nothing or exclude the
@@ -1185,7 +1188,7 @@ Value-first ordering; each phase ships alone and is useful alone. All phases are
 initiative scope; hub work is the roadmap's.
 
 - **P0 — stop the bleeding (no new LLM stages).** Per-turn ambient injection →
-  off by default with `budgeted` opt-in (D1 fixed by construction, D2 fixed in
+  budgeted by default since 2026-07-01 (originally off with `budgeted` opt-in; D1 fixed by construction, D2 fixed in
   the opt-in path via the budget ladder + session dedup); provider trait v2 with
   supersede + tiered manifest; SQLite store at
   `agent-memory/<realm>.sqlite3` with Markdown import (one-shot migration when
