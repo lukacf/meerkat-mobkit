@@ -6632,6 +6632,28 @@ function councilArgsByCallId(frames) {
   return out;
 }
 
+// src/lib/failure-summary.ts
+function recordOf(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim() ? value : "";
+}
+function summarizeFailureData(data) {
+  const record = recordOf(data);
+  if (!record) return { message: "", reasonType: "" };
+  const report = recordOf(record.error_report);
+  const reason = recordOf(report?.reason) ?? recordOf(record.reason);
+  const reasonType = nonEmptyString(reason?.reason_type) || nonEmptyString(record.reason) || nonEmptyString(reason?.kind);
+  const message = nonEmptyString(report?.message) || nonEmptyString(record.error) || nonEmptyString(record.message);
+  return { message, reasonType };
+}
+function describeFailure(data, fallback = "error") {
+  const { message, reasonType } = summarizeFailureData(data);
+  if (message && reasonType && !message.includes(reasonType)) return `${message} (${reasonType})`;
+  return message || reasonType || fallback;
+}
+
 // src/lib/id.ts
 function randomUuidFromValues(cryptoSource) {
   if (typeof cryptoSource.getRandomValues !== "function") {
@@ -8272,7 +8294,7 @@ function renderTerminalEntry(agent, frame, entryId, streamedText = "") {
     };
   }
   if (frame.event === "interaction_failed" || frame.event === "run_failed") {
-    const text = `${frame.event}: ${summarizeFrameData(frame.data)}`.trim();
+    const text = `${frame.event}: ${describeFailure(frame.data, "") || summarizeFrameData(frame.data)}`.trim();
     if (!text || text === `${frame.event}:`) return null;
     return {
       kind: "message",
@@ -12471,7 +12493,7 @@ function summarizeFrame(frame) {
     case "interaction_complete":
       return shortInteraction ? `Completed ${shortInteraction}` : "Completed";
     case "interaction_failed":
-      return `Failed: ${String(data.error || data.reason || "error")}`;
+      return `Failed: ${describeFailure(data)}`;
     case "interaction_started":
       return shortInteraction ? `Started ${shortInteraction}` : "Started";
     case "gating_decision":
@@ -18158,7 +18180,7 @@ var LOW_VALUE_REPLY_PATTERNS = [
   /\b(is|am)\s+online\s+(as|for)\b/i,
   /\bwill\s+(coordinate|maintain|focus|act|draft)\b/i
 ];
-function recordOf(value) {
+function recordOf2(value) {
   return value && typeof value === "object" ? value : {};
 }
 function textFromValue(value) {
@@ -18203,17 +18225,17 @@ function sessionHistoryAssistantReply(frame, data) {
   if (frame.sourceKind !== "session_history") {
     return textFromValue(data.result ?? data.text ?? data.content);
   }
-  const message = recordOf(data.message);
+  const message = recordOf2(data.message);
   const role = typeof message.role === "string" ? message.role : "";
   if (role !== "block_assistant") {
     return textFromValue(data.result ?? data.text ?? data.content);
   }
   const blocks = Array.isArray(message.blocks) ? message.blocks : [];
   const text = blocks.map((block) => {
-    const record = recordOf(block);
+    const record = recordOf2(block);
     const blockType = typeof record.block_type === "string" ? record.block_type : typeof record.type === "string" ? record.type : "";
     if (blockType !== "text") return "";
-    const blockData = recordOf(record.data);
+    const blockData = recordOf2(record.data);
     return textFromValue(blockData.text ?? record.text);
   }).filter(Boolean).join(" ").trim();
   return text;
@@ -18235,13 +18257,13 @@ function isScaffoldRequest(value) {
 }
 function typedSystemNoticeSignal(data) {
   const blocks = Array.isArray(data.blocks) ? data.blocks : [];
-  const comms = blocks.map(recordOf).filter((block) => block.type === "comms");
+  const comms = blocks.map(recordOf2).filter((block) => block.type === "comms");
   if (comms.length === 0) return null;
   const targets = [];
   const details = [];
   let incoming = true;
   for (const block of comms) {
-    const peer = recordOf(block.peer);
+    const peer = recordOf2(block.peer);
     const peerLabel = textFromValue(peer.display_name) || textFromValue(peer.id) || "peer";
     targets.push(lastSegment(peerLabel));
     if (block.direction === "outgoing") incoming = false;
@@ -18256,9 +18278,9 @@ function typedSystemNoticeSignal(data) {
   };
 }
 function blobKey(frame) {
-  const data = recordOf(frame.data);
-  const image = recordOf(data.image);
-  const blobRef = recordOf(image.blob_ref ?? data.blob_ref);
+  const data = recordOf2(frame.data);
+  const image = recordOf2(data.image);
+  const blobRef = recordOf2(image.blob_ref ?? data.blob_ref);
   const blobId = typeof blobRef.blob_id === "string" ? blobRef.blob_id : typeof data.blob_id === "string" ? data.blob_id : "";
   const imageId = typeof image.image_id === "string" ? image.image_id : typeof data.image_id === "string" ? data.image_id : "";
   return blobId || imageId || frame.interactionId || frame.id;
@@ -18270,7 +18292,7 @@ function severityOf(frame) {
   return "info";
 }
 function signalFromFrame(frame) {
-  const data = recordOf(frame.data);
+  const data = recordOf2(frame.data);
   const severity = severityOf(frame);
   const base = {
     id: frame.id || `${frame.event}:${frame.timestampMs || 0}`,
@@ -18283,7 +18305,9 @@ function signalFromFrame(frame) {
     return {
       ...base,
       label: frame.event === "interaction_failed" ? "Agent turn failed" : frame.event.replace(/_/g, " "),
-      detail: truncate2(textFromValue(data.error ?? data.reason ?? data.message) || "Needs attention")
+      detail: truncate2(
+        describeFailure(data, "") || textFromValue(data.error ?? data.reason ?? data.message) || "Needs attention"
+      )
     };
   }
   switch (frame.event) {
@@ -18327,13 +18351,13 @@ function signalFromFrame(frame) {
         ...base,
         id: `image:${blobKey(frame)}`,
         label: `${displayName(base.agent)} generated image`,
-        detail: textFromValue(data.prompt ?? recordOf(data.image).prompt ?? recordOf(data.image).alt) || "Generated image attached"
+        detail: textFromValue(data.prompt ?? recordOf2(data.image).prompt ?? recordOf2(data.image).alt) || "Generated image attached"
       };
     }
     case "tool_call_requested": {
       const name = typeof data.name === "string" ? data.name : "";
       if (!PEER_TOOLS.has(name)) return null;
-      const args = recordOf(data.args);
+      const args = recordOf2(data.args);
       const target = peerTarget(args);
       const body = textFromValue(args.body ?? args.params ?? args.result) || textFromValue(args.intent);
       const verb = name === "send_request" ? "asked" : name === "send_response" ? "replied to" : "sent to";

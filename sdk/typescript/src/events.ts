@@ -44,10 +44,29 @@ export interface RunCompletedEvent {
   readonly structuredOutput?: unknown;
 }
 
+/**
+ * meerkat's typed failure fact on `run_failed` (`error_report` on the wire):
+ * `class`, an optional typed `reason` whose `reason_type` is the stable
+ * discriminator (`llm_auth_error`, `llm_rate_limited`, ...), and `message`.
+ * `reasonType` mirrors `reason.reason_type` when present.
+ */
+export interface AgentErrorReport {
+  readonly class: string;
+  readonly message: string;
+  readonly reason?: Record<string, unknown>;
+  readonly reasonType?: string;
+}
+
 export interface RunFailedEvent {
   readonly type: "run_failed";
   readonly sessionId: string;
+  /**
+   * Operator-readable failure text. meerkat >= 0.7 carries no flat `error`
+   * on the wire; this is derived from `error_report.message` when absent.
+   */
   readonly error: string;
+  /** The typed report, when the wire carried one. */
+  readonly errorReport?: AgentErrorReport;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +157,22 @@ export type AgentEvent =
 // Event parser
 // ---------------------------------------------------------------------------
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseAgentErrorReport(raw: unknown): AgentErrorReport | undefined {
+  if (!isPlainRecord(raw)) return undefined;
+  const reason = isPlainRecord(raw.reason) ? raw.reason : undefined;
+  const reasonType = typeof reason?.reason_type === "string" ? reason.reason_type : undefined;
+  return {
+    class: String(raw.class ?? ""),
+    message: String(raw.message ?? ""),
+    ...(reason ? { reason } : {}),
+    ...(reasonType ? { reasonType } : {}),
+  };
+}
+
 type EventFactory = (raw: Record<string, unknown>) => AgentEvent;
 
 const EVENT_MAP: Record<string, EventFactory> = {
@@ -161,11 +196,15 @@ const EVENT_MAP: Record<string, EventFactory> = {
     }
     return evt;
   },
-  run_failed: (raw) => ({
-    type: "run_failed",
-    sessionId: String(raw.session_id ?? ""),
-    error: String(raw.error ?? ""),
-  }),
+  run_failed: (raw) => {
+    const errorReport = parseAgentErrorReport(raw.error_report);
+    const evt: RunFailedEvent = {
+      type: "run_failed",
+      sessionId: String(raw.session_id ?? ""),
+      error: String(raw.error ?? errorReport?.message ?? ""),
+    };
+    return errorReport ? { ...evt, errorReport } : evt;
+  },
   turn_started: (raw) => ({
     type: "turn_started",
     turnNumber: Number(raw.turn_number ?? 0),

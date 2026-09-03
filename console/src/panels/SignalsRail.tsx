@@ -1,5 +1,6 @@
 import React from "react";
 import { describeMemoryTimelineEvent, stripPeerTransportScaffold } from "../lib/adapters";
+import { describeFailure } from "../lib/failure-summary";
 import type { ConsoleFrame, ConsoleRailFilterPresetConfig } from "../types";
 
 interface SignalsRailProps {
@@ -227,7 +228,11 @@ function signalFromFrame(frame: ConsoleFrame): Signal | null {
     return {
       ...base,
       label: frame.event === "interaction_failed" ? "Agent turn failed" : frame.event.replace(/_/g, " "),
-      detail: truncate(textFromValue(data.error ?? data.reason ?? data.message) || "Needs attention"),
+      detail: truncate(
+        describeFailure(data, "")
+          || textFromValue(data.error ?? data.reason ?? data.message)
+          || "Needs attention",
+      ),
     };
   }
 

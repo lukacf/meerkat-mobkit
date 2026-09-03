@@ -29,6 +29,40 @@ use super::types::{
 };
 use super::{MobEventIngress, UnifiedRuntime, discovery_spec_to_spawn_spec};
 
+/// The `HostLoopCrash` detail for a `run_failed` agent event.
+///
+/// meerkat's `RunFailed` carries its failure truth as the typed
+/// `error_report { class, reason, message }` and the projected payload keeps
+/// it, so name it here: for a non-retryable provider failure (a 401 on a bad
+/// key) meerkat itself logs nothing at warn or above, which makes this ERROR
+/// line the only place an operator reading logs learns WHY the run failed.
+/// A payload without a report (a producer that predates it, or a
+/// payload-less envelope) falls back to the bare event id the line always
+/// carried.
+fn run_failed_crash_error(event_id: &str, payload: Option<&serde_json::Value>) -> String {
+    fn string_field(value: Option<&serde_json::Value>) -> Option<&str> {
+        value.and_then(serde_json::Value::as_str)
+    }
+    let mut detail = format!("agent run failed (event_id: {event_id})");
+    let Some(report) = payload.and_then(|payload| payload.get("error_report")) else {
+        return detail;
+    };
+    if let Some(class) = string_field(report.get("class")) {
+        detail.push_str(&format!(" class={class}"));
+    }
+    if let Some(reason_type) = string_field(
+        report
+            .get("reason")
+            .and_then(|reason| reason.get("reason_type")),
+    ) {
+        detail.push_str(&format!(" reason={reason_type}"));
+    }
+    if let Some(message) = string_field(report.get("message")) {
+        detail.push_str(&format!(": {message}"));
+    }
+    detail
+}
+
 impl UnifiedRuntime {
     /// Reset the mob and re-run discovery + edge reconciliation.
     ///
@@ -666,19 +700,21 @@ impl UnifiedRuntime {
                         self.fire_error(alert);
                     }
                     let unified_event = forwarded.envelope;
-                    // Detect agent run failures and fire HostLoopCrash
+                    // Detect agent run failures and fire HostLoopCrash, naming
+                    // the typed failure (class, reason, message) carried in
+                    // the payload's `error_report`.
                     if let crate::types::UnifiedEvent::Agent {
                         ref agent_id,
                         ref event_type,
-                        ..
+                        ref payload,
                     } = unified_event.event
                         && event_type == "run_failed"
                     {
                         self.fire_error(super::types::ErrorEvent::HostLoopCrash {
                             member_id: agent_id.clone(),
-                            error: format!(
-                                "agent run failed (event_id: {})",
-                                unified_event.event_id
+                            error: run_failed_crash_error(
+                                &unified_event.event_id,
+                                payload.as_ref(),
                             ),
                         });
                     }
@@ -1215,6 +1251,59 @@ mod shutdown_horizon_tests {
              covers two provider-callback windows plus drains and reap margin; \
              shrinking it below that strands every embedder that sized their \
              wait on the advertised figure"
+        );
+    }
+}
+
+#[cfg(test)]
+mod run_failed_crash_error_tests {
+    use super::run_failed_crash_error;
+
+    /// The ERROR line names the typed failure: class, the stable
+    /// `reason_type`, and meerkat's message, after the event id it always
+    /// carried.
+    #[test]
+    fn names_class_reason_and_message_from_the_error_report() {
+        let payload = serde_json::json!({
+            "type": "run_failed",
+            "session_id": "01a0-session",
+            "error_report": {
+                "class": "llm",
+                "reason": { "reason_type": "llm_auth_error" },
+                "message": "LLM error: authentication failed (401)"
+            }
+        });
+        assert_eq!(
+            run_failed_crash_error("evt-agent-7", Some(&payload)),
+            "agent run failed (event_id: evt-agent-7) class=llm reason=llm_auth_error: \
+             LLM error: authentication failed (401)"
+        );
+    }
+
+    /// A report without a typed reason still names class and message.
+    #[test]
+    fn omits_the_reason_when_the_report_carries_none() {
+        let payload = serde_json::json!({
+            "error_report": { "class": "internal", "message": "runner gave up" }
+        });
+        assert_eq!(
+            run_failed_crash_error("evt-1", Some(&payload)),
+            "agent run failed (event_id: evt-1) class=internal: runner gave up"
+        );
+    }
+
+    /// Without a report (a payload-less envelope, or a producer that
+    /// predates it) the line is exactly what it was before.
+    #[test]
+    fn falls_back_to_the_bare_event_id_without_a_report() {
+        assert_eq!(
+            run_failed_crash_error("evt-2", None),
+            "agent run failed (event_id: evt-2)"
+        );
+        let unrelated = serde_json::json!({ "type": "run_failed", "session_id": "s" });
+        assert_eq!(
+            run_failed_crash_error("evt-3", Some(&unrelated)),
+            "agent run failed (event_id: evt-3)"
         );
     }
 }

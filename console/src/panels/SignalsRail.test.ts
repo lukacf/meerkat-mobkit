@@ -222,3 +222,30 @@ test("signals rail drops routine memory dream lifecycle noise", () => {
   const groups = buildSignalGroupsForTest(frames);
   assert.equal(groups.length, 0, "dream.started and non-tainted transitions are dropped");
 });
+
+test("signals rail names a provider failure from meerkat's typed error_report", () => {
+  const frames: ConsoleFrame[] = [
+    {
+      id: "turn-failed",
+      event: "interaction_failed",
+      identity: "assistant",
+      interactionId: "turn-1",
+      timestampMs: Date.now(),
+      data: {
+        type: "run_failed",
+        session_id: "s",
+        error_report: {
+          class: "llm",
+          reason: { reason_type: "llm_auth_error" },
+          message: "LLM error: authentication failed (401)",
+        },
+      },
+    },
+  ];
+
+  const groups = buildSignalGroupsForTest(frames);
+  assert.equal(groups.length, 1, "one failed turn is one critical signal");
+  const [signal] = groups[0].items;
+  assert.equal(signal.label, "Agent turn failed");
+  assert.equal(signal.detail, "LLM error: authentication failed (401) (llm_auth_error)");
+});

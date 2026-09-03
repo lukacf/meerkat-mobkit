@@ -494,6 +494,7 @@ export type {
   RunStartedEvent,
   RunCompletedEvent,
   RunFailedEvent,
+  AgentErrorReport,
   TurnStartedEvent,
   TextDeltaEvent,
   TextCompleteEvent,

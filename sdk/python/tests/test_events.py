@@ -7,6 +7,7 @@ from meerkat_mobkit.events import (
     Event,
     MobEvent,
     RunCompleted,
+    RunFailed,
     RunStarted,
     TextDelta,
     ToolCallRequested,
@@ -31,6 +32,44 @@ class TestParseAgentEvent:
         ev = parse_agent_event({"type": "run_completed", "session_id": "s1", "result": "done"})
         assert isinstance(ev, RunCompleted)
         assert ev.result == "done"
+
+    def test_run_failed_derives_error_from_meerkat_error_report(self):
+        # Wire shape of meerkat-core 0.8.32 `AgentEvent::RunFailed`: the typed
+        # `error_report` is the only failure truth; there is no flat `error`.
+        raw = {
+            "type": "run_failed",
+            "session_id": "01a068a0-f911-7331-8187-d436145ac895",
+            "error_report": {
+                "class": "llm",
+                "reason": {"reason_type": "llm_auth_error"},
+                "message": "LLM error: authentication failed (401)",
+            },
+        }
+        ev = parse_agent_event(raw)
+        assert isinstance(ev, RunFailed)
+        assert ev.error == "LLM error: authentication failed (401)"
+        assert ev.error_report == raw["error_report"]
+        assert ev.error_class == "llm"
+        assert ev.reason_type == "llm_auth_error"
+
+    def test_run_failed_keeps_a_flat_error_when_the_wire_carries_one(self):
+        ev = parse_agent_event({"type": "run_failed", "session_id": "s1", "error": "boom"})
+        assert isinstance(ev, RunFailed)
+        assert ev.error == "boom"
+        assert ev.error_report == {}
+        assert ev.error_class == ""
+        assert ev.reason_type == ""
+
+    def test_run_failed_without_typed_reason_has_empty_reason_type(self):
+        ev = parse_agent_event({
+            "type": "run_failed",
+            "session_id": "s1",
+            "error_report": {"class": "internal", "message": "runner gave up"},
+        })
+        assert isinstance(ev, RunFailed)
+        assert ev.error == "runner gave up"
+        assert ev.error_class == "internal"
+        assert ev.reason_type == ""
 
     def test_tool_call_requested(self):
         ev = parse_agent_event({
@@ -72,6 +111,18 @@ class TestPatternMatching:
                 assert r == "done"
             case _:
                 raise AssertionError("should match RunCompleted")
+
+    def test_match_run_failed_error_sees_the_derived_message(self):
+        ev = parse_agent_event({
+            "type": "run_failed",
+            "session_id": "s1",
+            "error_report": {"class": "llm", "message": "rate limited"},
+        })
+        match ev:
+            case RunFailed(error=err):
+                assert err == "rate limited"
+            case _:
+                raise AssertionError("should match RunFailed")
 
 
 class TestAgentEvent:
