@@ -222,16 +222,18 @@ fn parse_handling_mode(params: &Value) -> Result<meerkat_core::types::HandlingMo
 /// `member_id` parameter.
 ///
 /// Precedence contract:
-/// 1. An exact mob-roster match (after public-alias/comms encoding) always
-///    wins. Callers holding concrete member ids — `rt:{identity}:{generation}`
-///    aliases, plain member names, and every member of a non-identity-first
-///    mob — keep raw member-id semantics.
-/// 2. Otherwise, on identity-first runtimes a bare durable identity (e.g.
+/// 1. A generated `rt:{identity}:{generation}` alias belongs to identity
+///    authority and stays generation-fenced even while its roster row exists.
+/// 2. An exact mob-roster match (after public-alias/comms encoding) keeps raw
+///    member-id semantics unless the active `IdentityRuntime` binding proves
+///    that the row is an identity-first embodiment. Identity-owned rows route
+///    through `IdentityRuntime` so delivery preparation is never bypassed.
+/// 3. Otherwise, on identity-first runtimes a bare durable identity (e.g.
 ///    `atlas-base-001` when the meerkat 0.7.1 roster holds
 ///    `rt:atlas-base-001:0`) resolves through the identity bridge —
 ///    the gateway-plane counterpart of the console plane's
 ///    `console_send_with_identity_first_fallback` (`http_console.rs`).
-/// 3. Anything else (no identity runtime, unparseable identity, unknown
+/// 4. Anything else (no identity runtime, unparseable identity, unknown
 ///    identity) falls through to raw member-id semantics so the original
 ///    mob `member not found` error surfaces unchanged.
 enum SendMessageTarget {
@@ -289,10 +291,26 @@ async fn resolve_send_message_target(
         return SendMessageTarget::AuthorityUnavailable { alias: member_id };
     }
     let roster_id = crate::member_comms_id::mob_member_id(&member_id);
-    if matches!(
-        runtime.mob_handle().get_member(&roster_id).await,
-        Ok(Some(_))
-    ) {
+    if let Ok(Some(member)) = runtime.mob_handle().get_member(&roster_id).await {
+        if let Some(identity_rt) = configured_identity_runtime
+            && let Ok(identity) = crate::identity_first::AgentIdentity::parse(&member_id)
+            && crate::member_comms_id::live_member_is_identity(
+                member.agent_identity.as_str(),
+                identity.as_str(),
+            )
+            && let Ok(status) = identity_rt.status(&identity).await
+            && status.state == crate::identity_first::IdentityLifecycleState::Active
+        {
+            return SendMessageTarget::Identity {
+                identity_rt: identity_rt.clone(),
+                identity,
+                expected_member_alias: None,
+                runtime_member_id: status
+                    .agent_runtime_id
+                    .map(|runtime_id| runtime_id.as_str().to_string()),
+                session_id: status.session_id,
+            };
+        }
         return SendMessageTarget::MobMember;
     }
     // Precedence pinning: the roster probe above is a point-in-time machine
@@ -441,10 +459,10 @@ pub(super) async fn handle_send_message(
             // alias: self-mapping the incarnation clobbers the spawn path's
             // incarnation -> durable registration and re-keys every later
             // live event onto the incarnation conversation (the console
-            // dispatch-mirroring defect). The MobMember arm is unreachable
-            // for generated aliases (they resolve to Identity or
-            // AuthorityUnavailable - pinned by test below), so its wire
-            // member id IS the durable identity.
+            // dispatch-mirroring defect). Generated aliases resolve to Identity
+            // or AuthorityUnavailable before the roster probe. Raw workers keep
+            // the MobMember arm, while active identity-owned roster rows route
+            // through IdentityRuntime (both precedence cases are pinned below).
             let (events_identity, events_member_id) = match &target {
                 SendMessageTarget::MobMember => (member_id.clone(), Some(member_id.clone())),
                 SendMessageTarget::AuthorityUnavailable { alias } => (

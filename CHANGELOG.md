@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **SDK identity-first sends now run MobKit delivery preparation exactly once.**
+  `handle.send()` / `mobkit/send_message` previously let the stable identity
+  roster row win as a raw mob member, bypassing `prepare_member_delivery` and
+  therefore ambient recall, inbound defanging, injection budgets, and the turn
+  ledger. Active identity-owned rows now route through `IdentityRuntime`; a
+  real-runtime regression proves one matching recall and one `surface=turn`
+  ledger offer for the delivered session while raw workers retain roster
+  semantics.
+
 - **The gateway no longer carries its own default for
   `agent_memory.per_turn_injection`.** The library default has been `budgeted`
   since 2026-07-01, when injected-context delivery became echo-safe, and the

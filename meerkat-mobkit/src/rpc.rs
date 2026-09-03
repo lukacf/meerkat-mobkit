@@ -3231,8 +3231,9 @@ async fn handle_unified_rpc_json_inner(
         }
         "mobkit/send_message" => {
             // Pass the identity runtime so bare durable identities resolve
-            // through the identity bridge when no roster member matches
-            // (exact member-id match wins; see `SendMessageTarget`).
+            // through the identity bridge. An active identity-owned roster row
+            // takes that same path so MobKit delivery preparation is not
+            // bypassed; raw roster rows preserve mob-plane semantics.
             Box::pin(mob_methods::handle_send_message(
                 runtime,
                 identity_ctx.map(|ctx| &ctx.runtime),
@@ -9390,6 +9391,205 @@ shell = true
             "unexpected error message: {message}"
         );
 
+        Ok(())
+    }
+
+    /// Regression for the SDK `handle.send()` door (`mobkit/send_message`):
+    /// identity-first members use a stable roster id, so the old roster-first
+    /// resolver took the raw MobMember arm and skipped `prepare_member_delivery`.
+    /// A turn-surface ledger row is written synchronously by MobKit preparation
+    /// and means the memory was OFFERED; typed transcript materialization is the
+    /// later DELIVERED fact owned by Meerkat activation.
+    ///
+    /// This 0.8.32 companion test is intentionally turn-driven. The paired
+    /// Meerkat 0.8.33 regression covers the same typed carrier at an
+    /// AutonomousHost wait-and-hold activation boundary.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_message_identity_roster_row_prepares_memory_exactly_once()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        #[derive(Default)]
+        struct CapturingMemoryProvider {
+            recalls: std::sync::Mutex<Vec<AgentMemoryRecallRequest>>,
+            injections: std::sync::Mutex<Vec<crate::memory::InjectionLogEntry>>,
+        }
+
+        #[async_trait]
+        impl AgentMemoryProvider for CapturingMemoryProvider {
+            async fn recall(
+                &self,
+                request: AgentMemoryRecallRequest,
+            ) -> Result<
+                Vec<crate::identity_first::AgentMemoryRecord>,
+                crate::identity_first::AgentMemoryError,
+            > {
+                self.recalls
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(request);
+                Ok(vec![crate::identity_first::AgentMemoryRecord {
+                    memory_id: "mem-sdk-routing".to_string(),
+                    title: "Archive code".to_string(),
+                    body: "The archive code is ORCHID-7734.".to_string(),
+                    tags: vec!["archive".to_string()],
+                    created_at_ms: 1,
+                    updated_at_ms: 1,
+                }])
+            }
+
+            async fn mark_usage(
+                &self,
+                _ids: &[String],
+                _event: crate::memory::UsageEvent,
+            ) -> Result<(), crate::identity_first::AgentMemoryError> {
+                Ok(())
+            }
+
+            async fn log_injections(
+                &self,
+                _realm: &str,
+                entries: &[crate::memory::InjectionLogEntry],
+            ) -> Result<(), crate::identity_first::AgentMemoryError> {
+                self.injections
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .extend_from_slice(entries);
+                Ok(())
+            }
+        }
+
+        let definition = MobDefinition::from_toml(
+            r#"
+[mob]
+id = "send-message-memory-preparation-test"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+external_addressable = true
+
+[profiles.worker.tools]
+comms = true
+"#,
+        )?;
+        let identity = AgentIdentity::parse("identity:archivist")?;
+        let roster = Arc::new(crate::identity_first::MutableRosterProvider::new(vec![
+            DurableAgentSpec {
+                identity: identity.clone(),
+                profile: meerkat_mob::ProfileName::from("worker"),
+                addressability: AgentAddressability::Addressable,
+                display_name: None,
+                labels: BTreeMap::new(),
+                context: None,
+                additional_instructions: Vec::new(),
+                initial_message: None,
+                runtime_mode_override: Some(meerkat_mob::MobRuntimeMode::TurnDriven),
+                backend: None,
+                binding: None,
+                placement: None,
+            },
+        ]));
+        let memory = Arc::new(CapturingMemoryProvider::default());
+        let scratch = tempfile::tempdir()?;
+        let runtime = UnifiedRuntime::builder()
+            .definition(definition)
+            .continuity_store(Arc::new(LocalContinuityStore::in_memory()?))
+            .lease_provider(Arc::new(LocalLeaseProvider::new()))
+            .roster_provider(roster)
+            .scratch_dir(scratch.path())
+            .identity_runtime_instance_id("send-message-memory-preparation-test")
+            .agent_memory(
+                memory.clone(),
+                crate::identity_first::AgentMemoryConfig {
+                    selection: AgentMemorySelection::Always,
+                    max_entries: 1,
+                    ..crate::identity_first::AgentMemoryConfig::default()
+                },
+            )
+            .default_llm_client(Arc::new(TestClient::for_provider(
+                meerkat_core::Provider::OpenAI,
+            )))
+            .build()
+            .await?;
+
+        let stable_roster_id =
+            crate::member_comms_id::roster_member_id_for_identity(identity.as_str());
+        assert!(
+            runtime
+                .mob_handle()
+                .get_member(&stable_roster_id)
+                .await?
+                .is_some(),
+            "fixture must exercise the exact roster-row branch"
+        );
+
+        let raw = handle_unified_rpc_json(
+            &runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "mobkit/send_message",
+                "params": {
+                    "member_id": identity.as_str(),
+                    "message": "What is the archive code?"
+                },
+            })
+            .to_string(),
+            Duration::from_secs(10),
+            None,
+            None,
+        )
+        .await;
+        let response: Value = serde_json::from_str(&raw)?;
+        assert!(
+            response["error"].is_null(),
+            "SDK-style identity send must be accepted: {response:#?}"
+        );
+        assert_eq!(response["result"]["accepted"], json!(true));
+        let response_session = response["result"]["session_id"]
+            .as_str()
+            .expect("identity delivery reports its bridge session");
+
+        {
+            let recalls = memory
+                .recalls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let turn_recalls = recalls
+                .iter()
+                .filter(|request| {
+                    request.query_text.as_deref() == Some("What is the archive code?")
+                })
+                .count();
+            assert_eq!(
+                turn_recalls, 1,
+                "the SDK door must invoke per-turn preparation exactly once"
+            );
+        }
+
+        {
+            let injections = memory
+                .injections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let turn_injections = injections
+                .iter()
+                .filter(|entry| entry.surface == crate::memory::InjectionSurface::Turn)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                turn_injections.len(),
+                1,
+                "one prepared record must produce one turn-surface offer"
+            );
+            assert_eq!(turn_injections[0].record_id, "mem-sdk-routing");
+            assert_eq!(turn_injections[0].identity, identity.as_str());
+            assert_eq!(
+                turn_injections[0].session_key.as_deref(),
+                Some(response_session)
+            );
+            assert!(turn_injections[0].at_ms > 0);
+        }
+
+        runtime.shutdown().await;
         Ok(())
     }
 

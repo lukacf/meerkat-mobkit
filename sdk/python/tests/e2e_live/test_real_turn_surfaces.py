@@ -181,9 +181,8 @@ async def _seed_and_send(rt, token: str):
         f"seeded record not recallable for the turn's query; recall returned {recalled!r}"
     )
     # Two SDK doors reach a member. `send_message` is what handle.send() uses
-    # and is the default here; `send` is the identity-first door. Both are
-    # defective for ambient memory on 0.8.30 (see the xfail reason above); the
-    # knob exists so the fix can be verified door by door.
+    # and is the default here; `send` is the identity-first door. The knob lets
+    # the same end-to-end assertion exercise either public SDK surface.
     door = os.environ.get("MOBKIT_E2E_LIVE_SEND_DOOR", "send_message")
     if door == "send":
         # identity-first door: mobkit/send
@@ -195,19 +194,6 @@ async def _seed_and_send(rt, token: str):
     return handle
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "0.8.30 defect, reproduced by this lane on 2026-09-03: neither SDK send door "
-        "delivers ambient memory to an identity-first member. mobkit/send_message "
-        "(handle.send) resolves a durable identity to the MobMember arm and skips "
-        "prepare_member_delivery entirely; mobkit/send (runtime.send) injects and "
-        "meerkat-mob refuses the delivery ('autonomous inbox delivery carries no "
-        "user-channel work boundary'). Only the dispatch door injects. strict=True: "
-        "when the 0.8.31 fix lands this test starts PASSING and the marker must be "
-        "removed, so the fix cannot land unnoticed either."
-    ),
-)
 @pytest.mark.asyncio
 @pytest.mark.timeout(400)
 async def test_omitted_per_turn_injection_injects_on_the_turn_surface(
