@@ -4218,13 +4218,21 @@ impl IdentityRuntime {
             return Ok(Vec::new());
         };
         let mut registered: Vec<meerkat_core::types::SessionId> = Vec::new();
+        // Instrumented per identity: on 2026-09-03 a production fleet's registration
+        // went from 49s to 170s for 17 identities with this function byte-identical,
+        // and this loop logged nothing, so nobody could say which of its three awaits
+        // had slowed. One INFO per identity with the three step durations, and one
+        // summary, so the next such regression names its step on the first launch.
+        let loop_started = std::time::Instant::now();
         for spec in roster {
             let identity = &spec.identity;
+            let identity_started = std::time::Instant::now();
             // A substrate that cannot answer is not a boot failure. This pass
             // only ever ADDS a registration that would otherwise happen later;
             // when the facts are unavailable the pre-existing behaviour stands,
             // including the downstream registration-required refusal. Failing
             // the boot here would make an optional capability mandatory.
+            let resolve_started = std::time::Instant::now();
             let resolved = match self
                 .continuity_store
                 .resolve_many(std::slice::from_ref(identity))
@@ -4246,6 +4254,7 @@ impl IdentityRuntime {
             else {
                 continue;
             };
+            let resolve_ms = resolve_started.elapsed().as_millis() as u64;
             let session_id = record.session_id.clone();
             // The substrate is the authority for the fence, not the record: the
             // record's own checkpoint version is a checkpoint-time stamp and may
@@ -4257,6 +4266,7 @@ impl IdentityRuntime {
             // registration-required refusal. A substrate without the fence
             // table returns an ERROR rather than None, which is the same
             // condition, so treat it the same way instead of failing the boot.
+            let continuity_started = std::time::Instant::now();
             let bound = match self
                 .continuity_store
                 .resolve_record_by_session(&session_id)
@@ -4288,6 +4298,8 @@ impl IdentityRuntime {
                     bound_record.identity, bound_record.session_id
                 )));
             }
+            let continuity_ms = continuity_started.elapsed().as_millis() as u64;
+            let publish_started = std::time::Instant::now();
             bridge
                 .register_session_runtime_state(
                     &session_id,
@@ -4303,8 +4315,23 @@ impl IdentityRuntime {
                          before activation: {error}"
                     ))
                 })?;
+            tracing::info!(
+                identity = %identity,
+                session_id = %session_id,
+                resolve_ms,
+                continuity_ms,
+                publish_ms = publish_started.elapsed().as_millis() as u64,
+                total_ms = identity_started.elapsed().as_millis() as u64,
+                "persisted continuity owner registered"
+            );
             registered.push(session_id);
         }
+        tracing::info!(
+            registered = registered.len(),
+            roster = roster.len(),
+            elapsed_ms = loop_started.elapsed().as_millis() as u64,
+            "persisted continuity owners registered"
+        );
         Ok(registered)
     }
 
