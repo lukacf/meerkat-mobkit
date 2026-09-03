@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   loop logged nothing, so nobody could name the slow step from the logs. Now
   the first launch does.
 
+- **A committed->durable reconciliation now reports its cost when it finishes.**
+  The runtime-authority freshness probe already logged when it started one;
+  it now logs completion at INFO with the durable and committed
+  (rewrite generation, message count) pair and `elapsed_ms`. On 2026-09-03 a
+  production fleet spent 171 s across 16 such reconciliations before
+  ResumeLifecycle with nothing at INFO to say so; the reproducer had to run at
+  DEBUG to see it.
+
 - **Autonomous-host members no longer lose the whole turn to memory injection.**
   meerkat refuses injected context on `runtime_mode = "autonomous_host"`
   ("autonomous inbox delivery carries no user-channel work boundary"), and
@@ -33,7 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   memory therefore requires `runtime_mode = "turn_driven"` until meerkat's
   carrier change lands with the peer/comms work. Real-API lane test added.
 
-<<<<<<< HEAD
 - **A per-turn memory injection that injects nothing now says why.**
   `RecallCoordinator::inject_for_turn_classified` returns a typed
   `TurnInjection::Skipped(reason)` with one of five reasons
@@ -44,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   recorded only what was injected, so "off", "no memory" and "budget spent"
   were the same absence; HomeCore's two months of zero turn-surface rows would
   have named themselves on the first turn.
-=======
+
 - **A real-API end-to-end lane (`make e2e-live`).** Boots the real
   `rpc_gateway` through the Python SDK, runs real Anthropic turns, and asserts
   positive observables that only exist if the whole chain worked: a
@@ -55,7 +62,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   is skipped unless `MOBKIT_E2E_LIVE=1`; once requested, a missing key or
   binary is a failure, never a skip. Nightly workflow `e2e-live.yml` (needs the
   `ANTHROPIC_API_KEY` repository secret; fails loudly without it).
->>>>>>> codex/per-turn-injection-one-default
 
 ### Fixed
 

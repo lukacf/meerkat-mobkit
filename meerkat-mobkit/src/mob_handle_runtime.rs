@@ -2469,6 +2469,7 @@ impl SessionStoreBackedRuntimeStore {
             return Ok(());
         }
         if durable_order < committed_order {
+            let reconciliation_started = std::time::Instant::now();
             // Durable BEHIND committed: the parent-1 tear shape. A projection
             // that failed (or, pre-fix, could not install a rewrite
             // generation) left the durable row behind authority the runtime
@@ -2497,6 +2498,20 @@ impl SessionStoreBackedRuntimeStore {
             );
             self.project_committed_session_to_durable(runtime_id)
                 .await?;
+            // The 2026-09-03 production boot regression spent 171 s in this
+            // branch across 16 sessions with nothing at INFO about how long or
+            // how many generations; the reproducer had to run at DEBUG to see
+            // it. One completion line per reconciliation, at INFO, with the cost.
+            tracing::info!(
+                runtime_id = %runtime_id,
+                session_id = %session_id,
+                durable_rewrite_generation = durable_order.0,
+                durable_message_count = durable_order.1,
+                committed_rewrite_generation = committed_order.0,
+                committed_message_count = committed_order.1,
+                elapsed_ms = reconciliation_started.elapsed().as_millis() as u64,
+                "committed->durable reconciliation complete"
+            );
             mark_fresh();
             return Ok(());
         }
