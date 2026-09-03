@@ -40,6 +40,7 @@ use meerkat_mobkit::contact_directory::ContactDirectory;
 use meerkat_mobkit::runtime::cross_mob_control::{
     ControlAuthorizer, ControlGrantTable, ControlListenAddr,
 };
+use meerkat_mobkit::shutdown_signal::ShutdownSignal;
 use meerkat_mobkit::unified_runtime::EventLogError;
 use meerkat_mobkit::unified_runtime::types::IdentityAuthorityReleaseOutcome;
 use meerkat_mobkit::unified_runtime::types::RetiredSupervisorCleanupOutcome;
@@ -9617,6 +9618,43 @@ fn agent_tool_error(message: String) -> AgentError {
 }
 
 /// Persistent mode: reads JSON-RPC over stdin, bootstraps unified runtime, serves HTTP.
+/// Why the persistent dispatch loop stopped admitting requests: the `reason=`
+/// token of the "dispatch loop ended" log line. The three designed exits are
+/// named so an operator can tell them apart from each other and from a
+/// crash, which leaves no such line (only the panic hook's ERROR, or nothing
+/// at all when the process was killed from outside).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DispatchLoopEnd {
+    /// The stdin reader closed the request channel: the launching process
+    /// closed our stdin (EOF) or the read failed. Exiting on EOF is by
+    /// design; a gateway whose parent went away has nobody left to answer.
+    StdinClosed,
+    /// SIGINT or SIGTERM arrived while stdin was still open.
+    Signal(ShutdownSignal),
+    /// The SDK's private shutdown handshake asked for an orderly stop.
+    SdkShutdownHandshake,
+}
+
+impl DispatchLoopEnd {
+    /// The signal that ended the loop, when one did.
+    fn signal(self) -> Option<ShutdownSignal> {
+        match self {
+            Self::Signal(signal) => Some(signal),
+            Self::StdinClosed | Self::SdkShutdownHandshake => None,
+        }
+    }
+}
+
+impl std::fmt::Display for DispatchLoopEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::StdinClosed => "stdin_closed",
+            Self::Signal(_) => "signal",
+            Self::SdkShutdownHandshake => "sdk_shutdown_handshake",
+        })
+    }
+}
+
 fn run_persistent(control_listen: Option<ControlListenAddr>) {
     // Deep worker stacks for the generated machine-authority apply path; the
     // builder is shared with mobkit_gateway, the failure reporting is not
@@ -9881,9 +9919,21 @@ external_addressable = true
             loop {
                 line.clear();
                 match reader.read_line(&mut line).await {
-                    Ok(0) => break, // EOF
+                    Ok(0) => {
+                        // EOF: the launching process closed the pipe. This
+                        // ends the gateway by design (`DispatchLoopEnd`), so
+                        // say so before the loop's own exit line.
+                        tracing::info!(
+                            "stdin reached EOF: the launching process closed the pipe; closing \
+                             request admission"
+                        );
+                        break;
+                    }
                     Ok(_) => {}
-                    Err(_) => break,
+                    Err(error) => {
+                        tracing::warn!(%error, "stdin read failed; closing request admission");
+                        break;
+                    }
                 }
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
@@ -12182,11 +12232,10 @@ external_addressable = true
     // the same methods concurrently, so completion order is free.
     let identity_ctx = identity_ctx.map(Arc::new);
     let http_base_url_shared: Arc<str> = http_base_url.clone().into();
-    let mut interrupted_with_open_stdin = false;
     let mut gateway_shutdown = None;
-    {
+    let dispatch_end = {
         let mut inflight = tokio::task::JoinSet::new();
-        loop {
+        let dispatch_end = loop {
             let request_line = tokio::select! {
                 line = rpc_rx.recv() => line,
                 // SIGINT *and* SIGTERM: a container stop sends SIGTERM, and
@@ -12194,19 +12243,20 @@ external_addressable = true
                 // on an ordinary deploy, leaving the schedule executor lease
                 // held for up to its duration. See
                 // `meerkat_mobkit::shutdown_signal`.
-                _ = meerkat_mobkit::shutdown_signal::shutdown_signal() => {
-                    interrupted_with_open_stdin = true;
-                    None
+                signal = meerkat_mobkit::shutdown_signal::shutdown_signal() => {
+                    break DispatchLoopEnd::Signal(signal);
                 },
             };
             let Some(request_line) = request_line else {
-                break; // stdin reader closed (EOF/error), or Ctrl-C won
+                // The stdin reader closed the request channel (EOF or a read
+                // error; it logged which).
+                break DispatchLoopEnd::StdinClosed;
             };
             if let Ok(message) = serde_json::from_str::<Value>(&request_line)
                 && let Some(request) = gateway_shutdown_request(&message)
             {
                 gateway_shutdown = Some(request);
-                break;
+                break DispatchLoopEnd::SdkShutdownHandshake;
             }
             let request_line =
                 apply_gateway_runtime_config_to_request(&request_line, &gateway_options.gating);
@@ -12244,7 +12294,16 @@ external_addressable = true
             });
             // Reap completed handlers so the set does not grow unbounded.
             while inflight.try_join_next().is_some() {}
-        }
+        };
+        // Name the branch that ended admission BEFORE the drain and the
+        // shutdown sequence, so a wedge in either still leaves the reason in
+        // the log. `reason=` is one of `DispatchLoopEnd`'s tokens; `signal=`
+        // is present only when the reason is `signal`.
+        tracing::info!(
+            reason = %dispatch_end,
+            signal = dispatch_end.signal().map(tracing::field::display),
+            "rpc_gateway dispatch loop ended; running graceful shutdown"
+        );
         // EOF/Ctrl-C makes further callback responses impossible (or asks us
         // to stop immediately), so wake callback waiters. An explicit SDK
         // shutdown handshake is different: stdin stays open and callback
@@ -12264,7 +12323,9 @@ external_addressable = true
         {
             inflight.shutdown().await;
         }
-    }
+        dispatch_end
+    };
+    let interrupted_with_open_stdin = matches!(dispatch_end, DispatchLoopEnd::Signal(_));
 
     // 10. Graceful shutdown: stop HTTP admission, bound the outer-handler
     // drain, then let the runtime cancel/join identity-owned transactions.
@@ -12335,6 +12396,13 @@ external_addressable = true
         let _ = stdout_writer.await;
     }
     drop(_temp_dir);
+    // The closing bookend to the "dispatch loop ended" line: if this one is
+    // missing from a log that has the first, the shutdown sequence wedged.
+    tracing::info!(
+        reason = %dispatch_end,
+        signal = dispatch_end.signal().map(tracing::field::display),
+        "rpc_gateway shutdown complete; exiting"
+    );
     if interrupted_with_open_stdin {
         // Tokio's stdin adapter performs a blocking read that cannot be
         // cancelled by aborting its task. All MobKit/runtime/stdout cleanup is

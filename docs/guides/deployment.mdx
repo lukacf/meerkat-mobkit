@@ -178,6 +178,57 @@ resumes a runtime bound where you asked, instead of silently reporting a live
 runtime bound somewhere else. A resumed launch reports the `http_base_url` and
 `http_public_base_url` the live runtime was started with.
 
+## Reading a gateway exit
+
+Both gateways log on stderr, through `tracing`, at the default filter (no
+`RUST_LOG` needed). When the run loop ends, the binary writes one INFO line
+naming which branch ended it, runs the graceful shutdown sequence, then writes
+a closing bookend:
+
+```text
+INFO rpc_gateway: rpc_gateway dispatch loop ended; running graceful shutdown reason=signal signal=SIGTERM
+INFO rpc_gateway: rpc_gateway shutdown complete; exiting reason=signal signal=SIGTERM
+```
+
+`reason=` is one of these tokens; `signal=` (`SIGINT` or `SIGTERM`) is present
+only when the reason is `signal`.
+
+| Binary | `reason=` | Meaning |
+|--------|-----------|---------|
+| `rpc_gateway` | `stdin_closed` | The launching process closed the gateway's stdin (EOF) or the read failed; the reader logs which just before. Exiting on EOF is by design: the SDK that owned the pipe is gone. |
+| `rpc_gateway` | `signal` | SIGINT or SIGTERM arrived while stdin was still open. |
+| `rpc_gateway` | `sdk_shutdown_handshake` | The SDK's `mobkit/shutdown` handshake asked for an orderly stop. |
+| `mobkit_gateway` | `signal` | SIGINT or SIGTERM. |
+| `mobkit_gateway` | `http_server_ended` | The HTTP server task ended on its own. A clean end proceeds to graceful shutdown; an abnormal one is also logged at ERROR and the process exits 1. |
+| `mobkit_gateway` | `stdin_guard_ended` | Not expected: the stdin guard parks forever after EOF. Named so it can never be silently absorbed. |
+
+`mobkit_gateway` does not exit on stdin EOF. It logs `stdin closed by the
+launching process; mobkit_gateway keeps serving HTTP until SIGINT or SIGTERM`
+and stays up, so a later exit is attributed to what actually ended it. After a
+signal it exits once shutdown completes whether or not stdin is still open (a
+terminal, or a parent holding the pipe); both gateways exit explicitly on that
+path because tokio's stdin read cannot be cancelled.
+
+Panics are reported through the same stream at ERROR, with `thread`, `file`,
+`line`, `column` and `payload` fields, before the standard panic message
+(`RUST_BACKTRACE` still works). A panic on a tokio worker unwinds one task and
+the process keeps running, so this line may be the only record of one.
+
+How to read a gateway that is gone:
+
+- The "loop ended" line is present with `reason=signal`: a supervisor or
+  operator stopped it. Check who sent the signal (container stop, health check
+  timing out during a long console operation, `kill`).
+- `reason=stdin_closed` on `rpc_gateway`: the SDK host process exited or closed
+  the pipe; look at the host first.
+- The "loop ended" line is present but the bookend is not: the shutdown
+  sequence wedged or the process was killed during it.
+- Neither line, but a `panic` ERROR: a crash; the line names the source
+  location.
+- No line at all: the process was killed from outside (SIGKILL, an OOM kill,
+  a stack overflow) or aborted. The exit status names which; `137` is SIGKILL,
+  `139` is a segfault or stack overflow, `134` is an abort.
+
 ## See also
 
 - [Configuration](/reference/configuration): the `http_listen`,

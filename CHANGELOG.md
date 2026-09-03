@@ -30,6 +30,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A gateway that exits now says why, and a panic leaves a log line.** Both
+  gateway binaries ended their run loop in silence on every designed path
+  (stdin EOF, SIGINT, SIGTERM, the SDK shutdown handshake) and had no panic
+  hook, so a report of "the gateway process exited, all endpoints 000" could
+  not be told apart from a crash, a supervisor's SIGTERM after a slow console
+  operation, or the SDK host closing the pipe; the only exit that named
+  itself lived in a test name. Each binary now logs one INFO line when its
+  `select!` resolves, before the shutdown sequence, with `reason=` naming the
+  branch (`rpc_gateway`: `stdin_closed`, `signal`, `sdk_shutdown_handshake`;
+  `mobkit_gateway`: `signal`, `http_server_ended`, `stdin_guard_ended`) and
+  `signal=SIGINT|SIGTERM` when a signal did it, then a "shutdown complete;
+  exiting" bookend, so a wedge between the two is visible as a missing
+  bookend. The `rpc_gateway` stdin reader names EOF versus a read error;
+  `mobkit_gateway` logs the stdin close it survives by design and, when the
+  HTTP server task ends abnormally, logs the error at ERROR on stderr as well
+  as failing init on stdout. `init_gateway_tracing` installs a panic hook
+  (`install_gateway_panic_hook`, exported) that reports every panic through
+  `tracing::error!` with thread, file, line, column and payload before the
+  default hook runs, so a task panic that the runtime absorbs is in the log
+  stream. `shutdown_signal::shutdown_signal()` now returns the new
+  `ShutdownSignal` (`Interrupt` | `Terminate`, `Display` = `SIGINT` /
+  `SIGTERM`) instead of `()`; a caller that pattern-matched the unit value
+  must bind or ignore it. All lines pass the default filter. Covered by a
+  subprocess suite (`tests/gateway_exit_reason.rs`) that drives both real
+  binaries through each exit with `RUST_LOG` unset and by a hook unit test;
+  `docs/guides/deployment.mdx` gains a "Reading a gateway exit" section that
+  also states the two designed exit contracts (`rpc_gateway` exits on stdin
+  EOF, `mobkit_gateway` does not).
+
 - **`DurableAgentSpec` exposes `runtime_mode_override` and `initial_message`
   in both gateway SDKs.** The Rust spec has deserialized both since the
   identity-first plane landed (`#[serde(default)]`), and the bridge forwards
@@ -97,6 +126,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   OIDC snapshot check on an open console.
 
 ### Fixed
+
+- **`mobkit_gateway` exits after SIGINT/SIGTERM even when stdin is still
+  open.** With stdin held open (a terminal, or a parent process holding the
+  pipe), a signalled `mobkit_gateway` completed its graceful shutdown and then
+  never exited: the tokio runtime destructor waits forever for the blocking
+  stdin read, which dropping its future cannot cancel. `rpc_gateway` has
+  worked around exactly this with an explicit exit on its signal path since
+  the stdin adapter landed; `mobkit_gateway` now does the same once cleanup
+  is complete. With stdin already at EOF (the container case) nothing
+  changes. Found by the new exit-reason subprocess suite, which asserts the
+  process is gone after the "shutdown complete; exiting" line.
 
 - **A `session_service()` builder that cannot answer `build_agent` is refused
   at `connect()` instead of being skipped in silence.** `MobKitRuntime._bootstrap`

@@ -809,10 +809,15 @@ pub fn default_tracing_filter(binary_target: &str) -> String {
     format!("warn,meerkat_mobkit=info,{binary_target}=info")
 }
 
-/// Install the gateway tracing subscriber on stderr.
+/// Install the gateway tracing subscriber on stderr, then the panic hook.
 ///
 /// Stderr, never stdout: stdout carries the init JSON handshake and the
 /// storage verbs' report output. `RUST_LOG` overrides the default filter.
+///
+/// The panic hook goes in here rather than in each binary's `main` so the
+/// two gateways cannot drift on it, and so a panic is reported through the
+/// same subscriber, with the same timestamps and filter, as the run-loop exit
+/// line the binaries log. See [`install_gateway_panic_hook`].
 pub fn init_gateway_tracing(binary_target: &str) {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -823,6 +828,67 @@ pub fn init_gateway_tracing(binary_target: &str) {
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();
+    install_gateway_panic_hook();
+}
+
+/// Report every panic through `tracing::error!` before the previously
+/// installed hook (normally the default one) prints its own message.
+///
+/// A panic on a tokio worker unwinds one task; the runtime and the process
+/// keep going, and the only trace is the default hook's plain-text line on
+/// stderr: no timestamp, no target, and gone if stderr was redirected away
+/// from the log stream. The panic in that case surfaces days later as "a
+/// member stopped answering" with nothing to grep for. Routing it through
+/// tracing puts the thread, source location and payload in the log stream
+/// itself, at ERROR so no sane filter drops it, next to the line that names
+/// which `select!` branch ended the gateway. Together they let an operator
+/// tell a crash-shaped exit from a supervisor's SIGTERM from a stdin EOF,
+/// which one report of "the gateway process exited, all endpoints 000" could
+/// not.
+///
+/// The previous hook still runs afterwards, so `RUST_BACKTRACE` keeps
+/// working and a host that installed its own hook before calling
+/// [`init_gateway_tracing`] keeps it. Re-entrancy is safe: tracing drops an
+/// event emitted from inside a subscriber callback rather than recursing, so
+/// a panic raised while formatting a log line does not abort the process
+/// from inside this hook.
+pub fn install_gateway_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log_panic(info);
+        previous(info);
+    }));
+}
+
+/// The tracing half of the panic hook, separate so the log shape is one
+/// place. Fields: `thread`, `file`, `line`, `column`, `payload`.
+fn log_panic(info: &std::panic::PanicHookInfo<'_>) {
+    let payload = panic_payload_text(info.payload());
+    let current = std::thread::current();
+    let thread = current.name().unwrap_or("<unnamed>");
+    match info.location() {
+        Some(location) => tracing::error!(
+            thread,
+            file = location.file(),
+            line = location.line(),
+            column = location.column(),
+            payload,
+            "panic"
+        ),
+        None => tracing::error!(thread, payload, "panic (location unavailable)"),
+    }
+}
+
+/// `panic!("literal")` carries a `&str`, `panic!("{x}")` carries a `String`;
+/// anything else (`panic_any`) has no text to show.
+fn panic_payload_text(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        text
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.as_str()
+    } else {
+        "<non-string panic payload>"
+    }
 }
 
 /// Extract and validate the optional `--control-listen <addr>` flag.
@@ -1433,6 +1499,106 @@ default_binding = "local"
             assert!(
                 filter.starts_with("warn,"),
                 "filter for {target} lost the dependency WARN default: {filter}"
+            );
+        }
+    }
+
+    /// Captures everything a `tracing_subscriber::fmt` subscriber writes so a
+    /// test can assert on the rendered line.
+    #[derive(Clone, Default)]
+    struct CaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CaptureWriter {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(
+                &self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+            .into_owned()
+        }
+    }
+
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+        type Writer = CaptureWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// A panic must leave an ERROR line in the tracing stream naming the
+    /// thread, the source location and the payload. Without the hook the
+    /// only record is the default hook's plain stderr text, which is not in
+    /// the log stream at all when stderr is redirected; the tests that
+    /// drive the real binaries cannot make a gateway panic on demand, so the
+    /// hook is proven here on the test thread with a thread-local subscriber.
+    #[test]
+    // The panics ARE the subject under test; they are caught two lines later.
+    #[allow(clippy::panic)]
+    fn panic_hook_reports_thread_location_and_payload_through_tracing() {
+        install_gateway_panic_hook();
+        let writer = CaptureWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .finish();
+        let current = std::thread::current();
+        let this_thread = current.name().unwrap_or("<unnamed>").to_string();
+        let outcomes = tracing::subscriber::with_default(subscriber, || {
+            // A formatted message carries a `String` payload, a literal
+            // carries a `&str`; both downcasts must render the text.
+            let formatted = std::panic::catch_unwind(|| {
+                panic!("gateway panic hook marker {}", 40 + 2);
+            });
+            let literal = std::panic::catch_unwind(|| {
+                panic!("gateway panic hook literal marker");
+            });
+            (formatted, literal)
+        });
+        assert!(outcomes.0.is_err() && outcomes.1.is_err());
+
+        let log = writer.contents();
+        let error_lines: Vec<&str> = log.lines().filter(|line| line.contains("ERROR")).collect();
+        assert!(
+            error_lines
+                .iter()
+                .any(|line| line.contains("gateway panic hook marker 42")),
+            "formatted panic payload missing from the tracing stream:\n{log}"
+        );
+        assert!(
+            error_lines
+                .iter()
+                .any(|line| line.contains("gateway panic hook literal marker")),
+            "literal panic payload missing from the tracing stream:\n{log}"
+        );
+        for line in &error_lines {
+            assert!(
+                line.contains("gateway_composition.rs"),
+                "panic line does not name the source file: {line}"
+            );
+            assert!(
+                line.contains("line=") && line.contains("column="),
+                "panic line does not carry the source position: {line}"
+            );
+            assert!(
+                line.contains(&this_thread),
+                "panic line does not name the panicking thread {this_thread:?}: {line}"
             );
         }
     }

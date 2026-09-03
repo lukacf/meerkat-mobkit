@@ -14,6 +14,7 @@ use meerkat_mobkit::contact_directory::ContactDirectory;
 use meerkat_mobkit::runtime::cross_mob_control::{
     ControlAuthorizer, ControlGrantTable, ControlListenAddr,
 };
+use meerkat_mobkit::shutdown_signal::ShutdownSignal;
 use meerkat_mobkit::{
     Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore, ConsolePolicy, ConsoleUiConfig,
     ConventionalPaths, GatewayPeerKeys, MOBKIT_CONTRACT_VERSION, MobBootstrapOptions,
@@ -1302,6 +1303,41 @@ fn main() {
     }
 }
 
+/// Which `select!` branch ended `run()`: the `reason=` token of the "run loop
+/// ended" log line. Named so an operator can tell a supervisor's signal from
+/// a server-task death from a crash, which leaves no such line (only the
+/// panic hook's ERROR, or nothing at all when the process was killed from
+/// outside).
+enum RunEnd {
+    /// The HTTP server task ended on its own; the outcome says whether
+    /// cleanly. Abnormal outcomes are logged at ERROR and fail `run()`.
+    HttpServer(meerkat_mobkit::gateway_composition::GatewayHttpDrainOutcome),
+    /// The stdin guard returned. It parks forever after EOF, so this branch
+    /// is not expected to fire; it is named rather than silently absorbed.
+    StdinGuard,
+    /// SIGINT or SIGTERM.
+    Signal(ShutdownSignal),
+}
+
+impl RunEnd {
+    /// The `reason=` token.
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::HttpServer(_) => "http_server_ended",
+            Self::StdinGuard => "stdin_guard_ended",
+            Self::Signal(_) => "signal",
+        }
+    }
+
+    /// The signal that ended the loop, when one did.
+    fn signal(&self) -> Option<ShutdownSignal> {
+        match self {
+            Self::Signal(signal) => Some(*signal),
+            Self::HttpServer(_) | Self::StdinGuard => None,
+        }
+    }
+}
+
 async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
     let GatewayLaunchArgs {
         control_listen,
@@ -1981,7 +2017,23 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
         loop {
             line.clear();
             match reader.read_line(&mut line).await {
-                Ok(0) | Err(_) => break, // launching parent closed stdin
+                Ok(0) => {
+                    // Unlike rpc_gateway, this binary outlives its stdin by
+                    // design (see below); say so, or a later exit gets
+                    // misattributed to the EOF.
+                    tracing::info!(
+                        "stdin closed by the launching process; mobkit_gateway keeps serving HTTP \
+                         until SIGINT or SIGTERM"
+                    );
+                    break;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "stdin read failed; mobkit_gateway keeps serving HTTP until SIGINT or SIGTERM"
+                    );
+                    break;
+                }
                 Ok(_) => {}
             }
             let trimmed = line.trim();
@@ -2006,26 +2058,49 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
         std::future::pending::<()>().await;
     };
 
-    tokio::select! {
+    let run_end = tokio::select! {
         // SIGINT *and* SIGTERM: a container stop sends SIGTERM, and waiting
         // on ctrl_c alone meant the graceful path never ran on an ordinary
         // deploy. See `meerkat_mobkit::shutdown_signal` for why that became
         // load-bearing at 0.8.22 (unreleased schedule executor lease).
-        result = http_server.wait() => {
-            match result {
-                meerkat_mobkit::gateway_composition::GatewayHttpDrainOutcome::Completed(result) => {
-                    result.context("gateway HTTP server failed")?;
-                }
-                meerkat_mobkit::gateway_composition::GatewayHttpDrainOutcome::TimedOut => {
-                    return Err(anyhow!("gateway HTTP server wait timed out"));
-                }
-                meerkat_mobkit::gateway_composition::GatewayHttpDrainOutcome::JoinFailed(error) => {
-                    return Err(anyhow!("gateway HTTP server task failed: {error}"));
-                }
+        outcome = http_server.wait() => RunEnd::HttpServer(outcome),
+        () = stdin_guard => RunEnd::StdinGuard,
+        signal = meerkat_mobkit::shutdown_signal::shutdown_signal() => RunEnd::Signal(signal),
+    };
+    // Name the branch that ended run() BEFORE the shutdown sequence, so a
+    // wedge in it still leaves the reason in the log. `reason=` is one of
+    // `RunEnd`'s tokens; `signal=` is present only when the reason is
+    // `signal`.
+    let exit_reason = run_end.reason();
+    let exit_signal = run_end.signal();
+    tracing::info!(
+        reason = %exit_reason,
+        signal = exit_signal.map(tracing::field::display),
+        "mobkit_gateway run loop ended; running graceful shutdown"
+    );
+    if let RunEnd::HttpServer(outcome) = run_end {
+        let failure = match outcome {
+            meerkat_mobkit::gateway_composition::GatewayHttpDrainOutcome::Completed(Ok(())) => None,
+            meerkat_mobkit::gateway_composition::GatewayHttpDrainOutcome::Completed(Err(error)) => {
+                Some(anyhow::Error::new(error).context("gateway HTTP server failed"))
             }
+            meerkat_mobkit::gateway_composition::GatewayHttpDrainOutcome::TimedOut => {
+                Some(anyhow!("gateway HTTP server wait timed out"))
+            }
+            meerkat_mobkit::gateway_composition::GatewayHttpDrainOutcome::JoinFailed(error) => {
+                Some(anyhow!("gateway HTTP server task failed: {error}"))
+            }
+        };
+        if let Some(error) = failure {
+            // main() reports this as a JSON-RPC error on stdout and exits 1;
+            // the log stream is stderr, so name it there too.
+            tracing::error!(
+                error = %format!("{error:#}"),
+                "mobkit_gateway exiting without graceful shutdown: the HTTP server task ended \
+                 abnormally"
+            );
+            return Err(error);
         }
-        () = stdin_guard => {}
-        () = meerkat_mobkit::shutdown_signal::shutdown_signal() => {}
     }
 
     // Release the schedule executor lease on the graceful path.
@@ -2062,7 +2137,30 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
             },
         )
         .await;
-    shutdown.cleanup?;
+    if let Err(error) = shutdown.cleanup {
+        tracing::error!(
+            reason = %exit_reason,
+            error = %error,
+            "mobkit_gateway shutdown finished with a registry cleanup failure; exiting"
+        );
+        return Err(error);
+    }
+    // The closing bookend to the "run loop ended" line: if this one is
+    // missing from a log that has the first, the shutdown sequence wedged.
+    tracing::info!(
+        reason = %exit_reason,
+        signal = exit_signal.map(tracing::field::display),
+        "mobkit_gateway shutdown complete; exiting"
+    );
+    if exit_signal.is_some() {
+        // Tokio's stdin adapter performs a blocking read that cannot be
+        // cancelled by dropping its future; on the signal path stdin may still
+        // be open (a terminal, or a parent holding the pipe), so the runtime
+        // destructor would wait forever for that helper thread and the process
+        // would log "exiting" and then never exit. All MobKit/runtime/registry
+        // cleanup is complete above; exit explicitly, as rpc_gateway does.
+        std::process::exit(0);
+    }
     Ok(())
 }
 
