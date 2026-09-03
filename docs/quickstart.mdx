@@ -179,6 +179,23 @@ output = await triage.dispatch_text_and_wait(
 await luka.send_and_wait("What's happening today?", timeout=60)
 ```
 
+<Note>
+**Profiles are templates; members are declared.** The `[profiles.*]` tables in
+`MOB_TOML` produce no members on their own: the identities your roster returns
+(or `ensure_member` names) are the only members that exist, and nothing spawns
+one member per profile for you. The roster callback receives the parsed
+definition as `context["mob_definition"]`, so a profile-shaped crew is one loop
+over `definition["profiles"]`; see
+[Profiles are templates](/concepts/roster#profiles-are-templates-members-are-declared).
+If the definition declares `[wiring]` (`auto_wire_orchestrator` or
+`role_wiring`), call `rt.mob_handle().reconcile_edges()` after boot and after
+each `rt.reconcile()`; `ensure_member` reconciles on its own. Pin
+`runtime_mode = "turn_driven"` on profiles that back addressable identities:
+meerkat defaults to `autonomous_host`, which runs a kickoff turn at spawn and
+cannot receive ambient per-turn memory (see
+[Runtime modes](/concepts/roster#runtime-modes)).
+</Note>
+
 Use `respawn()` for non-destructive recovery that keeps continuity, and `reset()` only when the app intentionally wants a destructive new generation and session.
 
 If you change a durable identity's role in the roster, its resume fails closed
