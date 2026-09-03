@@ -2047,29 +2047,36 @@ impl SessionStoreBackedRuntimeStore {
     /// (meerkat-core `session_store.rs`, head CAS). `None` when the store has
     /// no incremental channel: such stores load whole blobs whose Session
     /// carries its own history, so the caller reads the generation there.
+    async fn durable_head(
+        session_store: &Arc<dyn SessionStore>,
+        session_id: &meerkat_core::types::SessionId,
+        purpose: &str,
+    ) -> Result<
+        Option<meerkat_core::session_store::SessionHead>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        let Some(head_store) = Arc::clone(session_store).as_incremental() else {
+            return Ok(None);
+        };
+        head_store.load_head(session_id).await.map_err(|e| {
+            meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                "durable session head read for {purpose}: {e}"
+            ))
+        })
+    }
+
+    /// The durable row's rewrite generation as its head row records it (see
+    /// [`Self::durable_head`]); `None` when the store has no incremental
+    /// channel, in which case the loaded Session carries its own history.
     async fn durable_head_generation(
         session_store: &Arc<dyn SessionStore>,
         session_id: &meerkat_core::types::SessionId,
         purpose: &str,
     ) -> Result<Option<u64>, meerkat_runtime::store::RuntimeStoreError> {
-        let Some(head_store) = Arc::clone(session_store).as_incremental() else {
-            return Ok(None);
-        };
-        head_store
-            .load_head(session_id)
-            .await
-            .map(|head| head.map(|head| head.rewrite_count))
-            .map_err(|e| {
-                meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
-                    "durable session head read for {purpose}: {e}"
-                ))
-            })
+        Ok(Self::durable_head(session_store, session_id, purpose)
+            .await?
+            .map(|head| head.rewrite_count))
     }
-
-    /// Envelope keys the head-canonical read and the committed document may
-    /// legitimately disagree on without either owing the other anything.
-    /// `updated_at` is a write timestamp, not a durable fact.
-    const ENVELOPE_CURRENCY_IGNORED_KEYS: &'static [&'static str] = &["updated_at"];
 
     /// Metadata keys the head-canonical shape carries in its own head columns
     /// (transcript history graph, rewrite-prefix authority, realtime event
@@ -2084,46 +2091,30 @@ impl SessionStoreBackedRuntimeStore {
         meerkat_core::SESSION_REALTIME_TRANSCRIPT_STATE_KEY,
     ];
 
-    /// `None` when the two persisted session documents agree on every durable
-    /// envelope fact; otherwise the differing keys (metadata reported one
-    /// level deep as `metadata.<key>`, capped) for the envelope-currency INFO
-    /// line. Non-JSON or non-object documents fall back to a raw byte compare
-    /// and report as such, so an unreadable document still projects.
-    fn envelope_debt_keys(durable: &[u8], committed: &[u8]) -> Option<String> {
+    /// `None` when the durable row and the committed document agree on every
+    /// envelope fact a head-canonical row can carry; otherwise the differing
+    /// keys (metadata reported as `metadata.<key>`, capped) for the
+    /// envelope-currency INFO line. Compares typed fields and the metadata maps
+    /// directly - no serialisation of either document.
+    fn envelope_debt_keys(
+        durable: &meerkat_core::Session,
+        committed: &meerkat_core::Session,
+    ) -> Option<String> {
         const CAP: usize = 8;
-        let parse = |bytes: &[u8]| -> Option<serde_json::Map<String, serde_json::Value>> {
-            match serde_json::from_slice::<serde_json::Value>(bytes).ok()? {
-                serde_json::Value::Object(mut map) => {
-                    for key in Self::ENVELOPE_CURRENCY_IGNORED_KEYS {
-                        map.remove(*key);
-                    }
-                    Some(map)
-                }
-                _ => None,
-            }
-        };
-        let (Some(durable), Some(committed)) = (parse(durable), parse(committed)) else {
-            return (durable != committed).then(|| "<non-object document>".to_string());
-        };
         let mut keys: Vec<String> = Vec::new();
-        for key in durable.keys().chain(committed.keys()) {
-            if durable.get(key) == committed.get(key) {
+        if durable.version() != committed.version() {
+            keys.push("version".to_string());
+        }
+        if durable.created_at() != committed.created_at() {
+            keys.push("created_at".to_string());
+        }
+        let (a, b) = (durable.metadata(), committed.metadata());
+        for key in a.keys().chain(b.keys()) {
+            if Self::HEAD_OWNED_METADATA_KEYS.contains(&key.as_str()) {
                 continue;
             }
-            match (durable.get(key), committed.get(key)) {
-                (Some(serde_json::Value::Object(a)), Some(serde_json::Value::Object(b)))
-                    if key == "metadata" =>
-                {
-                    for inner in a.keys().chain(b.keys()) {
-                        if Self::HEAD_OWNED_METADATA_KEYS.contains(&inner.as_str()) {
-                            continue;
-                        }
-                        if a.get(inner) != b.get(inner) {
-                            keys.push(format!("metadata.{inner}"));
-                        }
-                    }
-                }
-                _ => keys.push(key.clone()),
+            if a.get(key) != b.get(key) {
+                keys.push(format!("metadata.{key}"));
             }
         }
         keys.sort_unstable();
@@ -2492,16 +2483,24 @@ impl SessionStoreBackedRuntimeStore {
                 ))
             })?
             .is_some();
-        let durable_generation = if durable_carries_history {
-            order_of(&durable)?.0
+        // A slim row's head carries both facts the probe needs: the adopted
+        // rewrite generation and the transcript digest (`head_revision`, the
+        // same value `transcript_revision()` re-derives over the whole
+        // transcript). Reading them off the head saves one full digest per
+        // member per boot (production: ~0.6 s of a 2.2 s probe on 1.2 MB rows).
+        let slim_head = if durable_carries_history {
+            None
         } else {
-            Self::durable_head_generation(
+            Self::durable_head(
                 session_store,
                 &session_id,
                 "runtime-authority freshness probe",
             )
             .await?
-            .unwrap_or(0)
+        };
+        let durable_generation = match slim_head.as_ref() {
+            Some(head) => head.rewrite_count,
+            None => order_of(&durable)?.0,
         };
         let durable_order = (durable_generation, durable.messages().len());
         if durable_order == committed_order {
@@ -2515,11 +2514,21 @@ impl SessionStoreBackedRuntimeStore {
             // make: refuse typed, loudly and repeatably, exactly like the
             // divergent-ahead refusal below. Exact revision equality marks
             // fresh.
-            let durable_revision = durable.transcript_revision().map_err(|e| {
-                meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
-                    "durable transcript revision for runtime-authority freshness probe: {e}"
-                ))
-            })?;
+            // Only a CURRENT-version head stores the transcript digest the current
+            // materialisation computes; a released (envelope v2) head stores the
+            // released-format rows digest (`released_0810_transcript_serialized_rows_digest`),
+            // which is not comparable. Released realms keep the full digest -
+            // four released_realm_upgrade_drive tests went red when they did not.
+            let durable_revision = match slim_head.as_ref() {
+                Some(head) if head.version == meerkat_core::SESSION_VERSION => {
+                    head.head_revision.clone()
+                }
+                _ => durable.transcript_revision().map_err(|e| {
+                    meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                        "durable transcript revision for runtime-authority freshness probe: {e}"
+                    ))
+                })?,
+            };
             let committed_revision = committed.session().transcript_revision().map_err(|e| {
                 meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
                     "committed transcript revision for runtime-authority freshness \
@@ -2549,33 +2558,13 @@ impl SessionStoreBackedRuntimeStore {
             // change, no write spent); any difference runs the idempotent
             // reconciliation before mark_fresh, so envelope debt clears on
             // a plain resume instead of stranding.
-            let durable_bytes = durable.to_persisted_bytes().map_err(|e| {
-                meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
-                    "durable session encode for envelope-currency probe: {e}"
-                ))
-            })?;
-            // A slim durable row carries no transcript history state; compare
-            // the envelopes like for like or this debt never clears and every
-            // boot re-projects an identical row.
-            let committed_bytes = if durable_carries_history {
-                committed.session().to_persisted_bytes()
-            } else {
-                let mut envelope = committed.session().clone();
-                envelope.clear_transcript_history_state();
-                envelope.to_persisted_bytes()
-            }
-            .map_err(|e| {
-                meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
-                    "committed session encode for envelope-currency probe: {e}"
-                ))
-            })?;
-            // Envelope currency is about durable facts (metadata, envelope
-            // fields), never about `updated_at`: production run-6 (2026-09-03)
-            // showed updated_at differing on 16/16 rows, so a raw byte compare
-            // called every boot "in debt" by construction. Compare the
-            // normalised documents and name what differs.
-            if let Some(differing_keys) = Self::envelope_debt_keys(&durable_bytes, &committed_bytes)
-            {
+            // Envelope currency compares the durable facts the head-canonical
+            // shape carries besides the transcript: envelope version, creation
+            // time and the metadata map (minus the keys the head owns in its own
+            // columns). It never serialises either document: production run-8
+            // sampling put two full 1.2 MB serialisations in every probe, ~1.6 s
+            // of a 2.2 s per-member cost, only to feed a byte compare.
+            if let Some(differing_keys) = Self::envelope_debt_keys(&durable, committed.session()) {
                 // This arm used to project silently: production run-5 L1
                 // (2026-09-03) walked 16 rewrite chains for 171 s from here
                 // with no line saying so. Name the debt before paying it.
@@ -2584,8 +2573,6 @@ impl SessionStoreBackedRuntimeStore {
                     session_id = %session_id,
                     rewrite_generation = durable_order.0,
                     message_count = durable_order.1,
-                    durable_bytes = durable_bytes.len(),
-                    committed_bytes = committed_bytes.len(),
                     differing_keys = %differing_keys,
                     "durable row matches committed order and revision but its persisted \
                      envelope differs; projecting for envelope currency"
@@ -8032,33 +8019,43 @@ impl PendingMobActivation {
 /// `RuntimeStore` double: what matters here is that each session maps to
 /// exactly one `rt:session:` read, that the count reflects successes, and that
 /// a failing read is absorbed rather than propagated.
+/// How many persisted-authority prewarm reads run at once. The reads are
+/// independent per session and read-only on matched rows; production run-8
+/// measured ~2.2 s each, serial, for 17 members (37 s before ResumeLifecycle).
+const PREWARM_CONCURRENCY: usize = 8;
+
 async fn converge_persisted_runtime_authority<F, Fut>(
     session_ids: &[meerkat_core::types::SessionId],
-    mut read_authority: F,
+    read_authority: F,
 ) -> usize
 where
-    F: FnMut(meerkat_runtime::LogicalRuntimeId) -> Fut,
+    F: Fn(meerkat_runtime::LogicalRuntimeId) -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
-    let mut read = 0usize;
-    for session_id in session_ids {
-        // The constructor owns the `rt:session:` convention; formatting it here
-        // would be a second spelling of the same fact.
-        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(session_id);
-        let observed = runtime_id.clone();
-        match read_authority(runtime_id).await {
-            Ok(()) => read += 1,
-            Err(error) => {
-                tracing::debug!(
-                    runtime_id = %observed,
-                    error = %error,
-                    "prewarming persisted runtime authority failed; the bounded resume \
-                     performs this read itself and owns the typed outcome"
-                );
+    use futures::StreamExt as _;
+    let read_authority = &read_authority;
+    futures::stream::iter(session_ids)
+        .map(|session_id| async move {
+            // The constructor owns the `rt:session:` convention; formatting it
+            // here would be a second spelling of the same fact.
+            let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(session_id);
+            let observed = runtime_id.clone();
+            match read_authority(runtime_id).await {
+                Ok(()) => 1usize,
+                Err(error) => {
+                    tracing::debug!(
+                        runtime_id = %observed,
+                        error = %error,
+                        "prewarming persisted runtime authority failed; the bounded resume \
+                         performs this read itself and owns the typed outcome"
+                    );
+                    0
+                }
             }
-        }
-    }
-    read
+        })
+        .buffer_unordered(PREWARM_CONCURRENCY)
+        .fold(0usize, |read, one| async move { read + one })
+        .await
 }
 
 impl MobRuntime {
@@ -14404,24 +14401,28 @@ comms = true
     }
 
     #[test]
-    fn envelope_debt_ignores_updated_at_and_names_metadata_keys() {
-        let durable = br#"{"id":"s","updated_at":"2026-09-03T17:39:58Z","metadata":{"a":1,"b":2}}"#;
-        let same_but_later =
-            br#"{"id":"s","updated_at":"2026-09-03T17:44:00Z","metadata":{"a":1,"b":2}}"#;
+    fn envelope_debt_compares_typed_facts_and_names_metadata_keys() {
+        let base = meerkat_core::Session::new();
+        let same = base.clone();
         assert_eq!(
-            SessionStoreBackedRuntimeStore::envelope_debt_keys(durable, same_but_later),
-            None,
-            "a write timestamp is not envelope debt"
+            SessionStoreBackedRuntimeStore::envelope_debt_keys(&base, &same),
+            None
         );
-        let metadata_debt = br#"{"id":"s","updated_at":"x","metadata":{"a":1,"b":3,"c":true}}"#;
+        let mut with_debt = base.clone();
+        with_debt.set_metadata("mobkit:probe:b", serde_json::Value::from(3));
+        with_debt.set_metadata("mobkit:probe:c", serde_json::Value::Bool(true));
         assert_eq!(
-            SessionStoreBackedRuntimeStore::envelope_debt_keys(durable, metadata_debt).as_deref(),
-            Some("metadata.b,metadata.c"),
+            SessionStoreBackedRuntimeStore::envelope_debt_keys(&base, &with_debt).as_deref(),
+            Some("metadata.mobkit:probe:b,metadata.mobkit:probe:c"),
             "metadata debt is named one level deep"
         );
-        let head_owned_only = br#"{"id":"s","updated_at":"x","metadata":{"a":1,"b":2,"realtime_transcript_state":{"seq":9},"session_transcript_history_state_v1":{"g":1}}}"#;
+        let mut head_owned_only = base.clone();
+        head_owned_only.set_metadata(
+            meerkat_core::SESSION_REALTIME_TRANSCRIPT_STATE_KEY,
+            serde_json::json!({"seq": 9}),
+        );
         assert_eq!(
-            SessionStoreBackedRuntimeStore::envelope_debt_keys(durable, head_owned_only),
+            SessionStoreBackedRuntimeStore::envelope_debt_keys(&base, &head_owned_only),
             None,
             "keys the head carries in its own columns are a representation difference, not debt"
         );
@@ -14433,19 +14434,6 @@ comms = true
                 "realtime_transcript_state"
             ],
             "pin the mirrored key set; meerkat-core's head_metadata_cell_carries_key is private"
-        );
-        let field_debt = br#"{"id":"t","updated_at":"x","metadata":{"a":1,"b":2}}"#;
-        assert_eq!(
-            SessionStoreBackedRuntimeStore::envelope_debt_keys(durable, field_debt).as_deref(),
-            Some("id")
-        );
-        assert_eq!(
-            SessionStoreBackedRuntimeStore::envelope_debt_keys(b"not json", b"not json"),
-            None
-        );
-        assert_eq!(
-            SessionStoreBackedRuntimeStore::envelope_debt_keys(b"not json", b"other").as_deref(),
-            Some("<non-object document>")
         );
     }
 

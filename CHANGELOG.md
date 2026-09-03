@@ -65,6 +65,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The pre-resume runtime-authority probe no longer serialises documents or
+  re-digests transcripts, and the 17 prewarm probes run concurrently.** A
+  real-process sample on the 0.8.31 candidate put ~2.2 s per member into the
+  freshness probe - two full serialisations of a ~1.2 MB session to feed an
+  envelope byte compare, plus one transcript digest to re-derive a revision the
+  head row already stores - run serially for 17 members, ~35 s before
+  `ResumeLifecycle` (0.8.28: 48.7 s). The probe now takes a slim row's rewrite
+  generation and transcript revision from its head row, compares envelope
+  facts typed (version, creation time, metadata minus head-owned keys) with no
+  serialisation, and `prewarm_persisted_runtime_authority` runs up to 8 probes
+  at once. The head-row revision is used only for current-version heads: a
+  released envelope-v2 head stores the released-format rows digest, which is
+  not comparable, so released realms keep the full transcript digest.
+
 - **Both session-service decorators now forward every reachable defaulted
   `MobSessionService` method, and CI proves it.** The 2026-09-03 audit behind
   the archive-lane fix found nine more defaulted methods neither decorator
