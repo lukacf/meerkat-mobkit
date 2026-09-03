@@ -294,6 +294,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   that built before still builds. Observable to hosts that print the error:
   the `TomlParse` text changed. Unit tests cover each rule in both polarities.
 
+- **A provider failure names itself.** Meerkat has carried `RunFailed` as the
+  typed `error_report { class, reason, message }` with no flat `error` string
+  since 0.7.0, and nothing in MobKit read it: the Python and TypeScript SDKs
+  parsed only `error` (always empty), the console timeline rendered every LLM
+  failure as `Failed: error`, the signals rail said "Needs attention", and
+  the `HostLoopCrash` ERROR line carried only an event id, so a bad key, an
+  exhausted quota and a Gemini 400 were indistinguishable from each other and
+  from a hang. The single wire projection (`console_agent_event_payload`,
+  which already re-derived the removed `result` string for tool completions)
+  now derives `error` from `error_report.message` and `reason` from the stable
+  `reason_type` for `run_failed`, mirrors the typed reason's `Display` into
+  `error` for `interaction_failed`, and keeps the report beside them, so every
+  SSE stream, console frame and event-log row carries both. The SDKs gain the
+  report (`RunFailed.error_report` with `error_class`/`reason_type` accessors
+  in Python, `RunFailedEvent.errorReport` in TypeScript) and derive `error`
+  from it for payloads that predate the projection; the Python
+  `UnifiedAgentEvent` now carries the agent `payload` that `query_events` and
+  `subscribe_events` were dropping (the events doc already said it must not
+  be). The console reads `error_report` first everywhere it renders a
+  failure, and `HostLoopCrash` logs class, reason and message. A missing
+  provider secret is now a typed wall instead of a heal loop: the mob bridge
+  reads Meerkat's `SessionProviderAuthFailure` typed on every spawn door
+  (create, resume, reset successor) and surfaces it as
+  `BridgeError::ProviderAuthRejected`; the identity runtime parks the
+  identity with an operator-visible reason for credential kinds no unattended
+  retry can change (`missing_secret`, `unsupported_combination`,
+  `missing_required_metadata`, `workspace_mismatch`,
+  `host_owned_unavailable`), the same park the host-rejected-build gate uses,
+  while kinds that can change out of band (expired, refresh failed, login
+  required) stay on the repair lanes. Exact-pinned hosts observe `error` and
+  `reason` keys on `run_failed` payloads and `interaction_failed` frames, a
+  populated `RunFailed.error` in the SDKs, a `HostLoopCrash` message that
+  names the cause, and a keyless identity that parks `Broken` with a reason
+  instead of rebuilding forever. `docs/concepts/events.mdx` documents the
+  payload. Rust API change for embedders that match `BridgeError`
+  exhaustively (new variant).
+
 - **`mobkit/reset_all` now resets every registered identity instead of
   retiring the whole roster.** The console handler chose reset-versus-retire
   by membership in the baseline member-spec slot, which only the
