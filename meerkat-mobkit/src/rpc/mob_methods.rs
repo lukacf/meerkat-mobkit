@@ -459,10 +459,10 @@ pub(super) async fn handle_send_message(
             // alias: self-mapping the incarnation clobbers the spawn path's
             // incarnation -> durable registration and re-keys every later
             // live event onto the incarnation conversation (the console
-            // dispatch-mirroring defect). The MobMember arm is unreachable
-            // for generated aliases (they resolve to Identity or
-            // AuthorityUnavailable - pinned by test below), so its wire
-            // member id IS the durable identity.
+            // dispatch-mirroring defect). Generated aliases resolve to Identity
+            // or AuthorityUnavailable before the roster probe. Raw workers keep
+            // the MobMember arm, while active identity-owned roster rows route
+            // through IdentityRuntime (both precedence cases are pinned below).
             let (events_identity, events_member_id) = match &target {
                 SendMessageTarget::MobMember => (member_id.clone(), Some(member_id.clone())),
                 SendMessageTarget::AuthorityUnavailable { alias } => (
