@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.30] - 2026-09-03
+
+Pairs with Meerkat `0.8.32` - unchanged from 0.8.29. All 25 exact dependency
+pins are byte-identical to the 0.8.29 release commit; this train carries no
+upstream movement.
+
+The `v0.8.29` tag exists on `0fd01efe` but was never published to any registry:
+its release run was refused for arriving before exact-main CI, and the recovery
+run was cancelled once the two items below were judged part of the release. The
+tag is left in place rather than rewritten. Consumers pin `0.8.30`.
+
+### Fixed
+
+- **`mobkit_gateway` now refuses `runtime_options` instead of dropping it in
+  silence.** `runtime_options` is an `rpc_gateway` protocol (`demo_llm`,
+  `max_sessions`, `identity_bootstrap_mode`, `experimental_live`, and since
+  0.8.29 the definition-epoch ceremony's `declare_spec_update`). `mobkit_gateway`
+  never read the object and its init params deserialize without
+  `deny_unknown_fields`, so serde discarded it and every option inside it. After
+  0.8.29 that meant an operator who declared a spec update against this binary
+  booted straight into the pinned-definition refusal the declaration exists to
+  clear, with no sign it was ever read. Both SDKs let `gateway_bin` /
+  `gatewayBin` select either binary, so the wrong-binary case is reachable. The
+  object is now refused with a typed error naming `rpc_gateway` and the option
+  family, so the refusal redirects rather than dead-ends. Mutation-proven:
+  deleting the refusal block turns its test red. (#378)
+
+### Tests
+
+- **A resumed member must materialise identically to a fresh one.** The
+  cold-restart continuity test now captures the `LlmRequest` each member sends on
+  its first turn after `Created` and after `Resumed`, and diffs model, system
+  prompt content, and the tool-name set, reporting field names rather than
+  counts. Vacuity guards refuse an empty prompt or tool set. Mutation-proven
+  three ways: an extractor blind to tools, an extractor blind to the prompt, and
+  a boot-2 definition on a different model each turn the test red, the last
+  naming `model: fresh="gpt-5.5" resumed="gpt-5.4"`. (#377)
+
 ## [0.8.29] - 2026-09-03
 
 Pairs with Meerkat `0.8.32` (annotated tag object
