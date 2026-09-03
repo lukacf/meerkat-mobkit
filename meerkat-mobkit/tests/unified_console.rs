@@ -2479,6 +2479,23 @@ async fn two_console_sends_to_a_turn_driven_member_each_close_with_their_own_ter
         );
     }
 
+    // Positive observable first: counting EVERY interaction_complete for the
+    // identity, from any source, pins exactly one terminal per send. History
+    // text terminals collapse against their live twins and a tool-only step
+    // contributes none, so this cannot pass vacuously when the backfill has
+    // not landed yet. Pre-fix this was 3 or more.
+    let all_terminals = frames
+        .iter()
+        .filter(|frame| frame["kind"] == json!("interaction_complete"))
+        .count();
+    assert_eq!(
+        all_terminals,
+        2,
+        "exactly one interaction_complete per send from any source; frames:\n{}",
+        pretty()
+    );
+    // Diagnostic twin: name the offending frames when the count is wrong for
+    // the reason this test exists.
     let empty_history_terminals: Vec<&Value> = frames
         .iter()
         .filter(|frame| {

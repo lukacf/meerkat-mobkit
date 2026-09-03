@@ -2533,6 +2533,14 @@ fn reset_all_resets_every_registered_identity_and_keeps_the_gateway_alive() {
         "reset_all reported failures: {reset_all:#?}\nstderr:\n{}",
         captured()
     );
+    // The bridge's successor transition retires the predecessor, so there is
+    // no stale-member cleanup gap to warn about; a warning here would be a
+    // claim about a gap that does not exist.
+    assert_eq!(
+        result["warnings"],
+        json!([]),
+        "reset_all must not warn about a cleanup it did not skip: {reset_all:#?}"
+    );
 
     // The other half of the report: the process is still there and serving.
     assert!(

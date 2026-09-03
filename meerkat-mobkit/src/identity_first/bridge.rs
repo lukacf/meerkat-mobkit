@@ -373,6 +373,14 @@ pub enum BridgeAdmissionError {
         kind: ResumeRejectionKind,
         detail: String,
     },
+    /// Provider authentication refused the member build before admission.
+    /// Carries meerkat's typed secret-free failure so the round trip back to
+    /// [`BridgeError::ProviderAuthRejected`] is lossless and the
+    /// deterministic-rejection classifier still reads the kind.
+    ProviderAuthRejected {
+        failure: meerkat_core::service::SessionProviderAuthFailure,
+        detail: String,
+    },
     /// The serialized actor admission round trip exceeded its budget.
     ActorAdmissionTimeout {
         operation: &'static str,
@@ -402,6 +410,13 @@ impl std::fmt::Display for BridgeAdmissionError {
                 "session bridge resume rejected before admission ({kind:?}): {detail}; \
                  durable session preserved, identity degraded pending retry"
             ),
+            Self::ProviderAuthRejected { failure, detail } => write!(
+                f,
+                "session bridge member build refused by provider authentication before \
+                 admission (kind={}, provider={}): {detail}",
+                failure.kind.as_str(),
+                failure.provider.as_str()
+            ),
             Self::ActorAdmissionTimeout {
                 operation,
                 identity,
@@ -429,7 +444,9 @@ impl From<BridgeError> for BridgeAdmissionError {
             BridgeError::Mob(detail) => Self::Mob(detail),
             BridgeError::InvalidInput(detail) => Self::InvalidInput(detail),
             BridgeError::ResumeRejected { kind, detail } => Self::ResumeRejected { kind, detail },
-            refused @ BridgeError::ProviderAuthRejected { .. } => Self::Mob(refused.to_string()),
+            BridgeError::ProviderAuthRejected { failure, detail } => {
+                Self::ProviderAuthRejected { failure, detail }
+            }
             BridgeError::ActorAdmissionTimeout {
                 operation,
                 identity,
@@ -462,6 +479,9 @@ impl From<BridgeAdmissionError> for BridgeError {
             BridgeAdmissionError::InvalidInput(detail) => Self::InvalidInput(detail),
             BridgeAdmissionError::ResumeRejected { kind, detail } => {
                 Self::ResumeRejected { kind, detail }
+            }
+            BridgeAdmissionError::ProviderAuthRejected { failure, detail } => {
+                Self::ProviderAuthRejected { failure, detail }
             }
             BridgeAdmissionError::ActorAdmissionTimeout {
                 operation,
@@ -630,6 +650,13 @@ pub(crate) fn provider_auth_rejection(
                 },
             ..
         } => cause.provider_auth_failure(),
+        // meerkat-mob shares ONE owned failure with every concurrent observer
+        // of a retirement or lifecycle operation through these transparent
+        // wrappers (a joined resume failure always arrives this way). Read
+        // through them exactly as meerkat-mob's own accessors do, or a wrapped
+        // refusal falls back to the untyped path and heal-loops.
+        meerkat_mob::MobError::SharedRetirementFailure(inner)
+        | meerkat_mob::MobError::SharedLifecycleFailure(inner) => provider_auth_rejection(inner),
         _ => None,
     }
 }
@@ -6593,6 +6620,67 @@ mod tests {
             resume_rejected(&identity, &session_id, &in_process, "resume"),
             BridgeError::ProviderAuthRejected { .. }
         ));
+        // A joined observer receives the same failure through meerkat-mob's
+        // transparent shared wrappers (every non-pending resume failure a
+        // joined caller sees is wrapped this way); the typed refusal must
+        // survive them on both the classifier and the resume door.
+        let shared_lifecycle = meerkat_mob::MobError::SharedLifecycleFailure(Arc::new(
+            meerkat_mob::MobError::SessionError(SessionError::provider_auth_failure(
+                failure.clone(),
+            )),
+        ));
+        assert_eq!(
+            provider_auth_rejection(&shared_lifecycle),
+            Some(failure.clone())
+        );
+        assert!(matches!(
+            resume_rejected(&identity, &session_id, &shared_lifecycle, "resume"),
+            BridgeError::ProviderAuthRejected { .. }
+        ));
+        let shared_retirement = meerkat_mob::MobError::SharedRetirementFailure(Arc::new(
+            meerkat_mob::MobError::BridgeCommandRejected {
+                cause: BridgeRejectionCause::MaterializeBuildRejected {
+                    cause: MemberBuildRejection::from_provider_auth_failure(&failure),
+                },
+                reason: "materialize rejected".to_string(),
+            },
+        ));
+        assert_eq!(
+            provider_auth_rejection(&shared_retirement),
+            Some(failure.clone())
+        );
+        // A wrapped failure that is not provider auth stays untyped.
+        let shared_other = meerkat_mob::MobError::SharedLifecycleFailure(Arc::new(
+            meerkat_mob::MobError::SessionError(SessionError::build_llm_identity_unresolvable(
+                "model unknown to registry",
+            )),
+        ));
+        assert_eq!(provider_auth_rejection(&shared_other), None);
+
+        // The admission seam must not flatten the refusal back into text: the
+        // round trip through `BridgeAdmissionError` keeps the typed failure.
+        let refused = BridgeError::ProviderAuthRejected {
+            failure: failure.clone(),
+            detail: "resume: refused".to_string(),
+        };
+        let admission = BridgeAdmissionError::from(refused);
+        let BridgeAdmissionError::ProviderAuthRejected {
+            failure: admitted,
+            detail: admitted_detail,
+        } = &admission
+        else {
+            return Err("the admission seam must carry the typed refusal".into());
+        };
+        assert_eq!(admitted, &failure);
+        assert_eq!(admitted_detail, "resume: refused");
+        let BridgeError::ProviderAuthRejected {
+            failure: round_tripped,
+            ..
+        } = BridgeError::from(admission)
+        else {
+            return Err("the admission seam must round-trip the typed refusal".into());
+        };
+        assert_eq!(round_tripped, failure);
         // An ordinary resume failure still classifies as a resume rejection.
         let restore_failed = meerkat_mob::MobError::MemberRestoreFailed {
             member_id: meerkat_mob::ids::AgentIdentity::from("agent-alpha"),

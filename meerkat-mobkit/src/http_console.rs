@@ -9158,7 +9158,11 @@ async fn reset_all_live_console_agents(
     let mut retired_delegate_details = Vec::new();
     let mut reset_details = Vec::new();
     let mut failures = Vec::new();
-    let mut warnings = Vec::new();
+    // Kept in the body for shape stability. Nothing on the reset path warns
+    // today: a registered identity resets through the bridge's successor
+    // transition (meerkat's respawn), which terminally retires the
+    // predecessor row, so there is no stale live member left to warn about.
+    let warnings: Vec<Value> = Vec::new();
 
     for identity in &main_identities {
         let parsed_identity = crate::identity_first::AgentIdentity::parse(identity).ok();
@@ -9520,15 +9524,10 @@ async fn reset_all_live_console_agents(
             }
             match identity_runtime.reset_tracked(parsed_identity).await {
                 Ok(record) => {
-                    let cleanup_warning = json!({
-                        "identity": identity,
-                        "kind": "stale_member_cleanup_skipped_after_identity_reset",
-                        "message": "reset published the new generation without retiring stale live mob members; identity control calls reject stale runtime ids",
-                    });
-                    warnings.push(cleanup_warning);
                     reset_details.push(json!({
                         "identity": identity,
-                        "cleanup_warning": warnings.last().cloned(),
+                        "agent_runtime_id": record.agent_runtime_id.as_str(),
+                        "generation": record.generation.get(),
                     }));
                     reset_main.push(identity);
                     if let Some(store) = console_events {
@@ -9540,7 +9539,6 @@ async fn reset_all_live_console_agents(
                                     "scope": "reset_all",
                                     "generation": record.generation.get(),
                                     "checkpoint_version": record.checkpoint_version.get(),
-                                    "cleanup_warning": warnings.last().cloned(),
                                 }),
                             )
                             .await;
@@ -11507,6 +11505,144 @@ comms = true
             status.generation.map(ContinuityGeneration::get),
             Some(1),
             "reset must advance the continuity generation from 0 to 1"
+        );
+
+        let _ = runtime.handle().stop().await;
+        Ok(())
+    }
+
+    /// Item R7 follow-up. Every registered identity is on the reset path, so
+    /// a registered identity on an identity runtime WITHOUT a session bridge
+    /// is a typed preflight failure and nothing is touched: no reset, no
+    /// retire, no lifecycle frame, generation unchanged. Before the routing
+    /// fix the guard was `baseline_identities.contains(identity) &&
+    /// !has_session_bridge`, which never fired on an identity-first gateway
+    /// (empty baseline slot), and the identity was silently retired instead.
+    #[tokio::test]
+    async fn reset_all_without_a_session_bridge_fails_closed_for_registered_identities()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-reset-all-no-session-bridge").await?;
+        spawn_identity_control_test_member(&runtime, "review:singleton", "review:singleton")
+            .await?;
+
+        let store = Arc::new(LocalContinuityStore::in_memory()?);
+        let lease_provider = Arc::new(LocalLeaseProvider::new());
+        let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: store.clone(),
+            lease_provider: lease_provider.clone(),
+            runtime_instance_id: "test-runtime".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let identity = AgentIdentity::parse("review:singleton")?;
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:review:singleton:0")?,
+            session_id: meerkat_core::types::SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let grants = lease_provider
+            .acquire_leases(std::slice::from_ref(&identity), "test-runtime")
+            .await?;
+        let grant = match grants.get(&identity).cloned() {
+            Some(LeaseAcquireResult::Acquired(grant)) => grant,
+            other => return Err(format!("expected acquired lease, got {other:?}").into()),
+        };
+        store
+            .upsert_continuity_record(&record, grant.fencing_token)
+            .await?;
+        identity_runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from("worker"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                    placement: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(record),
+                Some(grant),
+            )
+            .await;
+
+        let console_events = ConsoleEventStore::new();
+        let response = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            Some(console_events.clone()),
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            rpc_request("mobkit/reset_all"),
+            true,
+        ))
+        .await;
+        assert_eq!(
+            response["error"]["code"],
+            json!(-32000),
+            "a registered identity without a session bridge must fail the preflight: {response:#?}"
+        );
+        let body = &response["error"]["data"];
+        let failed = body["failed"]
+            .as_array()
+            .ok_or_else(|| format!("reset_all must report failed identities: {response:#?}"))?;
+        assert_eq!(failed.len(), 1, "exactly one failure: {response:#?}");
+        assert_eq!(failed[0]["identity"], json!("review:singleton"));
+        assert_eq!(
+            failed[0]["kind"],
+            json!("identity_reset_requires_session_bridge"),
+            "the failure names the missing bridge: {response:#?}"
+        );
+        assert_eq!(body["reset"], json!([]), "nothing was reset: {response:#?}");
+        assert_eq!(
+            body["retired_delegates"],
+            json!([]),
+            "a registered identity is never silently retired: {response:#?}"
+        );
+
+        // Nothing was touched: still Active at generation 0, no lifecycle
+        // frame, live member still present.
+        let status = identity_runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Active);
+        assert_eq!(
+            status.generation.map(ContinuityGeneration::get),
+            Some(0),
+            "a refused reset must not advance the generation"
+        );
+        let lifecycle = console_events
+            .replay_all(None)
+            .await
+            .map_err(|err| format!("replay_all: {}", err.error))?;
+        assert!(
+            lifecycle.iter().all(|event| {
+                event.event_type != "identity_reset" && event.event_type != "identity_retired"
+            }),
+            "a refused reset_all records no lifecycle frame: {lifecycle:#?}"
+        );
+        assert!(
+            runtime
+                .handle()
+                .get_member(&crate::member_comms_id::mob_member_id("review:singleton"))
+                .await
+                .ok()
+                .flatten()
+                .is_some(),
+            "the live member must survive a refused reset_all"
         );
 
         let _ = runtime.handle().stop().await;

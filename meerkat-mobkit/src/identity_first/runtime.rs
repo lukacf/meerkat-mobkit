@@ -134,6 +134,7 @@ fn admission_phase_error(
             IdentityRuntimeError::AdmissionFailed { identity, detail }
         }
         other @ (BridgeAdmissionError::ResumeRejected { .. }
+        | BridgeAdmissionError::ProviderAuthRejected { .. }
         | BridgeAdmissionError::ActorAdmissionTimeout { .. }) => {
             IdentityRuntimeError::AdmissionFailed {
                 identity,
@@ -5368,14 +5369,27 @@ impl IdentityRuntime {
                         &record.session_id,
                     )
                     .await;
-                if let Err(err) = &created_session_id
-                    && let Some(reason) = deterministic_build_rejection_reason(err)
-                {
-                    self.mark_host_rejected_build_park(identity, reason).await;
-                }
-                let created_session_id = created_session_id.map_err(|err| {
-                    IdentityRuntimeError::Internal(format!("bridge create_session: {err}"))
-                });
+                let created_session_id = match created_session_id {
+                    Ok(session_id) => Ok(session_id),
+                    // Typed on the FIRST attempt: the park is recorded and the
+                    // caller receives the same `HostRejectedBuild` a later
+                    // attempt fails fast with, so an in-band materialize (a
+                    // console send to a Dormant identity) surfaces the reason,
+                    // not `Internal` prose that happens to contain it.
+                    Err(err) => match deterministic_build_rejection_reason(&err) {
+                        Some(reason) => {
+                            self.mark_host_rejected_build_park(identity, reason.clone())
+                                .await;
+                            Err(IdentityRuntimeError::HostRejectedBuild {
+                                identity: identity.clone(),
+                                reason,
+                            })
+                        }
+                        None => Err(IdentityRuntimeError::Internal(format!(
+                            "bridge create_session: {err}"
+                        ))),
+                    },
+                };
                 match created_session_id {
                     Ok(session_id) => {
                         if session_id != provisional_session_id {
@@ -12184,10 +12198,20 @@ mod reset_reprofile_tests {
             )
             .await;
 
-        assert!(
-            runtime.materialize(&identity).await.is_err(),
-            "a keyless build must fail"
-        );
+        // The FIRST attempt is already the typed park, not `Internal` prose:
+        // a console send that materializes a Dormant keyless identity in-band
+        // surfaces the reason on this very call.
+        match runtime.materialize(&identity).await {
+            Err(IdentityRuntimeError::HostRejectedBuild { reason, .. }) => {
+                assert!(reason.contains("kind=missing_secret"), "{reason}");
+            }
+            other => {
+                return Err(format!(
+                    "the first keyless build must fail with the typed park, got {other:?}"
+                )
+                .into());
+            }
+        }
         assert_eq!(bridge.attempts(), 1);
         let park = runtime
             .host_rejected_build_park(&identity)

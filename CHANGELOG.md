@@ -323,13 +323,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `missing_required_metadata`, `workspace_mismatch`,
   `host_owned_unavailable`), the same park the host-rejected-build gate uses,
   while kinds that can change out of band (expired, refresh failed, login
-  required) stay on the repair lanes. Exact-pinned hosts observe `error` and
+  required) stay on the repair lanes. The refusal is typed on the first
+  attempt too (`HostRejectedBuild` from the materialize that recorded the
+  park, not `Internal` prose), it is read through meerkat-mob's transparent
+  `SharedRetirementFailure` / `SharedLifecycleFailure` wrappers (every resume
+  failure a joined observer sees is wrapped that way), and it survives the
+  admission seam as `BridgeAdmissionError::ProviderAuthRejected` instead of
+  being flattened back into text. Exact-pinned hosts observe `error` and
   `reason` keys on `run_failed` payloads and `interaction_failed` frames, a
   populated `RunFailed.error` in the SDKs, a `HostLoopCrash` message that
   names the cause, and a keyless identity that parks `Broken` with a reason
   instead of rebuilding forever. `docs/concepts/events.mdx` documents the
-  payload. Rust API change for embedders that match `BridgeError`
-  exhaustively (new variant).
+  payload. Rust API change for embedders that match `BridgeError` or
+  `BridgeAdmissionError` exhaustively (one new variant each).
 
 - **`mobkit/reset_all` now resets every registered identity instead of
   retiring the whole roster.** The console handler chose reset-versus-retire
@@ -349,8 +355,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   fleet-wide retire; they now observe a per-identity reset with
   `identity_reset` lifecycle frames, and a registered identity on a runtime
   without a session bridge is a typed `identity_reset_requires_session_bridge`
-  preflight failure (nothing touched) instead of a silent retire.
-  Gateway-subprocess regression added.
+  preflight failure (nothing touched) instead of a silent retire. The
+  per-identity `stale_member_cleanup_skipped_after_identity_reset` warning is
+  gone from the `reset_all` body (`warnings`, `reset_details[].cleanup_warning`)
+  and its `identity_reset` payload: the bridge's successor transition is
+  meerkat's respawn, which terminally retires the predecessor row, so the
+  warning asserted a cleanup gap that does not exist, once per identity per
+  call. `reset_details[]` now carries the successor `agent_runtime_id` and
+  `generation` instead. Gateway-subprocess regression added, plus a fail-closed
+  regression for the no-bridge preflight.
 
 - **A turn's terminal frame belongs to that turn.** Session-history backfill
   re-emitted every committed assistant step as an `interaction_complete`
@@ -374,11 +387,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   runtime-minted `interaction_complete`, `interaction_failed` or
   `interaction_callback_pending` (peer, flow-step and schedule inputs mint
   their own ids) was attributed to whichever console send was pending. Those
-  terminals now attribute only when `payload.interaction_id` names a reserved
-  console interaction, which they then close; otherwise they project with
-  `interaction_id: null`. Exact-pinned hosts no longer observe empty
-  `session_history` completions; hosts that already excluded that source kind
-  see no change. Full-runtime two-send regression with a scripted
+  events now attribute only when `payload.interaction_id` names a reserved
+  console interaction; otherwise they project with `interaction_id: null`.
+  `interaction_complete` and `interaction_failed` then close the interaction,
+  while `interaction_callback_pending` leaves it open: meerkat documents it as
+  a pause at an external callback boundary, and the resumed run's frames and
+  its eventual terminal carry the same id. Exact-pinned hosts no longer
+  observe empty `session_history` completions; hosts that already excluded
+  that source kind see no change. Full-runtime two-send regression with a scripted
   tool-then-text LLM, in both live and history-rebuild projection modes.
 
 - **An idempotent replay on the identity-first console door no longer runs a

@@ -50,7 +50,10 @@ Agent event names come from Meerkat's exhaustive event mapper. Current examples 
 - Tools: `tool_call_requested`, `tool_result_received`, `tool_execution_started`, `tool_execution_completed`, `tool_execution_timed_out`
 - Hooks: `hook_started`, `hook_completed`, `hook_failed`, `hook_denied`
 - Compaction: `compaction_started`, `compaction_completed`, `compaction_failed`
-- Interaction: `interaction_complete`, `interaction_callback_pending`, `interaction_failed`
+- Interaction: `interaction_complete`, `interaction_callback_pending`, `interaction_failed`.
+  Only the first and last are terminals; `interaction_callback_pending` means
+  the interaction is paused at an external callback boundary waiting for tool
+  results, and it resumes and closes under the same `interaction_id`
 
 These strings are projections of Meerkat `AgentEvent` variants. MobKit does not synthesize them as module events.
 

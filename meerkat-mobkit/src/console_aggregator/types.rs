@@ -360,12 +360,6 @@ pub enum IdentityFirstReservation {
 }
 
 impl IdentityFirstReservation {
-    pub fn accepted(&self) -> &ConsoleInteractionAccepted {
-        match self {
-            Self::Fresh(accepted) | Self::Existing(accepted) => accepted,
-        }
-    }
-
     pub fn into_accepted(self) -> ConsoleInteractionAccepted {
         match self {
             Self::Fresh(accepted) | Self::Existing(accepted) => accepted,

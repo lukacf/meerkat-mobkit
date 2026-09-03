@@ -519,7 +519,14 @@ impl ConsoleEventStore {
                         .response_phase_by_identity
                         .insert(identity.clone(), None);
                 }
-                "interaction_complete" | "interaction_failed" | "interaction_callback_pending" => {
+                // `interaction_callback_pending` is deliberately absent here: it
+                // names its interaction (attributed above) but does not end
+                // it. meerkat documents it as a pause at an external callback
+                // boundary, waiting for tool results before the session can
+                // continue, and later publishes the real terminal under the
+                // SAME interaction id. Closing on it left every later frame of
+                // the turn, its own terminal included, unattributed.
+                "interaction_complete" | "interaction_failed" => {
                     if let Some(interaction_id) = interaction_id.as_deref() {
                         close_console_interaction(&mut state, &identity, interaction_id);
                     }
@@ -590,12 +597,15 @@ fn select_interaction_for_run_started(
     (interaction_id, superseded)
 }
 
-/// Runtime-minted interaction terminals (`interaction_complete`,
-/// `interaction_failed`, `interaction_callback_pending`) name the interaction
-/// they close in `payload.interaction_id`. They belong to a console
+/// Runtime-minted directed interaction events (`interaction_complete`,
+/// `interaction_failed`, `interaction_callback_pending`) name their
+/// interaction in `payload.interaction_id`. They belong to a console
 /// interaction only when that id is one the console reserved for this
 /// identity; peer, flow-step and schedule inputs mint their own ids, and their
-/// terminals must not close whichever console send happens to be pending.
+/// events must not attach to whichever console send happens to be pending.
+/// `interaction_complete` and `interaction_failed` close the interaction they
+/// name; `interaction_callback_pending` only names it, because the
+/// interaction is paused at an external callback boundary, not over.
 fn select_interaction_for_directed_terminal(
     state: &ConsoleEventReplayState,
     identity: &str,
@@ -1484,5 +1494,155 @@ mod tests {
             None,
             "the console interaction is closed once its own terminal projected"
         );
+    }
+
+    /// `interaction_callback_pending` is a pause, not a terminal: meerkat
+    /// documents it as "waiting for tool results before the session can
+    /// continue" and later publishes the real terminal under the SAME
+    /// interaction id. Closing the console interaction on it left the resumed
+    /// run bound to the NEXT queued send and the turn's own terminal
+    /// unattributed.
+    #[tokio::test]
+    async fn callback_pending_names_its_interaction_without_closing_it() {
+        let store = ConsoleEventStore::new();
+        store
+            .register_runtime_identity("rt:worker:1", "worker")
+            .await;
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                "console-turn",
+                "console",
+                json!("hello"),
+            )
+            .await
+            .expect("reserve first console interaction");
+        // A second send queued behind the first: the resumed run must not
+        // bind to it.
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                "console-turn-2",
+                "console",
+                json!("second"),
+            )
+            .await
+            .expect("reserve second console interaction");
+
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "evt-run-started",
+                "rt:worker:1",
+                "run_started",
+                json!({ "input": { "kind": "content", "content": "hello" } }),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "evt-tool-call",
+                "rt:worker:1",
+                "tool_call_requested",
+                json!({ "id": "call-1", "name": "host_tool", "args": {} }),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "evt-callback-pending",
+                "rt:worker:1",
+                "interaction_callback_pending",
+                json!({
+                    "interaction_id": "console-turn",
+                    "tool_name": "host_tool",
+                    "args": {},
+                }),
+            ))
+            .await;
+        assert_eq!(
+            store.response_phase_for_identity("worker").await.as_deref(),
+            Some("tool-executing"),
+            "a paused interaction is not idle"
+        );
+
+        // The host answered the callback; meerkat resumes the SAME
+        // interaction with a pending-tool-results run.
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "evt-run-resumed",
+                "rt:worker:1",
+                "run_started",
+                json!({ "input": { "kind": "pending_tool_results" } }),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "evt-delta-after-resume",
+                "rt:worker:1",
+                "text_delta",
+                json!({ "delta": "done" }),
+            ))
+            .await;
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "evt-own-complete",
+                "rt:worker:1",
+                "interaction_complete",
+                json!({ "interaction_id": "console-turn", "result": "done" }),
+            ))
+            .await;
+        assert_eq!(
+            store.response_phase_for_identity("worker").await,
+            None,
+            "the identity is idle once the real terminal projected"
+        );
+
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("all-events replay should succeed");
+        let by_id = |event_id: &str| {
+            replay
+                .iter()
+                .find(|event| event.event_id == event_id)
+                .expect(event_id)
+        };
+        for event_id in [
+            "evt-callback-pending",
+            "evt-run-resumed",
+            "evt-delta-after-resume",
+            "evt-own-complete",
+        ] {
+            assert_eq!(
+                by_id(event_id).interaction_id.as_deref(),
+                Some("console-turn"),
+                "{event_id} belongs to the paused-then-resumed interaction"
+            );
+        }
+        assert!(
+            !replay.iter().any(|event| {
+                event.event_type == "interaction_failed"
+                    && event.data["reason"] == json!("superseded_by_later_run")
+            }),
+            "the resumed run must not supersede the still-pending first send: {replay:#?}"
+        );
+        // The second send is still queued, untouched, for its own run.
+        store
+            .project_unified_event(&agent_event_with_payload(
+                "evt-second-run-started",
+                "rt:worker:1",
+                "run_started",
+                json!({ "input": { "kind": "content", "content": "second" } }),
+            ))
+            .await;
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("all-events replay should succeed");
+        let second = replay
+            .iter()
+            .find(|event| event.event_id == "evt-second-run-started")
+            .expect("evt-second-run-started");
+        assert_eq!(second.interaction_id.as_deref(), Some("console-turn-2"));
     }
 }
