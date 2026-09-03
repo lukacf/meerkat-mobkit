@@ -124,6 +124,7 @@
 //! `spec.resolved_storage` / `spec.binary_blob_store` /
 //! `spec.committed_boundary_recoverer` assignments.
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -139,7 +140,9 @@ use meerkat_runtime::MeerkatMachine;
 
 use crate::mob_handle_runtime::MobBootstrapSpec;
 use crate::runtime::cross_mob_control::ControlListenAddr;
-use crate::runtime::{InMemoryMetadataStore, PersistentMetadataStore, RuntimeOptions};
+use crate::runtime::{
+    InMemoryMetadataStore, PersistentMetadataStore, RuntimeDecisionState, RuntimeOptions,
+};
 use crate::schedule_wiring::{
     ScheduleClaimWatchdogConfig, ScheduleFiringHostBinding, ScheduleMobTargetRegistry,
 };
@@ -344,24 +347,87 @@ pub const GATEWAY_HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// `advertised_shutdown_horizon_covers_every_bounded_gateway_phase`.
 pub const GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(312);
 
+/// The address a gateway HTTP listener binds when nothing selects another:
+/// loopback, ephemeral port. Every shipped release before the `bind` door
+/// existed used exactly this, and it is still the default on both binaries.
+pub const DEFAULT_GATEWAY_HTTP_LISTEN: SocketAddr =
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+
+/// A bound gateway HTTP listener plus the two base URLs it can be reached at:
+/// the same-host form ([`http_base_url`](Self::http_base_url)) and, when the
+/// launch declared one, the proxy-facing form
+/// ([`advertised_base_url`](Self::advertised_base_url)).
 pub struct GatewayHttpBinding {
     listener: tokio::net::TcpListener,
-    port: u16,
+    local_addr: SocketAddr,
+    advertised_base_url: Option<String>,
 }
 
 impl GatewayHttpBinding {
+    /// Bind loopback on an ephemeral port: the default posture, and the only
+    /// one both binaries had until the `http_listen` door was added.
     pub async fn bind_loopback() -> std::io::Result<Self> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let port = listener.local_addr()?.port();
-        Ok(Self { listener, port })
+        Self::bind(DEFAULT_GATEWAY_HTTP_LISTEN).await
     }
 
+    /// Bind an explicit address.
+    ///
+    /// This constructor performs NO exposure check. Callers run
+    /// [`validate_http_bind_policy`] on `listen` first; both binaries do so
+    /// before any bootstrap work, so a refused address costs no runtime
+    /// build. Unspecified addresses (`0.0.0.0`, `::`) bind every interface;
+    /// [`http_base_url`](Self::http_base_url) still reports the loopback form
+    /// a same-host client dials.
+    pub async fn bind(listen: SocketAddr) -> std::io::Result<Self> {
+        let listener = tokio::net::TcpListener::bind(listen).await?;
+        let local_addr = listener.local_addr()?;
+        Ok(Self {
+            listener,
+            local_addr,
+            advertised_base_url: None,
+        })
+    }
+
+    /// Record the base URL clients on the far side of a proxy use to reach
+    /// this listener (`https://mob.example.com`, `http://192.168.0.10:8080`).
+    /// It is carried into the init result as `http_public_base_url` and is
+    /// never used to bind. A trailing `/` is dropped so route concatenation
+    /// stays uniform with [`http_base_url`](Self::http_base_url).
+    pub fn with_advertised_base_url(mut self, base_url: Option<String>) -> Self {
+        self.advertised_base_url = base_url.map(|url| url.trim_end_matches('/').to_string());
+        self
+    }
+
+    /// The kernel-assigned port (meaningful for `HOST:0` binds).
     pub fn port(&self) -> u16 {
-        self.port
+        self.local_addr.port()
     }
 
+    /// The address the listener is actually bound to, as the kernel reports
+    /// it (`0.0.0.0:8080` stays `0.0.0.0:8080`).
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    /// The address a client ON THIS HOST dials: the bound address with an
+    /// unspecified IP mapped to the loopback of the same family.
+    pub fn reachable_addr(&self) -> SocketAddr {
+        loopback_reachable_addr(self.local_addr)
+    }
+
+    /// `http://<reachable_addr>`: what the init result reports as
+    /// `http_base_url`. For the default loopback bind this is byte-identical
+    /// to every earlier release (`http://127.0.0.1:<port>`); for `0.0.0.0` it
+    /// is still a URL that resolves on this host, because the SDK that
+    /// spawned the gateway shares its network namespace and dials this form
+    /// for SSE, multipart and console RPC.
     pub fn http_base_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        format!("http://{}", self.reachable_addr())
+    }
+
+    /// The proxy-facing base URL declared at launch, if any.
+    pub fn advertised_base_url(&self) -> Option<&str> {
+        self.advertised_base_url.as_deref()
     }
 
     pub fn serve(self, app: Router) -> GatewayHttpServer {
@@ -378,6 +444,196 @@ impl GatewayHttpBinding {
             task: Some(task),
         }
     }
+}
+
+/// Map an unspecified bind address (`0.0.0.0`, `::`) to the loopback address
+/// of the same family, keeping the port. Every other address is already the
+/// one a same-host client dials: a listener bound to one interface does not
+/// accept on loopback, so rewriting `192.168.0.10:8080` to `127.0.0.1:8080`
+/// would advertise a URL nothing answers.
+pub fn loopback_reachable_addr(bound: SocketAddr) -> SocketAddr {
+    match bound.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => {
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), bound.port())
+        }
+        IpAddr::V6(ip) if ip.is_unspecified() => {
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), bound.port())
+        }
+        _ => bound,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP listener exposure policy
+// ---------------------------------------------------------------------------
+
+/// Exposure policy for a gateway HTTP listener.
+///
+/// Mirrors `meerkat_rpc::secure_rpc::TcpBindPolicy`, the gate behind
+/// `--allow-remote` on `rkat-rpc --tcp` and `rkat mob host --listen-tcp`, so
+/// a MobKit operator meets the same word with the same meaning: `allow_remote`
+/// is an explicit transport-exposure acknowledgement, not an auth mechanism.
+/// MobKit does not depend on meerkat-rpc and the meerkat facade does not
+/// re-export the type, so the rule lives here rather than behind a new
+/// dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpBindPolicy {
+    pub allow_remote: bool,
+}
+
+impl HttpBindPolicy {
+    pub const fn local_only() -> Self {
+        Self {
+            allow_remote: false,
+        }
+    }
+
+    pub const fn allow_remote() -> Self {
+        Self { allow_remote: true }
+    }
+
+    /// The policy both gateways resolve at init: a non-loopback bind is
+    /// permitted when the launch acknowledged it (`allow_remote`) OR when the
+    /// console enforces app auth on every request, because then the listener
+    /// carries its own access boundary. `mobkit_gateway` builds its decision
+    /// state with `require_app_auth: false` and has no auth ingress, so on
+    /// that binary only the acknowledgement can open the gate.
+    pub fn for_gateway(allow_remote: bool, decisions: &RuntimeDecisionState) -> Self {
+        Self {
+            allow_remote: allow_remote || console_app_auth_enforced(decisions),
+        }
+    }
+}
+
+/// Whether the console can authenticate its callers on its own: app auth is
+/// required AND the trusted JWKS carries at least one key. This is the
+/// complement of the "closed to every caller" startup warning in
+/// `rpc_gateway`: `require_app_auth` with an empty JWKS refuses everyone,
+/// which protects the listener but is not the same as authenticating it, and
+/// is deliberately not enough to open the bind gate on its own.
+pub fn console_app_auth_enforced(decisions: &RuntimeDecisionState) -> bool {
+    decisions.console.require_app_auth
+        && crate::parse_jwks_json(&decisions.trusted_oidc.jwks_json).is_ok()
+}
+
+/// Why a requested HTTP listen address was refused before the listener opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HttpBindPolicyError {
+    /// The address is not loopback and neither the acknowledgement nor
+    /// enforced console auth permits the exposure.
+    RemoteBindRequiresExplicitAllow {
+        surface: &'static str,
+        listen: SocketAddr,
+    },
+}
+
+impl std::fmt::Display for HttpBindPolicyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RemoteBindRequiresExplicitAllow { surface, listen } => write!(
+                f,
+                "{surface} HTTP listen address `{listen}` is not loopback. MobKit binds 127.0.0.1 \
+                 unless the console enforces app auth (auth_config with a trusted signing key) or \
+                 the launch acknowledges the exposure with allow_remote \
+                 (runtime_options.allow_remote = true on rpc_gateway; the allow_remote init param, \
+                 --allow-remote, or MOBKIT_HTTP_ALLOW_REMOTE=1 on mobkit_gateway). allow_remote is \
+                 an exposure acknowledgement, not an auth mechanism: pass it only with an \
+                 authenticating proxy in front of this listener"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HttpBindPolicyError {}
+
+/// Enforce a loopback-only HTTP listener unless `policy` permits remote.
+///
+/// Pure and synchronous so both binaries can run it before bootstrap and a
+/// refusal costs nothing but the init reply.
+pub fn validate_http_bind_policy(
+    surface: &'static str,
+    listen: SocketAddr,
+    policy: HttpBindPolicy,
+) -> Result<(), HttpBindPolicyError> {
+    if policy.allow_remote || listen.ip().is_loopback() {
+        return Ok(());
+    }
+    Err(HttpBindPolicyError::RemoteBindRequiresExplicitAllow { surface, listen })
+}
+
+/// The loud warning every non-loopback bind logs, whatever opened the gate.
+/// Mirrors `mobkit_flow_editor`'s `--listen` warning: an operator must not be
+/// able to expose the console, JSON-RPC, blob, SSE and live routes to a
+/// network without a line in the log saying so. Emitted at WARN so it passes
+/// the default `warn,meerkat_mobkit=info` filter on both binaries.
+pub fn warn_on_non_loopback_bind(
+    surface: &'static str,
+    bound: SocketAddr,
+    decisions: &RuntimeDecisionState,
+) {
+    if bound.ip().is_loopback() {
+        return;
+    }
+    let console_auth = if console_app_auth_enforced(decisions) {
+        "console app auth is enforced"
+    } else {
+        "the console is OPEN (no app auth)"
+    };
+    tracing::warn!(
+        %bound,
+        "{surface} HTTP listener is bound to a NON-LOOPBACK address; {console_auth}; every route \
+         on this listener (console, JSON-RPC, blobs, SSE, live) is reachable by anyone who can \
+         reach {bound}. Bind 127.0.0.1 (the default) unless an authenticating proxy fronts this \
+         listener"
+    );
+}
+
+/// Parse a `HOST:PORT` HTTP listen address. IP literals only (`127.0.0.1:0`,
+/// `0.0.0.0:8080`, `[::]:8080`), the same rule as `mobkit_flow_editor
+/// --listen`; no DNS resolution, so a hostname is a typed refusal here rather
+/// than a bind that resolves differently on the next host.
+pub fn parse_http_listen_addr(value: &str) -> Result<SocketAddr, String> {
+    value.trim().parse::<SocketAddr>().map_err(|error| {
+        format!(
+            "`{value}` is not a HOST:PORT socket address ({error}); use an IP literal such as \
+             127.0.0.1:0 or 0.0.0.0:8080"
+        )
+    })
+}
+
+/// Parse the proxy-facing base URL a launch advertises. It must be an absolute
+/// `http://` or `https://` URL; a trailing `/` is dropped so `{base}/console`
+/// concatenation matches the local `http_base_url`.
+pub fn parse_http_public_base_url(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err(format!(
+            "`{value}` must be an absolute http:// or https:// URL, e.g. https://mob.example.com"
+        ));
+    }
+    let base = trimmed.trim_end_matches('/');
+    if base == "http:" || base == "https:" {
+        return Err(format!("`{value}` names no host"));
+    }
+    Ok(base.to_string())
+}
+
+/// Extract and validate the optional `--http-listen HOST:PORT` flag, the
+/// sibling of [`parse_control_listen_arg`] for the HTTP listener. Same
+/// argv convention: `args` is argv without the program name.
+pub fn parse_http_listen_arg(args: &[String]) -> Result<Option<SocketAddr>, String> {
+    let Some(position) = args.iter().position(|arg| arg == "--http-listen") else {
+        return Ok(None);
+    };
+    let Some(value) = args.get(position + 1) else {
+        return Err(
+            "--http-listen requires an address (HOST:PORT, e.g. 127.0.0.1:8080 or 0.0.0.0:8080)"
+                .to_string(),
+        );
+    };
+    parse_http_listen_addr(value)
+        .map(Some)
+        .map_err(|error| format!("--http-listen: {error}"))
 }
 
 pub struct GatewayHttpServer {
@@ -1221,5 +1477,218 @@ default_binding = "local"
             error.starts_with("--control-listen: "),
             "refusal must name the flag: {error}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // HTTP listener binding and exposure policy
+    // -----------------------------------------------------------------------
+
+    /// A JWKS with one key: what an `auth_config` launch trusts. Any key
+    /// shape will do for the gate, which asks only "is there a key".
+    const ONE_KEY_JWKS: &str =
+        r#"{"keys":[{"kid":"k1","kty":"oct","alg":"HS256","k":"c2VjcmV0LWJ5dGVz"}]}"#;
+
+    fn open_console() -> RuntimeDecisionState {
+        RuntimeDecisionState::local_console(
+            crate::decisions::ConsolePolicy {
+                require_app_auth: false,
+                ..crate::decisions::ConsolePolicy::default()
+            },
+            None,
+        )
+    }
+
+    fn closed_console_without_keys() -> RuntimeDecisionState {
+        RuntimeDecisionState::local_console(crate::decisions::ConsolePolicy::default(), None)
+    }
+
+    fn authenticated_console() -> RuntimeDecisionState {
+        let mut state = closed_console_without_keys();
+        state.trusted_oidc.jwks_json = ONE_KEY_JWKS.to_string();
+        state
+    }
+
+    /// The default constructor must stay byte-identical to every earlier
+    /// release: loopback, ephemeral port, `http://127.0.0.1:<port>`.
+    #[tokio::test]
+    async fn bind_loopback_reports_the_pre_existing_base_url_form() -> std::io::Result<()> {
+        let binding = GatewayHttpBinding::bind_loopback().await?;
+        assert_eq!(binding.local_addr().ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(
+            binding.http_base_url(),
+            format!("http://127.0.0.1:{}", binding.port())
+        );
+        assert_eq!(binding.advertised_base_url(), None);
+        Ok(())
+    }
+
+    /// A wildcard bind is reported at the loopback a same-host client can
+    /// dial, with the kernel-assigned port, and the advertised base rides
+    /// beside it with its trailing slash normalised away.
+    #[tokio::test]
+    async fn bind_unspecified_reports_a_reachable_loopback_base_url() -> std::io::Result<()> {
+        let binding = GatewayHttpBinding::bind("0.0.0.0:0".parse().map_err(std::io::Error::other)?)
+            .await?
+            .with_advertised_base_url(Some("https://mob.example.com/".to_string()));
+        assert!(binding.local_addr().ip().is_unspecified());
+        assert_ne!(binding.port(), 0);
+        assert_eq!(
+            binding.http_base_url(),
+            format!("http://127.0.0.1:{}", binding.port())
+        );
+        assert_eq!(
+            binding.reachable_addr(),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), binding.port())
+        );
+        assert_eq!(
+            binding.advertised_base_url(),
+            Some("https://mob.example.com")
+        );
+        Ok(())
+    }
+
+    /// The loopback mapping is a pure function of the bound address: both
+    /// wildcard families map to their loopback, every concrete address is
+    /// left alone (a listener on one interface does not answer on loopback).
+    #[test]
+    fn loopback_reachable_addr_maps_wildcards_only() -> Result<(), std::net::AddrParseError> {
+        assert_eq!(
+            loopback_reachable_addr("0.0.0.0:8080".parse()?),
+            "127.0.0.1:8080".parse()?
+        );
+        assert_eq!(
+            loopback_reachable_addr("[::]:8080".parse()?),
+            "[::1]:8080".parse()?
+        );
+        assert_eq!(
+            loopback_reachable_addr("192.0.2.10:8080".parse()?),
+            "192.0.2.10:8080".parse()?
+        );
+        assert_eq!(
+            loopback_reachable_addr("127.0.0.1:41".parse()?),
+            "127.0.0.1:41".parse()?
+        );
+        Ok(())
+    }
+
+    /// The gate itself, independent of any decision state: loopback always
+    /// passes, non-loopback passes only with the acknowledgement, and the
+    /// refusal names the address and every way out.
+    #[test]
+    fn http_bind_policy_refuses_non_loopback_without_allow_remote()
+    -> Result<(), std::net::AddrParseError> {
+        for loopback in ["127.0.0.1:0", "[::1]:8080", "127.0.0.2:9"] {
+            assert_eq!(
+                validate_http_bind_policy("test", loopback.parse()?, HttpBindPolicy::local_only()),
+                Ok(())
+            );
+        }
+        for remote in ["0.0.0.0:8080", "[::]:8080", "192.0.2.10:8080"] {
+            let listen: SocketAddr = remote.parse()?;
+            let error =
+                validate_http_bind_policy("rpc_gateway", listen, HttpBindPolicy::local_only());
+            assert_eq!(
+                error,
+                Err(HttpBindPolicyError::RemoteBindRequiresExplicitAllow {
+                    surface: "rpc_gateway",
+                    listen,
+                })
+            );
+            let message = error
+                .map(|()| String::new())
+                .unwrap_or_else(|error| error.to_string());
+            assert!(message.contains(remote), "{message}");
+            assert!(message.contains("rpc_gateway"), "{message}");
+            assert!(message.contains("allow_remote"), "{message}");
+            assert!(message.contains("auth_config"), "{message}");
+            assert!(message.contains("MOBKIT_HTTP_ALLOW_REMOTE"), "{message}");
+            assert_eq!(
+                validate_http_bind_policy("test", listen, HttpBindPolicy::allow_remote()),
+                Ok(())
+            );
+        }
+        Ok(())
+    }
+
+    /// The gateway resolution: enforced console auth opens the gate on its
+    /// own; an open console does not; a console that REQUIRES auth but
+    /// trusts no key (closed to everyone) does not either, because refusing
+    /// everyone is not authenticating anyone; the acknowledgement always does.
+    #[test]
+    fn http_bind_policy_for_gateway_treats_enforced_console_auth_as_allow() {
+        assert!(console_app_auth_enforced(&authenticated_console()));
+        assert!(!console_app_auth_enforced(&open_console()));
+        assert!(!console_app_auth_enforced(&closed_console_without_keys()));
+
+        assert_eq!(
+            HttpBindPolicy::for_gateway(false, &authenticated_console()),
+            HttpBindPolicy::allow_remote()
+        );
+        assert_eq!(
+            HttpBindPolicy::for_gateway(false, &open_console()),
+            HttpBindPolicy::local_only()
+        );
+        assert_eq!(
+            HttpBindPolicy::for_gateway(false, &closed_console_without_keys()),
+            HttpBindPolicy::local_only()
+        );
+        assert_eq!(
+            HttpBindPolicy::for_gateway(true, &open_console()),
+            HttpBindPolicy::allow_remote()
+        );
+    }
+
+    #[test]
+    fn parse_http_listen_addr_accepts_ip_literals_and_refuses_hostnames() {
+        assert_eq!(
+            parse_http_listen_addr(" 0.0.0.0:8080 ").ok(),
+            "0.0.0.0:8080".parse().ok()
+        );
+        assert_eq!(
+            parse_http_listen_addr("[::]:8080").ok(),
+            "[::]:8080".parse().ok()
+        );
+        for bad in ["localhost:8080", "8080", "0.0.0.0", ""] {
+            let error = parse_http_listen_addr(bad).err().unwrap_or_default();
+            assert!(error.contains("HOST:PORT"), "{bad:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn parse_http_public_base_url_requires_an_absolute_http_url() {
+        assert_eq!(
+            parse_http_public_base_url(" https://mob.example.com/ ").as_deref(),
+            Ok("https://mob.example.com")
+        );
+        assert_eq!(
+            parse_http_public_base_url("http://192.168.0.10:8080").as_deref(),
+            Ok("http://192.168.0.10:8080")
+        );
+        for bad in ["mob.example.com", "ws://mob.example.com", "https://", ""] {
+            assert!(parse_http_public_base_url(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn parse_http_listen_arg_mirrors_the_control_listen_flag() -> Result<(), String> {
+        let absent = vec!["--persistent".to_string()];
+        assert!(parse_http_listen_arg(&absent)?.is_none());
+
+        let present = vec!["--http-listen".to_string(), "0.0.0.0:8080".to_string()];
+        assert_eq!(
+            parse_http_listen_arg(&present)?,
+            "0.0.0.0:8080".parse().ok()
+        );
+
+        let missing_value = vec!["--http-listen".to_string()];
+        let error = parse_http_listen_arg(&missing_value)
+            .err()
+            .unwrap_or_default();
+        assert!(error.contains("--http-listen requires"), "{error}");
+
+        let malformed = vec!["--http-listen".to_string(), "localhost:8080".to_string()];
+        let error = parse_http_listen_arg(&malformed).err().unwrap_or_default();
+        assert!(error.starts_with("--http-listen:"), "{error}");
+        Ok(())
     }
 }

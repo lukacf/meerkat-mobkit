@@ -114,6 +114,9 @@ export interface MobKitBuilderConfig {
   consoleConfigPath: string | null;
   accessConfigPath: string | null;
   meerkatConfigPath: string | null;
+  httpListen: string | null;
+  httpPublicBaseUrl: string | null;
+  allowRemote: boolean | null;
   consoleRequireAppAuth: boolean | null;
   consoleReadOnly: boolean | null;
   consoleFetchTimeoutMs: number | null;
@@ -154,6 +157,9 @@ function defaultConfig(): MobKitBuilderConfig {
     consoleConfigPath: null,
     accessConfigPath: null,
     meerkatConfigPath: null,
+    httpListen: null,
+    httpPublicBaseUrl: null,
+    allowRemote: null,
     consoleRequireAppAuth: null,
     consoleReadOnly: null,
     consoleFetchTimeoutMs: null,
@@ -321,6 +327,55 @@ export class MobKitBuilder {
 
   consoleReadOnly(readOnly = true): this {
     this._config.consoleReadOnly = readOnly;
+    return this;
+  }
+
+  /**
+   * Bind the gateway HTTP listener to `HOST:PORT`.
+   *
+   * Emitted as `runtime_options.http_listen`. The default is `127.0.0.1:0`:
+   * loopback, ephemeral port, the only bind every earlier release had. A
+   * non-loopback address (`0.0.0.0:8080`) is refused at init unless the
+   * console enforces app auth (`auth(...)`) or the launch acknowledges the
+   * exposure with `allowRemote()`; the gateway logs a WARN line for every
+   * non-loopback bind. IP literals only, no hostnames. The init result's
+   * `http_base_url` keeps the same-host form (`127.0.0.1` for a wildcard
+   * bind). Mirrors the Python builder's `http_listen`.
+   */
+  httpListen(listen: string): this {
+    if (!listen.trim()) {
+      throw new Error("httpListen address must not be empty");
+    }
+    this._config.httpListen = listen.trim();
+    return this;
+  }
+
+  /**
+   * Advertise the base URL clients reach the gateway at through a proxy.
+   *
+   * Emitted as `runtime_options.http_public_base_url` and reported back in
+   * the init result; the gateway never binds it. Read it after `connect()`
+   * as `runtime.rustHttpPublicBaseUrl`. Mirrors the Python builder's
+   * `http_public_base_url`.
+   */
+  httpPublicBaseUrl(url: string): this {
+    if (!url.trim()) {
+      throw new Error("httpPublicBaseUrl must not be empty");
+    }
+    this._config.httpPublicBaseUrl = url.trim();
+    return this;
+  }
+
+  /**
+   * Acknowledge that `httpListen` exposes the listener beyond this host.
+   *
+   * Emitted as `runtime_options.allow_remote`. Same word and rule as
+   * `--allow-remote` on `rkat-rpc --tcp`: an exposure acknowledgement, not an
+   * auth mechanism. Pass it only with an authenticating proxy in front of the
+   * listener. Mirrors the Python builder's `allow_remote`.
+   */
+  allowRemote(allow = true): this {
+    this._config.allowRemote = allow;
     return this;
   }
 

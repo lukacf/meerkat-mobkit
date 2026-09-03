@@ -117,6 +117,32 @@ describe("MobKitBuilder chainable methods", () => {
     );
   });
 
+  it("httpListen() trims, sets httpListen and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.httpListen(" 0.0.0.0:8080 ");
+    assert.equal(result, builder);
+    assert.equal(builder._config.httpListen, "0.0.0.0:8080");
+  });
+
+  it("httpListen() rejects an empty address", () => {
+    assert.throws(
+      () => MobKit.builder().httpListen("  "),
+      /httpListen address must not be empty/,
+    );
+  });
+
+  it("httpPublicBaseUrl() sets httpPublicBaseUrl and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.httpPublicBaseUrl("https://mob.example.com");
+    assert.equal(result, builder);
+    assert.equal(builder._config.httpPublicBaseUrl, "https://mob.example.com");
+  });
+
+  it("allowRemote() defaults to true and accepts an explicit false", () => {
+    assert.equal(MobKit.builder().allowRemote()._config.allowRemote, true);
+    assert.equal(MobKit.builder().allowRemote(false)._config.allowRemote, false);
+  });
+
   it("consoleAuthRequired() sets consoleRequireAppAuth and returns this", () => {
     const builder = MobKit.builder();
     const result = builder.consoleAuthRequired(false);
@@ -288,6 +314,9 @@ describe("MobKitBuilder default config", () => {
     assert.equal(cfg.eventLog, null);
     assert.equal(cfg.consoleConfigPath, null);
     assert.equal(cfg.meerkatConfigPath, null);
+    assert.equal(cfg.httpListen, null);
+    assert.equal(cfg.httpPublicBaseUrl, null);
+    assert.equal(cfg.allowRemote, null);
     assert.equal(cfg.consoleRequireAppAuth, null);
     assert.equal(cfg.consoleReadOnly, null);
     assert.equal(cfg.consoleFetchTimeoutMs, null);
@@ -340,6 +369,9 @@ describe("MobKitBuilder method chaining", () => {
       .gateway("/bin/gw")
       .consoleConfig("console.toml")
       .meerkatConfig("host/config.toml")
+      .httpListen("0.0.0.0:8080")
+      .httpPublicBaseUrl("https://mob.example.com")
+      .allowRemote()
       .consoleAuthRequired(false)
       .consoleReadOnly(true)
       .consoleFetchTimeoutMs(120_000)
@@ -357,6 +389,9 @@ describe("MobKitBuilder method chaining", () => {
     assert.equal(builder._config.gatewayBin, "/bin/gw");
     assert.equal(builder._config.consoleConfigPath, "console.toml");
     assert.equal(builder._config.meerkatConfigPath, "host/config.toml");
+    assert.equal(builder._config.httpListen, "0.0.0.0:8080");
+    assert.equal(builder._config.httpPublicBaseUrl, "https://mob.example.com");
+    assert.equal(builder._config.allowRemote, true);
     assert.equal(builder._config.consoleRequireAppAuth, false);
     assert.equal(builder._config.consoleReadOnly, true);
     assert.equal(builder._config.consoleFetchTimeoutMs, 120_000);

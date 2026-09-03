@@ -387,6 +387,51 @@ describe("MobKitRuntime", () => {
     assert.equal("meerkat_config_path" in params.runtime_options, false);
   });
 
+  it("builds http_listen, http_public_base_url and allow_remote runtime options", () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._config.httpListen = "0.0.0.0:8080";
+    (rt as any)._config.httpPublicBaseUrl = "https://mob.example.com";
+    (rt as any)._config.allowRemote = true;
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal(params.runtime_options.http_listen, "0.0.0.0:8080");
+    assert.equal(
+      params.runtime_options.http_public_base_url,
+      "https://mob.example.com",
+    );
+    assert.equal(params.runtime_options.allow_remote, true);
+  });
+
+  it("transmits allow_remote=false rather than dropping it", () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._config.allowRemote = false;
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal(params.runtime_options.allow_remote, false);
+  });
+
+  it("omits the http exposure runtime options when unset", () => {
+    const { rt } = createMockRuntime();
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal("http_listen" in params.runtime_options, false);
+    assert.equal("http_public_base_url" in params.runtime_options, false);
+    assert.equal("allow_remote" in params.runtime_options, false);
+  });
+
+  it("rustHttpPublicBaseUrl prefers the advertised base and falls back to the local one", () => {
+    const { rt } = createMockRuntime();
+    assert.equal(rt.rustHttpPublicBaseUrl, null);
+    rt.setRustHttpBase("http://127.0.0.1:8081");
+    assert.equal(rt.rustHttpPublicBaseUrl, "http://127.0.0.1:8081");
+    (rt as any)._rustHttpPublicBase = "https://mob.example.com";
+    assert.equal(rt.rustHttpPublicBaseUrl, "https://mob.example.com");
+    assert.equal(rt.rustHttpBaseUrl, "http://127.0.0.1:8081");
+  });
+
   it("builds agent_memory runtime option", () => {
     const { rt } = createMockRuntime();
     (rt as any)._config.agentMemoryConfig = {

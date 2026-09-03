@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -121,6 +122,20 @@ struct InitParams {
     /// before. A named file that is missing or malformed refuses init. A
     /// relative path resolves against the launch directory.
     meerkat_config_path: Option<PathBuf>,
+    /// HTTP listener bind address, `HOST:PORT` (default `127.0.0.1:0`:
+    /// loopback, ephemeral port). Wins over `--http-listen` and
+    /// `MOBKIT_HTTP_LISTEN_ADDR`. A non-loopback address is refused unless
+    /// `allow_remote` acknowledges the exposure: this binary serves its
+    /// console open (no auth ingress), so loopback is its only boundary.
+    http_listen: Option<String>,
+    /// Explicit acknowledgement that `http_listen` exposes the listener
+    /// beyond this host; also `--allow-remote` or `MOBKIT_HTTP_ALLOW_REMOTE=1`.
+    /// Same word and rule as `--allow-remote` on `rkat-rpc --tcp`.
+    allow_remote: Option<bool>,
+    /// Base URL clients reach this gateway at through a proxy. Reported back
+    /// as `http_public_base_url` (and remembered for a resumed launch); never
+    /// used to bind.
+    http_public_base_url: Option<String>,
     /// Present ONLY so it can be refused.
     ///
     /// `mobkit_gateway` does not build the application tool-policy registry;
@@ -166,6 +181,11 @@ struct RuntimeRegistryEntry {
     /// written by older gateways simply resume with no control address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     control_listen_address: Option<String>,
+    /// Proxy-facing base URL the live gateway was launched with, so a
+    /// resumed launch reports the same one. Serde-defaulted for registries
+    /// written by older gateways.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    http_public_base_url: Option<String>,
 }
 
 fn current_time_ms() -> u64 {
@@ -249,6 +269,7 @@ fn config_fingerprint(
     context_root: Option<&Path>,
     compaction: Option<&meerkat_core::config::CompactionRuntimeConfig>,
     control_listen: Option<&ControlListenAddr>,
+    http_listen: SocketAddr,
     paths: &ConventionalPaths,
 ) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
@@ -298,6 +319,11 @@ fn config_fingerprint(
     if let Some(addr) = control_listen {
         hasher.update(addr.to_string().as_bytes());
     }
+    hasher.update(b"\n");
+    // The HTTP listener likewise binds at launch: a relaunch that asks for a
+    // different address must not resume a live runtime bound somewhere else
+    // and report that one as if it were the requested bind.
+    hasher.update(http_listen.to_string().as_bytes());
     hasher.update(b"\n");
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
 
@@ -500,6 +526,7 @@ fn gateway_agent_config(
 /// the session service's `runtime_store` stays `None` — keeping the
 /// StoreCheckpointer enabled.  The adapter is wired into MobBuilder
 /// directly via `with_runtime_adapter()`.
+#[allow(clippy::too_many_arguments)]
 fn build_persistent_session_service(
     layout: &MobKitStorageLayout,
     runtime_root: PathBuf,
@@ -777,6 +804,28 @@ fn parse_init_request(line: &str) -> anyhow::Result<(Value, InitParams)> {
     Ok((raw.get("id").cloned().unwrap_or(Value::Null), parsed))
 }
 
+/// Resolve the HTTP listen address: init param, then `--http-listen`, then
+/// `MOBKIT_HTTP_LISTEN_ADDR`, then loopback on an ephemeral port. Pure so the
+/// precedence is testable without touching the process environment. An empty
+/// environment value counts as unset, like `env_bool`.
+fn resolve_http_listen(
+    init_param: Option<&str>,
+    flag: Option<SocketAddr>,
+    env_value: Option<&str>,
+) -> Result<SocketAddr, String> {
+    if let Some(value) = init_param {
+        return meerkat_mobkit::gateway_composition::parse_http_listen_addr(value);
+    }
+    if let Some(addr) = flag {
+        return Ok(addr);
+    }
+    match env_value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => meerkat_mobkit::gateway_composition::parse_http_listen_addr(value)
+            .map_err(|error| format!("MOBKIT_HTTP_LISTEN_ADDR: {error}")),
+        None => Ok(meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN),
+    }
+}
+
 fn env_bool(name: &str) -> anyhow::Result<Option<bool>> {
     let Ok(value) = std::env::var(name) else {
         return Ok(None);
@@ -796,6 +845,7 @@ fn init_response(
     http_base_url: &str,
     launch_state: &str,
     control_listen_address: Option<&str>,
+    http_public_base_url: Option<&str>,
 ) -> Value {
     json!({
         "jsonrpc": "2.0",
@@ -804,6 +854,10 @@ fn init_response(
             "contract_version": MOBKIT_CONTRACT_VERSION,
             "runtime_id": runtime_id,
             "http_base_url": http_base_url,
+            // Proxy-facing base the launch advertised (http_public_base_url
+            // init param); null when none was declared. Never bound.
+            // Wire-additive optional field.
+            "http_public_base_url": http_public_base_url,
             "launch_state": launch_state,
             // Dialable address of the cross-mob control listener when the
             // gateway was launched with --control-listen (real bound port
@@ -1156,6 +1210,17 @@ fn run_storage_prune(args: &[String]) -> i32 {
     i32::from(report.has_errors())
 }
 
+/// Launch-time (argv) inputs `run` resolves against the init params. An init
+/// param wins where both name the same thing; the environment
+/// (`MOBKIT_HTTP_LISTEN_ADDR`, `MOBKIT_HTTP_ALLOW_REMOTE`) sits below both.
+struct GatewayLaunchArgs {
+    control_listen: Option<ControlListenAddr>,
+    /// `--http-listen HOST:PORT`.
+    http_listen: Option<SocketAddr>,
+    /// `--allow-remote`.
+    allow_remote: bool,
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
@@ -1198,6 +1263,19 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // --http-listen HOST:PORT / --allow-remote: the HTTP listener's bind
+    // address and the exposure acknowledgement a non-loopback bind needs.
+    // Init params win over these; MOBKIT_HTTP_LISTEN_ADDR and
+    // MOBKIT_HTTP_ALLOW_REMOTE sit below them. Validated here so a typo is a
+    // launch error, not a silently ignored flag.
+    let http_listen = match meerkat_mobkit::gateway_composition::parse_http_listen_arg(&args) {
+        Ok(value) => value,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
+    let allow_remote = args.iter().any(|arg| arg == "--allow-remote");
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         "mobkit_gateway starting (console/HTTP gateway)"
@@ -1213,14 +1291,23 @@ fn main() {
             std::process::exit(1);
         }
     };
-    if let Err(error) = runtime.block_on(Box::pin(run(control_listen))) {
+    if let Err(error) = runtime.block_on(Box::pin(run(GatewayLaunchArgs {
+        control_listen,
+        http_listen,
+        allow_remote,
+    }))) {
         let response = init_error(Value::Null, -32603, error.to_string());
         print_json_line(&response);
         std::process::exit(1);
     }
 }
 
-async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
+async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
+    let GatewayLaunchArgs {
+        control_listen,
+        http_listen: http_listen_flag,
+        allow_remote: allow_remote_flag,
+    } = launch;
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
     let mut init_line = String::new();
@@ -1289,6 +1376,40 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         Some(value) => value,
         None => env_bool("MOBKIT_CONSOLE_READ_ONLY")?.unwrap_or(false),
     };
+    // HTTP listener: init param > --http-listen > MOBKIT_HTTP_LISTEN_ADDR >
+    // loopback on an ephemeral port. Resolved before the resume lookup so the
+    // address joins the resume key and the exposure gate runs on every
+    // launch, resumed or not.
+    let http_listen = resolve_http_listen(
+        params.http_listen.as_deref(),
+        http_listen_flag,
+        std::env::var("MOBKIT_HTTP_LISTEN_ADDR").ok().as_deref(),
+    )
+    .map_err(|error| anyhow!("init params: http_listen: {error}"))?;
+    let allow_remote = match params.allow_remote {
+        Some(value) => value,
+        None => allow_remote_flag || env_bool("MOBKIT_HTTP_ALLOW_REMOTE")?.unwrap_or(false),
+    };
+    let declared_public_base_url = params
+        .http_public_base_url
+        .as_deref()
+        .map(meerkat_mobkit::gateway_composition::parse_http_public_base_url)
+        .transpose()
+        .map_err(|error| anyhow!("init params: http_public_base_url: {error}"))?;
+    // Exposure gate, before the registry lookup and before any bootstrap. The
+    // console this binary serves is open (`runtime_decision_state` hardcodes
+    // `require_app_auth: false`), so only `allow_remote` can open it; the gate
+    // still reads the real decision state so the rule has one owner. The UI
+    // config plays no part in the gate and is loaded later, as before.
+    meerkat_mobkit::gateway_composition::validate_http_bind_policy(
+        "mobkit_gateway",
+        http_listen,
+        meerkat_mobkit::gateway_composition::HttpBindPolicy::for_gateway(
+            allow_remote,
+            &runtime_decision_state(ConsoleUiConfig::default(), console_read_only),
+        ),
+    )
+    .map_err(|error| anyhow!("init params: {error}"))?;
 
     let mut paths = conventional_paths(&workspace_root);
     // An explicit init param wins over the workspace convention. The
@@ -1320,6 +1441,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         context_root.as_deref(),
         compaction_policy.as_ref(),
         control_listen.as_ref(),
+        http_listen,
         &paths,
     )?;
     let registry_file = layout
@@ -1347,6 +1469,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
             &entry.http_base_url,
             "resumed",
             entry.control_listen_address.as_deref(),
+            entry.http_public_base_url.as_deref(),
         ));
         return Ok(());
     }
@@ -1805,10 +1928,12 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
 
     let composition = composition.activate();
     let runtime = composition.runtime();
-    let http_binding = meerkat_mobkit::gateway_composition::GatewayHttpBinding::bind_loopback()
+    let http_binding = meerkat_mobkit::gateway_composition::GatewayHttpBinding::bind(http_listen)
         .await
-        .context("failed to bind gateway listener")?;
+        .with_context(|| format!("failed to bind gateway listener {http_listen}"))?
+        .with_advertised_base_url(declared_public_base_url);
     let http_base_url = http_binding.http_base_url();
+    let http_public_base_url = http_binding.advertised_base_url().map(str::to_string);
 
     let control_listen_address = runtime.control_listener_advertised_address();
     registry.entries.retain(|entry| entry.key != key);
@@ -1819,6 +1944,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         pid: std::process::id(),
         updated_at_ms: current_time_ms(),
         control_listen_address: control_listen_address.clone(),
+        http_public_base_url: http_public_base_url.clone(),
     });
     save_registry(&registry_file, &registry)?;
 
@@ -1828,9 +1954,15 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         &http_base_url,
         "created",
         control_listen_address.as_deref(),
+        http_public_base_url.as_deref(),
     ));
 
     let decisions = runtime_decision_state(console_ui, console_read_only);
+    meerkat_mobkit::gateway_composition::warn_on_non_loopback_bind(
+        "mobkit_gateway",
+        http_binding.local_addr(),
+        &decisions,
+    );
     let app = runtime.build_reference_app_router(decisions);
     let mut http_server = http_binding.serve(app);
 
@@ -2049,6 +2181,175 @@ mod tests {
     }
 
     #[test]
+    fn init_params_parse_http_listen_allow_remote_and_public_base_url() -> anyhow::Result<()> {
+        let line = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "mobkit/init",
+            "params": {
+                "http_listen": "0.0.0.0:8080",
+                "allow_remote": true,
+                "http_public_base_url": "https://mob.example.com"
+            }
+        })
+        .to_string();
+
+        let (_id, params) = parse_init_request(&line)?;
+
+        assert_eq!(params.http_listen.as_deref(), Some("0.0.0.0:8080"));
+        assert_eq!(params.allow_remote, Some(true));
+        assert_eq!(
+            params.http_public_base_url.as_deref(),
+            Some("https://mob.example.com")
+        );
+        Ok(())
+    }
+
+    /// Precedence: init param, then `--http-listen`, then the environment,
+    /// then loopback on an ephemeral port; an empty environment value is
+    /// unset, a malformed one is a typed refusal naming the variable.
+    #[test]
+    fn resolve_http_listen_prefers_init_param_then_flag_then_env() -> Result<(), String> {
+        let parse = |value: &str| -> Result<SocketAddr, String> {
+            value
+                .parse::<SocketAddr>()
+                .map_err(|error| error.to_string())
+        };
+        let flag = parse("192.0.2.10:8080")?;
+        assert_eq!(
+            resolve_http_listen(Some("0.0.0.0:9090"), Some(flag), Some("[::]:7070"))?,
+            parse("0.0.0.0:9090")?
+        );
+        assert_eq!(
+            resolve_http_listen(None, Some(flag), Some("[::]:7070"))?,
+            flag
+        );
+        assert_eq!(
+            resolve_http_listen(None, None, Some("[::]:7070"))?,
+            parse("[::]:7070")?
+        );
+        assert_eq!(
+            resolve_http_listen(None, None, Some("  "))?,
+            meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN
+        );
+        assert_eq!(
+            resolve_http_listen(None, None, None)?,
+            meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN
+        );
+        let error = resolve_http_listen(None, None, Some("localhost:1"))
+            .err()
+            .unwrap_or_default();
+        assert!(error.contains("MOBKIT_HTTP_LISTEN_ADDR"), "{error}");
+        let error = resolve_http_listen(Some("nope"), None, None)
+            .err()
+            .unwrap_or_default();
+        assert!(error.contains("HOST:PORT"), "{error}");
+        Ok(())
+    }
+
+    /// This binary serves an OPEN console (no auth ingress), so enforced
+    /// console auth can never open the exposure gate here: a non-loopback
+    /// bind always needs `allow_remote`, and loopback never does.
+    #[test]
+    fn non_loopback_http_listen_always_needs_allow_remote_on_the_open_console()
+    -> Result<(), std::net::AddrParseError> {
+        use meerkat_mobkit::gateway_composition::{HttpBindPolicy, validate_http_bind_policy};
+
+        let state = runtime_decision_state(ConsoleUiConfig::default(), false);
+        let remote: SocketAddr = "0.0.0.0:8080".parse()?;
+        let refused = validate_http_bind_policy(
+            "mobkit_gateway",
+            remote,
+            HttpBindPolicy::for_gateway(false, &state),
+        );
+        let message = refused
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.contains("mobkit_gateway"), "{message}");
+        assert!(message.contains("MOBKIT_HTTP_ALLOW_REMOTE"), "{message}");
+        assert_eq!(
+            validate_http_bind_policy(
+                "mobkit_gateway",
+                remote,
+                HttpBindPolicy::for_gateway(true, &state),
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_http_bind_policy(
+                "mobkit_gateway",
+                "127.0.0.1:0".parse()?,
+                HttpBindPolicy::for_gateway(false, &state),
+            ),
+            Ok(())
+        );
+        Ok(())
+    }
+
+    /// The init reply carries the advertised base beside the same-host one,
+    /// and `null` when none was declared, so an SDK can tell "not declared"
+    /// from "declared".
+    #[test]
+    fn init_response_reports_the_advertised_public_base_url() {
+        let with = init_response(
+            serde_json::json!(1),
+            "rt",
+            "http://127.0.0.1:41",
+            "created",
+            None,
+            Some("https://mob.example.com"),
+        );
+        assert_eq!(
+            with["result"]["http_public_base_url"],
+            serde_json::json!("https://mob.example.com")
+        );
+        assert_eq!(
+            with["result"]["http_base_url"],
+            serde_json::json!("http://127.0.0.1:41")
+        );
+        let without = init_response(
+            serde_json::json!(1),
+            "rt",
+            "http://127.0.0.1:41",
+            "resumed",
+            None,
+            None,
+        );
+        assert!(without["result"]["http_public_base_url"].is_null());
+    }
+
+    /// Like `--control-listen`, the HTTP listen address is part of the resume
+    /// key: a relaunch asking for a different bind must not resume a live
+    /// runtime bound elsewhere.
+    #[test]
+    fn config_fingerprint_changes_with_http_listen() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = conventional_paths(temp.path());
+        let fingerprint = |listen: &str| -> anyhow::Result<String> {
+            config_fingerprint(
+                temp.path(),
+                None,
+                false,
+                "tux-auto",
+                false,
+                false,
+                temp.path(),
+                temp.path(),
+                temp.path(),
+                None,
+                None,
+                None,
+                listen.parse()?,
+                &paths,
+            )
+        };
+        assert_eq!(fingerprint("127.0.0.1:0")?, fingerprint("127.0.0.1:0")?);
+        assert_ne!(fingerprint("127.0.0.1:0")?, fingerprint("0.0.0.0:8080")?);
+        Ok(())
+    }
+
+    #[test]
     fn init_params_parse_console_read_only() -> anyhow::Result<()> {
         let line = serde_json::json!({
             "jsonrpc": "2.0",
@@ -2143,6 +2444,7 @@ mod tests {
                 None,
                 None,
                 None,
+                meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
                 paths,
             )
         };
@@ -2155,7 +2457,7 @@ mod tests {
             "a changed host config must not resume the previous runtime"
         );
 
-        let mut without = paths.clone();
+        let mut without = paths;
         without.meerkat_config_toml = None;
         assert_ne!(
             fingerprint(&without)?,
@@ -2238,6 +2540,7 @@ mod tests {
             None,
             None,
             None,
+            meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
             &paths,
         )?;
         let read_only = config_fingerprint(
@@ -2253,6 +2556,7 @@ mod tests {
             None,
             None,
             None,
+            meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
             &paths,
         )?;
 
@@ -2289,6 +2593,7 @@ mod tests {
             None,
             None,
             None,
+            meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
             &paths,
         )?;
         let pinned_key = config_fingerprint(
@@ -2304,6 +2609,7 @@ mod tests {
             None,
             Some(&pinned),
             None,
+            meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
             &paths,
         )?;
         let lower_key = config_fingerprint(
@@ -2319,6 +2625,7 @@ mod tests {
             None,
             Some(&lower),
             None,
+            meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
             &paths,
         )?;
 

@@ -289,6 +289,18 @@ let json_api_with_runtime: Router =
     console_json_router_with_runtime(decisions, mob_runtime, None, None);
 ```
 
+Binding is separate from routing. `GatewayHttpBinding::bind_loopback()` is
+the default posture (loopback, ephemeral port) and
+`GatewayHttpBinding::bind(addr)` takes any `SocketAddr`; `http_base_url()`
+always returns the same-host form (`127.0.0.1` for `0.0.0.0` and `::`
+binds) and `with_advertised_base_url(..)` carries a proxy-facing base for
+your init reply. Run `validate_http_bind_policy("my-host", addr,
+HttpBindPolicy::for_gateway(allow_remote, &decisions))` before binding to
+get the gateways' fail-closed rule (non-loopback needs enforced console auth
+or the `allow_remote` acknowledgement) and `warn_on_non_loopback_bind` for
+their WARN line; all four live in `meerkat_mobkit::gateway_composition`. See
+[Deployment](/guides/deployment).
+
 ## See also
 
 - [Quickstart](/quickstart) -- getting started

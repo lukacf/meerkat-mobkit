@@ -380,6 +380,7 @@ class MobKitRuntime:
         self._running = False
         self._dispatcher = CallbackDispatcher()
         self._rust_http_base: str | None = None
+        self._rust_http_public_base: str | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._shutdown_task: asyncio.Task[None] | None = None
         self.jobs = JobsHandle(self)
@@ -437,6 +438,7 @@ class MobKitRuntime:
         """
         self._running = False
         self._rust_http_base = None
+        self._rust_http_public_base = None
         if self._transport is transport:
             self._transport = None
 
@@ -480,6 +482,7 @@ class MobKitRuntime:
             transport = PersistentTransport(self._config.gateway_bin)
             self._transport = transport
             self._rust_http_base = None
+            self._rust_http_public_base = None
             try:
                 # Detached host work reports asynchronously through ordinary
                 # gateway RPC after the short callback/job/start response.
@@ -525,6 +528,12 @@ class MobKitRuntime:
                     )
                     if isinstance(init_result, dict):
                         self._rust_http_base = init_result.get("http_base_url")
+                        public_base = init_result.get("http_public_base_url")
+                        self._rust_http_public_base = (
+                            public_base
+                            if isinstance(public_base, str) and public_base
+                            else None
+                        )
                         if not self._rust_http_base:
                             _log.warning(
                                 "mobkit/init did not return http_base_url — "
@@ -609,6 +618,12 @@ class MobKitRuntime:
             )
         if self._config.console_config_path:
             runtime_options["console_config_path"] = self._config.console_config_path
+        if self._config.http_listen:
+            runtime_options["http_listen"] = self._config.http_listen
+        if self._config.http_public_base_url:
+            runtime_options["http_public_base_url"] = self._config.http_public_base_url
+        if self._config.allow_remote is not None:
+            runtime_options["allow_remote"] = self._config.allow_remote
         if self._config.implicit_delegate_idle_retire_configured:
             runtime_options["implicit_delegate_idle_retire_secs"] = (
                 self._config.implicit_delegate_idle_retire_secs
@@ -689,6 +704,19 @@ class MobKitRuntime:
     @property
     def rust_http_base_url(self) -> str | None:
         return self._rust_http_base
+
+    @property
+    def rust_http_public_base_url(self) -> str | None:
+        """Base URL for clients that reach the gateway through a proxy.
+
+        The ``http_public_base_url`` the launch advertised (see
+        ``MobKitBuilder.http_public_base_url``), falling back to
+        ``rust_http_base_url`` when none was declared. The SDK's own SSE,
+        multipart and console RPC calls keep using ``rust_http_base_url``:
+        this process spawned the gateway and shares its network namespace,
+        so the same-host form is always the one that answers.
+        """
+        return self._rust_http_public_base or self._rust_http_base
 
     def set_rust_http_base(self, url: str) -> None:
         self._rust_http_base = url

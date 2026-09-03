@@ -18,8 +18,20 @@ fn both_binaries_delegate_runtime_and_http_lifecycle_to_the_library_root() {
             "{name} bypassed the shared typed composition root"
         );
         assert!(
-            source.contains("GatewayHttpBinding::bind_loopback"),
+            source.contains("GatewayHttpBinding::bind("),
             "{name} bypassed shared HTTP admission"
+        );
+        assert!(
+            source.contains("validate_http_bind_policy("),
+            "{name} binds without the shared HTTP exposure gate"
+        );
+        assert!(
+            source.contains("warn_on_non_loopback_bind("),
+            "{name} can bind non-loopback without the shared warning"
+        );
+        assert!(
+            !source.contains("TcpListener::bind("),
+            "{name} opened a listener outside GatewayHttpBinding"
         );
         assert!(
             source.contains("let shutdown = composition"),

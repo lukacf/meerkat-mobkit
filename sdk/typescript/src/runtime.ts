@@ -568,6 +568,7 @@ export class MobKitRuntime {
   private _lifecycleSequence = 0;
   private _dispatcher = new CallbackDispatcher();
   private _rustHttpBase: string | null = null;
+  private _rustHttpPublicBase: string | null = null;
   readonly jobs = new JobsHandle(this);
   readonly monitors = new MonitorsHandle(this);
 
@@ -608,6 +609,7 @@ export class MobKitRuntime {
         const transport = this._transport;
         this._transport = null;
         this._rustHttpBase = null;
+        this._rustHttpPublicBase = null;
         if (transport !== null) {
           try {
             await transport.stop();
@@ -703,6 +705,12 @@ export class MobKitRuntime {
               (initResult as Record<string, unknown>).http_base_url ?? "",
             ) || null;
         }
+        if (typeof initResult === "object" && initResult !== null) {
+          const publicBase = (initResult as Record<string, unknown>)
+            .http_public_base_url;
+          this._rustHttpPublicBase =
+            typeof publicBase === "string" && publicBase ? publicBase : null;
+        }
       } catch (err) {
         // Pre-fix every error path here was rewritten to a generic
         // `TransportError`, destroying the original RPC code/message
@@ -780,6 +788,15 @@ export class MobKitRuntime {
     }
     if (this._config.consoleReadOnly !== null) {
       runtimeOptions.console_read_only = this._config.consoleReadOnly;
+    }
+    if (this._config.httpListen) {
+      runtimeOptions.http_listen = this._config.httpListen;
+    }
+    if (this._config.httpPublicBaseUrl) {
+      runtimeOptions.http_public_base_url = this._config.httpPublicBaseUrl;
+    }
+    if (typeof this._config.allowRemote === "boolean") {
+      runtimeOptions.allow_remote = this._config.allowRemote;
     }
     if (this._config.consoleFetchTimeoutMs !== null) {
       runtimeOptions.console_fetch_timeout_ms =
@@ -894,6 +911,18 @@ export class MobKitRuntime {
     return this._rustHttpBase;
   }
 
+  /**
+   * Base URL for clients that reach the gateway through a proxy: the
+   * `http_public_base_url` the launch advertised (see
+   * `MobKitBuilder.httpPublicBaseUrl`), falling back to `rustHttpBaseUrl`
+   * when none was declared. The SDK's own SSE, multipart and console RPC
+   * calls keep using `rustHttpBaseUrl`: this process spawned the gateway
+   * and shares its network namespace, so the same-host form always answers.
+   */
+  get rustHttpPublicBaseUrl(): string | null {
+    return this._rustHttpPublicBase ?? this._rustHttpBase;
+  }
+
   setRustHttpBase(url: string): void {
     this._rustHttpBase = url;
   }
@@ -933,6 +962,7 @@ export class MobKitRuntime {
       const transport = this._transport;
       this._transport = null;
       this._rustHttpBase = null;
+      this._rustHttpPublicBase = null;
       if (transport !== null) await transport.stop();
     })();
 

@@ -470,6 +470,14 @@ Earlier SDKs had no setter and hosts overrode
 `console_config_path`; both now have builder methods and the override is no
 longer needed.
 
+The gateway binds `127.0.0.1` on an ephemeral port by default. To publish it
+from another container, `.http_listen("0.0.0.0:8080")` together with either
+`.auth(...)` or the explicit `.allow_remote()` acknowledgement, and
+`.http_public_base_url(...)` to advertise the proxy's address (read back as
+`runtime.rust_http_public_base_url`; `runtime.rust_http_base_url` stays the
+same-host form the SDK itself dials). A non-loopback bind without either is
+refused at init. See [Deployment](/guides/deployment).
+
 ## Runtime lifecycle
 
 ```python

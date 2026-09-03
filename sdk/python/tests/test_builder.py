@@ -251,6 +251,44 @@ class TestBuilderChain:
 
         assert params["runtime_options"]["console_config_path"] == str(console_toml)
 
+    def test_http_exposure_defaults_to_omitted(self):
+        params = MobKitRuntime(MobKit.builder()._config)._build_init_params()
+
+        assert "http_listen" not in params["runtime_options"]
+        assert "http_public_base_url" not in params["runtime_options"]
+        assert "allow_remote" not in params["runtime_options"]
+
+    def test_http_listen_sets_runtime_option(self):
+        b = MobKit.builder().http_listen(" 0.0.0.0:8080 ")
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["http_listen"] == "0.0.0.0:8080"
+
+    def test_http_listen_rejects_empty_value(self):
+        with pytest.raises(ValueError):
+            MobKit.builder().http_listen("  ")
+
+    def test_http_public_base_url_sets_runtime_option(self):
+        b = MobKit.builder().http_public_base_url("https://mob.example.com")
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert (
+            params["runtime_options"]["http_public_base_url"]
+            == "https://mob.example.com"
+        )
+
+    def test_allow_remote_sets_runtime_option(self):
+        b = MobKit.builder().allow_remote()
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["allow_remote"] is True
+
+    def test_allow_remote_false_is_transmitted_not_dropped(self):
+        b = MobKit.builder().allow_remote(False)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["allow_remote"] is False
+
     def test_meerkat_config_defaults_to_omitted(self):
         params = MobKitRuntime(MobKit.builder()._config)._build_init_params()
 

@@ -104,6 +104,9 @@ The stock SDK gateway (`rpc_gateway`) consumes the `runtime_options` object of `
 | `console_require_app_auth` | Boolean | Overrides `ConsolePolicy.require_app_auth`. The default is fail-closed: without `auth_config` the gateway's decision state trusts no signing key, so a console that still requires app auth refuses every request with 401, and the gateway logs a startup warning naming this. `false` is the explicit opt-out for a local or host-protected console. Python `.console_auth_required(False)`, TypeScript `.consoleAuthRequired(false)`; the Rust library twin is `RuntimeDecisionState::local_console`. |
 | `console_read_only` | Boolean | Sets `ConsolePolicy.read_only` for SDK `rpc_gateway` launches; mutating console RPCs are denied and omitted from capabilities while read/stream routes stay available. Python `.console_read_only()`, TypeScript `.consoleReadOnly()`. |
 | `console_fetch_timeout_ms` | Positive integer | Sets `RuntimeDecisionState.console.fetch_timeout_ms`, which the bundled console uses for JSON fetches after the initial 60s default. |
+| `http_listen` | `HOST:PORT` string | Bind address of the gateway HTTP listener (console, JSON-RPC, blobs, SSE, live). Default `127.0.0.1:0`: loopback, ephemeral port, the only bind every earlier release had. IP literals only, no hostnames. A non-loopback address is refused at init (`-32602`, before any bootstrap) unless `auth_config` enforces console app auth or `allow_remote` is `true`; every non-loopback bind that passes logs one WARN line. The init result's `http_base_url` stays the same-host form (`127.0.0.1` for `0.0.0.0` and `::` binds). Python `.http_listen("0.0.0.0:8080")`, TypeScript `.httpListen("0.0.0.0:8080")`. See [Deployment](/guides/deployment). |
+| `http_public_base_url` | Absolute `http(s)://` URL | The base URL clients reach the gateway at through a proxy. Reported back in the init result as `http_public_base_url` (trailing `/` removed; `null` when undeclared); never used to bind. Python `.http_public_base_url(url)`, read back as `runtime.rust_http_public_base_url`; TypeScript `.httpPublicBaseUrl(url)`, read back as `runtime.rustHttpPublicBaseUrl`. |
+| `allow_remote` | Boolean | Explicit acknowledgement that `http_listen` exposes the listener beyond this host; the same word and rule as `--allow-remote` on `rkat-rpc --tcp` and `rkat mob host --listen-tcp`. An exposure opt-in, not an auth mechanism: pass it only with an authenticating proxy in front of the listener. Python `.allow_remote()`, TypeScript `.allowRemote()`. |
 | `member_comms_address` | Socket-address string | Binds each local member to a signed TCP endpoint that remote peers can dial. Wildcard addresses are refused because they cannot be advertised as a concrete route. |
 | `contacts_toml` | TOML string | Loads the contact directory used to resolve remote mob ids to TCP/UDS control endpoints and pinned gateway public keys. |
 | `control_grants_toml` | TOML string | Loads the closed `[control_grants]` table for `--control-listen`. Each caller public key is scoped to named control verbs and members, and the gateway binds every request signature to the local mob id as its audience. Omitting the field installs an empty deny-all table; an explicit value without `[control_grants]`, or with an unknown/invalid field, fails initialization. |
@@ -525,6 +528,17 @@ For standalone `mobkit_gateway` launches, pass `console_read_only: true` in the
 part of the gateway resume fingerprint, so toggling it creates or resumes the
 matching runtime instead of reusing a runtime launched with the opposite policy.
 
+`mobkit_gateway` takes the HTTP exposure knobs as top-level `mobkit/init`
+params rather than `runtime_options`: `http_listen` (`HOST:PORT`, default
+`127.0.0.1:0`; also `--http-listen` or `MOBKIT_HTTP_LISTEN_ADDR`, the init
+param winning), `allow_remote` (also `--allow-remote` or
+`MOBKIT_HTTP_ALLOW_REMOTE=1`) and `http_public_base_url`. Its console is
+always open, so a non-loopback `http_listen` is refused unless `allow_remote`
+is set. The listen address joins the resume fingerprint like
+`--control-listen`, and a resumed launch reports the `http_base_url` and
+`http_public_base_url` the live runtime was started with. See
+[Deployment](/guides/deployment).
+
 ### Console auth by surface
 
 `require_app_auth` defaults to `true`, and the SDK gateway's decision state
@@ -538,7 +552,7 @@ failure). Opening it is an explicit, per-surface choice:
 | Python | `MobKit.builder().console_auth_required(False)` |
 | TypeScript | `MobKit.builder().consoleAuthRequired(false)` |
 | Rust library | `RuntimeDecisionState::local_console(ConsolePolicy { require_app_auth: false, ..ConsolePolicy::default() }, None)` |
-| `mobkit_gateway` | Always open: it has no auth ingress and binds loopback, so the host is the protection |
+| `mobkit_gateway` | Always open: it has no auth ingress and binds loopback by default, so the host is the protection; a non-loopback `http_listen` is refused unless `allow_remote` acknowledges the exposure |
 
 An open console is a deployment decision. Use it only behind a loopback bind
 or a reverse proxy that authenticates; for anything shared, configure

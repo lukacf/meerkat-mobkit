@@ -453,3 +453,232 @@ fn mobkit_gateway_identity_first_opt_out_skips_the_substrate() {
         );
     }
 }
+
+/// Spawn the real binary, send one `mobkit/init` whose params are `extra`
+/// plus a fresh workspace and store, and return the first stdout line as
+/// JSON (a `result` or an `error`).
+fn init_once(extra: Value, timeout: Duration) -> Value {
+    let bin = env!("CARGO_BIN_EXE_mobkit_gateway");
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let store = TempDir::new().expect("store tempdir");
+
+    let mut params = match extra {
+        Value::Object(map) => map,
+        other => panic!("init params must be a JSON object, got {other}"),
+    };
+    params.insert(
+        "workspace_root".into(),
+        json!(workspace.path().to_string_lossy()),
+    );
+    params.insert(
+        "store_path".into(),
+        json!(store.path().join("store").to_string_lossy()),
+    );
+    let init = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "mobkit/init",
+        "params": Value::Object(params),
+    });
+
+    let mut child = Command::new(bin)
+        .current_dir(workspace.path())
+        .env("ANTHROPIC_API_KEY", "sk-ant-regression-test")
+        .env("OPENAI_API_KEY", "sk-regression-test")
+        .env("XDG_STATE_HOME", workspace.path().join("xdg-state"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mobkit_gateway");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    writeln!(stdin, "{}", serde_json::to_string(&init).unwrap()).expect("write init");
+    stdin.flush().expect("flush");
+
+    let stdout = child.stdout.take().expect("stdout");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        let _ = reader.read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let line = rx
+        .recv_timeout(timeout)
+        .expect("mobkit_gateway did not answer mobkit/init in time");
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    serde_json::from_str(line.trim())
+        .unwrap_or_else(|e| panic!("non-JSON init response {:?}: {}", line, e))
+}
+
+/// A non-loopback `http_listen` without `allow_remote` is refused at init,
+/// before bootstrap: the reply is an error that names the address and the
+/// acknowledgement, not a bootstrapped runtime bound to every interface.
+#[test]
+fn mobkit_gateway_refuses_a_non_loopback_http_listen_without_allow_remote() {
+    let response = init_once(
+        json!({ "http_listen": "0.0.0.0:0" }),
+        Duration::from_secs(45),
+    );
+    assert!(
+        response.get("result").is_none(),
+        "a wildcard bind must not succeed without allow_remote: {response}"
+    );
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("0.0.0.0:0"), "{response}");
+    assert!(message.contains("allow_remote"), "{response}");
+}
+
+/// With the acknowledgement the wildcard bind succeeds. `http_base_url` is
+/// the same-host loopback form with the kernel-assigned port (never `:0`),
+/// and the advertised base rides beside it with its trailing slash dropped.
+#[test]
+fn mobkit_gateway_binds_a_non_loopback_http_listen_with_allow_remote() {
+    let response = init_once(
+        json!({
+            "http_listen": "0.0.0.0:0",
+            "allow_remote": true,
+            "http_public_base_url": "https://mob.example.com/"
+        }),
+        Duration::from_secs(90),
+    );
+    assert!(
+        response.get("error").is_none(),
+        "an acknowledged wildcard bind must succeed: {response}"
+    );
+    let base = response["result"]["http_base_url"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(base.starts_with("http://127.0.0.1:"), "{response}");
+    assert!(!base.ends_with(":0"), "{response}");
+    assert_eq!(
+        response["result"]["http_public_base_url"],
+        json!("https://mob.example.com"),
+        "{response}"
+    );
+}
+
+/// The same two facts on the SDK gateway: spawn `rpc_gateway --persistent`,
+/// send one `mobkit/init` carrying `runtime_options`, return the reply.
+fn rpc_init_once(runtime_options: Value, timeout: Duration) -> Value {
+    const MOB_CONFIG: &str =
+        "[mob]\nid = \"http-exposure-test\"\n\n[profiles.default]\nmodel = \"gpt-5.5\"\n";
+    let bin = env!("CARGO_BIN_EXE_rpc_gateway");
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let init = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "mobkit/init",
+        "params": {
+            "mob_config": MOB_CONFIG,
+            "runtime_options": runtime_options,
+        },
+    });
+
+    let mut child = Command::new(bin)
+        .arg("--persistent")
+        .current_dir(workspace.path())
+        .env("XDG_STATE_HOME", workspace.path().join("xdg-state"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn rpc_gateway");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    writeln!(stdin, "{}", serde_json::to_string(&init).unwrap()).expect("write init");
+    stdin.flush().expect("flush");
+
+    let stdout = child.stdout.take().expect("stdout");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        let _ = reader.read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let line = rx
+        .recv_timeout(timeout)
+        .expect("rpc_gateway did not answer mobkit/init in time");
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    serde_json::from_str(line.trim())
+        .unwrap_or_else(|e| panic!("non-JSON init response {:?}: {}", line, e))
+}
+
+/// `rpc_gateway`: a non-loopback `runtime_options.http_listen` with neither
+/// enforced console auth nor `allow_remote` is a `-32602` init refusal that
+/// names the address and the acknowledgement. `console_require_app_auth =
+/// false` (the common local opt-out) does not open the gate either.
+#[test]
+fn rpc_gateway_refuses_a_non_loopback_http_listen_without_allow_remote() {
+    let response = rpc_init_once(
+        json!({ "http_listen": "0.0.0.0:0", "console_require_app_auth": false }),
+        Duration::from_secs(45),
+    );
+    assert!(
+        response.get("result").is_none(),
+        "a wildcard bind must not succeed without allow_remote: {response}"
+    );
+    assert_eq!(response["error"]["code"], json!(-32602), "{response}");
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("0.0.0.0:0"), "{response}");
+    assert!(message.contains("allow_remote"), "{response}");
+}
+
+/// `rpc_gateway`: with the acknowledgement the wildcard bind succeeds, the
+/// reported `http_base_url` is the same-host loopback form with the real
+/// port, and `http_public_base_url` echoes the declared base normalised.
+#[test]
+fn rpc_gateway_binds_a_non_loopback_http_listen_with_allow_remote() {
+    let response = rpc_init_once(
+        json!({
+            "http_listen": "0.0.0.0:0",
+            "allow_remote": true,
+            "http_public_base_url": "https://mob.example.com/",
+            "console_require_app_auth": false
+        }),
+        Duration::from_secs(90),
+    );
+    assert!(
+        response.get("error").is_none(),
+        "an acknowledged wildcard bind must succeed: {response}"
+    );
+    let base = response["result"]["http_base_url"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(base.starts_with("http://127.0.0.1:"), "{response}");
+    assert!(!base.ends_with(":0"), "{response}");
+    assert_eq!(
+        response["result"]["http_public_base_url"],
+        json!("https://mob.example.com"),
+        "{response}"
+    );
+}
+
+/// The default launch on both binaries is byte-for-byte what every earlier
+/// release reported: a loopback `http_base_url` and, new but inert, a null
+/// `http_public_base_url`.
+#[test]
+fn both_gateways_default_to_a_loopback_bind_with_no_advertised_base() {
+    let rpc = rpc_init_once(json!({}), Duration::from_secs(90));
+    assert!(rpc.get("error").is_none(), "{rpc}");
+    let base = rpc["result"]["http_base_url"].as_str().unwrap_or_default();
+    assert!(base.starts_with("http://127.0.0.1:"), "{rpc}");
+    assert!(rpc["result"]["http_public_base_url"].is_null(), "{rpc}");
+
+    let console = init_once(json!({}), Duration::from_secs(90));
+    assert!(console.get("error").is_none(), "{console}");
+    let base = console["result"]["http_base_url"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(base.starts_with("http://127.0.0.1:"), "{console}");
+    assert!(
+        console["result"]["http_public_base_url"].is_null(),
+        "{console}"
+    );
+}

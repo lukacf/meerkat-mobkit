@@ -53,7 +53,8 @@
               "guides/module-system",
               "guides/console",
               "guides/flow-editor",
-              "guides/authentication"
+              "guides/authentication",
+              "guides/deployment"
             ]
           }
         ]

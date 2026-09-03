@@ -25,6 +25,9 @@ class MobKitBuilderConfig:
     console_fetch_timeout_ms: int | None = None
     console_require_app_auth: bool | None = None
     console_config_path: str | None = None
+    http_listen: str | None = None
+    http_public_base_url: str | None = None
+    allow_remote: bool | None = None
     gating_config_path: str | None = None
     access_config_path: str | None = None
     meerkat_config_path: str | None = None
@@ -587,6 +590,48 @@ class MobKitBuilder:
         TypeScript builder's ``consoleConfig``.
         """
         self._config.console_config_path = str(path)
+        return self
+
+    def http_listen(self, listen: str) -> MobKitBuilder:
+        """Bind the gateway HTTP listener to ``listen`` (``HOST:PORT``).
+
+        Emitted as ``runtime_options.http_listen``. The default is
+        ``127.0.0.1:0``: loopback, ephemeral port, the only bind every earlier
+        release had. A non-loopback address (``0.0.0.0:8080``) is refused at
+        init unless the console enforces app auth (``.auth(...)``) or the
+        launch acknowledges the exposure with ``.allow_remote()``; the gateway
+        logs a WARN line for every non-loopback bind. IP literals only, no
+        hostnames. The init result's ``http_base_url`` keeps the same-host
+        form (``127.0.0.1`` for a wildcard bind). Mirrors the TypeScript
+        builder's ``httpListen``.
+        """
+        if not isinstance(listen, str) or not listen.strip():
+            raise ValueError("http_listen must be a non-empty HOST:PORT string")
+        self._config.http_listen = listen.strip()
+        return self
+
+    def http_public_base_url(self, url: str) -> MobKitBuilder:
+        """Advertise the base URL clients reach the gateway at through a proxy.
+
+        Emitted as ``runtime_options.http_public_base_url`` and reported back
+        in the init result; the gateway never binds it. Read it after
+        ``connect()`` as ``runtime.rust_http_public_base_url``. Mirrors the
+        TypeScript builder's ``httpPublicBaseUrl``.
+        """
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("http_public_base_url must be a non-empty URL string")
+        self._config.http_public_base_url = url.strip()
+        return self
+
+    def allow_remote(self, allow: bool = True) -> MobKitBuilder:
+        """Acknowledge that ``http_listen`` exposes the listener beyond this host.
+
+        Emitted as ``runtime_options.allow_remote``. Same word and rule as
+        ``--allow-remote`` on ``rkat-rpc --tcp``: an exposure acknowledgement,
+        not an auth mechanism. Pass it only with an authenticating proxy in
+        front of the listener. Mirrors the TypeScript builder's ``allowRemote``.
+        """
+        self._config.allow_remote = bool(allow)
         return self
 
     def implicit_delegate_idle_retirement(

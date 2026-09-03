@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Gateways can bind a non-loopback address, and refuse to unless told
+  how.** Both bundled gateways bound `127.0.0.1:0` unconditionally
+  (`GatewayHttpBinding::bind_loopback` was the only constructor), so a reverse
+  proxy in another container could not reach them at all. `rpc_gateway` now
+  takes `runtime_options.http_listen` (`HOST:PORT`, default `127.0.0.1:0`),
+  `http_public_base_url` and `allow_remote`; `mobkit_gateway` takes the same
+  three as top-level init params, plus `--http-listen` / `--allow-remote` and
+  `MOBKIT_HTTP_LISTEN_ADDR` / `MOBKIT_HTTP_ALLOW_REMOTE` below them, and folds
+  the listen address into its resume fingerprint like `--control-listen`. The
+  gate is fail-closed and borrows Meerkat's vocabulary
+  (`meerkat_rpc::secure_rpc::TcpBindPolicy`, `--allow-remote`): a
+  non-loopback bind is refused at init, before any bootstrap, unless the
+  console enforces app auth (`auth_config` with a trusted key) or the launch
+  acknowledges the exposure with `allow_remote`; `mobkit_gateway` serves an
+  open console, so on that binary only the acknowledgement opens it. Every
+  non-loopback bind logs one WARN line. The init result's `http_base_url`
+  keeps the same-host form (`127.0.0.1` for `0.0.0.0` and `::` binds) so the
+  SDK that spawned the gateway still reaches it, and a new
+  `http_public_base_url` field (`null` when undeclared) carries the
+  proxy-facing base; Python exposes it as `rust_http_public_base_url`,
+  TypeScript as `rustHttpPublicBaseUrl`. Builders: Python `.http_listen()`,
+  `.http_public_base_url()`, `.allow_remote()`; TypeScript `.httpListen()`,
+  `.httpPublicBaseUrl()`, `.allowRemote()`. Rust library hosts get
+  `GatewayHttpBinding::bind(addr)`, `HttpBindPolicy`,
+  `validate_http_bind_policy` and `warn_on_non_loopback_bind` in
+  `gateway_composition`. Defaults are unchanged: an exact-pinned host that
+  sets none of this binds loopback and sees a byte-identical
+  `http_base_url`. A bind failure on `rpc_gateway` is now a JSON-RPC init
+  error naming the address instead of a panic. New
+  `docs/guides/deployment.mdx` covers proxies, containers and the gate.
+
 - **Console auth opt-out reaches every surface.** The Python builder gains
   `console_auth_required(required)` (emits
   `runtime_options.console_require_app_auth`) and `console_config(path)` (emits

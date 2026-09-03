@@ -181,6 +181,19 @@ struct GatewayRuntimeOptions {
     /// meerkat keeps in the host config rather than in `mob.toml`. A missing
     /// or malformed file refuses init; `None` keeps `Config::default()`.
     host_config: Option<Config>,
+    /// `runtime_options.http_listen`: the HTTP listener's bind address,
+    /// default `127.0.0.1:0` (loopback, ephemeral port). A non-loopback
+    /// address passes `http_bind_gate` only when the console enforces app
+    /// auth or `allow_remote` acknowledges the exposure.
+    http_listen: std::net::SocketAddr,
+    /// `runtime_options.http_public_base_url`: the base URL clients reach
+    /// this gateway at through a proxy. Reported in the init result as
+    /// `http_public_base_url`; never used to bind.
+    http_public_base_url: Option<String>,
+    /// `runtime_options.allow_remote`: explicit acknowledgement that
+    /// `http_listen` exposes the listener beyond this host. Same word and
+    /// rule as `--allow-remote` on `rkat-rpc --tcp`.
+    allow_remote: bool,
 }
 
 /// `runtime_options.live` wire forms: `true` mounts the live WebSocket
@@ -379,6 +392,9 @@ impl Default for GatewayRuntimeOptions {
                 meerkat_mobkit::mob_composition_manifest::CompositionAuthority::default(),
             compaction: None,
             host_config: None,
+            http_listen: meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
+            http_public_base_url: None,
+            allow_remote: false,
         }
     }
 }
@@ -556,6 +572,32 @@ fn minimal_decision_state() -> RuntimeDecisionState {
 fn console_closed_to_every_caller(state: &RuntimeDecisionState) -> bool {
     state.console.require_app_auth
         && meerkat_mobkit::parse_jwks_json(&state.trusted_oidc.jwks_json).is_err()
+}
+
+/// The HTTP listener exposure gate, run before any bootstrap work. The
+/// decision state it consults is the one the console will serve with:
+/// `auth_config` when the host passed one, else the keyless fallback, so
+/// enforced console auth (a trusted key AND `require_app_auth`) opens the
+/// gate on its own and `console_require_app_auth = false` does not.
+fn http_bind_gate(
+    options: &GatewayRuntimeOptions,
+) -> Result<(), meerkat_mobkit::gateway_composition::HttpBindPolicyError> {
+    let fallback;
+    let decisions = match options.decisions.as_ref() {
+        Some(decisions) => decisions,
+        None => {
+            fallback = minimal_decision_state();
+            &fallback
+        }
+    };
+    meerkat_mobkit::gateway_composition::validate_http_bind_policy(
+        "rpc_gateway",
+        options.http_listen,
+        meerkat_mobkit::gateway_composition::HttpBindPolicy::for_gateway(
+            options.allow_remote,
+            decisions,
+        ),
+    )
 }
 
 fn shell_module(id: &str, script: &str) -> ModuleConfig {
@@ -2252,6 +2294,123 @@ actions = ["agent.view"]
         let decisions = options.decisions.expect("decisions");
         assert!(!decisions.console.require_app_auth);
         assert!(!console_closed_to_every_caller(&decisions));
+    }
+
+    /// The three HTTP exposure doors parse to typed values and default to the
+    /// posture every earlier release had: loopback, ephemeral port, no
+    /// advertised base, no acknowledgement.
+    #[test]
+    fn gateway_runtime_options_parse_http_listen_public_base_and_allow_remote() -> Result<(), String>
+    {
+        let defaulted = parse_gateway_runtime_options(&json!({ "runtime_options": {} }), None)?;
+        assert_eq!(
+            defaulted.http_listen,
+            meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN
+        );
+        assert!(defaulted.http_listen.ip().is_loopback());
+        assert_eq!(defaulted.http_listen.port(), 0);
+        assert_eq!(defaulted.http_public_base_url, None);
+        assert!(!defaulted.allow_remote);
+
+        let declared = parse_gateway_runtime_options(
+            &json!({
+                "runtime_options": {
+                    "http_listen": "0.0.0.0:8080",
+                    "http_public_base_url": "https://mob.example.com/",
+                    "allow_remote": true
+                }
+            }),
+            None,
+        )?;
+        assert_eq!(
+            declared.http_listen,
+            "0.0.0.0:8080"
+                .parse::<std::net::SocketAddr>()
+                .map_err(|error| error.to_string())?
+        );
+        assert_eq!(
+            declared.http_public_base_url.as_deref(),
+            Some("https://mob.example.com")
+        );
+        assert!(declared.allow_remote);
+        Ok(())
+    }
+
+    #[test]
+    fn gateway_runtime_options_reject_malformed_http_exposure_values() {
+        for (runtime_options, needle) in [
+            (
+                json!({ "http_listen": "localhost:8080" }),
+                "runtime_options.http_listen",
+            ),
+            (
+                json!({ "http_listen": 8080 }),
+                "runtime_options.http_listen",
+            ),
+            (
+                json!({ "http_public_base_url": "mob.example.com" }),
+                "runtime_options.http_public_base_url",
+            ),
+            (
+                json!({ "allow_remote": "yes" }),
+                "runtime_options.allow_remote",
+            ),
+        ] {
+            let err = match parse_gateway_runtime_options(
+                &json!({ "runtime_options": runtime_options }),
+                None,
+            ) {
+                Ok(_) => String::new(),
+                Err(err) => err,
+            };
+            assert!(err.contains(needle), "{needle}: {err}");
+        }
+    }
+
+    /// The exposure gate as this binary composes it: a non-loopback
+    /// `http_listen` is refused with the keyless fallback state AND with the
+    /// explicit `console_require_app_auth = false` opt-out; it passes with
+    /// `allow_remote`, and with an `auth_config` that trusts a key (enforced
+    /// console auth). Loopback always passes.
+    #[test]
+    fn non_loopback_http_listen_is_refused_without_auth_or_allow_remote() -> Result<(), String> {
+        let refusal = |runtime_options: Value| -> Result<String, String> {
+            let options = parse_gateway_runtime_options(
+                &json!({ "runtime_options": runtime_options }),
+                None,
+            )?;
+            Ok(http_bind_gate(&options)
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default())
+        };
+
+        let message = refusal(json!({ "http_listen": "0.0.0.0:8080" }))?;
+        assert!(message.contains("0.0.0.0:8080"), "{message}");
+        assert!(message.contains("allow_remote"), "{message}");
+        let message = refusal(json!({
+            "http_listen": "0.0.0.0:8080",
+            "console_require_app_auth": false
+        }))?;
+        assert!(message.contains("allow_remote"), "{message}");
+
+        assert_eq!(
+            refusal(json!({ "http_listen": "0.0.0.0:8080", "allow_remote": true }))?,
+            ""
+        );
+        assert_eq!(
+            refusal(json!({
+                "http_listen": "0.0.0.0:8080",
+                "auth_config": {
+                    "provider": "jwt",
+                    "shared_secret": "test-shared-secret-with-enough-bytes"
+                }
+            }))?,
+            ""
+        );
+        assert_eq!(refusal(json!({ "http_listen": "127.0.0.1:8080" }))?, "");
+        assert_eq!(refusal(json!({}))?, "");
+        Ok(())
     }
 
     #[test]
@@ -4712,6 +4871,9 @@ fn parse_gateway_runtime_options(
         "compaction",
         "session_identity_config_root",
         "meerkat_config_path",
+        "http_listen",
+        "http_public_base_url",
+        "allow_remote",
     ];
     let unsupported = runtime_options
         .keys()
@@ -4761,6 +4923,27 @@ fn parse_gateway_runtime_options(
             ))
             .map_err(|error| format!("runtime_options.meerkat_config_path: {error}"))?,
         );
+    }
+    if let Some(value) = runtime_options.get("http_listen") {
+        let listen = value
+            .as_str()
+            .ok_or_else(|| "runtime_options.http_listen must be a HOST:PORT string".to_string())?;
+        parsed.http_listen = meerkat_mobkit::gateway_composition::parse_http_listen_addr(listen)
+            .map_err(|error| format!("runtime_options.http_listen: {error}"))?;
+    }
+    if let Some(value) = runtime_options.get("http_public_base_url") {
+        let url = value.as_str().ok_or_else(|| {
+            "runtime_options.http_public_base_url must be a URL string".to_string()
+        })?;
+        parsed.http_public_base_url = Some(
+            meerkat_mobkit::gateway_composition::parse_http_public_base_url(url)
+                .map_err(|error| format!("runtime_options.http_public_base_url: {error}"))?,
+        );
+    }
+    if let Some(value) = runtime_options.get("allow_remote") {
+        parsed.allow_remote = value
+            .as_bool()
+            .ok_or_else(|| "runtime_options.allow_remote must be a boolean".to_string())?;
     }
     if let Some(memory_config) = runtime_options.get("memory_config") {
         parsed.runtime_options.memory_backend = Some(parse_gateway_memory_config(
@@ -9822,6 +10005,10 @@ external_addressable = true
         .unwrap_or_else(|e| {
             fail_init(&request_id, -32602, e);
         });
+    // HTTP listener exposure gate, before any bootstrap work: a refused
+    // non-loopback `http_listen` costs the init reply and nothing else.
+    http_bind_gate(&gateway_options)
+        .unwrap_or_else(|error| fail_init(&request_id, -32602, error.to_string()));
     validate_gateway_identity_bootstrap_intent(
         gateway_options.identity_bootstrap_mode.as_ref(),
         has_roster_provider,
@@ -11771,12 +11958,25 @@ external_addressable = true
     }
     let event_drain_task = runtime.clone().spawn_event_drain_task();
 
-    // 6. Bind HTTP server on ephemeral port
-    let http_binding = meerkat_mobkit::gateway_composition::GatewayHttpBinding::bind_loopback()
-        .await
-        .expect("bind ephemeral port");
-    let port = http_binding.port();
+    // 6. Bind the HTTP listener: loopback on an ephemeral port unless
+    // runtime_options.http_listen selected another address (gated at init).
+    let http_binding =
+        meerkat_mobkit::gateway_composition::GatewayHttpBinding::bind(gateway_options.http_listen)
+            .await
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    -32603,
+                    format!(
+                        "failed to bind HTTP listener {}: {error}",
+                        gateway_options.http_listen
+                    ),
+                )
+            })
+            .with_advertised_base_url(gateway_options.http_public_base_url.clone());
+    let http_reachable_addr = http_binding.reachable_addr();
     let http_base_url = http_binding.http_base_url();
+    let http_public_base_url = http_binding.advertised_base_url().map(str::to_string);
 
     // 7. Start HTTP with graceful shutdown
     let mut decision_state = gateway_options
@@ -11784,6 +11984,11 @@ external_addressable = true
         .clone()
         .unwrap_or_else(minimal_decision_state);
     decision_state.console.ui = gateway_options.console_ui.clone();
+    meerkat_mobkit::gateway_composition::warn_on_non_loopback_bind(
+        "rpc_gateway",
+        http_binding.local_addr(),
+        &decision_state,
+    );
     if console_closed_to_every_caller(&decision_state) {
         tracing::warn!(
             "console requires app auth but trusts no signing key: every console request will be \
@@ -11805,7 +12010,7 @@ external_addressable = true
                 public_base_url: Some(public),
                 ..
             } => public.trim_end_matches('/').to_string(),
-            _ => format!("ws://127.0.0.1:{port}"),
+            _ => format!("ws://{http_reachable_addr}"),
         };
         let live_seed_max_chars = match &gateway_options.live {
             GatewayLiveOption::Enabled { seed_max_chars, .. } => *seed_max_chars,
@@ -11935,6 +12140,10 @@ external_addressable = true
         "id": request_id,
         "result": {
             "http_base_url": http_base_url,
+            // Proxy-facing base the launch advertised through
+            // runtime_options.http_public_base_url; null when none was
+            // declared. Never bound. Wire-additive.
+            "http_public_base_url": http_public_base_url,
             "loaded_modules": loaded_modules,
             "contract_version": MOBKIT_CONTRACT_VERSION,
             "runtime_origin": runtime_origin,
