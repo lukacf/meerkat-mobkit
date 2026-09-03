@@ -234,6 +234,8 @@ The builder forwards `consoleConfig(path)` as `runtime_options.console_config_pa
 
 The gateway binds `127.0.0.1` on an ephemeral port by default. `httpListen("0.0.0.0:8080")`, `allowRemote()` and `httpPublicBaseUrl(url)` are the exposure knobs (`runtime_options.http_listen`, `allow_remote`, `http_public_base_url`): a non-loopback bind is refused at init unless `auth(...)` enforces console auth or `allowRemote()` acknowledges the exposure, and the advertised base is read back as `runtime.rustHttpPublicBaseUrl` while `runtime.rustHttpBaseUrl` stays the same-host form the SDK itself dials. See [Deployment](/guides/deployment).
 
+`meerkatConfig(path)` forwards a Meerkat host `config.toml` as `runtime_options.meerkat_config_path`, the only door for the `[self_hosted]`, `[realm]` and `[models]` tables Meerkat keeps out of `mob.toml`; a missing or malformed file refuses init rather than building agents from the default config, and a top-level `[self_hosted]` or `[realm]` table inside `mob.toml` is refused at init with a message naming this option. The Python twin is `.meerkat_config(path)`. See [Self-hosted models and the Meerkat host config](/reference/configuration#self-hosted-models-and-the-meerkat-host-config).
+
 ## Storage durability declarations
 
 The gateway is fail-closed about durable storage: a store that cannot open

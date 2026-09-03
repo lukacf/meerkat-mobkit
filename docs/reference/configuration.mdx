@@ -114,6 +114,7 @@ The stock SDK gateway (`rpc_gateway`) consumes the `runtime_options` object of `
 | `runtime_store` | Object | Declares the runtime store's durability. The store (`runtime.sqlite` — session resume, archive, retire) is persistent SQLite by default; the only accepted declaration is `{ "storage": "memory" }`, after which sessions do not survive gateway restart. A failed SQLite open without this declaration is a startup error (`-32014`), never a silent in-memory fallback. |
 | `declare_spec_update` | Object | One-shot canonical mob-definition compare-and-swap. `{ "expected_revision": N }` applies the `mob_config` supplied in the same `mobkit/init` request only when the durable definition is still at `N`. The launch must be authoritative and use persistent mob storage. Exact replay converges; stale revision or successor-content disagreement refuses initialization with typed storage error `-32014`. |
 | `compaction` | Object | Declares the host-level session-compaction policy for every agent the gateway builds: `auto_compact_threshold` (tokens, non-zero), `recent_turn_budget`, `max_summary_tokens`, `min_turns_between_compactions`. A compactor is always installed; this declares *when it fires*. **Omitting `auto_compact_threshold` inherits Meerkat's model-aware default — `context_window * 4 / 5`, i.e. ~840,000 tokens on a million-token model such as `gpt-5.6-sol`, which in practice never fires and resends the full transcript every turn.** Declaring the key pins it. A mob profile's own `auto_compact_threshold` still wins per member. Unknown keys and a zero threshold fail initialization. |
+| `meerkat_config_path` | String path | The Meerkat host `config.toml` every agent the gateway builds starts from, loaded once at init and merged over `Config::default()` with Meerkat's own file semantics. This is the only door for the `[self_hosted]`, `[realm]` and `[models]` tables, which Meerkat keeps in the host config rather than in `mob.toml`; the gateway's own overlays (`member_comms_address`, `compaction`) are layered on top of it. A missing or malformed file refuses init with `-32602` naming the option and the path, never a silent `Config::default()`. Omitted, agents build from Meerkat's default config as before. Python `.meerkat_config(path)`, TypeScript `.meerkatConfig(path)`. `mobkit_gateway` takes the same file as its top-level `meerkat_config_path` init param and adopts `<workspace>/.rkat/config.toml` when it exists. See [Self-hosted models and the Meerkat host config](#self-hosted-models-and-the-meerkat-host-config). |
 | `workgraph` | Boolean or directory string | WorkGraph construction switch, default `true`. `false` disables the store, the member `workgraph_*` tools, the attention overlays and the `mobkit/workgraph/*` RPCs; a non-empty string is an explicit directory for the durable store (`workgraph.sqlite3` is created inside it); any other value fails initialization. Python `.workgraph(enabled)` and TypeScript `.workgraph(enabled)` take `true`, `false` or the directory string; an unused setter sends nothing and the gateway default applies. Store placement per launch mode, the auto-issued namespace grant and the memory-backed fallback are in [WorkGraph](#workgraph). |
 
 Unsupported nested fields fail initialization with `-32602` instead of being silently ignored.
@@ -163,6 +164,122 @@ process.
 unsupported field. Move definitions to the durable schedule store through
 schedule tools or `ScheduleService`.
 </Warning>
+
+## Self-hosted models and the Meerkat host config
+
+Meerkat keeps three tables out of the mob definition and in the host
+`config.toml`: `[self_hosted]` (serving endpoints and model aliases), `[realm]`
+(backend, auth and binding profiles, including the credential binding every
+`provider = "self_hosted"` member resolves through) and `[models]` (custom
+model rows). A `mob.toml` profile refers to them by name only:
+
+```toml mob.toml
+[profiles.worker]
+model = "gemma-4-31b"
+provider = "self_hosted"
+self_hosted_server_id = "local"
+```
+
+```toml config.toml
+[self_hosted]
+default_model = "gemma-4-31b"
+
+[self_hosted.servers.local]
+transport = "openai_compatible"
+base_url = "http://127.0.0.1:11434"
+api_style = "chat_completions"
+
+[self_hosted.models.gemma-4-31b]
+server = "local"
+remote_model = "gemma4:31b"
+
+[realm.global]
+default_binding = "local"
+
+[realm.global.backend.local]
+provider = "self_hosted"
+backend_kind = "self_hosted"
+server = "local"
+
+[realm.global.auth.local_auth]
+provider = "self_hosted"
+auth_method = "none"
+source = { kind = "platform_default" }
+
+[realm.global.binding.local]
+backend_profile = "local"
+auth_profile = "local_auth"
+```
+
+The alias shape, the realm binding rules and the Gemma 4 worked example are
+Meerkat's contract, documented in the Meerkat
+[self-hosting guide](https://github.com/lukacf/meerkat/blob/main/docs/guides/self-hosting-models.mdx);
+MobKit adds nothing to them. Note that `[models.<id>] provider = "self_hosted"`
+is refused by Meerkat's model registry: self-hosted aliases live under
+`[self_hosted.models]` only.
+
+**`[self_hosted]` and `[realm]` belong in the host config, never in `mob.toml`.**
+`MobDefinition::from_toml` deserializes without `deny_unknown_fields`, so a
+top-level `[self_hosted]` or `[realm]` table written into `mob.toml` used to
+vanish without a diagnostic and resurface two layers later as a member that
+could not build. Both binaries now refuse it at init, on the raw TOML text,
+with one message:
+
+```text
+mob.toml declares a top-level [self_hosted] table, which is meerkat host configuration
+that the mob definition parser ignores; move it into the meerkat config.toml and point the
+gateway at that file: runtime_options.meerkat_config_path on rpc_gateway, or the
+meerkat_config_path init param (default <workspace>/.rkat/config.toml) on mobkit_gateway
+```
+
+`rpc_gateway` answers it as `-32602` on the `mobkit/init` request id;
+`mobkit_gateway` fails the boot when it loads `config/mob.toml`. `[models.<id>]`
+is part of the mob definition and stays in `mob.toml` (it reaches the build as
+the definition's custom models); the same table in the host config also works.
+
+### How the host config reaches each surface
+
+| Surface | Ingress | When nothing is declared |
+|---------|---------|--------------------------|
+| `rpc_gateway` | `runtime_options.meerkat_config_path`; Python `.meerkat_config(path)`, TypeScript `.meerkatConfig(path)` | `Config::default()`, as in every earlier release |
+| `mobkit_gateway` | Top-level `meerkat_config_path` init param (a relative path resolves against the launch directory); the file's content joins the resume fingerprint, so a changed host config does not resume a runtime built without it | `<workspace>/.rkat/config.toml` when that file exists (`ConventionalPaths::with_meerkat_config_from_workspace`), else `Config::default()` |
+| Rust library | `UnifiedRuntimeBuilder::meerkat_config(config)`; `gateway_composition::load_gateway_host_config(path)` is the loader both binaries use and `refuse_host_config_tables_in_mob_toml(text)` the `mob.toml` check | `Config::default()` |
+
+The loader reads exactly the named file and merges it over `Config::default()`
+with `Config::merge_toml_str`, the step Meerkat applies to a discovered
+`.rkat/config.toml`: no directory walk and no home-directory fallback, so what
+the gateway loads is what the operator named. A file that cannot be read or
+does not parse refuses init (`rpc_gateway`: `-32602`,
+`runtime_options.meerkat_config_path: failed to read meerkat config <path>: ...`
+or `meerkat config <path> is invalid: ...`; `mobkit_gateway`: `-32603` with a
+null id, `init params: meerkat_config_path: ...`), because an operator who
+pointed the gateway at a file expects that file in force. The gateway's own
+declarations stay layered on top: `member_comms_address` and `compaction` on
+`rpc_gateway`, `compaction` on `mobkit_gateway`, and a profile's own
+`auto_compact_threshold` still wins per member.
+
+### The init model check
+
+`rpc_gateway` checks every inline profile's `model` before the mob exists, by
+Meerkat's own rule (`meerkat_mob::validate_definition`, narrowed to its
+`UnknownModel` diagnostic): a model is acceptable when it is catalogued, or
+defined under this definition's `[models.<id>]`, or provider-annotated
+(`provider = "self_hosted"` with a `self_hosted_server_id`, for one). This is
+the rule `rkat mob validate` documents and `MobBuilder::create` applies at
+bootstrap. A refused model is `-32602` with the profile named and, when a
+catalog id is close, a `Did you mean one of: ...?` hint (the common cause is a
+dated id such as `claude-sonnet-4-5-20250514` for `claude-sonnet-4-5`). Only
+that one diagnostic is adopted at init on purpose: the rest of the set
+(missing skill refs, wiring, flows) is Meerkat's to refuse at create time.
+`mobkit_gateway` has no pre-check; Meerkat runs the same validation when it
+creates the mob.
+
+Earlier releases compared the model string against the static catalog alone,
+so a `[models.<id>]` custom model and every self-hosted alias were refused at
+init on `rpc_gateway` while `mobkit_gateway` accepted them and then failed at
+the first member build with "self-hosted model '..' is not registered in
+config"; both binaries now agree, and with `meerkat_config_path` the member
+builds.
 
 ## Member role migrations
 

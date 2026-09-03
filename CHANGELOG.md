@@ -107,6 +107,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   error naming the address instead of a panic. New
   `docs/guides/deployment.mdx` covers proxies, containers and the gate.
 
+- **Gateways load a Meerkat host `config.toml`, so self-hosted models and
+  realm bindings reach the members.** Both gateway binaries built every agent
+  from `Config::default()` and had no ingress for the host config where
+  Meerkat keeps `[self_hosted]`, `[realm]` and `[models]`, so a self-hosted
+  profile was refused at init on `rpc_gateway` and died at the first member
+  build on `mobkit_gateway` ("self-hosted model '..' is not registered in
+  config"); the only route was a patched binary. `rpc_gateway` now takes
+  `runtime_options.meerkat_config_path` (Python `.meerkat_config(path)`,
+  TypeScript `.meerkatConfig(path)`); `mobkit_gateway` takes the same file as
+  a top-level `meerkat_config_path` init param and adopts
+  `<workspace>/.rkat/config.toml` when it exists, folding the file's content
+  into its resume fingerprint. The file is loaded once at init and merged over
+  `Config::default()` with Meerkat's own file semantics
+  (`gateway_composition::load_gateway_host_config`), with the gateway's comms
+  and compaction overlays layered on top; a missing or malformed file refuses
+  init naming the option and the path, never a silent default. A top-level
+  `[self_hosted]` or `[realm]` table in `mob.toml`, which
+  `MobDefinition::from_toml` dropped in silence, is now refused at init on
+  both binaries with a message pointing at `meerkat_config_path`
+  (`refuse_host_config_tables_in_mob_toml`, exported). Defaults are
+  unchanged: an exact-pinned host that names no file and writes no such table
+  builds from the default config exactly as before.
+
 - **Console auth opt-out reaches every surface.** The Python builder gains
   `console_auth_required(required)` (emits
   `runtime_options.console_require_app_auth`) and `console_config(path)` (emits
@@ -177,6 +200,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   says when it is needed: after `runtime.reconcile()` or an identity-first
   boot, only when the definition declares `auto_wire_orchestrator` or
   `role_wiring`, and not after `ensure_member`, which already reconciles.
+
+- **`rpc_gateway` no longer refuses `[models.<id>]` custom models and
+  provider-annotated self-hosted profiles at init.** The `mobkit/init`
+  pre-check compared every inline profile's `model` against the static
+  `meerkat_models` catalog alone, so anything Meerkat's registry legitimately
+  owns but the catalog does not (a `[models.<id>]` row, a
+  `provider = "self_hosted"` alias) was refused with `Profile '<p>' uses
+  unknown model '<m>'` and the process exited, while `MobBuilder::create`
+  would have accepted the same definition; `mobkit_gateway` had no such check,
+  so the two binaries disagreed. The check now delegates to meerkat-mob's
+  exported `validate_definition`, narrowed to its `UnknownModel` diagnostic
+  (catalogued, or defined under the definition's own `[models.<id>]`, or
+  provider-annotated: the rule `rkat mob validate` documents), and keeps the
+  `Did you mean one of: ...?` catalog hint for dated ids. Only that one
+  diagnostic is adopted at init on purpose; the rest of the set stays
+  Meerkat's to refuse at create time. Tests cover a custom model, a
+  self-hosted alias, a catalogued id, a dated id with the hint, and an unknown
+  id without one.
 
 - **`build_runtime_decision_state` no longer demands an identity provider for
   a console that has none.** The trusted-OIDC checks (non-empty audience,

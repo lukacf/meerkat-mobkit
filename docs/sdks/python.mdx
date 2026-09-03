@@ -370,6 +370,7 @@ rt = await (
 |--------|-------------|
 | `.mob(path)` | Path to mob TOML config |
 | `.mob_inline(toml_str)` | Inline mob TOML string (no temp file) |
+| `.meerkat_config(path)` | Meerkat host `config.toml` (`[self_hosted]`, `[realm]`, `[models]`) forwarded as `runtime_options.meerkat_config_path`; a missing or malformed file refuses init. See [Self-hosted models](/reference/configuration#self-hosted-models-and-the-meerkat-host-config) |
 | `.persistent_state(path)` | Enable persistent state at path |
 | `.continuity_store(provider)` | External identity continuity store |
 | `.lease_provider(provider)` | External identity lease provider |
