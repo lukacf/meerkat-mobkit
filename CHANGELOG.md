@@ -76,9 +76,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   now reads the durable generation from `SessionHead::rewrite_count`, which
   advances 1:1 with each adopted commit, and compares a slim row's envelope
   like for like so the equal arm does not re-project forever.
-  `SessionStoreBackedRuntimeStore::reconciliation_walk_count()` exposes the
-  walks a store instance ran; the regression drives HomeCore's A->B shape
-  in process and asserts leg A walks once and leg B walks zero times.
+  The regression drives HomeCore's A->B shape in process and asserts leg A
+  walks once and leg B walks zero times.
+- **The committed->durable projection no longer walks the rewrite chain for a
+  row already at the committed head.** With the generation read fixed, the
+  probe's equal arm still found the durable row's persisted envelope differing
+  from the committed document and projected it - silently, and the projection
+  ran all three rewrite-chain provers (extending-chain, inverse-append,
+  durable-behind) before concluding nothing was missing. A real-process sample
+  of the gateway put 3732 of 3766 frames in `durable_behind_prefix_chain`,
+  entered from MobKit's own identity-first bootstrap on the main thread, one
+  identity at a time. The projection now short-circuits the provers when the
+  durable revision equals the sealed head and the head generation equals the
+  committed generation (their conclusion, in O(1)) and still saves the
+  envelope; the equal arm logs at INFO when it projects, with byte sizes and
+  the differing top-level keys. Regression: envelope debt on a row at head
+  clears with zero chain walks.
 
 - **SDK identity-first sends now run MobKit delivery preparation exactly once.**
   `handle.send()` / `mobkit/send_message` previously let the stable identity

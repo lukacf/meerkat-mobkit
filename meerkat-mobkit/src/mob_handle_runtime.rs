@@ -2018,6 +2018,11 @@ struct SessionStoreBackedRuntimeStore {
     /// One boot walking the same unchanged row twice is the defect this
     /// counts; tests read it as the positive observable of a re-walk.
     reconciliation_walks: std::sync::atomic::AtomicU64,
+    /// Rewrite-chain prover runs (`find_transcript_rewrite_commit_chain_*`,
+    /// inverse-append, durable-behind) inside the committed->durable
+    /// projection. Each is O(generations x transcript); a row already at
+    /// the committed head must never pay for one.
+    chain_walks: std::sync::atomic::AtomicU64,
 }
 
 impl SessionStoreBackedRuntimeStore {
@@ -2029,6 +2034,70 @@ impl SessionStoreBackedRuntimeStore {
     pub fn reconciliation_walk_count(&self) -> u64 {
         self.reconciliation_walks
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Rewrite-chain prover runs inside the projection (see `chain_walks`).
+    #[cfg(test)]
+    pub fn chain_walk_count(&self) -> u64 {
+        self.chain_walks.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The durable row's rewrite generation as its head row records it.
+    /// `SessionHead::rewrite_count` advances 1:1 with each adopted commit
+    /// (meerkat-core `session_store.rs`, head CAS). `None` when the store has
+    /// no incremental channel: such stores load whole blobs whose Session
+    /// carries its own history, so the caller reads the generation there.
+    async fn durable_head_generation(
+        session_store: &Arc<dyn SessionStore>,
+        session_id: &meerkat_core::types::SessionId,
+        purpose: &str,
+    ) -> Result<Option<u64>, meerkat_runtime::store::RuntimeStoreError> {
+        let Some(head_store) = Arc::clone(session_store).as_incremental() else {
+            return Ok(None);
+        };
+        head_store
+            .load_head(session_id)
+            .await
+            .map(|head| head.map(|head| head.rewrite_count))
+            .map_err(|e| {
+                meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                    "durable session head read for {purpose}: {e}"
+                ))
+            })
+    }
+
+    /// Names the top-level JSON keys on which two persisted session documents
+    /// differ (capped), for the envelope-currency INFO line. Non-JSON or
+    /// non-object documents report as such rather than failing the probe.
+    fn differing_top_level_keys(durable: &[u8], committed: &[u8]) -> String {
+        const CAP: usize = 8;
+        let parse = |bytes: &[u8]| -> Option<serde_json::Map<String, serde_json::Value>> {
+            match serde_json::from_slice::<serde_json::Value>(bytes).ok()? {
+                serde_json::Value::Object(map) => Some(map),
+                _ => None,
+            }
+        };
+        let (Some(durable), Some(committed)) = (parse(durable), parse(committed)) else {
+            return "<non-object document>".to_string();
+        };
+        let mut keys: Vec<&str> = durable
+            .keys()
+            .chain(committed.keys())
+            .map(String::as_str)
+            .filter(|key| durable.get(*key) != committed.get(*key))
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        let total = keys.len();
+        let mut shown = keys.into_iter().take(CAP).collect::<Vec<_>>().join(",");
+        if total > CAP {
+            shown.push_str(&format!(",+{}", total - CAP));
+        }
+        if shown.is_empty() {
+            "<none at top level>".to_string()
+        } else {
+            shown
+        }
     }
 
     fn new(
@@ -2043,6 +2112,7 @@ impl SessionStoreBackedRuntimeStore {
             projection_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
             freshened: std::sync::Mutex::new(std::collections::HashSet::new()),
             reconciliation_walks: std::sync::atomic::AtomicU64::new(0),
+            chain_walks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -2058,6 +2128,7 @@ impl SessionStoreBackedRuntimeStore {
             projection_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
             freshened: std::sync::Mutex::new(std::collections::HashSet::new()),
             reconciliation_walks: std::sync::atomic::AtomicU64::new(0),
+            chain_walks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -2077,6 +2148,7 @@ impl SessionStoreBackedRuntimeStore {
             projection_flights: std::sync::Mutex::new(std::collections::HashMap::new()),
             freshened: std::sync::Mutex::new(std::collections::HashSet::new()),
             reconciliation_walks: std::sync::atomic::AtomicU64::new(0),
+            chain_walks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -2381,23 +2453,16 @@ impl SessionStoreBackedRuntimeStore {
                 ))
             })?
             .is_some();
-        let durable_head_store = if durable_carries_history {
-            None
+        let durable_generation = if durable_carries_history {
+            order_of(&durable)?.0
         } else {
-            Arc::clone(session_store).as_incremental()
-        };
-        let durable_generation = match durable_head_store {
-            Some(head_store) => head_store
-                .load_head(&session_id)
-                .await
-                .map_err(|e| {
-                    meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
-                        "durable session head read for runtime-authority freshness probe: {e}"
-                    ))
-                })?
-                .map(|head| head.rewrite_count)
-                .unwrap_or(0),
-            None => order_of(&durable)?.0,
+            Self::durable_head_generation(
+                session_store,
+                &session_id,
+                "runtime-authority freshness probe",
+            )
+            .await?
+            .unwrap_or(0)
         };
         let durable_order = (durable_generation, durable.messages().len());
         if durable_order == committed_order {
@@ -2466,6 +2531,20 @@ impl SessionStoreBackedRuntimeStore {
                 ))
             })?;
             if durable_bytes != committed_bytes {
+                // This arm used to project silently: production run-5 L1
+                // (2026-09-03) walked 16 rewrite chains for 171 s from here
+                // with no line saying so. Name the debt before paying it.
+                tracing::info!(
+                    runtime_id = %runtime_id,
+                    session_id = %session_id,
+                    rewrite_generation = durable_order.0,
+                    message_count = durable_order.1,
+                    durable_bytes = durable_bytes.len(),
+                    committed_bytes = committed_bytes.len(),
+                    differing_keys = %Self::differing_top_level_keys(&durable_bytes, &committed_bytes),
+                    "durable row matches committed order and revision but its persisted \
+                     envelope differs; projecting for envelope currency"
+                );
                 self.project_committed_session_to_durable(runtime_id)
                     .await?;
             }
@@ -2966,9 +3045,54 @@ impl SessionStoreBackedRuntimeStore {
                         "committed WholeBlob transcript-history seal: {e}"
                     ))
                 })?;
+            let durable_at_committed_head = match sealed.as_ref() {
+                Some(sealed) if sealed.commit_count() != 0 => {
+                    let durable_revision =
+                        durable_predecessor.transcript_revision().map_err(|e| {
+                            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                                "durable predecessor revision before rewrite-chain provers: {e}"
+                            ))
+                        })?;
+                    let committed_generation =
+                        successor.transcript_rewrite_generation().map_err(|e| {
+                            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                                "committed rewrite generation before rewrite-chain provers: {e}"
+                            ))
+                        })?;
+                    let durable_generation = Self::durable_head_generation(
+                        session_store,
+                        successor.id(),
+                        "committed->durable projection",
+                    )
+                    .await?;
+                    let at_head = durable_revision.as_str() == sealed.state().head()
+                        && durable_generation == Some(committed_generation);
+                    if at_head {
+                        // The provers below conclude exactly this for a row
+                        // whose head already carries the committed revision
+                        // and generation, at O(generations x transcript) each.
+                        // Production run-5 L1 (2026-09-03) paid that three
+                        // times per identity, 16 identities, 171 s, to learn
+                        // nothing was missing. Envelope currency alone needs
+                        // no chain walk; fall through to the projection save.
+                        tracing::debug!(
+                            runtime_id = %runtime_id,
+                            session_id = %successor.id(),
+                            rewrite_generation = committed_generation,
+                            "durable row already at the committed head; skipping the \
+                             rewrite-chain provers"
+                        );
+                    }
+                    at_head
+                }
+                _ => false,
+            };
             if let Some(sealed) = sealed.as_ref()
                 && sealed.commit_count() != 0
+                && !durable_at_committed_head
             {
+                self.chain_walks
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let missing_commits =
                     meerkat_core::session_store::find_transcript_rewrite_commit_chain_extending_session(
                         sealed,
@@ -13908,6 +14032,171 @@ comms = true
         assert_eq!(
             head_after.rewrite_count, committed_generation,
             "leg B leaves the head generation where leg A put it"
+        );
+    }
+
+    /// Production run-5 launch 1 (2026-09-03), in process: a head-canonical
+    /// row already AT the committed head (same revision, same generation)
+    /// whose persisted envelope differs from the committed document. The
+    /// equal arm must clear that debt through the projection WITHOUT running
+    /// the rewrite-chain provers: 3732 of 3766 sampled frames of the real
+    /// gateway sat in `durable_behind_prefix_chain` learning nothing was
+    /// missing, 16 identities, 171 s, on the bootstrap's main thread.
+    #[tokio::test]
+    async fn envelope_debt_on_a_row_at_the_committed_head_clears_without_a_chain_walk() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let continuity: Arc<dyn crate::identity_first::ContinuityStore> = Arc::new(
+            crate::identity_first::LocalContinuityStore::open(dir.path().join("continuity.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let adapter = Arc::new(crate::identity_first::ContinuitySessionStoreAdapter::new(
+            Arc::clone(&continuity),
+        ));
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(dir.path().join("runtime.db"))
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        let mut base = meerkat_core::Session::new();
+        for text in ["opening", "second", "third"] {
+            base.push(meerkat_core::Message::User(
+                meerkat_core::types::UserMessage::text(text),
+            ));
+        }
+        let parent_revision = base
+            .transcript_revision()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut committed = base.clone();
+        committed
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 3 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::types::UserMessage::text("compacted summary"),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("boot-probe compaction"),
+                Some("run5-envelope-debt-regression".to_string()),
+                Some(parent_revision),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+        let committed_generation = committed
+            .transcript_rewrite_generation()
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let identity = crate::identity_first::AgentIdentity::parse("domain:run5-envelope")
+            .unwrap_or_else(|error| panic!("{error}"));
+        crate::identity_first::ContinuityStore::upsert_continuity_record(
+            continuity.as_ref(),
+            &crate::identity_first::ContinuityRecord {
+                identity: identity.clone(),
+                agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                    "rt:domain:run5-envelope:0",
+                )
+                .unwrap_or_else(|error| panic!("{error}")),
+                session_id: base.id().clone(),
+                generation: crate::identity_first::ContinuityGeneration::new(0),
+                checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+            },
+            crate::identity_first::FencingToken::new(1),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+        adapter
+            .register_session(
+                base.id(),
+                crate::identity_first::SessionRuntimeState {
+                    identity,
+                    generation: crate::identity_first::ContinuityGeneration::new(0),
+                    fencing_token: crate::identity_first::FencingToken::new(1),
+                    checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let session_store: Arc<dyn SessionStore> = adapter;
+        // Land the durable row at the committed head the way production did:
+        // the pre-rewrite prefix is saved, the committed authority carries
+        // the rewrite, and one projection (leg A) adopts it onto the head.
+        session_store
+            .save(&base)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(base.id());
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        committed
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let landing =
+            SessionStoreBackedRuntimeStore::new(Arc::clone(&inner), Arc::clone(&session_store));
+        meerkat_runtime::RuntimeStore::load_session_boundary_authority(&landing, &runtime_id)
+            .await
+            .unwrap_or_else(|error| panic!("landing: {error}"));
+        assert_eq!(landing.reconciliation_walk_count(), 1, "landing walks once");
+        let head_store = Arc::clone(&session_store)
+            .as_incremental()
+            .unwrap_or_else(|| panic!("the continuity adapter exposes its head reads"));
+        let head = head_store
+            .load_head(base.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the landing leaves a head row"));
+        assert_eq!(
+            head.rewrite_count, committed_generation,
+            "precondition: at head"
+        );
+
+        // Envelope debt only: the committed authority carries a metadata key
+        // the durable row lacks. Same transcript, same generation.
+        let mut committed_with_envelope = committed.clone();
+        committed_with_envelope.set_metadata(
+            "mobkit:run5:envelope-probe",
+            serde_json::Value::String("current".to_string()),
+        );
+        inner
+            .commit_session_snapshot(
+                &runtime_id,
+                meerkat_runtime::store::SerializedSessionSnapshot {
+                    session_snapshot: Arc::new(
+                        committed_with_envelope
+                            .to_persisted_bytes()
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    ),
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let store =
+            SessionStoreBackedRuntimeStore::new(Arc::clone(&inner), Arc::clone(&session_store));
+        meerkat_runtime::RuntimeStore::load_session_boundary_authority(&store, &runtime_id)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            store.reconciliation_walk_count(),
+            0,
+            "a row at the committed head never orders behind"
+        );
+        assert_eq!(
+            store.chain_walk_count(),
+            0,
+            "envelope currency on a row at the committed head needs no rewrite-chain prover"
+        );
+        let durable = session_store
+            .load(base.id())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("the durable row must survive"));
+        assert_eq!(
+            durable.metadata().get("mobkit:run5:envelope-probe"),
+            Some(&serde_json::Value::String("current".to_string())),
+            "the envelope debt must still clear through the projection"
         );
     }
 
