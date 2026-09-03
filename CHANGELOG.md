@@ -89,9 +89,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   identity at a time. The projection now short-circuits the provers when the
   durable revision equals the sealed head and the head generation equals the
   committed generation (their conclusion, in O(1)) and still saves the
-  envelope; the equal arm logs at INFO when it projects, with byte sizes and
-  the differing top-level keys. Regression: envelope debt on a row at head
-  clears with zero chain walks.
+  envelope. "At head" means the committed session's current transcript
+  revision, not the revision at the last rewrite commit: every live row has
+  messages appended after its last compaction. Envelope currency compares
+  normalised documents (`updated_at` is a write timestamp, not debt) and the
+  equal arm logs at INFO when it projects, naming the differing keys with
+  metadata one level deep. Regression: envelope debt on a row at head, with
+  messages appended after the compaction, clears with zero chain walks.
 
 - **SDK identity-first sends now run MobKit delivery preparation exactly once.**
   `handle.send()` / `mobkit/send_message` previously let the stable identity

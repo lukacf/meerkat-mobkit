@@ -2066,38 +2066,61 @@ impl SessionStoreBackedRuntimeStore {
             })
     }
 
-    /// Names the top-level JSON keys on which two persisted session documents
-    /// differ (capped), for the envelope-currency INFO line. Non-JSON or
-    /// non-object documents report as such rather than failing the probe.
-    fn differing_top_level_keys(durable: &[u8], committed: &[u8]) -> String {
+    /// Envelope keys the head-canonical read and the committed document may
+    /// legitimately disagree on without either owing the other anything.
+    /// `updated_at` is a write timestamp, not a durable fact.
+    const ENVELOPE_CURRENCY_IGNORED_KEYS: &'static [&'static str] = &["updated_at"];
+
+    /// `None` when the two persisted session documents agree on every durable
+    /// envelope fact; otherwise the differing keys (metadata reported one
+    /// level deep as `metadata.<key>`, capped) for the envelope-currency INFO
+    /// line. Non-JSON or non-object documents fall back to a raw byte compare
+    /// and report as such, so an unreadable document still projects.
+    fn envelope_debt_keys(durable: &[u8], committed: &[u8]) -> Option<String> {
         const CAP: usize = 8;
         let parse = |bytes: &[u8]| -> Option<serde_json::Map<String, serde_json::Value>> {
             match serde_json::from_slice::<serde_json::Value>(bytes).ok()? {
-                serde_json::Value::Object(map) => Some(map),
+                serde_json::Value::Object(mut map) => {
+                    for key in Self::ENVELOPE_CURRENCY_IGNORED_KEYS {
+                        map.remove(*key);
+                    }
+                    Some(map)
+                }
                 _ => None,
             }
         };
         let (Some(durable), Some(committed)) = (parse(durable), parse(committed)) else {
-            return "<non-object document>".to_string();
+            return (durable != committed).then(|| "<non-object document>".to_string());
         };
-        let mut keys: Vec<&str> = durable
-            .keys()
-            .chain(committed.keys())
-            .map(String::as_str)
-            .filter(|key| durable.get(*key) != committed.get(*key))
-            .collect();
+        let mut keys: Vec<String> = Vec::new();
+        for key in durable.keys().chain(committed.keys()) {
+            if durable.get(key) == committed.get(key) {
+                continue;
+            }
+            match (durable.get(key), committed.get(key)) {
+                (Some(serde_json::Value::Object(a)), Some(serde_json::Value::Object(b)))
+                    if key == "metadata" =>
+                {
+                    for inner in a.keys().chain(b.keys()) {
+                        if a.get(inner) != b.get(inner) {
+                            keys.push(format!("metadata.{inner}"));
+                        }
+                    }
+                }
+                _ => keys.push(key.clone()),
+            }
+        }
         keys.sort_unstable();
         keys.dedup();
+        if keys.is_empty() {
+            return None;
+        }
         let total = keys.len();
         let mut shown = keys.into_iter().take(CAP).collect::<Vec<_>>().join(",");
         if total > CAP {
             shown.push_str(&format!(",+{}", total - CAP));
         }
-        if shown.is_empty() {
-            "<none at top level>".to_string()
-        } else {
-            shown
-        }
+        Some(shown)
     }
 
     fn new(
@@ -2530,7 +2553,13 @@ impl SessionStoreBackedRuntimeStore {
                     "committed session encode for envelope-currency probe: {e}"
                 ))
             })?;
-            if durable_bytes != committed_bytes {
+            // Envelope currency is about durable facts (metadata, envelope
+            // fields), never about `updated_at`: production run-6 (2026-09-03)
+            // showed updated_at differing on 16/16 rows, so a raw byte compare
+            // called every boot "in debt" by construction. Compare the
+            // normalised documents and name what differs.
+            if let Some(differing_keys) = Self::envelope_debt_keys(&durable_bytes, &committed_bytes)
+            {
                 // This arm used to project silently: production run-5 L1
                 // (2026-09-03) walked 16 rewrite chains for 171 s from here
                 // with no line saying so. Name the debt before paying it.
@@ -2541,7 +2570,7 @@ impl SessionStoreBackedRuntimeStore {
                     message_count = durable_order.1,
                     durable_bytes = durable_bytes.len(),
                     committed_bytes = committed_bytes.len(),
-                    differing_keys = %Self::differing_top_level_keys(&durable_bytes, &committed_bytes),
+                    differing_keys = %differing_keys,
                     "durable row matches committed order and revision but its persisted \
                      envelope differs; projecting for envelope currency"
                 );
@@ -3065,7 +3094,17 @@ impl SessionStoreBackedRuntimeStore {
                         "committed->durable projection",
                     )
                     .await?;
-                    let at_head = durable_revision.as_str() == sealed.state().head()
+                    // The sealed head is the revision AT the last rewrite commit;
+                    // every live row has messages appended since (production:
+                    // gen 34 with 198 rows), so compare the durable row against
+                    // the committed session's CURRENT transcript revision - the
+                    // same fact the freshness probe already matched.
+                    let committed_revision = successor.transcript_revision().map_err(|e| {
+                        meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                            "committed transcript revision before rewrite-chain provers: {e}"
+                        ))
+                    })?;
+                    let at_head = durable_revision == committed_revision
                         && durable_generation == Some(committed_generation);
                     if at_head {
                         // The provers below conclude exactly this for a row
@@ -13920,6 +13959,15 @@ comms = true
                 Some(parent_revision),
             )
             .unwrap_or_else(|error| panic!("{error}"));
+        // Production shape: every live row has messages appended after its
+        // last compaction, so the sealed head revision is NOT the current
+        // transcript revision. An at-head check that compares against the
+        // sealed head is false on every such row (run-6 L1, 16/16).
+        for text in ["after compaction one", "after compaction two"] {
+            committed.push(meerkat_core::Message::User(
+                meerkat_core::types::UserMessage::text(text),
+            ));
+        }
         let committed_generation = committed
             .transcript_rewrite_generation()
             .unwrap_or_else(|error| panic!("{error}"));
@@ -14035,6 +14083,37 @@ comms = true
         );
     }
 
+    #[test]
+    fn envelope_debt_ignores_updated_at_and_names_metadata_keys() {
+        let durable = br#"{"id":"s","updated_at":"2026-09-03T17:39:58Z","metadata":{"a":1,"b":2}}"#;
+        let same_but_later =
+            br#"{"id":"s","updated_at":"2026-09-03T17:44:00Z","metadata":{"a":1,"b":2}}"#;
+        assert_eq!(
+            SessionStoreBackedRuntimeStore::envelope_debt_keys(durable, same_but_later),
+            None,
+            "a write timestamp is not envelope debt"
+        );
+        let metadata_debt = br#"{"id":"s","updated_at":"x","metadata":{"a":1,"b":3,"c":true}}"#;
+        assert_eq!(
+            SessionStoreBackedRuntimeStore::envelope_debt_keys(durable, metadata_debt).as_deref(),
+            Some("metadata.b,metadata.c"),
+            "metadata debt is named one level deep"
+        );
+        let field_debt = br#"{"id":"t","updated_at":"x","metadata":{"a":1,"b":2}}"#;
+        assert_eq!(
+            SessionStoreBackedRuntimeStore::envelope_debt_keys(durable, field_debt).as_deref(),
+            Some("id")
+        );
+        assert_eq!(
+            SessionStoreBackedRuntimeStore::envelope_debt_keys(b"not json", b"not json"),
+            None
+        );
+        assert_eq!(
+            SessionStoreBackedRuntimeStore::envelope_debt_keys(b"not json", b"other").as_deref(),
+            Some("<non-object document>")
+        );
+    }
+
     /// Production run-5 launch 1 (2026-09-03), in process: a head-canonical
     /// row already AT the committed head (same revision, same generation)
     /// whose persisted envelope differs from the committed document. The
@@ -14077,6 +14156,15 @@ comms = true
                 Some(parent_revision),
             )
             .unwrap_or_else(|error| panic!("{error}"));
+        // Production shape: every live row has messages appended after its
+        // last compaction, so the sealed head revision is NOT the current
+        // transcript revision. An at-head check that compares against the
+        // sealed head is false on every such row (run-6 L1, 16/16).
+        for text in ["after compaction one", "after compaction two"] {
+            committed.push(meerkat_core::Message::User(
+                meerkat_core::types::UserMessage::text(text),
+            ));
+        }
         let committed_generation = committed
             .transcript_rewrite_generation()
             .unwrap_or_else(|error| panic!("{error}"));
