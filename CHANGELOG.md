@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   loop logged nothing, so nobody could name the slow step from the logs. Now
   the first launch does.
 
+- **A committed->durable reconciliation now reports its cost when it finishes.**
+  The runtime-authority freshness probe already logged when it started one;
+  it now logs completion at INFO with the durable and committed
+  (rewrite generation, message count) pair and `elapsed_ms`. On 2026-09-03 a
+  production fleet spent 171 s across 16 such reconciliations before
+  ResumeLifecycle with nothing at INFO to say so; the reproducer had to run at
+  DEBUG to see it.
+
 - **Autonomous-host members no longer lose the whole turn to memory injection.**
   meerkat refuses injected context on `runtime_mode = "autonomous_host"`
   ("autonomous inbox delivery carries no user-channel work boundary"), and
@@ -33,7 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   memory therefore requires `runtime_mode = "turn_driven"` until meerkat's
   carrier change lands with the peer/comms work. Real-API lane test added.
 
-<<<<<<< HEAD
 - **A per-turn memory injection that injects nothing now says why.**
   `RecallCoordinator::inject_for_turn_classified` returns a typed
   `TurnInjection::Skipped(reason)` with one of five reasons
@@ -44,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   recorded only what was injected, so "off", "no memory" and "budget spent"
   were the same absence; HomeCore's two months of zero turn-surface rows would
   have named themselves on the first turn.
-=======
+
 - **A real-API end-to-end lane (`make e2e-live`).** Boots the real
   `rpc_gateway` through the Python SDK, runs real Anthropic turns, and asserts
   positive observables that only exist if the whole chain worked: a
@@ -55,9 +62,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   is skipped unless `MOBKIT_E2E_LIVE=1`; once requested, a missing key or
   binary is a failure, never a skip. Nightly workflow `e2e-live.yml` (needs the
   `ANTHROPIC_API_KEY` repository secret; fails loudly without it).
->>>>>>> codex/per-turn-injection-one-default
 
 ### Fixed
+
+- **The runtime-authority freshness probe no longer re-walks a reconciled row
+  on every boot.** The head-canonical durable read is slim by design and
+  reports rewrite generation 0 on the `Session`, while its head row carries
+  the adopted generation. The probe compared the Session's 0 against the
+  committed generation, so every identity with a compaction history ordered
+  "behind" on every launch after the first projection landed and re-ran the
+  full committed->durable chain walk (production: 16 serial walks, ~170 s,
+  before `ResumeLifecycle`, then the 30 s explicit-resume watchdog). The probe
+  now reads the durable generation from `SessionHead::rewrite_count`, which
+  advances 1:1 with each adopted commit, and compares a slim row's envelope
+  like for like so the equal arm does not re-project forever.
+  The regression drives HomeCore's A->B shape in process and asserts leg A
+  walks once and leg B walks zero times.
+- **The committed->durable projection no longer walks the rewrite chain for a
+  row already at the committed head.** With the generation read fixed, the
+  probe's equal arm still found the durable row's persisted envelope differing
+  from the committed document and projected it - silently, and the projection
+  ran all three rewrite-chain provers (extending-chain, inverse-append,
+  durable-behind) before concluding nothing was missing. A real-process sample
+  of the gateway put 3732 of 3766 frames in `durable_behind_prefix_chain`,
+  entered from MobKit's own identity-first bootstrap on the main thread, one
+  identity at a time. The projection now short-circuits the provers when the
+  durable revision equals the sealed head and the head generation equals the
+  committed generation (their conclusion, in O(1)) and still saves the
+  envelope. "At head" means the committed session's current transcript
+  revision, not the revision at the last rewrite commit: every live row has
+  messages appended after its last compaction. Envelope currency compares
+  normalised documents (`updated_at` is a write timestamp, not debt; the
+  three metadata keys the head carries in its own columns - transcript
+  history, rewrite-prefix authority, realtime transcript state - are a
+  representation difference, not debt) and the
+  equal arm logs at INFO when it projects, naming the differing keys with
+  metadata one level deep. Regression: envelope debt on a row at head, with
+  messages appended after the compaction, clears with zero chain walks.
 
 - **Destructive resets during a recovered-operation handoff no longer fail
   typed.** meerkat-mob's `MobSessionService` carries a defaulted
