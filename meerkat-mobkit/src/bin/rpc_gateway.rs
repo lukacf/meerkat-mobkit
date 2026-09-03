@@ -2320,6 +2320,27 @@ actions = ["agent.view"]
     }
 
     #[test]
+    fn gateway_runtime_options_per_turn_injection_omitted_on_markdown_derives_off() {
+        // The store cannot carry budgeted injection, and init refuses markdown
+        // anyway; an OMITTED field must still parse (so the refusal names the
+        // migration) and must not be read as a request for budgeted.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let options = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "agent_memory": { "store": "markdown" } } }),
+            Some(tmp.path()),
+        )
+        .expect("markdown with omitted per_turn_injection must parse");
+        assert_eq!(
+            options
+                .agent_memory
+                .expect("agent memory options")
+                .config
+                .per_turn_injection,
+            meerkat_mobkit::AgentMemoryPerTurnInjection::Off
+        );
+    }
+
+    #[test]
     fn gateway_runtime_options_per_turn_injection_explicit_values_and_refusals() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let parse = |value: serde_json::Value| {
@@ -5424,11 +5445,15 @@ fn parse_gateway_agent_memory_config(
     // SDK client that passed an object and trusted the documented default got
     // zero turn-surface injections. Deriving the fallback from the library
     // means the next default change cannot fork again.
-    let per_turn_injection = match object.get("per_turn_injection") {
-        None => meerkat_mobkit::AgentMemoryPerTurnInjection::default(),
+    // Parsed as DECLARED-or-omitted here; the effective value is resolved once
+    // the store kind is known (below), because an omitted field must not
+    // manufacture a "budgeted requires sqlite" refusal for a markdown config
+    // that is about to be refused at init with the migration message anyway.
+    let per_turn_injection_declared = match object.get("per_turn_injection") {
+        None => None,
         Some(value) => match value.as_str().map(str::trim) {
-            Some("off") => meerkat_mobkit::AgentMemoryPerTurnInjection::Off,
-            Some("budgeted") => meerkat_mobkit::AgentMemoryPerTurnInjection::Budgeted,
+            Some("off") => Some(meerkat_mobkit::AgentMemoryPerTurnInjection::Off),
+            Some("budgeted") => Some(meerkat_mobkit::AgentMemoryPerTurnInjection::Budgeted),
             Some(other) => {
                 return Err(format!(
                     "runtime_options.agent_memory.per_turn_injection must be 'off' or 'budgeted' (got '{other}')"
@@ -5600,14 +5625,31 @@ fn parse_gateway_agent_memory_config(
     // session compacts) is wired only in the sqlite arm, so a markdown
     // deployment would silently stop injecting once a session's cumulative
     // budget is spent — fail loud instead.
-    if store == GatewayAgentMemoryStoreKind::Markdown
-        && per_turn_injection == meerkat_mobkit::AgentMemoryPerTurnInjection::Budgeted
-    {
-        return Err(
-            "runtime_options.agent_memory.per_turn_injection='budgeted' requires store='sqlite'"
-                .to_string(),
-        );
-    }
+    let per_turn_injection = match per_turn_injection_declared {
+        Some(declared) => {
+            if store == GatewayAgentMemoryStoreKind::Markdown
+                && declared == meerkat_mobkit::AgentMemoryPerTurnInjection::Budgeted
+            {
+                return Err(
+                    "runtime_options.agent_memory.per_turn_injection='budgeted' requires store='sqlite'"
+                        .to_string(),
+                );
+            }
+            declared
+        }
+        // Omitted: the library default (Budgeted) on the store that can carry
+        // it; on markdown, which has neither the ledger nor the compaction
+        // reset sink, the only value the store can honour is Off. This is a
+        // derived rule stated once, not a second default: it exists only
+        // because the markdown backend is import-only and refused at init.
+        None => {
+            if store == GatewayAgentMemoryStoreKind::Markdown {
+                meerkat_mobkit::AgentMemoryPerTurnInjection::Off
+            } else {
+                meerkat_mobkit::AgentMemoryPerTurnInjection::default()
+            }
+        }
+    };
     let path =
         resolve_agent_memory_root(persistent_state.ok_or_else(|| {
             "runtime_options.agent_memory requires persistent_state".to_string()

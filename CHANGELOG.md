@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+<<<<<<< HEAD
 - **A per-turn memory injection that injects nothing now says why.**
   `RecallCoordinator::inject_for_turn_classified` returns a typed
   `TurnInjection::Skipped(reason)` with one of five reasons
@@ -19,6 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   recorded only what was injected, so "off", "no memory" and "budget spent"
   were the same absence; HomeCore's two months of zero turn-surface rows would
   have named themselves on the first turn.
+=======
+- **A real-API end-to-end lane (`make e2e-live`).** Boots the real
+  `rpc_gateway` through the Python SDK, runs real Anthropic turns, and asserts
+  positive observables that only exist if the whole chain worked: a
+  surface=turn injection-ledger row when `per_turn_injection` is omitted (with
+  an explicit-off negative control in the same run), a hydrated
+  `routing_status` whose `session_provider` matches the profile declaration,
+  and a non-empty `resolved_tools` set read after the turn completes. The lane
+  is skipped unless `MOBKIT_E2E_LIVE=1`; once requested, a missing key or
+  binary is a failure, never a skip. Nightly workflow `e2e-live.yml` (needs the
+  `ANTHROPIC_API_KEY` repository secret; fails loudly without it).
+>>>>>>> codex/per-turn-injection-one-default
 
 ### Fixed
 
