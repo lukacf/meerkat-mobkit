@@ -362,9 +362,41 @@ class ImageBlock(ContentBlock):
 # DurableAgentSpec (REQ-40)
 # ---------------------------------------------------------------------------
 
+# Meerkat's `MobRuntimeMode` wire vocabulary (serde snake_case).
+_VALID_RUNTIME_MODES = frozenset({"autonomous_host", "turn_driven"})
+
+
+def _content_input_to_wire(content: str | list[ContentBlock]) -> str | list[dict[str, Any]]:
+    """Serialize a Rust ``ContentInput`` (untagged: text or block list)."""
+    if isinstance(content, str):
+        return content
+    return [block.to_dict() for block in content]
+
+
+def _content_input_from_wire(raw: Any) -> str | list[ContentBlock]:
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        return [ContentBlock.from_dict(block) for block in raw]
+    raise TypeError(
+        "content input must be a string or a list of content blocks, "
+        f"got {type(raw).__name__}"
+    )
+
+
 @dataclass
 class DurableAgentSpec:
-    """Identity-first agent specification matching Rust DurableAgentSpec."""
+    """Identity-first agent specification matching Rust DurableAgentSpec.
+
+    ``runtime_mode_override`` pins meerkat's runtime mode for this identity
+    (``"autonomous_host"`` or ``"turn_driven"``); ``None`` defers to the
+    profile's ``runtime_mode`` in mob.toml, whose meerkat default is
+    ``autonomous_host``. ``initial_message`` is the first turn a fresh
+    ``autonomous_host`` member runs on (plain text or content blocks, Rust
+    ``ContentInput``); ``None`` leaves meerkat's fallback spawn prompt in
+    place. Both fields are omitted from the wire when unset, so a roster that
+    never sets them is byte-identical to earlier SDKs.
+    """
 
     identity: str
     profile: str
@@ -376,9 +408,30 @@ class DurableAgentSpec:
     # Exact canonical Meerkat host ref. Callers must never reinterpret an
     # unavailable selected host as local placement.
     placement: str | None = None
+    runtime_mode_override: str | None = None
+    initial_message: str | list[ContentBlock] | None = None
 
     def __post_init__(self) -> None:
         self.identity = _validate_agent_identity(self.identity)
+        if (
+            self.runtime_mode_override is not None
+            and self.runtime_mode_override not in _VALID_RUNTIME_MODES
+        ):
+            raise ValueError(
+                "runtime_mode_override must be one of "
+                f"{sorted(_VALID_RUNTIME_MODES)}, got {self.runtime_mode_override!r}"
+            )
+        if self.initial_message is not None and not (
+            isinstance(self.initial_message, str)
+            or (
+                isinstance(self.initial_message, list)
+                and all(isinstance(b, ContentBlock) for b in self.initial_message)
+            )
+        ):
+            raise TypeError(
+                "initial_message must be a string or a list of ContentBlock, "
+                f"got {type(self.initial_message).__name__}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -394,10 +447,15 @@ class DurableAgentSpec:
         result["additional_instructions"] = list(self.additional_instructions)
         if self.placement is not None:
             result["placement"] = self.placement
+        if self.runtime_mode_override is not None:
+            result["runtime_mode_override"] = self.runtime_mode_override
+        if self.initial_message is not None:
+            result["initial_message"] = _content_input_to_wire(self.initial_message)
         return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DurableAgentSpec:
+        raw_initial = data.get("initial_message")
         return cls(
             identity=data["identity"],
             profile=data["profile"],
@@ -407,6 +465,10 @@ class DurableAgentSpec:
             context=data.get("context"),
             additional_instructions=list(data.get("additional_instructions") or []),
             placement=data.get("placement"),
+            runtime_mode_override=data.get("runtime_mode_override"),
+            initial_message=(
+                None if raw_initial is None else _content_input_from_wire(raw_initial)
+            ),
         )
 
 

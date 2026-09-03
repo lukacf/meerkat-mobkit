@@ -147,6 +147,34 @@ await rt.agent("domain:calendar").respawn()  # Non-destructive recovery
 await rt.reconcile()                  # In-process roster reconciliation
 ```
 
+### DurableAgentSpec fields
+
+The roster provider returns one `DurableAgentSpec` per identity. The Rust side
+deserializes the same shape, so every field below reaches the gateway
+verbatim; fields left at their default are omitted from the wire.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `identity` | `str` | Stable identity (`triage:main`); no whitespace or `/` |
+| `profile` | `str` | Profile name from mob.toml `[profiles.*]` |
+| `addressability` | `str` | `addressable` (default) or `internal_only` |
+| `display_name` | `str`, optional | Human-facing name |
+| `labels` | `dict[str, str]` | Member labels |
+| `context` | `Any`, optional | Opaque host context handed to the customizer |
+| `additional_instructions` | `list[str]` | Appended to the profile's system prompt |
+| `placement` | `str`, optional | Exact Meerkat host ref; never degrades to local |
+| `runtime_mode_override` | `str`, optional | `autonomous_host` or `turn_driven`. `None` defers to the profile's `runtime_mode`, whose meerkat default is `autonomous_host`. Ambient per-turn memory requires `turn_driven` (see the [configuration reference](/reference/configuration)) |
+| `initial_message` | `str` or `list[ContentBlock]`, optional | First turn a fresh `autonomous_host` member runs on (Rust `ContentInput`: text or content blocks). `None` leaves meerkat's fallback spawn prompt in place |
+
+```python
+DurableAgentSpec(
+    identity="archivist:main",
+    profile="archivist",
+    runtime_mode_override="turn_driven",      # pin this identity regardless of the profile default
+    initial_message="Index yesterday's mail.", # or [TextBlock(...), ImageBlock(...)]
+)
+```
+
 ### DispatchInput convenience constructors
 
 ```python

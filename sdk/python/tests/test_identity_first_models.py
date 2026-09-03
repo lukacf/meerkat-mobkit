@@ -289,6 +289,80 @@ class TestDurableAgentSpec:
         assert restored.placement == original.placement
 
 
+class TestDurableAgentSpecRuntimeFields:
+    """`runtime_mode_override` and `initial_message` reach the wire the way the
+    Rust `DurableAgentSpec` deserializes them: `MobRuntimeMode` snake_case and
+    an untagged `ContentInput` (text or block list). Unset means absent."""
+
+    def test_unset_fields_default_to_none_and_stay_off_the_wire(self):
+        spec = DurableAgentSpec(identity="a:main", profile="default")
+        assert spec.runtime_mode_override is None
+        assert spec.initial_message is None
+        d = spec.to_dict()
+        assert "runtime_mode_override" not in d
+        assert "initial_message" not in d
+
+    @pytest.mark.parametrize("mode", ["autonomous_host", "turn_driven"])
+    def test_runtime_mode_override_serializes_meerkat_vocabulary(self, mode):
+        spec = DurableAgentSpec(
+            identity="a:main", profile="default", runtime_mode_override=mode
+        )
+        assert spec.to_dict()["runtime_mode_override"] == mode
+
+    def test_runtime_mode_override_rejects_unknown_mode(self):
+        with pytest.raises(ValueError, match="runtime_mode_override"):
+            DurableAgentSpec(
+                identity="a:main", profile="default", runtime_mode_override="eager"
+            )
+
+    def test_initial_message_text_serializes_as_a_string(self):
+        spec = DurableAgentSpec(
+            identity="a:main", profile="default", initial_message="Start with the digest."
+        )
+        assert spec.to_dict()["initial_message"] == "Start with the digest."
+
+    def test_initial_message_blocks_serialize_as_a_block_list(self):
+        spec = DurableAgentSpec(
+            identity="a:main",
+            profile="default",
+            initial_message=[
+                TextBlock(text="Look at this."),
+                ImageBlock(media_type="image/png", data="AAAA"),
+            ],
+        )
+        assert spec.to_dict()["initial_message"] == [
+            {"type": "text", "text": "Look at this."},
+            {"type": "image", "media_type": "image/png", "source": "inline", "data": "AAAA"},
+        ]
+
+    def test_initial_message_rejects_non_content(self):
+        with pytest.raises(TypeError, match="initial_message"):
+            DurableAgentSpec(identity="a:main", profile="default", initial_message=42)
+
+    def test_from_dict_reads_both_fields(self):
+        spec = DurableAgentSpec.from_dict(
+            {
+                "identity": "a:main",
+                "profile": "default",
+                "runtime_mode_override": "turn_driven",
+                "initial_message": [{"type": "text", "text": "hi"}],
+            }
+        )
+        assert spec.runtime_mode_override == "turn_driven"
+        assert spec.initial_message == [TextBlock(text="hi")]
+
+    def test_round_trip_keeps_both_fields(self):
+        original = DurableAgentSpec(
+            identity="a:main",
+            profile="default",
+            runtime_mode_override="autonomous_host",
+            initial_message="kick off",
+        )
+        restored = DurableAgentSpec.from_dict(original.to_dict())
+        assert restored.runtime_mode_override == "autonomous_host"
+        assert restored.initial_message == "kick off"
+
+
 class TestContentBlock:
     """REQ-43: TextBlock and ImageBlock content blocks."""
 

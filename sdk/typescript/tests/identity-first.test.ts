@@ -118,6 +118,112 @@ describe("DurableAgentSpec (REQ-46)", () => {
     });
   });
 
+  // runtimeModeOverride / initialMessage are the two per-identity knobs the
+  // Rust DurableAgentSpec deserializes (MobRuntimeMode snake_case, untagged
+  // ContentInput). They must round-trip, and stay absent when unset so a
+  // roster that never sets them is byte-identical to earlier SDKs.
+  it("parses initial_message as text or as content blocks", async () => {
+    const { parseDurableAgentSpec } = await import("../src/types.js");
+    const text = parseDurableAgentSpec({
+      identity: "archivist:main",
+      profile: "archivist",
+      initial_message: "Index yesterday's mail.",
+    });
+    assert.equal(text.initialMessage, "Index yesterday's mail.");
+
+    const blocks = parseDurableAgentSpec({
+      identity: "archivist:main",
+      profile: "archivist",
+      initial_message: [
+        { type: "text", text: "Look at this." },
+        { type: "image", media_type: "image/png", source: "inline", data: "AAAA" },
+      ],
+    });
+    assert.deepEqual(blocks.initialMessage, [
+      { type: "text", text: "Look at this." },
+      { type: "image", mediaType: "image/png", source: "inline", data: "AAAA" },
+    ]);
+
+    const unset = parseDurableAgentSpec({ identity: "w:1", profile: "worker" });
+    assert.equal(unset.initialMessage, null);
+    assert.equal(unset.runtimeModeOverride, null);
+  });
+
+  it("serializes runtime_mode_override and initial_message, omitting them when unset", async () => {
+    const { durableAgentSpecToDict } = await import("../src/types.js");
+    const base = {
+      identity: "archivist:main",
+      profile: "archivist",
+      addressability: "addressable",
+      displayName: null,
+      labels: {},
+      context: null,
+      additionalInstructions: [],
+    };
+    const text = durableAgentSpecToDict({
+      ...base,
+      runtimeModeOverride: "turn_driven",
+      initialMessage: "Index yesterday's mail.",
+    });
+    assert.equal(text.runtime_mode_override, "turn_driven");
+    assert.equal(text.initial_message, "Index yesterday's mail.");
+
+    const blocks = durableAgentSpecToDict({
+      ...base,
+      initialMessage: [
+        { type: "text", text: "Look at this." },
+        { type: "image", mediaType: "image/png", source: "inline", data: "AAAA" },
+      ],
+    });
+    assert.deepEqual(blocks.initial_message, [
+      { type: "text", text: "Look at this." },
+      { type: "image", media_type: "image/png", source: "inline", data: "AAAA" },
+    ]);
+
+    const unset = durableAgentSpecToDict(base);
+    assert.equal("runtime_mode_override" in unset, false);
+    assert.equal("initial_message" in unset, false);
+  });
+
+  it("the roster callback payload carries both fields verbatim", async () => {
+    const { CallbackDispatcher } = await import("../src/agent-builder.js");
+    const dispatcher = new CallbackDispatcher();
+    dispatcher.registerRosterProvider({
+      async roster() {
+        return [
+          {
+            identity: "archivist:main",
+            profile: "archivist",
+            addressability: "addressable",
+            displayName: null,
+            labels: {},
+            context: null,
+            additionalInstructions: [],
+            runtimeModeOverride: "turn_driven",
+            initialMessage: "Index yesterday's mail.",
+          },
+          {
+            identity: "worker:1",
+            profile: "worker",
+            addressability: "internal_only",
+            displayName: null,
+            labels: {},
+            context: null,
+            additionalInstructions: [],
+          },
+        ];
+      },
+    });
+    const payload = (await dispatcher.handleCallback(
+      "callback/roster_provider/roster",
+      { context: {} },
+    )) as Array<Record<string, unknown>>;
+    assert.equal(payload[0].runtime_mode_override, "turn_driven");
+    assert.equal(payload[0].initial_message, "Index yesterday's mail.");
+    assert.equal("runtime_mode_override" in payload[1], false);
+    assert.equal("initial_message" in payload[1], false);
+  });
+
   it("never turns a present placement into local omission", async () => {
     const { durableAgentSpecToDict } = await import("../src/types.js");
     const wire = durableAgentSpecToDict({

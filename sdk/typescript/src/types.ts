@@ -2210,7 +2210,18 @@ export interface DurableAgentSpec {
   readonly labels: Readonly<Record<string, string>>;
   readonly context: unknown | null;
   readonly additionalInstructions: readonly string[];
+  /**
+   * Pins meerkat's runtime mode for this identity. `null`/omitted defers to
+   * the profile's `runtime_mode` in mob.toml (meerkat default:
+   * `autonomous_host`).
+   */
   readonly runtimeModeOverride?: "autonomous_host" | "turn_driven" | null;
+  /**
+   * First turn a fresh `autonomous_host` member runs on (Rust `ContentInput`:
+   * plain text or content blocks). `null`/omitted leaves meerkat's fallback
+   * spawn prompt in place.
+   */
+  readonly initialMessage?: string | readonly DispatchContentBlock[] | null;
   readonly backend?: "session" | "external" | null;
   readonly binding?: Readonly<Record<string, unknown>> | null;
   /** Exact canonical Meerkat host ref. Never interpreted as a local fallback. */
@@ -2231,6 +2242,7 @@ export function parseDurableAgentSpec(raw: unknown): DurableAgentSpec {
       d.runtime_mode_override === "autonomous_host" || d.runtime_mode_override === "turn_driven"
         ? d.runtime_mode_override
         : null,
+    initialMessage: parseContentInput(d.initial_message),
     backend:
       d.backend === "session" || d.backend === "external" ? d.backend : null,
     binding:
@@ -2257,6 +2269,12 @@ export function durableAgentSpecToDict(
   }
   if (spec.runtimeModeOverride) {
     result.runtime_mode_override = spec.runtimeModeOverride;
+  }
+  if (spec.initialMessage !== undefined && spec.initialMessage !== null) {
+    result.initial_message =
+      typeof spec.initialMessage === "string"
+        ? spec.initialMessage
+        : spec.initialMessage.map(contentBlockToDict);
   }
   if (spec.backend) result.backend = spec.backend;
   if (spec.binding) result.binding = { ...spec.binding };
@@ -2359,6 +2377,16 @@ function parseContentBlock(raw: unknown): DispatchContentBlock {
     };
   }
   return { type: "text", text: String(d.text ?? "") };
+}
+
+/**
+ * Rust `ContentInput` is untagged: a plain string or a list of content blocks.
+ * Anything else (absent, null, wrong shape) reads as `null`.
+ */
+function parseContentInput(raw: unknown): string | DispatchContentBlock[] | null {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) return raw.map(parseContentBlock);
+  return null;
 }
 
 export function contentBlockToDict(

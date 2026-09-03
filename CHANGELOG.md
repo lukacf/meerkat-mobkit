@@ -30,6 +30,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`DurableAgentSpec` exposes `runtime_mode_override` and `initial_message`
+  in both gateway SDKs.** The Rust spec has deserialized both since the
+  identity-first plane landed (`#[serde(default)]`), and the bridge forwards
+  them into the spawn (`with_initial_message`, `runtime_mode`), but the Python
+  dataclass had neither field and the TypeScript interface lacked
+  `initialMessage`, so an SDK roster could not pin a member's runtime mode per
+  identity nor choose its kickoff turn: every fresh `autonomous_host` identity
+  ran meerkat's fallback spawn prompt, and the only mode knob was the profile
+  in mob.toml. Python `DurableAgentSpec(runtime_mode_override=...,
+  initial_message=...)` and TypeScript `runtimeModeOverride` / `initialMessage`
+  now serialize to `runtime_mode_override` (`autonomous_host` |
+  `turn_driven`, validated) and `initial_message` (text or content blocks,
+  the untagged `ContentInput` shape) in the roster callback payload, and parse
+  back. Unset fields are omitted, so a roster that sets neither is
+  byte-identical to before. Tests drive the roster callback through the
+  dispatcher and assert the payload.
+
 - **Gateways can bind a non-loopback address, and refuse to unless told
   how.** Both bundled gateways bound `127.0.0.1:0` unconditionally
   (`GatewayHttpBinding::bind_loopback` was the only constructor), so a reverse
