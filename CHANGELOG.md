@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A per-turn memory injection that injects nothing now says why.**
+  `RecallCoordinator::inject_for_turn_classified` returns a typed
+  `TurnInjection::Skipped(reason)` with one of five reasons
+  (`per_turn_injection_off`, `contextual_with_empty_query`,
+  `budget_exhausted`, `no_records`, `nothing_renderable`), and the untyped
+  wrapper the dispatch door uses logs the first skip per identity and reason at
+  INFO with the effective config, then DEBUG. Before this, the injection ledger
+  recorded only what was injected, so "off", "no memory" and "budget spent"
+  were the same absence; HomeCore's two months of zero turn-surface rows would
+  have named themselves on the first turn.
+
 ### Fixed
 
 - **The gateway no longer carries its own default for

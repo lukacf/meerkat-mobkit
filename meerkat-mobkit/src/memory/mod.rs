@@ -29,8 +29,9 @@ pub use capabilities::{
 };
 pub use coordinator::{
     ConsolePrincipalOperatorResolver, MobScopeResolver, OperatorResolver, RecallCoordinator,
-    ScopeBudget, compose_identity_scope_set, compose_identity_scope_set_with_bindings,
-    compose_identity_scope_set_with_operator, compose_scope_budgets,
+    ScopeBudget, TurnInjection, TurnInjectionSkip, compose_identity_scope_set,
+    compose_identity_scope_set_with_bindings, compose_identity_scope_set_with_operator,
+    compose_scope_budgets,
 };
 pub use dispatch_taint::{DispatchTaintSlot, TaintObservingLlmClient};
 pub use distiller::{

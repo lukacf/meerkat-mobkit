@@ -311,6 +311,45 @@ struct NonceState {
 /// Deterministic recall coordinator (§9). Cheap to clone; per-session state
 /// is shared across clones on purpose (budgets are per session, not per
 /// clone).
+/// Upper bound on remembered (identity, skip reason) announcements.
+const MAX_NOTED_SKIPS: usize = 4096;
+
+/// Why a per-turn injection produced nothing. Exactly one of these is true for
+/// every empty outcome; they are checked in this order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TurnInjectionSkip {
+    /// `per_turn_injection` is `off` for this runtime.
+    PerTurnInjectionOff,
+    /// Selection is `contextual` and the turn carried no text to query with.
+    ContextualWithEmptyQuery,
+    /// The session's remaining injection budget is below the minimum useful size.
+    BudgetExhausted,
+    /// Recall returned no records for this identity and query.
+    NoRecords,
+    /// Records were recalled but nothing new fit: all already injected this
+    /// session, or none fit the remaining budget.
+    NothingRenderable,
+}
+
+impl TurnInjectionSkip {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PerTurnInjectionOff => "per_turn_injection_off",
+            Self::ContextualWithEmptyQuery => "contextual_with_empty_query",
+            Self::BudgetExhausted => "budget_exhausted",
+            Self::NoRecords => "no_records",
+            Self::NothingRenderable => "nothing_renderable",
+        }
+    }
+}
+
+/// Typed outcome of a per-turn injection attempt.
+#[derive(Debug)]
+pub enum TurnInjection {
+    Injected(Vec<meerkat_core::ContentInput>),
+    Skipped(TurnInjectionSkip),
+}
+
 #[derive(Clone)]
 pub struct RecallCoordinator {
     provider: Arc<dyn AgentMemoryProvider>,
@@ -320,6 +359,10 @@ pub struct RecallCoordinator {
     // session rotation orphans keys, and after a clear the worst case is one
     // re-injection per live session, not unbounded growth.
     session_state: Arc<Mutex<HashMap<String, SessionInjectionState>>>,
+    /// (identity, skip reason) pairs already announced at INFO, so the first
+    /// skip per identity is loud and the rest are DEBUG. Bounded; cleared when
+    /// it grows past `MAX_NOTED_SKIPS`, after which a reason may be re-announced.
+    noted_skips: Arc<Mutex<HashSet<(String, &'static str)>>>,
     // Per-(identity, session) envelope nonce (§9.1). Same wholesale-clear
     // bound as session_state; a cleared nonce simply re-mints on next use.
     nonces: Arc<Mutex<HashMap<String, NonceState>>>,
@@ -338,6 +381,7 @@ impl RecallCoordinator {
             provider,
             config: normalize_config(config),
             session_state: Arc::new(Mutex::new(HashMap::new())),
+            noted_skips: Arc::new(Mutex::new(HashSet::new())),
             nonces: Arc::new(Mutex::new(HashMap::new())),
             operator_resolver: None,
             mob_resolver: None,
@@ -457,15 +501,78 @@ impl RecallCoordinator {
         session_key: Option<&str>,
         content: &meerkat_core::ContentInput,
     ) -> Result<Vec<meerkat_core::ContentInput>, AgentMemoryError> {
+        match self
+            .inject_for_turn_classified(identity, session_key, content)
+            .await?
+        {
+            TurnInjection::Injected(bodies) => Ok(bodies),
+            TurnInjection::Skipped(reason) => {
+                self.note_skip(identity, reason);
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    /// Announce a skip once per (identity, reason) at INFO, then at DEBUG.
+    ///
+    /// HomeCore ran for two months with zero turn-surface injections because
+    /// the gateway defaulted `per_turn_injection` to off while the library
+    /// default was budgeted, and nothing anywhere said so: the ledger only
+    /// records what WAS injected, so "off" and "no memory" and "budget spent"
+    /// all looked like the same absence. The first skip per identity now names
+    /// itself in the log, which is where an operator asking "why no turn rows"
+    /// looks first.
+    fn note_skip(&self, identity: &AgentIdentity, reason: TurnInjectionSkip) {
+        let first = {
+            let mut noted = self
+                .noted_skips
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if noted.len() >= MAX_NOTED_SKIPS {
+                noted.clear();
+            }
+            noted.insert((identity.to_string(), reason.as_str()))
+        };
+        if first {
+            tracing::info!(
+                identity = %identity,
+                reason = reason.as_str(),
+                per_turn_injection = ?self.config.per_turn_injection,
+                selection = ?self.config.selection,
+                "agent memory per-turn injection skipped (first occurrence for this identity)"
+            );
+        } else {
+            tracing::debug!(
+                identity = %identity,
+                reason = reason.as_str(),
+                "agent memory per-turn injection skipped"
+            );
+        }
+    }
+
+    /// `inject_for_turn` with the outcome kept typed: every path that injects
+    /// nothing says which of the five it was, instead of returning an empty
+    /// vector indistinguishable from the others. The dispatch door uses the
+    /// untyped wrapper; tests and diagnostics use this.
+    pub async fn inject_for_turn_classified(
+        &self,
+        identity: &AgentIdentity,
+        session_key: Option<&str>,
+        content: &meerkat_core::ContentInput,
+    ) -> Result<TurnInjection, AgentMemoryError> {
         if self.config.per_turn_injection == AgentMemoryPerTurnInjection::Off {
-            return Ok(Vec::new());
+            return Ok(TurnInjection::Skipped(
+                TurnInjectionSkip::PerTurnInjectionOff,
+            ));
         }
         let query_text = compact_whitespace(&content.text_content());
         let query_terms = terms_from_value(&query_text)
             .into_iter()
             .collect::<Vec<_>>();
         if self.config.selection == AgentMemorySelection::Contextual && query_text.is_empty() {
-            return Ok(Vec::new());
+            return Ok(TurnInjection::Skipped(
+                TurnInjectionSkip::ContextualWithEmptyQuery,
+            ));
         }
         let (skip_ids, budget) = match session_key {
             Some(key) => {
@@ -485,7 +592,7 @@ impl RecallCoordinator {
             None => (None, MAX_INJECTED_ASSEMBLY_BYTES),
         };
         if budget < MIN_INJECTION_BUDGET_BYTES {
-            return Ok(Vec::new());
+            return Ok(TurnInjection::Skipped(TurnInjectionSkip::BudgetExhausted));
         }
         // The §8.3 selector stage retired unactivated: recall is the lexical
         // path on every turn now, wrapped into the annotated shape the §7.2
@@ -506,7 +613,7 @@ impl RecallCoordinator {
             .await?,
         );
         if records.is_empty() {
-            return Ok(Vec::new());
+            return Ok(TurnInjection::Skipped(TurnInjectionSkip::NoRecords));
         }
         let nonce = self.nonce_for(identity, session_key);
         let Some(rendered) = render_injection_annotated(
@@ -518,7 +625,7 @@ impl RecallCoordinator {
             skip_ids.as_ref(),
             budget,
         ) else {
-            return Ok(Vec::new());
+            return Ok(TurnInjection::Skipped(TurnInjectionSkip::NothingRenderable));
         };
         if let Some(key) = session_key {
             let mut guard = self
@@ -545,7 +652,9 @@ impl RecallCoordinator {
         // (meerkat stamps ContentInput in `injected_context` as the typed
         // InjectedContext role → excluded from compaction indexing). The
         // user's message text is never touched.
-        Ok(vec![meerkat_core::ContentInput::Text(rendered.text)])
+        Ok(TurnInjection::Injected(vec![
+            meerkat_core::ContentInput::Text(rendered.text),
+        ]))
     }
 
     // -----------------------------------------------------------------------
@@ -2048,6 +2157,193 @@ mod tests {
             1,
             "deduped records must not re-mark usage"
         );
+        Ok(())
+    }
+
+    // ---- typed skip reasons (why a turn injected nothing) ----
+
+    #[tokio::test]
+    async fn skip_reason_off() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(FakeProvider::bodies_only(vec![record("m", "T", "body")]));
+        let coordinator = RecallCoordinator::new(
+            provider,
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                per_turn_injection: AgentMemoryPerTurnInjection::Off,
+                ..AgentMemoryConfig::default()
+            },
+        );
+        let out = coordinator
+            .inject_for_turn_classified(
+                &identity()?,
+                Some("s"),
+                &meerkat_core::ContentInput::Text("hello".into()),
+            )
+            .await?;
+        assert!(matches!(
+            out,
+            TurnInjection::Skipped(TurnInjectionSkip::PerTurnInjectionOff)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn skip_reason_contextual_with_empty_query() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(FakeProvider::bodies_only(vec![record("m", "T", "body")]));
+        let coordinator = RecallCoordinator::new(
+            provider,
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Contextual,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
+                ..AgentMemoryConfig::default()
+            },
+        );
+        let out = coordinator
+            .inject_for_turn_classified(
+                &identity()?,
+                Some("s"),
+                &meerkat_core::ContentInput::Text("   ".into()),
+            )
+            .await?;
+        assert!(matches!(
+            out,
+            TurnInjection::Skipped(TurnInjectionSkip::ContextualWithEmptyQuery)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn skip_reason_budget_exhausted() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(FakeProvider::bodies_only(vec![record("m", "T", "body")]));
+        let coordinator = RecallCoordinator::new(
+            provider,
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
+                ..AgentMemoryConfig::default()
+            },
+        );
+        {
+            let mut guard = coordinator
+                .session_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.entry("spent".to_string()).or_default().injected_bytes =
+                MAX_INJECTED_SESSION_BYTES;
+        }
+        let out = coordinator
+            .inject_for_turn_classified(
+                &identity()?,
+                Some("spent"),
+                &meerkat_core::ContentInput::Text("hello".into()),
+            )
+            .await?;
+        assert!(matches!(
+            out,
+            TurnInjection::Skipped(TurnInjectionSkip::BudgetExhausted)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn skip_reason_no_records() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(FakeProvider::bodies_only(vec![]));
+        let coordinator = RecallCoordinator::new(
+            provider,
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
+                ..AgentMemoryConfig::default()
+            },
+        );
+        let out = coordinator
+            .inject_for_turn_classified(
+                &identity()?,
+                Some("s"),
+                &meerkat_core::ContentInput::Text("hello".into()),
+            )
+            .await?;
+        assert!(matches!(
+            out,
+            TurnInjection::Skipped(TurnInjectionSkip::NoRecords)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn skip_reason_nothing_renderable_after_dedup() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(FakeProvider::bodies_only(vec![record(
+            "mem-stable",
+            "Stable fact",
+            "The same record every turn.",
+        )]));
+        let coordinator = RecallCoordinator::new(
+            provider,
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
+                ..AgentMemoryConfig::default()
+            },
+        );
+        let id = identity()?;
+        let content = meerkat_core::ContentInput::Text("hello".into());
+        let first = coordinator
+            .inject_for_turn_classified(&id, Some("s"), &content)
+            .await?;
+        assert!(matches!(first, TurnInjection::Injected(ref bodies) if !bodies.is_empty()));
+        let second = coordinator
+            .inject_for_turn_classified(&id, Some("s"), &content)
+            .await?;
+        assert!(matches!(
+            second,
+            TurnInjection::Skipped(TurnInjectionSkip::NothingRenderable)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn skip_reasons_have_distinct_snake_case_labels() {
+        let all = [
+            TurnInjectionSkip::PerTurnInjectionOff,
+            TurnInjectionSkip::ContextualWithEmptyQuery,
+            TurnInjectionSkip::BudgetExhausted,
+            TurnInjectionSkip::NoRecords,
+            TurnInjectionSkip::NothingRenderable,
+        ];
+        let labels: HashSet<&str> = all.iter().map(|r| r.as_str()).collect();
+        assert_eq!(labels.len(), all.len(), "labels must be distinct");
+        for label in labels {
+            assert!(
+                label.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "{label} is not snake_case"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn untyped_wrapper_still_returns_empty_on_skip() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(FakeProvider::bodies_only(vec![]));
+        let coordinator = RecallCoordinator::new(
+            provider,
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
+                ..AgentMemoryConfig::default()
+            },
+        );
+        let id = identity()?;
+        let content = meerkat_core::ContentInput::Text("hello".into());
+        let out = coordinator
+            .inject_for_turn(&id, Some("s"), &content)
+            .await?;
+        assert!(out.is_empty());
+        // and the first skip for this identity was noted exactly once
+        let noted = coordinator
+            .noted_skips
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(noted.contains(&(id.to_string(), "no_records")));
+        assert_eq!(noted.len(), 1);
         Ok(())
     }
 
