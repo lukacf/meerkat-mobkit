@@ -128,6 +128,19 @@ struct InitParams {
     /// and not knowing.
     #[serde(default)]
     application_tool_policies: Option<Value>,
+    /// Present ONLY so it can be refused, same rule as `application_tool_policies`.
+    ///
+    /// The whole `runtime_options` object (demo_llm, max_sessions,
+    /// identity_bootstrap_mode, experimental_live, and #376's
+    /// declare_spec_update) is an rpc_gateway protocol; this binary parses none
+    /// of it. `InitParams` carries no `deny_unknown_fields`, so without this
+    /// field serde dropped the object and every option inside it in silence -
+    /// an operator who declared a spec update against this binary would boot into
+    /// the exact pinned-definition refusal the declaration exists to clear, with
+    /// no sign it was ever read. Both SDKs let the operator point at either
+    /// binary (`gateway_bin` / `gatewayBin`), so the wrong-binary case is real.
+    #[serde(default)]
+    runtime_options: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -712,6 +725,16 @@ fn parse_init_request(line: &str) -> anyhow::Result<(Value, InitParams)> {
     }
     let params = raw.get("params").cloned().unwrap_or_else(|| json!({}));
     let parsed: InitParams = serde_json::from_value(params).context("invalid init params")?;
+    if parsed.runtime_options.is_some() {
+        return Err(anyhow!(
+            "runtime_options is not implemented by mobkit_gateway; it takes effect only on the \
+             rpc_gateway binary (demo_llm, max_sessions, identity_bootstrap_mode, \
+             experimental_live, declare_spec_update). Refusing rather than ignoring: a silently \
+             dropped option arms nothing while looking deployed, and a dropped \
+             declare_spec_update leaves the pinned-definition refusal in place while the \
+             operator believes they cleared it"
+        ));
+    }
     if parsed.application_tool_policies.is_some() {
         return Err(anyhow!(
             "application_tool_policies is not implemented by mobkit_gateway; it takes effect only \
@@ -1908,6 +1931,35 @@ mod tests {
     /// The other binary implements `application_tool_policies`; this one must
     /// not pretend to. `InitParams` has no `deny_unknown_fields`, so before
     /// this refusal the key was dropped in silence.
+    /// `runtime_options` is an rpc_gateway protocol that this binary never
+    /// parsed. #376 routed `declare_spec_update` through it, which turned the
+    /// silent drop from "an option did nothing" into "a declaration the operator
+    /// relied on did nothing". Refuse the object, naming the binary that reads it.
+    #[test]
+    fn init_refuses_runtime_options_rather_than_dropping_them() {
+        let line = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "mobkit/init",
+            "params": {
+                "runtime_options": { "declare_spec_update": { "expected_revision": 1 } }
+            }
+        })
+        .to_string();
+        let error = parse_init_request(&line)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(
+            !error.is_empty(),
+            "a supplied runtime_options object must not be silently dropped"
+        );
+        assert!(
+            error.contains("rpc_gateway") && error.contains("declare_spec_update"),
+            "the refusal must name where the options work and the option that matters: {error}"
+        );
+    }
+
     #[test]
     fn init_refuses_application_tool_policies_rather_than_dropping_them() {
         let line = serde_json::json!({
