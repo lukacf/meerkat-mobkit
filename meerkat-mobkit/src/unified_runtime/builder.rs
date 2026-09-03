@@ -661,6 +661,26 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    /// Register the operational error hook.
+    ///
+    /// Failures the runtime detects after bootstrap (a spawn that failed, a
+    /// checkpoint that did not persist, a stalled actor loop) have no caller
+    /// to return to; they are emitted as typed [`crate::ErrorEvent`]s through
+    /// this hook. The hook is fire-and-forget: it runs on a detached task, and
+    /// a slow or failing hook cannot break the runtime. An attached
+    /// identity-first runtime receives the same hook.
+    ///
+    /// Every event is also logged through `tracing` (ERROR, or INFO for
+    /// `ErrorEvent::ActorLoopRecovered`) whether or not a hook is registered,
+    /// and when this method was never called [`Self::build`] emits one WARN
+    /// saying that nobody is listening. Both are `tracing` lines, so a library
+    /// host must install a `tracing` subscriber before `build`; without one it
+    /// sees neither the failures nor the notice. The gateway binaries install
+    /// a stderr subscriber themselves; an embedded host does that itself.
+    ///
+    /// Hosts that construct the runtime through [`UnifiedRuntime::bootstrap`]
+    /// instead of the builder register the hook with
+    /// [`UnifiedRuntime::set_error_hook`].
     pub fn on_error(mut self, hook: ErrorHook) -> Self {
         self.error_hook = Some(hook);
         self
