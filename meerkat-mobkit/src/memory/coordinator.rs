@@ -329,6 +329,12 @@ pub enum TurnInjectionSkip {
     /// Records were recalled but nothing new fit: all already injected this
     /// session, or none fit the remaining budget.
     NothingRenderable,
+    /// The member runs as an autonomous host, and meerkat refuses injected
+    /// context on that mode ("autonomous inbox delivery carries no user-channel
+    /// work boundary"). MobKit skips before delivery so the turn proceeds
+    /// without memory instead of being refused. Requires `runtime_mode =
+    /// "turn_driven"` to lift; meerkat's default mode is autonomous_host.
+    RuntimeModeAutonomousHost,
 }
 
 impl TurnInjectionSkip {
@@ -339,6 +345,7 @@ impl TurnInjectionSkip {
             Self::BudgetExhausted => "budget_exhausted",
             Self::NoRecords => "no_records",
             Self::NothingRenderable => "nothing_renderable",
+            Self::RuntimeModeAutonomousHost => "runtime_mode_autonomous_host",
         }
     }
 }
@@ -522,7 +529,10 @@ impl RecallCoordinator {
     /// all looked like the same absence. The first skip per identity now names
     /// itself in the log, which is where an operator asking "why no turn rows"
     /// looks first.
-    fn note_skip(&self, identity: &AgentIdentity, reason: TurnInjectionSkip) {
+    /// Record a skip decided OUTSIDE `inject_for_turn` (the delivery seam knows
+    /// facts the coordinator does not, such as the member's runtime mode) with
+    /// the same once-per-identity INFO / then DEBUG discipline.
+    pub fn note_skip(&self, identity: &AgentIdentity, reason: TurnInjectionSkip) {
         let first = {
             let mut noted = self
                 .noted_skips
@@ -2309,6 +2319,7 @@ mod tests {
             TurnInjectionSkip::BudgetExhausted,
             TurnInjectionSkip::NoRecords,
             TurnInjectionSkip::NothingRenderable,
+            TurnInjectionSkip::RuntimeModeAutonomousHost,
         ];
         let labels: HashSet<&str> = all.iter().map(|r| r.as_str()).collect();
         assert_eq!(labels.len(), all.len(), "labels must be distinct");

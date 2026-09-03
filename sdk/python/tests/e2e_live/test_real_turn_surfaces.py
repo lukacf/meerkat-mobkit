@@ -55,6 +55,23 @@ comms = true
 """
 
 
+AUTONOMOUS_IDENTITY = "identity:sentinel"
+AUTONOMOUS_PROFILE = "sentinel"
+
+MOB_TOML += f"""
+# No runtime_mode: meerkat's default is autonomous_host. On that mode meerkat
+# refuses injected context, so MobKit must skip recall typed and let the turn
+# proceed without memory (0.8.31), instead of the bridge refusing the turn.
+[profiles.sentinel]
+model = "{MODEL}"
+system_prompt = "You are a terse sentinel. Answer in one short sentence."
+external_addressable = true
+
+[profiles.sentinel.tools]
+comms = true
+"""
+
+
 class _Roster:
     """Identity-first roster: agent memory requires one, and the durable
     identity is what every surface under test is keyed by."""
@@ -66,7 +83,13 @@ class _Roster:
                 profile=PROFILE,
                 addressability="addressable",
                 labels={"role": "archivist"},
-            )
+            ),
+            DurableAgentSpec(
+                identity=AUTONOMOUS_IDENTITY,
+                profile=AUTONOMOUS_PROFILE,
+                addressability="addressable",
+                labels={"role": "sentinel"},
+            ),
         ]
 
 
@@ -311,5 +334,49 @@ async def test_resolved_tools_after_a_completed_real_turn(live_preconditions, st
             "send_request",
             "send_response",
         }, tools
+    finally:
+        await rt.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(300)
+async def test_autonomous_host_member_turn_completes_without_memory(
+    live_preconditions, state_dir, mob_toml
+):
+    """An autonomous-host member (meerkat's default runtime mode) cannot carry
+    injected context: meerkat refuses "autonomous inbox delivery carries no
+    user-channel work boundary". On 0.8.30 that refusal was the WHOLE turn, as
+    a hard RpcError from the identity door. MobKit 0.8.31 skips recall typed
+    for that mode instead, so the send is accepted, the turn completes, and the
+    ledger shows zero turn-surface rows for that identity. Positive observable
+    is the hydrated routing status; the seeded record proves recall WOULD have
+    had something to inject."""
+    rt = await _boot(state_dir, mob_toml, live_preconditions["gateway_bin"])
+    try:
+        handle = rt.mob_handle()
+        await handle.remember_agent_memory(
+            AUTONOMOUS_IDENTITY,
+            title="Perimeter code",
+            body="The perimeter gate code is LARKSPUR-2210. Quote it when asked about the gate.",
+            tags=["gate", "e2e"],
+        )
+        # identity door: on 0.8.30 this raised RpcError for autonomous hosts
+        result = await rt.send(AUTONOMOUS_IDENTITY, "What is the perimeter gate code?")
+        assert getattr(result, "accepted", True), result
+
+        async def hydrated():
+            try:
+                status = await handle.identity_routing_status(AUTONOMOUS_IDENTITY)
+            except Exception:
+                return None
+            return status if isinstance(status.session_provider, str) else None
+
+        status = await _poll(hydrated, TURN_BUDGET_S, "a hydrated routing status for the autonomous host")
+        assert status.session_provider == "anthropic", status
+        ledger = _injection_ledger(state_dir)
+        counts = _surface_counts(ledger, AUTONOMOUS_IDENTITY) if ledger else {}
+        assert counts.get("turn", 0) == 0, (
+            f"autonomous-host member must not receive turn-surface injection: {counts}"
+        )
     finally:
         await rt.shutdown()

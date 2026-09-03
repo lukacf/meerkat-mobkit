@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Autonomous-host members no longer lose the whole turn to memory injection.**
+  meerkat refuses injected context on `runtime_mode = "autonomous_host"`
+  ("autonomous inbox delivery carries no user-channel work boundary"), and
+  that mode is meerkat's default when a profile omits `runtime_mode`. On 0.8.30
+  a send through the identity door to such a member with per-turn injection on
+  was a hard error. MobKit now checks the member's effective runtime mode at
+  the delivery seam and skips recall with the typed reason
+  `runtime_mode_autonomous_host` (first occurrence per identity at INFO), so
+  the turn proceeds without ambient memory. Defang still runs. Ambient per-turn
+  memory therefore requires `runtime_mode = "turn_driven"` until meerkat's
+  carrier change lands with the peer/comms work. Real-API lane test added.
+
 <<<<<<< HEAD
 - **A per-turn memory injection that injects nothing now says why.**
   `RecallCoordinator::inject_for_turn_classified` returns a typed
