@@ -601,6 +601,12 @@ class MobKitRuntime:
             runtime_options["console_fetch_timeout_ms"] = (
                 self._config.console_fetch_timeout_ms
             )
+        if self._config.console_require_app_auth is not None:
+            runtime_options["console_require_app_auth"] = (
+                self._config.console_require_app_auth
+            )
+        if self._config.console_config_path:
+            runtime_options["console_config_path"] = self._config.console_config_path
         if self._config.implicit_delegate_idle_retire_configured:
             runtime_options["implicit_delegate_idle_retire_secs"] = (
                 self._config.implicit_delegate_idle_retire_secs

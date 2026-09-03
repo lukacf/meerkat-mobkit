@@ -226,6 +226,31 @@ class TestBuilderChain:
 
         assert params["runtime_options"]["console_read_only"] is True
 
+    def test_console_auth_defaults_to_omitted(self):
+        params = MobKitRuntime(MobKit.builder()._config)._build_init_params()
+
+        assert "console_require_app_auth" not in params["runtime_options"]
+        assert "console_config_path" not in params["runtime_options"]
+
+    def test_console_auth_required_false_sets_runtime_option(self):
+        b = MobKit.builder().console_auth_required(False)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["console_require_app_auth"] is False
+
+    def test_console_auth_required_true_sets_runtime_option(self):
+        b = MobKit.builder().console_auth_required(True)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["console_require_app_auth"] is True
+
+    def test_console_config_sets_runtime_option(self, tmp_path):
+        console_toml = tmp_path / "console.toml"
+        b = MobKit.builder().console_config(console_toml)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["console_config_path"] == str(console_toml)
+
     def test_workgraph_defaults_to_omitted(self):
         b = MobKit.builder()
         params = MobKitRuntime(b._config)._build_init_params()

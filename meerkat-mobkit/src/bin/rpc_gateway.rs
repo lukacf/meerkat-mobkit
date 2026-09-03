@@ -466,31 +466,26 @@ impl EventLogStore for InMemoryEventLogStore {
     }
 }
 
+/// Decision state for an SDK launch that configured no `auth_config`.
+///
+/// Fail-closed on purpose: `ConsolePolicy::default()` requires app auth and
+/// the shared constructor trusts no signing key, so the console refuses every
+/// request until the host either passes `runtime_options.auth_config` or opts
+/// out with `runtime_options.console_require_app_auth = false`. The
+/// session-store naming is the crate default (`default_dataset` /
+/// `default_table`).
 fn minimal_decision_state() -> RuntimeDecisionState {
-    RuntimeDecisionState {
-        bigquery: BigQueryNaming {
-            dataset: "default_dataset".to_string(),
-            table: "default_table".to_string(),
-        },
-        modules: vec![],
-        auth: AuthPolicy::default(),
-        trusted_oidc: TrustedOidcRuntimeConfig {
-            discovery_json: r#"{"issuer":"https://noop.example.com","authorization_endpoint":"https://noop.example.com/auth","token_endpoint":"https://noop.example.com/token","jwks_uri":"https://noop.example.com/.well-known/jwks.json","response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"]}"#.to_string(),
-            jwks_json: r#"{"keys":[]}"#.to_string(),
-            audience: "persistent-gateway".to_string(),
-        },
-        console: ConsolePolicy::default(),
-        ops: RuntimeOpsPolicy::default(),
-        release_metadata: ReleaseMetadata {
-            targets: vec![
-                "crates.io".to_string(),
-                "npm".to_string(),
-                "pypi".to_string(),
-                "github-releases".to_string(),
-            ],
-            support_matrix: "lts".to_string(),
-        },
-    }
+    RuntimeDecisionState::local_console(ConsolePolicy::default(), None)
+}
+
+/// True when `state` will refuse every console request: app auth is required
+/// but the trusted JWKS carries no key, so no bearer token can verify. This is
+/// what an SDK launch gets with neither `runtime_options.auth_config` nor
+/// `console_require_app_auth = false`; it is logged at startup so the resulting
+/// 401s are diagnosable.
+fn console_closed_to_every_caller(state: &RuntimeDecisionState) -> bool {
+    state.console.require_app_auth
+        && meerkat_mobkit::parse_jwks_json(&state.trusted_oidc.jwks_json).is_err()
 }
 
 fn shell_module(id: &str, script: &str) -> ModuleConfig {
@@ -2026,13 +2021,59 @@ actions = ["agent.view"]
 
         let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
 
-        assert!(
-            !options
-                .decisions
-                .expect("decisions")
-                .console
-                .require_app_auth
-        );
+        let decisions = options.decisions.expect("decisions");
+        assert!(!decisions.console.require_app_auth);
+        assert!(!console_closed_to_every_caller(&decisions));
+    }
+
+    #[test]
+    fn no_auth_config_fallback_is_closed_to_every_caller() {
+        let state = minimal_decision_state();
+
+        assert!(state.console.require_app_auth);
+        assert!(console_closed_to_every_caller(&state));
+    }
+
+    #[test]
+    fn no_auth_config_fallback_keeps_the_sdk_gateway_session_store_naming() {
+        let state = minimal_decision_state();
+
+        assert_eq!(state.bigquery.dataset, "default_dataset");
+        assert_eq!(state.bigquery.table, "default_table");
+        assert!(state.modules.is_empty());
+    }
+
+    #[test]
+    fn read_only_toggle_alone_still_leaves_the_console_closed() {
+        let params = json!({
+            "runtime_options": {
+                "console_read_only": true
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+
+        let decisions = options.decisions.expect("decisions");
+        assert!(decisions.console.read_only);
+        assert!(console_closed_to_every_caller(&decisions));
+    }
+
+    #[test]
+    fn jwt_auth_config_console_is_not_closed() {
+        let params = json!({
+            "runtime_options": {
+                "auth_config": {
+                    "provider": "jwt",
+                    "shared_secret": "test-shared-secret-with-enough-bytes"
+                }
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+
+        let decisions = options.decisions.expect("decisions");
+        assert!(decisions.console.require_app_auth);
+        assert!(!console_closed_to_every_caller(&decisions));
     }
 
     #[test]
@@ -11521,6 +11562,13 @@ external_addressable = true
         .clone()
         .unwrap_or_else(minimal_decision_state);
     decision_state.console.ui = gateway_options.console_ui.clone();
+    if console_closed_to_every_caller(&decision_state) {
+        tracing::warn!(
+            "console requires app auth but trusts no signing key: every console request will be \
+             refused with 401. Pass runtime_options.auth_config to trust an issuer, or set \
+             runtime_options.console_require_app_auth = false for an explicitly open local console"
+        );
+    }
     let app = runtime.build_reference_app_router(decision_state);
     // Live (realtime) transport: mount the live WebSocket router on the SAME
     // HTTP listener the console uses (no second port — a LAN client or the

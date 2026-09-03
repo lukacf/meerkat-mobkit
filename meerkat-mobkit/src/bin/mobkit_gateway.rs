@@ -14,10 +14,9 @@ use meerkat_mobkit::runtime::cross_mob_control::{
     ControlAuthorizer, ControlGrantTable, ControlListenAddr,
 };
 use meerkat_mobkit::{
-    AuthPolicy, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore, ConsolePolicy,
-    ConsoleUiConfig, ConventionalPaths, GatewayPeerKeys, MOBKIT_CONTRACT_VERSION,
-    MobBootstrapOptions, MobBootstrapSpec, MobKitStorageLayout, ObjectStoreBlobStore,
-    ReleaseMetadata, RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
+    Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore, ConsolePolicy, ConsoleUiConfig,
+    ConventionalPaths, GatewayPeerKeys, MOBKIT_CONTRACT_VERSION, MobBootstrapOptions,
+    MobBootstrapSpec, MobKitStorageLayout, ObjectStoreBlobStore, RuntimeDecisionState,
     load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::mob_definition_may_use_image_generation,
 };
@@ -675,35 +674,32 @@ fn build_persistent_session_service(
     ))
 }
 
+/// Session-store naming the standalone gateway projects into its session-store
+/// descriptor. Read at serve time, so it is pinned here rather than inherited
+/// from the shared constructor's SDK-gateway default.
+const TUX_BIGQUERY_DATASET: &str = "tux_local";
+const TUX_BIGQUERY_TABLE: &str = "runtime_events";
+
+/// The standalone console/admin gateway serves an explicitly open console: it
+/// has no `auth_config` ingress and binds loopback, so the host is the
+/// protection. Everything except the console policy and the session-store
+/// naming comes from the crate's single owner of the keyless snapshot.
 fn runtime_decision_state(
-    runtime_id: &str,
     console_ui: ConsoleUiConfig,
     console_read_only: bool,
 ) -> RuntimeDecisionState {
-    RuntimeDecisionState {
-        bigquery: BigQueryNaming {
-            dataset: "tux_local".to_string(),
-            table: "runtime_events".to_string(),
-        },
-        modules: Vec::new(),
-        auth: AuthPolicy::default(),
-        trusted_oidc: TrustedOidcRuntimeConfig {
-            discovery_json: r#"{"issuer":"https://noop.example.com","authorization_endpoint":"https://noop.example.com/auth","token_endpoint":"https://noop.example.com/token","jwks_uri":"https://noop.example.com/.well-known/jwks.json","response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"]}"#.to_string(),
-            jwks_json: r#"{"keys":[]}"#.to_string(),
-            audience: runtime_id.to_string(),
-        },
-        console: ConsolePolicy {
+    RuntimeDecisionState::local_console(
+        ConsolePolicy {
             require_app_auth: false,
             read_only: console_read_only,
             fetch_timeout_ms: None,
             ui: console_ui,
         },
-        ops: RuntimeOpsPolicy::default(),
-        release_metadata: ReleaseMetadata {
-            targets: vec!["local".to_string()],
-            support_matrix: "tux".to_string(),
-        },
-    }
+        Some(BigQueryNaming {
+            dataset: TUX_BIGQUERY_DATASET.to_string(),
+            table: TUX_BIGQUERY_TABLE.to_string(),
+        }),
+    )
 }
 
 fn print_json_line(value: &Value) {
@@ -1786,7 +1782,7 @@ async fn run(control_listen: Option<ControlListenAddr>) -> anyhow::Result<()> {
         control_listen_address.as_deref(),
     ));
 
-    let decisions = runtime_decision_state(&runtime_id, console_ui, console_read_only);
+    let decisions = runtime_decision_state(console_ui, console_read_only);
     let app = runtime.build_reference_app_router(decisions);
     let mut http_server = http_binding.serve(app);
 
@@ -2024,9 +2020,19 @@ mod tests {
 
     #[test]
     fn runtime_decision_state_projects_console_read_only() {
-        let state = runtime_decision_state("test-runtime", ConsoleUiConfig::default(), true);
+        let state = runtime_decision_state(ConsoleUiConfig::default(), true);
 
         assert!(state.console.read_only);
+    }
+
+    #[test]
+    fn runtime_decision_state_is_open_and_keeps_the_tux_session_store_naming() {
+        let state = runtime_decision_state(ConsoleUiConfig::default(), false);
+
+        assert!(!state.console.require_app_auth);
+        assert_eq!(state.bigquery.dataset, "tux_local");
+        assert_eq!(state.bigquery.table, "runtime_events");
+        assert!(state.modules.is_empty());
     }
 
     #[test]

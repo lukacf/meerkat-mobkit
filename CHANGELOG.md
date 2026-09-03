@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Console auth opt-out reaches every surface.** The Python builder gains
+  `console_auth_required(required)` (emits
+  `runtime_options.console_require_app_auth`) and `console_config(path)` (emits
+  `runtime_options.console_config_path`), the two knobs Python hosts, including
+  the in-repo memory live driver and HomeCore, had to inject by overriding
+  `MobKitRuntime._build_init_params`. The Rust library gains
+  `RuntimeDecisionState::local_console(console, bigquery)`, the one exported
+  constructor for a console that trusts no identity provider; both gateway
+  binaries now build their keyless decision state through it instead of two
+  private struct literals (mobkit_gateway keeps its `tux_local` /
+  `runtime_events` session-store naming through the parameter). The default is
+  unchanged and fail-closed: `ConsolePolicy::default()` requires app auth, and
+  an SDK launch with neither `auth_config` nor `console_require_app_auth =
+  false` still serves a console that refuses every request; `rpc_gateway` now
+  logs one startup warning naming that condition and the two ways out.
+  `validate_trusted_oidc_runtime_config` is exported for hosts that want the
+  OIDC snapshot check on an open console.
+
+### Fixed
+
+- **`build_runtime_decision_state` no longer demands an identity provider for
+  a console that has none.** The trusted-OIDC checks (non-empty audience,
+  discovery with `issuer` and `jwks_uri`, JWKS with at least one key) now run
+  only when `console.require_app_auth` is true; the request-time fail-closed
+  check is unchanged, and the release-metadata validation still runs on every
+  build. An empty trust manifest is accepted (`TrustedMobkitToml.modules` is
+  `#[serde(default)]`); hosts no longer have to write `modules = []`. A
+  malformed release-metadata document is still `DecisionPolicyError::TomlParse`
+  (the enum is not `#[non_exhaustive]`, so no variant was added) but its
+  message now names the release metadata JSON, and the variant's `Display`
+  prefix is `parse error:` with the document named in the message, instead of
+  labelling a JSON failure a TOML one. Acceptance-widening only: every host
+  that built before still builds. Observable to hosts that print the error:
+  the `TomlParse` text changed. Unit tests cover each rule in both polarities.
+
 ## [0.8.31] - 2026-09-04
 
 ### Changed

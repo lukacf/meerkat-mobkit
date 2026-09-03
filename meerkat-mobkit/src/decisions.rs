@@ -14,6 +14,10 @@ pub enum DecisionPolicyError {
     EmptyBigQueryDataset,
     EmptyBigQueryTable,
     InvalidBigQueryName(String),
+    /// A policy document failed to parse. Carried for both the trust manifest
+    /// (TOML) and the release metadata (JSON); the message names which
+    /// document and format failed. The variant name predates the JSON use and
+    /// is kept because this enum is not `#[non_exhaustive]`.
     TomlParse(String),
     MissingModuleId,
     MissingModuleCommand,
@@ -36,7 +40,7 @@ impl std::fmt::Display for DecisionPolicyError {
             Self::EmptyBigQueryDataset => write!(f, "empty BigQuery dataset"),
             Self::EmptyBigQueryTable => write!(f, "empty BigQuery table"),
             Self::InvalidBigQueryName(name) => write!(f, "invalid BigQuery name: {name}"),
-            Self::TomlParse(msg) => write!(f, "TOML parse error: {msg}"),
+            Self::TomlParse(msg) => write!(f, "parse error: {msg}"),
             Self::MissingModuleId => write!(f, "missing module id"),
             Self::MissingModuleCommand => write!(f, "missing module command"),
             Self::AuthProviderMismatch => write!(f, "auth provider mismatch"),
@@ -76,6 +80,9 @@ pub struct BigQueryNaming {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct TrustedMobkitToml {
+    /// An empty manifest (no `[[modules]]` table at all) declares no trusted
+    /// modules; hosts do not have to write a literal `modules = []`.
+    #[serde(default)]
     pub modules: Vec<TrustedModuleDecl>,
 }
 
@@ -192,8 +199,8 @@ pub fn validate_bigquery_naming(naming: &BigQueryNaming) -> Result<(), DecisionP
 pub fn load_trusted_mobkit_modules_from_toml(
     toml_text: &str,
 ) -> Result<Vec<ModuleConfig>, DecisionPolicyError> {
-    let parsed: TrustedMobkitToml =
-        toml::from_str(toml_text).map_err(|err| DecisionPolicyError::TomlParse(err.to_string()))?;
+    let parsed: TrustedMobkitToml = toml::from_str(toml_text)
+        .map_err(|err| DecisionPolicyError::TomlParse(format!("trust manifest TOML: {err}")))?;
 
     parsed
         .modules
@@ -269,10 +276,16 @@ pub fn validate_runtime_ops_policy(policy: &RuntimeOpsPolicy) -> Result<(), Deci
     Ok(())
 }
 
+/// Parses the release metadata document. A malformed document is reported as
+/// `DecisionPolicyError::TomlParse` whose message names the release metadata
+/// JSON, not TOML: the variant is shared with the trust manifest because the
+/// enum is not `#[non_exhaustive]` and adding a variant would break exhaustive
+/// matchers in hosts.
 pub fn parse_release_metadata_json(
     json_text: &str,
 ) -> Result<ReleaseMetadata, DecisionPolicyError> {
-    serde_json::from_str(json_text).map_err(|err| DecisionPolicyError::TomlParse(err.to_string()))
+    serde_json::from_str(json_text)
+        .map_err(|err| DecisionPolicyError::TomlParse(format!("release metadata JSON: {err}")))
 }
 
 pub fn validate_release_metadata(metadata: &ReleaseMetadata) -> Result<(), DecisionPolicyError> {
@@ -298,4 +311,87 @@ pub fn validate_release_metadata(metadata: &ReleaseMetadata) -> Result<(), Decis
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_trust_manifest_declares_no_modules() {
+        let modules = load_trusted_mobkit_modules_from_toml("").expect("empty manifest");
+
+        assert!(modules.is_empty());
+    }
+
+    #[test]
+    fn trust_manifest_without_modules_table_declares_no_modules() {
+        let modules = load_trusted_mobkit_modules_from_toml("# no modules yet\n")
+            .expect("comment-only manifest");
+
+        assert!(modules.is_empty());
+    }
+
+    #[test]
+    fn trust_manifest_parse_error_names_the_toml_document() {
+        let err = load_trusted_mobkit_modules_from_toml("modules = [ this is not toml")
+            .expect_err("malformed manifest must be refused");
+
+        match &err {
+            DecisionPolicyError::TomlParse(msg) => {
+                assert!(msg.starts_with("trust manifest TOML: "), "{msg}");
+            }
+            other => panic!("expected TomlParse, got {other:?}"),
+        }
+        assert!(
+            err.to_string()
+                .starts_with("parse error: trust manifest TOML: ")
+        );
+    }
+
+    #[test]
+    fn release_metadata_parse_error_names_the_json_document() {
+        let err = parse_release_metadata_json("{ not json")
+            .expect_err("malformed release metadata must be refused");
+
+        match &err {
+            DecisionPolicyError::TomlParse(msg) => {
+                assert!(msg.starts_with("release metadata JSON: "), "{msg}");
+            }
+            other => panic!("expected TomlParse, got {other:?}"),
+        }
+        let rendered = err.to_string();
+        assert!(
+            rendered.starts_with("parse error: release metadata JSON: "),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("TOML"), "{rendered}");
+    }
+
+    #[test]
+    fn canonical_release_metadata_validates() {
+        let metadata = ReleaseMetadata {
+            targets: REQUIRED_RELEASE_TARGETS
+                .iter()
+                .map(|target| (*target).to_string())
+                .collect(),
+            support_matrix: "same-as-meerkat".to_string(),
+        };
+
+        validate_release_metadata(&metadata).expect("canonical release metadata");
+    }
+
+    #[test]
+    fn release_metadata_missing_a_registry_is_refused() {
+        let metadata = ReleaseMetadata {
+            targets: vec!["crates.io".to_string()],
+            support_matrix: "same-as-meerkat".to_string(),
+        };
+
+        assert_eq!(
+            validate_release_metadata(&metadata),
+            Err(DecisionPolicyError::MissingReleaseTarget("npm".to_string()))
+        );
+    }
 }

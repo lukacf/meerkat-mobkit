@@ -360,6 +360,10 @@ rt = await (
 | `.memory(config)` | Memory configuration |
 | `.agent_memory(config=True, **options)` | Durable identity-scoped agent memory |
 | `.auth(config)` | Auth configuration |
+| `.console_auth_required(required)` | Set `runtime_options.console_require_app_auth`; `False` is the explicit opt-out from the fail-closed console default (see [Console access](#console-access)) |
+| `.console_read_only(read_only=True)` | View-only console: mutating console RPCs are denied and omitted from capabilities |
+| `.console_fetch_timeout_ms(ms)` | Bundled-console JSON fetch timeout override (positive integer) |
+| `.console_config(path)` | Console UI TOML (`ConsoleUiConfig`) forwarded as `runtime_options.console_config_path` |
 | `.gateway(bin_path)` | Path to rpc_gateway binary |
 | `.modules(specs)` | Module specifications |
 | `.build()` | Build and connect the runtime |
@@ -440,6 +444,31 @@ remediation (`mobkit/storage/doctor`, or the explicit ephemeral
 declaration). Blob-store durability has no wire declaration today — it is
 declared by Rust embedders via `ephemeral_blobs(true)` /
 `binary_blob_store(...)` and reported read-only in the census.
+
+### Console access
+
+The bundled console is fail-closed. Without `.auth(...)` the gateway's
+decision state trusts no signing key, and because `require_app_auth` defaults
+to `true` every console request is refused with 401; the gateway logs a
+startup warning naming this. Opening the console is an explicit builder call:
+
+```python
+runtime = await (
+    MobKit.builder()
+    .mob("config/mob.toml")
+    .gateway("./rpc_gateway")
+    .console_auth_required(False)  # explicit opt-out: local console, no identity provider
+    .console_config("config/console.toml")
+    .build()
+)
+```
+
+Use `.console_auth_required(False)` only behind a loopback bind or a reverse
+proxy that authenticates; for anything shared, configure `.auth(...)` instead.
+Earlier SDKs had no setter and hosts overrode
+`MobKitRuntime._build_init_params` to inject `console_require_app_auth` or
+`console_config_path`; both now have builder methods and the override is no
+longer needed.
 
 ## Runtime lifecycle
 

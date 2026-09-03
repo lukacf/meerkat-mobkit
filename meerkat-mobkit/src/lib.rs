@@ -219,7 +219,7 @@ pub use runtime::{
     route_module_call_rpc_json, route_module_call_rpc_subprocess, run_discovered_module_once,
     run_meerkat_baseline_verification_once, run_module_boundary_once,
     run_rpc_capabilities_boundary_once, session_store_contracts, start_mobkit_runtime,
-    start_mobkit_runtime_with_options,
+    start_mobkit_runtime_with_options, validate_trusted_oidc_runtime_config,
 };
 pub use storage_doctor::{
     DoctorOptions, MobKitStorageMigrator, diagnose_state_dir, diagnose_state_dir_blocking,

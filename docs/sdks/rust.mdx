@@ -234,7 +234,21 @@ fn validate_bigquery_naming(naming: &BigQueryNaming) -> Result<(), DecisionPolic
 fn load_trusted_mobkit_modules_from_toml(toml: &str) -> Result<Vec<ModuleConfig>, DecisionPolicyError>
 fn enforce_console_route_access(auth: &AuthPolicy, console: &ConsolePolicy, req: &ConsoleAccessRequest) -> Result<(), DecisionPolicyError>
 fn validate_runtime_ops_policy(policy: &RuntimeOpsPolicy) -> Result<(), DecisionPolicyError>
+fn validate_trusted_oidc_runtime_config(config: &TrustedOidcRuntimeConfig) -> Result<(), DecisionPolicyError>
+fn build_runtime_decision_state(input: RuntimeDecisionInputs) -> Result<RuntimeDecisionState, DecisionRuntimeError>
+impl RuntimeDecisionState {
+    // Explicit opt-out: a console that trusts no identity provider.
+    fn local_console(console: ConsolePolicy, bigquery: Option<BigQueryNaming>) -> Self
+}
 ```
+
+`build_runtime_decision_state` is the validating constructor; it checks the
+trusted OIDC snapshot only when `console.require_app_auth` is `true`.
+`RuntimeDecisionState::local_console` is the explicit opt-out for local or
+host-protected consoles. The default stays fail-closed: `ConsolePolicy::default()`
+requires app auth, and a state that trusts no key refuses every request. See
+[Decisions](/reference/decisions#runtime-decision-state) for every check and
+when it runs.
 
 ### Authentication
 
@@ -257,6 +271,15 @@ fn validate_traceability_statuses(statuses: &[&str]) -> Result<(), GovernanceVal
 Build Axum routers for serving the console and interactions:
 
 ```rust
+// Decision state. Explicit opt-out for a local console that trusts no
+// identity provider; ConsolePolicy::default() would require app auth and,
+// with no trusted key, refuse every request.
+let decisions = RuntimeDecisionState::local_console(
+    ConsolePolicy { require_app_auth: false, ..ConsolePolicy::default() },
+    None,
+);
+// Authenticated console: build_runtime_decision_state(RuntimeDecisionInputs { .. })?
+
 // Console frontend (HTML + JS + CSS)
 let frontend: Router = console_frontend_router();
 

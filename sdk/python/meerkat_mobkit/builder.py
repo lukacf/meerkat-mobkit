@@ -23,6 +23,8 @@ class MobKitBuilderConfig:
     runtime_store: Any | None = None
     console_read_only: bool | None = None
     console_fetch_timeout_ms: int | None = None
+    console_require_app_auth: bool | None = None
+    console_config_path: str | None = None
     gating_config_path: str | None = None
     access_config_path: str | None = None
     workgraph_enabled: bool | str | None = None
@@ -543,6 +545,28 @@ class MobKitBuilder:
 
     def console_read_only(self, read_only: bool = True) -> MobKitBuilder:
         self._config.console_read_only = bool(read_only)
+        return self
+
+    def console_auth_required(self, required: bool) -> MobKitBuilder:
+        """Set whether console routes require app authentication.
+
+        Emitted as ``runtime_options.console_require_app_auth``. The gateway
+        default is fail-closed: without ``.auth(...)`` the console trusts no
+        signing key and refuses every request with 401. Pass ``False`` only
+        for an explicitly open local or host-protected console. Mirrors the
+        TypeScript builder's ``consoleAuthRequired``.
+        """
+        self._config.console_require_app_auth = bool(required)
+        return self
+
+    def console_config(self, path: str | Path) -> MobKitBuilder:
+        """Console UI TOML (``ConsoleUiConfig``) for the bundled console.
+
+        Emitted as ``runtime_options.console_config_path`` and projected
+        through ``/console/experience`` as ``console_config``. Mirrors the
+        TypeScript builder's ``consoleConfig``.
+        """
+        self._config.console_config_path = str(path)
         return self
 
     def implicit_delegate_idle_retirement(

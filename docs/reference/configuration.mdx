@@ -90,7 +90,7 @@ PreSpawnData {
 
 ## SDK and Gateway runtime options
 
-The stock SDK gateway consumes the `runtime_options` object sent by Python and TypeScript builders during `mobkit/init`.
+The stock SDK gateway (`rpc_gateway`) consumes the `runtime_options` object of `mobkit/init`. The Python and TypeScript builders emit it from their setters; where a row names a setter, that is the only way the SDK reaches the key, and a key with no setter on an SDK can be sent only from a hand-built `mobkit/init` payload. `mobkit_gateway` refuses a `runtime_options` object rather than dropping it.
 
 | Field | Type | Gateway behavior |
 |-------|------|------------------|
@@ -100,9 +100,9 @@ The stock SDK gateway consumes the `runtime_options` object sent by Python and T
 | `routing_config_path` | String | Loads JSON or TOML route config (`routes = [...]` / `[[routes]]`) and installs the routes into the unified runtime before serving RPCs. |
 | `gating_config_path` | String | Loads JSON or TOML action policies from an `actions` object and supplies a configured `risk_tier` for `mobkit/gating/evaluate` requests that omit `risk_tier`. |
 | `auth_config` | Object | Supports JWT shared-secret auth (`provider = "jwt"` / `shared_secret`) and wires the reference HTTP console/SSE routes to the configured trusted issuer, audience, and email allowlist. |
-| `console_config_path` | String | Loads a TOML `ConsoleUiConfig` and projects it through `/console/experience` as `console_config`. |
-| `console_require_app_auth` | Boolean | Overrides `ConsolePolicy.require_app_auth` for explicit gateway builds, commonly `false` for local demos. |
-| `console_read_only` | Boolean | Sets `ConsolePolicy.read_only` for SDK `rpc_gateway` launches; mutating console RPCs are denied and omitted from capabilities while read/stream routes stay available. |
+| `console_config_path` | String | Loads a TOML `ConsoleUiConfig` and projects it through `/console/experience` as `console_config`. Python `.console_config(path)`, TypeScript `.consoleConfig(path)`. |
+| `console_require_app_auth` | Boolean | Overrides `ConsolePolicy.require_app_auth`. The default is fail-closed: without `auth_config` the gateway's decision state trusts no signing key, so a console that still requires app auth refuses every request with 401, and the gateway logs a startup warning naming this. `false` is the explicit opt-out for a local or host-protected console. Python `.console_auth_required(False)`, TypeScript `.consoleAuthRequired(false)`; the Rust library twin is `RuntimeDecisionState::local_console`. |
+| `console_read_only` | Boolean | Sets `ConsolePolicy.read_only` for SDK `rpc_gateway` launches; mutating console RPCs are denied and omitted from capabilities while read/stream routes stay available. Python `.console_read_only()`, TypeScript `.consoleReadOnly()`. |
 | `console_fetch_timeout_ms` | Positive integer | Sets `RuntimeDecisionState.console.fetch_timeout_ms`, which the bundled console uses for JSON fetches after the initial 60s default. |
 | `member_comms_address` | Socket-address string | Binds each local member to a signed TCP endpoint that remote peers can dial. Wildcard addresses are refused because they cannot be advertised as a concrete route. |
 | `contacts_toml` | TOML string | Loads the contact directory used to resolve remote mob ids to TCP/UDS control endpoints and pinned gateway public keys. |
@@ -525,6 +525,25 @@ For standalone `mobkit_gateway` launches, pass `console_read_only: true` in the
 part of the gateway resume fingerprint, so toggling it creates or resumes the
 matching runtime instead of reusing a runtime launched with the opposite policy.
 
+### Console auth by surface
+
+`require_app_auth` defaults to `true`, and the SDK gateway's decision state
+without `auth_config` trusts no signing key, so the default console is closed
+to every caller (each request answers 401 `missing_credentials` or a token
+failure). Opening it is an explicit, per-surface choice:
+
+| Surface | Explicit opt-out |
+|---------|------------------|
+| Raw `mobkit/init` | `runtime_options.console_require_app_auth: false` |
+| Python | `MobKit.builder().console_auth_required(False)` |
+| TypeScript | `MobKit.builder().consoleAuthRequired(false)` |
+| Rust library | `RuntimeDecisionState::local_console(ConsolePolicy { require_app_auth: false, ..ConsolePolicy::default() }, None)` |
+| `mobkit_gateway` | Always open: it has no auth ingress and binds loopback, so the host is the protection |
+
+An open console is a deployment decision. Use it only behind a loopback bind
+or a reverse proxy that authenticates; for anything shared, configure
+`auth_config` (Python `.auth(...)`, TypeScript `.auth(...)`) instead.
+
 ---
 
 ## RuntimeOpsPolicy
@@ -614,6 +633,12 @@ ReleaseMetadata {
 |-------|------|-------------|
 | `targets` | `Vec<String>` | Release targets (must include: `crates.io`, `npm`, `pypi`, `github-releases`) |
 | `support_matrix` | `String` | Must be `"same-as-meerkat"` |
+
+`build_runtime_decision_state` parses and validates this document on every
+build, with or without console auth; nothing reads it at serve time, so the
+check is release governance, not runtime policy. `RuntimeDecisionState::local_console`
+fills the canonical value. A malformed document is a `DecisionPolicyError::TomlParse`
+whose message names the release metadata JSON.
 
 ---
 
