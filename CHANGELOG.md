@@ -15,7 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   that mode is meerkat's default when a profile omits `runtime_mode`. On 0.8.30
   a send through the identity door to such a member with per-turn injection on
   was a hard error. MobKit now checks the member's effective runtime mode at
-  the delivery seam and skips recall with the typed reason
+  the delivery seam - resolved exactly as meerkat resolves it at spawn: the
+  roster override, else the profile's `runtime_mode`, else the default (a
+  first cut read only the override and wrongly skipped memory on `turn_driven`
+  profiles; the real-API lane caught it before any release) - and skips recall
+  with the typed reason
   `runtime_mode_autonomous_host` (first occurrence per identity at INFO), so
   the turn proceeds without ambient memory. Defang still runs. Ambient per-turn
   memory therefore requires `runtime_mode = "turn_driven"` until meerkat's

@@ -225,8 +225,8 @@ async def test_omitted_per_turn_injection_injects_on_the_turn_surface(
     """HomeCore's finding, end to end: an options object that OMITS
     per_turn_injection must get the documented default (budgeted) and therefore
     write surface=turn ledger rows during a real turn. Negative control in the
-    same run: an explicit "off" on a fresh state writes build rows but no turn
-    rows, proving the ledger read discriminates."""
+    same run: an explicit "off" on a fresh state completes its turn and writes
+    no turn rows, proving the ledger read discriminates."""
     rt = await _boot(state_dir, mob_toml, live_preconditions["gateway_bin"])
     try:
         await _seed_and_send(rt, token="ORCHID-7734")
@@ -257,21 +257,26 @@ async def test_omitted_per_turn_injection_injects_on_the_turn_surface(
     try:
         await _seed_and_send(rt_off, token="ORCHID-7734")
 
-        async def build_row_present():
-            ledger = _injection_ledger(control_state)
-            if ledger is None:
-                return None
-            counts = _surface_counts(ledger, IDENTITY)
-            return counts if counts.get("build", 0) >= 1 else None
+        # Completion signal for the control turn: routing status hydrates once the
+        # session has run. (A build-surface row is NOT a usable liveness signal
+        # here: build-time injection runs at materialization, which precedes the
+        # seed, so the control legitimately has zero build rows too.)
+        control_handle = rt_off.mob_handle()
 
-        counts_off = await _poll(build_row_present, TURN_BUDGET_S, "a surface=build ledger row on the control")
-        # give the turn the same window the positive case needed, then read once more
-        await asyncio.sleep(5.0)
-        counts_off = _surface_counts(_injection_ledger(control_state), IDENTITY)
+        async def control_hydrated():
+            try:
+                status = await control_handle.identity_routing_status(IDENTITY)
+            except Exception:
+                return None
+            return status if isinstance(status.session_provider, str) else None
+
+        await _poll(control_hydrated, TURN_BUDGET_S, "the control turn to hydrate its session")
+        await asyncio.sleep(3.0)
+        ledger_off = _injection_ledger(control_state)
+        counts_off = _surface_counts(ledger_off, IDENTITY) if ledger_off else {}
         assert counts_off.get("turn", 0) == 0, (
             f"explicit per_turn_injection=off must write no turn-surface rows: {counts_off}"
         )
-        assert counts_off.get("build", 0) >= 1, counts_off
     finally:
         await rt_off.shutdown()
 
