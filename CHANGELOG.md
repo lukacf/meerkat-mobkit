@@ -5,14 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.8.29] - 2026-09-03
+## [0.8.30] - 2026-09-03
 
 Pairs with Meerkat `0.8.32` (annotated tag object
 `5c4bb88c9fea0183ad161fd0114443f31f1e9aa1`, commit
 `ed9fb06b2d93089ae2ede51874a136807f479108`) across all 25 exact dependency
 pins.
 
+MobKit `0.8.29` was tagged but never published. This immutable-tag roll-forward
+adds the release-boundary guards below before publishing the paired artifacts.
+
 ### Changed
+
+- **`mobkit_gateway` now refuses the `runtime_options` object instead of
+  silently dropping it.** The object is an `rpc_gateway` protocol, including
+  `declare_spec_update`; the typed initialization refusal redirects operators
+  to that binary before a declared definition update can appear armed while
+  doing nothing.
+
+- **Release qualification now compares whole member materialization across a
+  cold restart.** The identity-first regression proves that a resumed member
+  receives the same model, system prompt, and tool-name set as a fresh member,
+  using the typed model-facing request rather than a projection-only catalog.
 
 - **Declared mob-definition updates now advance Meerkat's canonical definition
   epoch.** `runtime_options.declare_spec_update` routes through the typed
