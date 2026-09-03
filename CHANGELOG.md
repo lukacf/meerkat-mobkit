@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A committed->durable reconciliation now reports its cost when it finishes.**
+  The runtime-authority freshness probe already logged when it started one;
+  it now logs completion at INFO with the durable and committed
+  (rewrite generation, message count) pair and `elapsed_ms`. On 2026-09-03 a
+  production fleet spent 171 s across 16 such reconciliations before
+  ResumeLifecycle with nothing at INFO to say so; the reproducer had to run at
+  DEBUG to see it.
+
 - **Autonomous-host members no longer lose the whole turn to memory injection.**
   meerkat refuses injected context on `runtime_mode = "autonomous_host"`
   ("autonomous inbox delivery carries no user-channel work boundary"), and
