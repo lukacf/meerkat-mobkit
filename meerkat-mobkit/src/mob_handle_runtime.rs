@@ -5157,6 +5157,47 @@ macro_rules! delegate_mob_session_service {
                     )
                     .await
             }
+
+            // The remaining defaulted MobSessionService methods a transparent
+            // decorator must forward. Each default is a refusal or a downgrade
+            // (see the 2026-09-03 audit in the PR); the conformance gate
+            // scripts/verify-session-service-decorators.py fails fmt-lint if a
+            // production decorator ever lacks one again.
+            fn forked_participant_source_runtime(
+                self: Arc<Self>,
+            ) -> Option<Arc<dyn meerkat_mob::ForkedParticipantSourceRuntime>> {
+                Arc::clone(&self.inner).forked_participant_source_runtime()
+            }
+            fn persisted_session_authority_read_cost(
+                &self,
+            ) -> meerkat_mob::runtime::PersistedSessionAuthorityReadCost {
+                self.inner.persisted_session_authority_read_cost()
+            }
+            async fn observe_persisted_session_authority(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<Option<meerkat_mob::IdentitySessionStoreAuthority>, SessionError> {
+                self.inner
+                    .observe_persisted_session_authority(session_id)
+                    .await
+            }
+            async fn revalidate_session_resume_authority(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                expected: &meerkat_mob::SessionResumeAuthority,
+            ) -> Result<Result<(), meerkat_mob::SessionResumeRejection>, SessionError> {
+                self.inner
+                    .revalidate_session_resume_authority(session_id, expected)
+                    .await
+            }
+            async fn discard_live_session_actor_after_durability_reload_required(
+                &self,
+                witness: &meerkat_session::LiveSessionActorWitness,
+            ) -> Result<bool, SessionError> {
+                self.inner
+                    .discard_live_session_actor_after_durability_reload_required(witness)
+                    .await
+            }
             async fn execution_snapshot(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -5974,6 +6015,44 @@ impl MobSessionService for AfterCreateMobSessionService {
                 deadline,
                 post_commit_hook,
             )
+            .await
+    }
+
+    // Same seam as `delegate_mob_session_service!`: forward every remaining
+    // defaulted method; the conformance gate keeps this list complete.
+    fn forked_participant_source_runtime(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn meerkat_mob::ForkedParticipantSourceRuntime>> {
+        Arc::clone(&self.inner).forked_participant_source_runtime()
+    }
+    fn persisted_session_authority_read_cost(
+        &self,
+    ) -> meerkat_mob::runtime::PersistedSessionAuthorityReadCost {
+        self.inner.persisted_session_authority_read_cost()
+    }
+    async fn observe_persisted_session_authority(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_mob::IdentitySessionStoreAuthority>, SessionError> {
+        self.inner
+            .observe_persisted_session_authority(session_id)
+            .await
+    }
+    async fn revalidate_session_resume_authority(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        expected: &meerkat_mob::SessionResumeAuthority,
+    ) -> Result<Result<(), meerkat_mob::SessionResumeRejection>, SessionError> {
+        self.inner
+            .revalidate_session_resume_authority(session_id, expected)
+            .await
+    }
+    async fn discard_live_session_actor_after_durability_reload_required(
+        &self,
+        witness: &meerkat_session::LiveSessionActorWitness,
+    ) -> Result<bool, SessionError> {
+        self.inner
+            .discard_live_session_actor_after_durability_reload_required(witness)
             .await
     }
     async fn execution_snapshot(
@@ -12123,6 +12202,37 @@ comms = true
             Ok(())
         }
 
+        fn forked_participant_source_runtime(
+            self: Arc<Self>,
+        ) -> Option<Arc<dyn meerkat_mob::ForkedParticipantSourceRuntime>> {
+            self.record("forked_participant_source_runtime");
+            None
+        }
+
+        fn persisted_session_authority_read_cost(
+            &self,
+        ) -> meerkat_mob::runtime::PersistedSessionAuthorityReadCost {
+            self.record("persisted_session_authority_read_cost");
+            meerkat_mob::runtime::PersistedSessionAuthorityReadCost::Bounded
+        }
+
+        async fn observe_persisted_session_authority(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<Option<meerkat_mob::IdentitySessionStoreAuthority>, SessionError> {
+            self.record("observe_persisted_session_authority");
+            Ok(None)
+        }
+
+        async fn revalidate_session_resume_authority(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+            _expected: &meerkat_mob::SessionResumeAuthority,
+        ) -> Result<Result<(), meerkat_mob::SessionResumeRejection>, SessionError> {
+            self.record("revalidate_session_resume_authority");
+            Ok(Ok(()))
+        }
+
         async fn discard_live_session_under_runtime_turn_boundary(
             &self,
             _session_id: &meerkat_core::types::SessionId,
@@ -12209,6 +12319,69 @@ comms = true
             ],
             "each wrapper must delegate exactly once and add no semantic step",
         );
+    }
+
+    /// Every defaulted `MobSessionService` method reachable on main must reach
+    /// the inner service through BOTH production decorators. The defaults are
+    /// refusals or downgrades (read cost "Unsupported", fork source `None`),
+    /// so a missing forward is a silent behaviour change, not a compile error.
+    #[tokio::test]
+    async fn wrappers_forward_the_remaining_defaulted_methods_to_the_inner_service() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let inner: Arc<dyn MobSessionService> = probe.clone();
+        let pre_build: Arc<dyn MobSessionService> = Arc::new(PreBuildMobSessionService {
+            inner: Arc::clone(&inner),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        });
+        let after_create: Arc<dyn MobSessionService> = Arc::new(AfterCreateMobSessionService {
+            inner: probe.clone(),
+            after_hook: Arc::new(|_, _| Box::pin(async {})),
+        });
+        let session_id = meerkat_core::types::SessionId::new();
+        let expected = meerkat_mob::SessionResumeAuthority::default();
+        for wrapper in [pre_build, after_create] {
+            assert!(
+                Arc::clone(&wrapper)
+                    .forked_participant_source_runtime()
+                    .is_none(),
+                "the probe answers None; the wrapper must relay it, not mint its own"
+            );
+            assert_eq!(
+                wrapper.persisted_session_authority_read_cost(),
+                meerkat_mob::runtime::PersistedSessionAuthorityReadCost::Bounded,
+                "the trait default says Unsupported; only a forward can say Bounded"
+            );
+            assert!(
+                wrapper
+                    .observe_persisted_session_authority(&session_id)
+                    .await
+                    .expect("observe_persisted_session_authority must forward, not refuse")
+                    .is_none()
+            );
+            wrapper
+                .revalidate_session_resume_authority(&session_id, &expected)
+                .await
+                .expect("revalidate_session_resume_authority must forward")
+                .expect("the probe accepts");
+        }
+        let calls = probe.calls.lock().expect("probe calls");
+        for name in [
+            "forked_participant_source_runtime",
+            "persisted_session_authority_read_cost",
+            "observe_persisted_session_authority",
+            "revalidate_session_resume_authority",
+        ] {
+            assert_eq!(
+                calls.iter().filter(|call| **call == name).count(),
+                2,
+                "{name} must reach the inner service once per wrapper: {calls:?}"
+            );
+        }
     }
 
     struct CountingArchiveHook {
