@@ -5156,6 +5156,27 @@ macro_rules! delegate_mob_session_service {
                     )
                     .await
             }
+            // The hook-bearing lane rides only a recovered-operation handoff at
+            // retirement (meerkat-mob provisioner). Its trait DEFAULT refuses
+            // typed whenever a hook is present, so a decorator that forgets
+            // this forward turns every such destructive reset into
+            // "session service cannot run a pre-retire archive hook" - seen as
+            // a flake in live_reset_takes_a_turn_and_shuts_down_within_horizon
+            // on 2026-09-03, latent since 0.8.28.
+            async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_and_hook_before(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                deadline: meerkat_core::time_compat::Instant,
+                post_commit_hook: Option<Arc<dyn meerkat_runtime::MachineSessionArchivePostCommitHook>>,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_and_hook_before(
+                        session_id,
+                        deadline,
+                        post_commit_hook,
+                    )
+                    .await
+            }
             async fn execution_snapshot(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -5956,6 +5977,22 @@ impl MobSessionService for AfterCreateMobSessionService {
         self.inner
             .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_before(
                 session_id, deadline,
+            )
+            .await
+    }
+    // Same seam as `delegate_mob_session_service!`: the hook-bearing lane's
+    // trait default refuses when a hook is present; forward it.
+    async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_and_hook_before(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        deadline: meerkat_core::time_compat::Instant,
+        post_commit_hook: Option<Arc<dyn meerkat_runtime::MachineSessionArchivePostCommitHook>>,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_and_hook_before(
+                session_id,
+                deadline,
+                post_commit_hook,
             )
             .await
     }
@@ -12078,6 +12115,24 @@ comms = true
             Ok(())
         }
 
+        async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_and_hook_before(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+            _deadline: meerkat_core::time_compat::Instant,
+            post_commit_hook: Option<Arc<dyn meerkat_runtime::MachineSessionArchivePostCommitHook>>,
+        ) -> Result<(), SessionError> {
+            match post_commit_hook {
+                Some(hook) => {
+                    hook.after_runtime_retire_commit()
+                        .await
+                        .map_err(|e| SessionError::Store(Box::new(e)))?;
+                    self.record("archive_and_hook_before(hook=some, fired)");
+                }
+                None => self.record("archive_and_hook_before(hook=none)"),
+            }
+            Ok(())
+        }
+
         async fn discard_live_session_under_runtime_turn_boundary(
             &self,
             _session_id: &meerkat_core::types::SessionId,
@@ -12163,6 +12218,82 @@ comms = true
                 "enqueue_committed_parent_session_boundary_after_runtime_turn",
             ],
             "each wrapper must delegate exactly once and add no semantic step",
+        );
+    }
+
+    struct CountingArchiveHook {
+        fired: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl meerkat_runtime::MachineSessionArchivePostCommitHook for CountingArchiveHook {
+        async fn after_runtime_retire_commit(
+            &self,
+        ) -> Result<(), meerkat_runtime::RuntimeControlPlaneError> {
+            self.fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// The hook-bearing archive lane has a meerkat-mob trait default that
+    /// refuses whenever a hook is present. Both production decorators must
+    /// forward it so the hook reaches the inner service and fires there;
+    /// before this, a destructive reset during a recovered-operation handoff
+    /// failed with "session service cannot run a pre-retire archive hook".
+    #[tokio::test]
+    async fn wrappers_forward_the_hook_bearing_archive_lane_to_the_inner_service() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let inner: Arc<dyn MobSessionService> = probe.clone();
+        let pre_build = PreBuildMobSessionService {
+            inner: Arc::clone(&inner),
+            hook: no_op_pre_build_hook(),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        };
+        let after_create = AfterCreateMobSessionService {
+            inner: probe.clone(),
+            after_hook: Arc::new(|_, _| Box::pin(async {})),
+        };
+        let session_id = meerkat_core::types::SessionId::new();
+        let deadline =
+            meerkat_core::time_compat::Instant::now() + std::time::Duration::from_secs(5);
+
+        let hook = Arc::new(CountingArchiveHook {
+            fired: std::sync::atomic::AtomicUsize::new(0),
+        });
+        MobSessionService::archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_and_hook_before(
+            &pre_build,
+            &session_id,
+            deadline,
+            Some(Arc::clone(&hook) as Arc<dyn meerkat_runtime::MachineSessionArchivePostCommitHook>),
+        )
+        .await
+        .expect("the pre-build wrapper must forward the hook-bearing archive lane");
+        MobSessionService::archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_and_hook_before(
+            &after_create,
+            &session_id,
+            deadline,
+            Some(Arc::clone(&hook) as Arc<dyn meerkat_runtime::MachineSessionArchivePostCommitHook>),
+        )
+        .await
+        .expect("the after-create wrapper must forward the hook-bearing archive lane");
+
+        assert_eq!(
+            hook.fired.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the hook must fire inside the inner service once per wrapper"
+        );
+        let calls = probe.calls.lock().expect("probe calls");
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| **call == "archive_and_hook_before(hook=some, fired)")
+                .count(),
+            2,
+            "both wrappers must reach the inner service with the hook intact: {calls:?}"
         );
     }
 
