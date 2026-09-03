@@ -65,6 +65,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Both session-service decorators now forward every reachable defaulted
+  `MobSessionService` method, and CI proves it.** The 2026-09-03 audit behind
+  the archive-lane fix found nine more defaulted methods neither decorator
+  forwarded; five are reachable on main (`observe_persisted_session_authority`,
+  `discard_live_session_actor_after_durability_reload_required`,
+  `persisted_session_authority_read_cost`, `forked_participant_source_runtime`,
+  `revalidate_session_resume_authority`), the other four sit behind meerkat's
+  `experimental-gpt-live` feature which main does not enable. Their defaults
+  are refusals or downgrades (read cost "Unsupported", fork source `None`), so a
+  missing forward was a silent behaviour change. Both decorators forward all
+  five; the regression drives each through both wrappers into a recording
+  inner service. `scripts/verify-session-service-decorators.py` (fmt-lint)
+  parses the trait from the pinned meerkat-mob source, reads the features Cargo
+  enables, and fails when any production decorator lacks a reachable method, so
+  the next defaulted method meerkat adds fails CI instead of production.
+
 - **The runtime-authority freshness probe no longer re-walks a reconciled row
   on every boot.** The head-canonical durable read is slim by design and
   reports rewrite generation 0 on the `Session`, while its head row carries
