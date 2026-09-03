@@ -318,6 +318,7 @@ await handle.respawn_member("agent-1")
 | `get_member(member_id)` | `MemberSnapshot` | Get a single member by ID |
 | `retire_member(member_id)` | `None` | Retire a member (graceful shutdown) |
 | `respawn_member(member_id)` | `None` | Respawn a previously retired member |
+| `reconcile_edges()` | `ReconcileEdgesReport` | Converge mob.toml `[wiring]` (`auto_wire_orchestrator`, `role_wiring`) on the live roster. Needed after `runtime.reconcile()` or an identity-first boot only when the definition declares such wiring; `ensure_member` already runs it, and with no declared wiring the report is empty |
 
 `MemberSnapshot` exposes `agent_identity`, `role`, `state`, `wired_to`, and
 `labels`. Known state strings are exported from the top-level package as

@@ -477,7 +477,31 @@ class MobKitRuntime:
         """
         self._dispatcher.register_schedule_fire_handler(name, handler)
 
+    def _session_builder_to_register(self) -> SessionAgentBuilder | None:
+        """Return the configured session builder, refusing a non-conforming one.
+
+        ``mobkit/init`` carries ``has_session_builder``, which makes the gateway
+        call back into this process for every build. An object that cannot
+        answer ``build_agent`` (a bare function, a partial, a misnamed method)
+        used to be skipped here in silence while that flag was still sent, so
+        the first spawn failed later with "no SessionAgentBuilder registered".
+        Refuse it typed, before any gateway starts.
+        """
+        builder = self._config.session_builder
+        if builder is None:
+            return None
+        if not isinstance(builder, SessionAgentBuilder):
+            raise TypeError(
+                "session_service() requires a SessionAgentBuilder: an object with "
+                "an async build_agent(options) method; got "
+                f"{type(builder).__name__}"
+            )
+        return builder
+
     async def _bootstrap(self) -> None:
+        # Resolve the builder before anything is spawned: a refusal here costs
+        # nothing to clean up.
+        session_builder = self._session_builder_to_register()
         if self._config.gateway_bin:
             transport = PersistentTransport(self._config.gateway_bin)
             self._transport = transport
@@ -491,11 +515,9 @@ class MobKitRuntime:
                     self._dispatcher.register_job_credential_resolver(
                         self._config.job_credential_resolver
                     )
-                # Register builder FIRST — init may trigger callback/build_agent
-                if self._config.session_builder and isinstance(
-                    self._config.session_builder, SessionAgentBuilder
-                ):
-                    self._dispatcher.register_builder(self._config.session_builder)
+                # Register builder FIRST - init may trigger callback/build_agent
+                if session_builder is not None:
+                    self._dispatcher.register_builder(session_builder)
                 if self._config.error_callback is not None:
                     self._dispatcher.register_error_callback(self._config.error_callback)
                 # Register identity-first providers before transport start —
@@ -557,10 +579,8 @@ class MobKitRuntime:
             except BaseException:
                 await self._cleanup_failed_bootstrap(transport)
                 raise
-        elif self._config.session_builder and isinstance(
-            self._config.session_builder, SessionAgentBuilder
-        ):
-            self._dispatcher.register_builder(self._config.session_builder)
+        elif session_builder is not None:
+            self._dispatcher.register_builder(session_builder)
         else:
             _log.warning(
                 "MobKit runtime started without gateway or session builder — "
@@ -1806,13 +1826,23 @@ class MobHandle:
         return RediscoverReport.from_dict(raw)
 
     async def reconcile_edges(self) -> ReconcileEdgesReport:
-        """Re-run edge discovery and reconcile dynamic peer edges.
+        """Converge the definition's declared peer wiring on the live roster.
 
-        Refreshes the active roster, runs the configured ``EdgeDiscovery``,
-        and applies wire/unwire operations to match the desired topology.
+        The desired edges come from mob.toml's ``[wiring]`` block
+        (``auto_wire_orchestrator`` and ``role_wiring``), which the gateway
+        installs by itself; there is no builder knob to set. Wire and unwire
+        operations are applied so the live topology matches it, and the report
+        names them.
 
-        Only useful if ``EdgeDiscovery`` was configured on the builder.
-        Returns an empty report if no edge discovery is configured.
+        When it is needed: after ``runtime.reconcile()`` or an identity-first
+        boot, and only when the definition declares ``auto_wire_orchestrator``
+        or ``role_wiring``. Those restore paths embody identities concurrently
+        and do not converge the declared edges themselves, so the wiring is
+        otherwise bring-up-order dependent. ``ensure_member`` already runs this
+        after every successful materialization, so it is redundant there. With
+        no declared wiring the report is empty. Host ``topology_provider``
+        edges are converged by the identity plane on every restore and are not
+        this call's concern.
         """
         raw = await self._runtime._rpc("mobkit/reconcile_edges")
         return ReconcileEdgesReport.from_dict(raw)

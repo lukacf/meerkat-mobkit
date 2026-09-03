@@ -98,6 +98,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A `session_service()` builder that cannot answer `build_agent` is refused
+  at `connect()` instead of being skipped in silence.** `MobKitRuntime._bootstrap`
+  registered the builder only when `isinstance(builder, SessionAgentBuilder)`
+  held (a `runtime_checkable` Protocol, so this is an attribute check: a bare
+  function, a `partial`, or a class with the method misnamed fails it), yet
+  `_build_init_params` still sent `has_session_builder = true`, so the gateway
+  installed its callback wrapper and the first spawn died later with "no
+  SessionAgentBuilder registered", far from the line that caused it. Two
+  predicates for one fact. The builder is now resolved once, before any
+  gateway process is spawned, and a non-conforming object raises `TypeError`
+  naming the contract and the offending type; a conforming builder registers
+  exactly as before. Hosts whose builders already conform (HomeCore) see no
+  change. `MobHandle.reconcile_edges()`'s docstring no longer claims the call
+  needs an `EdgeDiscovery` configured on the builder (there is no such knob;
+  the definition-derived wiring policy is installed automatically) and now
+  says when it is needed: after `runtime.reconcile()` or an identity-first
+  boot, only when the definition declares `auto_wire_orchestrator` or
+  `role_wiring`, and not after `ensure_member`, which already reconciles.
+
 - **`build_runtime_decision_state` no longer demands an identity provider for
   a console that has none.** The trusted-OIDC checks (non-empty audience,
   discovery with `issuer` and `jwks_uri`, JWKS with at least one key) now run
