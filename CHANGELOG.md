@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **A real-API end-to-end lane (`make e2e-live`).** Boots the real
+  `rpc_gateway` through the Python SDK, runs real Anthropic turns, and asserts
+  positive observables that only exist if the whole chain worked: a
+  surface=turn injection-ledger row when `per_turn_injection` is omitted (with
+  an explicit-off negative control in the same run), a hydrated
+  `routing_status` whose `session_provider` matches the profile declaration,
+  and a non-empty `resolved_tools` set read after the turn completes. The lane
+  is skipped unless `MOBKIT_E2E_LIVE=1`; once requested, a missing key or
+  binary is a failure, never a skip. Nightly workflow `e2e-live.yml` (needs the
+  `ANTHROPIC_API_KEY` repository secret; fails loudly without it).
+
+### Fixed
+
+- **The gateway no longer carries its own default for
+  `agent_memory.per_turn_injection`.** The library default has been `budgeted`
+  since 2026-07-01, when injected-context delivery became echo-safe, and the
+  boolean form (`agent_memory: true`) followed it. The object form did not:
+  `rpc_gateway` substituted a literal `"off"` when the field was omitted, so
+  every SDK client that passed an options object and trusted the documented
+  default got zero turn-surface injections. HomeCore measured the consequence
+  as 10,283 build-surface injections and zero turn-surface ledger rows over the
+  lifetime of its store. The parser now derives the fallback from
+  `AgentMemoryPerTurnInjection::default()`, so one default governs both forms
+  and the next change cannot fork them; a non-string value is a typed refusal
+  instead of silently meaning off. The regression test is HomeCore's exact call
+  shape. The design document's "off by default" text, which predated the
+  library change, is corrected.
+
 ## [0.8.30] - 2026-09-03
 
 Pairs with Meerkat `0.8.32` - unchanged from 0.8.29. All 25 exact dependency
