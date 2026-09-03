@@ -75,7 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   generation and transcript revision from its head row, compares envelope
   facts typed (version, creation time, metadata minus head-owned keys) with no
   serialisation, and `prewarm_persisted_runtime_authority` runs up to 8 probes
-  at once.
+  at once. The head-row revision is used only for current-version heads: a
+  released envelope-v2 head stores the released-format rows digest, which is
+  not comparable, so released realms keep the full transcript digest.
 
 - **Both session-service decorators now forward every reachable defaulted
   `MobSessionService` method, and CI proves it.** The 2026-09-03 audit behind

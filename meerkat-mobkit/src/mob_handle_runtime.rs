@@ -2514,9 +2514,16 @@ impl SessionStoreBackedRuntimeStore {
             // make: refuse typed, loudly and repeatably, exactly like the
             // divergent-ahead refusal below. Exact revision equality marks
             // fresh.
+            // Only a CURRENT-version head stores the transcript digest the current
+            // materialisation computes; a released (envelope v2) head stores the
+            // released-format rows digest (`released_0810_transcript_serialized_rows_digest`),
+            // which is not comparable. Released realms keep the full digest -
+            // four released_realm_upgrade_drive tests went red when they did not.
             let durable_revision = match slim_head.as_ref() {
-                Some(head) => head.head_revision.clone(),
-                None => durable.transcript_revision().map_err(|e| {
+                Some(head) if head.version == meerkat_core::SESSION_VERSION => {
+                    head.head_revision.clone()
+                }
+                _ => durable.transcript_revision().map_err(|e| {
                     meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
                         "durable transcript revision for runtime-authority freshness probe: {e}"
                     ))
