@@ -110,7 +110,7 @@ b = "family_group"
 
 [profiles.personal]
 model = "claude-sonnet-4-5"
-system_prompt = "You are a personal assistant for a household member. When you receive information, acknowledge it briefly. Keep all responses to 1-2 sentences."
+skills = ["personal_role"]
 external_addressable = true
 
 
@@ -119,7 +119,7 @@ comms = true
 
 [profiles.family_group]
 model = "claude-sonnet-4-5"
-system_prompt = "You are a family group channel. When you receive household updates, acknowledge them briefly. Keep responses to 1-2 sentences."
+skills = ["family_group_role"]
 external_addressable = true
 
 
@@ -128,7 +128,7 @@ comms = true
 
 [profiles.triage]
 model = "claude-sonnet-4-5"
-system_prompt = "You are the household triage agent. When you receive events from connectors, analyze them and forward relevant information to the appropriate domain agents using the send tool. For school-related events, send to the peer with 'school' in their name. For calendar/scheduling events, send to the peer with 'calendar' in their name. You MUST use the send tool to forward information. After forwarding, summarize what you did."
+skills = ["triage_role"]
 external_addressable = false
 
 
@@ -137,7 +137,7 @@ comms = true
 
 [profiles.school]
 model = "claude-sonnet-4-5"
-system_prompt = "You are the school domain agent. You track school schedules, closures, and logistics. When you receive school-related events, analyze the impact (childcare needs, pickup changes) and respond with a brief assessment."
+skills = ["school_role"]
 external_addressable = false
 
 
@@ -146,7 +146,7 @@ comms = true
 
 [profiles.calendar]
 model = "claude-sonnet-4-5"
-system_prompt = "You are the calendar domain agent. You track appointments and schedules. When you receive scheduling events or conflicts, identify the conflict and propose a solution in 1-2 sentences."
+skills = ["calendar_role"]
 external_addressable = false
 
 
@@ -155,12 +155,41 @@ comms = true
 
 [profiles.gate]
 model = "claude-sonnet-4-5"
-system_prompt = "You are the gate agent. You evaluate proposed actions before they reach family members. When you receive a proposed action, briefly approve or flag concerns. Keep responses to 1-2 sentences."
+skills = ["gate_role"]
 external_addressable = false
 
 
 [profiles.gate.tools]
 comms = true
+
+# --- Prompts ---
+# A member's system prompt is assembled from its profile `skills`; a bare
+# `system_prompt` key under [profiles.X] is not a meerkat Profile field and
+# is silently dropped.
+
+[skills.personal_role]
+source = "inline"
+content = "You are a personal assistant for a household member. When you receive information, acknowledge it briefly. Keep all responses to 1-2 sentences."
+
+[skills.family_group_role]
+source = "inline"
+content = "You are a family group channel. When you receive household updates, acknowledge them briefly. Keep responses to 1-2 sentences."
+
+[skills.triage_role]
+source = "inline"
+content = "You are the household triage agent. When you receive events from connectors, analyze them and forward relevant information to the appropriate domain agents using the send tool. For school-related events, send to the peer with 'school' in their name. For calendar/scheduling events, send to the peer with 'calendar' in their name. You MUST use the send tool to forward information. After forwarding, summarize what you did."
+
+[skills.school_role]
+source = "inline"
+content = "You are the school domain agent. You track school schedules, closures, and logistics. When you receive school-related events, analyze the impact (childcare needs, pickup changes) and respond with a brief assessment."
+
+[skills.calendar_role]
+source = "inline"
+content = "You are the calendar domain agent. You track appointments and schedules. When you receive scheduling events or conflicts, identify the conflict and propose a solution in 1-2 sentences."
+
+[skills.gate_role]
+source = "inline"
+content = "You are the gate agent. You evaluate proposed actions before they reach family members. When you receive a proposed action, briefly approve or flag concerns. Keep responses to 1-2 sentences."
 """
 
 # ---------------------------------------------------------------------------
@@ -201,9 +230,11 @@ class HouseholdCustomizer:
                 peers.append(edge.a)
         if peers:
             peers.sort()
-            existing = draft.system_prompt or ""
-            draft.system_prompt = (
-                f"{existing}\nYour wired peers: {', '.join(peers)}"
+            # Appended after the profile's skill-assembled prompt. Setting
+            # draft.system_prompt here would REPLACE that prompt with the
+            # peer line alone.
+            draft.additional_instructions.append(
+                f"Your wired peers: {', '.join(peers)}"
             )
 
     async def after_create(self, identity, session_id, context) -> None:

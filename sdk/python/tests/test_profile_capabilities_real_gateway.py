@@ -67,7 +67,6 @@ id = "profile-capabilities-python-smoke"
 
 [profiles.domain]
 model = "gpt-5.5"
-system_prompt = "You are a deterministic profile-capability smoke-test profile."
 external_addressable = true
 
 [profiles.domain.tools]
@@ -76,7 +75,6 @@ shell = false
 
 [profiles.security]
 model = "gpt-5.5"
-system_prompt = "You are a deterministic security smoke-test profile."
 external_addressable = true
 
 [profiles.security.tools]

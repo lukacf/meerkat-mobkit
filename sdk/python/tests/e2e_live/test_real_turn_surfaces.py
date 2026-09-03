@@ -42,7 +42,7 @@ id = "e2e-live-turn-surfaces"
 
 [profiles.archivist]
 model = "{MODEL}"
-system_prompt = "You are a terse archivist. Answer in one short sentence."
+skills = ["archivist_role"]
 external_addressable = true
 # meerkat-mob's default runtime mode is autonomous_host, on which the identity
 # door refuses injected context outright ("autonomous inbox delivery carries no
@@ -52,6 +52,15 @@ runtime_mode = "turn_driven"
 
 [profiles.archivist.tools]
 comms = true
+
+# --- Prompts ---
+# A member's system prompt is assembled from its profile `skills`; a bare
+# `system_prompt` key under [profiles.X] is not a meerkat Profile field and
+# is silently dropped.
+
+[skills.archivist_role]
+source = "inline"
+content = "You are a terse archivist. Answer in one short sentence."
 """
 
 
@@ -64,11 +73,15 @@ MOB_TOML += f"""
 # proceed without memory (0.8.31), instead of the bridge refusing the turn.
 [profiles.sentinel]
 model = "{MODEL}"
-system_prompt = "You are a terse sentinel. Answer in one short sentence."
+skills = ["sentinel_role"]
 external_addressable = true
 
 [profiles.sentinel.tools]
 comms = true
+
+[skills.sentinel_role]
+source = "inline"
+content = "You are a terse sentinel. Answer in one short sentence."
 """
 
 

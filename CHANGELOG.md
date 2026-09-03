@@ -440,6 +440,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and logged one `WARN ... mob member not found` per send. Rust API change for
   embedders that call the reservation directly.
 
+- **The Flow Editor's Agent Editor no longer labels the peer description
+  "SYSTEM PROMPT".** The field it edits is the profile `peer_description`:
+  roster text other members read through the `peers` tool and peer-added
+  notifications, never part of the member's own prompt, which meerkat
+  assembles from the profile's `skills` (`[skills.<id>] source = "inline"` or
+  a path). Text typed under the old label therefore never reached the model,
+  and the "profile prompt skeleton" button filled the roster blurb with a
+  mandate template. The section title now reads "PEER DESCRIPTION", the
+  placeholder and the skeleton tooltip say what the text is for and where the
+  prompt actually lives, and the starter member's own description no longer
+  promises a prompt. The editor document key `systemPrompt` (and its
+  `system_prompt` import alias) is unchanged, so saved editor documents and
+  the bundled client keep round-tripping; the mapping is documented at the
+  projection and export sites. MobKit's own test fixtures modelled the same
+  mistake with an inert profile-level `system_prompt` key that meerkat
+  silently drops; they now carry their prompts as inline skills, or omit them
+  where no turn reads a prompt.
+
 ## [0.8.31] - 2026-09-04
 
 ### Changed

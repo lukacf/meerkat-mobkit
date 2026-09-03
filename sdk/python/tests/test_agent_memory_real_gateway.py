@@ -67,7 +67,6 @@ id = "agent-memory-python-smoke"
 
 [profiles.memory_smoke]
 model = "gpt-5.5"
-system_prompt = "You are a deterministic agent-memory smoke-test profile."
 external_addressable = true
 
 [profiles.memory_smoke.tools]

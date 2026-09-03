@@ -82,7 +82,7 @@ id = "homecore-e2e"
 
 [profiles.personal]
 model = "claude-sonnet-4-5"
-system_prompt = "You are a helpful personal assistant. Keep responses brief (1-2 sentences)."
+skills = ["personal_role"]
 external_addressable = true
 
 [profiles.personal.tools]
@@ -90,7 +90,7 @@ comms = true
 
 [profiles.triage]
 model = "claude-sonnet-4-5"
-system_prompt = "You are a triage agent. Route requests to the right domain. Keep responses brief."
+skills = ["triage_role"]
 external_addressable = false
 
 [profiles.triage.tools]
@@ -98,7 +98,7 @@ comms = true
 
 [profiles.calendar]
 model = "claude-sonnet-4-5"
-system_prompt = "You are a calendar domain agent. Help with scheduling. Keep responses brief."
+skills = ["calendar_role"]
 external_addressable = false
 
 [profiles.calendar.tools]
@@ -106,11 +106,32 @@ comms = true
 
 [profiles.gatekeeper]
 model = "claude-sonnet-4-5"
-system_prompt = "You are a gatekeeper agent. Validate requests. Keep responses brief."
+skills = ["gatekeeper_role"]
 external_addressable = false
 
 [profiles.gatekeeper.tools]
 comms = true
+
+# --- Prompts ---
+# A member's system prompt is assembled from its profile `skills`; a bare
+# `system_prompt` key under [profiles.X] is not a meerkat Profile field and
+# is silently dropped.
+
+[skills.personal_role]
+source = "inline"
+content = "You are a helpful personal assistant. Keep responses brief (1-2 sentences)."
+
+[skills.triage_role]
+source = "inline"
+content = "You are a triage agent. Route requests to the right domain. Keep responses brief."
+
+[skills.calendar_role]
+source = "inline"
+content = "You are a calendar domain agent. Help with scheduling. Keep responses brief."
+
+[skills.gatekeeper_role]
+source = "inline"
+content = "You are a gatekeeper agent. Validate requests. Keep responses brief."
 """
 
 # ---------------------------------------------------------------------------
@@ -166,9 +187,11 @@ class HomeCoreCustomizer:
 
         if peers:
             peers.sort()
-            existing = draft.system_prompt or ""
-            draft.system_prompt = (
-                f"{existing}\nYour connected peers: {', '.join(peers)}"
+            # Appended after the profile's skill-assembled prompt. Setting
+            # draft.system_prompt here would REPLACE that prompt with the
+            # peer line alone.
+            draft.additional_instructions.append(
+                f"Your connected peers: {', '.join(peers)}"
             )
 
     async def after_create(
