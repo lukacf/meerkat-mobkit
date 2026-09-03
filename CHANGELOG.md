@@ -198,6 +198,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `validate_trusted_oidc_runtime_config` is exported for hosts that want the
   OIDC snapshot check on an open console.
 
+- **`AgentBuildDraft`, `AgentBuildContext`, `DurableAgentSpec`,
+  `ExternalToolDef`, and `AgentCustomizerProtocol` are importable from the
+  top-level `meerkat_mobkit` package.** The identity-first customizer
+  (`customize_build(context, spec, draft)` with `draft.register_tool`) is the
+  per-identity equivalent of `SessionAgentBuilder.build_agent`, but its
+  argument types were public only through
+  `meerkat_mobkit.identity_first_models` / `identity_first_providers`, so the
+  documented per-profile tool path needed a submodule import while every other
+  public surface did not. Additive: the submodule paths keep working.
+
 ### Fixed
 
 - **The configuration reference now states four rules hosts were discovering

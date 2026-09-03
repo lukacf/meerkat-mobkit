@@ -52,9 +52,13 @@ from .jobs import (
     DetachedJobResult,
 )
 from .identity_first_models import (
+    AgentBuildContext,
+    AgentBuildDraft,
     CompletionCursor,
     CompletionProgress,
     ConsoleIdentityRecord,
+    DurableAgentSpec,
+    ExternalToolDef,
     IdentityBootstrapCounts,
     IdentityBootstrapEntry,
     IdentityBootstrapMode,
@@ -63,6 +67,10 @@ from .identity_first_models import (
     MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY,
     RoleMigrationDeclaration,
 )
+
+# Identity-first customizer boundary (public contract; the per-identity
+# equivalent of SessionAgentBuilder). The submodule paths keep working.
+from .identity_first_providers import AgentCustomizerProtocol
 
 # Data models
 from .models import DiscoverySpec, PreSpawnData, SessionBuildOptions, SessionCreatedContext, SessionQuery
@@ -245,6 +253,12 @@ __all__ = [
     "IdentityBootstrapStatus",
     "ConsoleIdentityRecord",
     "MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY",
+    # Identity-first customizer boundary
+    "AgentBuildContext",
+    "AgentBuildDraft",
+    "AgentCustomizerProtocol",
+    "DurableAgentSpec",
+    "ExternalToolDef",
     # Turn-completion identity
     "CompletionCursor",
     "CompletionProgress",
