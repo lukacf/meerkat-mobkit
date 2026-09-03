@@ -59,6 +59,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Destructive resets during a recovered-operation handoff no longer fail
+  typed.** meerkat-mob's `MobSessionService` carries a defaulted
+  `archive_with_mob_lifecycle_authority_under_runtime_turn_boundary_and_hook_before`
+  that refuses whenever a post-commit hook is present. MobKit's two session-service
+  decorators forwarded the other archive variants but not this one, so the
+  provisioner's hook-bearing retirement lane (taken only when a recovered
+  operation must be rebound) hit the default and the reset failed with
+  "session service cannot run a pre-retire archive hook". Both decorators now
+  forward it; the regression proves the hook reaches the inner service and
+  fires there. Latent since 0.8.28; surfaced as a flake in
+  `live_reset_takes_a_turn_and_shuts_down_within_horizon`.
+
 - **SDK identity-first sends now run MobKit delivery preparation exactly once.**
   `handle.send()` / `mobkit/send_message` previously let the stable identity
   roster row win as a raw mob member, bypassing `prepare_member_delivery` and
