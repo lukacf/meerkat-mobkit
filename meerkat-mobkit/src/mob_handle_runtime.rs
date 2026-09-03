@@ -2021,7 +2021,11 @@ struct SessionStoreBackedRuntimeStore {
 }
 
 impl SessionStoreBackedRuntimeStore {
-    /// Committed->durable reconciliation walks this instance has run.
+    /// Committed->durable reconciliation walks this instance has run. The
+    /// counter itself is live code (the walk arm increments it); this read is
+    /// the tests' positive observable of a re-walk until a health surface
+    /// consumes it.
+    #[cfg(test)]
     pub fn reconciliation_walk_count(&self) -> u64 {
         self.reconciliation_walks
             .load(std::sync::atomic::Ordering::Relaxed)
