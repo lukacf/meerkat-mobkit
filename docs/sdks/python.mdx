@@ -175,6 +175,25 @@ DurableAgentSpec(
 )
 ```
 
+### Roster provider context
+
+The gateway calls `roster(context)` with a typed `RosterContext`
+(`meerkat_mobkit.identity_first_models.RosterContext`), a one-to-one mirror of
+the Rust struct:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `mob_definition` | `dict \| None` | The booted mob's compiled definition as JSON (`id`, `profiles`, ...). Always present behind the bundled `rpc_gateway`; `None` only for in-process Rust embedders and test harnesses that resolve a roster without a mob definition. |
+| `previous_identities` | `list[str]` | Identities the identity runtime has registered at the time of the call. Empty on the bootstrap resolves (nothing is registered yet), populated on later re-derivations such as `mobkit/topology/query` or an edge reconcile. |
+
+```python
+class MyRoster:
+    async def roster(self, context):
+        household = (context.mob_definition or {}).get("id")
+        known = set(context.previous_identities)
+        ...
+```
+
 ### DispatchInput convenience constructors
 
 ```python

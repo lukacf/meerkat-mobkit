@@ -131,6 +131,27 @@ export type UnifiedEvent = UnifiedAgentEvent | UnifiedModuleEvent;
 `ModuleConfig` is not a public TypeScript SDK export. Pass module declaration
 objects to `.modules(...)`, whose public parameter type is `unknown[]`.
 
+An identity-first `RosterProvider.roster(context)` receives a typed
+`RosterContext`, a one-to-one mirror of the Rust struct the gateway sends
+under `params.context`:
+
+```typescript
+export interface RosterContext {
+  /**
+   * The booted mob's compiled definition as JSON (`id`, `profiles`, ...).
+   * Always present behind the bundled `rpc_gateway`; `null` only for in-process
+   * Rust embedders and test harnesses that resolve a roster without one.
+   */
+  readonly mobDefinition: Record<string, unknown> | null;
+  /**
+   * Identities the identity runtime has registered at the time of the call.
+   * Empty on the bootstrap resolves, populated on later re-derivations such as
+   * `mobkit/topology/query` or an edge reconcile.
+   */
+  readonly previousIdentities: readonly string[];
+}
+```
+
 ## Module support
 
 The SDK supports both ESM and CommonJS:

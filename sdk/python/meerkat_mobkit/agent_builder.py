@@ -742,6 +742,8 @@ class CallbackDispatcher:
         raise ValueError(f"unknown lease_provider operation: {op}")
 
     async def _handle_roster_provider(self, method: str, params: dict[str, Any]) -> Any:
+        from .identity_first_models import RosterContext
+
         provider = self._roster_provider
         if provider is None:
             raise ValueError("no roster provider registered")
@@ -749,7 +751,10 @@ class CallbackDispatcher:
         op = method.rsplit("/", 1)[-1]
 
         if op == "roster":
-            specs = await provider.roster(params.get("context", {}))
+            # The gateway nests the Rust `RosterContext` under `context`, the
+            # same envelope as the topology and customizer callbacks.
+            context = RosterContext.from_dict(params.get("context") or {})
+            specs = await provider.roster(context)
             return [s.to_dict() for s in specs]
 
         raise ValueError(f"unknown roster_provider operation: {op}")

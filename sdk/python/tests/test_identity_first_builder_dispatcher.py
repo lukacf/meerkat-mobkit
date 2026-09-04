@@ -8,6 +8,7 @@ from meerkat_mobkit.identity_first_models import (
     AgentBuildDraft,
     DurableAgentSpec,
     ManagedPeerEdge,
+    RosterContext,
 )
 from meerkat_mobkit.identity_first_providers import (
     ContinuityRecord,
@@ -521,6 +522,61 @@ class TestCallbackDispatcherRoster:
         # An identity that sets neither sends neither (byte-compatible roster).
         assert "runtime_mode_override" not in payload[1]
         assert "initial_message" not in payload[1]
+
+    @pytest.mark.asyncio
+    async def test_roster_callback_receives_the_gateway_context(self):
+        """Regression: the roster callback used to see an empty context.
+
+        The gateway sends the Rust ``RosterContext`` under ``params["context"]``
+        (same envelope as topology/customizer). The provider must receive the
+        mob definition and previous identities from it, typed.
+        """
+        seen: list[RosterContext] = []
+
+        class RecordingRoster:
+            async def roster(self, context):
+                seen.append(context)
+                return [DurableAgentSpec(identity="a:main", profile="assistant")]
+
+        d = CallbackDispatcher()
+        d.register_roster_provider(RecordingRoster())
+
+        await d.handle_callback("callback/roster_provider/roster", {
+            "context": {
+                "mob_definition": {
+                    "id": "household",
+                    "profiles": {"assistant": {"model": "gpt-5.5"}},
+                },
+                "previous_identities": ["a:main", "b:main"],
+            },
+        })
+        assert len(seen) == 1
+        context = seen[0]
+        assert isinstance(context, RosterContext)
+        assert context.mob_definition is not None
+        assert context.mob_definition["id"] == "household"
+        assert context.mob_definition["profiles"]["assistant"]["model"] == "gpt-5.5"
+        assert context.previous_identities == ["a:main", "b:main"]
+
+    @pytest.mark.asyncio
+    async def test_roster_callback_tolerates_a_bare_context(self):
+        """An older gateway that sends `{}` yields a typed context with defaults."""
+        seen: list[RosterContext] = []
+
+        class RecordingRoster:
+            async def roster(self, context):
+                seen.append(context)
+                return []
+
+        d = CallbackDispatcher()
+        d.register_roster_provider(RecordingRoster())
+
+        await d.handle_callback("callback/roster_provider/roster", {"context": {}})
+        await d.handle_callback("callback/roster_provider/roster", {})
+        assert [c.to_dict() for c in seen] == [
+            {"mob_definition": None, "previous_identities": []},
+            {"mob_definition": None, "previous_identities": []},
+        ]
 
 
 class TestCallbackDispatcherTopology:
