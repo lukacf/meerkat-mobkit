@@ -450,7 +450,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   scans files only while `.git/MERGE_MSG` exists, so a marker committed inside
   a merge and pushed afterwards was never read; the hook now runs with
   `--assume-in-merge` and a committed marker in any tracked text file fails
-  the push.
+  the push. The same pass gained a `bazel-builds-fresh` pre-push hook running
+  `node scripts/generate-bazel-rust-builds.mjs --check`: nothing regenerated
+  the BUILD files locally, so a new test binary reached CI stale and failed
+  its `fmt-lint` job there instead of at the push (PR #393).
 
 - **Prebuilt Linux gateway binaries load on glibc 2.31 and newer.** The
   `*-unknown-linux-gnu` release legs built directly on `ubuntu-latest`

@@ -60,6 +60,21 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
+  # On push: the generated Bazel BUILD files match the crate layout. CI runs
+  # the same check in fmt-lint; a new test binary or bin added without
+  # `node scripts/generate-bazel-rust-builds.mjs` fails there (PR #393,
+  # 2026-09-04). No hook regenerates on commit here, so the push gate is the
+  # only local one.
+  - repo: local
+    hooks:
+      - id: bazel-builds-fresh
+        name: generated Bazel BUILD files are fresh
+        entry: node scripts/generate-bazel-rust-builds.mjs --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
   # On push: every production AgentLlmClient decorator forwards
   # request_attempt_authority (the trait default silently reports LegacySplit).
   - repo: local
