@@ -49,6 +49,39 @@ describe("parseAgentEvent", () => {
     assert.equal(event.type, "run_failed");
     assert.equal((event as any).sessionId, "sess-3");
     assert.equal((event as any).error, "boom");
+    assert.equal((event as any).errorReport, undefined);
+  });
+
+  it("parses run_failed from meerkat's typed error_report (no flat error on the wire)", () => {
+    // Wire shape of meerkat-core 0.8.32 `AgentEvent::RunFailed`: the typed
+    // `error_report` is the only failure truth; there is no flat `error`.
+    const event = parseAgentEvent({
+      type: "run_failed",
+      session_id: "01a068a0-f911-7331-8187-d436145ac895",
+      error_report: {
+        class: "llm",
+        reason: { reason_type: "llm_auth_error" },
+        message: "LLM error: authentication failed (401)",
+      },
+    });
+    assert.equal(event.type, "run_failed");
+    assert.equal((event as any).error, "LLM error: authentication failed (401)");
+    assert.deepEqual((event as any).errorReport, {
+      class: "llm",
+      message: "LLM error: authentication failed (401)",
+      reason: { reason_type: "llm_auth_error" },
+      reasonType: "llm_auth_error",
+    });
+  });
+
+  it("parses run_failed whose error_report carries no typed reason", () => {
+    const event = parseAgentEvent({
+      type: "run_failed",
+      session_id: "s",
+      error_report: { class: "internal", message: "runner gave up" },
+    });
+    assert.equal((event as any).error, "runner gave up");
+    assert.deepEqual((event as any).errorReport, { class: "internal", message: "runner gave up" });
   });
 
   it("parses turn_started", () => {

@@ -347,6 +347,26 @@ pub struct ConsoleInteractionAccepted {
     pub status: ConsoleFrameStatus,
 }
 
+/// Outcome of reserving an identity-first console interaction.
+///
+/// `Fresh` is a newly minted interaction the caller owns and must dispatch.
+/// `Existing` is the original acceptance of an idempotent replay (same
+/// `idempotency_key`, same origin, content and handling mode): the turn it
+/// names was already dispatched once and must not be dispatched again.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IdentityFirstReservation {
+    Fresh(ConsoleInteractionAccepted),
+    Existing(ConsoleInteractionAccepted),
+}
+
+impl IdentityFirstReservation {
+    pub fn into_accepted(self) -> ConsoleInteractionAccepted {
+        match self {
+            Self::Fresh(accepted) | Self::Existing(accepted) => accepted,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ConsoleTimelineEvent {

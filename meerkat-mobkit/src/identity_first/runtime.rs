@@ -134,6 +134,7 @@ fn admission_phase_error(
             IdentityRuntimeError::AdmissionFailed { identity, detail }
         }
         other @ (BridgeAdmissionError::ResumeRejected { .. }
+        | BridgeAdmissionError::ProviderAuthRejected { .. }
         | BridgeAdmissionError::ActorAdmissionTimeout { .. }) => {
             IdentityRuntimeError::AdmissionFailed {
                 identity,
@@ -283,11 +284,13 @@ pub enum IdentityRuntimeError {
         baseline: CompletionCursor,
         observed: CompletionCursor,
     },
-    /// The identity is parked because the HOST deterministically rejected
-    /// its build (the candidate-mode effect gate class): the app-side
-    /// `callback/build_agent` round trip completed and the host answered
-    /// with an error. No automatic retry — a roster/policy (spec) change
-    /// clears the park; `reason` carries the host's rejection for operators.
+    /// The identity is parked because its build was DETERMINISTICALLY
+    /// rejected: either the host answered the app-side `callback/build_agent`
+    /// round trip with an error (the candidate-mode effect gate class), or
+    /// provider authentication refused the build with a credential kind no
+    /// unattended retry can change (a missing secret). No automatic retry: a
+    /// roster/policy (spec) change clears the park; `reason` carries the
+    /// rejection for operators.
     HostRejectedBuild {
         identity: AgentIdentity,
         reason: String,
@@ -402,7 +405,7 @@ impl std::fmt::Display for IdentityRuntimeError {
             ),
             Self::HostRejectedBuild { identity, reason } => write!(
                 f,
-                "identity {identity} is parked: the host deterministically rejected its build \
+                "identity {identity} is parked: its build was deterministically rejected \
                  ({reason}); a roster/policy (spec) change clears the park"
             ),
             Self::EmbodimentRejected(failure) => write!(
@@ -440,6 +443,72 @@ pub(crate) fn durable_spec_digest(spec: &DurableAgentSpec) -> u64 {
 /// meerkat fix, not this park).
 pub(crate) fn is_host_rejected_build_error(detail: &str) -> bool {
     detail.contains("callback/build_agent failed: callback error:")
+}
+
+/// Whether a typed provider-auth kind is a DETERMINISTIC build wall: a fact
+/// about configuration that no unattended retry can change, so the identity
+/// parks with the reason instead of heal-looping through the continuity
+/// repair supervisor (a missing key used to burn a full build per attempt,
+/// forever, with the cause visible nowhere). The remaining kinds describe
+/// credential STATE that can change out of band (a lease refreshes, a login
+/// completes, an I/O fault clears), so they stay on the existing repair
+/// lanes. Exhaustive on purpose: a new kind must be classified here.
+pub(crate) const fn is_deterministic_provider_auth_kind(kind: meerkat_core::AuthErrorKind) -> bool {
+    use meerkat_core::AuthErrorKind;
+    match kind {
+        AuthErrorKind::MissingSecret
+        | AuthErrorKind::UnsupportedCombination
+        | AuthErrorKind::MissingRequiredMetadata
+        | AuthErrorKind::WorkspaceMismatch
+        | AuthErrorKind::HostOwnedUnavailable => true,
+        AuthErrorKind::StaleCredential
+        | AuthErrorKind::RefreshRequired
+        | AuthErrorKind::LeaseAbsent
+        | AuthErrorKind::UserReauthRequired
+        | AuthErrorKind::Expired
+        | AuthErrorKind::RefreshFailed
+        | AuthErrorKind::ResolveRequired
+        | AuthErrorKind::InteractiveLoginRequired
+        | AuthErrorKind::Io
+        | AuthErrorKind::Other => false,
+    }
+}
+
+/// The park reason for a build the bridge refused DETERMINISTICALLY, or
+/// `None` when the failure may resolve on its own and belongs on the repair
+/// lanes. Two walls are recognised: the typed provider-auth refusal
+/// ([`BridgeError::ProviderAuthRejected`] with a kind
+/// [`is_deterministic_provider_auth_kind`] accepts) and the host's own
+/// `callback/build_agent` answer ([`is_host_rejected_build_error`], the one
+/// place a string probe remains because `rpc_gateway` mints that text).
+pub(crate) fn deterministic_build_rejection_reason(error: &BridgeError) -> Option<String> {
+    match error {
+        BridgeError::ProviderAuthRejected { failure, detail } => {
+            is_deterministic_provider_auth_kind(failure.kind)
+                .then(|| provider_auth_park_reason(failure, detail))
+        }
+        other => {
+            let detail = other.to_string();
+            is_host_rejected_build_error(&detail).then_some(detail)
+        }
+    }
+}
+
+/// One producer text for the provider-auth park so operators see a stable,
+/// greppable reason with the operator path inline.
+fn provider_auth_park_reason(
+    failure: &meerkat_core::service::SessionProviderAuthFailure,
+    detail: &str,
+) -> String {
+    format!(
+        "{} (typed AuthErrorKind `{}`): a credential/binding fact no unattended retry can \
+         change, so this identity is parked instead of heal-looping. Operator path: supply \
+         the credential or fix the binding for provider `{}`, then restart the gateway (the \
+         park is process-local) or change the roster spec. Refusal: {detail}",
+        failure.public_message(),
+        failure.kind.as_str(),
+        failure.provider.as_str()
+    )
 }
 
 impl std::error::Error for IdentityRuntimeError {}
@@ -5105,12 +5174,8 @@ impl IdentityRuntime {
                             },
                         )
                         .await;
-                        {
-                            let rejection = err.to_string();
-                            if is_host_rejected_build_error(&rejection) {
-                                self.mark_host_rejected_build_park(identity, rejection)
-                                    .await;
-                            }
+                        if let Some(reason) = deterministic_build_rejection_reason(&err) {
+                            self.mark_host_rejected_build_park(identity, reason).await;
                         }
                         // Repair honesty (OB3 rehearsal): the typed
                         // ArchivedNotRevivable refusal is a stable,
@@ -5303,16 +5368,28 @@ impl IdentityRuntime {
                         &draft,
                         &record.session_id,
                     )
-                    .await
-                    .map_err(|err| {
-                        IdentityRuntimeError::Internal(format!("bridge create_session: {err}"))
-                    });
-                if let Err(err) = &created_session_id {
-                    let detail = err.to_string();
-                    if is_host_rejected_build_error(&detail) {
-                        self.mark_host_rejected_build_park(identity, detail).await;
-                    }
-                }
+                    .await;
+                let created_session_id = match created_session_id {
+                    Ok(session_id) => Ok(session_id),
+                    // Typed on the FIRST attempt: the park is recorded and the
+                    // caller receives the same `HostRejectedBuild` a later
+                    // attempt fails fast with, so an in-band materialize (a
+                    // console send to a Dormant identity) surfaces the reason,
+                    // not `Internal` prose that happens to contain it.
+                    Err(err) => match deterministic_build_rejection_reason(&err) {
+                        Some(reason) => {
+                            self.mark_host_rejected_build_park(identity, reason.clone())
+                                .await;
+                            Err(IdentityRuntimeError::HostRejectedBuild {
+                                identity: identity.clone(),
+                                reason,
+                            })
+                        }
+                        None => Err(IdentityRuntimeError::Internal(format!(
+                            "bridge create_session: {err}"
+                        ))),
+                    },
+                };
                 match created_session_id {
                     Ok(session_id) => {
                         if session_id != provisional_session_id {
@@ -10032,8 +10109,10 @@ impl IdentityRuntime {
         }
     }
 
-    /// Park an identity whose build the host deterministically rejected,
-    /// scoped to the identity's CURRENT spec. Operator-visible through the
+    /// Park an identity whose build was deterministically rejected (the host
+    /// gate or a deterministic provider-auth kind, see
+    /// [`deterministic_build_rejection_reason`]), scoped to the identity's
+    /// CURRENT spec. Operator-visible through the
     /// bootstrap status surface and the warn line; no automatic retry until
     /// the spec changes.
     pub(crate) async fn mark_host_rejected_build_park(
@@ -10060,7 +10139,7 @@ impl IdentityRuntime {
         tracing::warn!(
             identity = %identity,
             reason = %reason,
-            "host deterministically rejected this identity's build; parking (no automatic \
+            "this identity's build was deterministically rejected; parking (no automatic \
              retry) until the roster spec changes"
         );
         // Keep the bootstrap status surface honest about WHY the identity is
@@ -11473,6 +11552,95 @@ mod reset_reprofile_tests {
         }
     }
 
+    /// Always answers create with meerkat's typed provider-auth refusal for
+    /// the configured `AuthErrorKind`: the shape the mob bridge produces when
+    /// the factory fails credential resolution at build time.
+    struct ProviderAuthRejectingBridge {
+        kind: meerkat_core::AuthErrorKind,
+        create_attempts: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ProviderAuthRejectingBridge {
+        fn new(kind: meerkat_core::AuthErrorKind) -> Self {
+            Self {
+                kind,
+                create_attempts: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn attempts(&self) -> usize {
+            self.create_attempts
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn failure(&self) -> meerkat_core::service::SessionProviderAuthFailure {
+            meerkat_core::service::SessionProviderAuthFailure {
+                kind: self.kind,
+                provider: meerkat_core::Provider::Anthropic,
+                realm_id: None,
+                binding_id: None,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBridge for ProviderAuthRejectingBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            _session_id: &SessionId,
+        ) -> Result<SessionId, BridgeError> {
+            self.create_attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let failure = self.failure();
+            Err(BridgeError::ProviderAuthRejected {
+                detail: format!("create_session: {}", failure.public_message()),
+                failure,
+            })
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            _session_id: &SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            Err(BridgeError::Mob(
+                "resume not used in provider-auth test".to_string(),
+            ))
+        }
+
+        async fn deliver_admitted(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _delivery: BridgeDelivery,
+        ) -> Result<SessionId, BridgeError> {
+            Err(BridgeError::Mob(
+                "deliver not used in provider-auth test".to_string(),
+            ))
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Err(BridgeError::Mob(
+                "checkpoint not used in provider-auth test".to_string(),
+            ))
+        }
+
+        async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            Ok(())
+        }
+    }
+
     /// A head-canonical store that answers Ready and then fails the exact
     /// session lookup must make pre-prepare resolution TERMINAL, not skip.
     ///
@@ -11997,6 +12165,181 @@ mod reset_reprofile_tests {
             2,
             "a changed spec re-admits exactly one new build attempt"
         );
+        Ok(())
+    }
+
+    /// A missing provider secret is a deterministic wall: the first typed
+    /// refusal parks the identity with an operator-readable reason, the next
+    /// attempt fails fast without a bridge call, and the repair supervisor
+    /// skips it. Before this the refusal was flattened to text, matched
+    /// nothing, and the identity heal-looped with the cause visible nowhere.
+    #[tokio::test]
+    async fn missing_secret_build_refusal_parks_identity_typed_on_first_attempt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:keyless")?;
+        let bridge = Arc::new(ProviderAuthRejectingBridge::new(
+            meerkat_core::AuthErrorKind::MissingSecret,
+        ));
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "provider-auth-park-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                durable_spec(identity.clone(), "domain"),
+                IdentityLifecycleState::Dormant,
+                None,
+                None,
+            )
+            .await;
+
+        // The FIRST attempt is already the typed park, not `Internal` prose:
+        // a console send that materializes a Dormant keyless identity in-band
+        // surfaces the reason on this very call.
+        match runtime.materialize(&identity).await {
+            Err(IdentityRuntimeError::HostRejectedBuild { reason, .. }) => {
+                assert!(reason.contains("kind=missing_secret"), "{reason}");
+            }
+            other => {
+                return Err(format!(
+                    "the first keyless build must fail with the typed park, got {other:?}"
+                )
+                .into());
+            }
+        }
+        assert_eq!(bridge.attempts(), 1);
+        let park = runtime
+            .host_rejected_build_park(&identity)
+            .await
+            .ok_or("the first typed provider-auth refusal must park the identity")?;
+        assert!(
+            park.reason.contains("kind=missing_secret"),
+            "{}",
+            park.reason
+        );
+        assert!(
+            park.reason.contains("provider=anthropic"),
+            "{}",
+            park.reason
+        );
+
+        // Parked: the next attempt fails fast typed WITHOUT re-running the
+        // build, and the repair supervisor's Broken selection excludes it.
+        match runtime.materialize(&identity).await {
+            Err(IdentityRuntimeError::HostRejectedBuild { reason, .. }) => {
+                assert!(reason.contains("kind=missing_secret"), "{reason}");
+            }
+            other => return Err(format!("expected the typed park, got {other:?}").into()),
+        }
+        assert_eq!(
+            bridge.attempts(),
+            1,
+            "a parked identity must not re-run the build"
+        );
+        runtime
+            .register(
+                durable_spec(identity.clone(), "domain"),
+                IdentityLifecycleState::Broken,
+                None,
+                None,
+            )
+            .await;
+        assert!(
+            runtime.repairable_broken_identities().await.is_empty(),
+            "the repair supervisor must skip a parked identity"
+        );
+        Ok(())
+    }
+
+    /// Credential STATE that can change out of band (here an expired lease)
+    /// is not a wall: no park, and the next attempt reaches the bridge again.
+    #[tokio::test]
+    async fn transient_provider_auth_failure_stays_on_the_repair_lanes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:expired")?;
+        let bridge = Arc::new(ProviderAuthRejectingBridge::new(
+            meerkat_core::AuthErrorKind::Expired,
+        ));
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "provider-auth-transient-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                durable_spec(identity.clone(), "domain"),
+                IdentityLifecycleState::Dormant,
+                None,
+                None,
+            )
+            .await;
+
+        assert!(runtime.materialize(&identity).await.is_err());
+        assert!(
+            runtime.host_rejected_build_park(&identity).await.is_none(),
+            "an expired credential must not park"
+        );
+        assert!(runtime.materialize(&identity).await.is_err());
+        assert_eq!(
+            bridge.attempts(),
+            2,
+            "an unparked identity re-attempts the build"
+        );
+        Ok(())
+    }
+
+    /// The classifier reads the typed refusal (its kind) and the host gate's
+    /// minted text; everything else is not a deterministic wall.
+    #[test]
+    fn deterministic_build_rejection_reason_reads_the_typed_kind()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let refusal = |kind| BridgeError::ProviderAuthRejected {
+            failure: meerkat_core::service::SessionProviderAuthFailure {
+                kind,
+                provider: meerkat_core::Provider::OpenAI,
+                realm_id: None,
+                binding_id: None,
+            },
+            detail: "create_session: refused".to_string(),
+        };
+        let reason = deterministic_build_rejection_reason(&refusal(
+            meerkat_core::AuthErrorKind::MissingSecret,
+        ))
+        .ok_or("a missing secret is a deterministic wall")?;
+        assert!(
+            reason.contains("provider=openai kind=missing_secret"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("Refusal: create_session: refused"),
+            "{reason}"
+        );
+        for transient in [
+            meerkat_core::AuthErrorKind::Expired,
+            meerkat_core::AuthErrorKind::RefreshFailed,
+            meerkat_core::AuthErrorKind::InteractiveLoginRequired,
+            meerkat_core::AuthErrorKind::Io,
+        ] {
+            assert!(
+                deterministic_build_rejection_reason(&refusal(transient)).is_none(),
+                "{transient:?} can change out of band and must not park"
+            );
+        }
+        let host_gate = BridgeError::Mob(
+            "spawn_member: callback/build_agent failed: callback error: gate refused".to_string(),
+        );
+        assert!(deterministic_build_rejection_reason(&host_gate).is_some());
+        let transport = BridgeError::Mob("callback transport closed".to_string());
+        assert!(deterministic_build_rejection_reason(&transport).is_none());
         Ok(())
     }
 

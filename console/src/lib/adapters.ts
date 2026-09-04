@@ -3,6 +3,7 @@ import {
   councilEntryFromFrame,
   isCouncilToolFrame,
 } from "./council-entries";
+import { describeFailure } from "./failure-summary";
 import type {
   ActivityFilterPreset,
   ConsoleActivityPulseItem,
@@ -2379,7 +2380,10 @@ function renderTerminalEntry(
   }
 
   if (frame.event === "interaction_failed" || frame.event === "run_failed") {
-    const text = `${frame.event}: ${summarizeFrameData(frame.data)}`.trim();
+    // meerkat's typed `error_report` first (message + reason_type), then the
+    // flat keys; the generic summarizer falls through to a JSON dump of the
+    // whole report for frames that predate the gateway's `error` mirror.
+    const text = `${frame.event}: ${describeFailure(frame.data, "") || summarizeFrameData(frame.data)}`.trim();
     if (!text || text === `${frame.event}:`) return null;
     return {
       kind: "message",

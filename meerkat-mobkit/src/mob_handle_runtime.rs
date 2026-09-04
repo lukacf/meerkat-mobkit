@@ -9083,6 +9083,14 @@ pub async fn resolved_tools_for_member(
 ///   `ToolExecutionCompleted` (typed `content` blocks are the sole owner),
 ///   while MobKit's wire contract — and the published SDKs, which parse
 ///   `result` — keep it. Derive it from the text blocks here.
+/// - meerkat 0.7 likewise removed the flat `error` string from `RunFailed`
+///   (the typed `error_report { class, reason, message }` is the sole
+///   owner). MobKit's consumers read `error` and `reason`, so every LLM
+///   failure rendered as "Failed: error" with the cause unread one level
+///   down. Derive `error` from the report's message and `reason` from its
+///   stable `reason_type` here, once; the report stays beside them.
+///   `InteractionFailed` mirrors its typed reason's `Display` into `error`
+///   the same way.
 pub fn console_agent_event_payload(event: &meerkat_core::AgentEvent) -> Value {
     use meerkat_core::AgentEvent;
     use meerkat_core::event::agent_event_type;
@@ -9113,6 +9121,32 @@ pub fn console_agent_event_payload(event: &meerkat_core::AgentEvent) -> Value {
             "result".to_string(),
             Value::String(meerkat_core::types::text_content(content)),
         );
+    }
+    if let AgentEvent::RunFailed { error_report, .. } = event {
+        if !record.contains_key("error") {
+            record.insert(
+                "error".to_string(),
+                Value::String(error_report.message.clone()),
+            );
+        }
+        // Read the discriminator from the report already serialized into the
+        // record rather than serializing the typed reason a second time.
+        let reason_type = record
+            .get("error_report")
+            .and_then(|report| report.get("reason"))
+            .and_then(|reason| reason.get("reason_type"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        if let Some(reason_type) = reason_type
+            && !record.contains_key("reason")
+        {
+            record.insert("reason".to_string(), Value::String(reason_type));
+        }
+    }
+    if let AgentEvent::InteractionFailed { reason, .. } = event
+        && !record.contains_key("error")
+    {
+        record.insert("error".to_string(), Value::String(reason.to_string()));
     }
     payload
 }
@@ -9284,6 +9318,80 @@ pub async fn send_message_on_mob_with_mode(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// meerkat >= 0.7 `RunFailed` carries only the typed `error_report`; the
+    /// projection derives the flat `error` and `reason` every MobKit consumer
+    /// (SDK `RunFailed.error`, the console failure summary, the event log)
+    /// reads, and keeps the report beside them.
+    #[test]
+    fn console_agent_event_payload_names_run_failed_from_its_error_report() {
+        use meerkat_core::event::{AgentErrorClass, AgentErrorReason, AgentErrorReport};
+
+        let event = meerkat_core::AgentEvent::RunFailed {
+            session_id: meerkat_core::types::SessionId::new(),
+            error_report: AgentErrorReport {
+                class: AgentErrorClass::Llm,
+                reason: Some(AgentErrorReason::LlmAuthError),
+                message: "LLM error: authentication failed (401)".to_string(),
+            },
+            terminal_cause_kind: None,
+        };
+        let payload = console_agent_event_payload(&event);
+        assert_eq!(payload["type"], "run_failed");
+        assert_eq!(payload["error"], "LLM error: authentication failed (401)");
+        assert_eq!(payload["reason"], "llm_auth_error");
+        assert_eq!(payload["error_report"]["class"], "llm");
+        assert_eq!(
+            payload["error_report"]["reason"]["reason_type"],
+            "llm_auth_error"
+        );
+        assert_eq!(
+            payload["error_report"]["message"],
+            "LLM error: authentication failed (401)"
+        );
+    }
+
+    /// A report without a typed reason still names the failure through
+    /// `error`; no `reason` key is fabricated for it.
+    #[test]
+    fn console_agent_event_payload_run_failed_without_typed_reason_carries_error_only() {
+        use meerkat_core::event::{AgentErrorClass, AgentErrorReport};
+
+        let event = meerkat_core::AgentEvent::RunFailed {
+            session_id: meerkat_core::types::SessionId::new(),
+            error_report: AgentErrorReport {
+                class: AgentErrorClass::Internal,
+                reason: None,
+                message: "internal: runner gave up".to_string(),
+            },
+            terminal_cause_kind: None,
+        };
+        let payload = console_agent_event_payload(&event);
+        assert_eq!(payload["error"], "internal: runner gave up");
+        assert!(
+            payload.get("reason").is_none(),
+            "no typed reason means no reason key: {payload}"
+        );
+    }
+
+    /// `InteractionFailed` carries a typed `reason`; its `Display` is the
+    /// human-readable text, mirrored into `error` so consumers read one key
+    /// for both failure shapes while the typed reason stays intact.
+    #[test]
+    fn console_agent_event_payload_interaction_failed_mirrors_reason_display_into_error() {
+        use meerkat_core::event::InteractionFailureReason;
+
+        let reason = InteractionFailureReason::Cancelled;
+        let expected = reason.to_string();
+        let event = meerkat_core::AgentEvent::InteractionFailed {
+            interaction_id: meerkat_core::InteractionId::new(),
+            reason,
+        };
+        let payload = console_agent_event_payload(&event);
+        assert_eq!(payload["type"], "interaction_failed");
+        assert_eq!(payload["error"], expected);
+        assert_eq!(payload["reason"]["kind"], "cancelled");
+    }
 
     struct EmptyDispatcher;
 

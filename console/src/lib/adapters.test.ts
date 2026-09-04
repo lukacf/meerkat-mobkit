@@ -20,6 +20,7 @@ import {
   systemNoticeClearsBusyState,
   WORKGRAPH_CARD_ITEM_ROW_LIMIT,
 } from "./adapters";
+import { describeFailure, summarizeFailureData } from "./failure-summary";
 import { mapFramesToTimelineEntries as mapFramesToTimelineEntriesShared } from "../../../packages/console-core/src/adapters";
 import {
   groupConversationTimelineEntries, describeMemoryTimelineEvent as describeMemoryTimelineEventCore } from "@console-core";
@@ -8466,4 +8467,46 @@ test("two sequential interactions stay contiguous when they do not overlap", () 
     idx("a-start") < idx("a-tool") && idx("a-tool") < idx("b-start") && idx("b-start") < idx("b-tool"),
     `non-overlapping interactions must stay grouped and in order: ${JSON.stringify(order)}`,
   );
+});
+
+test("failure summary reads meerkat's typed error_report before the flat keys", () => {
+  // A meerkat >= 0.7 `run_failed` payload as MobKit projects it into an
+  // `interaction_failed` frame: the typed report is the failure truth.
+  const typed = {
+    type: "run_failed",
+    session_id: "01a068a0-f911-7331-8187-d436145ac895",
+    error_report: {
+      class: "llm",
+      reason: { reason_type: "llm_auth_error" },
+      message: "LLM error: authentication failed (401)",
+    },
+  };
+  assert.deepEqual(summarizeFailureData(typed), {
+    message: "LLM error: authentication failed (401)",
+    reasonType: "llm_auth_error",
+  });
+  assert.equal(describeFailure(typed), "LLM error: authentication failed (401) (llm_auth_error)");
+
+  // Frames MobKit mints itself carry only the flat keys.
+  assert.equal(describeFailure({ reason: "superseded_by_later_run" }), "superseded_by_later_run");
+  assert.equal(describeFailure({ error: "member not found: mk--x" }), "member not found: mk--x");
+
+  // meerkat's own interaction_failed carries a typed reason object; a
+  // discriminator the message already spells out is not repeated.
+  assert.equal(
+    describeFailure({ error: "interaction cancelled", reason: { kind: "cancelled" } }),
+    "interaction cancelled",
+  );
+  assert.equal(
+    describeFailure({
+      error: "peer response undeliverable",
+      reason: { kind: "interaction_stream_abandoned" },
+    }),
+    "peer response undeliverable (interaction_stream_abandoned)",
+  );
+
+  // Nothing readable falls back to the caller's label, never to "[object Object]".
+  assert.equal(describeFailure({ session_id: "s" }), "error");
+  assert.equal(describeFailure({ session_id: "s" }, ""), "");
+  assert.equal(describeFailure(undefined), "error");
 });

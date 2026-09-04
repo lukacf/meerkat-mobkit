@@ -294,6 +294,142 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   that built before still builds. Observable to hosts that print the error:
   the `TomlParse` text changed. Unit tests cover each rule in both polarities.
 
+- **A provider failure names itself.** Meerkat has carried `RunFailed` as the
+  typed `error_report { class, reason, message }` with no flat `error` string
+  since 0.7.0, and nothing in MobKit read it: the Python and TypeScript SDKs
+  parsed only `error` (always empty), the console timeline rendered every LLM
+  failure as `Failed: error`, the signals rail said "Needs attention", and
+  the `HostLoopCrash` ERROR line carried only an event id, so a bad key, an
+  exhausted quota and a Gemini 400 were indistinguishable from each other and
+  from a hang. The single wire projection (`console_agent_event_payload`,
+  which already re-derived the removed `result` string for tool completions)
+  now derives `error` from `error_report.message` and `reason` from the stable
+  `reason_type` for `run_failed`, mirrors the typed reason's `Display` into
+  `error` for `interaction_failed`, and keeps the report beside them, so every
+  SSE stream, console frame and event-log row carries both. The SDKs gain the
+  report (`RunFailed.error_report` with `error_class`/`reason_type` accessors
+  in Python, `RunFailedEvent.errorReport` in TypeScript) and derive `error`
+  from it for payloads that predate the projection; the Python
+  `UnifiedAgentEvent` now carries the agent `payload` that `query_events` and
+  `subscribe_events` were dropping (the events doc already said it must not
+  be). The console reads `error_report` first everywhere it renders a
+  failure, and `HostLoopCrash` logs class, reason and message. A missing
+  provider secret is now a typed wall instead of a heal loop: the mob bridge
+  reads Meerkat's `SessionProviderAuthFailure` typed on every spawn door
+  (create, resume, reset successor) and surfaces it as
+  `BridgeError::ProviderAuthRejected`; the identity runtime parks the
+  identity with an operator-visible reason for credential kinds no unattended
+  retry can change (`missing_secret`, `unsupported_combination`,
+  `missing_required_metadata`, `workspace_mismatch`,
+  `host_owned_unavailable`), the same park the host-rejected-build gate uses,
+  while kinds that can change out of band (expired, refresh failed, login
+  required) stay on the repair lanes. The refusal is typed on the first
+  attempt too (`HostRejectedBuild` from the materialize that recorded the
+  park, not `Internal` prose), it is read through meerkat-mob's transparent
+  `SharedRetirementFailure` / `SharedLifecycleFailure` wrappers (every resume
+  failure a joined observer sees is wrapped that way, and so is the collision
+  retire before a resume retry), and it survives the admission seam as
+  `BridgeAdmissionError::ProviderAuthRejected` instead of being flattened
+  back into text. The resume-rejection classifier reads through the same
+  wrappers: a wrapped `SessionUnavailableForResume { ArchivedNotRevivable }`
+  or `MemberRestoreFailed` classified as `Other` before, so the typed
+  archived-not-revivable park never fired for it and the identity
+  heal-looped (the OB3 shape on a different door). Exact-pinned hosts
+  observe `error` and `reason` keys on `run_failed` payloads and
+  `interaction_failed` frames, a populated `RunFailed.error` in the SDKs, a
+  `HostLoopCrash` message that names the cause, and a keyless identity that
+  parks `Broken` with a reason instead of rebuilding forever.
+  `docs/concepts/events.mdx` documents the payload. Rust API change for
+  embedders that match `BridgeError` or
+  `BridgeAdmissionError` exhaustively (one new variant each).
+
+- **`mobkit/reset_all` now resets every registered identity instead of
+  retiring the whole roster.** The console handler chose reset-versus-retire
+  by membership in the baseline member-spec slot, which only the
+  non-identity-first `UnifiedRuntime::reconcile` populates. On every shipped
+  gateway that slot is empty, so each registered identity fell into the retire
+  arm: the call answered `reset: []` and `retired_delegates: [every identity]`,
+  the timeline carried one `identity_retired` frame per identity and no
+  `identity_reset`, and the operator's fleet was gone (reproduced 2026-09-03
+  against `rpc_gateway` with two identities; the gateway process itself
+  survived, so the reported exit had another cause). The reset set is now
+  every identity the identity runtime knows: each goes through
+  `reset_tracked` (generation advance, session-bridge requirement, stale-alias
+  preflight), and the baseline slot only decides the fate of members with no
+  registered identity. Raw delegates and live-only members stay on the retire
+  path. Exact-pinned hosts that call `reset_all` previously observed a
+  fleet-wide retire; they now observe a per-identity reset with
+  `identity_reset` lifecycle frames, and a registered identity on a runtime
+  without a session bridge is a typed `identity_reset_requires_session_bridge`
+  preflight failure (nothing touched) instead of a silent retire. The
+  per-identity `stale_member_cleanup_skipped_after_identity_reset` warning is
+  gone from the `reset_all` body (`warnings`, `reset_details[].cleanup_warning`)
+  and its `identity_reset` payload: the bridge's successor transition is
+  meerkat's respawn, which terminally retires the predecessor row, so the
+  warning asserted a cleanup gap that does not exist, once per identity per
+  call. `reset_details[]` now carries the successor `agent_runtime_id` and
+  `generation` instead. The reset set is also classified by lifecycle state
+  before anything is touched: a `Retiring` identity (the entry `mobkit/retire`
+  leaves until delete or roster reconcile) is leaving the fleet and is neither
+  resurrected nor reported, and a registered identity with no live roster row
+  (Dormant under lazy bootstrap, Broken after a failed materialize such as the
+  keyless park) is refused typed as `identity_not_resettable_in_state` with
+  its `state` named and a caller path in `error`, instead of the
+  `MemberNotFound` prose meerkat's respawn produced from inside
+  `reset_tracked`; the identities beside it are still reset.
+  Gateway-subprocess regression added, plus fail-closed regressions for the
+  no-bridge preflight, the Retiring skip and the typed refusal.
+
+- **A turn's terminal frame belongs to that turn.** Session-history backfill
+  re-emitted every committed assistant step as an `interaction_complete`
+  frame, including tool-only steps (a tool call with no text), whose
+  `result: ""` has no live twin: meerkat emits `text_complete` only for
+  non-empty text and the run's own terminal carries the final answer. Every
+  tool-only step therefore landed on the timeline as an empty completion with
+  `source.kind = session_history`, stamped with the SAME interaction id as the
+  live turn and a timestamp between the turn's `run_started` and its answer
+  (reproduced 2026-09-03 against `rpc_gateway` with claude-sonnet-4-6: one
+  empty completion per tool-calling turn). A kind-driven client closed the
+  turn before the answer arrived; the reported "later sends complete instantly
+  with an empty interaction_complete" is this frame. History never emits a
+  text-less `interaction_complete` now: a tool-only step projects as the live
+  edge's `tool_call_requested` frames (collapsing with a live twin on the
+  tool_use_id, rendering call and result as a pair on a history-only rebuild),
+  and a silent step projects nothing. Two attribution defects in the live
+  projection went with it: `run_started` matching read a `prompt` field that
+  meerkat's `RunStarted` never carried (it carries `input.content`), so a run
+  always bound to the queue front regardless of which send it started; and a
+  runtime-minted `interaction_complete`, `interaction_failed` or
+  `interaction_callback_pending` (peer, flow-step and schedule inputs mint
+  their own ids) was attributed to whichever console send was pending. Those
+  events now attribute only when `payload.interaction_id` names a reserved
+  console interaction; otherwise they project with `interaction_id: null`.
+  `interaction_complete` and `interaction_failed` then close the interaction,
+  while `interaction_callback_pending` leaves it open: meerkat documents it as
+  a pause at an external callback boundary, and the resumed run's frames and
+  its eventual terminal carry the same id. Exact-pinned hosts no longer
+  observe empty `session_history` completions; hosts that already excluded
+  that source kind see no change. Full-runtime two-send regression with a scripted
+  tool-then-text LLM, in both live and history-rebuild projection modes.
+
+- **An idempotent replay on the identity-first console door no longer runs a
+  second turn.** Resending an existing `idempotency_key` with identical
+  content returned the original acceptance (`status: delivered`, instantly)
+  AND dispatched a whole new LLM turn whose frames were stamped with the old
+  interaction id: `console_send_identity_first` spawned the dispatch
+  unconditionally because the reservation gave no fresh-versus-existing
+  signal (the member-addressed `send` path returned early on
+  `AppendDisposition::Existing` all along). Reproduced 2026-09-03: four
+  `run_started` for three sends.
+  `MobKitConsoleAggregator::reserve_identity_first_interaction` now returns
+  the typed `IdentityFirstReservation` (`Fresh` / `Existing`) and the door
+  dispatches only `Fresh`; a same-key different-content resend is still the
+  `-32009` idempotency conflict. The per-send live projection the door started
+  alongside the always-on event forwarder is gone: it encoded the runtime
+  incarnation id into a member alias that does not exist, so it never attached
+  and logged one `WARN ... mob member not found` per send. Rust API change for
+  embedders that call the reservation directly.
+
 ## [0.8.31] - 2026-09-04
 
 ### Changed

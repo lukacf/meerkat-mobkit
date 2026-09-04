@@ -1012,6 +1012,60 @@ class TestPersistedEvent:
         assert isinstance(r.event, UnifiedAgentEvent)
         assert r.event.agent_id == "agent-1"
         assert r.event.event_type == "run_completed"
+        assert r.event.payload == {"ok": True}
+
+    def test_from_dict_keeps_the_run_failed_agent_payload(self):
+        # docs/concepts/events.mdx: the agent payload is part of the wire
+        # contract and must not be dropped. Pre-fix `_parse_unified_event`
+        # built UnifiedAgentEvent(agent_id, event_type) only, so query_events
+        # consumers never saw meerkat's `error_report`.
+        r = PersistedEvent.from_dict(
+            {
+                "id": "ev-failed",
+                "seq": 4,
+                "timestamp_ms": 1003,
+                "member_id": "agent-1",
+                "event": {
+                    "kind": "agent",
+                    "agent_id": "agent-1",
+                    "event_type": "run_failed",
+                    "payload": {
+                        "type": "run_failed",
+                        "session_id": "s",
+                        "error_report": {
+                            "class": "llm",
+                            "reason": {"reason_type": "llm_auth_error"},
+                            "message": "LLM error: authentication failed (401)",
+                        },
+                        "error": "LLM error: authentication failed (401)",
+                        "reason": "llm_auth_error",
+                    },
+                },
+            }
+        )
+        assert isinstance(r.event, UnifiedAgentEvent)
+        assert r.event.event_type == "run_failed"
+        assert r.event.payload["error_report"]["reason"]["reason_type"] == "llm_auth_error"
+        assert r.event.payload["error"] == "LLM error: authentication failed (401)"
+
+    def test_from_dict_legacy_agent_shape_keeps_payload(self):
+        r = PersistedEvent.from_dict(
+            {
+                "id": "ev-legacy",
+                "seq": 5,
+                "timestamp_ms": 1004,
+                "member_id": "agent-1",
+                "event": {
+                    "Agent": {
+                        "agent_id": "agent-1",
+                        "event_type": "run_failed",
+                        "payload": {"error": "boom"},
+                    }
+                },
+            }
+        )
+        assert isinstance(r.event, UnifiedAgentEvent)
+        assert r.event.payload == {"error": "boom"}
 
     def test_from_dict_accepts_rust_internal_module_event(self):
         r = PersistedEvent.from_dict(
@@ -1039,6 +1093,13 @@ class TestUnifiedAgentEvent:
         e = UnifiedAgentEvent(agent_id="agent-1", event_type="run_completed")
         assert e.agent_id == "agent-1"
         assert e.event_type == "run_completed"
+        assert e.payload == {}
+
+    def test_direct_construction_with_payload(self):
+        e = UnifiedAgentEvent(
+            agent_id="agent-1", event_type="run_failed", payload={"error": "boom"}
+        )
+        assert e.payload == {"error": "boom"}
 
 
 class TestUnifiedModuleEvent:

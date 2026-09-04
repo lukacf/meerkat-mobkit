@@ -8,12 +8,10 @@ use axum::response::{IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
-use futures::StreamExt;
 use futures::future::join_all;
 use meerkat_contracts::WireRuntimeBinding;
 use meerkat_core::ContentInput;
 use meerkat_core::comms::TrustedPeerDescriptor;
-use meerkat_core::event::agent_event_type;
 use meerkat_mob::MobState;
 use meerkat_mob::ids::{AgentIdentity, AgentRuntimeId, FenceToken, MobId};
 use meerkat_mob::launch::MemberLaunchMode;
@@ -71,7 +69,6 @@ use crate::runtime::{
     resolve_authorized_console_auth_from_token,
 };
 use crate::runtime::{RuntimeMetadataTable, labels_to_json_value};
-use crate::types::{EventEnvelope, UnifiedEvent};
 use crate::unified_runtime::console_events::ConsoleEventStore;
 use crate::unified_runtime::mob_events::MobEventsStore;
 use crate::unified_runtime::{EventLogStore, EventQuery};
@@ -876,7 +873,6 @@ async fn console_send_handler(
         return match Box::pin(console_send_with_identity_first_fallback(
             aggregator,
             identity_runtime.clone(),
-            state.runtime.as_ref(),
             state.console_events.as_ref(),
             request,
         ))
@@ -907,7 +903,6 @@ async fn console_send_handler(
 async fn console_send_with_identity_first_fallback(
     aggregator: &MobKitConsoleAggregator,
     identity_runtime: Arc<crate::identity_first::IdentityRuntime>,
-    runtime: Option<&MobRuntime>,
     console_events: Option<&ConsoleEventStore>,
     request: ConsoleSendRequest,
 ) -> Result<crate::console_aggregator::ConsoleInteractionAccepted, ConsoleSendError> {
@@ -915,7 +910,6 @@ async fn console_send_with_identity_first_fallback(
     match Box::pin(console_send_identity_first(
         aggregator,
         identity_runtime,
-        runtime,
         console_events,
         request,
     ))
@@ -931,7 +925,6 @@ async fn console_send_with_identity_first_fallback(
 async fn console_send_identity_first(
     aggregator: &MobKitConsoleAggregator,
     identity_runtime: Arc<crate::identity_first::IdentityRuntime>,
-    runtime: Option<&MobRuntime>,
     console_events: Option<&ConsoleEventStore>,
     mut request: ConsoleSendRequest,
 ) -> Result<crate::console_aggregator::ConsoleInteractionAccepted, ConsoleSendError> {
@@ -992,10 +985,19 @@ async fn console_send_identity_first(
         .agent_runtime_id
         .as_ref()
         .map(|id| id.as_str().to_string());
-    let accepted = Box::pin(
+    let accepted = match Box::pin(
         aggregator.reserve_identity_first_interaction(request.clone(), session_id.as_deref()),
     )
-    .await?;
+    .await?
+    {
+        // An idempotent replay: the original acceptance is the answer, and the
+        // turn it names already ran (or is running). Dispatching again would
+        // run a second turn whose frames land under this interaction id.
+        crate::console_aggregator::IdentityFirstReservation::Existing(accepted) => {
+            return Ok(accepted);
+        }
+        crate::console_aggregator::IdentityFirstReservation::Fresh(accepted) => accepted,
+    };
 
     if let Some(events) = console_events {
         events
@@ -1008,20 +1010,6 @@ async fn console_send_identity_first(
             )
             .await
             .map_err(ConsoleSendError::State)?;
-    }
-
-    if let (Some(runtime), Some(events), Some(runtime_member_id)) = (
-        runtime,
-        console_events.cloned(),
-        runtime_member_id.as_deref(),
-    ) {
-        start_identity_first_console_live_projection(
-            runtime,
-            events,
-            identity.as_str(),
-            runtime_member_id,
-        )
-        .await;
     }
 
     if handling_mode == meerkat_core::types::HandlingMode::Steer {
@@ -1160,60 +1148,6 @@ async fn console_send_identity_first(
         }
     });
     Ok(accepted)
-}
-
-async fn start_identity_first_console_live_projection(
-    runtime: &MobRuntime,
-    console_events: ConsoleEventStore,
-    identity: &str,
-    runtime_member_id: &str,
-) {
-    let identity = identity.to_string();
-    let runtime_member_id = runtime_member_id.to_string();
-    let mut stream = match runtime
-        .handle()
-        .subscribe_agent_events(&crate::member_comms_id::mob_member_id(
-            runtime_member_id.as_str(),
-        ))
-        .await
-    {
-        Ok(stream) => stream,
-        Err(err) => {
-            tracing::warn!(
-                identity = %identity,
-                runtime_member_id = %runtime_member_id,
-                error = %err,
-                "console identity-first live projection could not subscribe to agent events"
-            );
-            return;
-        }
-    };
-
-    tokio::spawn(async move {
-        while let Some(envelope) = stream.next().await {
-            let event_type = agent_event_type(&envelope.payload).to_string();
-            let unified = EventEnvelope {
-                event_id: format!("evt-agent-{}", envelope.event_id),
-                source: "agent".to_string(),
-                timestamp_ms: envelope.timestamp_ms,
-                event: UnifiedEvent::Agent {
-                    agent_id: runtime_member_id.clone(),
-                    event_type: event_type.clone(),
-                    // Console wire shape, not the raw 0.7 event: keeps the
-                    // derived `result` text (and `tool_call_id` mirror) that
-                    // the embedded console's adapters and image-frame
-                    // projection consume.
-                    payload: Some(crate::mob_handle_runtime::console_agent_event_payload(
-                        &envelope.payload,
-                    )),
-                },
-            };
-            console_events.project_unified_event(&unified).await;
-            if matches!(event_type.as_str(), "run_completed" | "run_failed") {
-                break;
-            }
-        }
-    });
 }
 
 fn parse_identity_first_handling_mode(
@@ -4782,36 +4716,6 @@ fn console_runtime_alias_generation(alias: &str, durable_identity: &str) -> Opti
     generation.parse().ok()
 }
 
-async fn stale_console_member_ids_for_identity(
-    handle: &MobHandle,
-    visibility_policy: &dyn ConsoleVisibilityPolicy,
-    durable_identity: &str,
-    current_runtime_member_id: Option<&str>,
-    include_current: bool,
-) -> Vec<AgentIdentity> {
-    let Some(current_generation) = current_runtime_member_id
-        .and_then(|alias| console_runtime_alias_generation(alias, durable_identity))
-    else {
-        return Vec::new();
-    };
-    lookup_member_alias_candidates_with_session(handle, durable_identity)
-        .await
-        .into_iter()
-        .filter(|alias| {
-            runtime_alias_visible_to_console(handle, visibility_policy, alias)
-                && console_runtime_alias_generation(
-                    alias.runtime_member_id.as_str(),
-                    durable_identity,
-                )
-                .is_some_and(|generation| {
-                    generation < current_generation
-                        || (include_current && generation == current_generation)
-                })
-        })
-        .map(|alias| crate::member_comms_id::mob_member_id(alias.runtime_member_id.as_str()))
-        .collect()
-}
-
 /// Lifecycle-authoritative stale aliases, independent of console projection.
 ///
 /// This is used only while the durable identity lifecycle lock is held. A
@@ -5940,7 +5844,6 @@ async fn handle_console_runtime_rpc_with_visibility(
                 return match Box::pin(console_send_with_identity_first_fallback(
                     aggregator,
                     identity_runtime.clone(),
-                    Some(runtime),
                     console_events.as_ref(),
                     send_request,
                 ))
@@ -9099,6 +9002,44 @@ fn apply_console_visibility_policy(
         .retain(|module_id| !hidden.contains(module_id));
 }
 
+/// How `reset_all` routes one REGISTERED identity, decided from the identity
+/// runtime's lifecycle state and the live roster BEFORE anything is touched.
+/// The reset path is the bridge's successor transition (meerkat's respawn),
+/// which replaces a live roster row; handing it an identity without one made
+/// meerkat answer `MemberNotFound` from inside `reset_tracked`, as prose, and
+/// the whole call failed for a fleet that had otherwise been reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegisteredResetDisposition {
+    /// Live roster rows project under this identity: reset through
+    /// `reset_tracked` (the stale-alias checks decide whether those rows are
+    /// really this identity's).
+    Reset,
+    /// `Retiring`: the entry `mobkit/retire` leaves behind until delete or a
+    /// roster reconcile. The identity is leaving the fleet, so it is neither
+    /// resurrected nor reported.
+    LeavingFleet,
+    /// Registered but with no live roster row at all (Dormant under lazy
+    /// bootstrap, Broken after a failed materialize such as the keyless park,
+    /// Suspended mid-transition): the successor transition has nothing to
+    /// replace, so the reset is refused typed with the state named.
+    NotResettable {
+        state: crate::identity_first::IdentityLifecycleState,
+    },
+}
+
+fn registered_reset_disposition(
+    status: &crate::identity_first::IdentityStatus,
+    live_runtime_member_ids: Option<&BTreeSet<String>>,
+) -> RegisteredResetDisposition {
+    match (status.state, live_runtime_member_ids) {
+        (crate::identity_first::IdentityLifecycleState::Retiring, _) => {
+            RegisteredResetDisposition::LeavingFleet
+        }
+        (_, Some(_)) => RegisteredResetDisposition::Reset,
+        (state, None) => RegisteredResetDisposition::NotResettable { state },
+    }
+}
+
 async fn reset_all_live_console_agents(
     runtime: &MobRuntime,
     console_events: Option<&ConsoleEventStore>,
@@ -9255,7 +9196,11 @@ async fn reset_all_live_console_agents(
     let mut retired_delegate_details = Vec::new();
     let mut reset_details = Vec::new();
     let mut failures = Vec::new();
-    let mut warnings = Vec::new();
+    // Kept in the body for shape stability. Nothing on the reset path warns
+    // today: a registered identity resets through the bridge's successor
+    // transition (meerkat's respawn), which terminally retires the
+    // predecessor row, so there is no stale live member left to warn about.
+    let warnings: Vec<Value> = Vec::new();
 
     for identity in &main_identities {
         let parsed_identity = crate::identity_first::AgentIdentity::parse(identity).ok();
@@ -9267,6 +9212,17 @@ async fn reset_all_live_console_agents(
             None
         };
         let baseline_identity_runtime_registered = registered_status.is_some();
+        // Lifecycle classification (item R7): a Retiring identity is outside
+        // the reset set. An identity with no live roster row is reported
+        // typed, per identity, in the execution pass so it never blocks the
+        // rest of the fleet; only the call-level session-bridge requirement
+        // below applies to it here.
+        let reset_disposition = registered_status.as_ref().map(|status| {
+            registered_reset_disposition(status, raw_runtime_member_ids_by_identity.get(identity))
+        });
+        if reset_disposition == Some(RegisteredResetDisposition::LeavingFleet) {
+            continue;
+        }
         if baseline_identities.contains(identity)
             && !current_main_identities.contains(identity)
             && !baseline_identity_runtime_registered
@@ -9356,9 +9312,12 @@ async fn reset_all_live_console_agents(
                     continue;
                 }
             }
-            if baseline_identities.contains(identity)
-                && !identity_runtime
-                    .is_some_and(|identity_runtime| identity_runtime.has_session_bridge())
+            // Every registered identity is on the reset path (see the
+            // execution pass below), so the session-bridge requirement is
+            // unconditional here: without a bridge nothing can be reset, and
+            // the call must fail closed before any member is touched.
+            if !identity_runtime
+                .is_some_and(|identity_runtime| identity_runtime.has_session_bridge())
             {
                 failures.push(json!({
                     "identity": identity,
@@ -9490,27 +9449,38 @@ async fn reset_all_live_console_agents(
             })),
         }
     }
+    // Routing rule for the execution pass (item R7). Every identity the
+    // identity runtime knows is RESET: `identity_runtime.statuses()` is the
+    // durable roster, and `reset_tracked` already owns generation advance,
+    // the session-bridge requirement and the stale-alias checks. The
+    // baseline slot (`runtime.baseline_member_specs()`) only decides the fate
+    // of members WITHOUT a registered identity: it is populated solely by the
+    // non-identity-first `UnifiedRuntime::reconcile`, so on an identity-first
+    // gateway it is empty by construction. Keying reset-versus-retire on it
+    // for registered identities made `reset_all` retire every identity on
+    // every shipped gateway. Members with no registered identity and no
+    // baseline spec (raw delegates, live-only workers) stay on the retire
+    // path.
     for identity in main_identities {
-        let baseline_identity_runtime_registered = if let Some(identity_runtime) = identity_runtime
-            && let Ok(parsed_identity) = crate::identity_first::AgentIdentity::parse(&identity)
-        {
-            identity_runtime.status(&parsed_identity).await.is_ok()
-        } else {
-            false
+        let parsed_identity = crate::identity_first::AgentIdentity::parse(&identity).ok();
+        let registered_status = match (identity_runtime, parsed_identity.as_ref()) {
+            (Some(identity_runtime), Some(parsed_identity)) => {
+                identity_runtime.status(parsed_identity).await.ok()
+            }
+            _ => None,
         };
+        let reset_disposition = registered_status.as_ref().map(|status| {
+            registered_reset_disposition(status, raw_runtime_member_ids_by_identity.get(&identity))
+        });
+        if reset_disposition == Some(RegisteredResetDisposition::LeavingFleet) {
+            continue;
+        }
         if baseline_identities.contains(&identity)
             && !current_main_identities.contains(&identity)
-            && !baseline_identity_runtime_registered
+            && registered_status.is_none()
         {
             continue;
         }
-        let registered_status = if let Some(identity_runtime) = identity_runtime
-            && let Ok(parsed_identity) = crate::identity_first::AgentIdentity::parse(&identity)
-        {
-            identity_runtime.status(&parsed_identity).await.ok()
-        } else {
-            None
-        };
         let registered_runtime_id = registered_status
             .as_ref()
             .and_then(|status| status.agent_runtime_id.as_ref())
@@ -9542,127 +9512,140 @@ async fn reset_all_live_console_agents(
             }));
             continue;
         }
-        if baseline_identities.contains(&identity) {
-            if let Some(identity_runtime) = identity_runtime
-                && let Ok(parsed_identity) = crate::identity_first::AgentIdentity::parse(&identity)
-                && let Ok(status) = identity_runtime.status(&parsed_identity).await
-            {
-                let registered_runtime_id = status
-                    .agent_runtime_id
-                    .as_ref()
-                    .map(crate::identity_first::AgentRuntimeId::as_str);
-                if let Some(registered_runtime_id) = registered_runtime_id
-                    && let Some((live_identity, _live_session_id)) =
-                        raw_live_alias_by_runtime_member_id.get(registered_runtime_id)
-                    && live_identity != &identity
-                {
-                    failures.push(json!({
-                        "identity": identity,
-                        "error": format!(
-                            "stale live identity alias: identity runtime binding points at {registered_runtime_id}, but live console alias projects identity {live_identity}"
-                        ),
-                        "kind": "stale_live_identity_alias",
-                    }));
-                    continue;
-                }
-                if let Some(live_runtime_ids) = raw_runtime_member_ids_by_identity.get(&identity) {
-                    // The registered binding must exist AND this identity must have a
-                    // live roster member. Roster ids are the encoded durable identity
-                    // now, so `contains` against an AgentRuntimeId never matched.
-                    if !(registered_runtime_id.is_some()
-                        && live_runtime_ids.iter().any(|live| {
-                            crate::member_comms_id::live_member_is_identity(live, identity.as_str())
-                        }))
-                    {
-                        failures.push(json!({
-                            "identity": identity,
-                            "error": format!(
-                                "stale live identity alias: identity runtime binding points at {}, but live console alias resolves to [{}]",
-                                registered_runtime_id.unwrap_or("<none>"),
-                                live_runtime_ids.iter().cloned().collect::<Vec<_>>().join(", ")
-                            ),
-                            "kind": "stale_live_identity_alias",
-                        }));
-                        continue;
-                    }
-                    if let Some(registered_runtime_id) = registered_runtime_id
-                        && let Some(registered_session_id) =
-                            status.session_id.as_ref().map(ToString::to_string)
-                        && let Some(Some(live_session_id)) =
-                            raw_session_id_by_identity_runtime_member
-                                .get(&(identity.clone(), registered_runtime_id.to_string()))
-                        && live_session_id != &registered_session_id
-                    {
-                        failures.push(json!({
-                            "identity": identity,
-                            "error": format!(
-                                "stale live identity alias: identity runtime binding points at {registered_runtime_id} session {registered_session_id}, but live console alias resolves to session {live_session_id}"
-                            ),
-                            "kind": "stale_live_identity_alias",
-                        }));
-                        continue;
-                    }
-                }
-                if !identity_runtime.has_session_bridge() {
-                    failures.push(json!({
-                        "identity": identity,
-                        "error": "reset requires an identity runtime with a session bridge",
-                        "kind": "identity_reset_requires_session_bridge",
-                    }));
-                    continue;
-                }
-                match identity_runtime.reset_tracked(&parsed_identity).await {
-                    Ok(record) => {
-                        let cleanup_warning = json!({
-                            "identity": identity,
-                            "kind": "stale_member_cleanup_skipped_after_identity_reset",
-                            "message": "reset published the new generation without retiring stale live mob members; identity control calls reject stale runtime ids",
-                        });
-                        warnings.push(cleanup_warning);
-                        reset_details.push(json!({
-                            "identity": identity,
-                            "cleanup_warning": warnings.last().cloned(),
-                        }));
-                        reset_main.push(identity);
-                        if let Some(store) = console_events {
-                            store
-                                .record_lifecycle(
-                                    parsed_identity.as_str(),
-                                    "identity_reset",
-                                    json!({
-                                        "scope": "reset_all",
-                                        "generation": record.generation.get(),
-                                        "checkpoint_version": record.checkpoint_version.get(),
-                                        "cleanup_warning": warnings.last().cloned(),
-                                    }),
-                                )
-                                .await;
-                        }
-                    }
-                    Err(err) => failures.push(json!({
-                        "identity": identity,
-                        "error": err.to_string(),
-                    })),
-                }
-                continue;
-            }
-            let runtime_member_id = runtime_member_id_by_identity
-                .get(&identity)
-                .map(String::as_str)
-                .unwrap_or(identity.as_str());
-            if let Some(bound_identity) = identity_by_runtime_member_id
-                .get(crate::member_comms_id::runtime_alias_str(runtime_member_id).as_ref())
-                && bound_identity != &identity
+
+        if let (Some(identity_runtime), Some(parsed_identity), Some(status)) = (
+            identity_runtime,
+            parsed_identity.as_ref(),
+            registered_status.as_ref(),
+        ) {
+            if let Some(registered_runtime_id) = registered_runtime_id
+                && let Some((live_identity, _live_session_id)) =
+                    raw_live_alias_by_runtime_member_id.get(registered_runtime_id)
+                && live_identity != &identity
             {
                 failures.push(json!({
                     "identity": identity,
                     "error": format!(
-                        "stale live identity alias: live console alias resolves to {runtime_member_id}, but identity runtime binding belongs to {bound_identity}"
+                        "stale live identity alias: identity runtime binding points at {registered_runtime_id}, but live console alias projects identity {live_identity}"
                     ),
                     "kind": "stale_live_identity_alias",
                 }));
                 continue;
             }
+            if let Some(live_runtime_ids) = raw_runtime_member_ids_by_identity.get(&identity) {
+                // The registered binding must exist AND this identity must have a
+                // live roster member. Roster ids are the encoded durable identity
+                // now, so `contains` against an AgentRuntimeId never matched.
+                if !(registered_runtime_id.is_some()
+                    && live_runtime_ids.iter().any(|live| {
+                        crate::member_comms_id::live_member_is_identity(live, identity.as_str())
+                    }))
+                {
+                    failures.push(json!({
+                        "identity": identity,
+                        "error": format!(
+                            "stale live identity alias: identity runtime binding points at {}, but live console alias resolves to [{}]",
+                            registered_runtime_id.unwrap_or("<none>"),
+                            live_runtime_ids.iter().cloned().collect::<Vec<_>>().join(", ")
+                        ),
+                        "kind": "stale_live_identity_alias",
+                    }));
+                    continue;
+                }
+                if let Some(registered_runtime_id) = registered_runtime_id
+                    && let Some(registered_session_id) =
+                        status.session_id.as_ref().map(ToString::to_string)
+                    && let Some(Some(live_session_id)) = raw_session_id_by_identity_runtime_member
+                        .get(&(identity.clone(), registered_runtime_id.to_string()))
+                    && live_session_id != &registered_session_id
+                {
+                    failures.push(json!({
+                        "identity": identity,
+                        "error": format!(
+                            "stale live identity alias: identity runtime binding points at {registered_runtime_id} session {registered_session_id}, but live console alias resolves to session {live_session_id}"
+                        ),
+                        "kind": "stale_live_identity_alias",
+                    }));
+                    continue;
+                }
+            }
+            if let Some(RegisteredResetDisposition::NotResettable { state }) = reset_disposition {
+                failures.push(json!({
+                    "identity": identity,
+                    "error": format!(
+                        "identity is {state} with no live roster row, so reset_all cannot reset \
+                         it: a reset is the bridge's successor transition (meerkat respawn), \
+                         which replaces a live member. Materialize it first (a console send \
+                         materializes a dormant identity) or repair the cause its status names \
+                         (a broken one), then reset it; `mobkit/delete_identity` followed by \
+                         re-registration is the fresh start",
+                        state = state.wire_str()
+                    ),
+                    "kind": "identity_not_resettable_in_state",
+                    "state": state.wire_str(),
+                }));
+                continue;
+            }
+            if !identity_runtime.has_session_bridge() {
+                failures.push(json!({
+                    "identity": identity,
+                    "error": "reset requires an identity runtime with a session bridge",
+                    "kind": "identity_reset_requires_session_bridge",
+                }));
+                continue;
+            }
+            match identity_runtime.reset_tracked(parsed_identity).await {
+                Ok(record) => {
+                    reset_details.push(json!({
+                        "identity": identity,
+                        "agent_runtime_id": record.agent_runtime_id.as_str(),
+                        "generation": record.generation.get(),
+                    }));
+                    reset_main.push(identity);
+                    if let Some(store) = console_events {
+                        store
+                            .record_lifecycle(
+                                parsed_identity.as_str(),
+                                "identity_reset",
+                                json!({
+                                    "scope": "reset_all",
+                                    "generation": record.generation.get(),
+                                    "checkpoint_version": record.checkpoint_version.get(),
+                                }),
+                            )
+                            .await;
+                    }
+                }
+                Err(err) => failures.push(json!({
+                    "identity": identity,
+                    "error": err.to_string(),
+                })),
+            }
+            continue;
+        }
+
+        // From here on the identity has no registered binding: it is a live
+        // mob member the console projects directly.
+        let runtime_member_id = runtime_member_id_by_identity
+            .get(&identity)
+            .map(String::as_str)
+            .unwrap_or(identity.as_str());
+        if let Some(bound_identity) = identity_by_runtime_member_id
+            .get(crate::member_comms_id::runtime_alias_str(runtime_member_id).as_ref())
+            && bound_identity != &identity
+        {
+            failures.push(json!({
+                "identity": identity,
+                "error": format!(
+                    "stale live identity alias: live console alias resolves to {runtime_member_id}, but identity runtime binding belongs to {bound_identity}"
+                ),
+                "kind": "stale_live_identity_alias",
+            }));
+            continue;
+        }
+        if baseline_identities.contains(&identity) {
+            // A baseline member on a non-identity-first runtime: reset means a
+            // fresh session under the same configuration.
             match Box::pin(respawn_console_member(
                 &handle,
                 &crate::member_comms_id::mob_member_id(runtime_member_id),
@@ -9695,172 +9678,8 @@ async fn reset_all_live_console_agents(
                 })),
             }
         } else {
-            if let Some(identity_runtime) = identity_runtime
-                && let Ok(parsed_identity) = crate::identity_first::AgentIdentity::parse(&identity)
-                && let Ok(registered_status) = identity_runtime.status(&parsed_identity).await
-            {
-                let registered_runtime_id = registered_status
-                    .agent_runtime_id
-                    .as_ref()
-                    .map(crate::identity_first::AgentRuntimeId::as_str);
-                // Visibility of the identity's ROSTER ROW, not of its incarnation.
-                //
-                // This used to ask whether the registered AgentRuntimeId was among
-                // the visible roster member ids. Since the stable-identity lowering
-                // the roster row is the encoded durable identity and the runtime id
-                // names an incarnation, so that question can never be true - which
-                // made every identity carrying a duplicate label read as ambiguous
-                // even with its own row visible and healthy. The binding must still
-                // EXIST, which registered_runtime_id covers.
-                let registered_visible = registered_runtime_id.is_some()
-                    && visible_runtime_member_ids.iter().any(|member_id| {
-                        crate::member_comms_id::live_member_is_identity(
-                            member_id,
-                            identity.as_str(),
-                        )
-                    });
-                if duplicate_live_identities.contains(&identity) && !registered_visible {
-                    failures.push(json!({
-                        "identity": identity,
-                        "error": "ambiguous live identity alias [via reset-all execution-retire]",
-                    }));
-                    continue;
-                }
-                if let Some(registered_runtime_id) = registered_runtime_id
-                    && let Some((live_identity, _live_session_id)) =
-                        raw_live_alias_by_runtime_member_id.get(registered_runtime_id)
-                    && live_identity != &identity
-                {
-                    failures.push(json!({
-                        "identity": identity,
-                        "error": format!(
-                            "stale live identity alias: identity runtime binding points at {registered_runtime_id}, but live console alias projects identity {live_identity}"
-                        ),
-                        "kind": "stale_live_identity_alias",
-                    }));
-                    continue;
-                }
-                if let Some(live_runtime_ids) = raw_runtime_member_ids_by_identity.get(&identity) {
-                    // The registered binding must exist AND this identity must have a
-                    // live roster member. Roster ids are the encoded durable identity
-                    // now, so `contains` against an AgentRuntimeId never matched.
-                    if !(registered_runtime_id.is_some()
-                        && live_runtime_ids.iter().any(|live| {
-                            crate::member_comms_id::live_member_is_identity(live, identity.as_str())
-                        }))
-                    {
-                        failures.push(json!({
-                            "identity": identity,
-                            "error": format!(
-                                "stale live identity alias: identity runtime binding points at {}, but live console alias resolves to [{}]",
-                                registered_runtime_id.unwrap_or("<none>"),
-                                live_runtime_ids.iter().cloned().collect::<Vec<_>>().join(", ")
-                            ),
-                            "kind": "stale_live_identity_alias",
-                        }));
-                        continue;
-                    }
-                    if let Some(registered_runtime_id) = registered_runtime_id
-                        && let Some(registered_session_id) = registered_status
-                            .session_id
-                            .as_ref()
-                            .map(ToString::to_string)
-                        && let Some(Some(live_session_id)) =
-                            raw_session_id_by_identity_runtime_member
-                                .get(&(identity.clone(), registered_runtime_id.to_string()))
-                        && live_session_id != &registered_session_id
-                    {
-                        failures.push(json!({
-                            "identity": identity,
-                            "error": format!(
-                                "stale live identity alias: identity runtime binding points at {registered_runtime_id} session {registered_session_id}, but live console alias resolves to session {live_session_id}"
-                            ),
-                            "kind": "stale_live_identity_alias",
-                        }));
-                        continue;
-                    }
-                }
-                let stale_member_ids = stale_console_member_ids_for_identity(
-                    &handle,
-                    visibility_policy,
-                    parsed_identity.as_str(),
-                    registered_status
-                        .agent_runtime_id
-                        .as_ref()
-                        .map(crate::identity_first::AgentRuntimeId::as_str),
-                    !identity_runtime.has_session_bridge(),
-                )
-                .await;
-                match identity_runtime.retire_tracked(&parsed_identity).await {
-                    Ok(token) => match retire_console_member_ids(&handle, stale_member_ids).await {
-                        Ok(()) => {
-                            retired_delegate_details.push(json!({ "identity": identity }));
-                            retired_delegates.push(json!({ "identity": identity }));
-                            if let Some(store) = console_events {
-                                store
-                                    .record_lifecycle(
-                                        parsed_identity.as_str(),
-                                        "identity_retired",
-                                        json!({
-                                            "scope": "reset_all",
-                                            "dynamic": true,
-                                            "fencing_token": token.get(),
-                                        }),
-                                    )
-                                    .await;
-                            }
-                        }
-                        Err(err) => {
-                            warnings.push(json!({
-                                "identity": identity,
-                                "kind": "stale_member_cleanup_failed_after_identity_retire",
-                                "message": err,
-                            }));
-                            retired_delegate_details.push(json!({
-                                "identity": identity,
-                                "cleanup_warning": warnings.last().cloned(),
-                            }));
-                            retired_delegates.push(json!({ "identity": identity }));
-                            if let Some(store) = console_events {
-                                store
-                                    .record_lifecycle(
-                                        parsed_identity.as_str(),
-                                        "identity_retired",
-                                        json!({
-                                            "scope": "reset_all",
-                                            "dynamic": true,
-                                            "fencing_token": token.get(),
-                                            "cleanup_warning": warnings.last().cloned(),
-                                        }),
-                                    )
-                                    .await;
-                            }
-                        }
-                    },
-                    Err(err) => failures.push(json!({
-                        "identity": identity,
-                        "error": err.to_string(),
-                    })),
-                }
-                continue;
-            }
-            let runtime_member_id = runtime_member_id_by_identity
-                .get(&identity)
-                .map(String::as_str)
-                .unwrap_or(identity.as_str());
-            if let Some(bound_identity) = identity_by_runtime_member_id
-                .get(crate::member_comms_id::runtime_alias_str(runtime_member_id).as_ref())
-                && bound_identity != &identity
-            {
-                failures.push(json!({
-                    "identity": identity,
-                    "error": format!(
-                        "stale live identity alias: live console alias resolves to {runtime_member_id}, but identity runtime binding belongs to {bound_identity}"
-                    ),
-                    "kind": "stale_live_identity_alias",
-                }));
-                continue;
-            }
+            // A live-only member nobody declared: neither registered nor in the
+            // baseline. It has no durable owner to reset to, so it is retired.
             match retire_console_member(
                 &handle,
                 &crate::member_comms_id::mob_member_id(runtime_member_id),
@@ -10391,7 +10210,7 @@ mod tests {
         ContinuityGeneration, ContinuityRecord, DurabilityPolicy, DurableAgentSpec, FencingToken,
         IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig, LeaseAcquireResult,
         LeaseGrant, LocalContinuityStore, LocalLeaseProvider, ManagedPeerEdge,
-        ResumeSessionOutcome, SessionBridge, SessionSnapshot,
+        ResetSuccessorBinding, ResumeSessionOutcome, SessionBridge, SessionSnapshot,
     };
     use crate::memory::SqliteAgentMemoryStore;
     use crate::mob_handle_runtime::{MobRuntime, model_capabilities_for_role};
@@ -10549,6 +10368,74 @@ mod tests {
                 .map_err(|_| BridgeError::Mob("handling modes mutex poisoned".to_string()))?
                 .push(delivery.handling_mode);
             Ok(self.session_id.clone())
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Err(BridgeError::Mob("checkpoint not used in test".to_string()))
+        }
+
+        async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            Ok(())
+        }
+    }
+
+    /// Reset double: mints the successor binding a real bridge commits through
+    /// respawn, without touching the mob plane. It lets the destructive reset
+    /// path (`reset_tracked`) run in-process, which is what `reset_all` takes
+    /// for every registered identity.
+    struct SuccessorMintingIdentityBridge;
+
+    #[async_trait::async_trait]
+    impl SessionBridge for SuccessorMintingIdentityBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            Ok(session_id.clone())
+        }
+
+        async fn reset_member_to_successor(
+            &self,
+            identity: &AgentIdentity,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+        ) -> Result<ResetSuccessorBinding, BridgeError> {
+            let agent_runtime_id = AgentRuntimeId::parse(&format!("rt:{}:1", identity.as_str()))
+                .map_err(|err| BridgeError::Mob(format!("mint successor runtime id: {err}")))?;
+            Ok(ResetSuccessorBinding {
+                agent_runtime_id,
+                session_id: meerkat_core::types::SessionId::new(),
+            })
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &meerkat_core::types::SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            Ok(ResumeSessionOutcome::Resumed {
+                session_id: session_id.clone(),
+            })
+        }
+
+        async fn deliver_admitted(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _delivery: crate::identity_first::BridgeDelivery,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            Err(BridgeError::Mob("deliver not used in test".to_string()))
         }
 
         async fn checkpoint_session(
@@ -11567,7 +11454,9 @@ comms = true
             runtime_instance_id: "test-runtime".to_string(),
             has_runtime_store: true,
             durability_policy: DurabilityPolicy::SyncWriteThrough,
-            bridge: None,
+            // reset_all RESETS every registered identity (item R7), and reset
+            // needs a session bridge; without one the call fails closed.
+            bridge: Some(Arc::new(SuccessorMintingIdentityBridge)),
             default_timeout: None,
         }));
         let identity = AgentIdentity::parse("review:singleton")?;
@@ -11664,6 +11553,168 @@ comms = true
                 .as_array()
                 .is_some_and(Vec::is_empty),
             "reset_all should not report duplicate-label failure for durable registered binding: {reset_all_response:#?}"
+        );
+        // Item R7: a registered identity is RESET by reset_all, never retired.
+        // Before the fix this test passed on the retire path, because nothing
+        // above looked at which arm ran.
+        assert_eq!(
+            reset_all_response["result"]["reset"],
+            json!(["review:singleton"]),
+            "registered identity must be in the reset set: {reset_all_response:#?}"
+        );
+        assert_eq!(
+            reset_all_response["result"]["retired_delegates"],
+            json!([]),
+            "registered identity must not be retired by reset_all: {reset_all_response:#?}"
+        );
+        let status = identity_runtime.status(&identity).await?;
+        assert_eq!(
+            status.state,
+            IdentityLifecycleState::Active,
+            "reset must leave the identity registered and active"
+        );
+        assert_eq!(
+            status.generation.map(ContinuityGeneration::get),
+            Some(1),
+            "reset must advance the continuity generation from 0 to 1"
+        );
+
+        let _ = runtime.handle().stop().await;
+        Ok(())
+    }
+
+    /// Item R7 follow-up. Every registered identity is on the reset path, so
+    /// a registered identity on an identity runtime WITHOUT a session bridge
+    /// is a typed preflight failure and nothing is touched: no reset, no
+    /// retire, no lifecycle frame, generation unchanged. Before the routing
+    /// fix the guard was `baseline_identities.contains(identity) &&
+    /// !has_session_bridge`, which never fired on an identity-first gateway
+    /// (empty baseline slot), and the identity was silently retired instead.
+    #[tokio::test]
+    async fn reset_all_without_a_session_bridge_fails_closed_for_registered_identities()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-reset-all-no-session-bridge").await?;
+        spawn_identity_control_test_member(&runtime, "review:singleton", "review:singleton")
+            .await?;
+
+        let store = Arc::new(LocalContinuityStore::in_memory()?);
+        let lease_provider = Arc::new(LocalLeaseProvider::new());
+        let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: store.clone(),
+            lease_provider: lease_provider.clone(),
+            runtime_instance_id: "test-runtime".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let identity = AgentIdentity::parse("review:singleton")?;
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:review:singleton:0")?,
+            session_id: meerkat_core::types::SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let grants = lease_provider
+            .acquire_leases(std::slice::from_ref(&identity), "test-runtime")
+            .await?;
+        let grant = match grants.get(&identity).cloned() {
+            Some(LeaseAcquireResult::Acquired(grant)) => grant,
+            other => return Err(format!("expected acquired lease, got {other:?}").into()),
+        };
+        store
+            .upsert_continuity_record(&record, grant.fencing_token)
+            .await?;
+        identity_runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from("worker"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                    placement: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(record),
+                Some(grant),
+            )
+            .await;
+
+        let console_events = ConsoleEventStore::new();
+        let response = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            Some(console_events.clone()),
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            rpc_request("mobkit/reset_all"),
+            true,
+        ))
+        .await;
+        assert_eq!(
+            response["error"]["code"],
+            json!(-32000),
+            "a registered identity without a session bridge must fail the preflight: {response:#?}"
+        );
+        let body = &response["error"]["data"];
+        let failed = body["failed"]
+            .as_array()
+            .ok_or_else(|| format!("reset_all must report failed identities: {response:#?}"))?;
+        assert_eq!(failed.len(), 1, "exactly one failure: {response:#?}");
+        assert_eq!(failed[0]["identity"], json!("review:singleton"));
+        assert_eq!(
+            failed[0]["kind"],
+            json!("identity_reset_requires_session_bridge"),
+            "the failure names the missing bridge: {response:#?}"
+        );
+        assert_eq!(body["reset"], json!([]), "nothing was reset: {response:#?}");
+        assert_eq!(
+            body["retired_delegates"],
+            json!([]),
+            "a registered identity is never silently retired: {response:#?}"
+        );
+
+        // Nothing was touched: still Active at generation 0, no lifecycle
+        // frame, live member still present.
+        let status = identity_runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Active);
+        assert_eq!(
+            status.generation.map(ContinuityGeneration::get),
+            Some(0),
+            "a refused reset must not advance the generation"
+        );
+        let lifecycle = console_events
+            .replay_all(None)
+            .await
+            .map_err(|err| format!("replay_all: {}", err.error))?;
+        assert!(
+            lifecycle.iter().all(|event| {
+                event.event_type != "identity_reset" && event.event_type != "identity_retired"
+            }),
+            "a refused reset_all records no lifecycle frame: {lifecycle:#?}"
+        );
+        assert!(
+            runtime
+                .handle()
+                .get_member(&crate::member_comms_id::mob_member_id("review:singleton"))
+                .await
+                .ok()
+                .flatten()
+                .is_some(),
+            "the live member must survive a refused reset_all"
         );
 
         let _ = runtime.handle().stop().await;
@@ -12538,6 +12589,438 @@ comms = true
         assert_eq!(
             identity_runtime.status(&identity).await?.state,
             IdentityLifecycleState::Active
+        );
+
+        let _ = runtime.handle().stop().await;
+        Ok(())
+    }
+
+    /// The half of item R7 that must NOT change: a live member with no
+    /// registered identity and no baseline spec has no durable owner to reset
+    /// to, so `reset_all` retires it and says so as `identity_retired`.
+    #[tokio::test]
+    async fn reset_all_retires_live_only_members_that_have_no_registered_identity()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-reset-all-live-only-retire").await?;
+        runtime
+            .handle()
+            .spawn_spec(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    // meerkat 0.7: roster ids are comms-safe encodings of the
+                    // public alias (MemberCommsName rejects ":").
+                    crate::member_comms_id::mob_member_id_str("worker:solo").into_owned(),
+                    Some("You are a live-only worker nobody registered.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(BTreeMap::from([(
+                    "agent_identity".to_string(),
+                    "worker:solo".to_string(),
+                )])),
+            )
+            .await?;
+
+        let console_events = ConsoleEventStore::new();
+        let response = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            Some(console_events.clone()),
+            None,
+            None,
+            None,
+            None,
+            rpc_request("mobkit/reset_all"),
+            true,
+        ))
+        .await;
+        assert_eq!(
+            response["error"],
+            Value::Null,
+            "reset_all over a live-only member must succeed: {response:#?}"
+        );
+        assert_eq!(
+            response["result"]["reset"],
+            json!([]),
+            "a live-only member has no durable owner to reset to: {response:#?}"
+        );
+        assert_eq!(
+            response["result"]["retired_delegates"],
+            json!([{ "identity": "worker:solo" }]),
+            "the live-only member must be retired: {response:#?}"
+        );
+
+        let lifecycle = console_events
+            .replay_all(None)
+            .await
+            .map_err(|err| format!("replay_all: {}", err.error))?;
+        let retired = lifecycle
+            .iter()
+            .filter(|event| {
+                event.event_type == "identity_retired" && event.identity == "worker:solo"
+            })
+            .count();
+        assert_eq!(
+            retired, 1,
+            "exactly one identity_retired lifecycle event for the live-only member: {lifecycle:#?}"
+        );
+        assert!(
+            lifecycle
+                .iter()
+                .all(|event| event.event_type != "identity_reset"),
+            "nothing on this runtime can be reset: {lifecycle:#?}"
+        );
+
+        let _ = runtime.handle().stop().await;
+        Ok(())
+    }
+
+    fn reset_all_test_spec(identity: &AgentIdentity) -> DurableAgentSpec {
+        DurableAgentSpec {
+            identity: identity.clone(),
+            profile: ProfileName::from("worker"),
+            addressability: AgentAddressability::Addressable,
+            display_name: None,
+            labels: BTreeMap::new(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: None,
+            runtime_mode_override: None,
+            backend: None,
+            binding: None,
+            placement: None,
+        }
+    }
+
+    /// Register `identity` as Active with a held lease and a persisted
+    /// continuity record at generation 0: the shape a materialized identity
+    /// has at rest, which lets `reset_tracked` (fence advance, generation
+    /// bump) and `retire_tracked` run against it in-process.
+    async fn register_leased_active_identity(
+        identity_runtime: &IdentityRuntime,
+        store: &LocalContinuityStore,
+        lease_provider: &LocalLeaseProvider,
+        runtime_instance_id: &str,
+        identity: &AgentIdentity,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse(&format!("rt:{identity}:0"))?,
+            session_id: meerkat_core::types::SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let grants = lease_provider
+            .acquire_leases(std::slice::from_ref(identity), runtime_instance_id)
+            .await?;
+        let grant = match grants.get(identity).cloned() {
+            Some(LeaseAcquireResult::Acquired(grant)) => grant,
+            other => return Err(format!("expected acquired lease, got {other:?}").into()),
+        };
+        store
+            .upsert_continuity_record(&record, grant.fencing_token)
+            .await?;
+        identity_runtime
+            .register(
+                reset_all_test_spec(identity),
+                IdentityLifecycleState::Active,
+                Some(record),
+                Some(grant),
+            )
+            .await;
+        Ok(())
+    }
+
+    fn reset_all_test_identity_runtime(
+        store: &Arc<LocalContinuityStore>,
+        lease_provider: &Arc<LocalLeaseProvider>,
+        runtime_instance_id: &str,
+    ) -> Arc<IdentityRuntime> {
+        Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: store.clone(),
+            lease_provider: lease_provider.clone(),
+            runtime_instance_id: runtime_instance_id.to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(Arc::new(SuccessorMintingIdentityBridge)),
+            default_timeout: None,
+        }))
+    }
+
+    /// Item R7, round 2. `reset_all` classifies each registered identity by
+    /// lifecycle state before routing it. A `Retiring` identity is the entry
+    /// `mobkit/retire` leaves behind until delete or roster reconcile; it is
+    /// leaving the fleet, so it is neither resurrected through the successor
+    /// transition nor reported, while the Active identity beside it resets.
+    #[tokio::test]
+    async fn reset_all_leaves_a_retiring_identity_alone_and_resets_the_active_one()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-reset-all-retiring-skipped").await?;
+        spawn_identity_control_test_member(&runtime, "review:active", "review:active").await?;
+
+        let store = Arc::new(LocalContinuityStore::in_memory()?);
+        let lease_provider = Arc::new(LocalLeaseProvider::new());
+        let identity_runtime =
+            reset_all_test_identity_runtime(&store, &lease_provider, "test-runtime");
+        let active = AgentIdentity::parse("review:active")?;
+        let leaving = AgentIdentity::parse("review:leaving")?;
+        for identity in [&active, &leaving] {
+            register_leased_active_identity(
+                &identity_runtime,
+                &store,
+                &lease_provider,
+                "test-runtime",
+                identity,
+            )
+            .await?;
+        }
+        identity_runtime.retire_tracked(&leaving).await?;
+        assert_eq!(
+            identity_runtime.status(&leaving).await?.state,
+            IdentityLifecycleState::Retiring,
+            "fixture: retire leaves the entry registered in state Retiring"
+        );
+
+        let console_events = ConsoleEventStore::new();
+        let response = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            Some(console_events.clone()),
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            rpc_request("mobkit/reset_all"),
+            true,
+        ))
+        .await;
+        assert_eq!(
+            response["error"],
+            Value::Null,
+            "a Retiring identity must not fail reset_all: {response:#?}"
+        );
+        let body = &response["result"];
+        assert_eq!(
+            body["reset"],
+            json!(["review:active"]),
+            "only the active identity is in the reset set: {response:#?}"
+        );
+        assert_eq!(
+            body["retired_delegates"],
+            json!([]),
+            "a Retiring identity is not retired again: {response:#?}"
+        );
+        assert_eq!(
+            body["failed"],
+            json!([]),
+            "a Retiring identity is not reported as a failure: {response:#?}"
+        );
+
+        // The Retiring identity is untouched: still Retiring at generation 0.
+        let leaving_status = identity_runtime.status(&leaving).await?;
+        assert_eq!(leaving_status.state, IdentityLifecycleState::Retiring);
+        assert_eq!(
+            leaving_status.generation.map(ContinuityGeneration::get),
+            Some(0),
+            "reset_all must not resurrect a Retiring identity"
+        );
+        let active_status = identity_runtime.status(&active).await?;
+        assert_eq!(active_status.state, IdentityLifecycleState::Active);
+        assert_eq!(
+            active_status.generation.map(ContinuityGeneration::get),
+            Some(1),
+            "the active identity resets to generation 1"
+        );
+
+        let lifecycle = console_events
+            .replay_all(None)
+            .await
+            .map_err(|err| format!("replay_all: {}", err.error))?;
+        let reset_frames = lifecycle
+            .iter()
+            .filter(|event| event.event_type == "identity_reset")
+            .map(|event| event.identity.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reset_frames,
+            vec!["review:active"],
+            "exactly one identity_reset frame, for the active identity: {lifecycle:#?}"
+        );
+        assert!(
+            lifecycle
+                .iter()
+                .all(|event| event.event_type != "identity_retired"),
+            "reset_all retires nothing here: {lifecycle:#?}"
+        );
+
+        let _ = runtime.handle().stop().await;
+        Ok(())
+    }
+
+    /// Item R7, round 2. A registered identity with no live roster row cannot
+    /// go through the successor transition: meerkat's respawn has no member
+    /// to replace and answered `MemberNotFound` prose from inside
+    /// `reset_tracked`, failing the call for a fleet that had been reset.
+    /// `reset_all` now refuses such an identity typed
+    /// (`identity_not_resettable_in_state`, state named), leaves it
+    /// untouched, and still resets the Active identity beside it. Both
+    /// producing shapes are covered: Dormant under lazy bootstrap (never
+    /// materialized, no continuity) and Broken after a failed materialize
+    /// (the keyless park), which keeps its continuity record.
+    #[tokio::test]
+    async fn reset_all_refuses_registered_identities_without_a_live_member_typed()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-reset-all-no-live-member-typed").await?;
+        spawn_identity_control_test_member(&runtime, "review:active", "review:active").await?;
+
+        let store = Arc::new(LocalContinuityStore::in_memory()?);
+        let lease_provider = Arc::new(LocalLeaseProvider::new());
+        let identity_runtime =
+            reset_all_test_identity_runtime(&store, &lease_provider, "test-runtime");
+        let active = AgentIdentity::parse("review:active")?;
+        register_leased_active_identity(
+            &identity_runtime,
+            &store,
+            &lease_provider,
+            "test-runtime",
+            &active,
+        )
+        .await?;
+        let lazy = AgentIdentity::parse("review:lazy")?;
+        identity_runtime
+            .register(
+                reset_all_test_spec(&lazy),
+                IdentityLifecycleState::Dormant,
+                None,
+                None,
+            )
+            .await;
+        let parked = AgentIdentity::parse("review:parked")?;
+        identity_runtime
+            .register(
+                reset_all_test_spec(&parked),
+                IdentityLifecycleState::Broken,
+                Some(ContinuityRecord {
+                    identity: parked.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:review:parked:0")?,
+                    session_id: meerkat_core::types::SessionId::new(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(0),
+                }),
+                None,
+            )
+            .await;
+
+        let console_events = ConsoleEventStore::new();
+        let response = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            Some(console_events.clone()),
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            rpc_request("mobkit/reset_all"),
+            true,
+        ))
+        .await;
+        assert_eq!(
+            response["error"]["code"],
+            json!(-32000),
+            "an unresettable identity is a per-identity failure: {response:#?}"
+        );
+        let body = &response["error"]["data"];
+        assert_eq!(
+            body["reset"],
+            json!(["review:active"]),
+            "the active identity is still reset: {response:#?}"
+        );
+        assert_eq!(
+            body["retired_delegates"],
+            json!([]),
+            "no registered identity is retired: {response:#?}"
+        );
+        let failed = body["failed"]
+            .as_array()
+            .ok_or_else(|| format!("reset_all must report failed identities: {response:#?}"))?;
+        let typed = failed
+            .iter()
+            .map(|entry| {
+                (
+                    entry["identity"].as_str().unwrap_or_default(),
+                    entry["kind"].as_str().unwrap_or_default(),
+                    entry["state"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            typed,
+            vec![
+                ("review:lazy", "identity_not_resettable_in_state", "dormant"),
+                (
+                    "review:parked",
+                    "identity_not_resettable_in_state",
+                    "broken"
+                ),
+            ],
+            "each unresettable identity is refused typed with its state: {response:#?}"
+        );
+        for entry in failed {
+            let error = entry["error"].as_str().unwrap_or_default();
+            let state = entry["state"].as_str().unwrap_or_default();
+            assert!(
+                error.contains(&format!("identity is {state} with no live roster row")),
+                "the refusal names the state and the missing member: {entry:#?}"
+            );
+        }
+
+        // Nothing touched on the refused identities; the active one reset.
+        let lazy_status = identity_runtime.status(&lazy).await?;
+        assert_eq!(lazy_status.state, IdentityLifecycleState::Dormant);
+        assert_eq!(lazy_status.generation, None);
+        let parked_status = identity_runtime.status(&parked).await?;
+        assert_eq!(parked_status.state, IdentityLifecycleState::Broken);
+        assert_eq!(
+            parked_status.generation.map(ContinuityGeneration::get),
+            Some(0)
+        );
+        let active_status = identity_runtime.status(&active).await?;
+        assert_eq!(active_status.state, IdentityLifecycleState::Active);
+        assert_eq!(
+            active_status.generation.map(ContinuityGeneration::get),
+            Some(1)
+        );
+
+        let lifecycle = console_events
+            .replay_all(None)
+            .await
+            .map_err(|err| format!("replay_all: {}", err.error))?;
+        let reset_frames = lifecycle
+            .iter()
+            .filter(|event| event.event_type == "identity_reset")
+            .map(|event| event.identity.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reset_frames,
+            vec!["review:active"],
+            "exactly one identity_reset frame, for the active identity: {lifecycle:#?}"
+        );
+        assert!(
+            lifecycle.iter().all(|event| {
+                event.event_type != "identity_retired"
+                    && event.identity != "review:lazy"
+                    && event.identity != "review:parked"
+            }),
+            "refused identities leave no lifecycle frame: {lifecycle:#?}"
         );
 
         let _ = runtime.handle().stop().await;
@@ -13951,7 +14434,6 @@ comms = true
         let accepted = console_send_identity_first(
             &aggregator,
             runtime.clone(),
-            Some(&mob_runtime),
             Some(&events),
             crate::console_aggregator::ConsoleSendRequest {
                 identity: identity.as_str().to_string(),
@@ -14028,7 +14510,6 @@ comms = true
         let accepted = console_send_with_identity_first_fallback(
             &aggregator,
             identity_runtime,
-            Some(&mob_runtime),
             Some(&events),
             crate::console_aggregator::ConsoleSendRequest {
                 identity: "agent:member-only".to_string(),
@@ -14115,7 +14596,6 @@ comms = true
             console_send_identity_first(
                 &aggregator,
                 runtime,
-                None,
                 None,
                 crate::console_aggregator::ConsoleSendRequest {
                     identity: identity.as_str().to_string(),
@@ -14209,7 +14689,6 @@ comms = true
                 &aggregator,
                 runtime,
                 None,
-                None,
                 crate::console_aggregator::ConsoleSendRequest {
                     identity: identity.as_str().to_string(),
                     content: serde_json::to_value(meerkat_core::ContentInput::Text(
@@ -14230,6 +14709,154 @@ comms = true
             deliver_calls.load(Ordering::SeqCst),
             1,
             "steer delivery should have reached the bridge before the console response waits"
+        );
+        Ok(())
+    }
+
+    /// An identical-content resend of an existing idempotency key is a
+    /// replay: it answers with the original acceptance and runs NOTHING.
+    /// Before the fix the identity-first door answered with the old
+    /// acceptance AND dispatched a whole new turn stamped with the old
+    /// interaction id (reproduced 2026-09-03: 4 `run_started` for 3 sends).
+    #[tokio::test]
+    async fn identity_first_console_send_replay_returns_the_original_acceptance_without_a_second_dispatch()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let identity = AgentIdentity::parse("agent:replay-console")?;
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:replay-console:0")?,
+            session_id: meerkat_core::types::SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let handling_modes = Arc::new(Mutex::new(Vec::new()));
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-replay-send-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(Arc::new(RecordingIdentityBridge {
+                session_id: record.session_id.clone(),
+                handling_modes: handling_modes.clone(),
+            })),
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from("default"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                    placement: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(record),
+                Some(LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(7),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let events = ConsoleEventStore::new();
+        let request = crate::console_aggregator::ConsoleSendRequest {
+            identity: identity.as_str().to_string(),
+            content: serde_json::to_value(meerkat_core::ContentInput::Text(
+                "hello once".to_string(),
+            ))?,
+            origin: "test".to_string(),
+            idempotency_key: "idem-replay".to_string(),
+            handling_mode: None,
+        };
+        let first = console_send_identity_first(
+            &aggregator,
+            runtime.clone(),
+            Some(&events),
+            request.clone(),
+        )
+        .await?;
+        // The first send dispatches: a positive observable before any count.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if handling_modes
+                    .lock()
+                    .map(|modes| !modes.is_empty())
+                    .unwrap_or(false)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .map_err(|_| "the first send must reach the bridge")?;
+
+        let replay = console_send_identity_first(
+            &aggregator,
+            runtime.clone(),
+            Some(&events),
+            request.clone(),
+        )
+        .await?;
+        assert_eq!(
+            replay.interaction_id, first.interaction_id,
+            "a replay answers with the original interaction"
+        );
+        assert_eq!(replay.input_frame_id, first.input_frame_id);
+
+        // Give a wrongly spawned second dispatch time to reach the bridge.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let deliveries = handling_modes
+            .lock()
+            .map(|modes| modes.len())
+            .map_err(|_| "handling modes mutex poisoned")?;
+        assert_eq!(deliveries, 1, "a replay must not dispatch a second turn");
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some(identity.as_str().to_string()),
+                ..ConsoleTimelineQuery::default()
+            })
+            .await?;
+        assert_eq!(
+            page.frames
+                .iter()
+                .filter(|frame| frame.kind == "user_input")
+                .count(),
+            1,
+            "a replay appends no second input frame: {:#?}",
+            page.frames
+        );
+
+        // Same key, different content is still the typed conflict.
+        let conflict = console_send_identity_first(
+            &aggregator,
+            runtime,
+            Some(&events),
+            crate::console_aggregator::ConsoleSendRequest {
+                content: serde_json::to_value(meerkat_core::ContentInput::Text(
+                    "hello twice".to_string(),
+                ))?,
+                ..request
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                conflict,
+                Err(super::ConsoleSendError::IdempotencyConflict(ref key)) if key == "idem-replay"
+            ),
+            "{conflict:?}"
         );
         Ok(())
     }
@@ -14288,7 +14915,6 @@ comms = true
         let accepted = console_send_identity_first(
             &aggregator,
             runtime,
-            None,
             None,
             crate::console_aggregator::ConsoleSendRequest {
                 identity: identity.as_str().to_string(),

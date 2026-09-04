@@ -66,9 +66,37 @@ class RunCompleted(Event):
 
 @dataclass(frozen=True, slots=True)
 class RunFailed(Event):
-    """Agent run failed."""
+    """Agent run failed.
+
+    ``error_report`` is meerkat's typed failure fact: ``class``, an optional
+    ``reason`` object whose ``reason_type`` is the stable discriminator
+    (``llm_auth_error``, ``llm_rate_limited``, ...), and ``message``. meerkat
+    >= 0.7 carries no flat ``error`` string on the wire, so ``error`` is
+    derived from ``error_report["message"]`` when the payload omits it; a
+    payload that does carry ``error`` keeps it.
+    """
     session_id: str = ""
     error: str = ""
+    error_report: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.error and isinstance(self.error_report, dict):
+            message = self.error_report.get("message")
+            if isinstance(message, str):
+                object.__setattr__(self, "error", message)
+
+    @property
+    def error_class(self) -> str:
+        """``error_report["class"]`` (``llm``, ``tool``, ``auth``, ...), or ``""``."""
+        value = self.error_report.get("class") if isinstance(self.error_report, dict) else None
+        return value if isinstance(value, str) else ""
+
+    @property
+    def reason_type(self) -> str:
+        """``error_report["reason"]["reason_type"]``, or ``""`` without a typed reason."""
+        reason = self.error_report.get("reason") if isinstance(self.error_report, dict) else None
+        value = reason.get("reason_type") if isinstance(reason, dict) else None
+        return value if isinstance(value, str) else ""
 
 
 # ---------------------------------------------------------------------------

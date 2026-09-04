@@ -408,9 +408,16 @@ class ReconcileEdgesReport:
 
 @dataclass(frozen=True)
 class UnifiedAgentEvent:
-    """An agent event reference from the unified event bus."""
+    """An agent event from the unified event bus.
+
+    ``payload`` is the projected meerkat agent event (the same shape the
+    per-agent SSE stream carries, for example ``error_report``/``error``/
+    ``reason`` on ``run_failed``). It is part of the wire contract and must
+    not be dropped; ``{}`` when the envelope carried none.
+    """
     agent_id: str
     event_type: str
+    payload: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -425,6 +432,11 @@ class UnifiedModuleEvent:
 UnifiedEvent = UnifiedAgentEvent | UnifiedModuleEvent
 
 
+def _agent_payload(value: Any) -> dict[str, Any]:
+    """The agent payload as a dict; ``{}`` for an absent or non-object value."""
+    return value if isinstance(value, dict) else {}
+
+
 def _parse_unified_event(raw: dict[str, Any]) -> UnifiedEvent:
     """Parse a serialized UnifiedEvent.
 
@@ -436,6 +448,7 @@ def _parse_unified_event(raw: dict[str, Any]) -> UnifiedEvent:
         return UnifiedAgentEvent(
             agent_id=raw.get("agent_id", raw.get("agentId", "")),
             event_type=raw.get("event_type", raw.get("eventType", "")),
+            payload=_agent_payload(raw.get("payload")),
         )
     if raw.get("kind") == "module":
         return UnifiedModuleEvent(
@@ -448,6 +461,7 @@ def _parse_unified_event(raw: dict[str, Any]) -> UnifiedEvent:
         return UnifiedAgentEvent(
             agent_id=agent.get("agent_id", ""),
             event_type=agent.get("event_type", ""),
+            payload=_agent_payload(agent.get("payload")),
         )
     if "Module" in raw:
         module = raw["Module"]

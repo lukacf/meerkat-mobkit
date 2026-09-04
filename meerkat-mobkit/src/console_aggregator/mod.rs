@@ -40,7 +40,7 @@ pub use types::{
     ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleIdentityInspection, ConsoleIdentityRecord,
     ConsoleInteractionAccepted, ConsoleReplayUnavailable, ConsoleSendRequest, ConsoleTimelineEvent,
     ConsoleTimelineMode, ConsoleTimelinePage, ConsoleTimelineQuery, ConsoleTimelineWindowPage,
-    ConsoleTimelineWindowQuery, ConsoleVisibility, NewConsoleFrame,
+    ConsoleTimelineWindowQuery, ConsoleVisibility, IdentityFirstReservation, NewConsoleFrame,
 };
 
 const TIMELINE_CHANNEL_CAP: usize = 1024;
@@ -1617,11 +1617,17 @@ impl MobKitConsoleAggregator {
         Ok(accepted)
     }
 
+    /// Reserve the console interaction for an identity-first send.
+    ///
+    /// Returns [`IdentityFirstReservation::Existing`] for an idempotent replay
+    /// (same key, same origin, content and handling mode) so the caller
+    /// answers with the original acceptance and does not dispatch the turn
+    /// again.
     pub async fn reserve_identity_first_interaction(
         &self,
         request: ConsoleSendRequest,
         session_id: Option<&str>,
-    ) -> Result<ConsoleInteractionAccepted, ConsoleSendError> {
+    ) -> Result<IdentityFirstReservation, ConsoleSendError> {
         validate_send_request(&request)?;
         let _content = content_input_from_value(&request.content)?;
         let runtime_key =
@@ -1662,7 +1668,9 @@ impl MobKitConsoleAggregator {
                     request.idempotency_key,
                 ));
             }
-            return Ok(accepted_from_frame(&existing));
+            return Ok(IdentityFirstReservation::Existing(accepted_from_frame(
+                &existing,
+            )));
         }
 
         let interaction_id = identity_first_interaction_uuid(&dedupe_key);
@@ -1699,13 +1707,22 @@ impl MobKitConsoleAggregator {
             .append_if_absent(new_frame)
             .await
             .map_err(ConsoleSendError::Log)?;
+        if outcome.disposition == AppendDisposition::Existing {
+            // Lost the race with a concurrent identical send, which owns the
+            // dispatch.
+            return Ok(IdentityFirstReservation::Existing(accepted_from_frame(
+                &outcome.frame,
+            )));
+        }
         let _ = self
             .inner
             .event_tx
             .send(ConsoleTimelineEvent::ConsoleFrame {
                 frame: outcome.frame.clone(),
             });
-        Ok(accepted_from_frame(&outcome.frame))
+        Ok(IdentityFirstReservation::Fresh(accepted_from_frame(
+            &outcome.frame,
+        )))
     }
 
     async fn runtime_key_for_identity_first_send(
@@ -4270,6 +4287,40 @@ fn frames_from_session_history_message_with_namespace(
         // variant; all assistant history is block-shaped now.
         Message::BlockAssistant(assistant) => {
             let text = assistant.text_blocks().collect::<Vec<_>>().join("");
+            if text.is_empty() {
+                // A text-less step is not a terminal. A tool-only step
+                // continues after its tool results; re-emitted as
+                // `interaction_complete` with `result: ""` it had no live twin
+                // (meerkat emits `text_complete` only for non-empty text and
+                // the run's own terminal carries the final answer), so every
+                // tool-only step reached the timeline as an empty completion
+                // stamped with the live turn's interaction id, and
+                // kind-driven clients closed the turn before its answer. It
+                // projects as the live edge's `tool_call_requested` frames
+                // instead; a silent step projects nothing.
+                let step = HistoryAssistantStep {
+                    runtime_key,
+                    identity,
+                    session_id,
+                    offset,
+                    assistant,
+                    payload_hash: &payload_hash,
+                    interaction_id: history_interaction_id.as_deref(),
+                    run_id: history_run_id.as_deref(),
+                };
+                let mut frames = tool_only_step_tool_call_frames(step);
+                frames.extend(spawn_initial_message_frames_from_assistant(
+                    runtime_key,
+                    identity,
+                    identity_namespace,
+                    session_id,
+                    offset,
+                    assistant,
+                    &payload_hash,
+                ));
+                frames.extend(outgoing_comms_tool_call_frames_from_assistant(step));
+                return frames;
+            }
             (
                 "interaction_complete",
                 assistant.created_at.timestamp_millis().max(0) as u64,
@@ -4313,9 +4364,9 @@ fn frames_from_session_history_message_with_namespace(
             source_cursor: Some(format!("{session_id}:{offset}")),
         },
         source_event_id: None,
-        interaction_id: history_interaction_id,
+        interaction_id: history_interaction_id.clone(),
         turn_id: None,
-        run_id: history_run_id,
+        run_id: history_run_id.clone(),
         parent_frame_id: None,
         caused_by_frame_id: None,
     }];
@@ -4330,12 +4381,16 @@ fn frames_from_session_history_message_with_namespace(
             &payload_hash,
         ));
         frames.extend(outgoing_comms_tool_call_frames_from_assistant(
-            runtime_key,
-            identity,
-            session_id,
-            offset,
-            assistant,
-            &payload_hash,
+            HistoryAssistantStep {
+                runtime_key,
+                identity,
+                session_id,
+                offset,
+                assistant,
+                payload_hash: &payload_hash,
+                interaction_id: history_interaction_id.as_deref(),
+                run_id: history_run_id.as_deref(),
+            },
         ));
     }
     frames
@@ -4363,54 +4418,123 @@ const OUTGOING_COMMS_SEND_TOOLS: [&str; 3] = ["send_message", "send_request", "s
 /// live twin (same tool_use_id) collapses through the tool-call arm of
 /// [`transcript_fingerprint`].
 fn outgoing_comms_tool_call_frames_from_assistant(
-    runtime_key: &str,
-    identity: &str,
-    session_id: &str,
-    offset: usize,
-    assistant: &meerkat_core::types::BlockAssistantMessage,
-    payload_hash: &str,
+    step: HistoryAssistantStep<'_>,
 ) -> Vec<NewConsoleFrame> {
     let mut frames = Vec::new();
-    for (tool_idx, tool) in assistant.tool_calls().enumerate() {
+    for (tool_idx, tool) in step.assistant.tool_calls().enumerate() {
         if !OUTGOING_COMMS_SEND_TOOLS.contains(&tool.name) {
             continue;
         }
         let Ok(args) = serde_json::from_str::<Value>(tool.args.get()) else {
             continue;
         };
-        frames.push(NewConsoleFrame {
-            id: None,
-            dedupe_key: format!(
-                "session-history:{runtime_key}:{session_id}:{offset}:comms-out:{tool_idx}:{payload_hash}"
-            ),
-            timestamp_ms: assistant.created_at.timestamp_millis().max(0) as u64,
-            runtime_key: runtime_key.to_string(),
-            identity: identity.to_string(),
-            conversation_id: Some(identity.to_string()),
-            session_id: Some(session_id.to_string()),
-            kind: "tool_call_requested".to_string(),
-            status: ConsoleFrameStatus::Completed,
-            payload: json!({
-                "id": tool.id,
-                "tool_call_id": tool.id,
-                "name": tool.name,
-                "args": args,
-                "source_event_type": "session_history",
-                "type": "session_history",
-            }),
-            source: ConsoleFrameSource {
-                kind: ConsoleFrameSourceKind::SessionHistory,
-                source_cursor: Some(format!("{session_id}:{offset}:comms-out:{tool_idx}")),
-            },
-            source_event_id: None,
-            interaction_id: None,
-            turn_id: None,
-            run_id: None,
-            parent_frame_id: None,
-            caused_by_frame_id: None,
-        });
+        frames.push(history_tool_call_frame(
+            step,
+            "comms-out",
+            tool_idx,
+            tool.id,
+            tool.name,
+            args,
+        ));
     }
     frames
+}
+
+/// Transcript coordinates of one committed assistant message, shared by every
+/// history frame projected from it. The interaction and run ids are the
+/// persisted `TranscriptMessageIdentity`, the same identity the live pipeline
+/// stamped.
+#[derive(Clone, Copy)]
+struct HistoryAssistantStep<'a> {
+    runtime_key: &'a str,
+    identity: &'a str,
+    session_id: &'a str,
+    offset: usize,
+    assistant: &'a meerkat_core::types::BlockAssistantMessage,
+    payload_hash: &'a str,
+    interaction_id: Option<&'a str>,
+    run_id: Option<&'a str>,
+}
+
+/// Every tool call of a text-less (tool-only) assistant step as a
+/// `tool_call_requested` history frame. The peer-comms send tools are left to
+/// [`outgoing_comms_tool_call_frames_from_assistant`], which runs for every
+/// assistant step, so a comms call never projects twice.
+fn tool_only_step_tool_call_frames(step: HistoryAssistantStep<'_>) -> Vec<NewConsoleFrame> {
+    let mut frames = Vec::new();
+    for (tool_idx, tool) in step.assistant.tool_calls().enumerate() {
+        if OUTGOING_COMMS_SEND_TOOLS.contains(&tool.name) {
+            continue;
+        }
+        let Ok(args) = serde_json::from_str::<Value>(tool.args.get()) else {
+            continue;
+        };
+        frames.push(history_tool_call_frame(
+            step,
+            "tool-call",
+            tool_idx,
+            tool.id,
+            tool.name,
+            args,
+        ));
+    }
+    frames
+}
+
+/// One `tool_call_requested` history frame in the live edge's shape ({id,
+/// tool_call_id, name, args}): the console pairs it with the backfilled tool
+/// result by `tool_call_id` exactly like a live turn, and a live twin (same
+/// tool_use_id) collapses through the tool-call arm of
+/// [`transcript_fingerprint`].
+fn history_tool_call_frame(
+    step: HistoryAssistantStep<'_>,
+    cursor_tag: &str,
+    tool_idx: usize,
+    tool_call_id: &str,
+    tool_name: &str,
+    args: Value,
+) -> NewConsoleFrame {
+    let HistoryAssistantStep {
+        runtime_key,
+        identity,
+        session_id,
+        offset,
+        assistant,
+        payload_hash,
+        interaction_id,
+        run_id,
+    } = step;
+    NewConsoleFrame {
+        id: None,
+        dedupe_key: format!(
+            "session-history:{runtime_key}:{session_id}:{offset}:{cursor_tag}:{tool_idx}:{payload_hash}"
+        ),
+        timestamp_ms: assistant.created_at.timestamp_millis().max(0) as u64,
+        runtime_key: runtime_key.to_string(),
+        identity: identity.to_string(),
+        conversation_id: Some(identity.to_string()),
+        session_id: Some(session_id.to_string()),
+        kind: "tool_call_requested".to_string(),
+        status: ConsoleFrameStatus::Completed,
+        payload: json!({
+            "id": tool_call_id,
+            "tool_call_id": tool_call_id,
+            "name": tool_name,
+            "args": args,
+            "source_event_type": "session_history",
+            "type": "session_history",
+        }),
+        source: ConsoleFrameSource {
+            kind: ConsoleFrameSourceKind::SessionHistory,
+            source_cursor: Some(format!("{session_id}:{offset}:{cursor_tag}:{tool_idx}")),
+        },
+        source_event_id: None,
+        interaction_id: interaction_id.map(str::to_string),
+        turn_id: None,
+        run_id: run_id.map(str::to_string),
+        parent_frame_id: None,
+        caused_by_frame_id: None,
+    }
 }
 
 /// The subset of [`crate::console_spawn::MOB_SPAWN_TOOL_VOCABULARY`] whose
@@ -9155,7 +9279,8 @@ comms = true
                 },
                 None,
             )
-            .await?;
+            .await?
+            .into_accepted();
         let page = aggregator
             .query_timeline(ConsoleTimelineQuery {
                 identity: Some("review:singleton".to_string()),
@@ -11488,9 +11613,13 @@ comms = true
         assert_eq!(frame.payload["text"], json!("Visible answer."));
     }
 
+    /// A reasoning-plus-tool step with no visible text is not a terminal
+    /// (it used to project an `interaction_complete` with `result: ""`, the
+    /// empty completion of the R6 repro): it projects its tool call, and the
+    /// reasoning text reaches no frame at all.
     #[test]
-    fn session_history_projection_leaves_reasoning_only_result_empty() {
-        let frame = frame_from_session_history_message(
+    fn session_history_projection_never_leaks_reasoning_into_a_text_less_step() {
+        let frames = frames_from_session_history_message(
             "runtime-a",
             "agent-a",
             "session-a",
@@ -11510,12 +11639,25 @@ comms = true
                 "stop_reason": "end_turn",
                 "created_at": "1970-01-01T00:00:00.010Z"
             }),
-        )
-        .expect("assistant block history frame");
+        );
 
-        assert_eq!(frame.kind, "interaction_complete");
-        assert_eq!(frame.payload["result"], json!(""));
-        assert_eq!(frame.payload["text"], json!(""));
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.kind != "interaction_complete"),
+            "a text-less step is not a terminal: {frames:#?}"
+        );
+        let call = frames
+            .iter()
+            .find(|frame| frame.kind == "tool_call_requested")
+            .expect("the tool call projects");
+        assert_eq!(call.payload["tool_call_id"], json!("toolu-1"));
+        assert!(
+            frames
+                .iter()
+                .all(|frame| !frame.payload.to_string().contains("Private planning text.")),
+            "reasoning text must not reach any history frame: {frames:#?}"
+        );
     }
 
     /// Sender-side comms parity: assistant history whose tool calls are the
@@ -11968,6 +12110,142 @@ comms = true
         );
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].interaction_id, None);
+    }
+
+    /// A text-less assistant step is never a terminal. A tool-only step
+    /// projects as the live edge's `tool_call_requested` frames (one per
+    /// non-comms tool call, comms calls stay with the comms parity helper), a
+    /// silent step projects nothing, and a step that says something keeps
+    /// its `interaction_complete` with the text.
+    #[test]
+    fn session_history_text_less_step_never_projects_an_empty_completion() {
+        let interaction = "6fa459ea-ee8a-3ca4-894e-db77e160355e";
+        let run = "886313e1-3b8a-5372-9b90-0c9aee199e5d";
+        let frames = frames_from_session_history_message_with_namespace(
+            "runtime-a",
+            "helper",
+            "",
+            "session-a",
+            6,
+            json!({
+                "role": "block_assistant",
+                "blocks": [
+                    {
+                        "block_type": "tool_use",
+                        "data": { "id": "toolu_peers_1", "name": "peers", "args": {} }
+                    }
+                ],
+                "identity": { "interaction_id": interaction, "run_id": run },
+                "stop_reason": "tool_use",
+                "created_at": "1970-01-01T00:00:00.400Z"
+            }),
+        );
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.kind != "interaction_complete"),
+            "a tool-only step must not project a terminal: {frames:#?}"
+        );
+        let call = frames
+            .iter()
+            .find(|frame| frame.kind == "tool_call_requested")
+            .expect("a tool-only step projects its tool call");
+        assert_eq!(call.payload["tool_call_id"], json!("toolu_peers_1"));
+        assert_eq!(call.payload["name"], json!("peers"));
+        assert_eq!(call.payload["args"], json!({}));
+        assert_eq!(call.source.kind, ConsoleFrameSourceKind::SessionHistory);
+        assert_eq!(call.interaction_id.as_deref(), Some(interaction));
+        assert_eq!(call.run_id.as_deref(), Some(run));
+        assert_eq!(call.timestamp_ms, 400);
+
+        // A comms send in a tool-only step belongs to the comms parity
+        // helper: exactly one tool-call frame, never two.
+        let frames = frames_from_session_history_message_with_namespace(
+            "runtime-a",
+            "helper",
+            "",
+            "session-a",
+            7,
+            json!({
+                "role": "block_assistant",
+                "blocks": [
+                    {
+                        "block_type": "tool_use",
+                        "data": {
+                            "id": "toolu_send_1",
+                            "name": "send_message",
+                            "args": { "peer_id": "peer-1", "body": "hi" }
+                        }
+                    }
+                ],
+                "stop_reason": "tool_use",
+                "created_at": "1970-01-01T00:00:00.500Z"
+            }),
+        );
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame.kind == "tool_call_requested")
+                .count(),
+            1,
+            "{frames:#?}"
+        );
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.kind != "interaction_complete"),
+            "{frames:#?}"
+        );
+
+        // A silent step (no text, no tool calls) projects nothing at all.
+        let frames = frames_from_session_history_message_with_namespace(
+            "runtime-a",
+            "helper",
+            "",
+            "session-a",
+            8,
+            json!({
+                "role": "block_assistant",
+                "blocks": [],
+                "stop_reason": "end_turn",
+                "created_at": "1970-01-01T00:00:00.600Z"
+            }),
+        );
+        assert!(frames.is_empty(), "{frames:#?}");
+
+        // Control: a step that says something keeps its terminal and the
+        // text, and its non-comms tool call stays inside that terminal's
+        // message (the live edge already projected the call).
+        let frames = frames_from_session_history_message_with_namespace(
+            "runtime-a",
+            "helper",
+            "",
+            "session-a",
+            9,
+            json!({
+                "role": "block_assistant",
+                "blocks": [
+                    { "block_type": "text", "data": { "text": "Checking peers." } },
+                    {
+                        "block_type": "tool_use",
+                        "data": { "id": "toolu_peers_2", "name": "peers", "args": {} }
+                    }
+                ],
+                "stop_reason": "tool_use",
+                "created_at": "1970-01-01T00:00:00.700Z"
+            }),
+        );
+        let terminal = frames
+            .iter()
+            .find(|frame| frame.kind == "interaction_complete")
+            .expect("a step with text keeps its terminal");
+        assert_eq!(terminal.payload["result"], json!("Checking peers."));
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.kind != "tool_call_requested"),
+            "{frames:#?}"
+        );
     }
 
     #[test]

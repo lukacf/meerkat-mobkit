@@ -1,4 +1,5 @@
 import React from "react";
+import { describeFailure } from "../lib/failure-summary";
 import type { ConsoleFrame } from "../types";
 
 interface TimelinePanelProps {
@@ -56,7 +57,7 @@ function summarizeFrame(frame: ConsoleFrame): string {
   const shortInteraction = String(frame.interactionId || "").slice(0, 8);
   switch (ev) {
     case "interaction_complete":    return shortInteraction ? `Completed ${shortInteraction}` : "Completed";
-    case "interaction_failed":      return `Failed: ${String(data.error || data.reason || "error")}`;
+    case "interaction_failed":      return `Failed: ${describeFailure(data)}`;
     case "interaction_started":     return shortInteraction ? `Started ${shortInteraction}` : "Started";
     case "gating_decision":         return `Gate ${String(data.decision || "")}: ${String(data.action_id || data.pending_id || "")}`;
     case "member_ready":            return `Member ready`;

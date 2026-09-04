@@ -2212,3 +2212,337 @@ async fn sender_conversation_view_renders_outgoing_peer_comms_live() {
 async fn sender_conversation_view_renders_outgoing_peer_comms_after_history_rebuild() {
     run_outgoing_comms_console_scenario(false).await;
 }
+
+const TOOL_STEP_MEMBER: &str = "console-tool-step";
+
+/// Scripted LLM whose every turn is a tool-only step (one `peers` call, no
+/// text) followed by a text reply that names the prompt it answers. This is
+/// the shape the demo `TestClient` cannot produce, and the shape that minted
+/// the empty `interaction_complete` frames in the R6 repro: a tool-only
+/// assistant step has no live text twin, so its history projection survived
+/// dedupe as an empty completion under the live turn's interaction id.
+struct ToolThenTextClient {
+    tool_calls: AtomicUsize,
+}
+
+fn last_user_prompt(request: &LlmRequest) -> String {
+    request
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            Message::User(user) => Some(user.text_content()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+impl LlmClient for ToolThenTextClient {
+    fn project_replay_messages(&self, messages: &[Message]) -> Result<Vec<Message>, LlmError> {
+        Ok(messages.to_vec())
+    }
+
+    fn stream<'a>(
+        &'a self,
+        request: &'a LlmRequest,
+    ) -> Pin<Box<dyn futures::Stream<Item = Result<LlmEvent, LlmError>> + Send + 'a>> {
+        let provider = LlmClient::provider(self);
+        let prompt = last_user_prompt(request);
+        if !prompt.starts_with("turn-") {
+            // Any host-minted turn gets a plain text answer (an empty
+            // completion is a retryable provider error to meerkat and would
+            // stall the member's queue), so the scripted tool-then-text turns
+            // are exactly the two console sends.
+            return text_only_turn(request, provider, "Acknowledged.");
+        }
+        if matches!(request.messages.last(), Some(Message::ToolResults { .. })) {
+            return text_only_turn(request, provider, &format!("Reply to {prompt}"));
+        }
+        let call = self.tool_calls.fetch_add(1, Ordering::SeqCst);
+        let [usage, done] = llm_usage::usage_then_done(request, provider, StopReason::ToolUse);
+        Box::pin(stream::iter(vec![
+            Ok(LlmEvent::ToolCallComplete {
+                id: format!("peers-call-{call}"),
+                name: "peers".to_string(),
+                args: json!({}),
+                meta: None,
+            }),
+            Ok(usage),
+            Ok(done),
+        ]))
+    }
+
+    fn provider(&self) -> Provider {
+        Provider::Other
+    }
+
+    fn health_check<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), LlmError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// Sequence number of a frame's `console:N` cursor; the timeline's order.
+fn frame_cursor_seq(frame: &Value) -> u64 {
+    frame["cursor"]
+        .as_str()
+        .and_then(|cursor| cursor.strip_prefix("console:"))
+        .and_then(|seq| seq.parse().ok())
+        .unwrap_or_else(|| panic!("frame without a console cursor: {frame:#?}"))
+}
+
+fn frame_result_text(frame: &Value) -> &str {
+    frame["payload"]["result"].as_str().unwrap_or_default()
+}
+
+/// One turn_driven member whose every turn is a tool-only step and then a
+/// text reply, driven by two console sends with distinct idempotency keys.
+/// Returns the member's conversation timeline after both turns completed and
+/// the session-history backfill had a chance to run behind the last one,
+/// together with the interaction id each send was accepted under.
+///
+/// `drain_live_events` selects the projection source under test exactly as
+/// in `run_outgoing_comms_console_scenario`: `true` is the gateway mode (live
+/// console events, history frames dedupe against their live twins); `false`
+/// rebuilds the conversation purely from session-history backfill.
+async fn run_tool_step_console_scenario(drain_live_events: bool) -> (Vec<Value>, Vec<String>) {
+    let definition = MobDefinition::from_toml(&format!(
+        r#"
+[mob]
+id = "tool-step-console-mob-{}"
+
+[profiles.lead]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.lead.tools]
+comms = true
+"#,
+        NEXT_TEST_MOB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
+    .expect("parse tool-step console mob definition");
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let session_path = temp_dir.path().join("sessions");
+    std::fs::create_dir_all(&session_path).expect("session path");
+    let factory = AgentFactory::new(&session_path).comms(true);
+    let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
+    let script_client = Arc::new(ToolThenTextClient {
+        tool_calls: AtomicUsize::new(0),
+    });
+    let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(script_client),
+        });
+    let runtime = UnifiedRuntime::bootstrap(
+        mob_spec,
+        MobKitConfig {
+            modules: vec![],
+            discovery: DiscoverySpec {
+                namespace: "tool-step-console".to_string(),
+                modules: vec![],
+            },
+            pre_spawn: vec![],
+        },
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("bootstrap tool-step console runtime");
+    let runtime = Arc::new(runtime);
+    let event_drain = drain_live_events.then(|| runtime.clone().spawn_event_drain_task());
+
+    // No initial message: a spawn-time turn would race the first send for
+    // the console's pending interaction and add a third terminal, and the
+    // two console sends are the whole subject here.
+    let mut spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        MobMemberId::from(TOOL_STEP_MEMBER).to_string(),
+        None,
+        None,
+        None,
+    );
+    spec.runtime_mode = Some(MobRuntimeMode::TurnDriven);
+    runtime.spawn(spec).await.expect("spawn turn_driven member");
+
+    let app = runtime.build_reference_app_router(decision_state(false));
+    let mut interaction_ids = Vec::new();
+    for turn in ["turn-1", "turn-2"] {
+        let send_json = post_console_rpc(
+            &app,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": format!("send-{turn}"),
+                "method": "mobkit/console/send",
+                "params": {
+                    "identity": TOOL_STEP_MEMBER,
+                    "origin": "test",
+                    "idempotency_key": format!("tool-step-{turn}"),
+                    "content": turn
+                }
+            }),
+        )
+        .await;
+        assert!(
+            send_json.get("error").is_none() || send_json["error"].is_null(),
+            "console send failed: {send_json}"
+        );
+        interaction_ids.push(
+            send_json["result"]["interaction_id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("an accepted send names its interaction: {send_json}"))
+                .to_string(),
+        );
+        let reply = format!("Reply to {turn}");
+        wait_for_timeline(&app, TOOL_STEP_MEMBER, &reply, |frames| {
+            frames_contain_text(frames, &reply)
+        })
+        .await;
+    }
+    // Every session-bearing console event and every identity query forces a
+    // history refresh; keep querying so the refresh behind the last turn has
+    // landed before the timeline is read.
+    let mut frames = Vec::new();
+    for _ in 0..10 {
+        frames = query_conversation_frames(&app, TOOL_STEP_MEMBER).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    if let Some(event_drain) = event_drain {
+        event_drain.abort();
+    }
+    let shutdown = runtime.shutdown().await;
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
+    (frames, interaction_ids)
+}
+
+/// R6: two console sends to one turn_driven member each close with their
+/// own terminal. Each accepted interaction has exactly one live
+/// `interaction_complete`, carrying that turn's answer and following its own
+/// `run_started`, and no text-less `interaction_complete` from
+/// session-history backfill appears for the identity (before the fix each
+/// tool-only step surfaced as one, stamped with the live turn's interaction
+/// id).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_console_sends_to_a_turn_driven_member_each_close_with_their_own_terminal() {
+    let (frames, interaction_ids) = run_tool_step_console_scenario(true).await;
+    let pretty = || serde_json::to_string_pretty(&frames).unwrap_or_default();
+
+    assert_eq!(interaction_ids.len(), 2);
+    assert_ne!(
+        interaction_ids[0], interaction_ids[1],
+        "distinct idempotency keys reserve distinct interactions"
+    );
+    for (turn_idx, interaction_id) in interaction_ids.iter().enumerate() {
+        let terminals: Vec<&Value> = frames
+            .iter()
+            .filter(|frame| {
+                frame["kind"] == json!("interaction_complete")
+                    && frame["source"]["kind"] == json!("console_event")
+                    && frame["interaction_id"] == json!(interaction_id)
+            })
+            .collect();
+        assert_eq!(
+            terminals.len(),
+            1,
+            "exactly one live terminal for interaction {interaction_id}; frames:\n{}",
+            pretty()
+        );
+        let terminal = terminals[0];
+        assert_eq!(
+            frame_result_text(terminal),
+            format!("Reply to turn-{}", turn_idx + 1),
+            "a live terminal carries its own turn's answer: {terminal:#?}"
+        );
+        let run_started = frames
+            .iter()
+            .find(|frame| {
+                frame["kind"] == json!("run_started")
+                    && frame["interaction_id"] == json!(interaction_id)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "interaction {interaction_id} has no run_started; frames:\n{}",
+                    pretty()
+                )
+            });
+        assert!(
+            frame_cursor_seq(run_started) < frame_cursor_seq(terminal),
+            "a terminal must follow its own run_started; frames:\n{}",
+            pretty()
+        );
+    }
+
+    // Positive observable first: counting EVERY interaction_complete for the
+    // identity, from any source, pins exactly one terminal per send. History
+    // text terminals collapse against their live twins and a tool-only step
+    // contributes none, so this cannot pass vacuously when the backfill has
+    // not landed yet. Pre-fix this was 3 or more.
+    let all_terminals = frames
+        .iter()
+        .filter(|frame| frame["kind"] == json!("interaction_complete"))
+        .count();
+    assert_eq!(
+        all_terminals,
+        2,
+        "exactly one interaction_complete per send from any source; frames:\n{}",
+        pretty()
+    );
+    // Diagnostic twin: name the offending frames when the count is wrong for
+    // the reason this test exists.
+    let empty_history_terminals: Vec<&Value> = frames
+        .iter()
+        .filter(|frame| {
+            frame["kind"] == json!("interaction_complete")
+                && frame["source"]["kind"] == json!("session_history")
+                && frame_result_text(frame).is_empty()
+        })
+        .collect();
+    assert!(
+        empty_history_terminals.is_empty(),
+        "a tool-only step must not surface as an empty completion: {empty_history_terminals:#?}"
+    );
+}
+
+/// The history-only rebuild of the same two turns: a tool-only step projects
+/// as its `tool_call_requested` frame (call and result render as a pair, like
+/// a live turn), and the only `interaction_complete` frames are the two text
+/// replies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn history_rebuild_projects_a_tool_only_step_as_a_tool_call_not_an_empty_completion() {
+    let (frames, _) = run_tool_step_console_scenario(false).await;
+    let pretty = || serde_json::to_string_pretty(&frames).unwrap_or_default();
+
+    let mut results: Vec<&str> = frames
+        .iter()
+        .filter(|frame| frame["kind"] == json!("interaction_complete"))
+        .map(frame_result_text)
+        .collect();
+    results.sort_unstable();
+    assert_eq!(
+        results,
+        vec!["Reply to turn-1", "Reply to turn-2"],
+        "one terminal per turn and none for the tool-only steps; frames:\n{}",
+        pretty()
+    );
+    let peers_calls = frames
+        .iter()
+        .filter(|frame| {
+            frame["kind"] == json!("tool_call_requested")
+                && frame["payload"]["name"] == json!("peers")
+                && frame["source"]["kind"] == json!("session_history")
+        })
+        .count();
+    assert_eq!(
+        peers_calls,
+        2,
+        "each tool-only step projects its tool call; frames:\n{}",
+        pretty()
+    );
+}
