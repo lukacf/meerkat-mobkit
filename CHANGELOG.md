@@ -327,14 +327,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   attempt too (`HostRejectedBuild` from the materialize that recorded the
   park, not `Internal` prose), it is read through meerkat-mob's transparent
   `SharedRetirementFailure` / `SharedLifecycleFailure` wrappers (every resume
-  failure a joined observer sees is wrapped that way), and it survives the
-  admission seam as `BridgeAdmissionError::ProviderAuthRejected` instead of
-  being flattened back into text. Exact-pinned hosts observe `error` and
-  `reason` keys on `run_failed` payloads and `interaction_failed` frames, a
-  populated `RunFailed.error` in the SDKs, a `HostLoopCrash` message that
-  names the cause, and a keyless identity that parks `Broken` with a reason
-  instead of rebuilding forever. `docs/concepts/events.mdx` documents the
-  payload. Rust API change for embedders that match `BridgeError` or
+  failure a joined observer sees is wrapped that way, and so is the collision
+  retire before a resume retry), and it survives the admission seam as
+  `BridgeAdmissionError::ProviderAuthRejected` instead of being flattened
+  back into text. The resume-rejection classifier reads through the same
+  wrappers: a wrapped `SessionUnavailableForResume { ArchivedNotRevivable }`
+  or `MemberRestoreFailed` classified as `Other` before, so the typed
+  archived-not-revivable park never fired for it and the identity
+  heal-looped (the OB3 shape on a different door). Exact-pinned hosts
+  observe `error` and `reason` keys on `run_failed` payloads and
+  `interaction_failed` frames, a populated `RunFailed.error` in the SDKs, a
+  `HostLoopCrash` message that names the cause, and a keyless identity that
+  parks `Broken` with a reason instead of rebuilding forever.
+  `docs/concepts/events.mdx` documents the payload. Rust API change for
+  embedders that match `BridgeError` or
   `BridgeAdmissionError` exhaustively (one new variant each).
 
 - **`mobkit/reset_all` now resets every registered identity instead of
@@ -362,8 +368,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   meerkat's respawn, which terminally retires the predecessor row, so the
   warning asserted a cleanup gap that does not exist, once per identity per
   call. `reset_details[]` now carries the successor `agent_runtime_id` and
-  `generation` instead. Gateway-subprocess regression added, plus a fail-closed
-  regression for the no-bridge preflight.
+  `generation` instead. The reset set is also classified by lifecycle state
+  before anything is touched: a `Retiring` identity (the entry `mobkit/retire`
+  leaves until delete or roster reconcile) is leaving the fleet and is neither
+  resurrected nor reported, and a registered identity with no live roster row
+  (Dormant under lazy bootstrap, Broken after a failed materialize such as the
+  keyless park) is refused typed as `identity_not_resettable_in_state` with
+  its `state` named and a caller path in `error`, instead of the
+  `MemberNotFound` prose meerkat's respawn produced from inside
+  `reset_tracked`; the identities beside it are still reset.
+  Gateway-subprocess regression added, plus fail-closed regressions for the
+  no-bridge preflight, the Retiring skip and the typed refusal.
 
 - **A turn's terminal frame belongs to that turn.** Session-history backfill
   re-emitted every committed assistant step as an `interaction_complete`

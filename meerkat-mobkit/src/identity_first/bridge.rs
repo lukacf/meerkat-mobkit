@@ -696,6 +696,18 @@ fn respawn_bridge_error(step: &str, error: &meerkat_mob::MobRespawnError) -> Bri
 /// belt-and-braces for continuity violations that reach us stringified through
 /// the provisioning path (`MobError::Internal`).
 fn classify_resume_error(error: &meerkat_mob::MobError) -> ResumeRejectionKind {
+    // meerkat-mob shares ONE owned failure with every concurrent observer of
+    // a retirement or lifecycle operation through these transparent wrappers:
+    // the collision retire before a resume retry and a joined resume observer
+    // both hand their failure to `resume_rejected` this way. Classify what
+    // they carry, exactly as `provider_auth_rejection` does, or a wrapped
+    // ArchivedNotRevivable reads as `Other`, never reaches the typed park in
+    // the identity runtime, and the identity heal-loops (the OB3 incident).
+    if let meerkat_mob::MobError::SharedRetirementFailure(inner)
+    | meerkat_mob::MobError::SharedLifecycleFailure(inner) = error
+    {
+        return classify_resume_error(inner);
+    }
     if matches!(
         error,
         meerkat_mob::MobError::SessionUnavailableForResume {
@@ -6559,6 +6571,66 @@ mod tests {
 
         let other = meerkat_mob::MobError::WiringError("unrelated".to_string());
         assert_eq!(classify_resume_error(&other), ResumeRejectionKind::Other);
+
+        // meerkat-mob hands a joined observer (and the collision retire before
+        // a resume retry) the SAME failure through its transparent shared
+        // wrappers. The classification must read through them: a wrapped
+        // archived refusal is still the stable wall the identity runtime
+        // parks on, and a wrapped restore failure is still typed.
+        let wrapped_archived = meerkat_mob::MobError::SharedLifecycleFailure(Arc::new(
+            meerkat_mob::MobError::SessionUnavailableForResume {
+                session_id: meerkat_core::types::SessionId::new(),
+                reason: meerkat_mob::error::SessionResumeUnavailableReason::ArchivedNotRevivable,
+                runtime_state: None,
+                verdict: None,
+            },
+        ));
+        assert_eq!(
+            classify_resume_error(&wrapped_archived),
+            ResumeRejectionKind::ArchivedNotRevivable
+        );
+        let wrapped_restore_failed = meerkat_mob::MobError::SharedRetirementFailure(Arc::new(
+            meerkat_mob::MobError::MemberRestoreFailed {
+                member_id: meerkat_mob::ids::AgentIdentity::from("agent-alpha"),
+                session_id: None,
+                reason: "durable snapshot missing".to_string(),
+            },
+        ));
+        assert_eq!(
+            classify_resume_error(&wrapped_restore_failed),
+            ResumeRejectionKind::MemberRestoreFailed
+        );
+        // Reading through the wrapper must not over-classify: a wrapped
+        // Absent stays out of the archived class exactly like the bare one.
+        let wrapped_absent = meerkat_mob::MobError::SharedRetirementFailure(Arc::new(
+            meerkat_mob::MobError::SessionUnavailableForResume {
+                session_id: meerkat_core::types::SessionId::new(),
+                reason: meerkat_mob::error::SessionResumeUnavailableReason::Absent,
+                runtime_state: None,
+                verdict: None,
+            },
+        ));
+        assert_eq!(
+            classify_resume_error(&wrapped_absent),
+            ResumeRejectionKind::Other
+        );
+        // And the resume door itself carries the typed kind, which is what the
+        // identity runtime matches to record the archived-not-revivable park.
+        let identity = AgentIdentity::parse("domain:archived")
+            .unwrap_or_else(|err| panic!("test identity must parse: {err}"));
+        let session_id = meerkat_core::types::SessionId::new();
+        assert!(matches!(
+            resume_rejected(
+                &identity,
+                &session_id,
+                &wrapped_archived,
+                "collision retire before resume retry"
+            ),
+            BridgeError::ResumeRejected {
+                kind: ResumeRejectionKind::ArchivedNotRevivable,
+                ..
+            }
+        ));
     }
 
     /// A provider-auth build refusal is read TYPED from meerkat's carriers
