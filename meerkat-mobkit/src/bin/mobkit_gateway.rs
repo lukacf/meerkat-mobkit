@@ -271,6 +271,7 @@ fn config_fingerprint(
     compaction: Option<&meerkat_core::config::CompactionRuntimeConfig>,
     control_listen: Option<&ControlListenAddr>,
     http_listen: SocketAddr,
+    http_public_base_url: Option<&str>,
     paths: &ConventionalPaths,
 ) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
@@ -325,6 +326,11 @@ fn config_fingerprint(
     // different address must not resume a live runtime bound somewhere else
     // and report that one as if it were the requested bind.
     hasher.update(http_listen.to_string().as_bytes());
+    hasher.update(b"\n");
+    // The advertised base is reported back and remembered in the registry; a
+    // launch that declares a different one must not be answered with the
+    // previous launch's value, so it joins the key beside the listen address.
+    hasher.update(http_public_base_url.unwrap_or("").as_bytes());
     hasher.update(b"\n");
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
 
@@ -815,7 +821,8 @@ fn resolve_http_listen(
     env_value: Option<&str>,
 ) -> Result<SocketAddr, String> {
     if let Some(value) = init_param {
-        return meerkat_mobkit::gateway_composition::parse_http_listen_addr(value);
+        return meerkat_mobkit::gateway_composition::parse_http_listen_addr(value)
+            .map_err(|error| error.to_string());
     }
     if let Some(addr) = flag {
         return Ok(addr);
@@ -867,6 +874,30 @@ fn init_response(
             "control_listen_address": control_listen_address,
         }
     })
+}
+
+/// Marker error: `run()` has already written the init reply for this failure
+/// on the request id (`-32602` for a refused declaration, `-32603` for a
+/// failed bind), so `main` must not write a second, id-less one.
+#[derive(Debug)]
+struct InitReplied;
+
+impl std::fmt::Display for InitReplied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("mobkit/init was refused; the reply is already on stdout")
+    }
+}
+
+impl std::error::Error for InitReplied {}
+
+/// Write a typed init refusal on the request id and return the marker
+/// `run()` propagates. Invalid declarations are `-32602` (the same code
+/// `rpc_gateway` answers with), so an SDK gets a caller action rather than an
+/// "internal error" with a null id.
+fn refuse_init(request_id: &Value, code: i64, message: String) -> anyhow::Error {
+    tracing::warn!(code, %message, "mobkit/init refused");
+    print_json_line(&init_error(request_id.clone(), code, message));
+    anyhow::Error::new(InitReplied)
 }
 
 fn init_error(request_id: Value, code: i64, message: String) -> Value {
@@ -1297,8 +1328,12 @@ fn main() {
         http_listen,
         allow_remote,
     }))) {
-        let response = init_error(Value::Null, -32603, error.to_string());
-        print_json_line(&response);
+        // A refusal `run()` already answered on the request id must not be
+        // followed by a second, id-less reply.
+        if error.downcast_ref::<InitReplied>().is_none() {
+            let response = init_error(Value::Null, -32603, error.to_string());
+            print_json_line(&response);
+        }
         std::process::exit(1);
     }
 }
@@ -1354,8 +1389,7 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
     let (request_id, params) = match parse_init_request(init_line.trim()) {
         Ok(value) => value,
         Err(error) => {
-            print_json_line(&init_error(Value::Null, -32602, error.to_string()));
-            return Err(error);
+            return Err(refuse_init(&Value::Null, -32602, error.to_string()));
         }
     };
 
@@ -1392,8 +1426,13 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
         .compaction
         .as_ref()
         .map(|value| {
-            meerkat_mobkit::parse_compaction_policy(value)
-                .map_err(|error| anyhow!("init params: compaction {error}"))
+            meerkat_mobkit::parse_compaction_policy(value).map_err(|error| {
+                refuse_init(
+                    &request_id,
+                    -32602,
+                    format!("init params: compaction {error}"),
+                )
+            })
         })
         .transpose()?;
     // Doctrine default: the identity substrate is ON. `identity_first: false`
@@ -1421,7 +1460,13 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
         http_listen_flag,
         std::env::var("MOBKIT_HTTP_LISTEN_ADDR").ok().as_deref(),
     )
-    .map_err(|error| anyhow!("init params: http_listen: {error}"))?;
+    .map_err(|error| {
+        refuse_init(
+            &request_id,
+            -32602,
+            format!("init params: http_listen: {error}"),
+        )
+    })?;
     let allow_remote = match params.allow_remote {
         Some(value) => value,
         None => allow_remote_flag || env_bool("MOBKIT_HTTP_ALLOW_REMOTE")?.unwrap_or(false),
@@ -1431,21 +1476,27 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
         .as_deref()
         .map(meerkat_mobkit::gateway_composition::parse_http_public_base_url)
         .transpose()
-        .map_err(|error| anyhow!("init params: http_public_base_url: {error}"))?;
+        .map_err(|error| {
+            refuse_init(
+                &request_id,
+                -32602,
+                format!("init params: http_public_base_url: {error}"),
+            )
+        })?;
     // Exposure gate, before the registry lookup and before any bootstrap. The
     // console this binary serves is open (`runtime_decision_state` hardcodes
     // `require_app_auth: false`), so only `allow_remote` can open it; the gate
     // still reads the real decision state so the rule has one owner. The UI
     // config plays no part in the gate and is loaded later, as before.
     meerkat_mobkit::gateway_composition::validate_http_bind_policy(
-        "mobkit_gateway",
+        meerkat_mobkit::gateway_composition::GatewaySurface::MobkitGateway,
         http_listen,
         meerkat_mobkit::gateway_composition::HttpBindPolicy::for_gateway(
             allow_remote,
             &runtime_decision_state(ConsoleUiConfig::default(), console_read_only),
         ),
     )
-    .map_err(|error| anyhow!("init params: {error}"))?;
+    .map_err(|error| refuse_init(&request_id, -32602, format!("init params: {error}")))?;
 
     let mut paths = conventional_paths(&workspace_root);
     // An explicit init param wins over the workspace convention. The
@@ -1454,14 +1505,34 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
     if let Some(explicit) = params.meerkat_config_path.clone() {
         paths.meerkat_config_toml = Some(explicit);
     }
+    // Adoption is never invisible: the convention picks up a file the operator
+    // may not have written for this gateway, and its content joins the resume
+    // key, so the log names the file and which door produced it.
+    if let Some(path) = paths.meerkat_config_toml.as_deref() {
+        let source = if params.meerkat_config_path.is_some() {
+            "meerkat_config_path init param"
+        } else {
+            "<workspace>/.rkat/config.toml convention"
+        };
+        tracing::info!(
+            path = %path.display(),
+            source,
+            "meerkat host config adopted; every agent this gateway builds starts from it"
+        );
+    }
     // Loaded before the registry lookup so a bad file refuses init instead of
     // resuming or creating a runtime built from `Config::default()`.
     let host_config = paths
         .meerkat_config_toml
         .as_deref()
         .map(|path| {
-            meerkat_mobkit::gateway_composition::load_gateway_host_config(path)
-                .map_err(|error| anyhow!("init params: meerkat_config_path: {error}"))
+            meerkat_mobkit::gateway_composition::load_gateway_host_config(path).map_err(|error| {
+                refuse_init(
+                    &request_id,
+                    -32602,
+                    format!("init params: meerkat_config_path: {error}"),
+                )
+            })
         })
         .transpose()?;
     let key = config_fingerprint(
@@ -1478,6 +1549,7 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
         compaction_policy.as_ref(),
         control_listen.as_ref(),
         http_listen,
+        declared_public_base_url.as_deref(),
         &paths,
     )?;
     let registry_file = layout
@@ -1510,8 +1582,29 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Bind the HTTP listener before any bootstrap work and right after the
+    // resume lookup: a resumed launch reports the live runtime's listener and
+    // must not contend for its port, while a fresh launch on a fixed
+    // `http_listen` may find the port taken (EADDRINUSE). Failing here costs
+    // the init reply and nothing else: no runtime build and no schedule
+    // executor lease left held for its full duration by a process exit. The
+    // listener is served once the runtime is up (`http_binding.serve`).
+    let http_binding = meerkat_mobkit::gateway_composition::GatewayHttpBinding::bind(http_listen)
+        .await
+        .map_err(|error| {
+            refuse_init(
+                &request_id,
+                -32603,
+                format!("failed to bind gateway listener {http_listen}: {error}"),
+            )
+        })?
+        .with_advertised_base_url(declared_public_base_url);
+    let http_base_url = http_binding.http_base_url();
+    let http_public_base_url = http_binding.advertised_base_url().map(str::to_string);
+
     std::env::set_current_dir(&workspace_root).ok();
-    let (definition, used_workspace_config) = load_definition(&workspace_root, &key, &paths)?;
+    let (definition, used_workspace_config) = load_definition(&workspace_root, &key, &paths)
+        .map_err(|error| refuse_init(&request_id, -32602, error.to_string()))?;
     let console_ui = match &paths.console_toml {
         Some(path) => load_console_ui_config_from_path_for_realm(path, realm)
             .with_context(|| format!("failed to load {}", path.display()))?,
@@ -1964,12 +2057,8 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
 
     let composition = composition.activate();
     let runtime = composition.runtime();
-    let http_binding = meerkat_mobkit::gateway_composition::GatewayHttpBinding::bind(http_listen)
-        .await
-        .with_context(|| format!("failed to bind gateway listener {http_listen}"))?
-        .with_advertised_base_url(declared_public_base_url);
-    let http_base_url = http_binding.http_base_url();
-    let http_public_base_url = http_binding.advertised_base_url().map(str::to_string);
+    // The HTTP listener was bound at init, right behind the exposure gate and
+    // the resume lookup (`http_binding` above); only serving it waited.
 
     let control_listen_address = runtime.control_listener_advertised_address();
     registry.entries.retain(|entry| entry.key != key);
@@ -1995,7 +2084,7 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
 
     let decisions = runtime_decision_state(console_ui, console_read_only);
     meerkat_mobkit::gateway_composition::warn_on_non_loopback_bind(
-        "mobkit_gateway",
+        meerkat_mobkit::gateway_composition::GatewaySurface::MobkitGateway,
         http_binding.local_addr(),
         &decisions,
     );
@@ -2351,12 +2440,14 @@ mod tests {
     #[test]
     fn non_loopback_http_listen_always_needs_allow_remote_on_the_open_console()
     -> Result<(), std::net::AddrParseError> {
-        use meerkat_mobkit::gateway_composition::{HttpBindPolicy, validate_http_bind_policy};
+        use meerkat_mobkit::gateway_composition::{
+            GatewaySurface, HttpBindPolicy, validate_http_bind_policy,
+        };
 
         let state = runtime_decision_state(ConsoleUiConfig::default(), false);
         let remote: SocketAddr = "0.0.0.0:8080".parse()?;
         let refused = validate_http_bind_policy(
-            "mobkit_gateway",
+            GatewaySurface::MobkitGateway,
             remote,
             HttpBindPolicy::for_gateway(false, &state),
         );
@@ -2368,7 +2459,7 @@ mod tests {
         assert!(message.contains("MOBKIT_HTTP_ALLOW_REMOTE"), "{message}");
         assert_eq!(
             validate_http_bind_policy(
-                "mobkit_gateway",
+                GatewaySurface::MobkitGateway,
                 remote,
                 HttpBindPolicy::for_gateway(true, &state),
             ),
@@ -2376,7 +2467,7 @@ mod tests {
         );
         assert_eq!(
             validate_http_bind_policy(
-                "mobkit_gateway",
+                GatewaySurface::MobkitGateway,
                 "127.0.0.1:0".parse()?,
                 HttpBindPolicy::for_gateway(false, &state),
             ),
@@ -2439,11 +2530,54 @@ mod tests {
                 None,
                 None,
                 listen.parse()?,
+                None,
                 &paths,
             )
         };
         assert_eq!(fingerprint("127.0.0.1:0")?, fingerprint("127.0.0.1:0")?);
         assert_ne!(fingerprint("127.0.0.1:0")?, fingerprint("0.0.0.0:8080")?);
+        Ok(())
+    }
+
+    /// The advertised base is reported back from the registry on resume, so a
+    /// launch that declares a different one (or drops it) must not resume a
+    /// runtime recorded with the previous value: it joins the key beside the
+    /// listen address.
+    #[test]
+    fn config_fingerprint_changes_with_http_public_base_url() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = conventional_paths(temp.path());
+        let fingerprint = |base: Option<&str>| -> anyhow::Result<String> {
+            config_fingerprint(
+                temp.path(),
+                None,
+                false,
+                "tux-auto",
+                false,
+                false,
+                temp.path(),
+                temp.path(),
+                temp.path(),
+                None,
+                None,
+                None,
+                meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
+                base,
+                &paths,
+            )
+        };
+        assert_eq!(
+            fingerprint(Some("https://mob.example.com"))?,
+            fingerprint(Some("https://mob.example.com"))?
+        );
+        assert_ne!(
+            fingerprint(Some("https://mob.example.com"))?,
+            fingerprint(Some("https://other.example.com"))?
+        );
+        assert_ne!(
+            fingerprint(Some("https://mob.example.com"))?,
+            fingerprint(None)?
+        );
         Ok(())
     }
 
@@ -2543,6 +2677,7 @@ mod tests {
                 None,
                 None,
                 meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
+                None,
                 paths,
             )
         };
@@ -2639,6 +2774,7 @@ mod tests {
             None,
             None,
             meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
+            None,
             &paths,
         )?;
         let read_only = config_fingerprint(
@@ -2655,6 +2791,7 @@ mod tests {
             None,
             None,
             meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
+            None,
             &paths,
         )?;
 
@@ -2692,6 +2829,7 @@ mod tests {
             None,
             None,
             meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
+            None,
             &paths,
         )?;
         let pinned_key = config_fingerprint(
@@ -2708,6 +2846,7 @@ mod tests {
             Some(&pinned),
             None,
             meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
+            None,
             &paths,
         )?;
         let lower_key = config_fingerprint(
@@ -2724,6 +2863,7 @@ mod tests {
             Some(&lower),
             None,
             meerkat_mobkit::gateway_composition::DEFAULT_GATEWAY_HTTP_LISTEN,
+            None,
             &paths,
         )?;
 

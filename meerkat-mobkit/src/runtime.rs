@@ -460,9 +460,14 @@ impl RuntimeDecisionState {
     /// whose issuer resolves nowhere, a JWKS with no keys, no trusted modules,
     /// the default auth and ops policies, and the canonical release metadata.
     ///
-    /// Only `console` and the session-store naming are read at serve time, so
-    /// they are the parameters. `bigquery` defaults to `default_dataset` /
-    /// `default_table` (the SDK gateway's naming) when `None`.
+    /// At serve time the runtime reads `console`, the session-store naming
+    /// (`bigquery`) and `modules` (the trusted module set `console_ingress`
+    /// consults). The first two are the parameters; `bigquery` defaults to
+    /// `default_dataset` / `default_table` (the SDK gateway's naming) when
+    /// `None`. `modules` starts empty, which is what both bundled gateways
+    /// serve; a Rust host with trusted modules adds them through
+    /// [`with_modules`](Self::with_modules) instead of falling back to a
+    /// struct literal.
     ///
     /// The default stays fail-closed: `ConsolePolicy::default()` has
     /// `require_app_auth: true`, and because this state carries no keys every
@@ -497,6 +502,16 @@ impl RuntimeDecisionState {
                 support_matrix: CANONICAL_SUPPORT_MATRIX.to_string(),
             },
         }
+    }
+
+    /// Replace the trusted module set a state built by
+    /// [`local_console`](Self::local_console) serves. The validating
+    /// constructor derives this set from the trust manifest; a host that
+    /// opted out of console auth but still runs trusted modules declares them
+    /// here so the exported constructor covers that host too.
+    pub fn with_modules(mut self, modules: Vec<ModuleConfig>) -> Self {
+        self.modules = modules;
+        self
     }
 }
 
@@ -1786,5 +1801,21 @@ mod decision_state_tests {
         let state = RuntimeDecisionState::local_console(ConsolePolicy::default(), None);
 
         assert!(state.console.require_app_auth);
+    }
+
+    #[test]
+    fn local_console_with_modules_carries_the_trusted_set() {
+        let module = ModuleConfig {
+            id: "recorder".to_string(),
+            command: "recorder".to_string(),
+            args: vec!["--flag".to_string()],
+            restart_policy: RestartPolicy::Never,
+        };
+
+        let state = RuntimeDecisionState::local_console(open_console(), None)
+            .with_modules(vec![module.clone()]);
+
+        assert_eq!(state.modules, vec![module]);
+        assert_eq!(state.console, open_console());
     }
 }

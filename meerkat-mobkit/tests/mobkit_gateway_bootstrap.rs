@@ -20,6 +20,7 @@
 //! is independent of the mob), so an empty workspace is sufficient.
 
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -458,21 +459,24 @@ fn mobkit_gateway_identity_first_opt_out_skips_the_substrate() {
 /// plus a fresh workspace and store, and return the first stdout line as
 /// JSON (a `result` or an `error`).
 fn init_once(extra: Value, timeout: Duration) -> Value {
-    let bin = env!("CARGO_BIN_EXE_mobkit_gateway");
     let workspace = TempDir::new().expect("workspace tempdir");
     let store = TempDir::new().expect("store tempdir");
+    init_once_in(workspace.path(), store.path(), extra, timeout)
+}
+
+/// [`init_once`] against caller-owned directories, so a test can inspect what
+/// the boot left (or did not leave) on disk. `store_path` is `<store>/store`.
+fn init_once_in(workspace: &Path, store: &Path, extra: Value, timeout: Duration) -> Value {
+    let bin = env!("CARGO_BIN_EXE_mobkit_gateway");
 
     let mut params = match extra {
         Value::Object(map) => map,
         other => panic!("init params must be a JSON object, got {other}"),
     };
-    params.insert(
-        "workspace_root".into(),
-        json!(workspace.path().to_string_lossy()),
-    );
+    params.insert("workspace_root".into(), json!(workspace.to_string_lossy()));
     params.insert(
         "store_path".into(),
-        json!(store.path().join("store").to_string_lossy()),
+        json!(store.join("store").to_string_lossy()),
     );
     let init = json!({
         "jsonrpc": "2.0",
@@ -482,10 +486,10 @@ fn init_once(extra: Value, timeout: Duration) -> Value {
     });
 
     let mut child = Command::new(bin)
-        .current_dir(workspace.path())
+        .current_dir(workspace)
         .env("ANTHROPIC_API_KEY", "sk-ant-regression-test")
         .env("OPENAI_API_KEY", "sk-regression-test")
-        .env("XDG_STATE_HOME", workspace.path().join("xdg-state"))
+        .env("XDG_STATE_HOME", workspace.join("xdg-state"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -514,9 +518,16 @@ fn init_once(extra: Value, timeout: Duration) -> Value {
         .unwrap_or_else(|e| panic!("non-JSON init response {:?}: {}", line, e))
 }
 
+/// A `[self_hosted.models]` alias whose server is not declared: parses, fails
+/// meerkat's `Config::validate`, and must be refused at init by path on both
+/// binaries instead of killing the first member build.
+const DANGLING_HOST_CONFIG: &str =
+    "[self_hosted.models.gemma-4-31b]\nserver = \"nowhere\"\nremote_model = \"gemma4:31b\"\n";
+
 /// A non-loopback `http_listen` without `allow_remote` is refused at init,
-/// before bootstrap: the reply is an error that names the address and the
-/// acknowledgement, not a bootstrapped runtime bound to every interface.
+/// before bootstrap: the reply is a `-32602` error ON THE REQUEST ID that
+/// names the address and the acknowledgement, not a bootstrapped runtime
+/// bound to every interface and not an "internal error" with a null id.
 #[test]
 fn mobkit_gateway_refuses_a_non_loopback_http_listen_without_allow_remote() {
     let response = init_once(
@@ -527,9 +538,74 @@ fn mobkit_gateway_refuses_a_non_loopback_http_listen_without_allow_remote() {
         response.get("result").is_none(),
         "a wildcard bind must not succeed without allow_remote: {response}"
     );
+    assert_eq!(response["id"], json!(1), "{response}");
+    assert_eq!(response["error"]["code"], json!(-32602), "{response}");
     let message = response["error"]["message"].as_str().unwrap_or_default();
     assert!(message.contains("0.0.0.0:0"), "{response}");
     assert!(message.contains("allow_remote"), "{response}");
+}
+
+/// `http_listen` makes a fixed port possible, so a port another process holds
+/// is a realistic init failure. It must be answered before any bootstrap:
+/// `-32603` on the request id naming the address, and nothing under the store
+/// path (the identity substrate, session store and schedule executor lease
+/// all live there and none may have been touched).
+#[test]
+fn mobkit_gateway_refuses_a_taken_fixed_port_at_init_without_bootstrapping() {
+    let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("hold a loopback port");
+    let taken = holder.local_addr().expect("held address");
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let store = TempDir::new().expect("store tempdir");
+
+    let response = init_once_in(
+        workspace.path(),
+        store.path(),
+        json!({ "http_listen": taken.to_string() }),
+        Duration::from_secs(45),
+    );
+
+    assert!(
+        response.get("result").is_none(),
+        "a taken port must not produce a runtime: {response}"
+    );
+    assert_eq!(response["id"], json!(1), "{response}");
+    assert_eq!(response["error"]["code"], json!(-32603), "{response}");
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains(&taken.to_string()), "{response}");
+    assert!(message.contains("failed to bind"), "{response}");
+    let store_dir = store.path().join("store");
+    assert!(
+        !store_dir.exists(),
+        "a refused bind must not have bootstrapped anything under {}",
+        store_dir.display()
+    );
+    drop(holder);
+}
+
+/// The host config is validated with meerkat's own rules at init: a dangling
+/// server reference is `-32602` on the request id naming the file, on this
+/// binary too.
+#[test]
+fn mobkit_gateway_refuses_a_host_config_that_does_not_validate_by_path() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let store = TempDir::new().expect("store tempdir");
+    let config = workspace.path().join("dangling.toml");
+    std::fs::write(&config, DANGLING_HOST_CONFIG).expect("write host config");
+
+    let response = init_once_in(
+        workspace.path(),
+        store.path(),
+        json!({ "meerkat_config_path": config.to_string_lossy() }),
+        Duration::from_secs(45),
+    );
+
+    assert!(response.get("result").is_none(), "{response}");
+    assert_eq!(response["id"], json!(1), "{response}");
+    assert_eq!(response["error"]["code"], json!(-32602), "{response}");
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("meerkat_config_path"), "{response}");
+    assert!(message.contains("dangling.toml"), "{response}");
+    assert!(message.contains("references unknown server"), "{response}");
 }
 
 /// With the acknowledgement the wildcard bind succeeds. `http_base_url` is
@@ -561,27 +637,49 @@ fn mobkit_gateway_binds_a_non_loopback_http_listen_with_allow_remote() {
     );
 }
 
+const RPC_MOB_CONFIG: &str =
+    "[mob]\nid = \"http-exposure-test\"\n\n[profiles.default]\nmodel = \"gpt-5.5\"\n";
+
 /// The same two facts on the SDK gateway: spawn `rpc_gateway --persistent`,
 /// send one `mobkit/init` carrying `runtime_options`, return the reply.
 fn rpc_init_once(runtime_options: Value, timeout: Duration) -> Value {
-    const MOB_CONFIG: &str =
-        "[mob]\nid = \"http-exposure-test\"\n\n[profiles.default]\nmodel = \"gpt-5.5\"\n";
-    let bin = env!("CARGO_BIN_EXE_rpc_gateway");
     let workspace = TempDir::new().expect("workspace tempdir");
+    rpc_init_in(
+        workspace.path(),
+        RPC_MOB_CONFIG,
+        json!({}),
+        runtime_options,
+        timeout,
+    )
+}
+
+/// [`rpc_init_once`] with the mob definition text, extra TOP-LEVEL init
+/// params (`top_level`, an object) and the workspace under the test's control.
+fn rpc_init_in(
+    workspace: &Path,
+    mob_config: &str,
+    top_level: Value,
+    runtime_options: Value,
+    timeout: Duration,
+) -> Value {
+    let bin = env!("CARGO_BIN_EXE_rpc_gateway");
+    let mut params = match top_level {
+        Value::Object(map) => map,
+        other => panic!("top-level init params must be a JSON object, got {other}"),
+    };
+    params.insert("mob_config".into(), json!(mob_config));
+    params.insert("runtime_options".into(), runtime_options);
     let init = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "mobkit/init",
-        "params": {
-            "mob_config": MOB_CONFIG,
-            "runtime_options": runtime_options,
-        },
+        "params": Value::Object(params),
     });
 
     let mut child = Command::new(bin)
         .arg("--persistent")
-        .current_dir(workspace.path())
-        .env("XDG_STATE_HOME", workspace.path().join("xdg-state"))
+        .current_dir(workspace)
+        .env("XDG_STATE_HOME", workspace.join("xdg-state"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -608,6 +706,117 @@ fn rpc_init_once(runtime_options: Value, timeout: Duration) -> Value {
     let _ = child.wait();
     serde_json::from_str(line.trim())
         .unwrap_or_else(|e| panic!("non-JSON init response {:?}: {}", line, e))
+}
+
+/// `rpc_gateway`: a port another process holds is refused at init, before
+/// any bootstrap: `-32603` on the request id naming the address, and the
+/// declared `persistent_state` directory was never created (the session
+/// store, identity substrate and schedule executor lease all live there).
+#[test]
+fn rpc_gateway_refuses_a_taken_fixed_port_at_init_without_bootstrapping() {
+    let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("hold a loopback port");
+    let taken = holder.local_addr().expect("held address");
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let state = workspace.path().join("state");
+
+    let response = rpc_init_in(
+        workspace.path(),
+        RPC_MOB_CONFIG,
+        json!({ "persistent_state": state.to_string_lossy() }),
+        json!({ "http_listen": taken.to_string() }),
+        Duration::from_secs(45),
+    );
+
+    assert!(
+        response.get("result").is_none(),
+        "a taken port must not produce a runtime: {response}"
+    );
+    assert_eq!(response["id"], json!(1), "{response}");
+    assert_eq!(response["error"]["code"], json!(-32603), "{response}");
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains(&taken.to_string()), "{response}");
+    assert!(message.contains("failed to bind"), "{response}");
+    assert!(
+        !state.exists(),
+        "a refused bind must not have bootstrapped anything under {}",
+        state.display()
+    );
+    drop(holder);
+}
+
+/// `rpc_gateway`: the four exposure/config options live inside
+/// `runtime_options` here; the top-level shape (mobkit_gateway's) is refused
+/// with `-32602` naming their home, never bound to loopback in silence.
+#[test]
+fn rpc_gateway_refuses_top_level_exposure_options_by_naming_runtime_options() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let response = rpc_init_in(
+        workspace.path(),
+        RPC_MOB_CONFIG,
+        json!({ "http_listen": "0.0.0.0:8080", "allow_remote": true }),
+        json!({}),
+        Duration::from_secs(45),
+    );
+    assert!(response.get("result").is_none(), "{response}");
+    assert_eq!(response["error"]["code"], json!(-32602), "{response}");
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("runtime_options.http_listen"),
+        "{response}"
+    );
+    assert!(
+        message.contains("runtime_options.allow_remote"),
+        "{response}"
+    );
+}
+
+/// `rpc_gateway`: a `[self_hosted]` table in `mob_config` is refused at init
+/// with `-32602` pointing at `meerkat_config_path`, not dropped by the
+/// definition parser.
+#[test]
+fn rpc_gateway_refuses_host_config_tables_in_mob_config() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let mob_config = format!(
+        "{RPC_MOB_CONFIG}\n[self_hosted.servers.local]\nbase_url = \"http://127.0.0.1:11434\"\n"
+    );
+    let response = rpc_init_in(
+        workspace.path(),
+        &mob_config,
+        json!({}),
+        json!({}),
+        Duration::from_secs(45),
+    );
+    assert!(response.get("result").is_none(), "{response}");
+    assert_eq!(response["error"]["code"], json!(-32602), "{response}");
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("[self_hosted]"), "{response}");
+    assert!(message.contains("meerkat_config_path"), "{response}");
+}
+
+/// `rpc_gateway`: a host config that parses but fails meerkat's own
+/// `Config::validate` (dangling server reference) is `-32602` at init naming
+/// the option and the file, the fail-late class the ingress exists to remove.
+#[test]
+fn rpc_gateway_refuses_a_host_config_that_does_not_validate_by_path() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let config = workspace.path().join("dangling.toml");
+    std::fs::write(&config, DANGLING_HOST_CONFIG).expect("write host config");
+    let response = rpc_init_in(
+        workspace.path(),
+        RPC_MOB_CONFIG,
+        json!({}),
+        json!({ "meerkat_config_path": config.to_string_lossy() }),
+        Duration::from_secs(45),
+    );
+    assert!(response.get("result").is_none(), "{response}");
+    assert_eq!(response["error"]["code"], json!(-32602), "{response}");
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("runtime_options.meerkat_config_path"),
+        "{response}"
+    );
+    assert!(message.contains("dangling.toml"), "{response}");
+    assert!(message.contains("references unknown server"), "{response}");
 }
 
 /// `rpc_gateway`: a non-loopback `runtime_options.http_listen` with neither

@@ -474,12 +474,11 @@ fn unknown_model_init_error(definition: &MobDefinition) -> Option<String> {
 /// `. Did you mean one of: ...?` over catalog ids that share a three-segment
 /// prefix with `model` in either direction; empty when nothing is close.
 fn catalog_model_hint(model: &str) -> String {
-    let prefix = model.split('-').take(3).collect::<Vec<_>>().join("-");
+    let prefix = three_segment_prefix(model);
     let mut suggestions: Vec<&str> = meerkat_models::catalog::catalog()
         .iter()
         .filter(|entry| {
-            entry.id.starts_with(&prefix)
-                || model.starts_with(&entry.id.split('-').take(3).collect::<Vec<_>>().join("-"))
+            entry.id.starts_with(prefix) || model.starts_with(three_segment_prefix(entry.id))
         })
         .map(|entry| entry.id)
         .collect();
@@ -491,6 +490,110 @@ fn catalog_model_hint(model: &str) -> String {
     } else {
         format!(". Did you mean one of: {}?", suggestions.join(", "))
     }
+}
+
+/// The first three `-`-separated segments of a model id, borrowed
+/// (`claude-sonnet-4` of `claude-sonnet-4-5-20250514`); the whole id when it
+/// has fewer.
+fn three_segment_prefix(id: &str) -> &str {
+    id.match_indices('-')
+        .nth(2)
+        .map_or(id, |(index, _)| &id[..index])
+}
+
+/// Whether `model` is a catalog id.
+fn is_catalogued_model(model: &str) -> bool {
+    meerkat_models::catalog::catalog()
+        .iter()
+        .any(|entry| entry.id == model)
+}
+
+/// One WARN line per provider-annotated profile whose model is neither
+/// catalogued nor defined under this definition's `[models.<id>]`.
+///
+/// meerkat's rule (`validate_definition`) accepts such a profile at init: the
+/// provider annotation is what makes the model resolvable, so
+/// `unknown_model_init_error` says nothing about it, and a dated or misspelled
+/// id on a `provider = "openai"` profile (every HomeCore profile is annotated)
+/// surfaces at the first LLM call rather than at init. These lines keep that
+/// visible without making the gateway a second refusal authority; the catalog
+/// hint rides along for the typo case. A `provider = "self_hosted"` alias is
+/// registered in the meerkat host config rather than the catalog, so it is
+/// checked against `[self_hosted.models]` there and warned about only when
+/// absent (the member would then fail at its first build).
+fn uncatalogued_provider_annotated_model_warnings(
+    definition: &MobDefinition,
+    host_config: Option<&Config>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (name, binding) in &definition.profiles {
+        let Some(profile) = binding.as_inline() else {
+            continue;
+        };
+        let Some(provider) = profile.provider else {
+            continue;
+        };
+        let model = profile.model.as_str();
+        if is_catalogued_model(model) || definition.models.contains_key(&profile.model) {
+            continue;
+        }
+        if provider == meerkat_core::Provider::SelfHosted {
+            let registered =
+                host_config.is_some_and(|config| config.self_hosted.models.contains_key(model));
+            if !registered {
+                warnings.push(format!(
+                    "profiles.{name} model '{model}' (provider = \"self_hosted\") is not \
+                     registered under [self_hosted.models] in the meerkat host config; init \
+                     accepts it on meerkat's rule and the member will fail at its first build \
+                     unless runtime_options.meerkat_config_path names a config that defines it",
+                    name = name.as_str(),
+                ));
+            }
+            continue;
+        }
+        warnings.push(format!(
+            "profiles.{name} model '{model}' is provider-annotated (provider = \"{provider}\") \
+             but is neither catalogued nor defined under [models.{model}]; init accepts it on \
+             meerkat's rule and a typo surfaces at the first LLM call{hint}",
+            name = name.as_str(),
+            provider = provider.as_str(),
+            hint = catalog_model_hint(model),
+        ));
+    }
+    warnings
+}
+
+/// `mobkit/init` params that are `runtime_options` fields on this binary but
+/// top-level init params on `mobkit_gateway`. A host that copies the other
+/// binary's shape is told so, with the field's home named, instead of being
+/// bound to loopback with the default config in silence: the same
+/// refuse-only rule `mobkit_gateway` applies to a `runtime_options` object.
+const RUNTIME_OPTIONS_ONLY_KEYS: [&str; 4] = [
+    "http_listen",
+    "allow_remote",
+    "http_public_base_url",
+    "meerkat_config_path",
+];
+
+fn refuse_misplaced_runtime_options(params: &Value) -> Result<(), String> {
+    let misplaced: Vec<&str> = RUNTIME_OPTIONS_ONLY_KEYS
+        .into_iter()
+        .filter(|key| params.get(key).is_some())
+        .collect();
+    if misplaced.is_empty() {
+        return Ok(());
+    }
+    let homes: Vec<String> = misplaced
+        .iter()
+        .map(|key| format!("runtime_options.{key}"))
+        .collect();
+    Err(format!(
+        "top-level init param(s) {} are runtime_options fields on rpc_gateway: declare them as \
+         {}. The top-level form is mobkit_gateway's init-param shape and this binary would \
+         otherwise ignore it",
+        misplaced.join(", "),
+        homes.join(", "),
+    ))
 }
 
 #[derive(Default)]
@@ -565,16 +668,6 @@ fn minimal_decision_state() -> RuntimeDecisionState {
     RuntimeDecisionState::local_console(ConsolePolicy::default(), None)
 }
 
-/// True when `state` will refuse every console request: app auth is required
-/// but the trusted JWKS carries no key, so no bearer token can verify. This is
-/// what an SDK launch gets with neither `runtime_options.auth_config` nor
-/// `console_require_app_auth = false`; it is logged at startup so the resulting
-/// 401s are diagnosable.
-fn console_closed_to_every_caller(state: &RuntimeDecisionState) -> bool {
-    state.console.require_app_auth
-        && meerkat_mobkit::parse_jwks_json(&state.trusted_oidc.jwks_json).is_err()
-}
-
 /// The HTTP listener exposure gate, run before any bootstrap work. The
 /// decision state it consults is the one the console will serve with:
 /// `auth_config` when the host passed one, else the keyless fallback, so
@@ -592,7 +685,7 @@ fn http_bind_gate(
         }
     };
     meerkat_mobkit::gateway_composition::validate_http_bind_policy(
-        "rpc_gateway",
+        meerkat_mobkit::gateway_composition::GatewaySurface::RpcGateway,
         options.http_listen,
         meerkat_mobkit::gateway_composition::HttpBindPolicy::for_gateway(
             options.allow_remote,
@@ -691,6 +784,7 @@ fn parse_gateway_modules(params: &Value) -> (Vec<ModuleConfig>, Vec<PreSpawnData
 #[cfg(test)]
 mod tests {
     use super::*;
+    use meerkat_mobkit::gateway_composition::ConsoleAuthPosture;
     use meerkat_mobkit::mob_handle_runtime::MobRuntimeError;
     use meerkat_mobkit::unified_runtime::types::IdentityAuthorityReleaseOutcome;
     use meerkat_mobkit::unified_runtime::types::RetiredSupervisorCleanupOutcome;
@@ -1359,6 +1453,100 @@ default_binding = "local"
             !message.contains("Did you mean"),
             "no hint when nothing is close: {message}"
         );
+    }
+
+    /// A provider-annotated profile bypasses the init refusal by meerkat's
+    /// rule, so a dated id on it passes init; the gateway then owes one WARN
+    /// naming the profile, the model and the closest catalog ids. Catalogued
+    /// and `[models.<id>]`-defined annotated models warn about nothing, and a
+    /// self-hosted alias warns only when the host config does not register it.
+    #[test]
+    fn provider_annotated_dated_model_passes_init_and_warns_with_the_hint() {
+        let dated = MobDefinition::from_toml(
+            "[mob]\nid = \"m\"\n\n[profiles.w]\nmodel = \"claude-sonnet-4-5-20250514\"\n\
+             provider = \"anthropic\"\n",
+        )
+        .expect("a dated annotated id parses");
+        assert_eq!(
+            unknown_model_init_error(&dated),
+            None,
+            "provider annotation must pass init (meerkat's rule)"
+        );
+        let warnings = uncatalogued_provider_annotated_model_warnings(&dated, None);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let warning = &warnings[0];
+        assert!(warning.contains("profiles.w"), "{warning}");
+        assert!(warning.contains("claude-sonnet-4-5-20250514"), "{warning}");
+        assert!(warning.contains("provider = \"anthropic\""), "{warning}");
+        assert!(warning.contains("first LLM call"), "{warning}");
+        assert!(
+            warning.contains("Did you mean one of:") && warning.contains("claude-sonnet-4-5"),
+            "{warning}"
+        );
+
+        let quiet = MobDefinition::from_toml(
+            "[mob]\nid = \"m\"\n\n[profiles.a]\nmodel = \"gpt-5.5\"\nprovider = \"openai\"\n\n\
+             [profiles.b]\nmodel = \"house-model\"\nprovider = \"openai\"\n\n\
+             [models.house-model]\nprovider = \"openai\"\n",
+        )
+        .expect("catalogued and custom annotated models parse");
+        assert!(
+            uncatalogued_provider_annotated_model_warnings(&quiet, None).is_empty(),
+            "catalogued and [models.<id>] models must not warn"
+        );
+
+        let self_hosted = MobDefinition::from_toml(
+            "[mob]\nid = \"m\"\n\n[profiles.w]\nmodel = \"gemma-4-31b\"\n\
+             provider = \"self_hosted\"\nself_hosted_server_id = \"local\"\n",
+        )
+        .expect("self-hosted definition");
+        let unregistered = uncatalogued_provider_annotated_model_warnings(&self_hosted, None);
+        assert_eq!(unregistered.len(), 1, "{unregistered:?}");
+        assert!(
+            unregistered[0].contains("[self_hosted.models]")
+                && unregistered[0].contains("meerkat_config_path"),
+            "{}",
+            unregistered[0]
+        );
+        let mut host = Config::default();
+        host.merge_toml_str(HOST_CONFIG_FIXTURE)
+            .expect("host config fixture");
+        assert!(
+            uncatalogued_provider_annotated_model_warnings(&self_hosted, Some(&host)).is_empty(),
+            "an alias the host config registers must not warn"
+        );
+    }
+
+    /// The four exposure/config options are `runtime_options` fields here and
+    /// top-level init params on `mobkit_gateway`; the top-level shape must be
+    /// refused by name, never silently ignored.
+    #[test]
+    fn top_level_exposure_options_are_refused_and_pointed_at_runtime_options() {
+        assert_eq!(
+            refuse_misplaced_runtime_options(&json!({
+                "mob_config": "",
+                "runtime_options": { "http_listen": "127.0.0.1:0" }
+            })),
+            Ok(())
+        );
+        let error = refuse_misplaced_runtime_options(&json!({
+            "http_listen": "0.0.0.0:8080",
+            "meerkat_config_path": "/etc/homecore/config.toml"
+        }))
+        .err()
+        .unwrap_or_default();
+        assert!(error.contains("runtime_options.http_listen"), "{error}");
+        assert!(
+            error.contains("runtime_options.meerkat_config_path"),
+            "{error}"
+        );
+        assert!(error.contains("mobkit_gateway"), "{error}");
+        for key in RUNTIME_OPTIONS_ONLY_KEYS {
+            let error = refuse_misplaced_runtime_options(&json!({ key: true }))
+                .err()
+                .unwrap_or_default();
+            assert!(error.contains(&format!("runtime_options.{key}")), "{error}");
+        }
     }
 
     /// M4: `runtime_store` accepts only the explicit in-memory declaration;
@@ -2294,7 +2482,7 @@ actions = ["agent.view"]
 
         let decisions = options.decisions.expect("decisions");
         assert!(!decisions.console.require_app_auth);
-        assert!(!console_closed_to_every_caller(&decisions));
+        assert_eq!(ConsoleAuthPosture::of(&decisions), ConsoleAuthPosture::Open);
     }
 
     /// The three HTTP exposure doors parse to typed values and default to the
@@ -2419,7 +2607,10 @@ actions = ["agent.view"]
         let state = minimal_decision_state();
 
         assert!(state.console.require_app_auth);
-        assert!(console_closed_to_every_caller(&state));
+        assert_eq!(
+            ConsoleAuthPosture::of(&state),
+            ConsoleAuthPosture::ClosedToEveryCaller
+        );
     }
 
     #[test]
@@ -2443,7 +2634,10 @@ actions = ["agent.view"]
 
         let decisions = options.decisions.expect("decisions");
         assert!(decisions.console.read_only);
-        assert!(console_closed_to_every_caller(&decisions));
+        assert_eq!(
+            ConsoleAuthPosture::of(&decisions),
+            ConsoleAuthPosture::ClosedToEveryCaller
+        );
     }
 
     #[test]
@@ -2461,7 +2655,10 @@ actions = ["agent.view"]
 
         let decisions = options.decisions.expect("decisions");
         assert!(decisions.console.require_app_auth);
-        assert!(!console_closed_to_every_caller(&decisions));
+        assert_eq!(
+            ConsoleAuthPosture::of(&decisions),
+            ConsoleAuthPosture::Enforced
+        );
     }
 
     #[test]
@@ -9844,38 +10041,6 @@ external_addressable = true
             meerkat_mobkit::storage_layout::default_ephemeral_scratch_root(),
         ),
     };
-    let callback_job_store: Option<Arc<dyn meerkat::DetachedJobStore>> =
-        persistent_state.as_ref().map(|state_path| {
-            let path = meerkat_store::realm_paths_in(
-                state_path,
-                meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
-            )
-            .jobs_sqlite_path;
-            if let Some(parent) = path.parent()
-                && let Err(error) = std::fs::create_dir_all(parent)
-            {
-                fail_init(
-                    &request_id,
-                    STORAGE_RESOLUTION_CODE,
-                    format!(
-                        "failed to create detached job store directory {}: {error}",
-                        parent.display()
-                    ),
-                );
-            }
-            match meerkat::SqliteDetachedJobStore::open(path.clone()) {
-                Ok(store) => Arc::new(store) as Arc<dyn meerkat::DetachedJobStore>,
-                Err(error) => fail_init(
-                    &request_id,
-                    STORAGE_RESOLUTION_CODE,
-                    meerkat_mobkit::storage_health::JobStoreResolutionError {
-                        path,
-                        message: error.to_string(),
-                    }
-                    .to_string(),
-                ),
-            }
-        });
 
     // 3. Set up stdout writer channel for multiplexed output
     let (stdout_tx, mut stdout_rx) = mpsc::channel::<GatewayStdoutLine>(64);
@@ -10051,6 +10216,11 @@ external_addressable = true
         );
     }
 
+    // A top-level `http_listen` / `allow_remote` / `http_public_base_url` /
+    // `meerkat_config_path` is mobkit_gateway's shape; here they live inside
+    // runtime_options and a misplaced one must not be dropped.
+    refuse_misplaced_runtime_options(&params)
+        .unwrap_or_else(|error| fail_init(&request_id, -32602, error));
     let mut gateway_options = parse_gateway_runtime_options(&params, persistent_state.as_deref())
         .unwrap_or_else(|e| {
             fail_init(&request_id, -32602, e);
@@ -10059,6 +10229,74 @@ external_addressable = true
     // non-loopback `http_listen` costs the init reply and nothing else.
     http_bind_gate(&gateway_options)
         .unwrap_or_else(|error| fail_init(&request_id, -32602, error.to_string()));
+    // Bind the HTTP listener right behind the gate, still before any
+    // bootstrap work. `http_listen` makes a fixed port possible, so
+    // EADDRINUSE is a realistic init failure, and failing here costs the init
+    // reply and nothing else: no runtime build, no schedule executor lease
+    // that a `std::process::exit` would leave held for its full duration.
+    // The listener is served once the runtime is up (`http_binding.serve`).
+    let http_binding =
+        meerkat_mobkit::gateway_composition::GatewayHttpBinding::bind(gateway_options.http_listen)
+            .await
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    -32603,
+                    format!(
+                        "failed to bind HTTP listener {}: {error}",
+                        gateway_options.http_listen
+                    ),
+                )
+            })
+            .with_advertised_base_url(gateway_options.http_public_base_url.clone());
+    let http_reachable_addr = http_binding.reachable_addr();
+    let http_base_url = http_binding.http_base_url();
+    let http_public_base_url = http_binding.advertised_base_url().map(str::to_string);
+    // Provider-annotated profiles pass meerkat's init rule whatever their
+    // model string says; say so once per such profile, with the hint, so a
+    // dated id does not first appear as a failed LLM call.
+    for warning in uncatalogued_provider_annotated_model_warnings(
+        &definition,
+        gateway_options.host_config.as_ref(),
+    ) {
+        tracing::warn!("{warning}");
+    }
+    // The detached callback-job store is the first thing that touches the
+    // persistent state directory; it opens AFTER the listener is bound so a
+    // refused or failed bind leaves nothing on disk (the taken-port test
+    // asserts the directory is absent).
+    let callback_job_store: Option<Arc<dyn meerkat::DetachedJobStore>> =
+        persistent_state.as_ref().map(|state_path| {
+            let path = meerkat_store::realm_paths_in(
+                state_path,
+                meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+            )
+            .jobs_sqlite_path;
+            if let Some(parent) = path.parent()
+                && let Err(error) = std::fs::create_dir_all(parent)
+            {
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!(
+                        "failed to create detached job store directory {}: {error}",
+                        parent.display()
+                    ),
+                );
+            }
+            match meerkat::SqliteDetachedJobStore::open(path.clone()) {
+                Ok(store) => Arc::new(store) as Arc<dyn meerkat::DetachedJobStore>,
+                Err(error) => fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    meerkat_mobkit::storage_health::JobStoreResolutionError {
+                        path,
+                        message: error.to_string(),
+                    }
+                    .to_string(),
+                ),
+            }
+        });
     validate_gateway_identity_bootstrap_intent(
         gateway_options.identity_bootstrap_mode.as_ref(),
         has_roster_provider,
@@ -12008,25 +12246,8 @@ external_addressable = true
     }
     let event_drain_task = runtime.clone().spawn_event_drain_task();
 
-    // 6. Bind the HTTP listener: loopback on an ephemeral port unless
-    // runtime_options.http_listen selected another address (gated at init).
-    let http_binding =
-        meerkat_mobkit::gateway_composition::GatewayHttpBinding::bind(gateway_options.http_listen)
-            .await
-            .unwrap_or_else(|error| {
-                fail_init(
-                    &request_id,
-                    -32603,
-                    format!(
-                        "failed to bind HTTP listener {}: {error}",
-                        gateway_options.http_listen
-                    ),
-                )
-            })
-            .with_advertised_base_url(gateway_options.http_public_base_url.clone());
-    let http_reachable_addr = http_binding.reachable_addr();
-    let http_base_url = http_binding.http_base_url();
-    let http_public_base_url = http_binding.advertised_base_url().map(str::to_string);
+    // 6. The HTTP listener was bound at init, right behind the exposure gate
+    // (see `http_binding` above); only serving it waits for the runtime.
 
     // 7. Start HTTP with graceful shutdown
     let mut decision_state = gateway_options
@@ -12035,11 +12256,13 @@ external_addressable = true
         .unwrap_or_else(minimal_decision_state);
     decision_state.console.ui = gateway_options.console_ui.clone();
     meerkat_mobkit::gateway_composition::warn_on_non_loopback_bind(
-        "rpc_gateway",
+        meerkat_mobkit::gateway_composition::GatewaySurface::RpcGateway,
         http_binding.local_addr(),
         &decision_state,
     );
-    if console_closed_to_every_caller(&decision_state) {
+    if meerkat_mobkit::gateway_composition::ConsoleAuthPosture::of(&decision_state)
+        == meerkat_mobkit::gateway_composition::ConsoleAuthPosture::ClosedToEveryCaller
+    {
         tracing::warn!(
             "console requires app auth but trusts no signing key: every console request will be \
              refused with 401. Pass runtime_options.auth_config to trust an issuer, or set \
@@ -12066,11 +12289,15 @@ external_addressable = true
             GatewayLiveOption::Enabled { seed_max_chars, .. } => *seed_max_chars,
             GatewayLiveOption::Disabled => None,
         };
+        // The same host config every other agent-build door starts from:
+        // `EnvRealtimeConfigSource` reads `[realm]` / `[self_hosted]` off it,
+        // so `Config::default()` here would drop a declared host config on
+        // the live door alone, with no diagnostic.
         let live_ctx = Arc::new(meerkat_mobkit::live_wiring::attach_live(
             Arc::clone(&live_service),
             Arc::clone(&live_machine),
             &live_agent_factory,
-            meerkat::Config::default(),
+            gateway_agent_config(&gateway_options),
             ws_base_url,
             live_seed_max_chars,
         ));
