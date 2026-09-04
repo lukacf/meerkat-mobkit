@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.31] - 2026-09-04
+
+### Changed
+
+- **Pinned to Meerkat 0.8.33.** All exact Meerkat dependency sites move to
+  `=0.8.33`; this release pairs with Meerkat 0.8.33, which makes the
+  reopened-gateway resume path wait for a slow stale-session teardown instead
+  of failing with `UnregisterInProgress`.
+
 ### Added
 
 - **Identity-first boot registration now says how long each identity took.**
@@ -316,7 +325,6 @@ pins.
   asymmetric: an embedder who sizes their wait on an advertised figure that has
   silently shrunk is stranded *and* more confident, precisely because they asked.
 
-
 ### Fixed
 
 - **`identity_first_send_does_not_park_mob_actor_until_turn_completion` no
@@ -362,7 +370,6 @@ pins.
   flow context, and the timing - upstream invokes the barrier before minting the
   run id - is upstream's ordering. Both are filed there rather than worked
   around here.
-
 
 - **A never-run queued input is pinned against being reported as completed.**
   All three consumers had reported NULL coverage on this clause. The test drives
@@ -472,7 +479,6 @@ pins.
   be "fixed" by abandoning grouping. Mutation-proven: restoring the group-min
   comparison turns the steer test red and only that test.
 
-
 ### Added
 
 - **CI now runs the TypeScript SDK suite.** It ran nowhere. 705 tests across 20
@@ -495,7 +501,6 @@ pins.
   `scripts/test_ci_workflow.py` pin both halves, and both are mutation-checked:
   downgrading the step to `typecheck`, or dropping the job from the result
   comparison, each turn one red.
-
 
 - **`mobkit/identity/routing_status` exposes meerkat's typed model-routing
   status per identity.** The result is
@@ -968,7 +973,6 @@ member, because the roster does not expose a binding for the caller to restate.
   unreadable or ambiguous intent fails closed and retryable instead of being
   treated as permission to destroy a live member. Only a valid `Absent` intent
   leaves identity-first its existing repair ownership.
-
 
 ## [0.8.22] - 2026-08-24
 
@@ -1654,7 +1658,6 @@ Paired release on meerkat v0.8.21.
 - Python SDK: typed `MobKitRuntime.list_identities()` returning `ConsoleIdentityRecord` (the supported identity -> session/profile map).
 - `docs/proposals/simplification-audit-mobkit.md`: capability audit under the owner's simplification directive; seeds the 0.8.16 program.
 
-
 ## [0.8.13] - 2026-08-06
 
 Paired release on meerkat 0.8.20 (the direct pairing: 0.8.19's
@@ -1760,7 +1763,6 @@ resurrection before tagging.
   repair), and the "no repair admission holds" WARN read as a failure in
   HomeCore's v0.8.11 production validation. Content equality with the
   committed authority now logs debug and returns.
-
 
 ## [0.8.11] - 2026-08-04
 
