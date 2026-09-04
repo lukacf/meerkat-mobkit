@@ -31,6 +31,7 @@ import {
   parseSessionSnapshot,
   parseLeaseGrant,
   parseAgentBuildContext,
+  parseRosterContext,
   parseDurableAgentSpec,
   parseAgentBuildDraft,
   agentBuildDraftToDict,
@@ -517,7 +518,9 @@ export class CallbackDispatcher {
       if (this._rosterProvider === null) {
         throw new Error("no RosterProvider registered");
       }
-      const context = params.context ?? {};
+      // The gateway nests the Rust `RosterContext` under `context`, the same
+      // envelope as the topology and customizer callbacks.
+      const context = parseRosterContext(params.context ?? {});
       const specs = await this._rosterProvider.roster(context);
       return specs.map(durableAgentSpecToDict);
     }

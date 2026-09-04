@@ -2536,6 +2536,45 @@ export function parseAgentBuildContext(raw: unknown): AgentBuildContext {
   };
 }
 
+// -- RosterContext ----------------------------------------------------------
+
+/**
+ * Read-only context the gateway hands to `RosterProvider.roster`.
+ *
+ * Mirrors the Rust `RosterContext` one for one; it arrives on the wire as
+ * `callback/roster_provider/roster` `params.context`.
+ *
+ * `mobDefinition` is the booted mob's compiled definition as a plain JSON
+ * object (`[mob]` id, profiles, ...). It is `null` only when the runtime
+ * resolving the roster has no mob definition, which the bundled `rpc_gateway`
+ * never does; the field is nullable because in-process Rust embedders and test
+ * harnesses can call the provider without one.
+ *
+ * `previousIdentities` lists the identities the identity runtime has
+ * registered at the time of the call. It is empty on the bootstrap calls
+ * (nothing is registered yet) and populated on later re-derivations such as a
+ * topology query or edge reconcile.
+ */
+export interface RosterContext {
+  readonly mobDefinition: Record<string, unknown> | null;
+  readonly previousIdentities: readonly string[];
+}
+
+export function parseRosterContext(raw: unknown): RosterContext {
+  const d = asRecord(raw);
+  const definition = d.mob_definition;
+  if (definition === undefined || definition === null) {
+    return { mobDefinition: null, previousIdentities: asStringArray(d.previous_identities) };
+  }
+  if (typeof definition !== "object" || Array.isArray(definition)) {
+    throw new TypeError("RosterContext.mob_definition must be an object or null");
+  }
+  return {
+    mobDefinition: definition as Record<string, unknown>,
+    previousIdentities: asStringArray(d.previous_identities),
+  };
+}
+
 // -- AgentBuildDraft (REQ-49a) --------------------------------------------
 
 export interface AgentBuildDraft {
@@ -3197,7 +3236,11 @@ export interface LeaseProvider {
 }
 
 export interface RosterProvider {
-  roster(context: unknown): Promise<DurableAgentSpec[]>;
+  /**
+   * Return the desired `DurableAgentSpec` list. `context` carries the booted
+   * mob definition and the identities the runtime has already registered.
+   */
+  roster(context: RosterContext): Promise<DurableAgentSpec[]>;
 }
 
 export interface AgentCustomizer {

@@ -363,6 +363,18 @@ impl LeaseProvider for GatewayLeaseProvider {
 // ---------------------------------------------------------------------------
 
 /// Gateway-side `RosterProvider` that delegates to Python/TypeScript via JSON-RPC.
+///
+/// Wire shape of `callback/roster_provider/roster` params:
+///
+/// ```json
+/// { "context": { "mob_definition": { ... } | null, "previous_identities": ["a:b", ...] } }
+/// ```
+///
+/// The `RosterContext` is nested under `context`, the same envelope the
+/// topology (`compute_edges`) and customizer (`customize_build`) callbacks
+/// use and the one both SDK dispatchers read. Until 2026-09-04 the struct
+/// was serialized as the whole params object, so the SDK-hosted callback
+/// always saw `{}` and could not read either field.
 pub struct GatewayRosterProvider {
     bridge: Box<dyn CallbackBridge>,
 }
@@ -378,8 +390,9 @@ impl GatewayRosterProvider {
 #[async_trait]
 impl RosterProvider for GatewayRosterProvider {
     async fn roster(&self, context: &RosterContext) -> Result<Vec<DurableAgentSpec>, RosterError> {
-        let params = serde_json::to_value(context)
+        let context = serde_json::to_value(context)
             .map_err(|e| RosterError::Io(format!("serialize roster context: {e}")))?;
+        let params = json!({ "context": context });
         let result = self
             .bridge
             .call("callback/roster_provider/roster", params)
@@ -1213,10 +1226,64 @@ mod tests {
             Some(meerkat_contracts::WireRuntimeBinding::External { .. })
         ));
 
-        // Verify previous_identities was sent
+        // Verify previous_identities was sent inside the `context` envelope
+        // the SDK dispatchers read (`params.context`).
         let (_, params) = mock.last_call().await;
-        let prev = params["previous_identities"].as_array().unwrap();
+        let prev = params["context"]["previous_identities"].as_array().unwrap();
         assert_eq!(prev[0].as_str().unwrap(), "old:agent");
+        assert!(params["context"]["mob_definition"].is_null());
+        assert!(
+            params.get("previous_identities").is_none(),
+            "roster context must not be flattened into the params root: {params}"
+        );
+    }
+
+    /// Regression for the SDK-side "empty roster context" defect: the Python
+    /// and TypeScript dispatchers hand `params.context` to the host callback,
+    /// so the mob definition and previous identities must travel there.
+    #[tokio::test]
+    async fn test_identity_first_gateway_roster_context_carries_mob_definition_under_context() {
+        let mock = Arc::new(MockBridge::new());
+        mock.set_response("callback/roster_provider/roster", Ok(json!([])))
+            .await;
+
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "roster-context-envelope"
+
+[profiles.default]
+model = "gpt-5.5"
+"#,
+        )
+        .expect("parse mob definition");
+        let provider = GatewayRosterProvider::new(mock.clone());
+        let ctx = RosterContext {
+            mob_definition: Some(definition),
+            previous_identities: vec![
+                AgentIdentity::parse("agent:alice").unwrap(),
+                AgentIdentity::parse("agent:bob").unwrap(),
+            ],
+        };
+        provider.roster(&ctx).await.unwrap();
+
+        let (method, params) = mock.last_call().await;
+        assert_eq!(method, "callback/roster_provider/roster");
+        let context = params
+            .get("context")
+            .expect("roster params carry a `context` envelope");
+        assert_eq!(
+            context["mob_definition"]["id"],
+            json!("roster-context-envelope")
+        );
+        assert!(
+            context["mob_definition"]["profiles"]["default"].is_object(),
+            "mob definition profiles must survive serialization: {context}"
+        );
+        assert_eq!(
+            context["previous_identities"],
+            json!(["agent:alice", "agent:bob"])
+        );
     }
 
     // -----------------------------------------------------------------------

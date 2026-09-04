@@ -649,6 +649,45 @@ class AgentBuildContext:
         )
 
 
+@dataclass(frozen=True)
+class RosterContext:
+    """Read-only context the gateway hands to ``RosterProviderProtocol.roster``.
+
+    Mirrors the Rust ``RosterContext`` one for one; it arrives on the wire as
+    ``callback/roster_provider/roster`` ``params["context"]``.
+
+    ``mob_definition`` is the booted mob's compiled definition as a plain
+    JSON object (``[mob]`` id, profiles, ...). It is ``None`` only when the
+    runtime resolving the roster has no mob definition, which the bundled
+    ``rpc_gateway`` never does; the field is optional because in-process Rust
+    embedders and test harnesses can call the provider without one.
+
+    ``previous_identities`` lists the identities the identity runtime has
+    registered at the time of the call. It is empty on the bootstrap calls
+    (nothing is registered yet) and populated on later re-derivations such as
+    a topology query or edge reconcile.
+    """
+
+    mob_definition: dict[str, Any] | None = None
+    previous_identities: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mob_definition": self.mob_definition,
+            "previous_identities": list(self.previous_identities),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RosterContext:
+        definition = data.get("mob_definition")
+        if definition is not None and not isinstance(definition, dict):
+            raise ValueError("RosterContext.mob_definition must be an object or null")
+        return cls(
+            mob_definition=definition,
+            previous_identities=[str(i) for i in (data.get("previous_identities") or [])],
+        )
+
+
 @dataclass
 class AgentBuildDraft:
     """Mutable draft that AgentCustomizer modifies."""

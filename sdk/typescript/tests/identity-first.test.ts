@@ -1762,6 +1762,47 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
     assert.equal(specs[0].identity, "triage:main");
   });
 
+  it("hands the roster callback the gateway's typed RosterContext", async () => {
+    // Regression: the roster callback used to receive `{}`. The gateway sends
+    // the Rust `RosterContext` under `params.context` (same envelope as the
+    // topology and customizer callbacks); the provider must see both fields.
+    const { CallbackDispatcher } = await import("../src/agent-builder.js");
+    const dispatcher = new CallbackDispatcher();
+
+    const seen: unknown[] = [];
+    dispatcher.registerRosterProvider({
+      async roster(context) {
+        seen.push(context);
+        return [];
+      },
+    });
+
+    await dispatcher.handleCallback("callback/roster_provider/roster", {
+      context: {
+        mob_definition: {
+          id: "household",
+          profiles: { assistant: { model: "gpt-5.5" } },
+        },
+        previous_identities: ["a:main", "b:main"],
+      },
+    });
+    assert.equal(seen.length, 1);
+    assert.deepEqual(seen[0], {
+      mobDefinition: {
+        id: "household",
+        profiles: { assistant: { model: "gpt-5.5" } },
+      },
+      previousIdentities: ["a:main", "b:main"],
+    });
+
+    // An older gateway that sends a bare `{}` (or no context at all) still
+    // yields a typed context with defaults.
+    await dispatcher.handleCallback("callback/roster_provider/roster", { context: {} });
+    await dispatcher.handleCallback("callback/roster_provider/roster", {});
+    assert.deepEqual(seen[1], { mobDefinition: null, previousIdentities: [] });
+    assert.deepEqual(seen[2], { mobDefinition: null, previousIdentities: [] });
+  });
+
   it("routes callback/topology_provider/compute_edges to TopologyProvider", async () => {
     const { CallbackDispatcher } = await import("../src/agent-builder.js");
     const dispatcher = new CallbackDispatcher();

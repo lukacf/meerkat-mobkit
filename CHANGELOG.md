@@ -210,6 +210,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **SDK-hosted roster callbacks now receive the roster context instead of
+  `{}`.** An external SDK user reported, and the maintainer confirmed, that a
+  Python or TypeScript `roster(context)` callback behind `rpc_gateway` could
+  not read either field the Rust `RosterContext` promises. Root cause was a
+  wire-shape mismatch in `GatewayRosterProvider`: it serialised the context as
+  the whole `callback/roster_provider/roster` params object
+  (`{"mob_definition": ..., "previous_identities": [...]}`), while both SDK
+  dispatchers, like the sibling topology and customizer callbacks, read
+  `params["context"]`, so the callback saw an empty dict on every call. The
+  bridge now nests the context under `context`, matching the envelope the SDKs
+  already read, so the callback receives the booted mob definition (as JSON)
+  and the identities the runtime has registered (empty on the bootstrap
+  resolves, populated on later re-derivations such as `mobkit/topology/query`
+  or an edge reconcile). Both SDKs gain a typed `RosterContext`
+  (`mob_definition` / `mobDefinition`, `previous_identities` /
+  `previousIdentities`) and parse the envelope into it before invoking the
+  callback; a bare `{}` from an older gateway still parses to the defaults.
+  The regression drives the real `rpc_gateway --persistent` binary over the
+  stdin-JSONL host protocol and asserts on the wire that every bootstrap roster
+  call carries `context.mob_definition.id` and an empty
+  `context.previous_identities`, and that a later `mobkit/topology/query`
+  re-asks the roster with the registered identity in `previous_identities`.
+  Behaviour change for SDK implementors: the Python callback argument is now
+  the frozen `RosterContext` dataclass instead of a `dict` (read
+  `context.mob_definition`, not `context.get(...)`), and the TypeScript
+  callback receives the typed `RosterContext` interface.
+
 - **The configuration reference now states four rules hosts were discovering
   at spawn time or by reading source.** `docs/reference/configuration.mdx`
   gains a `[profiles.*.tools]` table: every flag defaults to `false`, and

@@ -5,6 +5,8 @@ import base64
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from .identity_first_models import RosterContext
+
 
 # ---------------------------------------------------------------------------
 # Result models (REQ-43c)
@@ -274,7 +276,13 @@ class LeaseProviderProtocol(Protocol):
 
 @runtime_checkable
 class RosterProviderProtocol(Protocol):
-    async def roster(self, context: Any) -> list[Any]: ...
+    async def roster(self, context: RosterContext) -> list[Any]:
+        """Return the desired ``DurableAgentSpec`` list.
+
+        ``context`` carries the booted mob definition and the identities the
+        runtime has already registered; see ``RosterContext``.
+        """
+        ...
 
 
 @runtime_checkable

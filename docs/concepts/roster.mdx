@@ -433,6 +433,31 @@ Reconciliation compares the desired member set with the current roster and
 spawns, retains, or retires members to converge. See the
 [unified runtime guide](/guides/unified-runtime) for the complete flow.
 
+### Roster provider context
+
+Every time the identity runtime derives the desired roster it calls the
+host's roster provider with a `RosterContext`. Behind the SDK gateway that is
+the `callback/roster_provider/roster` request, whose params nest the context
+under `context` (the same envelope the topology and customizer callbacks use):
+
+```json
+{
+  "context": {
+    "mob_definition": { "id": "household", "profiles": { "...": {} } },
+    "previous_identities": ["identity:luka", "triage:main"]
+  }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `mob_definition` | The booted mob's compiled definition. Always present behind the bundled `rpc_gateway`; `null` only when an in-process Rust embedder or test harness resolves a roster without a mob definition. |
+| `previous_identities` | Identities the identity runtime has registered at the time of the call. Empty on the bootstrap resolves (nothing is registered yet), populated on later re-derivations such as `mobkit/topology/query` or an edge reconcile. |
+
+The Python SDK delivers this as `RosterContext` from
+`meerkat_mobkit.identity_first_models`; the TypeScript SDK as the exported
+`RosterContext` interface (`mobDefinition`, `previousIdentities`).
+
 ## See also
 
 - [Identity-first doctrine](https://github.com/lukacf/meerkat-mobkit/blob/main/docs/design/identity-first-doctrine.md) - choose the identity plane or worker plane

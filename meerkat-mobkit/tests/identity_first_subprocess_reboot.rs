@@ -1131,3 +1131,163 @@ fn a_role_migration_declaration_does_not_survive_into_the_next_boot() {
     );
     fresh.shutdown_and_reap();
 }
+
+// ---------------------------------------------------------------------------
+// Roster callback context at the SDK boundary
+// ---------------------------------------------------------------------------
+
+const ROSTER_CALLBACK: &str = "callback/roster_provider/roster";
+
+/// `Gateway::call`, but every `callback/roster_provider/roster` request the
+/// gateway makes while the call is in flight is appended to `recorded`, params
+/// exactly as they crossed the wire. This is the host's view: what the SDK
+/// dispatchers hand to the user's roster callback is `params.context`.
+fn call_recording_roster_callbacks(
+    gateway: &mut Gateway,
+    id: &str,
+    method: &str,
+    params: Value,
+    deadline: Duration,
+    recorded: &mut Vec<Value>,
+) -> Value {
+    gateway.send(&json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": method,
+        "params": params,
+    }));
+    let matched = gateway.wait_for(
+        deadline,
+        |gateway, message| {
+            if message.get("method").and_then(Value::as_str) == Some(ROSTER_CALLBACK) {
+                recorded.push(message.get("params").cloned().unwrap_or(Value::Null));
+            }
+            answer_host_callback(gateway, message);
+        },
+        |message| is_response_with_id(message, id),
+    );
+    let Some(response) = matched else {
+        panic!(
+            "[{}] no response to {method} within {:?}\n{}",
+            gateway.label,
+            deadline,
+            gateway.stderr_tail()
+        );
+    };
+    assert!(
+        response.get("error").is_none(),
+        "[{}] {method} failed: {response}\n{}",
+        gateway.label,
+        gateway.stderr_tail()
+    );
+    response
+}
+
+/// The `RosterContext` the SDK callback receives, or a panic naming the
+/// defect this test guards: the gateway used to serialize the context as the
+/// params root, so `params.context` (what Python and TypeScript read) was `{}`.
+fn roster_callback_context(params: &Value) -> &Value {
+    assert!(
+        params.get("mob_definition").is_none() && params.get("previous_identities").is_none(),
+        "roster context was flattened into the params root; the SDK dispatchers read \
+         `params.context` and would receive an empty context: {params}"
+    );
+    params
+        .get("context")
+        .unwrap_or_else(|| panic!("roster callback params carry no `context` envelope: {params}"))
+}
+
+/// Regression for the SDK-reported defect that the roster callback hosted by
+/// Python/TypeScript received an empty context. Drives the real binary and
+/// asserts on the wire, so it proves what an SDK host sees, not what the Rust
+/// bridge intends: the bootstrap roster calls carry the mob definition (with
+/// nothing registered yet, no previous identities), and a later topology query
+/// re-asks the roster with the identity the runtime has since registered.
+#[test]
+fn the_roster_callback_receives_the_mob_definition_and_previous_identities() {
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    std::fs::create_dir_all(&state).expect("create state dir");
+
+    let mut gateway = Gateway::start("roster-context", false);
+    let mut recorded = Vec::new();
+    let response = call_recording_roster_callbacks(
+        &mut gateway,
+        "init",
+        "mobkit/init",
+        json!({
+            "persistent_state": state,
+            "mob_config": MOB_CONFIG,
+            "has_roster_provider": true,
+            "runtime_options": {
+                "demo_llm": true,
+                "identity_bootstrap_mode": { "mode": "eager_materialize" }
+            }
+        }),
+        INIT_TIMEOUT,
+        &mut recorded,
+    );
+    assert!(
+        response["result"]["contract_version"].is_string(),
+        "[roster-context] identity-first init returned no contract version: {response}"
+    );
+    assert!(
+        !recorded.is_empty(),
+        "[roster-context] init never resolved the roster through the host callback"
+    );
+    for params in &recorded {
+        let context = roster_callback_context(params);
+        assert_eq!(
+            context["mob_definition"]["id"],
+            json!("identity-first-subprocess-reboot"),
+            "[roster-context] bootstrap roster context lacks the mob definition: {params}"
+        );
+        assert!(
+            context["mob_definition"]["profiles"]["default"].is_object(),
+            "[roster-context] mob definition profiles did not reach the host: {params}"
+        );
+        assert!(
+            context["previous_identities"].is_array(),
+            "[roster-context] previous_identities must be a list, even when empty: {params}"
+        );
+    }
+    // The first resolve runs before anything is registered, so the runtime has
+    // no previous identities to report there; the field is present but empty.
+    assert_eq!(
+        recorded[0]["context"]["previous_identities"],
+        json!([]),
+        "[roster-context] the pre-registration roster call must report no previous identities"
+    );
+
+    // A topology query re-derives the desired roster with the identities the
+    // runtime has registered since bootstrap, so this is where the SDK
+    // callback must see the previously known identity.
+    recorded.clear();
+    call_recording_roster_callbacks(
+        &mut gateway,
+        "topology",
+        "mobkit/topology/query",
+        json!({}),
+        RPC_TIMEOUT,
+        &mut recorded,
+    );
+    let params = recorded.last().unwrap_or_else(|| {
+        panic!(
+            "[roster-context] the identity-first topology query did not consult the roster\n{}",
+            gateway.stderr_tail()
+        )
+    });
+    let context = roster_callback_context(params);
+    assert_eq!(
+        context["mob_definition"]["id"],
+        json!("identity-first-subprocess-reboot"),
+        "[roster-context] topology roster context lacks the mob definition: {params}"
+    );
+    assert_eq!(
+        context["previous_identities"],
+        json!([IDENTITY]),
+        "[roster-context] the registered identity did not reach the roster callback: {params}"
+    );
+
+    gateway.shutdown_and_reap();
+}
