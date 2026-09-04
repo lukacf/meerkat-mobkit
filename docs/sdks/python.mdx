@@ -370,7 +370,7 @@ rt = await (
 |--------|-------------|
 | `.mob(path)` | Path to mob TOML config |
 | `.mob_inline(toml_str)` | Inline mob TOML string (no temp file) |
-| `.meerkat_config(path)` | Meerkat host `config.toml` (`[self_hosted]`, `[realm]`, `[models]`) forwarded as `runtime_options.meerkat_config_path`; a missing or malformed file refuses init. See [Self-hosted models](/reference/configuration#self-hosted-models-and-the-meerkat-host-config) |
+| `.meerkat_config(path)` | Meerkat host `config.toml` forwarded as `runtime_options.meerkat_config_path`, the only door for the `[self_hosted]` and `[realm]` tables Meerkat keeps out of `mob.toml` (a host-config `[models]` table reaches the factory too, but a profile's `model` must be catalogued, provider-annotated or defined under `mob.toml`'s own `[models.<id>]` to pass the init model check); a missing, malformed or non-validating file refuses init rather than building agents from the default config, and a top-level `[self_hosted]` or `[realm]` table inside `mob.toml` is refused at init with a message naming this option. TypeScript twin `meerkatConfig(path)`. See [Self-hosted models and the Meerkat host config](/reference/configuration#self-hosted-models-and-the-meerkat-host-config) |
 | `.persistent_state(path)` | Enable persistent state at path |
 | `.continuity_store(provider)` | External identity continuity store |
 | `.lease_provider(provider)` | External identity lease provider |
