@@ -39,6 +39,11 @@ repos:
       - id: check-toml
         stages: [pre-push]
       - id: check-merge-conflict
+        # Without --assume-in-merge the hook scans files only while
+        # .git/MERGE_MSG exists, so a conflict marker committed during a merge
+        # and pushed later passes untouched (CHANGELOG.md, 2026-09-03). Force
+        # the scan on every push.
+        args: [--assume-in-merge]
         stages: [pre-push]
       - id: check-added-large-files
         args: ['--maxkb=1000']

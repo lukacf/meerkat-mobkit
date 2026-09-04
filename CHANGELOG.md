@@ -440,6 +440,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and logged one `WARN ... mob member not found` per send. Rust API change for
   embedders that call the reservation directly.
 
+- **`CHANGELOG.md` no longer carries committed merge-conflict markers, and the
+  pre-push hook now catches them.** Merge aa28ea02 committed an unresolved
+  conflict in the `[Unreleased]` / Added section (the typed per-turn injection
+  skip reasons on one side, the `make e2e-live` lane on the other) and PR #381
+  carried the `<<<<<<< HEAD` / `=======` / `>>>>>>>` lines to main. Both
+  entries describe shipped changes and both are kept; only the three marker
+  lines are gone. The markers passed pre-push because `check-merge-conflict`
+  scans files only while `.git/MERGE_MSG` exists, so a marker committed inside
+  a merge and pushed afterwards was never read; the hook now runs with
+  `--assume-in-merge` and a committed marker in any tracked text file fails
+  the push.
+
 - **Prebuilt Linux gateway binaries load on glibc 2.31 and newer.** The
   `*-unknown-linux-gnu` release legs built directly on `ubuntu-latest`
   (Ubuntu 24.04, glibc 2.39) and nothing read the produced binary, so the
