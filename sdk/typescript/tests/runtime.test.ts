@@ -4,8 +4,12 @@
 
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
+  MobKit,
   MobKitRuntime,
   MobHandle,
   ToolCaller,
@@ -14,6 +18,39 @@ import {
   RpcError,
   TransportError,
 } from "../dist/index.js";
+
+/**
+ * A stand-in gateway that answers every JSON-RPC request on stdin with
+ * `result` (twin of the Python `_write_echo_gateway`). The transport spawns
+ * `gatewayBin` directly, so the stand-in is a `sh` wrapper around a CommonJS
+ * script run by the current node binary (a shebang would break on a
+ * node path containing spaces).
+ */
+function writeEchoGateway(dir: string, result: Record<string, unknown>): string {
+  const script = join(dir, "echo_gateway.cjs");
+  writeFileSync(
+    script,
+    [
+      'const readline = require("node:readline");',
+      `const RESULT = ${JSON.stringify(result)};`,
+      "const rl = readline.createInterface({ input: process.stdin });",
+      'rl.on("line", (line) => {',
+      "  let request;",
+      "  try { request = JSON.parse(line); } catch { return; }",
+      '  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: RESULT }) + "\\n");',
+      "});",
+      'rl.on("close", () => process.exit(0));',
+      "",
+    ].join("\n"),
+  );
+  const gateway = join(dir, "echo_gateway.sh");
+  writeFileSync(
+    gateway,
+    `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`,
+    { mode: 0o755 },
+  );
+  return gateway;
+}
 
 // ---------------------------------------------------------------------------
 // Mock RPC helper
@@ -36,8 +73,6 @@ function createMockRuntime(): {
     mobConfigPath: null,
     sessionBuilder: null,
     sessionStore: null,
-    discoveryCallback: null,
-    preSpawnCallback: null,
     errorCallback: null,
     eventLog: null,
     consoleConfigPath: null,
@@ -365,6 +400,113 @@ describe("MobKitRuntime", () => {
       params.runtime_options.access_config_path,
       "config/access.toml",
     );
+  });
+
+  it("builds meerkat_config_path runtime option", () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._config.meerkatConfigPath = "/etc/homecore/config.toml";
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal(
+      params.runtime_options.meerkat_config_path,
+      "/etc/homecore/config.toml",
+    );
+  });
+
+  it("omits meerkat_config_path runtime option when unset", () => {
+    const { rt } = createMockRuntime();
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal("meerkat_config_path" in params.runtime_options, false);
+  });
+
+  it("builds http_listen, http_public_base_url and allow_remote runtime options", () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._config.httpListen = "0.0.0.0:8080";
+    (rt as any)._config.httpPublicBaseUrl = "https://mob.example.com";
+    (rt as any)._config.allowRemote = true;
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal(params.runtime_options.http_listen, "0.0.0.0:8080");
+    assert.equal(
+      params.runtime_options.http_public_base_url,
+      "https://mob.example.com",
+    );
+    assert.equal(params.runtime_options.allow_remote, true);
+  });
+
+  it("transmits allow_remote=false rather than dropping it", () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._config.allowRemote = false;
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal(params.runtime_options.allow_remote, false);
+  });
+
+  it("omits the http exposure runtime options when unset", () => {
+    const { rt } = createMockRuntime();
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal("http_listen" in params.runtime_options, false);
+    assert.equal("http_public_base_url" in params.runtime_options, false);
+    assert.equal("allow_remote" in params.runtime_options, false);
+  });
+
+  it("rustHttpPublicBaseUrl prefers the advertised base and falls back to the local one", () => {
+    const { rt } = createMockRuntime();
+    assert.equal(rt.rustHttpPublicBaseUrl, null);
+    rt.setRustHttpBase("http://127.0.0.1:8081");
+    assert.equal(rt.rustHttpPublicBaseUrl, "http://127.0.0.1:8081");
+    (rt as any)._rustHttpPublicBase = "https://mob.example.com";
+    assert.equal(rt.rustHttpPublicBaseUrl, "https://mob.example.com");
+    assert.equal(rt.rustHttpBaseUrl, "http://127.0.0.1:8081");
+  });
+
+  // Twin of the Python test_connect_records_local_and_advertised_base_urls:
+  // drives the real connect()/_bootstrap path against a stand-in gateway, so
+  // the init-result parse block is what sets both base URLs (a test that
+  // assigns _rustHttpPublicBase directly cannot notice that block vanishing).
+  it("connect() records the local and advertised base URLs from the init result", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mobkit-echo-gateway-"));
+    const gateway = writeEchoGateway(dir, {
+      http_base_url: "http://127.0.0.1:1",
+      http_public_base_url: "https://mob.example.com",
+    });
+    const rt = new MobKitRuntime(
+      (MobKit.builder().gateway(gateway) as any)._config,
+    );
+    try {
+      await rt.connect();
+      assert.equal(rt.rustHttpBaseUrl, "http://127.0.0.1:1");
+      assert.equal(rt.rustHttpPublicBaseUrl, "https://mob.example.com");
+    } finally {
+      await rt.shutdown();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("connect() falls back to the local base when the init result declares no advertised base", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mobkit-echo-gateway-"));
+    const gateway = writeEchoGateway(dir, {
+      http_base_url: "http://127.0.0.1:1",
+      http_public_base_url: null,
+    });
+    const rt = new MobKitRuntime(
+      (MobKit.builder().gateway(gateway) as any)._config,
+    );
+    try {
+      await rt.connect();
+      assert.equal(rt.rustHttpBaseUrl, "http://127.0.0.1:1");
+      assert.equal(rt.rustHttpPublicBaseUrl, "http://127.0.0.1:1");
+    } finally {
+      await rt.shutdown();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("builds agent_memory runtime option", () => {

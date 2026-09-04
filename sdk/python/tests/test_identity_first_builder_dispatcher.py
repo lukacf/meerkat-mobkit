@@ -493,6 +493,35 @@ class TestCallbackDispatcherRoster:
         assert len(result) == 1
         assert result[0]["identity"] == "a:main"
 
+    @pytest.mark.asyncio
+    async def test_roster_payload_carries_runtime_mode_override_and_initial_message(self):
+        """The roster callback reply is what Rust deserializes into
+        DurableAgentSpec; both per-identity knobs must be in it verbatim."""
+
+        class MockRoster:
+            async def roster(self, context):
+                return [
+                    DurableAgentSpec(
+                        identity="archivist:main",
+                        profile="archivist",
+                        runtime_mode_override="turn_driven",
+                        initial_message="Index yesterday's mail.",
+                    ),
+                    DurableAgentSpec(identity="worker:1", profile="worker"),
+                ]
+
+        d = CallbackDispatcher()
+        d.register_roster_provider(MockRoster())
+
+        payload = await d.handle_callback(
+            "callback/roster_provider/roster", {"context": {}}
+        )
+        assert payload[0]["runtime_mode_override"] == "turn_driven"
+        assert payload[0]["initial_message"] == "Index yesterday's mail."
+        # An identity that sets neither sends neither (byte-compatible roster).
+        assert "runtime_mode_override" not in payload[1]
+        assert "initial_message" not in payload[1]
+
 
 class TestCallbackDispatcherTopology:
     @pytest.mark.asyncio

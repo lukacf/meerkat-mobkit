@@ -26,22 +26,53 @@
 //!
 //! # Contract
 //!
-//! Resolves on the FIRST of SIGINT or SIGTERM. It does not tell the caller
-//! which arrived, because no caller has a reason to behave differently - both
-//! mean "an operator or supervisor is stopping this process, run the shutdown
-//! sequence". Callers keep owning what shutdown means; this only decides when.
+//! Resolves on the FIRST of SIGINT or SIGTERM and reports which one arrived as
+//! a [`ShutdownSignal`]. Both mean "an operator or supervisor is stopping this
+//! process, run the shutdown sequence", and no caller behaves differently on
+//! the two; the name exists for the exit log line. A gateway that vanished
+//! used to leave no trace of why, and a supervisor's SIGTERM after a slow
+//! console operation was indistinguishable from a crash. Callers keep owning
+//! what shutdown means; this only decides when, and says what asked.
 //!
 //! If the SIGTERM handler cannot be installed the function degrades to SIGINT
 //! only rather than failing the process. A binary that refuses to start
 //! because it could not register a signal handler is strictly worse than one
 //! that starts and handles fewer signals.
 
-/// Resolve when the process is asked to terminate, by SIGINT or SIGTERM.
+/// Which termination signal ended the wait in [`shutdown_signal`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownSignal {
+    /// SIGINT: an interactive ctrl-c, or `kill -INT`.
+    Interrupt,
+    /// SIGTERM: the stop signal every container platform and init system
+    /// sends first.
+    Terminate,
+}
+
+impl ShutdownSignal {
+    /// The conventional signal name, as `kill -l` prints it. This is the
+    /// token the gateway exit log line carries in its `signal=` field.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Interrupt => "SIGINT",
+            Self::Terminate => "SIGTERM",
+        }
+    }
+}
+
+impl std::fmt::Display for ShutdownSignal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// Resolve when the process is asked to terminate, by SIGINT or SIGTERM, and
+/// report which.
 ///
 /// See the module docs for why waiting on [`tokio::signal::ctrl_c`] alone is
 /// insufficient for any process that will be deployed in a container.
 #[cfg(unix)]
-pub async fn shutdown_signal() {
+pub async fn shutdown_signal() -> ShutdownSignal {
     use tokio::signal::unix::{SignalKind, signal};
 
     let mut terminate = match signal(SignalKind::terminate()) {
@@ -64,18 +95,34 @@ pub async fn shutdown_signal() {
                  releasing the schedule executor lease."
             );
             let _ = tokio::signal::ctrl_c().await;
-            return;
+            return ShutdownSignal::Interrupt;
         }
     };
 
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = terminate.recv() => {}
+        _ = tokio::signal::ctrl_c() => ShutdownSignal::Interrupt,
+        _ = terminate.recv() => ShutdownSignal::Terminate,
     }
 }
 
 /// Non-Unix fallback: SIGTERM has no equivalent, so this is SIGINT only.
 #[cfg(not(unix))]
-pub async fn shutdown_signal() {
+pub async fn shutdown_signal() -> ShutdownSignal {
     let _ = tokio::signal::ctrl_c().await;
+    ShutdownSignal::Interrupt
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exit log line's `signal=` token is what an operator greps for and
+    /// what the gateway exit-reason tests assert on; pin the exact spelling.
+    #[test]
+    fn signal_names_are_the_conventional_kill_l_tokens() {
+        assert_eq!(ShutdownSignal::Interrupt.name(), "SIGINT");
+        assert_eq!(ShutdownSignal::Terminate.name(), "SIGTERM");
+        assert_eq!(ShutdownSignal::Interrupt.to_string(), "SIGINT");
+        assert_eq!(ShutdownSignal::Terminate.to_string(), "SIGTERM");
+    }
 }

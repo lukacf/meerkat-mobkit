@@ -226,6 +226,85 @@ class TestBuilderChain:
 
         assert params["runtime_options"]["console_read_only"] is True
 
+    def test_console_auth_defaults_to_omitted(self):
+        params = MobKitRuntime(MobKit.builder()._config)._build_init_params()
+
+        assert "console_require_app_auth" not in params["runtime_options"]
+        assert "console_config_path" not in params["runtime_options"]
+
+    def test_console_auth_required_false_sets_runtime_option(self):
+        b = MobKit.builder().console_auth_required(False)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["console_require_app_auth"] is False
+
+    def test_console_auth_required_true_sets_runtime_option(self):
+        b = MobKit.builder().console_auth_required(True)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["console_require_app_auth"] is True
+
+    def test_console_config_sets_runtime_option(self, tmp_path):
+        console_toml = tmp_path / "console.toml"
+        b = MobKit.builder().console_config(console_toml)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["console_config_path"] == str(console_toml)
+
+    def test_http_exposure_defaults_to_omitted(self):
+        params = MobKitRuntime(MobKit.builder()._config)._build_init_params()
+
+        assert "http_listen" not in params["runtime_options"]
+        assert "http_public_base_url" not in params["runtime_options"]
+        assert "allow_remote" not in params["runtime_options"]
+
+    def test_http_listen_sets_runtime_option(self):
+        b = MobKit.builder().http_listen(" 0.0.0.0:8080 ")
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["http_listen"] == "0.0.0.0:8080"
+
+    def test_http_listen_rejects_empty_value(self):
+        with pytest.raises(ValueError):
+            MobKit.builder().http_listen("  ")
+
+    def test_http_public_base_url_sets_runtime_option(self):
+        b = MobKit.builder().http_public_base_url("https://mob.example.com")
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert (
+            params["runtime_options"]["http_public_base_url"]
+            == "https://mob.example.com"
+        )
+
+    def test_allow_remote_sets_runtime_option(self):
+        b = MobKit.builder().allow_remote()
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["allow_remote"] is True
+
+    def test_allow_remote_false_is_transmitted_not_dropped(self):
+        b = MobKit.builder().allow_remote(False)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["allow_remote"] is False
+
+    def test_meerkat_config_defaults_to_omitted(self):
+        params = MobKitRuntime(MobKit.builder()._config)._build_init_params()
+
+        assert "meerkat_config_path" not in params["runtime_options"]
+
+    def test_meerkat_config_sets_runtime_option(self, tmp_path):
+        config_toml = tmp_path / ".rkat" / "config.toml"
+        b = MobKit.builder().meerkat_config(config_toml)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["meerkat_config_path"] == str(config_toml)
+
+    def test_meerkat_config_rejects_empty_path(self):
+        with pytest.raises(ValueError, match="must not be empty"):
+            MobKit.builder().meerkat_config("  ")
+
     def test_workgraph_defaults_to_omitted(self):
         b = MobKit.builder()
         params = MobKitRuntime(b._config)._build_init_params()
@@ -558,3 +637,26 @@ class TestConventionDefaults:
         b = MobKit.builder().mob("config/mob.toml").gating("custom/gating.toml")
         b._apply_convention_defaults()
         assert b._config.gating_config_path == "custom/gating.toml"
+
+
+class TestRemovedBootKnobs:
+    """`.discovery()` / `.pre_spawn()` were stored and never transmitted (dead
+    since v0.2). A call must now refuse loudly instead of being accepted and
+    dropped, and the config carries no slot for them."""
+
+    def test_discovery_is_not_a_builder_method(self):
+        with pytest.raises(AttributeError, match="discovery"):
+            MobKit.builder().discovery(lambda ctx: [])
+
+    def test_pre_spawn_is_not_a_builder_method(self):
+        with pytest.raises(AttributeError, match="pre_spawn"):
+            MobKit.builder().pre_spawn(lambda: {})
+
+    def test_config_has_no_dead_callback_slots(self):
+        from dataclasses import fields
+
+        names = {f.name for f in fields(MobKit.builder()._config)}
+        assert "discovery_callback" not in names
+        assert "pre_spawn_callback" not in names
+        # The live boot-membership knob is still there.
+        assert "roster_provider" in names

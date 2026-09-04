@@ -13,10 +13,15 @@
 //! deployment/
 //!   routing.toml                # deployment-specific routing (optional)
 //!   schedules.toml              # deployment-specific schedules (optional)
+//! .rkat/
+//!   config.toml                 # meerkat host config: [self_hosted], [realm], [models] (optional)
 //! ```
 //!
 //! If a file exists at the conventional path, it's loaded. If not, it's skipped.
-//! Explicit paths always override convention.
+//! Explicit paths always override convention. The meerkat host config sits at
+//! the WORKSPACE root rather than under `config/`, so it is adopted through
+//! [`ConventionalPaths::with_meerkat_config_from_workspace`] rather than
+//! [`ConventionalPaths::discover`].
 //!
 //! # Usage
 //!
@@ -51,6 +56,11 @@ pub struct ConventionalPaths {
     pub routing_toml: Option<PathBuf>,
     /// Contact directory TOML (e.g. `config/contacts.toml`).
     pub contacts_toml: Option<PathBuf>,
+    /// Meerkat host config (`<workspace>/.rkat/config.toml`), adopted only
+    /// through [`with_meerkat_config_from_workspace`](Self::with_meerkat_config_from_workspace).
+    /// It carries the tables meerkat keeps out of `mob.toml` (`[self_hosted]`,
+    /// `[realm]`, `[models]`); a gateway hands it to every agent it builds.
+    pub meerkat_config_toml: Option<PathBuf>,
     /// All discovered schedule files, in order:
     /// defaults first (e.g. `config/defaults/schedules.toml`),
     /// then deployment overrides (e.g. `deployment/schedules.toml`).
@@ -88,8 +98,22 @@ impl ConventionalPaths {
             access_toml,
             routing_toml,
             contacts_toml,
+            meerkat_config_toml: None,
             schedule_files,
         }
+    }
+
+    /// Adopt the workspace's meerkat host config
+    /// (`<workspace>/.rkat/config.toml`) when it exists.
+    ///
+    /// Separate from [`discover`](Self::discover) because the host config
+    /// lives at the workspace root, beside `config/` and `deployment/`, not
+    /// inside either. Absent, the field stays `None` and a gateway builds
+    /// agents from meerkat's default config as before.
+    pub fn with_meerkat_config_from_workspace(mut self, workspace_root: impl AsRef<Path>) -> Self {
+        self.meerkat_config_toml =
+            check_file(workspace_root.as_ref().join(".rkat").join("config.toml"));
+        self
     }
 
     /// Collect schedule file paths as strings (for module args).
@@ -168,6 +192,39 @@ mod tests {
         assert!(paths.console_toml.is_none());
         assert!(paths.routing_toml.is_none());
         assert!(paths.schedule_files.is_empty());
+    }
+
+    /// The meerkat host config is a workspace-root file: `discover` never
+    /// adopts it, `with_meerkat_config_from_workspace` adopts it only when it
+    /// exists.
+    #[test]
+    fn meerkat_config_is_adopted_from_the_workspace_root_only_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let deployment = tmp.path().join("deployment");
+        fs::create_dir_all(&config).unwrap();
+        fs::create_dir_all(&deployment).unwrap();
+
+        let absent = ConventionalPaths::discover(&config, &deployment)
+            .with_meerkat_config_from_workspace(tmp.path());
+        assert!(absent.meerkat_config_toml.is_none());
+
+        fs::create_dir_all(tmp.path().join(".rkat")).unwrap();
+        let expected = tmp.path().join(".rkat").join("config.toml");
+        fs::write(&expected, "[self_hosted]\n").unwrap();
+
+        assert!(
+            ConventionalPaths::discover(&config, &deployment)
+                .meerkat_config_toml
+                .is_none(),
+            "discover alone must not adopt the workspace-root file"
+        );
+        let present = ConventionalPaths::discover(&config, &deployment)
+            .with_meerkat_config_from_workspace(tmp.path());
+        assert_eq!(
+            present.meerkat_config_toml.as_deref(),
+            Some(expected.as_path())
+        );
     }
 
     #[test]

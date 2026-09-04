@@ -24,9 +24,10 @@ use crate::baseline::{
 };
 use crate::decisions::{
     AuthPolicy, AuthProvider, BigQueryNaming, ConsoleAccessRequest, ConsolePolicy,
-    DecisionPolicyError, ReleaseMetadata, RuntimeOpsPolicy, enforce_console_route_access,
-    load_trusted_mobkit_modules_from_toml, parse_release_metadata_json, validate_bigquery_naming,
-    validate_release_metadata, validate_runtime_ops_policy,
+    DecisionPolicyError, REQUIRED_RELEASE_TARGETS, ReleaseMetadata, RuntimeOpsPolicy,
+    enforce_console_route_access, load_trusted_mobkit_modules_from_toml,
+    parse_release_metadata_json, validate_bigquery_naming, validate_release_metadata,
+    validate_runtime_ops_policy,
 };
 use crate::process::{ProcessBoundaryError, run_process_json_line};
 use crate::protocol::parse_unified_event_line;
@@ -406,6 +407,11 @@ impl std::error::Error for DecisionRuntimeError {
     }
 }
 
+/// Raw policy documents a host hands to [`build_runtime_decision_state`].
+///
+/// `trusted_mobkit_toml` is the trust manifest (an empty string declares no
+/// modules) and `release_metadata_json` is the release metadata document;
+/// both are parsed and validated by the builder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeDecisionInputs {
     pub bigquery: BigQueryNaming,
@@ -417,6 +423,13 @@ pub struct RuntimeDecisionInputs {
     pub release_metadata_json: String,
 }
 
+/// The policies the runtime consults while serving.
+///
+/// At serve time the runtime reads `bigquery` (session-store descriptor),
+/// `modules`, `console`, and, only when a token has to be verified,
+/// `trusted_oidc`. Every field is public: [`build_runtime_decision_state`]
+/// is the validating constructor and [`RuntimeDecisionState::local_console`]
+/// is the explicit opt-out for a console that trusts no identity provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeDecisionState {
     pub bigquery: BigQueryNaming,
@@ -428,6 +441,82 @@ pub struct RuntimeDecisionState {
     pub release_metadata: ReleaseMetadata,
 }
 
+/// OIDC discovery document carried by [`RuntimeDecisionState::local_console`].
+/// The issuer resolves nowhere; the document exists so the snapshot parses.
+const LOCAL_CONSOLE_DISCOVERY_JSON: &str = r#"{"issuer":"https://noop.example.com","authorization_endpoint":"https://noop.example.com/auth","token_endpoint":"https://noop.example.com/token","jwks_uri":"https://noop.example.com/.well-known/jwks.json","response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"]}"#;
+/// A JWKS with no keys: no token can verify against it.
+const LOCAL_CONSOLE_JWKS_JSON: &str = r#"{"keys":[]}"#;
+const LOCAL_CONSOLE_AUDIENCE: &str = "local-console";
+const LOCAL_CONSOLE_BIGQUERY_DATASET: &str = "default_dataset";
+const LOCAL_CONSOLE_BIGQUERY_TABLE: &str = "default_table";
+const CANONICAL_SUPPORT_MATRIX: &str = "same-as-meerkat";
+
+impl RuntimeDecisionState {
+    /// Decision state for a console that trusts no identity provider.
+    ///
+    /// This is the explicit opt-out from console authentication for local or
+    /// host-protected deployments, and the single owner of the placeholder
+    /// snapshot both gateway binaries used to hand-build: a discovery document
+    /// whose issuer resolves nowhere, a JWKS with no keys, no trusted modules,
+    /// the default auth and ops policies, and the canonical release metadata.
+    ///
+    /// At serve time the runtime reads `console`, the session-store naming
+    /// (`bigquery`) and `modules` (the trusted module set `console_ingress`
+    /// consults). The first two are the parameters; `bigquery` defaults to
+    /// `default_dataset` / `default_table` (the SDK gateway's naming) when
+    /// `None`. `modules` starts empty, which is what both bundled gateways
+    /// serve; a Rust host with trusted modules adds them through
+    /// [`with_modules`](Self::with_modules) instead of falling back to a
+    /// struct literal.
+    ///
+    /// The default stays fail-closed: `ConsolePolicy::default()` has
+    /// `require_app_auth: true`, and because this state carries no keys every
+    /// token is refused, so a console built from it with the default policy
+    /// answers every request with 401. Pass a policy with
+    /// `require_app_auth: false` to open the console, and do so only where the
+    /// host itself provides the protection (a loopback bind, a reverse proxy
+    /// that authenticates).
+    ///
+    /// The result deliberately bypasses [`build_runtime_decision_state`]:
+    /// there is nothing to validate about a snapshot that trusts nothing.
+    pub fn local_console(console: ConsolePolicy, bigquery: Option<BigQueryNaming>) -> Self {
+        Self {
+            bigquery: bigquery.unwrap_or_else(|| BigQueryNaming {
+                dataset: LOCAL_CONSOLE_BIGQUERY_DATASET.to_string(),
+                table: LOCAL_CONSOLE_BIGQUERY_TABLE.to_string(),
+            }),
+            modules: Vec::new(),
+            auth: AuthPolicy::default(),
+            trusted_oidc: TrustedOidcRuntimeConfig {
+                discovery_json: LOCAL_CONSOLE_DISCOVERY_JSON.to_string(),
+                jwks_json: LOCAL_CONSOLE_JWKS_JSON.to_string(),
+                audience: LOCAL_CONSOLE_AUDIENCE.to_string(),
+            },
+            console,
+            ops: RuntimeOpsPolicy::default(),
+            release_metadata: ReleaseMetadata {
+                targets: REQUIRED_RELEASE_TARGETS
+                    .iter()
+                    .map(|target| (*target).to_string())
+                    .collect(),
+                support_matrix: CANONICAL_SUPPORT_MATRIX.to_string(),
+            },
+        }
+    }
+
+    /// Replace the trusted module set a state built by
+    /// [`local_console`](Self::local_console) serves. The validating
+    /// constructor derives this set from the trust manifest; a host that
+    /// opted out of console auth but still runs trusted modules declares them
+    /// here so the exported constructor covers that host too.
+    pub fn with_modules(mut self, modules: Vec<ModuleConfig>) -> Self {
+        self.modules = modules;
+        self
+    }
+}
+
+/// The OIDC snapshot a console verifies bearer tokens against: the provider's
+/// discovery document, its JWKS, and the audience tokens must carry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustedOidcRuntimeConfig {
     pub discovery_json: String,
@@ -1421,6 +1510,48 @@ pub fn run_meerkat_baseline_verification_once(
         .map_err(BaselineRuntimeError::Baseline)
 }
 
+/// Validates the trusted OIDC snapshot a console needs to verify tokens: a
+/// non-empty audience, a discovery document with `issuer` and `jwks_uri`, and
+/// a JWKS with at least one key.
+///
+/// [`build_runtime_decision_state`] runs this only when
+/// `console.require_app_auth` is true. An open console never consults the
+/// snapshot unless an ABAC access controller is installed and a caller
+/// volunteers a token; a broken snapshot then degrades that caller to
+/// anonymous instead of refusing at startup. A host that wants the startup
+/// refusal on an open console calls this itself.
+pub fn validate_trusted_oidc_runtime_config(
+    config: &TrustedOidcRuntimeConfig,
+) -> Result<(), DecisionPolicyError> {
+    if config.audience.trim().is_empty() {
+        return Err(DecisionPolicyError::InvalidTrustedAuthConfig(
+            "trusted OIDC audience must not be empty".to_string(),
+        ));
+    }
+    parse_oidc_discovery_json(&config.discovery_json).map_err(|err| {
+        DecisionPolicyError::InvalidTrustedAuthConfig(format!(
+            "invalid trusted OIDC discovery: {err:?}"
+        ))
+    })?;
+    parse_jwks_json(&config.jwks_json).map_err(|err| {
+        DecisionPolicyError::InvalidTrustedAuthConfig(format!("invalid trusted JWKS: {err:?}"))
+    })?;
+    Ok(())
+}
+
+/// Validates `input` and assembles the runtime's decision state.
+///
+/// Checks, in order: BigQuery naming; the trust manifest (TOML, an empty
+/// manifest declares no modules); the ops policy; the release metadata (JSON
+/// parse, then the four required registries and
+/// `support_matrix == "same-as-meerkat"`); and, only when
+/// `input.console.require_app_auth` is true, the trusted OIDC snapshot via
+/// [`validate_trusted_oidc_runtime_config`]. Every refusal is a typed
+/// [`DecisionRuntimeError::Policy`]; nothing here panics.
+///
+/// `RuntimeDecisionState` has public fields, so a host may also build it as a
+/// struct literal and skip these checks; [`RuntimeDecisionState::local_console`]
+/// is the supported shortcut for a console that trusts no provider.
 pub fn build_runtime_decision_state(
     input: RuntimeDecisionInputs,
 ) -> Result<RuntimeDecisionState, DecisionRuntimeError> {
@@ -1431,23 +1562,10 @@ pub fn build_runtime_decision_state(
     let release_metadata = parse_release_metadata_json(&input.release_metadata_json)
         .map_err(DecisionRuntimeError::Policy)?;
     validate_release_metadata(&release_metadata).map_err(DecisionRuntimeError::Policy)?;
-    if input.trusted_oidc.audience.trim().is_empty() {
-        return Err(DecisionRuntimeError::Policy(
-            DecisionPolicyError::InvalidTrustedAuthConfig(
-                "trusted OIDC audience must not be empty".to_string(),
-            ),
-        ));
+    if input.console.require_app_auth {
+        validate_trusted_oidc_runtime_config(&input.trusted_oidc)
+            .map_err(DecisionRuntimeError::Policy)?;
     }
-    parse_oidc_discovery_json(&input.trusted_oidc.discovery_json).map_err(|err| {
-        DecisionRuntimeError::Policy(DecisionPolicyError::InvalidTrustedAuthConfig(format!(
-            "invalid trusted OIDC discovery: {err:?}"
-        )))
-    })?;
-    parse_jwks_json(&input.trusted_oidc.jwks_json).map_err(|err| {
-        DecisionRuntimeError::Policy(DecisionPolicyError::InvalidTrustedAuthConfig(format!(
-            "invalid trusted JWKS: {err:?}"
-        )))
-    })?;
 
     Ok(RuntimeDecisionState {
         bigquery: input.bigquery,
@@ -1465,4 +1583,239 @@ fn current_time_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod decision_state_tests {
+    use super::*;
+    use crate::auth::OidcContractError;
+
+    const CANONICAL_RELEASE_JSON: &str = r#"{"targets":["crates.io","npm","pypi","github-releases"],"support_matrix":"same-as-meerkat"}"#;
+    const ONE_KEY_JWKS_JSON: &str =
+        r#"{"keys":[{"kty":"oct","alg":"HS256","k":"c2VjcmV0LXNlY3JldC1zZWNyZXQ"}]}"#;
+    const VALID_DISCOVERY_JSON: &str =
+        r#"{"issuer":"http://127.0.0.1/tests","jwks_uri":"http://127.0.0.1/tests/jwks.json"}"#;
+
+    fn open_console() -> ConsolePolicy {
+        ConsolePolicy {
+            require_app_auth: false,
+            ..ConsolePolicy::default()
+        }
+    }
+
+    fn snapshot_that_trusts_nothing() -> TrustedOidcRuntimeConfig {
+        TrustedOidcRuntimeConfig {
+            discovery_json: "{}".to_string(),
+            jwks_json: r#"{"keys":[]}"#.to_string(),
+            audience: String::new(),
+        }
+    }
+
+    fn one_key_snapshot() -> TrustedOidcRuntimeConfig {
+        TrustedOidcRuntimeConfig {
+            discovery_json: VALID_DISCOVERY_JSON.to_string(),
+            jwks_json: ONE_KEY_JWKS_JSON.to_string(),
+            audience: "tests".to_string(),
+        }
+    }
+
+    fn inputs(
+        console: ConsolePolicy,
+        trusted_oidc: TrustedOidcRuntimeConfig,
+    ) -> RuntimeDecisionInputs {
+        RuntimeDecisionInputs {
+            bigquery: BigQueryNaming {
+                dataset: "decision_tests".to_string(),
+                table: "rows".to_string(),
+            },
+            trusted_mobkit_toml: String::new(),
+            auth: AuthPolicy::default(),
+            trusted_oidc,
+            console,
+            ops: RuntimeOpsPolicy::default(),
+            release_metadata_json: CANONICAL_RELEASE_JSON.to_string(),
+        }
+    }
+
+    fn invalid_trusted_auth_message(err: DecisionRuntimeError) -> String {
+        match err {
+            DecisionRuntimeError::Policy(DecisionPolicyError::InvalidTrustedAuthConfig(msg)) => msg,
+            other => panic!("expected InvalidTrustedAuthConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auth_off_accepts_a_snapshot_that_trusts_nothing() {
+        let state =
+            build_runtime_decision_state(inputs(open_console(), snapshot_that_trusts_nothing()))
+                .expect("open console needs no trusted keys");
+
+        assert!(!state.console.require_app_auth);
+        assert!(state.modules.is_empty());
+        assert_eq!(state.trusted_oidc.jwks_json, r#"{"keys":[]}"#);
+    }
+
+    #[test]
+    fn auth_on_accepts_a_one_key_snapshot_and_an_empty_manifest() {
+        let state =
+            build_runtime_decision_state(inputs(ConsolePolicy::default(), one_key_snapshot()))
+                .expect("one trusted key is a complete snapshot");
+
+        assert!(state.console.require_app_auth);
+        assert!(state.modules.is_empty());
+    }
+
+    #[test]
+    fn auth_on_refuses_an_empty_jwks() {
+        let mut snapshot = one_key_snapshot();
+        snapshot.jwks_json = r#"{"keys":[]}"#.to_string();
+
+        let err = build_runtime_decision_state(inputs(ConsolePolicy::default(), snapshot))
+            .expect_err("auth on with no keys must be refused at build time");
+
+        assert!(invalid_trusted_auth_message(err).contains("JWKS"));
+    }
+
+    #[test]
+    fn auth_on_refuses_an_empty_audience() {
+        let mut snapshot = one_key_snapshot();
+        snapshot.audience = "   ".to_string();
+
+        let err = build_runtime_decision_state(inputs(ConsolePolicy::default(), snapshot))
+            .expect_err("auth on with no audience must be refused at build time");
+
+        assert!(invalid_trusted_auth_message(err).contains("audience"));
+    }
+
+    #[test]
+    fn auth_on_refuses_discovery_without_jwks_uri() {
+        let mut snapshot = one_key_snapshot();
+        snapshot.discovery_json = r#"{"issuer":"http://127.0.0.1/tests"}"#.to_string();
+
+        let err = build_runtime_decision_state(inputs(ConsolePolicy::default(), snapshot))
+            .expect_err("auth on with an incomplete discovery document must be refused");
+
+        assert!(invalid_trusted_auth_message(err).contains("discovery"));
+    }
+
+    #[test]
+    fn release_metadata_parse_error_names_json_at_build() {
+        let mut input = inputs(open_console(), snapshot_that_trusts_nothing());
+        input.release_metadata_json = "not json".to_string();
+
+        let err = build_runtime_decision_state(input)
+            .expect_err("malformed release metadata must be refused");
+
+        match err {
+            DecisionRuntimeError::Policy(DecisionPolicyError::TomlParse(msg)) => {
+                assert!(msg.starts_with("release metadata JSON: "), "{msg}");
+            }
+            other => panic!("expected TomlParse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn release_metadata_is_still_validated_with_auth_off() {
+        let mut input = inputs(open_console(), snapshot_that_trusts_nothing());
+        input.release_metadata_json =
+            r#"{"targets":["crates.io"],"support_matrix":"same-as-meerkat"}"#.to_string();
+
+        let err = build_runtime_decision_state(input)
+            .expect_err("incomplete release metadata must be refused");
+
+        assert_eq!(
+            err,
+            DecisionRuntimeError::Policy(DecisionPolicyError::MissingReleaseTarget(
+                "npm".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn validate_trusted_oidc_runtime_config_is_callable_on_its_own() {
+        validate_trusted_oidc_runtime_config(&one_key_snapshot()).expect("complete snapshot");
+
+        let err = validate_trusted_oidc_runtime_config(&snapshot_that_trusts_nothing())
+            .expect_err("empty snapshot");
+        assert!(matches!(
+            err,
+            DecisionPolicyError::InvalidTrustedAuthConfig(_)
+        ));
+    }
+
+    #[test]
+    fn local_console_keeps_the_given_policy_and_naming() {
+        let naming = BigQueryNaming {
+            dataset: "tux_local".to_string(),
+            table: "runtime_events".to_string(),
+        };
+        let policy = ConsolePolicy {
+            require_app_auth: false,
+            read_only: true,
+            fetch_timeout_ms: Some(1_500),
+            ..ConsolePolicy::default()
+        };
+
+        let state = RuntimeDecisionState::local_console(policy.clone(), Some(naming.clone()));
+
+        assert_eq!(state.console, policy);
+        assert_eq!(state.bigquery, naming);
+        assert!(state.modules.is_empty());
+    }
+
+    #[test]
+    fn local_console_defaults_to_the_sdk_gateway_naming() {
+        let state = RuntimeDecisionState::local_console(open_console(), None);
+
+        assert_eq!(state.bigquery.dataset, "default_dataset");
+        assert_eq!(state.bigquery.table, "default_table");
+        validate_bigquery_naming(&state.bigquery).expect("default naming is valid");
+    }
+
+    #[test]
+    fn local_console_trusts_no_keys() {
+        let state = RuntimeDecisionState::local_console(open_console(), None);
+
+        assert_eq!(
+            parse_jwks_json(&state.trusted_oidc.jwks_json),
+            Err(OidcContractError::MissingKeys)
+        );
+        parse_oidc_discovery_json(&state.trusted_oidc.discovery_json)
+            .expect("placeholder discovery document parses");
+        assert!(matches!(
+            validate_trusted_oidc_runtime_config(&state.trusted_oidc),
+            Err(DecisionPolicyError::InvalidTrustedAuthConfig(_))
+        ));
+    }
+
+    #[test]
+    fn local_console_release_metadata_is_canonical() {
+        let state = RuntimeDecisionState::local_console(open_console(), None);
+
+        validate_release_metadata(&state.release_metadata).expect("canonical release metadata");
+    }
+
+    #[test]
+    fn local_console_with_the_default_policy_stays_closed() {
+        let state = RuntimeDecisionState::local_console(ConsolePolicy::default(), None);
+
+        assert!(state.console.require_app_auth);
+    }
+
+    #[test]
+    fn local_console_with_modules_carries_the_trusted_set() {
+        let module = ModuleConfig {
+            id: "recorder".to_string(),
+            command: "recorder".to_string(),
+            args: vec!["--flag".to_string()],
+            restart_policy: RestartPolicy::Never,
+        };
+
+        let state = RuntimeDecisionState::local_console(open_console(), None)
+            .with_modules(vec![module.clone()]);
+
+        assert_eq!(state.modules, vec![module]);
+        assert_eq!(state.console, open_console());
+    }
 }

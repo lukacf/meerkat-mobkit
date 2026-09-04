@@ -7,6 +7,293 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed - BREAKING for host/SDK implementors
+
+- **`ConventionalPaths` gains a public `meerkat_config_toml: Option<PathBuf>`
+  field.** The struct is all-`pub` and not `#[non_exhaustive]`, so a Rust
+  host that builds it with a struct literal must add the field
+  (`ConventionalPaths::discover(..)` and
+  `.with_meerkat_config_from_workspace(..)` are unaffected). It carries the
+  workspace `.rkat/config.toml` a gateway adopts as its Meerkat host config.
+
+- **The dead `.discovery()` / `.pre_spawn()` builder knobs are gone from both
+  gateway SDKs.** Python `MobKitBuilder.discovery(callback)` /
+  `.pre_spawn(callback)` and TypeScript `.discovery()` / `.preSpawn()` stored
+  the callback on the builder config and nothing ever read it: `_bootstrap`
+  registered continuity, lease, roster, topology and customizer callbacks only,
+  `mobkit/init` carried no field for it, and neither gateway binary has a
+  discovery callback protocol (the Rust `Discovery` trait is a classic-plane
+  bootstrap hook that only an in-process Rust builder can install). The knobs
+  were born dead in v0.2 and `docs/sdks/python.mdx` listed them as a working
+  "Discovery callback (mob-level)", so an SDK host following the page got no
+  boot spawn and no error. Wiring them would mean a new callback family in
+  Rust and both SDKs for a plane the identity roster already covers, so they
+  are removed instead. Breaking only in the sense that a call now raises
+  `AttributeError` / is a TypeScript compile error where it used to be
+  accepted and dropped; no host that saw members spawn was using them. Boot
+  membership is declared through `.roster(provider)` (identity plane) or
+  `ensure_member` (worker plane); `[profiles.*]` are templates and spawn
+  nothing by themselves. The docs page now says so.
+
+### Added
+
+- **A gateway that exits now says why, and a panic leaves a log line.** Both
+  gateway binaries ended their run loop in silence on every designed path
+  (stdin EOF, SIGINT, SIGTERM, the SDK shutdown handshake) and had no panic
+  hook, so a report of "the gateway process exited, all endpoints 000" could
+  not be told apart from a crash, a supervisor's SIGTERM after a slow console
+  operation, or the SDK host closing the pipe; the only exit that named
+  itself lived in a test name. Each binary now logs one INFO line when its
+  `select!` resolves, before the shutdown sequence, with `reason=` naming the
+  branch (`rpc_gateway`: `stdin_closed`, `signal`, `sdk_shutdown_handshake`;
+  `mobkit_gateway`: `signal`, `http_server_ended`, `stdin_guard_ended`) and
+  `signal=SIGINT|SIGTERM` when a signal did it, then a "shutdown complete;
+  exiting" bookend, so a wedge between the two is visible as a missing
+  bookend. The `rpc_gateway` stdin reader names EOF versus a read error;
+  `mobkit_gateway` logs the stdin close it survives by design and, when the
+  HTTP server task ends abnormally, logs the error at ERROR on stderr as well
+  as failing init on stdout. `init_gateway_tracing` installs a panic hook
+  (`install_gateway_panic_hook`, exported) that reports every panic through
+  `tracing::error!` with thread, file, line, column and payload before the
+  default hook runs, so a task panic that the runtime absorbs is in the log
+  stream. `shutdown_signal::shutdown_signal()` now returns the new
+  `ShutdownSignal` (`Interrupt` | `Terminate`, `Display` = `SIGINT` /
+  `SIGTERM`) instead of `()`; a caller that pattern-matched the unit value
+  must bind or ignore it. All lines pass the default filter. Covered by a
+  subprocess suite (`tests/gateway_exit_reason.rs`) that drives both real
+  binaries through each exit with `RUST_LOG` unset and by a hook unit test;
+  `docs/guides/deployment.mdx` gains a "Reading a gateway exit" section that
+  also states the two designed exit contracts (`rpc_gateway` exits on stdin
+  EOF, `mobkit_gateway` does not).
+
+- **`DurableAgentSpec` exposes `runtime_mode_override` and `initial_message`
+  in both gateway SDKs.** The Rust spec has deserialized both since the
+  identity-first plane landed (`#[serde(default)]`), and the bridge forwards
+  them into the spawn (`with_initial_message`, `runtime_mode`), but the Python
+  dataclass had neither field and the TypeScript interface lacked
+  `initialMessage`, so an SDK roster could not pin a member's runtime mode per
+  identity nor choose its kickoff turn: every fresh `autonomous_host` identity
+  ran meerkat's fallback spawn prompt, and the only mode knob was the profile
+  in mob.toml. Python `DurableAgentSpec(runtime_mode_override=...,
+  initial_message=...)` and TypeScript `runtimeModeOverride` / `initialMessage`
+  now serialize to `runtime_mode_override` (`autonomous_host` |
+  `turn_driven`, validated) and `initial_message` (text or content blocks,
+  the untagged `ContentInput` shape) in the roster callback payload, and parse
+  back. Unset fields are omitted, so a roster that sets neither is
+  byte-identical to before. Tests drive the roster callback through the
+  dispatcher and assert the payload.
+
+- **Gateways can bind a non-loopback address, and refuse to unless told
+  how.** Both bundled gateways bound `127.0.0.1:0` unconditionally
+  (`GatewayHttpBinding::bind_loopback` was the only constructor), so a reverse
+  proxy in another container could not reach them at all. `rpc_gateway` now
+  takes `runtime_options.http_listen` (`HOST:PORT`, default `127.0.0.1:0`),
+  `http_public_base_url` and `allow_remote`; `mobkit_gateway` takes the same
+  three as top-level init params, plus `--http-listen` / `--allow-remote` and
+  `MOBKIT_HTTP_LISTEN_ADDR` / `MOBKIT_HTTP_ALLOW_REMOTE` below them, and folds
+  the listen address AND the advertised base into its resume fingerprint like
+  `--control-listen`, so a relaunch that changes `http_public_base_url` is not
+  answered with the previous launch's value. The same four keys sent top-level
+  to `rpc_gateway` (the other binary's shape) are refused with `-32602` naming
+  their `runtime_options.*` home instead of being ignored. The
+  gate is fail-closed and borrows Meerkat's vocabulary
+  (`meerkat_rpc::secure_rpc::TcpBindPolicy`, `--allow-remote`): a
+  non-loopback bind is refused at init, before any bootstrap, unless the
+  console enforces app auth (`auth_config` with a trusted key) or the launch
+  acknowledges the exposure with `allow_remote`; `mobkit_gateway` serves an
+  open console, so on that binary only the acknowledgement opens it. Every
+  non-loopback bind logs one WARN line. The init result's `http_base_url`
+  keeps the same-host form (`127.0.0.1` for `0.0.0.0` and `::` binds) so the
+  SDK that spawned the gateway still reaches it, and a new
+  `http_public_base_url` field (`null` when undeclared) carries the
+  proxy-facing base; Python exposes it as `rust_http_public_base_url`,
+  TypeScript as `rustHttpPublicBaseUrl`. Builders: Python `.http_listen()`,
+  `.http_public_base_url()`, `.allow_remote()`; TypeScript `.httpListen()`,
+  `.httpPublicBaseUrl()`, `.allowRemote()`. The SDKs record the advertised
+  base and expose it read-only; their own SSE, multipart and console calls
+  keep dialling `http_base_url`, because the SDK process spawned the gateway
+  and shares its network namespace, so the same-host form is the one that
+  always answers (a deliberate reading of "the transport honours the
+  advertised base": it is carried and surfaced, not dialled). Rust library
+  hosts get `GatewayHttpBinding::bind(addr)`, `HttpBindPolicy`,
+  `validate_http_bind_policy(surface, ..)` and
+  `warn_on_non_loopback_bind(surface, ..)` in `gateway_composition`, where
+  `surface` is the new `GatewaySurface` enum (`RpcGateway` | `MobkitGateway`)
+  rather than a string, the console's auth state is the new
+  `ConsoleAuthPosture` (`Open` | `ClosedToEveryCaller` | `Enforced`, one
+  classifier consumed by the gate, the non-loopback warning and
+  `rpc_gateway`'s closed-console warning), and the listen/base-URL parsers
+  return a typed `HttpExposureParseError`. The new error enums are
+  `#[non_exhaustive]`. Both binaries bind the listener right behind the gate,
+  BEFORE any bootstrap, so a port another process holds (fixed ports are now
+  possible) is a `-32603` init error on the request id with no runtime built
+  and no schedule executor lease taken; previously the bind ran last and a
+  collision exited past the graceful tail with the lease held. On
+  `mobkit_gateway` every init-param refusal (`http_listen`, the gate,
+  `http_public_base_url`, `meerkat_config_path`, `compaction`, host-config
+  tables in `mob.toml`) is now `-32602` ON THE REQUEST ID, where it used to
+  surface as `-32603` with a null id; the bind failure is `-32603` on the
+  request id. Defaults are unchanged: an exact-pinned host that sets none of
+  this binds loopback and sees a byte-identical `http_base_url`. A bind
+  failure on `rpc_gateway` is a JSON-RPC init error naming the address
+  instead of a panic. New `docs/guides/deployment.mdx` covers proxies,
+  containers and the gate.
+
+- **Gateways load a Meerkat host `config.toml`, so self-hosted models and
+  realm bindings reach the members.** Both gateway binaries built every agent
+  from `Config::default()` and had no ingress for the host config where
+  Meerkat keeps `[self_hosted]`, `[realm]` and `[models]`, so a self-hosted
+  profile was refused at init on `rpc_gateway` and died at the first member
+  build on `mobkit_gateway` ("self-hosted model '..' is not registered in
+  config"); the only route was a patched binary. `rpc_gateway` now takes
+  `runtime_options.meerkat_config_path` (Python `.meerkat_config(path)`,
+  TypeScript `.meerkatConfig(path)`); `mobkit_gateway` takes the same file as
+  a top-level `meerkat_config_path` init param and adopts
+  `<workspace>/.rkat/config.toml` when it exists, folding the file's content
+  into its resume fingerprint and logging one INFO line naming the adopted
+  file and which door (init param or convention) produced it, so adoption is
+  never invisible. The file is loaded once at init, merged over
+  `Config::default()` with Meerkat's own file semantics and validated with
+  Meerkat's own `Config::validate` against the canonical catalog, the step
+  `rkat` and `rkat-rpc` run after every load
+  (`gateway_composition::load_gateway_host_config`; a new
+  `GatewayHostConfigError::Invalid { path, source }` variant carries the
+  verdict), with the gateway's comms and compaction overlays layered on top;
+  a missing, malformed or non-validating file (a `[self_hosted.models.<id>]`
+  alias naming an undeclared server, for one) refuses init naming the option
+  and the path, never a silent default and never a first-member-build death.
+  The same loaded config now also feeds `rpc_gateway`'s live/realtime door
+  (`attach_live`), which used to start from `Config::default()` alone. A
+  top-level `[self_hosted]` or `[realm]` table in `mob.toml`, which
+  `MobDefinition::from_toml` dropped in silence, is now refused at init on
+  both binaries with a message pointing at `meerkat_config_path`
+  (`refuse_host_config_tables_in_mob_toml`, exported). `[models.<id>]` is
+  not one of those tables: a profile's `model` must be catalogued,
+  provider-annotated or defined under the definition's OWN `[models.<id>]`
+  to pass the model check (`validate_definition` reads only the definition),
+  so a host-config `[models]` row reaches the factory but does not satisfy
+  the check. Defaults are unchanged: an exact-pinned host that names no
+  file, has no `<workspace>/.rkat/config.toml` beside its `config/` directory
+  (`mobkit_gateway` now adopts that file when present), and writes no such
+  table builds from the default config exactly as before.
+
+- **Console auth opt-out reaches every surface.** The Python builder gains
+  `console_auth_required(required)` (emits
+  `runtime_options.console_require_app_auth`) and `console_config(path)` (emits
+  `runtime_options.console_config_path`), the two knobs Python hosts, including
+  the in-repo memory live driver and HomeCore, had to inject by overriding
+  `MobKitRuntime._build_init_params`. The Rust library gains
+  `RuntimeDecisionState::local_console(console, bigquery)`, the one exported
+  constructor for a console that trusts no identity provider, plus
+  `with_modules(..)` for a Rust host that opted out of console auth but still
+  runs trusted modules (the state serves `console`, the session-store naming
+  and `modules`); both gateway
+  binaries now build their keyless decision state through it instead of two
+  private struct literals (mobkit_gateway keeps its `tux_local` /
+  `runtime_events` session-store naming through the parameter). The default is
+  unchanged and fail-closed: `ConsolePolicy::default()` requires app auth, and
+  an SDK launch with neither `auth_config` nor `console_require_app_auth =
+  false` still serves a console that refuses every request; `rpc_gateway` now
+  logs one startup warning naming that condition and the two ways out.
+  `validate_trusted_oidc_runtime_config` is exported for hosts that want the
+  OIDC snapshot check on an open console.
+
+### Fixed
+
+- **The configuration reference now states four rules hosts were discovering
+  at spawn time or by reading source.** `docs/reference/configuration.mdx`
+  gains a `[profiles.*.tools]` table: every flag defaults to `false`, and
+  `comms` must be `true` because Meerkat keys a member's identity, wiring and
+  peer messaging on its comms name and refuses `comms = false` (or an omitted
+  key) with `profile '<name>' has tools.comms=false; mob meerkats require
+  comms=true`, which `mobkit/ensure_member` reports as `-32602` on the worker
+  plane and as outcome `broken` on the identity plane. The assertion ledger's
+  `state_path` row now says what the file is: a runtime-owned snapshot loaded
+  once at bootstrap and rewritten wholesale on every `mobkit/memory/index`
+  (host calls and enabled Steward conflict signals alike), not a shared
+  append log, with the 4,096-assertion cap and the load-time refusal and drop
+  rules. A WorkGraph section documents the `runtime_options.workgraph`
+  default, the store placement per launch mode including the memory-backed
+  fallback without `persistent_state`, and that the `WorkGraphNamespaceGrant`
+  (realm `mob.<id>`, namespace `default`) is issued by the gateway, never by
+  the host. The `mobkit_gateway` `identity_roster` init param, shipped
+  undocumented, gets its shape and boot-scoped semantics.
+  `docs/sdks/typescript.mdx` documents `.onError(...)` beside the gateway
+  logging section. Documentation only; no behaviour changed.
+
+- **`mobkit_gateway` exits after SIGINT/SIGTERM even when stdin is still
+  open.** With stdin held open (a terminal, or a parent process holding the
+  pipe), a signalled `mobkit_gateway` completed its graceful shutdown and then
+  never exited: the tokio runtime destructor waits forever for the blocking
+  stdin read, which dropping its future cannot cancel. `rpc_gateway` has
+  worked around exactly this with an explicit exit on its signal path since
+  the stdin adapter landed; `mobkit_gateway` now does the same once cleanup
+  is complete. With stdin already at EOF (the container case) nothing
+  changes. Found by the new exit-reason subprocess suite, which asserts the
+  process is gone after the "shutdown complete; exiting" line.
+
+- **A `session_service()` builder that cannot answer `build_agent` is refused
+  at `connect()` instead of being skipped in silence.** `MobKitRuntime._bootstrap`
+  registered the builder only when `isinstance(builder, SessionAgentBuilder)`
+  held (a `runtime_checkable` Protocol, so this is an attribute check: a bare
+  function, a `partial`, or a class with the method misnamed fails it), yet
+  `_build_init_params` still sent `has_session_builder = true`, so the gateway
+  installed its callback wrapper and the first spawn died later with "no
+  SessionAgentBuilder registered", far from the line that caused it. Two
+  predicates for one fact. The builder is now resolved once, before any
+  gateway process is spawned, and a non-conforming object raises `TypeError`
+  naming the contract and the offending type; a conforming builder registers
+  exactly as before. Hosts whose builders already conform (HomeCore) see no
+  change. `MobHandle.reconcile_edges()`'s docstring no longer claims the call
+  needs an `EdgeDiscovery` configured on the builder (there is no such knob;
+  the definition-derived wiring policy is installed automatically) and now
+  says when it is needed: after `runtime.reconcile()` or an identity-first
+  boot, only when the definition declares `auto_wire_orchestrator` or
+  `role_wiring`, and not after `ensure_member`, which already reconciles.
+
+- **`rpc_gateway` no longer refuses `[models.<id>]` custom models and
+  provider-annotated self-hosted profiles at init.** The `mobkit/init`
+  pre-check compared every inline profile's `model` against the static
+  `meerkat_models` catalog alone, so anything Meerkat's registry legitimately
+  owns but the catalog does not (a `[models.<id>]` row, a
+  `provider = "self_hosted"` alias) was refused with `Profile '<p>' uses
+  unknown model '<m>'` and the process exited, while `MobBuilder::create`
+  would have accepted the same definition; `mobkit_gateway` had no such check,
+  so the two binaries disagreed. The check now delegates to meerkat-mob's
+  exported `validate_definition`, narrowed to its `UnknownModel` diagnostic
+  (catalogued, or defined under the definition's own `[models.<id>]`, or
+  provider-annotated: the rule `rkat mob validate` documents), and keeps the
+  `Did you mean one of: ...?` catalog hint for dated ids. Only that one
+  diagnostic is adopted at init on purpose; the rest of the set stays
+  Meerkat's to refuse at create time. Behaviour change an exact-pinned host
+  observes: a PROVIDER-ANNOTATED profile is resolvable by Meerkat's rule
+  whatever its model string says, so a dated or misspelled id on a
+  `provider = "openai"` profile (every HomeCore profile is annotated) now
+  passes init and fails at the first LLM call, where the old catalog check
+  refused it at init with the hint. `rpc_gateway` does not add a second
+  refusal authority for that case; it logs one WARN per such profile at init
+  naming the profile, the model and the closest catalog ids, and for
+  `provider = "self_hosted"` warns only when the alias is not registered in
+  the host config's `[self_hosted.models]`. Tests cover a custom model, a
+  self-hosted alias, a catalogued id, a dated id with the hint, an unknown
+  id without one, and a dated provider-annotated id that passes init and
+  warns.
+
+- **`build_runtime_decision_state` no longer demands an identity provider for
+  a console that has none.** The trusted-OIDC checks (non-empty audience,
+  discovery with `issuer` and `jwks_uri`, JWKS with at least one key) now run
+  only when `console.require_app_auth` is true; the request-time fail-closed
+  check is unchanged, and the release-metadata validation still runs on every
+  build. An empty trust manifest is accepted (`TrustedMobkitToml.modules` is
+  `#[serde(default)]`); hosts no longer have to write `modules = []`. A
+  malformed release-metadata document is still `DecisionPolicyError::TomlParse`
+  (the enum is not `#[non_exhaustive]`, so no variant was added) but its
+  message now names the release metadata JSON, and the variant's `Display`
+  prefix is `parse error:` with the document named in the message, instead of
+  labelling a JSON failure a TOML one. Acceptance-widening only: every host
+  that built before still builds. Observable to hosts that print the error:
+  the `TomlParse` text changed. Unit tests cover each rule in both polarities.
+
 ## [0.8.31] - 2026-09-04
 
 ### Changed

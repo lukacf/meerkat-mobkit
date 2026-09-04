@@ -15,16 +15,20 @@ class MobKitBuilderConfig:
     mob_config_inline: str | None = None
     session_builder: Any | None = None
     session_store: Any | None = None
-    discovery_callback: Any | None = None
-    pre_spawn_callback: Any | None = None
     error_callback: Any | None = None
     job_credential_resolver: Any | None = None
     event_log: Any | None = None
     runtime_store: Any | None = None
     console_read_only: bool | None = None
     console_fetch_timeout_ms: int | None = None
+    console_require_app_auth: bool | None = None
+    console_config_path: str | None = None
+    http_listen: str | None = None
+    http_public_base_url: str | None = None
+    allow_remote: bool | None = None
     gating_config_path: str | None = None
     access_config_path: str | None = None
+    meerkat_config_path: str | None = None
     workgraph_enabled: bool | str | None = None
     routing_config_path: str | None = None
     host_runnables: list[str] = field(default_factory=list)
@@ -59,7 +63,7 @@ class MobKitBuilder:
             MobKit.builder()
             .mob("config/mob.toml")
             .session_service(builder, store)
-            .discovery(discover_fn)
+            .roster(my_roster)
             .build()
         )
     """
@@ -83,14 +87,6 @@ class MobKitBuilder:
     def session_service(self, builder: Any, store: Any = None) -> MobKitBuilder:
         self._config.session_builder = builder
         self._config.session_store = store
-        return self
-
-    def discovery(self, callback: Any) -> MobKitBuilder:
-        self._config.discovery_callback = callback
-        return self
-
-    def pre_spawn(self, callback: Any) -> MobKitBuilder:
-        self._config.pre_spawn_callback = callback
         return self
 
     def event_log(self, config: Any = None, *, storage: Any = None, **kwargs: Any) -> MobKitBuilder:
@@ -194,6 +190,29 @@ class MobKitBuilder:
         ``config/access.toml``) access control is off entirely.
         """
         self._config.access_config_path = config_path
+        return self
+
+    def meerkat_config(self, path: str | Path) -> MobKitBuilder:
+        """Load a meerkat host ``config.toml`` into every agent the gateway builds.
+
+        Emitted as ``runtime_options.meerkat_config_path``. This is the only door
+        for the tables meerkat keeps in its host config rather than in
+        ``mob.toml``: ``[self_hosted]`` (servers and model aliases) and
+        ``[realm]`` (backend, auth and binding profiles). A host-config
+        ``[models]`` table reaches the factory too, but a profile's ``model``
+        must be catalogued, provider-annotated or defined under ``mob.toml``'s
+        own ``[models.<id>]`` to pass the init model check. The gateway reads
+        the file once at init and refuses a missing, malformed or
+        non-validating file (meerkat's ``Config::validate``); it also
+        refuses a ``mob.toml`` that carries ``[self_hosted]`` or ``[realm]`` at
+        top level, so a table in the wrong file is an error rather than a silent
+        drop. Opt-in: without this call the gateway builds from meerkat's default
+        config as before. Mirrors the TypeScript builder's ``meerkatConfig``.
+        """
+        text = str(path)
+        if not text.strip():
+            raise ValueError("meerkat_config path must not be empty")
+        self._config.meerkat_config_path = text
         return self
 
     def experimental_live(
@@ -543,6 +562,70 @@ class MobKitBuilder:
 
     def console_read_only(self, read_only: bool = True) -> MobKitBuilder:
         self._config.console_read_only = bool(read_only)
+        return self
+
+    def console_auth_required(self, required: bool) -> MobKitBuilder:
+        """Set whether console routes require app authentication.
+
+        Emitted as ``runtime_options.console_require_app_auth``. The gateway
+        default is fail-closed: without ``.auth(...)`` the console trusts no
+        signing key and refuses every request with 401. Pass ``False`` only
+        for an explicitly open local or host-protected console. Mirrors the
+        TypeScript builder's ``consoleAuthRequired``.
+        """
+        self._config.console_require_app_auth = bool(required)
+        return self
+
+    def console_config(self, path: str | Path) -> MobKitBuilder:
+        """Console UI TOML (``ConsoleUiConfig``) for the bundled console.
+
+        Emitted as ``runtime_options.console_config_path`` and projected
+        through ``/console/experience`` as ``console_config``. Mirrors the
+        TypeScript builder's ``consoleConfig``.
+        """
+        self._config.console_config_path = str(path)
+        return self
+
+    def http_listen(self, listen: str) -> MobKitBuilder:
+        """Bind the gateway HTTP listener to ``listen`` (``HOST:PORT``).
+
+        Emitted as ``runtime_options.http_listen``. The default is
+        ``127.0.0.1:0``: loopback, ephemeral port, the only bind every earlier
+        release had. A non-loopback address (``0.0.0.0:8080``) is refused at
+        init unless the console enforces app auth (``.auth(...)``) or the
+        launch acknowledges the exposure with ``.allow_remote()``; the gateway
+        logs a WARN line for every non-loopback bind. IP literals only, no
+        hostnames. The init result's ``http_base_url`` keeps the same-host
+        form (``127.0.0.1`` for a wildcard bind). Mirrors the TypeScript
+        builder's ``httpListen``.
+        """
+        if not isinstance(listen, str) or not listen.strip():
+            raise ValueError("http_listen must be a non-empty HOST:PORT string")
+        self._config.http_listen = listen.strip()
+        return self
+
+    def http_public_base_url(self, url: str) -> MobKitBuilder:
+        """Advertise the base URL clients reach the gateway at through a proxy.
+
+        Emitted as ``runtime_options.http_public_base_url`` and reported back
+        in the init result; the gateway never binds it. Read it after
+        ``connect()`` as ``runtime.rust_http_public_base_url``. Mirrors the
+        TypeScript builder's ``httpPublicBaseUrl``.
+        """
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("http_public_base_url must be a non-empty URL string")
+        self._config.http_public_base_url = url.strip()
+        return self
+
+    def allow_remote(self, allow: bool = True) -> MobKitBuilder:
+        """Acknowledge that ``http_listen`` exposes the listener beyond this host.
+
+        Emitted as ``runtime_options.allow_remote``. Same word and rule as
+        ``--allow-remote`` on ``rkat-rpc --tcp``: an exposure acknowledgement,
+        not an auth mechanism. Pass it only with an authenticating proxy in
+        front of the listener. Mirrors the TypeScript builder's ``allowRemote``.
+        """
+        self._config.allow_remote = bool(allow)
         return self
 
     def implicit_delegate_idle_retirement(

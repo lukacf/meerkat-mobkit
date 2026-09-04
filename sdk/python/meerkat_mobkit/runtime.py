@@ -380,6 +380,7 @@ class MobKitRuntime:
         self._running = False
         self._dispatcher = CallbackDispatcher()
         self._rust_http_base: str | None = None
+        self._rust_http_public_base: str | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._shutdown_task: asyncio.Task[None] | None = None
         self.jobs = JobsHandle(self)
@@ -437,6 +438,7 @@ class MobKitRuntime:
         """
         self._running = False
         self._rust_http_base = None
+        self._rust_http_public_base = None
         if self._transport is transport:
             self._transport = None
 
@@ -475,11 +477,36 @@ class MobKitRuntime:
         """
         self._dispatcher.register_schedule_fire_handler(name, handler)
 
+    def _session_builder_to_register(self) -> SessionAgentBuilder | None:
+        """Return the configured session builder, refusing a non-conforming one.
+
+        ``mobkit/init`` carries ``has_session_builder``, which makes the gateway
+        call back into this process for every build. An object that cannot
+        answer ``build_agent`` (a bare function, a partial, a misnamed method)
+        used to be skipped here in silence while that flag was still sent, so
+        the first spawn failed later with "no SessionAgentBuilder registered".
+        Refuse it typed, before any gateway starts.
+        """
+        builder = self._config.session_builder
+        if builder is None:
+            return None
+        if not isinstance(builder, SessionAgentBuilder):
+            raise TypeError(
+                "session_service() requires a SessionAgentBuilder: an object with "
+                "an async build_agent(options) method; got "
+                f"{type(builder).__name__}"
+            )
+        return builder
+
     async def _bootstrap(self) -> None:
+        # Resolve the builder before anything is spawned: a refusal here costs
+        # nothing to clean up.
+        session_builder = self._session_builder_to_register()
         if self._config.gateway_bin:
             transport = PersistentTransport(self._config.gateway_bin)
             self._transport = transport
             self._rust_http_base = None
+            self._rust_http_public_base = None
             try:
                 # Detached host work reports asynchronously through ordinary
                 # gateway RPC after the short callback/job/start response.
@@ -488,11 +515,9 @@ class MobKitRuntime:
                     self._dispatcher.register_job_credential_resolver(
                         self._config.job_credential_resolver
                     )
-                # Register builder FIRST — init may trigger callback/build_agent
-                if self._config.session_builder and isinstance(
-                    self._config.session_builder, SessionAgentBuilder
-                ):
-                    self._dispatcher.register_builder(self._config.session_builder)
+                # Register builder FIRST - init may trigger callback/build_agent
+                if session_builder is not None:
+                    self._dispatcher.register_builder(session_builder)
                 if self._config.error_callback is not None:
                     self._dispatcher.register_error_callback(self._config.error_callback)
                 # Register identity-first providers before transport start —
@@ -525,6 +550,12 @@ class MobKitRuntime:
                     )
                     if isinstance(init_result, dict):
                         self._rust_http_base = init_result.get("http_base_url")
+                        public_base = init_result.get("http_public_base_url")
+                        self._rust_http_public_base = (
+                            public_base
+                            if isinstance(public_base, str) and public_base
+                            else None
+                        )
                         if not self._rust_http_base:
                             _log.warning(
                                 "mobkit/init did not return http_base_url — "
@@ -548,10 +579,8 @@ class MobKitRuntime:
             except BaseException:
                 await self._cleanup_failed_bootstrap(transport)
                 raise
-        elif self._config.session_builder and isinstance(
-            self._config.session_builder, SessionAgentBuilder
-        ):
-            self._dispatcher.register_builder(self._config.session_builder)
+        elif session_builder is not None:
+            self._dispatcher.register_builder(session_builder)
         else:
             _log.warning(
                 "MobKit runtime started without gateway or session builder — "
@@ -575,6 +604,8 @@ class MobKitRuntime:
             runtime_options["gating_config_path"] = self._config.gating_config_path
         if self._config.access_config_path:
             runtime_options["access_config_path"] = self._config.access_config_path
+        if self._config.meerkat_config_path:
+            runtime_options["meerkat_config_path"] = self._config.meerkat_config_path
         if self._config.workgraph_enabled is not None:
             runtime_options["workgraph"] = self._config.workgraph_enabled
         if self._config.routing_config_path:
@@ -601,6 +632,18 @@ class MobKitRuntime:
             runtime_options["console_fetch_timeout_ms"] = (
                 self._config.console_fetch_timeout_ms
             )
+        if self._config.console_require_app_auth is not None:
+            runtime_options["console_require_app_auth"] = (
+                self._config.console_require_app_auth
+            )
+        if self._config.console_config_path:
+            runtime_options["console_config_path"] = self._config.console_config_path
+        if self._config.http_listen:
+            runtime_options["http_listen"] = self._config.http_listen
+        if self._config.http_public_base_url:
+            runtime_options["http_public_base_url"] = self._config.http_public_base_url
+        if self._config.allow_remote is not None:
+            runtime_options["allow_remote"] = self._config.allow_remote
         if self._config.implicit_delegate_idle_retire_configured:
             runtime_options["implicit_delegate_idle_retire_secs"] = (
                 self._config.implicit_delegate_idle_retire_secs
@@ -681,6 +724,19 @@ class MobKitRuntime:
     @property
     def rust_http_base_url(self) -> str | None:
         return self._rust_http_base
+
+    @property
+    def rust_http_public_base_url(self) -> str | None:
+        """Base URL for clients that reach the gateway through a proxy.
+
+        The ``http_public_base_url`` the launch advertised (see
+        ``MobKitBuilder.http_public_base_url``), falling back to
+        ``rust_http_base_url`` when none was declared. The SDK's own SSE,
+        multipart and console RPC calls keep using ``rust_http_base_url``:
+        this process spawned the gateway and shares its network namespace,
+        so the same-host form is always the one that answers.
+        """
+        return self._rust_http_public_base or self._rust_http_base
 
     def set_rust_http_base(self, url: str) -> None:
         self._rust_http_base = url
@@ -1770,13 +1826,23 @@ class MobHandle:
         return RediscoverReport.from_dict(raw)
 
     async def reconcile_edges(self) -> ReconcileEdgesReport:
-        """Re-run edge discovery and reconcile dynamic peer edges.
+        """Converge the definition's declared peer wiring on the live roster.
 
-        Refreshes the active roster, runs the configured ``EdgeDiscovery``,
-        and applies wire/unwire operations to match the desired topology.
+        The desired edges come from mob.toml's ``[wiring]`` block
+        (``auto_wire_orchestrator`` and ``role_wiring``), which the gateway
+        installs by itself; there is no builder knob to set. Wire and unwire
+        operations are applied so the live topology matches it, and the report
+        names them.
 
-        Only useful if ``EdgeDiscovery`` was configured on the builder.
-        Returns an empty report if no edge discovery is configured.
+        When it is needed: after ``runtime.reconcile()`` or an identity-first
+        boot, and only when the definition declares ``auto_wire_orchestrator``
+        or ``role_wiring``. Those restore paths embody identities concurrently
+        and do not converge the declared edges themselves, so the wiring is
+        otherwise bring-up-order dependent. ``ensure_member`` already runs this
+        after every successful materialization, so it is redundant there. With
+        no declared wiring the report is empty. Host ``topology_provider``
+        edges are converged by the identity plane on every restore and are not
+        this call's concern.
         """
         raw = await self._runtime._rpc("mobkit/reconcile_edges")
         return ReconcileEdgesReport.from_dict(raw)

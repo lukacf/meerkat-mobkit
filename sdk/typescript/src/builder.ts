@@ -8,7 +8,7 @@
  * const rt = await MobKit.builder()
  *   .mob("config/mob.toml")
  *   .sessionService(builder, store)
- *   .discovery(discoverFn)
+ *   .roster(myRoster)
  *   .build();
  *
  * const handle = rt.mobHandle();
@@ -106,13 +106,15 @@ export interface MobKitBuilderConfig {
   mobConfigPath: string | null;
   sessionBuilder: SessionAgentBuilder | null;
   sessionStore: unknown;
-  discoveryCallback: unknown;
-  preSpawnCallback: unknown;
   errorCallback: ErrorCallback | null;
   eventLog: unknown;
   runtimeStore: unknown;
   consoleConfigPath: string | null;
   accessConfigPath: string | null;
+  meerkatConfigPath: string | null;
+  httpListen: string | null;
+  httpPublicBaseUrl: string | null;
+  allowRemote: boolean | null;
   consoleRequireAppAuth: boolean | null;
   consoleReadOnly: boolean | null;
   consoleFetchTimeoutMs: number | null;
@@ -145,13 +147,15 @@ function defaultConfig(): MobKitBuilderConfig {
     mobConfigPath: null,
     sessionBuilder: null,
     sessionStore: null,
-    discoveryCallback: null,
-    preSpawnCallback: null,
     errorCallback: null,
     eventLog: null,
     runtimeStore: null,
     consoleConfigPath: null,
     accessConfigPath: null,
+    meerkatConfigPath: null,
+    httpListen: null,
+    httpPublicBaseUrl: null,
+    allowRemote: null,
     consoleRequireAppAuth: null,
     consoleReadOnly: null,
     consoleFetchTimeoutMs: null,
@@ -205,16 +209,6 @@ export class MobKitBuilder {
   sessionService(builder: SessionAgentBuilder, store?: unknown): this {
     this._config.sessionBuilder = builder;
     this._config.sessionStore = store ?? null;
-    return this;
-  }
-
-  discovery(callback: unknown): this {
-    this._config.discoveryCallback = callback;
-    return this;
-  }
-
-  preSpawn(callback: unknown): this {
-    this._config.preSpawnCallback = callback;
     return this;
   }
 
@@ -281,6 +275,31 @@ export class MobKitBuilder {
   }
 
   /**
+   * Load a meerkat host `config.toml` into every agent the gateway builds.
+   *
+   * Emitted as `runtime_options.meerkat_config_path`. This is the only door
+   * for the tables meerkat keeps in its host config rather than in
+   * `mob.toml`: `[self_hosted]` (servers and model aliases) and `[realm]`
+   * (backend, auth and binding profiles). A host-config `[models]` table
+   * reaches the factory too, but a profile's `model` must be catalogued,
+   * provider-annotated or defined under `mob.toml`'s own `[models.<id>]` to
+   * pass the init model check. The gateway reads the file once at init and
+   * refuses a missing, malformed or non-validating file (meerkat's
+   * `Config::validate`); it also
+   * refuses a `mob.toml` that carries `[self_hosted]` or `[realm]` at top
+   * level, so a table in the wrong file is an error rather than a silent
+   * drop. Opt-in: without this call the gateway builds from meerkat's default
+   * config as before. Mirrors the Python builder's `meerkat_config(path)`.
+   */
+  meerkatConfig(configPath: string): this {
+    if (!configPath.trim()) {
+      throw new Error("meerkatConfig path must not be empty");
+    }
+    this._config.meerkatConfigPath = configPath;
+    return this;
+  }
+
+  /**
    * Install the explicit pre-release GPT Live stdio registration.
    *
    * The gateway remains disabled when omitted. The selected binary must be
@@ -298,6 +317,55 @@ export class MobKitBuilder {
 
   consoleReadOnly(readOnly = true): this {
     this._config.consoleReadOnly = readOnly;
+    return this;
+  }
+
+  /**
+   * Bind the gateway HTTP listener to `HOST:PORT`.
+   *
+   * Emitted as `runtime_options.http_listen`. The default is `127.0.0.1:0`:
+   * loopback, ephemeral port, the only bind every earlier release had. A
+   * non-loopback address (`0.0.0.0:8080`) is refused at init unless the
+   * console enforces app auth (`auth(...)`) or the launch acknowledges the
+   * exposure with `allowRemote()`; the gateway logs a WARN line for every
+   * non-loopback bind. IP literals only, no hostnames. The init result's
+   * `http_base_url` keeps the same-host form (`127.0.0.1` for a wildcard
+   * bind). Mirrors the Python builder's `http_listen`.
+   */
+  httpListen(listen: string): this {
+    if (!listen.trim()) {
+      throw new Error("httpListen address must not be empty");
+    }
+    this._config.httpListen = listen.trim();
+    return this;
+  }
+
+  /**
+   * Advertise the base URL clients reach the gateway at through a proxy.
+   *
+   * Emitted as `runtime_options.http_public_base_url` and reported back in
+   * the init result; the gateway never binds it. Read it after `connect()`
+   * as `runtime.rustHttpPublicBaseUrl`. Mirrors the Python builder's
+   * `http_public_base_url`.
+   */
+  httpPublicBaseUrl(url: string): this {
+    if (!url.trim()) {
+      throw new Error("httpPublicBaseUrl must not be empty");
+    }
+    this._config.httpPublicBaseUrl = url.trim();
+    return this;
+  }
+
+  /**
+   * Acknowledge that `httpListen` exposes the listener beyond this host.
+   *
+   * Emitted as `runtime_options.allow_remote`. Same word and rule as
+   * `--allow-remote` on `rkat-rpc --tcp`: an exposure acknowledgement, not an
+   * auth mechanism. Pass it only with an authenticating proxy in front of the
+   * listener. Mirrors the Python builder's `allow_remote`.
+   */
+  allowRemote(allow = true): this {
+    this._config.allowRemote = allow;
     return this;
   }
 

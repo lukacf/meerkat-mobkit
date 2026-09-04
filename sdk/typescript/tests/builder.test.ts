@@ -47,22 +47,6 @@ describe("MobKitBuilder chainable methods", () => {
     assert.equal(builder._config.sessionStore, null);
   });
 
-  it("discovery() sets discoveryCallback and returns this", () => {
-    const builder = MobKit.builder();
-    const cb = () => {};
-    const result = builder.discovery(cb);
-    assert.equal(result, builder);
-    assert.equal(builder._config.discoveryCallback, cb);
-  });
-
-  it("preSpawn() sets preSpawnCallback and returns this", () => {
-    const builder = MobKit.builder();
-    const cb = () => {};
-    const result = builder.preSpawn(cb);
-    assert.equal(result, builder);
-    assert.equal(builder._config.preSpawnCallback, cb);
-  });
-
   it("onError() sets errorCallback and returns this", () => {
     const builder = MobKit.builder();
     const cb = () => {};
@@ -101,6 +85,46 @@ describe("MobKitBuilder chainable methods", () => {
     const result = builder.accessControl("config/access.toml");
     assert.equal(result, builder);
     assert.equal(builder._config.accessConfigPath, "config/access.toml");
+  });
+
+  it("meerkatConfig() sets meerkatConfigPath and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.meerkatConfig(".rkat/config.toml");
+    assert.equal(result, builder);
+    assert.equal(builder._config.meerkatConfigPath, ".rkat/config.toml");
+  });
+
+  it("meerkatConfig() rejects an empty path", () => {
+    assert.throws(
+      () => MobKit.builder().meerkatConfig("  "),
+      /meerkatConfig path must not be empty/,
+    );
+  });
+
+  it("httpListen() trims, sets httpListen and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.httpListen(" 0.0.0.0:8080 ");
+    assert.equal(result, builder);
+    assert.equal(builder._config.httpListen, "0.0.0.0:8080");
+  });
+
+  it("httpListen() rejects an empty address", () => {
+    assert.throws(
+      () => MobKit.builder().httpListen("  "),
+      /httpListen address must not be empty/,
+    );
+  });
+
+  it("httpPublicBaseUrl() sets httpPublicBaseUrl and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.httpPublicBaseUrl("https://mob.example.com");
+    assert.equal(result, builder);
+    assert.equal(builder._config.httpPublicBaseUrl, "https://mob.example.com");
+  });
+
+  it("allowRemote() defaults to true and accepts an explicit false", () => {
+    assert.equal(MobKit.builder().allowRemote()._config.allowRemote, true);
+    assert.equal(MobKit.builder().allowRemote(false)._config.allowRemote, false);
   });
 
   it("consoleAuthRequired() sets consoleRequireAppAuth and returns this", () => {
@@ -268,11 +292,13 @@ describe("MobKitBuilder default config", () => {
     assert.equal(cfg.mobConfigPath, null);
     assert.equal(cfg.sessionBuilder, null);
     assert.equal(cfg.sessionStore, null);
-    assert.equal(cfg.discoveryCallback, null);
-    assert.equal(cfg.preSpawnCallback, null);
     assert.equal(cfg.errorCallback, null);
     assert.equal(cfg.eventLog, null);
     assert.equal(cfg.consoleConfigPath, null);
+    assert.equal(cfg.meerkatConfigPath, null);
+    assert.equal(cfg.httpListen, null);
+    assert.equal(cfg.httpPublicBaseUrl, null);
+    assert.equal(cfg.allowRemote, null);
     assert.equal(cfg.consoleRequireAppAuth, null);
     assert.equal(cfg.consoleReadOnly, null);
     assert.equal(cfg.consoleFetchTimeoutMs, null);
@@ -324,6 +350,10 @@ describe("MobKitBuilder method chaining", () => {
       .mob("mob.toml")
       .gateway("/bin/gw")
       .consoleConfig("console.toml")
+      .meerkatConfig("host/config.toml")
+      .httpListen("0.0.0.0:8080")
+      .httpPublicBaseUrl("https://mob.example.com")
+      .allowRemote()
       .consoleAuthRequired(false)
       .consoleReadOnly(true)
       .consoleFetchTimeoutMs(120_000)
@@ -340,6 +370,10 @@ describe("MobKitBuilder method chaining", () => {
     assert.equal(builder._config.mobConfigPath, "mob.toml");
     assert.equal(builder._config.gatewayBin, "/bin/gw");
     assert.equal(builder._config.consoleConfigPath, "console.toml");
+    assert.equal(builder._config.meerkatConfigPath, "host/config.toml");
+    assert.equal(builder._config.httpListen, "0.0.0.0:8080");
+    assert.equal(builder._config.httpPublicBaseUrl, "https://mob.example.com");
+    assert.equal(builder._config.allowRemote, true);
     assert.equal(builder._config.consoleRequireAppAuth, false);
     assert.equal(builder._config.consoleReadOnly, true);
     assert.equal(builder._config.consoleFetchTimeoutMs, 120_000);
@@ -352,5 +386,24 @@ describe("MobKitBuilder method chaining", () => {
     assert.equal(builder._config.maxSessions, 320);
     assert.equal(builder._config.gatewayTimeoutMs, 300_000);
     assert.deepEqual(builder._config.modules, [{ id: "a" }]);
+  });
+});
+
+describe("MobKitBuilder removed boot knobs", () => {
+  // discovery() / preSpawn() were stored and never transmitted (dead since
+  // v0.2). The method must be gone so a caller fails loudly at the call site
+  // instead of being accepted and dropped, and the config has no slot for it.
+  it("discovery() and preSpawn() are not builder methods", () => {
+    const builder = MobKit.builder() as unknown as Record<string, unknown>;
+    assert.equal(typeof builder.discovery, "undefined");
+    assert.equal(typeof builder.preSpawn, "undefined");
+  });
+
+  it("the config carries no dead callback slots", () => {
+    const cfg = MobKit.builder()._config as unknown as Record<string, unknown>;
+    assert.equal("discoveryCallback" in cfg, false);
+    assert.equal("preSpawnCallback" in cfg, false);
+    // The live boot-membership knob is still there.
+    assert.equal("rosterProvider" in cfg, true);
   });
 });

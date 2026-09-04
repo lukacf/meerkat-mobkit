@@ -124,7 +124,8 @@
 //! `spec.resolved_storage` / `spec.binary_blob_store` /
 //! `spec.committed_boundary_recoverer` assignments.
 
-use std::path::PathBuf;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -139,7 +140,9 @@ use meerkat_runtime::MeerkatMachine;
 
 use crate::mob_handle_runtime::MobBootstrapSpec;
 use crate::runtime::cross_mob_control::ControlListenAddr;
-use crate::runtime::{InMemoryMetadataStore, PersistentMetadataStore, RuntimeOptions};
+use crate::runtime::{
+    InMemoryMetadataStore, PersistentMetadataStore, RuntimeDecisionState, RuntimeOptions,
+};
 use crate::schedule_wiring::{
     ScheduleClaimWatchdogConfig, ScheduleFiringHostBinding, ScheduleMobTargetRegistry,
 };
@@ -344,24 +347,87 @@ pub const GATEWAY_HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// `advertised_shutdown_horizon_covers_every_bounded_gateway_phase`.
 pub const GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(312);
 
+/// The address a gateway HTTP listener binds when nothing selects another:
+/// loopback, ephemeral port. Every shipped release before the `bind` door
+/// existed used exactly this, and it is still the default on both binaries.
+pub const DEFAULT_GATEWAY_HTTP_LISTEN: SocketAddr =
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+
+/// A bound gateway HTTP listener plus the two base URLs it can be reached at:
+/// the same-host form ([`http_base_url`](Self::http_base_url)) and, when the
+/// launch declared one, the proxy-facing form
+/// ([`advertised_base_url`](Self::advertised_base_url)).
 pub struct GatewayHttpBinding {
     listener: tokio::net::TcpListener,
-    port: u16,
+    local_addr: SocketAddr,
+    advertised_base_url: Option<String>,
 }
 
 impl GatewayHttpBinding {
+    /// Bind loopback on an ephemeral port: the default posture, and the only
+    /// one both binaries had until the `http_listen` door was added.
     pub async fn bind_loopback() -> std::io::Result<Self> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let port = listener.local_addr()?.port();
-        Ok(Self { listener, port })
+        Self::bind(DEFAULT_GATEWAY_HTTP_LISTEN).await
     }
 
+    /// Bind an explicit address.
+    ///
+    /// This constructor performs NO exposure check. Callers run
+    /// [`validate_http_bind_policy`] on `listen` first; both binaries do so
+    /// before any bootstrap work, so a refused address costs no runtime
+    /// build. Unspecified addresses (`0.0.0.0`, `::`) bind every interface;
+    /// [`http_base_url`](Self::http_base_url) still reports the loopback form
+    /// a same-host client dials.
+    pub async fn bind(listen: SocketAddr) -> std::io::Result<Self> {
+        let listener = tokio::net::TcpListener::bind(listen).await?;
+        let local_addr = listener.local_addr()?;
+        Ok(Self {
+            listener,
+            local_addr,
+            advertised_base_url: None,
+        })
+    }
+
+    /// Record the base URL clients on the far side of a proxy use to reach
+    /// this listener (`https://mob.example.com`, `http://192.168.0.10:8080`).
+    /// It is carried into the init result as `http_public_base_url` and is
+    /// never used to bind. A trailing `/` is dropped so route concatenation
+    /// stays uniform with [`http_base_url`](Self::http_base_url).
+    pub fn with_advertised_base_url(mut self, base_url: Option<String>) -> Self {
+        self.advertised_base_url = base_url.map(|url| url.trim_end_matches('/').to_string());
+        self
+    }
+
+    /// The kernel-assigned port (meaningful for `HOST:0` binds).
     pub fn port(&self) -> u16 {
-        self.port
+        self.local_addr.port()
     }
 
+    /// The address the listener is actually bound to, as the kernel reports
+    /// it (`0.0.0.0:8080` stays `0.0.0.0:8080`).
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    /// The address a client ON THIS HOST dials: the bound address with an
+    /// unspecified IP mapped to the loopback of the same family.
+    pub fn reachable_addr(&self) -> SocketAddr {
+        loopback_reachable_addr(self.local_addr)
+    }
+
+    /// `http://<reachable_addr>`: what the init result reports as
+    /// `http_base_url`. For the default loopback bind this is byte-identical
+    /// to every earlier release (`http://127.0.0.1:<port>`); for `0.0.0.0` it
+    /// is still a URL that resolves on this host, because the SDK that
+    /// spawned the gateway shares its network namespace and dials this form
+    /// for SSE, multipart and console RPC.
     pub fn http_base_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        format!("http://{}", self.reachable_addr())
+    }
+
+    /// The proxy-facing base URL declared at launch, if any.
+    pub fn advertised_base_url(&self) -> Option<&str> {
+        self.advertised_base_url.as_deref()
     }
 
     pub fn serve(self, app: Router) -> GatewayHttpServer {
@@ -378,6 +444,336 @@ impl GatewayHttpBinding {
             task: Some(task),
         }
     }
+}
+
+/// Map an unspecified bind address (`0.0.0.0`, `::`) to the loopback address
+/// of the same family, keeping the port. Every other address is already the
+/// one a same-host client dials: a listener bound to one interface does not
+/// accept on loopback, so rewriting `192.168.0.10:8080` to `127.0.0.1:8080`
+/// would advertise a URL nothing answers.
+pub fn loopback_reachable_addr(bound: SocketAddr) -> SocketAddr {
+    match bound.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => {
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), bound.port())
+        }
+        IpAddr::V6(ip) if ip.is_unspecified() => {
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), bound.port())
+        }
+        _ => bound,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP listener exposure policy
+// ---------------------------------------------------------------------------
+
+/// Exposure policy for a gateway HTTP listener.
+///
+/// Mirrors `meerkat_rpc::secure_rpc::TcpBindPolicy`, the gate behind
+/// `--allow-remote` on `rkat-rpc --tcp` and `rkat mob host --listen-tcp`, so
+/// a MobKit operator meets the same word with the same meaning: `allow_remote`
+/// is an explicit transport-exposure acknowledgement, not an auth mechanism.
+/// MobKit does not depend on meerkat-rpc and the meerkat facade does not
+/// re-export the type, so the rule lives here rather than behind a new
+/// dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpBindPolicy {
+    pub allow_remote: bool,
+}
+
+impl HttpBindPolicy {
+    pub const fn local_only() -> Self {
+        Self {
+            allow_remote: false,
+        }
+    }
+
+    pub const fn allow_remote() -> Self {
+        Self { allow_remote: true }
+    }
+
+    /// The policy both gateways resolve at init: a non-loopback bind is
+    /// permitted when the launch acknowledged it (`allow_remote`) OR when the
+    /// console enforces app auth on every request, because then the listener
+    /// carries its own access boundary. `mobkit_gateway` builds its decision
+    /// state with `require_app_auth: false` and has no auth ingress, so on
+    /// that binary only the acknowledgement can open the gate.
+    pub fn for_gateway(allow_remote: bool, decisions: &RuntimeDecisionState) -> Self {
+        Self {
+            allow_remote: allow_remote || ConsoleAuthPosture::of(decisions).is_enforced(),
+        }
+    }
+}
+
+/// Which gateway binary is speaking, for refusals and log lines that name
+/// their surface. The set is closed (the two bundled binaries) and `Display`
+/// is the binary name, so a call site cannot misspell the surface into an
+/// operator-facing message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GatewaySurface {
+    /// The SDK stdin JSON-RPC gateway.
+    RpcGateway,
+    /// The standalone console/HTTP gateway.
+    MobkitGateway,
+}
+
+impl GatewaySurface {
+    /// The binary name as it appears in messages and log lines.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::RpcGateway => "rpc_gateway",
+            Self::MobkitGateway => "mobkit_gateway",
+        }
+    }
+}
+
+impl std::fmt::Display for GatewaySurface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// How the console on a gateway listener treats its callers, classified once
+/// from the decision state the console will serve with.
+///
+/// One three-state fact with one classifier, consumed by the bind gate
+/// ([`HttpBindPolicy::for_gateway`] opens on `Enforced` alone), by
+/// [`warn_on_non_loopback_bind`] (which names the posture) and by
+/// `rpc_gateway`'s startup warning (which fires on `ClosedToEveryCaller`).
+/// A `require_app_auth` console with an empty JWKS protects the listener by
+/// refusing everyone, which is not the same as authenticating it, and is
+/// deliberately not enough to open the bind gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsoleAuthPosture {
+    /// `require_app_auth` is false: every request is admitted.
+    Open,
+    /// `require_app_auth` is true but the trusted JWKS carries no key, so no
+    /// bearer token can verify and every request is refused with 401. This is
+    /// what an SDK launch gets with neither `runtime_options.auth_config` nor
+    /// `console_require_app_auth = false`.
+    ClosedToEveryCaller,
+    /// `require_app_auth` is true and the trusted JWKS carries at least one
+    /// key: the console authenticates its callers on its own.
+    Enforced,
+}
+
+impl ConsoleAuthPosture {
+    /// Classify `decisions`. The trusted JWKS is parsed here and nowhere else.
+    pub fn of(decisions: &RuntimeDecisionState) -> Self {
+        if !decisions.console.require_app_auth {
+            return Self::Open;
+        }
+        if crate::parse_jwks_json(&decisions.trusted_oidc.jwks_json).is_ok() {
+            Self::Enforced
+        } else {
+            Self::ClosedToEveryCaller
+        }
+    }
+
+    /// Whether the console authenticates its callers on its own: the only
+    /// posture that opens the bind gate without `allow_remote`.
+    pub const fn is_enforced(self) -> bool {
+        matches!(self, Self::Enforced)
+    }
+}
+
+/// Why a requested HTTP listen address was refused before the listener opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HttpBindPolicyError {
+    /// The address is not loopback and neither the acknowledgement nor
+    /// enforced console auth permits the exposure.
+    RemoteBindRequiresExplicitAllow {
+        surface: GatewaySurface,
+        listen: SocketAddr,
+    },
+}
+
+impl std::fmt::Display for HttpBindPolicyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RemoteBindRequiresExplicitAllow { surface, listen } => write!(
+                f,
+                "{surface} HTTP listen address `{listen}` is not loopback. MobKit binds 127.0.0.1 \
+                 unless the console enforces app auth (auth_config with a trusted signing key) or \
+                 the launch acknowledges the exposure with allow_remote \
+                 (runtime_options.allow_remote = true on rpc_gateway; the allow_remote init param, \
+                 --allow-remote, or MOBKIT_HTTP_ALLOW_REMOTE=1 on mobkit_gateway). allow_remote is \
+                 an exposure acknowledgement, not an auth mechanism: pass it only with an \
+                 authenticating proxy in front of this listener"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HttpBindPolicyError {}
+
+/// Enforce a loopback-only HTTP listener unless `policy` permits remote.
+///
+/// Pure and synchronous so both binaries can run it before bootstrap and a
+/// refusal costs nothing but the init reply.
+pub fn validate_http_bind_policy(
+    surface: GatewaySurface,
+    listen: SocketAddr,
+    policy: HttpBindPolicy,
+) -> Result<(), HttpBindPolicyError> {
+    if policy.allow_remote || listen.ip().is_loopback() {
+        return Ok(());
+    }
+    Err(HttpBindPolicyError::RemoteBindRequiresExplicitAllow { surface, listen })
+}
+
+/// The loud warning every non-loopback bind logs, whatever opened the gate.
+/// Mirrors `mobkit_flow_editor`'s `--listen` warning: an operator must not be
+/// able to expose the console, JSON-RPC, blob, SSE and live routes to a
+/// network without a line in the log saying so. Emitted at WARN so it passes
+/// the default `warn,meerkat_mobkit=info` filter on both binaries.
+pub fn warn_on_non_loopback_bind(
+    surface: GatewaySurface,
+    bound: SocketAddr,
+    decisions: &RuntimeDecisionState,
+) {
+    if bound.ip().is_loopback() {
+        return;
+    }
+    let console_auth = match ConsoleAuthPosture::of(decisions) {
+        ConsoleAuthPosture::Enforced => "console app auth is enforced",
+        ConsoleAuthPosture::ClosedToEveryCaller => {
+            "the console requires app auth but trusts no key (refuses every caller)"
+        }
+        ConsoleAuthPosture::Open => "the console is OPEN (no app auth)",
+    };
+    tracing::warn!(
+        %bound,
+        "{surface} HTTP listener is bound to a NON-LOOPBACK address; {console_auth}; every route \
+         on this listener (console, JSON-RPC, blobs, SSE, live) is reachable by anyone who can \
+         reach {bound}. Bind 127.0.0.1 (the default) unless an authenticating proxy fronts this \
+         listener"
+    );
+}
+
+/// Why an `http_listen` or `http_public_base_url` declaration was refused
+/// before anything was bound. Every caller formats it into an init reply or a
+/// launch error with `Display`; the variants exist so the shape is matchable
+/// and the texts have one owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HttpExposureParseError {
+    /// The listen value is not `HOST:PORT` with an IP literal.
+    ListenAddress {
+        value: String,
+        source: std::net::AddrParseError,
+    },
+    /// `--http-listen` was the last argument.
+    ListenFlagMissingValue,
+    /// `--http-listen` carried a value that is not `HOST:PORT`.
+    ListenFlagAddress {
+        value: String,
+        source: std::net::AddrParseError,
+    },
+    /// The advertised base is not an absolute `http://` or `https://` URL.
+    PublicBaseUrlNotAbsoluteHttp { value: String },
+    /// The advertised base is a bare scheme with no host.
+    PublicBaseUrlNoHost { value: String },
+}
+
+impl std::fmt::Display for HttpExposureParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn listen_address(
+            f: &mut std::fmt::Formatter<'_>,
+            value: &str,
+            source: &std::net::AddrParseError,
+        ) -> std::fmt::Result {
+            write!(
+                f,
+                "`{value}` is not a HOST:PORT socket address ({source}); use an IP literal such \
+                 as 127.0.0.1:0 or 0.0.0.0:8080"
+            )
+        }
+        match self {
+            Self::ListenAddress { value, source } => listen_address(f, value, source),
+            Self::ListenFlagMissingValue => f.write_str(
+                "--http-listen requires an address (HOST:PORT, e.g. 127.0.0.1:8080 or 0.0.0.0:8080)",
+            ),
+            Self::ListenFlagAddress { value, source } => {
+                f.write_str("--http-listen: ")?;
+                listen_address(f, value, source)
+            }
+            Self::PublicBaseUrlNotAbsoluteHttp { value } => write!(
+                f,
+                "`{value}` must be an absolute http:// or https:// URL, e.g. https://mob.example.com"
+            ),
+            Self::PublicBaseUrlNoHost { value } => write!(f, "`{value}` names no host"),
+        }
+    }
+}
+
+impl std::error::Error for HttpExposureParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ListenAddress { source, .. } | Self::ListenFlagAddress { source, .. } => {
+                Some(source)
+            }
+            Self::ListenFlagMissingValue
+            | Self::PublicBaseUrlNotAbsoluteHttp { .. }
+            | Self::PublicBaseUrlNoHost { .. } => None,
+        }
+    }
+}
+
+/// Parse a `HOST:PORT` HTTP listen address. IP literals only (`127.0.0.1:0`,
+/// `0.0.0.0:8080`, `[::]:8080`), the same rule as `mobkit_flow_editor
+/// --listen`; no DNS resolution, so a hostname is a typed refusal here rather
+/// than a bind that resolves differently on the next host.
+pub fn parse_http_listen_addr(value: &str) -> Result<SocketAddr, HttpExposureParseError> {
+    value
+        .trim()
+        .parse::<SocketAddr>()
+        .map_err(|source| HttpExposureParseError::ListenAddress {
+            value: value.to_string(),
+            source,
+        })
+}
+
+/// Parse the proxy-facing base URL a launch advertises. It must be an absolute
+/// `http://` or `https://` URL; a trailing `/` is dropped so `{base}/console`
+/// concatenation matches the local `http_base_url`.
+pub fn parse_http_public_base_url(value: &str) -> Result<String, HttpExposureParseError> {
+    let trimmed = value.trim();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err(HttpExposureParseError::PublicBaseUrlNotAbsoluteHttp {
+            value: value.to_string(),
+        });
+    }
+    let base = trimmed.trim_end_matches('/');
+    if base == "http:" || base == "https:" {
+        return Err(HttpExposureParseError::PublicBaseUrlNoHost {
+            value: value.to_string(),
+        });
+    }
+    Ok(base.to_string())
+}
+
+/// Extract and validate the optional `--http-listen HOST:PORT` flag, the
+/// sibling of [`parse_control_listen_arg`] for the HTTP listener. Same
+/// argv convention: `args` is argv without the program name.
+pub fn parse_http_listen_arg(
+    args: &[String],
+) -> Result<Option<SocketAddr>, HttpExposureParseError> {
+    let Some(position) = args.iter().position(|arg| arg == "--http-listen") else {
+        return Ok(None);
+    };
+    let Some(value) = args.get(position + 1) else {
+        return Err(HttpExposureParseError::ListenFlagMissingValue);
+    };
+    value
+        .trim()
+        .parse::<SocketAddr>()
+        .map(Some)
+        .map_err(|source| HttpExposureParseError::ListenFlagAddress {
+            value: value.clone(),
+            source,
+        })
 }
 
 pub struct GatewayHttpServer {
@@ -553,10 +949,15 @@ pub fn default_tracing_filter(binary_target: &str) -> String {
     format!("warn,meerkat_mobkit=info,{binary_target}=info")
 }
 
-/// Install the gateway tracing subscriber on stderr.
+/// Install the gateway tracing subscriber on stderr, then the panic hook.
 ///
 /// Stderr, never stdout: stdout carries the init JSON handshake and the
 /// storage verbs' report output. `RUST_LOG` overrides the default filter.
+///
+/// The panic hook goes in here rather than in each binary's `main` so the
+/// two gateways cannot drift on it, and so a panic is reported through the
+/// same subscriber, with the same timestamps and filter, as the run-loop exit
+/// line the binaries log. See [`install_gateway_panic_hook`].
 pub fn init_gateway_tracing(binary_target: &str) {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -567,6 +968,67 @@ pub fn init_gateway_tracing(binary_target: &str) {
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();
+    install_gateway_panic_hook();
+}
+
+/// Report every panic through `tracing::error!` before the previously
+/// installed hook (normally the default one) prints its own message.
+///
+/// A panic on a tokio worker unwinds one task; the runtime and the process
+/// keep going, and the only trace is the default hook's plain-text line on
+/// stderr: no timestamp, no target, and gone if stderr was redirected away
+/// from the log stream. The panic in that case surfaces days later as "a
+/// member stopped answering" with nothing to grep for. Routing it through
+/// tracing puts the thread, source location and payload in the log stream
+/// itself, at ERROR so no sane filter drops it, next to the line that names
+/// which `select!` branch ended the gateway. Together they let an operator
+/// tell a crash-shaped exit from a supervisor's SIGTERM from a stdin EOF,
+/// which one report of "the gateway process exited, all endpoints 000" could
+/// not.
+///
+/// The previous hook still runs afterwards, so `RUST_BACKTRACE` keeps
+/// working and a host that installed its own hook before calling
+/// [`init_gateway_tracing`] keeps it. Re-entrancy is safe: tracing drops an
+/// event emitted from inside a subscriber callback rather than recursing, so
+/// a panic raised while formatting a log line does not abort the process
+/// from inside this hook.
+pub fn install_gateway_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log_panic(info);
+        previous(info);
+    }));
+}
+
+/// The tracing half of the panic hook, separate so the log shape is one
+/// place. Fields: `thread`, `file`, `line`, `column`, `payload`.
+fn log_panic(info: &std::panic::PanicHookInfo<'_>) {
+    let payload = panic_payload_text(info.payload());
+    let current = std::thread::current();
+    let thread = current.name().unwrap_or("<unnamed>");
+    match info.location() {
+        Some(location) => tracing::error!(
+            thread,
+            file = location.file(),
+            line = location.line(),
+            column = location.column(),
+            payload,
+            "panic"
+        ),
+        None => tracing::error!(thread, payload, "panic (location unavailable)"),
+    }
+}
+
+/// `panic!("literal")` carries a `&str`, `panic!("{x}")` carries a `String`;
+/// anything else (`panic_any`) has no text to show.
+fn panic_payload_text(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        text
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.as_str()
+    } else {
+        "<non-string panic payload>"
+    }
 }
 
 /// Extract and validate the optional `--control-listen <addr>` flag.
@@ -588,6 +1050,178 @@ pub fn parse_control_listen_arg(args: &[String]) -> Result<Option<ControlListenA
     ControlListenAddr::parse(value)
         .map(Some)
         .map_err(|error| format!("--control-listen: {error}"))
+}
+
+// ---------------------------------------------------------------------------
+// Host configuration ingress
+// ---------------------------------------------------------------------------
+
+/// A top-level `mob.toml` table that belongs to meerkat's HOST config
+/// (`config.toml`), not to the mob definition.
+///
+/// `MobDefinition::from_toml` deserializes without `deny_unknown_fields`, so a
+/// `[self_hosted]` or `[realm]` table written into `mob.toml` was dropped in
+/// silence, and the first self-hosted member then died at build time with
+/// "self-hosted model '..' is not registered in config", two layers away from
+/// the file that caused it. Both gateways refuse the table at init instead
+/// and name the option that carries the host config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HostConfigTableInMobToml {
+    /// `[self_hosted]`: serving endpoints and model aliases.
+    SelfHosted,
+    /// `[realm]`: backend, auth and binding profiles.
+    Realm,
+}
+
+impl HostConfigTableInMobToml {
+    /// Every table this check refuses, in the order it reports them.
+    pub const ALL: [Self; 2] = [Self::SelfHosted, Self::Realm];
+
+    /// The table name as written in TOML.
+    pub fn table(self) -> &'static str {
+        match self {
+            Self::SelfHosted => "self_hosted",
+            Self::Realm => "realm",
+        }
+    }
+}
+
+impl std::fmt::Display for HostConfigTableInMobToml {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "mob.toml declares a top-level [{table}] table, which is meerkat host configuration \
+             that the mob definition parser ignores; move it into the meerkat config.toml and \
+             point the gateway at that file: runtime_options.meerkat_config_path on rpc_gateway, \
+             or the meerkat_config_path init param (default <workspace>/.rkat/config.toml) on \
+             mobkit_gateway",
+            table = self.table()
+        )
+    }
+}
+
+impl std::error::Error for HostConfigTableInMobToml {}
+
+/// Refuse `[self_hosted]` and `[realm]` at the top level of a `mob.toml`
+/// document.
+///
+/// Runs on the RAW text, because by the time a typed `MobDefinition` exists
+/// the tables are already gone. Text that is not valid TOML is accepted here:
+/// `MobDefinition::from_toml` owns that verdict and reports it with its own
+/// message, and both gateways run it first.
+pub fn refuse_host_config_tables_in_mob_toml(
+    mob_toml: &str,
+) -> Result<(), HostConfigTableInMobToml> {
+    let Ok(toml::Value::Table(document)) = toml::from_str::<toml::Value>(mob_toml) else {
+        return Ok(());
+    };
+    match HostConfigTableInMobToml::ALL
+        .into_iter()
+        .find(|table| document.contains_key(table.table()))
+    {
+        Some(table) => Err(table),
+        None => Ok(()),
+    }
+}
+
+/// Why a meerkat host `config.toml` could not become a gateway's agent
+/// config. Both binaries refuse init on it: an operator who pointed the
+/// gateway at a file expects that file in force, and booting from
+/// `Config::default()` instead would resurface as an unexplained
+/// "self-hosted model is not registered in config" at the first member build.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum GatewayHostConfigError {
+    /// The file could not be read.
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// The file is not a valid meerkat config document.
+    Parse {
+        path: PathBuf,
+        source: meerkat::ConfigError,
+    },
+    /// The file parsed but fails meerkat's own `Config::validate` against the
+    /// canonical catalog: a `[self_hosted.models.<id>]` alias naming a server
+    /// that is not declared, a `[models.<id>]` row colliding with a catalog
+    /// id, a zero compaction threshold. These are exactly the errors `rkat`
+    /// and `rkat-rpc` refuse at load and that would otherwise surface at the
+    /// first member build.
+    Invalid {
+        path: PathBuf,
+        source: meerkat::ConfigError,
+    },
+}
+
+impl std::fmt::Display for GatewayHostConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Read { path, source } => {
+                write!(
+                    f,
+                    "failed to read meerkat config {}: {source}",
+                    path.display()
+                )
+            }
+            Self::Parse { path, source } => {
+                write!(f, "meerkat config {} is invalid: {source}", path.display())
+            }
+            Self::Invalid { path, source } => {
+                write!(
+                    f,
+                    "meerkat config {} does not validate: {source}",
+                    path.display()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for GatewayHostConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Read { source, .. } => Some(source),
+            Self::Parse { source, .. } | Self::Invalid { source, .. } => Some(source),
+        }
+    }
+}
+
+/// Load a meerkat host `config.toml` as the base config for every agent a
+/// gateway builds.
+///
+/// One explicit file, merged over `Config::default()` with meerkat's own
+/// file-merge semantics (`Config::merge_toml_str`, the step `Config::load`
+/// applies to a discovered `.rkat/config.toml`) and then validated with
+/// meerkat's own `Config::validate` against the canonical model catalog, the
+/// step `rkat` and `rkat-rpc` run after every load. No directory walk and no
+/// home-directory fallback: the gateway is handed a path, so what it loads is
+/// exactly what the operator named. This is what carries `[self_hosted]`,
+/// `[realm]` and `[models]` to `FactoryAgentBuilder`; the caller layers the
+/// gateway's own overlays (comms transport, compaction policy) on top.
+pub fn load_gateway_host_config(path: &Path) -> Result<meerkat::Config, GatewayHostConfigError> {
+    let text = std::fs::read_to_string(path).map_err(|source| GatewayHostConfigError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut config = meerkat::Config::default();
+    config
+        .merge_toml_str(&text)
+        .map_err(|source| GatewayHostConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    // Validation is the gateway ingress being at least as strict as meerkat's
+    // own: a dangling `[self_hosted.models.<id>] server = ".."` reference
+    // passes the parse and would otherwise kill the first member build.
+    config
+        .validate(meerkat_models::canonical())
+        .map_err(|source| GatewayHostConfigError::Invalid {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok(config)
 }
 
 // ---------------------------------------------------------------------------
@@ -843,6 +1477,150 @@ mod tests {
         );
     }
 
+    const HOST_CONFIG_FIXTURE: &str = r#"
+[self_hosted]
+default_model = "gemma-4-31b"
+
+[self_hosted.servers.local]
+transport = "openai_compatible"
+base_url = "http://127.0.0.1:11434"
+api_style = "chat_completions"
+
+[self_hosted.models.gemma-4-31b]
+server = "local"
+remote_model = "gemma4:31b"
+
+[models.house-model]
+provider = "openai"
+
+[realm.global]
+default_binding = "local"
+"#;
+
+    /// The host config's `[self_hosted]`, `[models]` and `[realm]` tables must
+    /// arrive in the loaded `Config`: nothing else in either gateway can
+    /// supply them (`TomlDefinition` drops the first and last, and the
+    /// registry refuses `[models.<id>] provider = "self_hosted"`).
+    #[test]
+    fn host_config_carries_self_hosted_models_and_realm_tables()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, HOST_CONFIG_FIXTURE)?;
+
+        let config = load_gateway_host_config(&path)?;
+
+        assert_eq!(
+            config
+                .self_hosted
+                .models
+                .get("gemma-4-31b")
+                .map(|model| model.server.as_str()),
+            Some("local")
+        );
+        assert!(config.self_hosted.servers.contains_key("local"));
+        assert_eq!(
+            config.self_hosted.default_model.as_deref(),
+            Some("gemma-4-31b")
+        );
+        assert_eq!(
+            config
+                .models
+                .custom
+                .get("house-model")
+                .map(|model| model.provider == meerkat_core::Provider::OpenAI),
+            Some(true)
+        );
+        assert!(config.realm.contains_key("global"));
+        Ok(())
+    }
+
+    /// A named file that cannot be read or parsed is a typed refusal that
+    /// names the path, never a silent `Config::default()`.
+    #[test]
+    fn host_config_refuses_missing_and_malformed_files_by_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let missing = dir.path().join("absent.toml");
+        let error = load_gateway_host_config(&missing).err();
+        assert!(
+            matches!(&error, Some(GatewayHostConfigError::Read { path, .. }) if path == &missing),
+            "{error:?}"
+        );
+        assert!(
+            error
+                .map(|error| error.to_string())
+                .unwrap_or_default()
+                .contains("absent.toml")
+        );
+
+        let malformed = dir.path().join("broken.toml");
+        std::fs::write(&malformed, "[self_hosted\n")?;
+        let error = load_gateway_host_config(&malformed).err();
+        assert!(
+            matches!(&error, Some(GatewayHostConfigError::Parse { path, .. }) if path == &malformed),
+            "{error:?}"
+        );
+        Ok(())
+    }
+
+    /// A file that parses but fails meerkat's own `Config::validate` is refused
+    /// at load by path, with meerkat's message: here a `[self_hosted.models]`
+    /// alias whose server is not declared, the fail-late class the ingress
+    /// exists to remove (the member would otherwise die at its first build).
+    #[test]
+    fn host_config_refuses_a_file_that_does_not_validate_by_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let dangling = dir.path().join("dangling.toml");
+        std::fs::write(
+            &dangling,
+            "[self_hosted.models.gemma-4-31b]\nserver = \"nowhere\"\nremote_model = \"gemma4:31b\"\n",
+        )?;
+        let error = load_gateway_host_config(&dangling).err();
+        assert!(
+            matches!(&error, Some(GatewayHostConfigError::Invalid { path, .. }) if path == &dangling),
+            "{error:?}"
+        );
+        let message = error.map(|error| error.to_string()).unwrap_or_default();
+        assert!(message.contains("dangling.toml"), "{message}");
+        assert!(message.contains("references unknown server"), "{message}");
+        assert!(message.contains("nowhere"), "{message}");
+        Ok(())
+    }
+
+    /// `TomlDefinition` has no `deny_unknown_fields`, so the two host-config
+    /// tables vanish from a parsed definition without a diagnostic. The raw
+    /// check must name the table and the option that carries the host config,
+    /// and must leave every table that DOES belong in mob.toml alone.
+    #[test]
+    fn mob_toml_host_config_tables_are_refused_by_name() {
+        let self_hosted = "[mob]\nid = \"m\"\n\n[self_hosted.servers.local]\n\
+                           base_url = \"http://127.0.0.1:11434\"\n";
+        assert_eq!(
+            refuse_host_config_tables_in_mob_toml(self_hosted),
+            Err(HostConfigTableInMobToml::SelfHosted)
+        );
+        let realm = "[mob]\nid = \"m\"\n\n[realm.global]\ndefault_binding = \"local\"\n";
+        assert_eq!(
+            refuse_host_config_tables_in_mob_toml(realm),
+            Err(HostConfigTableInMobToml::Realm)
+        );
+        for table in HostConfigTableInMobToml::ALL {
+            let message = table.to_string();
+            assert!(
+                message.contains(&format!("[{}]", table.table())),
+                "{message}"
+            );
+            assert!(message.contains("meerkat_config_path"), "{message}");
+        }
+        let ordinary = "[mob]\nid = \"m\"\n\n[profiles.w]\nmodel = \"house-model\"\n\n\
+                        [models.house-model]\nprovider = \"openai\"\n";
+        assert_eq!(refuse_host_config_tables_in_mob_toml(ordinary), Ok(()));
+        // Invalid TOML is the definition parser's verdict, not this check's.
+        assert_eq!(refuse_host_config_tables_in_mob_toml("[mob\n"), Ok(()));
+    }
+
     #[tokio::test]
     async fn shutdown_tail_orders_profile_quiesce_runtime_cleanup_then_registry_cleanup() {
         let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -920,6 +1698,106 @@ mod tests {
         }
     }
 
+    /// Captures everything a `tracing_subscriber::fmt` subscriber writes so a
+    /// test can assert on the rendered line.
+    #[derive(Clone, Default)]
+    struct CaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CaptureWriter {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(
+                &self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+            .into_owned()
+        }
+    }
+
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+        type Writer = CaptureWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// A panic must leave an ERROR line in the tracing stream naming the
+    /// thread, the source location and the payload. Without the hook the
+    /// only record is the default hook's plain stderr text, which is not in
+    /// the log stream at all when stderr is redirected; the tests that
+    /// drive the real binaries cannot make a gateway panic on demand, so the
+    /// hook is proven here on the test thread with a thread-local subscriber.
+    #[test]
+    // The panics ARE the subject under test; they are caught two lines later.
+    #[allow(clippy::panic)]
+    fn panic_hook_reports_thread_location_and_payload_through_tracing() {
+        install_gateway_panic_hook();
+        let writer = CaptureWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .finish();
+        let current = std::thread::current();
+        let this_thread = current.name().unwrap_or("<unnamed>").to_string();
+        let outcomes = tracing::subscriber::with_default(subscriber, || {
+            // A formatted message carries a `String` payload, a literal
+            // carries a `&str`; both downcasts must render the text.
+            let formatted = std::panic::catch_unwind(|| {
+                panic!("gateway panic hook marker {}", 40 + 2);
+            });
+            let literal = std::panic::catch_unwind(|| {
+                panic!("gateway panic hook literal marker");
+            });
+            (formatted, literal)
+        });
+        assert!(outcomes.0.is_err() && outcomes.1.is_err());
+
+        let log = writer.contents();
+        let error_lines: Vec<&str> = log.lines().filter(|line| line.contains("ERROR")).collect();
+        assert!(
+            error_lines
+                .iter()
+                .any(|line| line.contains("gateway panic hook marker 42")),
+            "formatted panic payload missing from the tracing stream:\n{log}"
+        );
+        assert!(
+            error_lines
+                .iter()
+                .any(|line| line.contains("gateway panic hook literal marker")),
+            "literal panic payload missing from the tracing stream:\n{log}"
+        );
+        for line in &error_lines {
+            assert!(
+                line.contains("gateway_composition.rs"),
+                "panic line does not name the source file: {line}"
+            );
+            assert!(
+                line.contains("line=") && line.contains("column="),
+                "panic line does not carry the source position: {line}"
+            );
+            assert!(
+                line.contains(&this_thread),
+                "panic line does not name the panicking thread {this_thread:?}: {line}"
+            );
+        }
+    }
+
     #[test]
     fn control_listen_arg_absent_is_none() -> Result<(), String> {
         let args = vec!["--persistent".to_string()];
@@ -960,5 +1838,272 @@ mod tests {
             error.starts_with("--control-listen: "),
             "refusal must name the flag: {error}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // HTTP listener binding and exposure policy
+    // -----------------------------------------------------------------------
+
+    /// A JWKS with one key: what an `auth_config` launch trusts. Any key
+    /// shape will do for the gate, which asks only "is there a key".
+    const ONE_KEY_JWKS: &str =
+        r#"{"keys":[{"kid":"k1","kty":"oct","alg":"HS256","k":"c2VjcmV0LWJ5dGVz"}]}"#;
+
+    fn open_console() -> RuntimeDecisionState {
+        RuntimeDecisionState::local_console(
+            crate::decisions::ConsolePolicy {
+                require_app_auth: false,
+                ..crate::decisions::ConsolePolicy::default()
+            },
+            None,
+        )
+    }
+
+    fn closed_console_without_keys() -> RuntimeDecisionState {
+        RuntimeDecisionState::local_console(crate::decisions::ConsolePolicy::default(), None)
+    }
+
+    fn authenticated_console() -> RuntimeDecisionState {
+        let mut state = closed_console_without_keys();
+        state.trusted_oidc.jwks_json = ONE_KEY_JWKS.to_string();
+        state
+    }
+
+    /// The default constructor must stay byte-identical to every earlier
+    /// release: loopback, ephemeral port, `http://127.0.0.1:<port>`.
+    #[tokio::test]
+    async fn bind_loopback_reports_the_pre_existing_base_url_form() -> std::io::Result<()> {
+        let binding = GatewayHttpBinding::bind_loopback().await?;
+        assert_eq!(binding.local_addr().ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(
+            binding.http_base_url(),
+            format!("http://127.0.0.1:{}", binding.port())
+        );
+        assert_eq!(binding.advertised_base_url(), None);
+        Ok(())
+    }
+
+    /// A wildcard bind is reported at the loopback a same-host client can
+    /// dial, with the kernel-assigned port, and the advertised base rides
+    /// beside it with its trailing slash normalised away.
+    #[tokio::test]
+    async fn bind_unspecified_reports_a_reachable_loopback_base_url() -> std::io::Result<()> {
+        let binding = GatewayHttpBinding::bind("0.0.0.0:0".parse().map_err(std::io::Error::other)?)
+            .await?
+            .with_advertised_base_url(Some("https://mob.example.com/".to_string()));
+        assert!(binding.local_addr().ip().is_unspecified());
+        assert_ne!(binding.port(), 0);
+        assert_eq!(
+            binding.http_base_url(),
+            format!("http://127.0.0.1:{}", binding.port())
+        );
+        assert_eq!(
+            binding.reachable_addr(),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), binding.port())
+        );
+        assert_eq!(
+            binding.advertised_base_url(),
+            Some("https://mob.example.com")
+        );
+        Ok(())
+    }
+
+    /// The loopback mapping is a pure function of the bound address: both
+    /// wildcard families map to their loopback, every concrete address is
+    /// left alone (a listener on one interface does not answer on loopback).
+    #[test]
+    fn loopback_reachable_addr_maps_wildcards_only() -> Result<(), std::net::AddrParseError> {
+        assert_eq!(
+            loopback_reachable_addr("0.0.0.0:8080".parse()?),
+            "127.0.0.1:8080".parse()?
+        );
+        assert_eq!(
+            loopback_reachable_addr("[::]:8080".parse()?),
+            "[::1]:8080".parse()?
+        );
+        assert_eq!(
+            loopback_reachable_addr("192.0.2.10:8080".parse()?),
+            "192.0.2.10:8080".parse()?
+        );
+        assert_eq!(
+            loopback_reachable_addr("127.0.0.1:41".parse()?),
+            "127.0.0.1:41".parse()?
+        );
+        Ok(())
+    }
+
+    /// The gate itself, independent of any decision state: loopback always
+    /// passes, non-loopback passes only with the acknowledgement, and the
+    /// refusal names the address and every way out.
+    #[test]
+    fn http_bind_policy_refuses_non_loopback_without_allow_remote()
+    -> Result<(), std::net::AddrParseError> {
+        for loopback in ["127.0.0.1:0", "[::1]:8080", "127.0.0.2:9"] {
+            assert_eq!(
+                validate_http_bind_policy(
+                    GatewaySurface::MobkitGateway,
+                    loopback.parse()?,
+                    HttpBindPolicy::local_only()
+                ),
+                Ok(())
+            );
+        }
+        for remote in ["0.0.0.0:8080", "[::]:8080", "192.0.2.10:8080"] {
+            let listen: SocketAddr = remote.parse()?;
+            let error = validate_http_bind_policy(
+                GatewaySurface::RpcGateway,
+                listen,
+                HttpBindPolicy::local_only(),
+            );
+            assert_eq!(
+                error,
+                Err(HttpBindPolicyError::RemoteBindRequiresExplicitAllow {
+                    surface: GatewaySurface::RpcGateway,
+                    listen,
+                })
+            );
+            let message = error
+                .map(|()| String::new())
+                .unwrap_or_else(|error| error.to_string());
+            assert!(message.contains(remote), "{message}");
+            assert!(message.contains("rpc_gateway"), "{message}");
+            assert!(message.contains("allow_remote"), "{message}");
+            assert!(message.contains("auth_config"), "{message}");
+            assert!(message.contains("MOBKIT_HTTP_ALLOW_REMOTE"), "{message}");
+            assert_eq!(
+                validate_http_bind_policy(
+                    GatewaySurface::MobkitGateway,
+                    listen,
+                    HttpBindPolicy::allow_remote()
+                ),
+                Ok(())
+            );
+        }
+        Ok(())
+    }
+
+    /// The surface enum is what a message names: both binaries spell
+    /// themselves the way their `--version` output does.
+    #[test]
+    fn gateway_surface_display_is_the_binary_name() {
+        assert_eq!(GatewaySurface::RpcGateway.to_string(), "rpc_gateway");
+        assert_eq!(GatewaySurface::MobkitGateway.to_string(), "mobkit_gateway");
+    }
+
+    /// The gateway resolution: enforced console auth opens the gate on its
+    /// own; an open console does not; a console that REQUIRES auth but
+    /// trusts no key (closed to everyone) does not either, because refusing
+    /// everyone is not authenticating anyone; the acknowledgement always does.
+    #[test]
+    fn http_bind_policy_for_gateway_treats_enforced_console_auth_as_allow() {
+        assert_eq!(
+            ConsoleAuthPosture::of(&authenticated_console()),
+            ConsoleAuthPosture::Enforced
+        );
+        assert_eq!(
+            ConsoleAuthPosture::of(&open_console()),
+            ConsoleAuthPosture::Open
+        );
+        assert_eq!(
+            ConsoleAuthPosture::of(&closed_console_without_keys()),
+            ConsoleAuthPosture::ClosedToEveryCaller
+        );
+        assert!(ConsoleAuthPosture::Enforced.is_enforced());
+        assert!(!ConsoleAuthPosture::Open.is_enforced());
+        assert!(!ConsoleAuthPosture::ClosedToEveryCaller.is_enforced());
+
+        assert_eq!(
+            HttpBindPolicy::for_gateway(false, &authenticated_console()),
+            HttpBindPolicy::allow_remote()
+        );
+        assert_eq!(
+            HttpBindPolicy::for_gateway(false, &open_console()),
+            HttpBindPolicy::local_only()
+        );
+        assert_eq!(
+            HttpBindPolicy::for_gateway(false, &closed_console_without_keys()),
+            HttpBindPolicy::local_only()
+        );
+        assert_eq!(
+            HttpBindPolicy::for_gateway(true, &open_console()),
+            HttpBindPolicy::allow_remote()
+        );
+    }
+
+    #[test]
+    fn parse_http_listen_addr_accepts_ip_literals_and_refuses_hostnames() {
+        assert_eq!(
+            parse_http_listen_addr(" 0.0.0.0:8080 ").ok(),
+            "0.0.0.0:8080".parse().ok()
+        );
+        assert_eq!(
+            parse_http_listen_addr("[::]:8080").ok(),
+            "[::]:8080".parse().ok()
+        );
+        for bad in ["localhost:8080", "8080", "0.0.0.0", ""] {
+            let error = parse_http_listen_addr(bad).err();
+            assert!(
+                matches!(&error, Some(HttpExposureParseError::ListenAddress { value, .. }) if value == bad),
+                "{bad:?}: {error:?}"
+            );
+            let message = error.map(|error| error.to_string()).unwrap_or_default();
+            assert!(message.contains("HOST:PORT"), "{bad:?}: {message}");
+        }
+    }
+
+    #[test]
+    fn parse_http_public_base_url_requires_an_absolute_http_url() {
+        assert_eq!(
+            parse_http_public_base_url(" https://mob.example.com/ ").as_deref(),
+            Ok("https://mob.example.com")
+        );
+        assert_eq!(
+            parse_http_public_base_url("http://192.168.0.10:8080").as_deref(),
+            Ok("http://192.168.0.10:8080")
+        );
+        for bad in ["mob.example.com", "ws://mob.example.com", ""] {
+            assert_eq!(
+                parse_http_public_base_url(bad),
+                Err(HttpExposureParseError::PublicBaseUrlNotAbsoluteHttp {
+                    value: bad.to_string()
+                }),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            parse_http_public_base_url("https://"),
+            Err(HttpExposureParseError::PublicBaseUrlNoHost {
+                value: "https://".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn parse_http_listen_arg_mirrors_the_control_listen_flag() -> Result<(), HttpExposureParseError>
+    {
+        let absent = vec!["--persistent".to_string()];
+        assert!(parse_http_listen_arg(&absent)?.is_none());
+
+        let present = vec!["--http-listen".to_string(), "0.0.0.0:8080".to_string()];
+        assert_eq!(
+            parse_http_listen_arg(&present)?,
+            "0.0.0.0:8080".parse().ok()
+        );
+
+        let missing_value = vec!["--http-listen".to_string()];
+        let error = parse_http_listen_arg(&missing_value).err();
+        assert_eq!(error, Some(HttpExposureParseError::ListenFlagMissingValue));
+        let message = error.map(|error| error.to_string()).unwrap_or_default();
+        assert!(message.contains("--http-listen requires"), "{message}");
+
+        let malformed = vec!["--http-listen".to_string(), "localhost:8080".to_string()];
+        let error = parse_http_listen_arg(&malformed).err();
+        assert!(
+            matches!(&error, Some(HttpExposureParseError::ListenFlagAddress { value, .. }) if value == "localhost:8080"),
+            "{error:?}"
+        );
+        let message = error.map(|error| error.to_string()).unwrap_or_default();
+        assert!(message.starts_with("--http-listen:"), "{message}");
+        Ok(())
     }
 }
