@@ -37,6 +37,54 @@ class TestNewSymbolsExist:
         assert hasattr(meerkat_mobkit, name), f"{name} should be in public surface"
 
 
+class TestIdentityFirstCustomizerExports:
+    """The customizer boundary types are importable from the top level.
+
+    ``customize_build(context, spec, draft)`` is the per-identity equivalent of
+    ``SessionAgentBuilder.build_agent``; its argument types used to be public
+    only through ``meerkat_mobkit.identity_first_models`` /
+    ``identity_first_providers``.
+    """
+
+    NAMES = [
+        "AgentBuildContext",
+        "AgentBuildDraft",
+        "AgentCustomizerProtocol",
+        "DurableAgentSpec",
+        "ExternalToolDef",
+    ]
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_symbol_is_exported_and_declared(self, name):
+        assert hasattr(meerkat_mobkit, name), f"{name} should be importable from meerkat_mobkit"
+        assert name in meerkat_mobkit.__all__, f"{name} should be declared in __all__"
+
+    def test_top_level_names_are_the_canonical_objects(self):
+        from meerkat_mobkit import (
+            AgentBuildContext,
+            AgentBuildDraft,
+            AgentCustomizerProtocol,
+            DurableAgentSpec,
+            ExternalToolDef,
+        )
+        from meerkat_mobkit import identity_first_models, identity_first_providers
+
+        assert AgentBuildContext is identity_first_models.AgentBuildContext
+        assert AgentBuildDraft is identity_first_models.AgentBuildDraft
+        assert DurableAgentSpec is identity_first_models.DurableAgentSpec
+        assert ExternalToolDef is identity_first_models.ExternalToolDef
+        assert AgentCustomizerProtocol is identity_first_providers.AgentCustomizerProtocol
+
+    def test_draft_register_tool_round_trips_through_top_level_import(self):
+        from meerkat_mobkit import AgentBuildDraft, ExternalToolDef
+
+        draft = AgentBuildDraft()
+        draft.register_tool("lookup", lambda args: {"ok": True}, description="lookup")
+        assert draft.external_tools == [
+            ExternalToolDef(name="lookup", description="lookup", input_schema={"type": "object"})
+        ]
+
+
 class TestLegacySymbolsRemoved:
     @pytest.mark.parametrize("name", [
         "MobkitTypedClient",

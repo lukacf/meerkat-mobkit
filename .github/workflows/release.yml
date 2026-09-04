@@ -231,6 +231,17 @@ jobs:
     # (mirrors meerkat's release build): each target builds natively on its own
     # runner with plain cargo — no bazel, no BuildBuddy, no self-hosted runner.
     runs-on: ${{ matrix.runs-on }}
+    # A Linux GNU binary's glibc floor is whatever glibc it was linked
+    # against. Built directly on ubuntu-latest (Ubuntu 24.04, glibc 2.39),
+    # the v0.8.30 gateways carried a hard GLIBC_2.39 version requirement
+    # (pidfd_spawnp/pidfd_getpid) and refused to load on Debian bookworm
+    # (2.36), Ubuntu 22.04 (2.35) and bullseye (2.31), and nothing read the
+    # produced binary to notice. Building inside buildpack-deps:bullseye pins
+    # the floor at 2.31, the same image and floor meerkat's release lane
+    # ships, and scripts/check-linux-release-binary-portability.sh refuses
+    # any binary above it before packaging. Non-Linux matrix entries get no
+    # container.
+    container: ${{ contains(matrix.target, 'unknown-linux-gnu') && 'docker.io/library/buildpack-deps:bullseye' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -264,7 +275,15 @@ jobs:
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.target }}
+          # The Linux key names the container. rust-cache keys on rustc, the
+          # lock and the environment, none of which changed when the Linux
+          # legs moved into bullseye, so the target directory the host builds
+          # left behind (C objects compiled against glibc 2.39 headers) would
+          # otherwise be restored into the container, the portability gate
+          # would refuse the result, and every retry would restore the same
+          # stale cache because rust-cache saves only on success. macOS and
+          # Windows keys are unchanged.
+          key: release-${{ contains(matrix.target, 'unknown-linux-gnu') && 'bullseye-' || '' }}${{ matrix.target }}
 
       - name: Apply release build profile overrides
         shell: bash
@@ -310,6 +329,26 @@ jobs:
           # exposed by what is IN THE BINARY, not by what the lock says.
           cargo build -p meerkat-mobkit --bin mobkit_gateway --bin rpc_gateway --bin mobkit_repair \
             --locked --release --target "${{ matrix.target }}"
+
+      # The gate reads the produced binary, not the build environment: a
+      # container or toolchain change that raised the floor would otherwise
+      # publish silently, which is exactly how the ubuntu-latest builds shipped
+      # through v0.8.30. Every binary the build step produces is checked, and
+      # the step fails closed before anything is packaged, attested or
+      # uploaded. scripts/test_release_workflow.py runs this body against the
+      # build step's --bin list, so a binary added there without a line here
+      # fails CI rather than shipping unchecked.
+      - name: Check Linux binary portability
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          ./scripts/check-linux-release-binary-portability.sh \
+            "target/${TARGET}/release/mobkit_gateway" \
+            "target/${TARGET}/release/rpc_gateway" \
+            "target/${TARGET}/release/mobkit_repair"
 
       - name: Ad-hoc codesign macOS binaries
         if: runner.os == 'macOS'

@@ -39,6 +39,11 @@ repos:
       - id: check-toml
         stages: [pre-push]
       - id: check-merge-conflict
+        # Without --assume-in-merge the hook scans files only while
+        # .git/MERGE_MSG exists, so a conflict marker committed during a merge
+        # and pushed later passes untouched (CHANGELOG.md, 2026-09-03). Force
+        # the scan on every push.
+        args: [--assume-in-merge]
         stages: [pre-push]
       - id: check-added-large-files
         args: ['--maxkb=1000']
@@ -50,6 +55,21 @@ repos:
       - id: cargo-fmt
         name: cargo fmt --check
         entry: scripts/repo-cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+  # On push: the generated Bazel BUILD files match the crate layout. CI runs
+  # the same check in fmt-lint; a new test binary or bin added without
+  # `node scripts/generate-bazel-rust-builds.mjs` fails there (PR #393,
+  # 2026-09-04). No hook regenerates on commit here, so the push gate is the
+  # only local one.
+  - repo: local
+    hooks:
+      - id: bazel-builds-fresh
+        name: generated Bazel BUILD files are fresh
+        entry: node scripts/generate-bazel-rust-builds.mjs --check
         language: system
         types: [rust]
         pass_filenames: false

@@ -2230,10 +2230,21 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         "provider_params_rows": 4,
         "provider_params_invalid_json_label": "invalid JSON",
         "provider_params_object_required_error": "provider_params must be a JSON object",
-        "system_prompt_title": "SYSTEM PROMPT",
+        // The `system_prompt_*` view keys are the editor client's view-config
+        // vocabulary (`packages/flow-editor-core/src/views/view-config.ts`)
+        // and stay stable. The text they carry describes the profile
+        // `peer_description`, which the editor document stores under the
+        // legacy `systemPrompt` member key: roster text other members read
+        // through the `peers` tool and peer-added notifications. It never
+        // enters this member's own system prompt, which meerkat assembles
+        // from the profile's `skills`. `apply_skeleton_title` describes what
+        // the bundled client's `memberPromptSkeleton` actually inserts (a
+        // second-person mandate template, unchanged); it must not promise
+        // peer-facing text until that template is rewritten.
+        "system_prompt_title": "PEER DESCRIPTION",
         "apply_skeleton_label": "APPLY SKELETON",
-        "apply_skeleton_title": "Apply a MobKit profile prompt skeleton",
-        "system_prompt_placeholder": "Describe the member mandate. This text is exported as the profile peer_description.",
+        "apply_skeleton_title": "Insert the bundled starter template: a second-person mandate with operating rules ('You are <name>, a member of a Meerkat mob...'). It lands in this peer-facing description, not in the member's prompt, so rewrite it as a description of this member before exporting.",
+        "system_prompt_placeholder": "Describe this member's role for its peers. Exported as the profile peer_description and shown to other members through the peers tool and peer-added notifications; it is not this member's system prompt, which comes from the profile skills.",
         "output_schema_title": "OUTPUT SCHEMA",
         "schema_none_label": "— none —",
         "schema_required_label": "req",
@@ -3138,6 +3149,8 @@ fn agent_definition_catalog(
                         "externalAddressable": member.get("externalAddressable").and_then(Value::as_bool).unwrap_or(false),
                         "backend": member.get("backend").and_then(Value::as_str).unwrap_or_default(),
                         "maxInlinePeerNotifications": member.get("maxInlinePeerNotifications").or_else(|| member.get("max_inline_peer_notifications")).cloned().unwrap_or(Value::Null),
+                        // Legacy editor-document key for the profile
+                        // `peer_description`; see the definition export.
                         "systemPrompt": member.get("systemPrompt").and_then(Value::as_str).unwrap_or_default(),
                         "providerParams": member.get("providerParams").or_else(|| member.get("provider_params")).cloned().unwrap_or(Value::Null),
                         "definitionType": "mobkit/profile-member",
@@ -3294,7 +3307,7 @@ mob = true
 
 [profiles.agent]
 model = "gpt-5.5"
-peer_description = "Start from a minimal editable MobKit profile member and configure its prompt, tools, skills, schema, and runtime mode in the Agent Editor."
+peer_description = "Start from a minimal editable MobKit profile member and configure its peer description, tools, skills, schema, and runtime mode in the Agent Editor."
 runtime_mode = "turn_driven"
 
 [profiles.agent.tools]
@@ -10975,6 +10988,8 @@ fn normalize_member_update_patch(
     for (key, value) in patch {
         match key.as_str() {
             "id" => return Err("update_member cannot change member id".to_string()),
+            // `systemPrompt` patches the peer description: the editor
+            // document's legacy key for the profile `peer_description`.
             "name" | "systemPrompt" => {
                 let text = value
                     .as_str()
@@ -11763,6 +11778,7 @@ fn member_from_agent_definition(definition: &Value, members: &Value) -> Result<V
         "externalAddressable": definition.get("externalAddressable").and_then(Value::as_bool).unwrap_or(false),
         "backend": optional_definition_string(definition, "backend"),
         "maxInlinePeerNotifications": definition.get("maxInlinePeerNotifications").cloned().unwrap_or(Value::Null),
+        // Legacy editor-document key for the profile `peer_description`.
         "systemPrompt": optional_definition_string(definition, "systemPrompt"),
         "providerParams": definition.get("providerParams").cloned().unwrap_or(Value::Null),
         "sourceDefinition": {
@@ -14910,6 +14926,13 @@ fn project_definition_to_editor_document_for_flow(
                     "role": profile_name.to_string(),
                     "profileBinding": "inline",
                     "model": profile.model,
+                    // `systemPrompt` is the editor document's legacy key for the
+                    // profile `peer_description`: peer-facing roster text that
+                    // other members read through the `peers` tool and peer-added
+                    // notifications, never this member's own prompt (meerkat
+                    // assembles that from `skills`). The bundled client reads
+                    // the key under this name, so the key stays and the Agent
+                    // Editor label says what it carries.
                     "systemPrompt": profile.peer_description,
                     "tools": tool_ids_from_config(&profile.tools),
                     "schema": schema_id,
@@ -16930,14 +16953,22 @@ fn emit_rendered_profile(
     if !skills.is_empty() {
         lines.push(format!("skills = {}", toml_array(&skills)));
     }
-    if let Some(prompt) = member
+    // The editor document's `systemPrompt` (and its snake_case import alias)
+    // is the profile `peer_description`: roster text other members read
+    // through the `peers` tool. It is exported under that TOML key and never
+    // becomes this member's system prompt, which meerkat assembles from the
+    // `skills` written above.
+    if let Some(peer_description) = member
         .get("systemPrompt")
         .or_else(|| member.get("system_prompt"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        lines.push(format!("peer_description = {}", toml_string(prompt)));
+        lines.push(format!(
+            "peer_description = {}",
+            toml_string(peer_description)
+        ));
     }
     lines.push(format!(
         "external_addressable = {}",
@@ -34237,7 +34268,19 @@ depends_on_mode = "all"
         );
         assert_eq!(
             mob_definition["editor_agent_detail_view"]["system_prompt_title"],
-            json!("SYSTEM PROMPT")
+            json!("PEER DESCRIPTION")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["apply_skeleton_title"],
+            json!(
+                "Insert the bundled starter template: a second-person mandate with operating rules ('You are <name>, a member of a Meerkat mob...'). It lands in this peer-facing description, not in the member's prompt, so rewrite it as a description of this member before exporting."
+            )
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["system_prompt_placeholder"],
+            json!(
+                "Describe this member's role for its peers. Exported as the profile peer_description and shown to other members through the peers tool and peer-added notifications; it is not this member's system prompt, which comes from the profile skills."
+            )
         );
         assert!(
             mob_definition["editor_agent_detail_view"]
@@ -35059,6 +35102,12 @@ url = "https://example.invalid/mcp"
                 && member["providerParams"]
                     == json!({ "thinking_budget_tokens": 8192, "top_p": 0.5 })
         }));
+        assert!(
+            members.iter().any(|member| {
+                member["id"] == "m_planner" && member["systemPrompt"] == "Plan the work"
+            }),
+            "the editor's systemPrompt member key must carry the profile peer_description"
+        );
         let plan_step = document.flow["steps"]
             .as_array()
             .and_then(|steps| steps.iter().find(|step| step["id"] == "plan"))

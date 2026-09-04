@@ -198,6 +198,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `validate_trusted_oidc_runtime_config` is exported for hosts that want the
   OIDC snapshot check on an open console.
 
+- **`AgentBuildDraft`, `AgentBuildContext`, `DurableAgentSpec`,
+  `ExternalToolDef`, and `AgentCustomizerProtocol` are importable from the
+  top-level `meerkat_mobkit` package.** The identity-first customizer
+  (`customize_build(context, spec, draft)` with `draft.register_tool`) is the
+  per-identity equivalent of `SessionAgentBuilder.build_agent`, but its
+  argument types were public only through
+  `meerkat_mobkit.identity_first_models` / `identity_first_providers`, so the
+  documented per-profile tool path needed a submodule import while every other
+  public surface did not. Additive: the submodule paths keep working.
+
 ### Fixed
 
 - **The configuration reference now states four rules hosts were discovering
@@ -429,6 +439,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   incarnation id into a member alias that does not exist, so it never attached
   and logged one `WARN ... mob member not found` per send. Rust API change for
   embedders that call the reservation directly.
+
+- **`CHANGELOG.md` no longer carries committed merge-conflict markers, and the
+  pre-push hook now catches them.** Merge aa28ea02 committed an unresolved
+  conflict in the `[Unreleased]` / Added section (the typed per-turn injection
+  skip reasons on one side, the `make e2e-live` lane on the other) and PR #381
+  carried the `<<<<<<< HEAD` / `=======` / `>>>>>>>` lines to main. Both
+  entries describe shipped changes and both are kept; only the three marker
+  lines are gone. The markers passed pre-push because `check-merge-conflict`
+  scans files only while `.git/MERGE_MSG` exists, so a marker committed inside
+  a merge and pushed afterwards was never read; the hook now runs with
+  `--assume-in-merge` and a committed marker in any tracked text file fails
+  the push. The same pass gained a `bazel-builds-fresh` pre-push hook running
+  `node scripts/generate-bazel-rust-builds.mjs --check`: nothing regenerated
+  the BUILD files locally, so a new test binary reached CI stale and failed
+  its `fmt-lint` job there instead of at the push (PR #393).
+
+- **Prebuilt Linux gateway binaries load on glibc 2.31 and newer.** The
+  `*-unknown-linux-gnu` release legs built directly on `ubuntu-latest`
+  (Ubuntu 24.04, glibc 2.39) and nothing read the produced binary, so the
+  v0.8.30 `mobkit-rpc-gateway` and `mobkit-gateway` archives carried a hard
+  `GLIBC_2.39` version requirement (`pidfd_spawnp`/`pidfd_getpid`) and the
+  loader refused them on Debian bookworm (2.36), Ubuntu 22.04 (2.35) and
+  bullseye (2.31); only trixie and Ubuntu 24.04 could run them. The Linux legs
+  now build inside `docker.io/library/buildpack-deps:bullseye`, the image
+  meerkat's release lane uses, so both products ship one 2.31 floor, and the
+  new `scripts/check-linux-release-binary-portability.sh` reads every produced
+  binary before packaging and fails the release on any glibc reference above
+  the floor or any dynamic OpenSSL dependency (the gateway's TLS is rustls).
+  The Linux cache key names the container so a host-built target directory is
+  not restored into it. macOS and Windows legs are unchanged. Hosts that
+  download the Linux archives gain the wider set of loadable distributions and
+  observe no other change; the quickstart now states the floor.
+
+- **The Flow Editor's Agent Editor no longer labels the peer description
+  "SYSTEM PROMPT".** The field it edits is the profile `peer_description`:
+  roster text other members read through the `peers` tool and peer-added
+  notifications, never part of the member's own prompt, which meerkat
+  assembles from the profile's `skills` (`[skills.<id>] source = "inline"` or
+  a path). Text typed under the old label therefore never reached the model.
+  The section title now reads "PEER DESCRIPTION", the placeholder says what
+  the text is for and where the prompt actually lives, and the starter
+  member's own description no longer promises a prompt. The "APPLY SKELETON"
+  button's behaviour is not changed: the bundled client's
+  `memberPromptSkeleton` still inserts a second-person mandate template with
+  operating rules ("You are <name>, a member of a Meerkat mob...") into this
+  peer-facing field, so its tooltip now says exactly that and tells the author
+  to rewrite the text as a description before exporting; replacing the
+  template with peer-facing text is a client bundle change and is not in this
+  release. The editor document key `systemPrompt` (and its
+  `system_prompt` import alias) is unchanged, so saved editor documents and
+  the bundled client keep round-tripping; the mapping is documented at the
+  projection and export sites. MobKit's own test fixtures modelled the same
+  mistake with an inert profile-level `system_prompt` key that meerkat
+  silently drops; they now carry their prompts as inline skills, or omit them
+  where no turn reads a prompt.
 
 ## [0.8.31] - 2026-09-04
 

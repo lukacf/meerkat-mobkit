@@ -436,12 +436,24 @@ fn continuity_db(state: &Path) -> std::path::PathBuf {
         .path
 }
 
+/// The marker carried by [`PROFILE_PROMPT_MOB_TOML`]'s inline skill. Its
+/// presence in a captured request proves the profile-level prompt carrier is
+/// real, so the revival assertions rest on a prompt that exists.
+const PROFILE_PROMPT_MARKER: &str = "PROFILE-PROMPT-MARKER-16-YANKEE";
+
 /// The lazy-recall mob with a PROFILE-declared system prompt - the one
 /// configuration shape proven (HomeCore/OB3 field contrast, 2026-08-06) to
 /// re-author one assembled System row per automatic revival on the
 /// 0.8.16-0.8.18 line: the assembled prompt lands in persisted spawn state
 /// at original spawn and the mob-resume AppendExplicit branches re-lower it
 /// as fresh explicit intent on every boot.
+///
+/// The prompt rides the only profile-level carrier meerkat reads: `skills`
+/// resolved against an inline `[skills.<id>]`. Until 2026-09-03 this fixture
+/// wrote a bare `system_prompt` key under `[profiles.personal]`, which is not
+/// a `Profile` field and is dropped at `MobDefinition::from_toml`, so no
+/// prompt was in play and the "authors no extra rows" assertions were
+/// vacuous.
 const PROFILE_PROMPT_MOB_TOML: &str = r#"
 [mob]
 id = "lazy-recall-continuity"
@@ -450,10 +462,14 @@ id = "lazy-recall-continuity"
 model = "gpt-5.5"
 external_addressable = true
 runtime_mode = "turn_driven"
-system_prompt = "PROFILE-PROMPT-MARKER-16-YANKEE: you are alice."
+skills = ["personal_role"]
 
 [profiles.personal.tools]
 comms = true
+
+[skills.personal_role]
+source = "inline"
+content = "PROFILE-PROMPT-MARKER-16-YANKEE: you are alice."
 "#;
 
 /// `boot` with an explicit definition and NO agent customizer, so a
@@ -3107,9 +3123,12 @@ async fn mobkit_repair_binary_prunes_duplicates_and_member_resumes() {
 }
 
 /// Profile-prompt revival hygiene (0.8.19 pairing prep, 2026-08-06): a
-/// member whose PROFILE declares a system_prompt, booted repeatedly with a
-/// turn each - automatic rematerialization must author NOTHING beyond each
-/// turn's own messages. MEASURED FINDING: this is ALREADY GREEN on the
+/// member whose PROFILE declares a prompt through an inline skill, booted
+/// repeatedly with a turn each - automatic rematerialization must author
+/// NOTHING beyond each turn's own messages, and every boot's request must
+/// carry the prompt exactly once (zero copies is a lost prompt, more is
+/// revival re-authoring; the durable row count below is the same fact seen
+/// from the store). MEASURED FINDING: this is ALREADY GREEN on the
 /// 0.8.18 pairing - the identity-first lazy revival and the cold-mint
 /// recovery lane both take PreservePersisted paths (host_materialize) and
 /// do not mint. The field defect (HomeCore parent-1: one assembled row per
@@ -3158,6 +3177,21 @@ async fn profile_prompt_revival_authors_no_system_rows() {
             .await
             .expect("boot 1's turn");
         wait_for_turn(&capture, 1, "boot 1's turn").await;
+        // The carrier must be real: the profile's inline-skill prompt reaches
+        // the freshly spawned member's first request. Without this, the
+        // revival assertions below pass for a member with no prompt to
+        // re-author.
+        assert!(
+            PROFILE_PROMPT_MOB_TOML.contains(PROFILE_PROMPT_MARKER),
+            "fixture and marker drifted apart"
+        );
+        let first = capture.last().expect("a boot-1 request was captured");
+        assert_eq!(
+            first.matches(PROFILE_PROMPT_MARKER).count(),
+            1,
+            "the profile's inline-skill prompt must reach the spawned member's first \
+             request exactly once; request: {first}"
+        );
         runtime.shutdown().await;
         let (head, count) = wait_for_durable_document_at_least(&state, 2, "boot 1's commit").await;
         session_id = head;
@@ -3187,6 +3221,12 @@ async fn profile_prompt_revival_authors_no_system_rows() {
             .await
             .unwrap_or_else(|e| panic!("boot {boot_no}'s turn must not be refused: {e}"));
         wait_for_turn(&capture, 1, "a revival boot's turn").await;
+        let revived = capture.last().expect("a revival boot request was captured");
+        assert_eq!(
+            revived.matches(PROFILE_PROMPT_MARKER).count(),
+            1,
+            "boot {boot_no} must carry the profile prompt exactly once; request: {revived}"
+        );
         wait_for_durable_document_at_least(
             &state,
             durable_count + 2,
@@ -3245,6 +3285,12 @@ async fn profile_prompt_revival_authors_no_system_rows() {
             .await
             .expect("the cold-mint turn must not be refused");
         wait_for_turn(&capture, 1, "the cold-mint turn").await;
+        let minted = capture.last().expect("a cold-mint request was captured");
+        assert_eq!(
+            minted.matches(PROFILE_PROMPT_MARKER).count(),
+            1,
+            "the cold-mint boot must carry the profile prompt exactly once; request: {minted}"
+        );
         runtime.shutdown().await;
         let (_, count) =
             wait_for_durable_document_at_least(&state, 0, "the post-reset document").await;

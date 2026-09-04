@@ -169,6 +169,179 @@ def workflow_permissions_without_comments() -> str:
     )
 
 
+PORTABILITY_SCRIPT = ROOT / "scripts/check-linux-release-binary-portability.sh"
+
+# glibc shipped by each Debian release the container expression may name. The
+# gate's default floor must equal the entry for the image in use; an image move
+# to a codename missing here fails the parity test until the map is extended,
+# which is the moment to decide the new floor deliberately.
+CONTAINER_GLIBC = {"bullseye": "2.31", "bookworm": "2.36", "trixie": "2.41"}
+
+# readelf --dyn-syms output shapes. GLIBC_2.4 (__stack_chk_fail) is in nearly
+# every binary and sorts ABOVE "2.31" as text, below it as a version.
+DYNSYMS_WITHIN_FLOOR = """\
+Symbol table '.dynsym' contains 3 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     1: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND memcpy@GLIBC_2.14 (2)
+     2: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND __stack_chk_fail@GLIBC_2.4 (3)
+     3: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND gettid@GLIBC_2.30 (4)
+"""
+# The v0.8.30 shape: std's pidfd spawn path bound to the runner's glibc 2.39.
+DYNSYMS_ABOVE_FLOOR = DYNSYMS_WITHIN_FLOOR + (
+    "     4: 0000000000000000     0 FUNC    WEAK   DEFAULT  UND pidfd_spawnp@GLIBC_2.39 (5)\n"
+)
+DYNAMIC_RUSTLS = """\
+Dynamic section at offset 0x1000 contains 3 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+"""
+DYNAMIC_OPENSSL = DYNAMIC_RUSTLS + (
+    " 0x0000000000000001 (NEEDED)             Shared library: [libssl.so.3]\n"
+    " 0x0000000000000001 (NEEDED)             Shared library: [libcrypto.so.3]\n"
+)
+
+
+def step_block(step_name: str, job: str = "build_binaries") -> str:
+    """The text of exactly one step, bounded by the next `- name:`."""
+    lines = job_block(job).splitlines()
+    start = lines.index(f"      - name: {step_name}")
+    for offset, line in enumerate(lines[start + 1 :], start=start + 1):
+        if line.startswith("      - name: "):
+            return "\n".join(lines[start:offset])
+    return "\n".join(lines[start:])
+
+
+def step_script(step_name: str, job: str = "build_binaries") -> str:
+    """One step's `run: |` body, de-indented, verbatim."""
+    lines = job_block(job).splitlines()
+    step = lines.index(f"      - name: {step_name}")
+    run = lines.index("        run: |", step)
+    body: list[str] = []
+    for line in lines[run + 1 :]:
+        if line and not line.startswith("          "):
+            break
+        body.append(line[10:] if line else "")
+    return "\n".join(body)
+
+
+def scalar(block: str, key: str, indent: str) -> str:
+    """The raw value of the single `<indent><key>: value` line in a block."""
+    matches = [line for line in block.splitlines() if line.startswith(f"{indent}{key}: ")]
+    if len(matches) != 1:
+        raise AssertionError(f"expected exactly one `{key}` line, found {len(matches)}")
+    return matches[0].split(": ", 1)[1]
+
+
+def matrix_targets(job: str = "build_binaries") -> list[str]:
+    return re.findall(r"^\s+target: (\S+)$", job_block(job), re.M)
+
+
+def evaluate_expression(expression: str, **context):
+    """Evaluate a GitHub expression that yields a VALUE, under an explicit context.
+
+    `evaluate_condition` collapses to bool. The `container:` image and the cache
+    `key:` are strings built with the `cond && 'a' || 'b'` idiom, whose result
+    is an operand, and Python's `and`/`or` return operands the same way. Any
+    `matrix.*` name the caller did not supply raises rather than reading as ''.
+    """
+    translated = expression.replace("&&", " and ").replace("||", " or ")
+    translated = re.sub(
+        r"\bmatrix\.([A-Za-z_][A-Za-z0-9_-]*)",
+        lambda m: "matrix_" + m.group(1).replace("-", "_"),
+        translated,
+    )
+    translated = re.sub(r"contains\(([^,]+),\s*('[^']*')\)", r"(\2 in \1)", translated)
+    missing = {
+        name for name in re.findall(r"\bmatrix_[A-Za-z0-9_]+", translated) if name not in context
+    }
+    if missing:
+        raise AssertionError(f"expression references unsupplied names: {sorted(missing)}")
+    return eval(translated, {"__builtins__": {}}, dict(context))
+
+
+def render_template(template: str, **context) -> str:
+    """Substitute every `${{ expr }}` in a YAML scalar with its evaluated value."""
+    return re.sub(
+        r"\$\{\{\s*(.*?)\s*\}\}",
+        lambda m: str(evaluate_expression(m.group(1), **context)),
+        template,
+    )
+
+
+def run_portability_check(dynsyms: str, dynamic: str, *, floor: str | None = None,
+                          binaries: list[str] | None = None) -> subprocess.CompletedProcess[str]:
+    """Run the real gate against a fake `readelf`.
+
+    The ELF the gate reads is the release artifact, which no test can build,
+    and macOS has no readelf at all, so the readelf OUTPUT is the fixture: the
+    script's decision is under test, not binutils. Only `rpc_gateway` exists
+    on disk; other names in `binaries` exercise the missing-file path.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "readelf"
+        fake.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  --dyn-syms) printf '%s' "$FAKE_READELF_DYNSYMS" ;;
+  -d) printf '%s' "$FAKE_READELF_DYNAMIC" ;;
+  *) echo "fake readelf: unexpected arguments: $*" >&2; exit 99 ;;
+esac
+"""
+        )
+        fake.chmod(0o755)
+        (root / "rpc_gateway").write_bytes(b"\x7fELF fixture")
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["FAKE_READELF_DYNSYMS"] = dynsyms
+        env["FAKE_READELF_DYNAMIC"] = dynamic
+        env.pop("MOBKIT_GLIBC_FLOOR", None)
+        if floor is not None:
+            env["MOBKIT_GLIBC_FLOOR"] = floor
+        names = ["rpc_gateway"] if binaries is None else binaries
+        return subprocess.run(
+            [str(PORTABILITY_SCRIPT), *(str(root / name) for name in names)],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+
+def run_portability_step(target: str, *, gate_status: int) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """Execute the `Check Linux binary portability` step body under bash.
+
+    A fake gate script records what it was asked to check and exits with
+    `gate_status`, so the test observes which binaries the step covers and
+    whether a refusal propagates, rather than pattern-matching the YAML.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        scripts = root / "scripts"
+        scripts.mkdir()
+        log = root / "calls.log"
+        fake = scripts / "check-linux-release-binary-portability.sh"
+        fake.write_text(
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$@" >> "$FAKE_GATE_LOG"\nexit "$FAKE_GATE_STATUS"\n'
+        )
+        fake.chmod(0o755)
+        env = os.environ.copy()
+        env.update({"TARGET": target, "FAKE_GATE_LOG": str(log), "FAKE_GATE_STATUS": str(gate_status)})
+        result = subprocess.run(
+            ["bash", "-c", step_script("Check Linux binary portability")],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        checked = log.read_text().splitlines() if log.exists() else []
+    return result, checked
+
+
 class NpmReleaseWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -617,6 +790,151 @@ class ExactMainCiGateTests(unittest.TestCase):
         block = job_block("require_ci_green")
         self.assertIn('run.head_branch === "main"', block)
         self.assertIn('run.event === "push"', block)
+
+
+class LinuxBinaryPortabilityGateTests(unittest.TestCase):
+    """The gate reads the produced binary and refuses one the floor cannot load.
+
+    A Linux GNU binary's glibc floor is whatever glibc it was linked against,
+    and until this gate nothing read the result: the v0.8.30 gateways, built
+    directly on ubuntu-latest, carried a hard GLIBC_2.39 version requirement
+    (pidfd_spawnp/pidfd_getpid) and the loader refused them on Debian bookworm
+    (2.36), Ubuntu 22.04 (2.35) and bullseye (2.31). Every job read green.
+    """
+
+    def test_a_glibc_reference_above_the_floor_is_refused(self):
+        result = run_portability_check(DYNSYMS_ABOVE_FLOOR, DYNAMIC_RUSTLS)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(
+            "references GLIBC_2.39, above the declared floor GLIBC_2.31", result.stderr
+        )
+
+    def test_a_binary_within_the_floor_passes_and_names_its_maximum(self):
+        result = run_portability_check(DYNSYMS_WITHIN_FLOOR, DYNAMIC_RUSTLS)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+        # The input also carries GLIBC_2.4, which a string sort would report as
+        # the maximum and then compare above 2.31. Only a version sort names 2.30.
+        self.assertIn("max glibc ref GLIBC_2.30, floor GLIBC_2.31", result.stdout)
+
+    def test_the_floor_is_the_declared_parameter_not_a_constant(self):
+        result = run_portability_check(DYNSYMS_ABOVE_FLOOR, DYNAMIC_RUSTLS, floor="2.39")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("floor GLIBC_2.39", result.stdout)
+
+    def test_a_dynamic_openssl_dependency_is_refused(self):
+        # All first-party TLS is rustls; a NEEDED libssl means a dependency
+        # regressed into native-tls, as meerkat v0.8.21 shipped via oai-rt-rs.
+        result = run_portability_check(DYNSYMS_WITHIN_FLOOR, DYNAMIC_OPENSSL)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("dynamically links OpenSSL", result.stderr)
+        self.assertIn("libssl.so.3", result.stderr)
+
+    def test_one_missing_binary_fails_the_whole_set(self):
+        result = run_portability_check(
+            DYNSYMS_WITHIN_FLOOR, DYNAMIC_RUSTLS, binaries=["rpc_gateway", "mobkit_gateway"]
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+        self.assertIn("mobkit_gateway: file not found", result.stderr)
+
+    def test_the_gate_is_executable_from_a_checkout(self):
+        # The workflow invokes it as ./scripts/...; a 644 file fails the step
+        # with "Permission denied", which reads as a broken gate, not a floor.
+        self.assertTrue(os.access(PORTABILITY_SCRIPT, os.X_OK))
+        self.assertTrue(PORTABILITY_SCRIPT.read_text().startswith("#!/usr/bin/env bash\n"))
+
+
+class LinuxReleaseContainerTests(unittest.TestCase):
+    """Linux GNU release legs build inside a pinned-glibc container and every
+    produced binary passes the portability gate before it is packaged.
+
+    These evaluate the real `container:` and cache `key:` expressions per
+    matrix target and execute the gate step's shell, rather than asserting
+    that the word "bullseye" appears somewhere in the file.
+    """
+
+    def container_expression(self) -> str:
+        return scalar(job_block("build_binaries"), "container", "    ")
+
+    def linux_image(self) -> str:
+        return render_template(self.container_expression(), matrix_target="x86_64-unknown-linux-gnu")
+
+    def test_linux_gnu_legs_build_inside_the_pinned_container_and_others_do_not(self):
+        targets = matrix_targets()
+        self.assertEqual(len(targets), 5, targets)
+        for target in targets:
+            with self.subTest(target=target):
+                image = render_template(self.container_expression(), matrix_target=target)
+                if target.endswith("-unknown-linux-gnu"):
+                    self.assertEqual(image, "docker.io/library/buildpack-deps:bullseye")
+                else:
+                    # macOS and Windows legs cannot run a Linux container; an
+                    # empty string is how the expression opts them out.
+                    self.assertEqual(image, "")
+
+    def test_the_declared_floor_matches_the_container_image(self):
+        # The floor is a fact about the image; the two are declared in two
+        # files and this is the only thing that holds them together.
+        codename = self.linux_image().rsplit(":", 1)[1]
+        self.assertIn(
+            codename, CONTAINER_GLIBC,
+            f"unknown Debian codename {codename!r}: extend CONTAINER_GLIBC and decide the floor",
+        )
+        declared = re.search(
+            r'^MOBKIT_GLIBC_FLOOR="\$\{MOBKIT_GLIBC_FLOOR:-([0-9.]+)\}"$',
+            PORTABILITY_SCRIPT.read_text(),
+            re.M,
+        )
+        self.assertIsNotNone(declared, "the gate must declare an overridable default floor")
+        self.assertEqual(declared.group(1), CONTAINER_GLIBC[codename])
+
+    def test_the_linux_cache_key_names_the_container(self):
+        # rust-cache keys on rustc, the lock and the env; none changed when the
+        # Linux legs moved into the container, so the host-built target dir
+        # would be restored into it and the gate would refuse the same stale
+        # cache on every retry. The other legs keep their existing keys.
+        key = scalar(step_block("Cache cargo registry"), "key", "          ")
+        linux = render_template(key, matrix_target="x86_64-unknown-linux-gnu")
+        mac = render_template(key, matrix_target="aarch64-apple-darwin")
+
+        self.assertIn(self.linux_image().rsplit(":", 1)[1], linux)
+        self.assertEqual(mac, "release-aarch64-apple-darwin")
+
+    def test_the_gate_runs_on_linux_after_the_build_and_before_anything_ships(self):
+        block = job_block("build_binaries")
+        gate = block.index("      - name: Check Linux binary portability")
+
+        self.assertLess(block.index("      - name: Build gateway binaries"), gate)
+        for later in ("Package artifacts", "Attest build provenance", "Upload artifacts"):
+            with self.subTest(step=later):
+                self.assertLess(gate, block.index(f"      - name: {later}"))
+        step = step_block("Check Linux binary portability")
+        self.assertIn("        if: runner.os == 'Linux'", step)
+        self.assertIn("          TARGET: ${{ matrix.target }}", step)
+
+    def test_the_gate_checks_every_binary_the_build_step_produces(self):
+        built = re.findall(r"--bin (\w+)", step_script("Build gateway binaries"))
+        self.assertTrue(built, "the build step names no --bin; the parser is wrong")
+        target = "aarch64-unknown-linux-gnu"
+
+        result, checked = run_portability_step(target, gate_status=0)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            sorted(checked), sorted(f"target/{target}/release/{name}" for name in built)
+        )
+
+    def test_a_refused_binary_fails_the_step(self):
+        result, checked = run_portability_step("x86_64-unknown-linux-gnu", gate_status=1)
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertTrue(checked, "the gate was never invoked")
 
 
 if __name__ == "__main__":

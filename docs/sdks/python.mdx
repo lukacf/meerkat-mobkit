@@ -282,7 +282,8 @@ print(snapshot.agent_identity, snapshot.state)
 # Find members by label
 members = await handle.find_members("owner", "user-123")
 
-# Re-run discovery and reconcile the roster
+# Reconcile the named modules (routing, delivery). This does not touch the
+# roster; identity roster reconciliation is rt.reconcile().
 result = await handle.reconcile(["routing", "delivery"])
 
 # Call an MCP tool on a loaded module
@@ -377,7 +378,8 @@ rt = await (
 | `.scratch_dir(path)` | Required scratch path for external identity providers |
 | `.roster(provider)` | Identity-first roster provider |
 | `.topology_provider(provider)` | Identity-first topology provider |
-| `.agent_customizer(customizer)` | Identity-first agent customizer |
+| `.agent_customizer(customizer)` | Identity-first agent customizer (`customize_build(context, spec, draft)`; see [Per-profile tools](#session-agent-builder-and-per-profile-tools)) |
+| `.on_error(callback)` | Error hook. Receives every runtime `ErrorEvent` (`category`, `message`, `context`) the gateway forwards as the `mobkit/on_error` notification; sync or async, fire-and-forget. Without it the events reach only the gateway's stderr ERROR line (see [Error hook and logging](/guides/unified-runtime#error-hook-and-logging)) |
 | `.identity_bootstrap_mode(mode)` | Eager, lazy, or bounded background-warm identity materialization; requires `.roster(...)` |
 | `.role_migrations(declarations)` | Authorize durable member role migrations for THIS boot. Takes an iterable of `RoleMigrationDeclaration` dataclasses or equivalent `identity` / `from_role` dicts, validating either form; a conflicting pair for one identity raises `ValueError`, an identical repeat is accepted, and leaving the setter unused emits no `role_migrations` init-params key at all |
 | `.session_service(builder, store)` | Session agent builder and optional store |
@@ -546,19 +548,118 @@ Discarding is the legacy pre-0.8.9 default and is not recommended: it hides
 panic output and makes a slow-but-working storage migration indistinguishable
 from a hang.
 
-## Session agent builder
+## Session agent builder and per-profile tools
 
-Define how agents are built during session creation:
+`build_agent` runs once per member build on the worker plane (fresh spawn or
+resume). The gateway pre-fills `SessionBuildOptions` before it calls you:
+
+| Field | Pre-filled with |
+|-------|-----------------|
+| `profile_name` | The spawn's role, taken from the member's `profile_name` (else `role`) label that meerkat stamps from the mob-member binding |
+| `labels` | The member's peer labels merged with the request labels |
+| `app_context` | The host context attached to the spawn, if any |
+| `session_id` | The spawn's `session_id` label when it carries one, else the resumed session's id |
+| `resume_session_id` | The resumed session's id on a resume; `None` on a mint |
+
+Read `profile_name`, do not assign it. There is no way to select a profile
+from `build_agent`: the gateway applies only `additional_instructions` (mint
+builds only; on a resume they are ignored with a warning, because a resume
+inherits the persisted prompt state), `labels`, `resume_session_id`, and the
+registered `tools` from what you return, and ignores a host-set
+`profile_name`. Per-profile tools are therefore
+one builder that branches on the pre-filled value:
 
 ```python
 from meerkat_mobkit import SessionAgentBuilder, SessionBuildOptions
 
 class MyBuilder(SessionAgentBuilder):
     async def build_agent(self, options: SessionBuildOptions) -> None:
-        options.profile_name = "assistant"
-        options.register_tool("search", my_search_handler)
-        options.register_tool("calculator", my_calc_handler)
+        # options.profile_name arrives pre-filled from the spawn role.
+        options.register_tool("calendar_lookup", my_calendar_handler)
+        if options.profile_name == "security":
+            options.register_tool(
+                "unifi_scan",
+                my_scan_handler,
+                description="Scan the UniFi controller",
+                input_schema={"type": "object", "properties": {"site": {"type": "string"}}},
+            )
+
+runtime = await (
+    MobKit.builder()
+    .mob("config/mob.toml")
+    .session_service(MyBuilder())
+    .gateway("./rpc_gateway")
+    .build()
+)
 ```
+
+`.session_service(builder)` is the public setter; `build()` connects and
+registers the builder on the callback dispatcher for you. `MobKitBuilder._config`
+and `MobKitRuntime._dispatcher` are internal and change without notice. The
+builder must be set before `build()`: `mobkit/init` tells the gateway whether a
+session builder exists, so there is no post-connect registration.
+
+### Identity-first equivalent: `customize_build`
+
+On the identity plane the same hook is `AgentCustomizer.customize_build`,
+registered with the public `.agent_customizer(customizer)`. It runs on fresh
+create and on every restore/reconcile, receives the durable spec (so
+`spec.profile` is the profile name), and registers tools on the draft:
+
+```python
+from meerkat_mobkit import (
+    AgentBuildContext,
+    AgentBuildDraft,
+    AgentCustomizerProtocol,
+    DurableAgentSpec,
+)
+
+class MyCustomizer(AgentCustomizerProtocol):
+    async def customize_build(
+        self,
+        context: AgentBuildContext,
+        spec: DurableAgentSpec,
+        draft: AgentBuildDraft,
+    ) -> None:
+        # context.identity, context.active_peers, context.managed_edges are read-only.
+        if spec.profile == "security":
+            draft.register_tool("unifi_scan", my_scan_handler, description="Scan the UniFi controller")
+        draft.additional_instructions.append(f"Your wired peers: {', '.join(context.active_peers)}")
+```
+
+`draft` also carries `model`, `system_prompt`, `additional_instructions`,
+`labels`, `app_context`, and `provider_params`. A tool registered here rides
+the same `callback/call_tool` dispatch as `build_agent` tools, so resumed
+identities keep it.
+
+### Provider parameters (`provider_params`)
+
+`AgentBuildDraft.provider_params` mirrors meerkat's `ProviderParamsOverride`:
+the shared sampling knobs at the top level and the provider-specific knobs
+nested under `provider_tag`, which is tagged by `provider`. Anthropic prompt
+caching is such a knob; meerkat 0.8.32 (the pinned release) defaults it to
+`disabled` on every backend, so a long-lived identity opts in here:
+
+```python
+draft.provider_params = {
+    "provider_tag": {
+        "provider": "anthropic",
+        "cache_control": "automatic",   # disabled | automatic | system_prefix | system_and_conversation
+        "cache_ttl": "1h",              # 5m | 1h; effective only with a cache_control policy
+    },
+}
+```
+
+The flat form `{"cache_control": "automatic"}` is refused: both
+`ProviderParamsOverride` and the provider tags deny unknown fields, so the
+gateway rejects the returned draft instead of dropping the knob. Knobs the
+draft leaves unset are filled from the profile's own `provider_params`, and a
+`provider_tag` from a different provider family than the profile's own tag is a
+typed merge error, not a silent union. A declared `provider_params` also reaches resumed
+sessions (the bridge masks it into `resume_overrides`); it requires an inline
+definition profile to carry it, so an identity bound to a realm-reference
+profile fails the build with a message naming the realm profile as the place
+to declare it.
 
 ## Error hierarchy
 
