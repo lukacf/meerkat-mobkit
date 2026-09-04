@@ -279,9 +279,13 @@ export class MobKitBuilder {
    *
    * Emitted as `runtime_options.meerkat_config_path`. This is the only door
    * for the tables meerkat keeps in its host config rather than in
-   * `mob.toml`: `[self_hosted]` (servers and model aliases), `[realm]`
-   * (backend, auth and binding profiles) and `[models]`. The gateway reads
-   * the file once at init and refuses a missing or malformed file; it also
+   * `mob.toml`: `[self_hosted]` (servers and model aliases) and `[realm]`
+   * (backend, auth and binding profiles). A host-config `[models]` table
+   * reaches the factory too, but a profile's `model` must be catalogued,
+   * provider-annotated or defined under `mob.toml`'s own `[models.<id>]` to
+   * pass the init model check. The gateway reads the file once at init and
+   * refuses a missing, malformed or non-validating file (meerkat's
+   * `Config::validate`); it also
    * refuses a `mob.toml` that carries `[self_hosted]` or `[realm]` at top
    * level, so a table in the wrong file is an error rather than a silent
    * drop. Opt-in: without this call the gateway builds from meerkat's default

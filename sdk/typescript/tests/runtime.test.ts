@@ -4,8 +4,12 @@
 
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
+  MobKit,
   MobKitRuntime,
   MobHandle,
   ToolCaller,
@@ -14,6 +18,39 @@ import {
   RpcError,
   TransportError,
 } from "../dist/index.js";
+
+/**
+ * A stand-in gateway that answers every JSON-RPC request on stdin with
+ * `result` (twin of the Python `_write_echo_gateway`). The transport spawns
+ * `gatewayBin` directly, so the stand-in is a `sh` wrapper around a CommonJS
+ * script run by the current node binary (a shebang would break on a
+ * node path containing spaces).
+ */
+function writeEchoGateway(dir: string, result: Record<string, unknown>): string {
+  const script = join(dir, "echo_gateway.cjs");
+  writeFileSync(
+    script,
+    [
+      'const readline = require("node:readline");',
+      `const RESULT = ${JSON.stringify(result)};`,
+      "const rl = readline.createInterface({ input: process.stdin });",
+      'rl.on("line", (line) => {',
+      "  let request;",
+      "  try { request = JSON.parse(line); } catch { return; }",
+      '  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: RESULT }) + "\\n");',
+      "});",
+      'rl.on("close", () => process.exit(0));',
+      "",
+    ].join("\n"),
+  );
+  const gateway = join(dir, "echo_gateway.sh");
+  writeFileSync(
+    gateway,
+    `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`,
+    { mode: 0o755 },
+  );
+  return gateway;
+}
 
 // ---------------------------------------------------------------------------
 // Mock RPC helper
@@ -428,6 +465,48 @@ describe("MobKitRuntime", () => {
     (rt as any)._rustHttpPublicBase = "https://mob.example.com";
     assert.equal(rt.rustHttpPublicBaseUrl, "https://mob.example.com");
     assert.equal(rt.rustHttpBaseUrl, "http://127.0.0.1:8081");
+  });
+
+  // Twin of the Python test_connect_records_local_and_advertised_base_urls:
+  // drives the real connect()/_bootstrap path against a stand-in gateway, so
+  // the init-result parse block is what sets both base URLs (a test that
+  // assigns _rustHttpPublicBase directly cannot notice that block vanishing).
+  it("connect() records the local and advertised base URLs from the init result", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mobkit-echo-gateway-"));
+    const gateway = writeEchoGateway(dir, {
+      http_base_url: "http://127.0.0.1:1",
+      http_public_base_url: "https://mob.example.com",
+    });
+    const rt = new MobKitRuntime(
+      (MobKit.builder().gateway(gateway) as any)._config,
+    );
+    try {
+      await rt.connect();
+      assert.equal(rt.rustHttpBaseUrl, "http://127.0.0.1:1");
+      assert.equal(rt.rustHttpPublicBaseUrl, "https://mob.example.com");
+    } finally {
+      await rt.shutdown();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("connect() falls back to the local base when the init result declares no advertised base", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mobkit-echo-gateway-"));
+    const gateway = writeEchoGateway(dir, {
+      http_base_url: "http://127.0.0.1:1",
+      http_public_base_url: null,
+    });
+    const rt = new MobKitRuntime(
+      (MobKit.builder().gateway(gateway) as any)._config,
+    );
+    try {
+      await rt.connect();
+      assert.equal(rt.rustHttpBaseUrl, "http://127.0.0.1:1");
+      assert.equal(rt.rustHttpPublicBaseUrl, "http://127.0.0.1:1");
+    } finally {
+      await rt.shutdown();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("builds agent_memory runtime option", () => {
