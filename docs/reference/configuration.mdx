@@ -104,7 +104,7 @@ The stock SDK gateway (`rpc_gateway`) consumes the `runtime_options` object of `
 | `console_require_app_auth` | Boolean | Overrides `ConsolePolicy.require_app_auth`. The default is fail-closed: without `auth_config` the gateway's decision state trusts no signing key, so a console that still requires app auth refuses every request with 401, and the gateway logs a startup warning naming this. `false` is the explicit opt-out for a local or host-protected console. Python `.console_auth_required(False)`, TypeScript `.consoleAuthRequired(false)`; the Rust library twin is `RuntimeDecisionState::local_console`. |
 | `console_read_only` | Boolean | Sets `ConsolePolicy.read_only` for SDK `rpc_gateway` launches; mutating console RPCs are denied and omitted from capabilities while read/stream routes stay available. Python `.console_read_only()`, TypeScript `.consoleReadOnly()`. |
 | `console_fetch_timeout_ms` | Positive integer | Sets `RuntimeDecisionState.console.fetch_timeout_ms`, which the bundled console uses for JSON fetches after the initial 60s default. |
-| `http_listen` | `HOST:PORT` string | Bind address of the gateway HTTP listener (console, JSON-RPC, blobs, SSE, live). Default `127.0.0.1:0`: loopback, ephemeral port, the only bind every earlier release had. IP literals only, no hostnames. A non-loopback address is refused at init (`-32602`, before any bootstrap) unless `auth_config` enforces console app auth or `allow_remote` is `true`; every non-loopback bind that passes logs one WARN line. The init result's `http_base_url` stays the same-host form (`127.0.0.1` for `0.0.0.0` and `::` binds). Python `.http_listen("0.0.0.0:8080")`, TypeScript `.httpListen("0.0.0.0:8080")`. See [Deployment](/guides/deployment). |
+| `http_listen` | `HOST:PORT` string | Bind address of the gateway HTTP listener (console, JSON-RPC, blobs, SSE, live). Default `127.0.0.1:0`: loopback, ephemeral port, the only bind every earlier release had. IP literals only, no hostnames. A non-loopback address is refused at init (`-32602`, before any bootstrap) unless `auth_config` enforces console app auth or `allow_remote` is `true`; every non-loopback bind that passes logs one WARN line. The listener is bound right behind that gate, still before any bootstrap, so a port another process holds is a `-32603` init error naming the address with no runtime built and no schedule executor lease taken behind it. The init result's `http_base_url` stays the same-host form (`127.0.0.1` for `0.0.0.0` and `::` binds). Python `.http_listen("0.0.0.0:8080")`, TypeScript `.httpListen("0.0.0.0:8080")`. A top-level `http_listen` (the `mobkit_gateway` init-param shape) is refused with `-32602` naming `runtime_options.http_listen`. See [Deployment](/guides/deployment). |
 | `http_public_base_url` | Absolute `http(s)://` URL | The base URL clients reach the gateway at through a proxy. Reported back in the init result as `http_public_base_url` (trailing `/` removed; `null` when undeclared); never used to bind. Python `.http_public_base_url(url)`, read back as `runtime.rust_http_public_base_url`; TypeScript `.httpPublicBaseUrl(url)`, read back as `runtime.rustHttpPublicBaseUrl`. |
 | `allow_remote` | Boolean | Explicit acknowledgement that `http_listen` exposes the listener beyond this host; the same word and rule as `--allow-remote` on `rkat-rpc --tcp` and `rkat mob host --listen-tcp`. An exposure opt-in, not an auth mechanism: pass it only with an authenticating proxy in front of the listener. Python `.allow_remote()`, TypeScript `.allowRemote()`. |
 | `member_comms_address` | Socket-address string | Binds each local member to a signed TCP endpoint that remote peers can dial. Wildcard addresses are refused because they cannot be advertised as a concrete route. |
@@ -114,7 +114,7 @@ The stock SDK gateway (`rpc_gateway`) consumes the `runtime_options` object of `
 | `runtime_store` | Object | Declares the runtime store's durability. The store (`runtime.sqlite` — session resume, archive, retire) is persistent SQLite by default; the only accepted declaration is `{ "storage": "memory" }`, after which sessions do not survive gateway restart. A failed SQLite open without this declaration is a startup error (`-32014`), never a silent in-memory fallback. |
 | `declare_spec_update` | Object | One-shot canonical mob-definition compare-and-swap. `{ "expected_revision": N }` applies the `mob_config` supplied in the same `mobkit/init` request only when the durable definition is still at `N`. The launch must be authoritative and use persistent mob storage. Exact replay converges; stale revision or successor-content disagreement refuses initialization with typed storage error `-32014`. |
 | `compaction` | Object | Declares the host-level session-compaction policy for every agent the gateway builds: `auto_compact_threshold` (tokens, non-zero), `recent_turn_budget`, `max_summary_tokens`, `min_turns_between_compactions`. A compactor is always installed; this declares *when it fires*. **Omitting `auto_compact_threshold` inherits Meerkat's model-aware default — `context_window * 4 / 5`, i.e. ~840,000 tokens on a million-token model such as `gpt-5.6-sol`, which in practice never fires and resends the full transcript every turn.** Declaring the key pins it. A mob profile's own `auto_compact_threshold` still wins per member. Unknown keys and a zero threshold fail initialization. |
-| `meerkat_config_path` | String path | The Meerkat host `config.toml` every agent the gateway builds starts from, loaded once at init and merged over `Config::default()` with Meerkat's own file semantics. This is the only door for the `[self_hosted]`, `[realm]` and `[models]` tables, which Meerkat keeps in the host config rather than in `mob.toml`; the gateway's own overlays (`member_comms_address`, `compaction`) are layered on top of it. A missing or malformed file refuses init with `-32602` naming the option and the path, never a silent `Config::default()`. Omitted, agents build from Meerkat's default config as before. Python `.meerkat_config(path)`, TypeScript `.meerkatConfig(path)`. `mobkit_gateway` takes the same file as its top-level `meerkat_config_path` init param and adopts `<workspace>/.rkat/config.toml` when it exists. See [Self-hosted models and the Meerkat host config](#self-hosted-models-and-the-meerkat-host-config). |
+| `meerkat_config_path` | String path | The Meerkat host `config.toml` every agent the gateway builds starts from (the live/realtime door included), loaded once at init, merged over `Config::default()` with Meerkat's own file semantics and validated with Meerkat's own `Config::validate` against the canonical catalog. This is the only door for the `[self_hosted]` and `[realm]` tables, which Meerkat keeps in the host config rather than in `mob.toml`; a host-config `[models]` table reaches the factory too, but does not satisfy the [init model check](#the-init-model-check), which reads the definition's own `[models.<id>]`. The gateway's own overlays (`member_comms_address`, `compaction`) are layered on top. A missing, malformed or non-validating file (a `[self_hosted.models.<id>]` alias naming an undeclared server, for one) refuses init with `-32602` naming the option and the path, never a silent `Config::default()`. Omitted, agents build from Meerkat's default config as before. Python `.meerkat_config(path)`, TypeScript `.meerkatConfig(path)`. `mobkit_gateway` takes the same file as its top-level `meerkat_config_path` init param and adopts `<workspace>/.rkat/config.toml` when it exists, logging one INFO line naming the adopted file either way; a top-level `meerkat_config_path` sent to `rpc_gateway` is refused with `-32602` naming `runtime_options.meerkat_config_path`. See [Self-hosted models and the Meerkat host config](#self-hosted-models-and-the-meerkat-host-config). |
 | `workgraph` | Boolean or directory string | WorkGraph construction switch, default `true`. `false` disables the store, the member `workgraph_*` tools, the attention overlays and the `mobkit/workgraph/*` RPCs; a non-empty string is an explicit directory for the durable store (`workgraph.sqlite3` is created inside it); any other value fails initialization. Python `.workgraph(enabled)` and TypeScript `.workgraph(enabled)` take `true`, `false` or the directory string; an unused setter sends nothing and the gateway default applies. Store placement per launch mode, the auto-issued namespace grant and the memory-backed fallback are in [WorkGraph](#workgraph). |
 
 Unsupported nested fields fail initialization with `-32602` instead of being silently ignored.
@@ -232,10 +232,19 @@ gateway at that file: runtime_options.meerkat_config_path on rpc_gateway, or the
 meerkat_config_path init param (default <workspace>/.rkat/config.toml) on mobkit_gateway
 ```
 
-`rpc_gateway` answers it as `-32602` on the `mobkit/init` request id;
-`mobkit_gateway` fails the boot when it loads `config/mob.toml`. `[models.<id>]`
-is part of the mob definition and stays in `mob.toml` (it reaches the build as
-the definition's custom models); the same table in the host config also works.
+Both binaries answer it as `-32602` on the `mobkit/init` request id
+(`mobkit_gateway` when it loads `config/mob.toml`).
+
+`[models.<id>]` is different from the two tables above. A profile's `model`
+must be catalogued, provider-annotated, or defined under the **mob
+definition's own** `[models.<id>]` to pass the model check: the check
+(`meerkat_mob::validate_definition`, run at init on `rpc_gateway` and by
+Meerkat at create time on both binaries) reads only the definition's tables.
+So a custom model a profile names by id belongs in `mob.toml`. A `[models]`
+table in the host config still reaches the factory through
+`meerkat_config_path` (a provider-annotated profile can use such a row), but
+it does not satisfy the check, and a profile whose model exists only there and
+carries no `provider` is refused at init as `UnknownModel`.
 
 ### How the host config reaches each surface
 
@@ -248,12 +257,20 @@ the definition's custom models); the same table in the host config also works.
 The loader reads exactly the named file and merges it over `Config::default()`
 with `Config::merge_toml_str`, the step Meerkat applies to a discovered
 `.rkat/config.toml`: no directory walk and no home-directory fallback, so what
-the gateway loads is what the operator named. A file that cannot be read or
-does not parse refuses init (`rpc_gateway`: `-32602`,
-`runtime_options.meerkat_config_path: failed to read meerkat config <path>: ...`
-or `meerkat config <path> is invalid: ...`; `mobkit_gateway`: `-32603` with a
-null id, `init params: meerkat_config_path: ...`), because an operator who
-pointed the gateway at a file expects that file in force. The gateway's own
+the gateway loads is what the operator named. Adoption is never silent:
+`mobkit_gateway` logs one INFO line naming the adopted file and whether the
+init param or the workspace convention produced it. A file that cannot be read or
+does not parse or does not validate refuses init (`rpc_gateway`: `-32602`,
+`runtime_options.meerkat_config_path: failed to read meerkat config <path>: ...`,
+`meerkat config <path> is invalid: ...` or
+`meerkat config <path> does not validate: ...`; `mobkit_gateway`: `-32602` on
+the request id, `init params: meerkat_config_path: ...`), because an operator
+who pointed the gateway at a file expects that file in force. Validation is
+Meerkat's own `Config::validate` against the canonical catalog, the step
+`rkat` and `rkat-rpc` run after every load: a `[self_hosted.models.<id>]`
+alias whose `server` is not declared, a `[models.<id>]` row colliding with a
+catalog id, or a zero compaction threshold is refused at init instead of
+killing the first member build. The gateway's own
 declarations stay layered on top: `member_comms_address` and `compaction` on
 `rpc_gateway`, `compaction` on `mobkit_gateway`, and a profile's own
 `auto_compact_threshold` still wins per member.
@@ -273,6 +290,18 @@ that one diagnostic is adopted at init on purpose: the rest of the set
 (missing skill refs, wiring, flows) is Meerkat's to refuse at create time.
 `mobkit_gateway` has no pre-check; Meerkat runs the same validation when it
 creates the mob.
+
+**Provider-annotated profiles bypass the refusal.** By Meerkat's rule a
+profile that sets `provider = "..."` is resolvable whatever its `model` string
+says, so a dated or misspelled id on such a profile (every HomeCore profile
+carries `provider = "openai"`) passes init and surfaces at the first LLM call.
+`rpc_gateway` does not add a second refusal authority for that case; it logs
+one WARN per such profile at init naming the profile, the model and the closest
+catalog ids (`profiles.<p> model '<m>' is provider-annotated ... a typo surfaces
+at the first LLM call. Did you mean one of: ...?`). A `provider = "self_hosted"`
+alias is checked against the host config's `[self_hosted.models]` instead and
+warned about only when it is not registered there. Catalogued and
+`[models.<id>]`-defined models warn about nothing.
 
 Earlier releases compared the model string against the static catalog alone,
 so a `[models.<id>]` custom model and every self-hosted alias were refused at
@@ -765,10 +794,15 @@ params rather than `runtime_options`: `http_listen` (`HOST:PORT`, default
 param winning), `allow_remote` (also `--allow-remote` or
 `MOBKIT_HTTP_ALLOW_REMOTE=1`) and `http_public_base_url`. Its console is
 always open, so a non-loopback `http_listen` is refused unless `allow_remote`
-is set. The listen address joins the resume fingerprint like
-`--control-listen`, and a resumed launch reports the `http_base_url` and
-`http_public_base_url` the live runtime was started with. See
-[Deployment](/guides/deployment).
+is set. Every init-param refusal on this binary (`http_listen` parse, the
+exposure gate, `http_public_base_url`, `meerkat_config_path`, `compaction`,
+a `[self_hosted]` table in `mob.toml`) answers `-32602` on the request id, and
+a listener bind failure `-32603` on the request id. The listen address and the
+advertised base both join the resume fingerprint like `--control-listen`, so a
+relaunch that changes either creates a runtime with the declared values instead
+of reporting the previous launch's. The mirror rule holds on `rpc_gateway`: the
+same four keys sent top-level there are refused with `-32602` naming their
+`runtime_options.*` home. See [Deployment](/guides/deployment).
 
 ### Console auth by surface
 

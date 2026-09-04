@@ -190,7 +190,13 @@ let decisions = RuntimeDecisionState::local_console(
     ConsolePolicy { require_app_auth: false, ..ConsolePolicy::default() },
     None, // session-store naming defaults to default_dataset / default_table
 );
+// A host that runs trusted modules adds them; the state starts with none.
+let decisions = decisions.with_modules(trusted_modules);
 ```
+
+At serve time the runtime reads `console`, the session-store naming and
+`modules` (the trusted module set console ingress consults); `local_console`
+takes the first two as parameters and `with_modules` covers the third.
 
 The default stays fail-closed: `local_console(ConsolePolicy::default(), None)`
 requires app auth and trusts no key, so it refuses every request. This is

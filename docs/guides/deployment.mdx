@@ -144,8 +144,15 @@ bootstrapped, unless one of two things is true:
 
 `mobkit_gateway` has no auth ingress, so on that binary only `allow_remote`
 (init param, `--allow-remote`, or `MOBKIT_HTTP_ALLOW_REMOTE=1`) can open the
-gate. A refused bind answers `mobkit/init` with a `-32602` error whose message
-names the address and every way out.
+gate. On both binaries a refused bind answers `mobkit/init` with a `-32602`
+error on the request id whose message names the address and every way out.
+
+The listener is bound right behind the gate, before any bootstrap. A fixed
+`http_listen` port makes "address already in use" a realistic init failure,
+and it is answered the same way: `-32603` on the request id naming the
+address, with nothing built behind it (no runtime, no session store, and no
+schedule executor lease that a process exit would leave held for its full
+duration).
 
 Every non-loopback bind that does pass logs one WARN line on stderr naming the
 bound address and whether the console on it is authenticated or open. It cannot
@@ -172,11 +179,15 @@ the loopback default and proxy to `http_base_url`.
 
 ## Resume behaviour (`mobkit_gateway`)
 
-The HTTP listen address is part of the runtime resume fingerprint, like
-`--control-listen`. Relaunching with a different `http_listen` creates or
-resumes a runtime bound where you asked, instead of silently reporting a live
-runtime bound somewhere else. A resumed launch reports the `http_base_url` and
-`http_public_base_url` the live runtime was started with.
+The HTTP listen address and the advertised `http_public_base_url` are both
+part of the runtime resume fingerprint, like `--control-listen`. Relaunching
+with a different `http_listen` or a different (or newly dropped)
+`http_public_base_url` creates a runtime with the values you declared instead
+of silently reporting a live runtime started with other ones; with a fixed
+port that new runtime cannot bind while the old one still holds the port, and
+init says so. A resumed launch (same fingerprint) reports the `http_base_url`
+and `http_public_base_url` the live runtime was started with, which are by
+construction the ones you declared.
 
 ## Reading a gateway exit
 

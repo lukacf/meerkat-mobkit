@@ -239,16 +239,31 @@ fn build_runtime_decision_state(input: RuntimeDecisionInputs) -> Result<RuntimeD
 impl RuntimeDecisionState {
     // Explicit opt-out: a console that trusts no identity provider.
     fn local_console(console: ConsolePolicy, bigquery: Option<BigQueryNaming>) -> Self
+    // Trusted module set for a local_console state (starts empty).
+    fn with_modules(self, modules: Vec<ModuleConfig>) -> Self
 }
 ```
 
 `build_runtime_decision_state` is the validating constructor; it checks the
 trusted OIDC snapshot only when `console.require_app_auth` is `true`.
 `RuntimeDecisionState::local_console` is the explicit opt-out for local or
-host-protected consoles. The default stays fail-closed: `ConsolePolicy::default()`
+host-protected consoles; at serve time the runtime reads `console`, the
+session-store naming and `modules`, and a host with trusted modules adds them
+with `.with_modules(...)`. The default stays fail-closed: `ConsolePolicy::default()`
 requires app auth, and a state that trusts no key refuses every request. See
 [Decisions](/reference/decisions#runtime-decision-state) for every check and
 when it runs.
+
+`gateway_composition` also exports the HTTP exposure vocabulary both binaries
+use: `GatewaySurface` (`RpcGateway` | `MobkitGateway`, `Display` is the binary
+name), `ConsoleAuthPosture::of(&decisions)` (`Open` | `ClosedToEveryCaller` |
+`Enforced`, the one classifier behind the bind gate and the non-loopback
+warning), `HttpBindPolicy`, `validate_http_bind_policy(surface, listen, policy)`,
+`warn_on_non_loopback_bind(surface, bound, &decisions)`, and the typed
+`HttpExposureParseError` behind `parse_http_listen_addr`,
+`parse_http_public_base_url` and `parse_http_listen_arg`. The error enums
+(`HttpBindPolicyError`, `HttpExposureParseError`, `GatewayHostConfigError`,
+`HostConfigTableInMobToml`) are `#[non_exhaustive]`.
 
 ### Authentication
 
