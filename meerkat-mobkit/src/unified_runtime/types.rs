@@ -538,6 +538,9 @@ impl From<meerkat_core::event::CompactionPreservedHistoryFit> for CompactionPres
 ///   serialized mob command loop went unanswered past its budget
 /// - `ActorLoopRecovered` — the same probe's parked round trip completed;
 ///   the resolution half of the stall, correlated by `stall_id`
+/// - `ActorLoopTerminated` - the probe's round trip resolved with the actor's
+///   command or reply channel CLOSED: the loop did not recover, it is gone,
+///   and the process must restart
 /// - `IdentityMaterializationFailure` — identity-first peer/fleet hydration skipped a member
 /// - `MobStopProceededWithoutInterrupt` — `lifecycle.rs` teardown gave up
 ///   waiting for runtime-attach readiness and continued without interrupting
@@ -608,6 +611,26 @@ pub enum ErrorEvent {
         /// Wall-clock time from the probe's send to the reply, which is the
         /// receiver's evidence of how bad the stall actually was.
         stalled_for_secs: u64,
+    },
+    /// The probe's round trip resolved with the actor's command or reply
+    /// channel closed: the serialized mob loop TERMINATED.
+    ///
+    /// Terminal, and deliberately not [`Self::ActorLoopRecovered`]. A
+    /// fail-stopped actor closes its command channel, which resolves a parked
+    /// probe with a typed channel-closed error; before this variant existed
+    /// the probe read any completion as "the loop drains" and emitted a
+    /// recovery for a mob that was dead (OB3 2026-09-04: `actor_loop_recovered`
+    /// while every subsequent send failed instantly). Nothing in this process
+    /// can restart the actor; the operator must restart the process. The
+    /// delivery path fails fast on this state with `ActorTerminated`.
+    ActorLoopTerminated {
+        /// The [`Self::ActorLoopStalled`] whose parked round trip observed the
+        /// closed channel, when termination was seen on a stalled probe rather
+        /// than on a fresh round trip.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stall_id: Option<u64>,
+        /// The channel-closed error text the probe observed.
+        detail: String,
     },
     HostLoopCrash {
         member_id: String,
@@ -689,6 +712,18 @@ impl Display for ErrorEvent {
                     "actor_loop_recovered: stall {stall_id} resolved after {stalled_for_secs}s"
                 )
             }
+            Self::ActorLoopTerminated { stall_id, detail } => match stall_id {
+                Some(stall_id) => write!(
+                    f,
+                    "actor_loop_terminated: the mob actor loop is gone (observed on stall \
+                     {stall_id}); this is NOT a recovery, the process must restart: {detail}"
+                ),
+                None => write!(
+                    f,
+                    "actor_loop_terminated: the mob actor loop is gone; this is NOT a recovery, \
+                     the process must restart: {detail}"
+                ),
+            },
             Self::HostLoopCrash { member_id, error } => {
                 write!(f, "host_loop_crash: {member_id}: {error}")
             }

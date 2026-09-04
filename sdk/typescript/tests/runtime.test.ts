@@ -1679,6 +1679,96 @@ describe("MobHandle.respawnMember()", () => {
   });
 });
 
+describe("MobHandle.reloadMember()", () => {
+  it("sends mobkit/reload_member and parses the typed result", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      reloaded: true,
+      disposition: "discarded",
+      session_id: "sess-1",
+      generation: 4,
+      identity: "review:singleton",
+      identity_first: true,
+    }));
+
+    const result = await handle.reloadMember("review:singleton");
+    assert.equal(calls.length, 1, "never a second (respawn) call");
+    assert.equal(calls[0].method, "mobkit/reload_member");
+    assert.deepEqual(calls[0].params, { member_id: "review:singleton" });
+    assert.deepEqual(result, {
+      reloaded: true,
+      disposition: "discarded",
+      sessionId: "sess-1",
+      generation: 4,
+      identity: "review:singleton",
+    });
+  });
+
+  it("degrades gracefully on a minimal not_current result", async () => {
+    const { handle, setResponse } = createMockRuntime();
+    setResponse(() => ({ reloaded: false, disposition: "not_current" }));
+    const result = await handle.reloadMember("m-1");
+    assert.equal(result.reloaded, false);
+    assert.equal(result.disposition, "not_current");
+    assert.equal(result.sessionId, null);
+    assert.equal(result.generation, null);
+  });
+});
+
+describe("MobHandle.memberHealth()", () => {
+  it("sends mobkit/member_health and parses the report", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      identity: "review:singleton",
+      member_id: "rt:review:singleton:4",
+      state: "active",
+      bootstrap_state: "active",
+      materialization_in_flight: false,
+      session_id: "sess-1",
+      generation: 4,
+      last_delivery_error: {
+        class: "reload_required",
+        detail: "Runtime recovery is repair-blocked",
+        at_unix_ms: 1700000000000,
+      },
+      actor_loop: { state: "stalled", stall_id: 7, stalled_for_secs: 42 },
+      open_stall_id: 7,
+    }));
+
+    const health = await handle.memberHealth("review:singleton");
+    assert.equal(calls[0].method, "mobkit/member_health");
+    assert.deepEqual(calls[0].params, { member_id: "review:singleton" });
+    assert.equal(health.identity, "review:singleton");
+    assert.equal(health.memberId, "rt:review:singleton:4");
+    assert.equal(health.state, "active");
+    assert.equal(health.bootstrapState, "active");
+    assert.equal(health.materializationInFlight, false);
+    assert.equal(health.sessionId, "sess-1");
+    assert.equal(health.generation, 4);
+    assert.equal(health.lastDeliveryError?.class, "reload_required");
+    assert.equal(health.actorLoop.state, "stalled");
+    assert.equal(health.openStallId, 7);
+    // Absent until the gateway can read meerkat's durability state.
+    assert.equal(health.durability, null);
+  });
+
+  it("carries durability when present and degrades on a missing actor_loop", async () => {
+    const { handle, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      identity: "x",
+      state: "dormant",
+      durability: { reload_required: { operation: "completed_boundary_commit", reason: "HTTP 0" } },
+    }));
+    const health = await handle.memberHealth("x");
+    assert.deepEqual(health.durability, {
+      reload_required: { operation: "completed_boundary_commit", reason: "HTTP 0" },
+    });
+    assert.deepEqual(health.actorLoop, { state: "unobserved" });
+    assert.equal(health.openStallId, null);
+    assert.equal(health.lastDeliveryError, null);
+  });
+});
+
 describe("MobHandle.resolveRouting()", () => {
   it("sends mobkit/routing/resolve with recipient", async () => {
     const { handle, calls, setResponse } = createMockRuntime();

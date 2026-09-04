@@ -1516,6 +1516,7 @@ describe("parseErrorEvent", () => {
       COMPACTION_PERSISTENCE_REJECTED: "compaction_persistence_rejected",
       ACTOR_LOOP_STALLED: "actor_loop_stalled",
       ACTOR_LOOP_RECOVERED: "actor_loop_recovered",
+      ACTOR_LOOP_TERMINATED: "actor_loop_terminated",
       HOST_LOOP_CRASH: "host_loop_crash",
       REDISCOVER_FAILURE: "rediscover_failure",
       EVENT_LOG_FLUSH_FAILURE: "event_log_flush_failure",

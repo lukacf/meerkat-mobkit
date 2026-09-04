@@ -330,6 +330,13 @@ snapshot = await handle.get_member("agent-1")
 # Member lifecycle
 await handle.retire_member("agent-1")
 await handle.respawn_member("agent-1")
+
+# Non-destructive cold reload (same session, same generation) and the
+# in-process health read that works while the actor loop is stalled
+health = await handle.member_health("agent-1")
+if health.last_delivery_error and health.last_delivery_error["class"] == "reload_required":
+    outcome = await handle.reload_member("agent-1")
+    assert outcome.disposition in ("discarded", "not_degraded")
 ```
 
 | Method | Return type | Description |
@@ -337,7 +344,9 @@ await handle.respawn_member("agent-1")
 | `list_members()` | `list[MemberSnapshot]` | List all members in the roster |
 | `get_member(member_id)` | `MemberSnapshot` | Get a single member by ID |
 | `retire_member(member_id)` | `None` | Retire a member (graceful shutdown) |
-| `respawn_member(member_id)` | `None` | Respawn a previously retired member |
+| `respawn_member(member_id)` | `None` | Respawn a previously retired member (identity-first: a destructive continuity reset) |
+| `reload_member(member_id)` | `MemberReloadResult` | Non-destructive cold reload: same identity, same durable session, same generation (identity-first only) |
+| `member_health(member_id)` | `MemberHealth` | Lifecycle and delivery health from in-process reads; carries `actor_loop`, `open_stall_id`, and `last_delivery_error` |
 | `reconcile_edges()` | `ReconcileEdgesReport` | Converge mob.toml `[wiring]` (`auto_wire_orchestrator`, `role_wiring`) on the live roster. Needed after `runtime.reconcile()` or an identity-first boot only when the definition declares such wiring; `ensure_member` already runs it, and with no declared wiring the report is empty |
 
 `MemberSnapshot` exposes `agent_identity`, `role`, `state`, `wired_to`, and

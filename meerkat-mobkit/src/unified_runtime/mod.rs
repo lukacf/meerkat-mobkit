@@ -238,6 +238,11 @@ pub struct UnifiedRuntime {
     /// when the loop stops draining. Observation only — aborted first during
     /// shutdown so the intentional actor stop cannot fire a false page.
     actor_loop_probe_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    /// The probe's published verdict (live / stalled / terminated), shared
+    /// with the identity-first delivery path so a send issued while a stall
+    /// is open fails fast naming the `stall_id` instead of waiting the whole
+    /// admission budget behind the wedged command.
+    actor_loop_health: Arc<crate::actor_loop_health::ActorLoopHealth>,
     implicit_delegate_retirement_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     /// Late-bound identity authority observed by the already-running idle
     /// retirement sweeper. Gateways attach identity-first after base runtime
@@ -435,8 +440,12 @@ impl UnifiedRuntime {
         // later (`set_error_hook`), so it holds the late-bound slot and reads
         // the hook at fire time.
         let error_hook: SharedErrorHook = Arc::new(std::sync::RwLock::new(None));
-        let actor_loop_probe_task =
-            Self::spawn_actor_loop_probe(mob_runtime.handle(), Arc::clone(&error_hook));
+        let actor_loop_health = crate::actor_loop_health::ActorLoopHealth::shared();
+        let actor_loop_probe_task = Self::spawn_actor_loop_probe(
+            mob_runtime.handle(),
+            Arc::clone(&error_hook),
+            Arc::clone(&actor_loop_health),
+        );
         let console_events = ConsoleEventStore::new();
         // Agent-tool spawns (mob_spawn_member/delegate) project their members
         // into this runtime's console event store so spawned workers are
@@ -489,6 +498,7 @@ impl UnifiedRuntime {
             mob_events: mob_events_store,
             mob_events_subscriber_task: tokio::sync::Mutex::new(mob_events_task),
             actor_loop_probe_task: tokio::sync::Mutex::new(actor_loop_probe_task),
+            actor_loop_health,
             implicit_delegate_retirement_task: tokio::sync::Mutex::new(None),
             implicit_delegate_identity_runtime: identity_runtime_authority,
             identity_lease_renewal_task: tokio::sync::Mutex::new(None),
@@ -559,6 +569,7 @@ impl UnifiedRuntime {
     fn spawn_actor_loop_probe(
         handle: MobHandle,
         error_hook: SharedErrorHook,
+        health: Arc<crate::actor_loop_health::ActorLoopHealth>,
     ) -> Option<JoinHandle<()>> {
         let runtime_handle = tokio::runtime::Handle::try_current().ok()?;
         Some(runtime_handle.spawn(run_actor_loop_probe(
@@ -567,9 +578,17 @@ impl UnifiedRuntime {
                 async move { handle.status().await }
             },
             error_hook,
+            health,
             actor_loop_probe_interval(),
             actor_loop_probe_budget(),
         )))
+    }
+
+    /// The actor-loop probe's shared verdict. Read by the identity-first
+    /// delivery path (fail fast while a stall is open) and by
+    /// `mobkit/member_health`.
+    pub fn actor_loop_health(&self) -> &Arc<crate::actor_loop_health::ActorLoopHealth> {
+        &self.actor_loop_health
     }
 
     pub async fn bootstrap(
@@ -1035,6 +1054,12 @@ impl UnifiedRuntime {
         context: Arc<crate::identity_first::IdentityFirstRuntimeContext>,
     ) {
         self.install_identity_first_flow_target_provisioner(&context.runtime);
+        // The probe's verdict reaches the identity delivery path through the
+        // identity runtime (and from there its session bridge): a send issued
+        // while a stall is open fails fast instead of queueing behind it.
+        context
+            .runtime
+            .install_actor_loop_health(Arc::clone(&self.actor_loop_health));
         self.mob_runtime
             .install_identity_runtime_authority(Arc::clone(&context.runtime));
         *self
@@ -2462,6 +2487,35 @@ fn parse_probe_secs(raw: Option<&str>, default: Duration) -> Duration {
         .unwrap_or(default)
 }
 
+/// Which observations on a probe round trip mean "the actor terminated".
+///
+/// A fail-stopped actor closes `command_rx`; the parked probe then resolves
+/// with `ActorCommandChannelClosed` (or `ActorReplyChannelClosed` when the
+/// reply side was dropped). meerkat 0.8.33's `MobHandle::status` additionally
+/// launders both variants into `MobError::Internal("<variant text>; last
+/// actor-published phase is Running, ...")` whenever the phase watch is not
+/// terminal, so the typed variant is matched first and the laundered text
+/// second. Anything else (a typed scope denial, a lifecycle refusal) is a
+/// LIVE loop that answered, and stays out of this classification.
+fn actor_terminated_detail(result: &Result<MobState, MobError>) -> Option<String> {
+    let error = match result {
+        Ok(_) => return None,
+        Err(error) => error,
+    };
+    match error {
+        MobError::ActorCommandChannelClosed | MobError::ActorReplyChannelClosed => {
+            Some(error.to_string())
+        }
+        MobError::Internal(text)
+            if text.contains(&MobError::ActorCommandChannelClosed.to_string())
+                || text.contains(&MobError::ActorReplyChannelClosed.to_string()) =>
+        {
+            Some(text.clone())
+        }
+        _ => None,
+    }
+}
+
 /// Actor-loop liveness probe.
 ///
 /// meerkat's mob actor is ONE serialized command loop: a handler that blocks
@@ -2505,13 +2559,27 @@ fn parse_probe_secs(raw: Option<&str>, default: Duration) -> Duration {
 /// evidence, and "wedged" is the absence of a resolution, measured by the
 /// receiver's own clock — not by any count this emitter could produce.
 ///
-/// The probe treats ANY completion within budget — `Ok` or a typed error —
-/// as a live loop: it measures whether the loop drains, not whether the mob
-/// is healthy. A terminal phase reply (`Stopped`/`Completed`/`Destroyed`)
-/// ends the probe: there is no loop left worth watching.
+/// The probe treats a completion within budget, `Ok` or a typed error the
+/// actor ANSWERED with, as a live loop: it measures whether the loop drains,
+/// not whether the mob is healthy. The one exception is a channel-closed
+/// error ([`actor_terminated_detail`]): that is not the loop answering, it is
+/// the loop being gone. It is emitted as [`ErrorEvent::ActorLoopTerminated`],
+/// never as a recovery (OB3 2026-09-04 read exactly such a resolution as
+/// `actor_loop_recovered` while every later send failed instantly), the
+/// shared [`ActorLoopHealth`] is marked terminated so deliveries fail fast,
+/// and the probe ends: there is no loop left to watch and nothing in this
+/// process can restart it. A terminal phase reply
+/// (`Stopped`/`Completed`/`Destroyed`) also ends the probe.
+///
+/// Every verdict is mirrored into `health`, the seam the delivery path reads:
+/// stalled on page, live on the correlated resolution, terminated on a closed
+/// channel.
+///
+/// [`ActorLoopHealth`]: crate::actor_loop_health::ActorLoopHealth
 async fn run_actor_loop_probe<P, F>(
     mut probe: P,
     error_hook: SharedErrorHook,
+    health: Arc<crate::actor_loop_health::ActorLoopHealth>,
     interval: Duration,
     budget: Duration,
 ) where
@@ -2533,6 +2601,7 @@ async fn run_actor_loop_probe<P, F>(
             Err(_) => {
                 let stall_id = next_stall_id;
                 next_stall_id += 1;
+                health.mark_stalled(stall_id);
                 fire_error_hook(
                     &error_hook,
                     ErrorEvent::ActorLoopStalled {
@@ -2560,7 +2629,30 @@ async fn run_actor_loop_probe<P, F>(
                 );
                 // Park on the SAME round trip until the loop drains it.
                 let result = round_trip.await;
+                if let Some(detail) = actor_terminated_detail(&result) {
+                    // The parked command did not drain; the actor died under
+                    // it. Say so, and never call it a recovery.
+                    health.mark_terminated(Some(stall_id), detail.clone());
+                    tracing::error!(
+                        stall_id,
+                        stalled_for_secs = started.elapsed().as_secs(),
+                        detail = %detail,
+                        "mob actor loop TERMINATED while stall {stall_id} was open: the actor \
+                         command channel closed, so the loop did not recover and cannot \
+                         recover in this process; every delivery will now fail fast; the \
+                         process must restart"
+                    );
+                    fire_error_hook(
+                        &error_hook,
+                        ErrorEvent::ActorLoopTerminated {
+                            stall_id: Some(stall_id),
+                            detail,
+                        },
+                    );
+                    break;
+                }
                 resolved_stalls += 1;
+                health.mark_recovered(stall_id);
                 // The receiver opened an incident on the stall above; this is
                 // the only thing that lets it close that incident rather than
                 // escalate forever.
@@ -2574,6 +2666,24 @@ async fn run_actor_loop_probe<P, F>(
                 result
             }
         };
+        if let Some(detail) = actor_terminated_detail(&result) {
+            // A closed channel on a fresh round trip: the loop is gone
+            // without ever having stalled from this probe's point of view.
+            health.mark_terminated(None, detail.clone());
+            tracing::error!(
+                detail = %detail,
+                "mob actor loop TERMINATED: the actor command channel closed; every delivery \
+                 will now fail fast; the process must restart"
+            );
+            fire_error_hook(
+                &error_hook,
+                ErrorEvent::ActorLoopTerminated {
+                    stall_id: None,
+                    detail,
+                },
+            );
+            break;
+        }
         if matches!(
             result,
             Ok(MobState::Stopped | MobState::Completed | MobState::Destroyed)
@@ -3263,6 +3373,7 @@ model = "gpt-5.5"
         let probe_task = tokio::spawn(run_actor_loop_probe(
             std::future::pending::<Result<MobState, MobError>>,
             slot,
+            crate::actor_loop_health::ActorLoopHealth::shared(),
             Duration::from_mins(1),
             Duration::from_secs(30),
         ));
@@ -3323,6 +3434,7 @@ model = "gpt-5.5"
         let probe_task = tokio::spawn(run_actor_loop_probe(
             std::future::pending::<Result<MobState, MobError>>,
             slot,
+            crate::actor_loop_health::ActorLoopHealth::shared(),
             Duration::from_mins(1),
             Duration::from_secs(30),
         ));
@@ -3361,6 +3473,7 @@ model = "gpt-5.5"
                 Ok(MobState::Running)
             },
             slot,
+            crate::actor_loop_health::ActorLoopHealth::shared(),
             Duration::from_mins(1),
             Duration::from_secs(30),
         ));
@@ -3482,6 +3595,7 @@ model = "gpt-5.5"
                 std::future::ready(Ok(MobState::Running))
             },
             slot,
+            crate::actor_loop_health::ActorLoopHealth::shared(),
             Duration::from_mins(1),
             Duration::from_secs(30),
         ));
@@ -3527,6 +3641,7 @@ model = "gpt-5.5"
                 }
             },
             slot,
+            crate::actor_loop_health::ActorLoopHealth::shared(),
             Duration::from_mins(1),
             Duration::from_secs(30),
         ));
@@ -3584,6 +3699,200 @@ model = "gpt-5.5"
         }
         drop(events);
         probe_task.abort();
+    }
+
+    /// The wedge that OB3 misread as a recovery: the parked probe resolves
+    /// because the actor's command channel CLOSED, not because the loop
+    /// drained. That must page `ActorLoopTerminated`, never
+    /// `ActorLoopRecovered`, must mark the shared health terminated so every
+    /// delivery fails fast, and must end the probe (nothing is left to watch).
+    #[tokio::test(start_paused = true)]
+    async fn channel_closed_on_parked_probe_is_termination_not_recovery() {
+        let (slot, captured) = capturing_error_hook_slot();
+        let health = crate::actor_loop_health::ActorLoopHealth::shared();
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = probes.clone();
+        let probe_task = tokio::spawn(run_actor_loop_probe(
+            move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+                async {
+                    // Past the 30s budget, then the actor dies under the
+                    // parked command.
+                    tokio::time::sleep(Duration::from_secs(50)).await;
+                    Err(MobError::ActorCommandChannelClosed)
+                }
+            },
+            slot,
+            Arc::clone(&health),
+            Duration::from_mins(1),
+            Duration::from_secs(30),
+        ));
+
+        tokio::time::sleep(Duration::from_mins(2)).await;
+        tokio::task::yield_now().await;
+
+        let events = captured.lock().await;
+        assert_eq!(
+            events.len(),
+            2,
+            "one stall page then one termination: {events:?}"
+        );
+        assert!(
+            matches!(
+                &events[0],
+                ErrorEvent::ActorLoopStalled {
+                    stall_id: Some(1),
+                    ..
+                }
+            ),
+            "the stall opens first: {events:?}"
+        );
+        match &events[1] {
+            ErrorEvent::ActorLoopTerminated { stall_id, detail } => {
+                assert_eq!(*stall_id, Some(1), "termination names the stall it closed");
+                assert!(
+                    detail.contains("command channel closed"),
+                    "detail carries the channel-closed evidence: {detail}"
+                );
+            }
+            other => panic!("expected ActorLoopTerminated, got {other:?}"),
+        }
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ErrorEvent::ActorLoopRecovered { .. })),
+            "a dead actor must NEVER be reported as recovered: {events:?}"
+        );
+        drop(events);
+        assert!(
+            matches!(
+                health.snapshot(),
+                crate::actor_loop_health::ActorLoopHealthState::Terminated {
+                    stall_id: Some(1),
+                    ..
+                }
+            ),
+            "shared health must read terminated: {:?}",
+            health.snapshot()
+        );
+        // The probe ended: many more intervals produce no further round trips.
+        tokio::time::sleep(Duration::from_mins(10)).await;
+        assert_eq!(
+            probes.load(Ordering::SeqCst),
+            1,
+            "a terminated loop has nothing left to probe"
+        );
+        assert!(
+            probe_task.is_finished(),
+            "the probe task must end on termination"
+        );
+    }
+
+    /// meerkat 0.8.33's `MobHandle::status` launders the typed channel-closed
+    /// variants into `MobError::Internal(..)` when the phase watch is not
+    /// terminal. The classification must see through that, or a laundered
+    /// termination reads as a live loop answering with an error.
+    #[test]
+    fn laundered_channel_closed_text_classifies_as_termination() {
+        let laundered = MobError::Internal(format!(
+            "{}; last actor-published phase is Running, so the phase watch is not terminal \
+             lifecycle authority",
+            MobError::ActorCommandChannelClosed
+        ));
+        assert!(actor_terminated_detail(&Err(laundered)).is_some());
+        assert!(actor_terminated_detail(&Err(MobError::ActorReplyChannelClosed)).is_some());
+        assert!(actor_terminated_detail(&Err(MobError::ActorCommandChannelClosed)).is_some());
+        // A typed refusal the actor ANSWERED with is a live loop.
+        assert!(
+            actor_terminated_detail(&Err(MobError::Internal(
+                "scope denied for this command".to_string()
+            )))
+            .is_none()
+        );
+        assert!(actor_terminated_detail(&Ok(MobState::Running)).is_none());
+    }
+
+    /// A closed channel on a FRESH round trip (no stall open) is still a
+    /// termination with no stall to correlate, and still fails deliveries.
+    #[tokio::test(start_paused = true)]
+    async fn channel_closed_on_fresh_probe_terminates_without_a_stall_id() {
+        let (slot, captured) = capturing_error_hook_slot();
+        let health = crate::actor_loop_health::ActorLoopHealth::shared();
+        let probe_task = tokio::spawn(run_actor_loop_probe(
+            || std::future::ready(Err(MobError::ActorReplyChannelClosed)),
+            slot,
+            Arc::clone(&health),
+            Duration::from_mins(1),
+            Duration::from_secs(30),
+        ));
+        tokio::time::sleep(Duration::from_secs(65)).await;
+        tokio::task::yield_now().await;
+        let events = captured.lock().await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(
+            matches!(
+                &events[0],
+                ErrorEvent::ActorLoopTerminated { stall_id: None, .. }
+            ),
+            "{events:?}"
+        );
+        drop(events);
+        assert!(health.snapshot().refuses_admission());
+        assert!(probe_task.is_finished());
+    }
+
+    /// The health seam mirrors the probe's verdict exactly: stalled while the
+    /// round trip is parked, live again on the correlated resolution.
+    #[tokio::test(start_paused = true)]
+    async fn health_reads_stalled_while_parked_and_live_after_recovery() {
+        let (slot, _captured) = capturing_error_hook_slot();
+        let health = crate::actor_loop_health::ActorLoopHealth::shared();
+        let probe_task = tokio::spawn(run_actor_loop_probe(
+            || async {
+                tokio::time::sleep(Duration::from_secs(50)).await;
+                Ok(MobState::Running)
+            },
+            slot,
+            Arc::clone(&health),
+            Duration::from_mins(1),
+            Duration::from_secs(30),
+        ));
+
+        // Interval (60s) + budget (30s) + slack: the stall is open.
+        tokio::time::sleep(Duration::from_secs(95)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            health.snapshot().open_stall_id(),
+            Some(1),
+            "the delivery path must see the open stall: {:?}",
+            health.snapshot()
+        );
+
+        // The parked round trip answers at 110s.
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            health.snapshot(),
+            crate::actor_loop_health::ActorLoopHealthState::Live,
+            "recovery must reopen the delivery path"
+        );
+        probe_task.abort();
+    }
+
+    /// The default sink must log a termination at ERROR with the restart
+    /// instruction, never at INFO like a recovery.
+    #[test]
+    fn termination_is_logged_as_an_error_naming_the_restart() {
+        let terminated = ErrorEvent::ActorLoopTerminated {
+            stall_id: Some(4),
+            detail: "mob actor command channel closed".to_string(),
+        };
+        let ((), logged) = capture_tracing(|| log_error_event(&terminated, true));
+        assert!(logged.contains("ERROR"), "{logged}");
+        assert!(
+            logged.contains("process must restart") && logged.contains("NOT a recovery"),
+            "the operator must be told the loop is gone, not recovered: {logged}"
+        );
     }
 
     #[test]

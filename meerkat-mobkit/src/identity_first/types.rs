@@ -1075,6 +1075,131 @@ pub struct IdentityStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Member reload + member health (operator verbs, 2026-09-04 OB3 stall)
+// ---------------------------------------------------------------------------
+
+/// What a non-destructive member reload found.
+///
+/// Mirrors meerkat 0.8.34's `MemberReloadOutcome` disposition vocabulary so
+/// the wire shape does not move when the verb switches from the
+/// retire-then-rematerialize implementation (0.8.33 API) to the mob primitive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberReloadDisposition {
+    /// The live registration was discarded and the same durable session was
+    /// re-materialized from durable truth (same session id, same continuity
+    /// generation, same identity alias).
+    Discarded,
+    /// The registration was not durability-degraded; nothing was discarded.
+    /// A success no-op. (Only observable once meerkat exposes durability
+    /// state; the 0.8.33 implementation cannot produce it.)
+    NotDegraded,
+    /// There is no current live registration to reload (the identity is
+    /// dormant or uninitialized). Nothing was done; the next send
+    /// materializes lazily.
+    NotCurrent,
+}
+
+/// Result of `mobkit/reload_member` / `IdentityRuntime::reload_member`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberReloadOutcome {
+    /// Whether a live registration was actually replaced. `false` for
+    /// `not_degraded` and `not_current`.
+    pub reloaded: bool,
+    pub disposition: MemberReloadDisposition,
+    /// The durable session the identity is bound to after the reload. For a
+    /// `discarded` reload this is the SAME id as before; a differing id means
+    /// meerkat reported the durable snapshot typed-absent and the resume fell
+    /// back to a fresh spawn (logged at WARN).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<meerkat_core::types::SessionId>,
+    /// The continuity generation after the reload; unchanged by a reload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<ContinuityGeneration>,
+}
+
+/// Durability verdict of a member's live runtime registration.
+///
+/// Wire: `"ready"` or `{"reload_required": {"operation": ..., "reason": ...}}`.
+/// Populated once meerkat exposes `is_durability_ready` (0.8.34); absent from
+/// `mobkit/member_health` until then.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberDurability {
+    Ready,
+    ReloadRequired { operation: String, reason: String },
+}
+
+/// The class of the most recent delivery failure for an identity, so an
+/// operator can read WHY sends fail before spending an admission budget
+/// finding out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryErrorClass {
+    /// meerkat refused admission: the member needs a cold reload.
+    ReloadRequired,
+    /// The delivery was refused because the actor loop had an open stall.
+    ActorLoopStalled,
+    /// The delivery was refused because the actor loop terminated.
+    ActorTerminated,
+    /// The actor round trip exceeded the admission budget.
+    AdmissionTimeout,
+    /// Any other pre-admission failure.
+    AdmissionFailed,
+    /// A post-admission failure (the turn ran).
+    Completion,
+}
+
+/// One recorded delivery failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryErrorRecord {
+    pub class: DeliveryErrorClass,
+    pub detail: String,
+    /// Unix epoch milliseconds when the failure was recorded.
+    pub at_unix_ms: u64,
+}
+
+/// `mobkit/member_health` response: the identity's lifecycle and delivery
+/// health as far as the runtime can observe it WITHOUT touching the mob actor
+/// (every field is an in-process read, so this answers while the loop is
+/// stalled - which is exactly when it is needed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberHealthReport {
+    pub identity: AgentIdentity,
+    /// The generated runtime alias of the current incarnation, when bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_id: Option<AgentRuntimeId>,
+    pub state: IdentityLifecycleState,
+    /// Startup-hydration projection (`warming` while a materialization is in
+    /// flight), when the bootstrap roster tracks this identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_state: Option<IdentityBootstrapState>,
+    /// True while a materialization for this identity is in flight.
+    pub materialization_in_flight: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<meerkat_core::types::SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<ContinuityGeneration>,
+    /// The most recent delivery failure, cleared by the next successful
+    /// delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_delivery_error: Option<DeliveryErrorRecord>,
+    /// The actor-loop probe's current verdict (shared across every member:
+    /// the loop is one).
+    pub actor_loop: crate::actor_loop_health::ActorLoopHealthReport,
+    /// The open `ErrorEvent::ActorLoopStalled { stall_id }`, when a stall is
+    /// open. Duplicates `actor_loop.stall_id` for one-field readers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_stall_id: Option<u64>,
+    /// Durability verdict of the live registration. Absent until meerkat
+    /// exposes it (0.8.34).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub durability: Option<MemberDurability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuity_unrecoverable: Option<ContinuityUnrecoverable>,
+}
+
+// ---------------------------------------------------------------------------
 // AgentBuildContext + AgentBuildDraft + ExternalToolDef
 // ---------------------------------------------------------------------------
 

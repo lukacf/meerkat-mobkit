@@ -1211,6 +1211,161 @@ pub(super) async fn handle_retire_member(
     }
 }
 
+/// `mobkit/reload_member`: non-destructive cold reload of an identity's live
+/// member (same identity, same durable session, same continuity generation).
+/// Identity-plane only: the worker plane's `respawn` is a destructive reset
+/// and is never called from here.
+pub(super) async fn handle_reload_member(
+    runtime: &UnifiedRuntime,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
+    let Some(mid) = params
+        .get("member_id")
+        .and_then(Value::as_str)
+        .filter(|mid| !mid.is_empty())
+    else {
+        return JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "Invalid params: member_id required".to_string(),
+                data: None,
+            }),
+        };
+    };
+    let mid = crate::member_comms_id::runtime_alias_str(mid).into_owned();
+    if let Some(response) =
+        stale_runtime_alias_error_response(identity_runtime, &mid, response_id.clone()).await
+    {
+        return response;
+    }
+    let Some(identity_runtime) = identity_runtime else {
+        return JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: "reload_member requires identity-first runtime authority; the worker \
+                          plane has no non-destructive reload (respawn_member is a destructive \
+                          reset)"
+                    .to_string(),
+                data: None,
+            }),
+        };
+    };
+    let Some(durable) = identity_runtime.identity_for_member_mutation(&mid).await else {
+        return JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32001,
+                message: format!("unknown identity: {mid}"),
+                data: None,
+            }),
+        };
+    };
+    let expected_alias =
+        crate::member_comms_id::is_reserved_generated_alias(&mid).then_some(mid.as_str());
+    match identity_runtime
+        .reload_member_alias_tracked(&durable, expected_alias)
+        .await
+    {
+        Ok(outcome) => {
+            let mut body = serde_json::to_value(&outcome).unwrap_or(Value::Null);
+            body["identity_first"] = Value::Bool(true);
+            body["identity"] = Value::String(durable.to_string());
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(body),
+                error: None,
+            }
+        }
+        Err(err) => super::identity_error_response(response_id, &err),
+    }
+}
+
+/// `mobkit/member_health`: the identity's lifecycle and delivery health from
+/// in-process reads only (never touches the mob actor, so it answers while
+/// the loop is stalled).
+pub(super) async fn handle_member_health(
+    runtime: &UnifiedRuntime,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
+    let Some(mid) = params
+        .get("member_id")
+        .or_else(|| params.get("identity"))
+        .and_then(Value::as_str)
+        .filter(|mid| !mid.is_empty())
+    else {
+        return JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "Invalid params: member_id required".to_string(),
+                data: None,
+            }),
+        };
+    };
+    let mid = crate::member_comms_id::runtime_alias_str(mid).into_owned();
+    if let Some(response) =
+        stale_runtime_alias_error_response(identity_runtime, &mid, response_id.clone()).await
+    {
+        return response;
+    }
+    let Some(identity_runtime) = identity_runtime else {
+        return JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: "member_health requires identity-first runtime authority".to_string(),
+                data: None,
+            }),
+        };
+    };
+    let identity = match identity_runtime.identity_for_member_mutation(&mid).await {
+        Some(identity) => identity,
+        None => match crate::identity_first::AgentIdentity::parse(&mid) {
+            Ok(identity) => identity,
+            Err(_) => {
+                return JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32001,
+                        message: format!("unknown identity: {mid}"),
+                        data: None,
+                    }),
+                };
+            }
+        },
+    };
+    match identity_runtime.member_health(&identity).await {
+        Ok(report) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(serde_json::to_value(&report).unwrap_or(Value::Null)),
+            error: None,
+        },
+        Err(err) => super::identity_error_response(response_id, &err),
+    }
+}
+
 pub(super) async fn handle_respawn_member(
     runtime: &UnifiedRuntime,
     identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,

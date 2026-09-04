@@ -100,6 +100,8 @@ import {
   parseMemoryIndexResult,
   parseCallToolResult,
   parseMemberSnapshot,
+  parseMemberReloadResult,
+  parseMemberHealth,
   parseRuntimeRouteResult,
   parseGatingEvaluateResult,
   parseGatingDecisionResult,
@@ -186,6 +188,8 @@ import {
   type MemoryIndexResult,
   type CallToolResult,
   type MemberSnapshot,
+  type MemberReloadResult,
+  type MemberHealth,
   type RuntimeRouteResult,
   type GatingEvaluateResult,
   type GatingDecisionResult,
@@ -1790,10 +1794,39 @@ export class MobHandle {
     });
   }
 
+  /**
+   * Respawn a member. On an identity-first gateway this is a DESTRUCTIVE
+   * continuity reset (fresh session, advanced generation); to clear a
+   * durability-degraded member without losing its transcript use
+   * {@link reloadMember}.
+   */
   async respawnMember(memberId: string): Promise<void> {
     await this._runtime._rpc("mobkit/respawn_member", {
       member_id: memberId,
     });
+  }
+
+  /**
+   * Non-destructive cold reload of an identity's live member: same identity,
+   * same durable session id, same continuity generation. The repair for a
+   * member whose sends fail with the reload-required class. Identity-first
+   * gateways only.
+   */
+  async reloadMember(memberId: string): Promise<MemberReloadResult> {
+    return parseMemberReloadResult(
+      await this._runtime._rpc("mobkit/reload_member", { member_id: memberId }),
+    );
+  }
+
+  /**
+   * Lifecycle and delivery health for one identity, read in-process: unlike
+   * {@link memberStatus} it never crosses the mob actor loop, so it answers
+   * while the loop is stalled.
+   */
+  async memberHealth(memberId: string): Promise<MemberHealth> {
+    return parseMemberHealth(
+      await this._runtime._rpc("mobkit/member_health", { member_id: memberId }),
+    );
   }
 
   async memberStatus(memberId: string): Promise<RichMemberSnapshot> {

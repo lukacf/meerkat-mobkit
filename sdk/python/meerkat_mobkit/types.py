@@ -813,6 +813,83 @@ class MemberSnapshot:
 
 
 @dataclass(frozen=True)
+class MemberReloadResult:
+    """Result of ``mobkit/reload_member`` (non-destructive cold reload).
+
+    ``disposition`` is ``"discarded"`` (the live registration was replaced by
+    a re-materialization of the SAME durable session), ``"not_degraded"`` (a
+    success no-op; only produced once meerkat exposes durability state) or
+    ``"not_current"`` (nothing live to reload). ``session_id`` and
+    ``generation`` are the identity's binding AFTER the reload; a reload never
+    advances the generation. Tolerate future disposition strings.
+    """
+    reloaded: bool
+    disposition: str
+    session_id: str | None
+    generation: int | None
+    identity: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MemberReloadResult:
+        generation = data.get("generation")
+        return cls(
+            reloaded=bool(data.get("reloaded", False)),
+            disposition=str(data.get("disposition", "")),
+            session_id=(str(data["session_id"]) if data.get("session_id") is not None else None),
+            generation=(int(generation) if generation is not None else None),
+            identity=(str(data["identity"]) if data.get("identity") is not None else None),
+        )
+
+
+@dataclass(frozen=True)
+class MemberHealth:
+    """Result of ``mobkit/member_health``: lifecycle and delivery health read
+    in-process (it answers while the mob actor loop is stalled).
+
+    ``actor_loop`` is the shared probe verdict ``{"state": "live" | "stalled"
+    | "terminated" | "unobserved", ...}``; ``open_stall_id`` is set while a
+    stall is open. ``last_delivery_error`` is ``{"class", "detail",
+    "at_unix_ms"}`` or ``None``. ``durability`` is ``"ready"`` or
+    ``{"reload_required": {"operation", "reason"}}`` once the gateway can
+    observe it, and ``None`` before that.
+    """
+    identity: str
+    member_id: str | None
+    state: str
+    materialization_in_flight: bool
+    session_id: str | None
+    generation: int | None
+    actor_loop: dict[str, Any]
+    open_stall_id: int | None
+    last_delivery_error: dict[str, Any] | None
+    durability: Any | None
+    bootstrap_state: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MemberHealth:
+        generation = data.get("generation")
+        actor_loop = data.get("actor_loop")
+        last_error = data.get("last_delivery_error")
+        return cls(
+            identity=str(data.get("identity", "")),
+            member_id=(str(data["member_id"]) if data.get("member_id") is not None else None),
+            state=str(data.get("state", "")),
+            materialization_in_flight=bool(data.get("materialization_in_flight", False)),
+            session_id=(str(data["session_id"]) if data.get("session_id") is not None else None),
+            generation=(int(generation) if generation is not None else None),
+            actor_loop=(dict(actor_loop) if isinstance(actor_loop, dict) else {"state": "unobserved"}),
+            open_stall_id=(
+                int(data["open_stall_id"]) if data.get("open_stall_id") is not None else None
+            ),
+            last_delivery_error=(dict(last_error) if isinstance(last_error, dict) else None),
+            durability=data.get("durability"),
+            bootstrap_state=(
+                str(data["bootstrap_state"]) if data.get("bootstrap_state") is not None else None
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class RuntimeRouteResult:
     """A runtime route entry."""
     route_key: str
@@ -1940,6 +2017,7 @@ class ErrorCategory(str, Enum):
     COMPACTION_PERSISTENCE_REJECTED = "compaction_persistence_rejected"
     ACTOR_LOOP_STALLED = "actor_loop_stalled"
     ACTOR_LOOP_RECOVERED = "actor_loop_recovered"
+    ACTOR_LOOP_TERMINATED = "actor_loop_terminated"
     HOST_LOOP_CRASH = "host_loop_crash"
     REDISCOVER_FAILURE = "rediscover_failure"
     EVENT_LOG_FLUSH_FAILURE = "event_log_flush_failure"
@@ -2003,6 +2081,14 @@ class ErrorEvent:
             stall_id = context.get("stall_id", 0)
             stalled_for = context.get("stalled_for_secs", 0)
             message = f"stall {stall_id} resolved after {stalled_for}s"
+        elif category == ErrorCategory.ACTOR_LOOP_TERMINATED:
+            stall_id = context.get("stall_id")
+            detail = context.get("detail", "")
+            observed = f" (observed on stall {stall_id})" if stall_id is not None else ""
+            message = (
+                f"the mob actor loop is gone{observed}; this is NOT a recovery, "
+                f"the process must restart: {detail}"
+            )
         elif category == ErrorCategory.HOST_LOOP_CRASH:
             message = f"{member_id}: {error}" if member_id else error
         elif category == ErrorCategory.REDISCOVER_FAILURE:

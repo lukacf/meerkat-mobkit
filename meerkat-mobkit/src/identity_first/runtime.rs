@@ -32,12 +32,15 @@ use super::types::{
     AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeId,
     AgentRuntimeServices, CheckpointVersion, CompletionCursor, CompletionProgress,
     ContinuityFailure, ContinuityFailureKind, ContinuityGeneration, ContinuityHealth,
-    ContinuityRecord, ContinuityStoreError, ContinuityUnrecoverable, DispatchAdmission,
-    DispatchInput, DurabilityPolicy, DurableAgentSpec, FencingToken, HostRejectedBuildPark,
-    IdentityBootstrapEntry, IdentityBootstrapMode, IdentityBootstrapState, IdentityBootstrapStatus,
-    IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable,
-    RosterContext, SendAdmission, SessionSnapshot, TopologyContext,
+    ContinuityRecord, ContinuityStoreError, ContinuityUnrecoverable, DeliveryErrorClass,
+    DeliveryErrorRecord, DispatchAdmission, DispatchInput, DurabilityPolicy, DurableAgentSpec,
+    FencingToken, HostRejectedBuildPark, IdentityBootstrapEntry, IdentityBootstrapMode,
+    IdentityBootstrapState, IdentityBootstrapStatus, IdentityLifecycleState, IdentityStatus,
+    LeaseGrant, LeaseInfo, ManagedPeerEdge, MemberHealthReport, MemberReloadDisposition,
+    MemberReloadOutcome, NotAddressable, RosterContext, SendAdmission, SessionSnapshot,
+    TopologyContext,
 };
+use crate::actor_loop_health::{ActorLoopHealth, ActorLoopHealthKind, ActorLoopHealthReport};
 use crate::memory::records::{
     ManifestTier, MemoryId, MemoryKind, MemoryScope, NewMemoryRecord, RecordMeta, UsageEvent,
 };
@@ -133,6 +136,27 @@ fn admission_phase_error(
         | BridgeAdmissionError::InvariantViolation(detail) => {
             IdentityRuntimeError::AdmissionFailed { identity, detail }
         }
+        BridgeAdmissionError::ActorLoopStalled {
+            operation,
+            stall_id,
+            stalled_for,
+            ..
+        } => IdentityRuntimeError::ActorLoopStalled {
+            identity,
+            operation,
+            stall_id,
+            stalled_for,
+        },
+        BridgeAdmissionError::ActorTerminated {
+            operation, detail, ..
+        } => IdentityRuntimeError::ActorTerminated {
+            identity,
+            operation,
+            detail,
+        },
+        BridgeAdmissionError::ReloadRequired { reason, .. } => {
+            IdentityRuntimeError::ReloadRequired { identity, reason }
+        }
         other @ (BridgeAdmissionError::ResumeRejected { .. }
         | BridgeAdmissionError::ProviderAuthRejected { .. }
         | BridgeAdmissionError::ActorAdmissionTimeout { .. }) => {
@@ -142,6 +166,51 @@ fn admission_phase_error(
             }
         }
     }
+}
+
+/// Map the ingress-only lane's bridge error. The typed fast-fail refusals
+/// (open stall, terminated loop, reload required) keep their type so callers
+/// and the automatic reload can act on them; everything else keeps the
+/// historical `Internal("bridge deliver: ..")` form.
+fn ingress_phase_error(identity: &AgentIdentity, err: BridgeError) -> IdentityRuntimeError {
+    let identity = identity.clone();
+    match err {
+        BridgeError::ActorLoopStalled {
+            operation,
+            stall_id,
+            stalled_for,
+            ..
+        } => IdentityRuntimeError::ActorLoopStalled {
+            identity,
+            operation,
+            stall_id,
+            stalled_for,
+        },
+        BridgeError::ActorTerminated {
+            operation, detail, ..
+        } => IdentityRuntimeError::ActorTerminated {
+            identity,
+            operation,
+            detail,
+        },
+        BridgeError::ReloadRequired { reason, .. } => {
+            IdentityRuntimeError::ReloadRequired { identity, reason }
+        }
+        other => IdentityRuntimeError::Internal(format!("bridge deliver: {other}")),
+    }
+}
+
+/// Why a member is being retired on the mob plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LifecycleRetireIntent {
+    /// The identity leaves the fleet: memory harvest hooks run (session tail
+    /// distillation, exit interview).
+    Retire,
+    /// Non-destructive reload: the same durable session is re-materialized
+    /// immediately under the same lifecycle lock, so nothing rotates and the
+    /// memory hooks must NOT run (an exit interview for a member that stays
+    /// would be a lie).
+    Reload,
 }
 
 /// Map the terminal edge of an admitted turn. Pre-admission outcomes are
@@ -185,6 +254,38 @@ pub enum IdentityRuntimeError {
     AdmissionFailed {
         identity: AgentIdentity,
         detail: String,
+    },
+    /// Refused BEFORE any actor round trip was queued: the actor-loop probe
+    /// has an OPEN stall. The delivery did not wait the admission budget
+    /// behind the wedged command (OB3 2026-09-04: 600 s per send). `stall_id`
+    /// joins this refusal to the `ErrorEvent::ActorLoopStalled` incident;
+    /// deliveries resume on the correlated `ActorLoopRecovered`. Nothing was
+    /// delivered; safe to retry after recovery.
+    ActorLoopStalled {
+        identity: AgentIdentity,
+        operation: &'static str,
+        stall_id: u64,
+        stalled_for: Duration,
+    },
+    /// Refused BEFORE any actor round trip was queued: the actor-loop probe
+    /// observed the mob actor's channels closed. The loop is gone and will
+    /// not recover in this process; the process must restart. Nothing was
+    /// delivered.
+    ActorTerminated {
+        identity: AgentIdentity,
+        operation: &'static str,
+        detail: String,
+    },
+    /// meerkat refused admission because the member's runtime registration is
+    /// durability-degraded and needs a registration-authorized cold reload.
+    /// The runtime already ran ONE automatic non-destructive reload
+    /// (`reload_member`) and retried; this is the typed failure after that
+    /// single attempt (or the reload itself failing, with both reasons in
+    /// `reason`). Nothing was delivered. Operator path: `mobkit/member_health`
+    /// then `mobkit/reload_member`; never `respawn_member` (destructive).
+    ReloadRequired {
+        identity: AgentIdentity,
+        reason: String,
     },
     /// PHASE 3 of 4. The work WAS admitted and its turn reached a FAILED
     /// terminal.
@@ -318,6 +419,35 @@ impl std::fmt::Display for IdentityRuntimeError {
                 f,
                 "completion-bearing send to {identity} failed at admission: {detail}; \
                  the turn never started"
+            ),
+            Self::ActorLoopStalled {
+                identity,
+                operation,
+                stall_id,
+                stalled_for,
+            } => write!(
+                f,
+                "send to {identity} refused: the mob actor loop has an open stall (stall_id \
+                 {stall_id}, open for {stalled_for:?}) so `{operation}` was not queued behind \
+                 it; nothing was delivered; retry after actor_loop_recovered with stall_id \
+                 {stall_id}"
+            ),
+            Self::ActorTerminated {
+                identity,
+                operation,
+                detail,
+            } => write!(
+                f,
+                "send to {identity} refused: the mob actor loop TERMINATED ({detail}) so \
+                 `{operation}` cannot be queued; nothing was delivered; this will not recover, \
+                 the process must restart"
+            ),
+            Self::ReloadRequired { identity, reason } => write!(
+                f,
+                "send to {identity} refused: the member's runtime registration requires a \
+                 registration-authorized cold reload and one automatic reload attempt did not \
+                 clear it; nothing was delivered; run mobkit/reload_member (non-destructive), \
+                 never respawn_member: {reason}"
             ),
             Self::CompletionFailed { identity, detail } => write!(
                 f,
@@ -586,6 +716,10 @@ pub(crate) struct IdentityEntry {
     /// bridge/callback churn) and the repair supervisor skips the identity.
     /// A changed spec clears it — the retry is then permitted.
     pub host_rejected_build_park: Option<HostRejectedBuildPark>,
+    /// The most recent delivery failure for this identity, cleared by the
+    /// next successful delivery. Read by `mobkit/member_health` so an
+    /// operator learns WHY sends fail without spending an admission budget.
+    pub last_delivery_error: Option<DeliveryErrorRecord>,
 }
 
 /// Tracks a held lease for an identity.
@@ -1414,6 +1548,11 @@ pub struct IdentityRuntime {
     default_timeout: Duration,
     materialization_failure_backoff: RwLock<BTreeMap<AgentIdentity, MaterializationFailureBackoff>>,
     error_hook: StdRwLock<Option<crate::unified_runtime::ErrorHook>>,
+    /// The unified runtime's actor-loop probe verdict, installed late (the
+    /// probe starts with the base runtime, identity-first attaches after).
+    /// Forwarded to the session bridge so admission fails fast while a stall
+    /// is open; read by `member_health`.
+    actor_loop_health: StdRwLock<Option<Arc<ActorLoopHealth>>>,
     bootstrap_status: watch::Sender<IdentityBootstrapStatus>,
     bootstrap_generation: StdMutex<u64>,
     bootstrap_controller: Mutex<()>,
@@ -1595,6 +1734,7 @@ impl IdentityRuntime {
             default_timeout: config.default_timeout.unwrap_or(Duration::from_secs(90)),
             materialization_failure_backoff: RwLock::new(BTreeMap::new()),
             error_hook: StdRwLock::new(None),
+            actor_loop_health: StdRwLock::new(None),
             bootstrap_status,
             bootstrap_generation: StdMutex::new(0),
             bootstrap_controller: Mutex::new(()),
@@ -3312,6 +3452,7 @@ impl IdentityRuntime {
                 has_runtime_store: self.has_runtime_store,
                 continuity_unrecoverable,
                 host_rejected_build_park,
+                last_delivery_error: None,
             };
             entries.insert(identity.clone(), entry);
         }
@@ -4821,13 +4962,38 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
         expected_alias: Option<&str>,
-        mut cancellation: Option<&mut watch::Receiver<bool>>,
+        cancellation: Option<&mut watch::Receiver<bool>>,
         expected_bootstrap_generation: Option<u64>,
         bound_bootstrap_generation: &mut Option<u64>,
         overrides: EmbodimentOverrides<'_>,
     ) -> Result<EmbodimentOutcome, IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        self.embody_identity_locked(
+            identity,
+            expected_alias,
+            cancellation,
+            expected_bootstrap_generation,
+            bound_bootstrap_generation,
+            overrides,
+        )
+        .await
+    }
+
+    /// [`Self::embody_identity`] for a caller that ALREADY holds this
+    /// identity's lifecycle lock (the reload verb runs retire and
+    /// re-materialize under one lock so no send can interleave). The
+    /// per-identity tokio mutex is not reentrant, so the body is split rather
+    /// than re-acquired.
+    async fn embody_identity_locked(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        mut cancellation: Option<&mut watch::Receiver<bool>>,
+        expected_bootstrap_generation: Option<u64>,
+        bound_bootstrap_generation: &mut Option<u64>,
+        overrides: EmbodimentOverrides<'_>,
+    ) -> Result<EmbodimentOutcome, IdentityRuntimeError> {
         let bootstrap_generation = {
             let entries = self.entries.read().await;
             entries
@@ -7619,17 +7785,44 @@ impl IdentityRuntime {
             let delivered_session_id = match commit_mode {
                 // Validated -> Delivered. One await, all of it bounded, all of
                 // it under the lock. Unchanged.
-                SendCommitMode::Ingress => bridge
-                    .deliver_with_mode_context_and_system_prompt(
-                        rid,
-                        &content_to_deliver,
-                        system_prompt,
-                        &injected_context,
-                        handling_mode,
-                        bridge_interaction_id,
-                    )
-                    .await
-                    .map_err(|e| IdentityRuntimeError::Internal(format!("bridge deliver: {e}")))?,
+                SendCommitMode::Ingress => {
+                    // One automatic non-destructive reload on a typed
+                    // reload-required refusal, then the typed failure. Never a
+                    // loop: a second refusal after a reload is an operator
+                    // matter.
+                    let mut reload_attempted = false;
+                    loop {
+                        let attempt = bridge
+                            .deliver_with_mode_context_and_system_prompt(
+                                rid,
+                                &content_to_deliver,
+                                system_prompt,
+                                &injected_context,
+                                handling_mode,
+                                bridge_interaction_id,
+                            )
+                            .await
+                            .map_err(|e| ingress_phase_error(identity, e));
+                        match attempt {
+                            Ok(delivered) => {
+                                self.record_delivery_success(identity).await;
+                                break delivered;
+                            }
+                            Err(err) => {
+                                self.record_delivery_error(identity, &err).await;
+                                if !reload_attempted
+                                    && matches!(err, IdentityRuntimeError::ReloadRequired { .. })
+                                {
+                                    reload_attempted = true;
+                                    self.reload_for_delivery_locked(identity, &err).await?;
+                                    token = self.ensure_active_lease(identity).await?;
+                                    continue;
+                                }
+                                return Err(err);
+                            }
+                        }
+                    }
+                }
 
                 // Validated -> Admitted(receipt) -> [UNLOCK] -> Terminal ->
                 // [RELOCK] -> Revalidated -> Reconciled | Superseded.
@@ -7640,18 +7833,42 @@ impl IdentityRuntime {
                 // lifecycle operation - reset, retire, alias rebind - for the
                 // turn's whole duration.
                 SendCommitMode::AwaitCommit => {
-                    // ADMITTED. Bounded; still under the lock.
-                    let receipt = bridge
-                        .begin_awaiting_commit(
-                            rid,
-                            &content_to_deliver,
-                            system_prompt,
-                            &injected_context,
-                            handling_mode,
-                            bridge_interaction_id,
-                        )
-                        .await
-                        .map_err(|err| admission_phase_error(identity, err))?;
+                    // ADMITTED. Bounded; still under the lock. One automatic
+                    // non-destructive reload on a typed reload-required
+                    // refusal, then the typed failure (same rule as the
+                    // ingress lane).
+                    let mut reload_attempted = false;
+                    let receipt = loop {
+                        let attempt = bridge
+                            .begin_awaiting_commit(
+                                rid,
+                                &content_to_deliver,
+                                system_prompt,
+                                &injected_context,
+                                handling_mode,
+                                bridge_interaction_id,
+                            )
+                            .await
+                            .map_err(|err| admission_phase_error(identity, err));
+                        match attempt {
+                            Ok(receipt) => {
+                                self.record_delivery_success(identity).await;
+                                break receipt;
+                            }
+                            Err(err) => {
+                                self.record_delivery_error(identity, &err).await;
+                                if !reload_attempted
+                                    && matches!(err, IdentityRuntimeError::ReloadRequired { .. })
+                                {
+                                    reload_attempted = true;
+                                    self.reload_for_delivery_locked(identity, &err).await?;
+                                    token = self.ensure_active_lease(identity).await?;
+                                    continue;
+                                }
+                                return Err(err);
+                            }
+                        }
+                    };
 
                     // CAPTURE the incarnation we admitted onto, so a reset,
                     // retire or alias rebind during the unlocked window is
@@ -8276,6 +8493,19 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
     ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.retire_locked_with_intent(identity, LifecycleRetireIntent::Retire)
+            .await
+    }
+
+    /// Retire the identity's mob member while the caller holds the lifecycle
+    /// lock. `Retire` is the ordinary path; `Reload` is the first half of a
+    /// non-destructive reload and skips the memory harvest hooks because the
+    /// same session is re-materialized right after (nothing rotates, no exit).
+    async fn retire_locked_with_intent(
+        &self,
+        identity: &AgentIdentity,
+        intent: LifecycleRetireIntent,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
         self.ensure_active_lease(identity).await?;
         let registered_entry = self
             .mark_lifecycle_in_progress(identity, IdentityLifecycleState::Retiring)
@@ -8342,8 +8572,11 @@ impl IdentityRuntime {
 
         // §8.4 trigger (b): distill the outgoing session's tail BEFORE the
         // member retires. Best-effort and bounded — retirement proceeds at
-        // the distiller's pre-rotation timeout.
-        if let Some(injector) = self.agent_memory.read().await.clone() {
+        // the distiller's pre-rotation timeout. A reload keeps the session,
+        // so neither the distillation nor the exit interview applies.
+        if intent == LifecycleRetireIntent::Retire
+            && let Some(injector) = self.agent_memory.read().await.clone()
+        {
             if let Some(session_id) = session_id.as_ref() {
                 injector
                     .distill_before_rotation(
@@ -8410,6 +8643,303 @@ impl IdentityRuntime {
         self.mark_bootstrap_from_lifecycle(identity, state, bootstrap_error);
         release_result.map_err(IdentityRuntimeError::Lease)?;
         Ok(grant.fencing_token)
+    }
+
+    // -----------------------------------------------------------------------
+    // Lifecycle: reload_member (non-destructive cold reload, OB3 2026-09-04)
+    // -----------------------------------------------------------------------
+
+    /// Non-destructive cold reload of the identity's live member.
+    ///
+    /// Same identity alias, same durable session id, same continuity
+    /// generation. Implemented on the meerkat 0.8.33 API as retire-then-
+    /// re-materialize under the identity's lifecycle lock:
+    ///
+    /// 1. the mob member is retired (`bridge.retire_member`, which runs
+    ///    meerkat-mob's retire path and its reload-required discard) and the
+    ///    session runtime state is unregistered; the continuity record is NOT
+    ///    touched (retire only re-upserts it under the new fence token);
+    /// 2. the identity moves `Retiring` -> `Dormant` explicitly (the only place
+    ///    that does so in-process; ordinary retire leaves `Retiring`);
+    /// 3. the same continuity record is embodied again: `resume_session` on
+    ///    the recorded `session_id`, whose executor registration is where
+    ///    meerkat mints the cold reload from durable truth.
+    ///
+    /// Contrast `respawn_member` (identity reset): fence owner, ADVANCE the
+    /// generation, fresh continuity. That is a destructive continuity reset
+    /// and this verb never calls it.
+    ///
+    /// On 0.8.33 the runtime cannot observe durability state, so an Active
+    /// identity is always reloaded (`discarded`); `not_degraded` is reserved
+    /// for the 0.8.34 primitive. A dormant/uninitialized identity is
+    /// `not_current` (nothing live to discard; the next send materializes
+    /// lazily). Broken/Retiring/Suspended are refused typed: those need the
+    /// reconcile/repair paths, not a reload.
+    async fn reload_locked(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<MemberReloadOutcome, IdentityRuntimeError> {
+        let (state, before) = {
+            let entries = self.entries.read().await;
+            let entry = entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            (entry.state, entry.continuity.clone())
+        };
+        match state {
+            IdentityLifecycleState::Active => {}
+            IdentityLifecycleState::Dormant | IdentityLifecycleState::Uninitialized => {
+                return Ok(MemberReloadOutcome {
+                    reloaded: false,
+                    disposition: MemberReloadDisposition::NotCurrent,
+                    session_id: before.as_ref().map(|record| record.session_id.clone()),
+                    generation: before.as_ref().map(|record| record.generation),
+                });
+            }
+            IdentityLifecycleState::Broken
+            | IdentityLifecycleState::Retiring
+            | IdentityLifecycleState::Suspended => {
+                return Err(IdentityRuntimeError::InvalidState {
+                    identity: identity.clone(),
+                    state,
+                    operation: "reload_member",
+                });
+            }
+        }
+        let Some(before) = before else {
+            return Ok(MemberReloadOutcome {
+                reloaded: false,
+                disposition: MemberReloadDisposition::NotCurrent,
+                session_id: None,
+                generation: None,
+            });
+        };
+
+        tracing::info!(
+            %identity,
+            session_id = %before.session_id,
+            generation = before.generation.get(),
+            "reload_member: discarding the live member registration and re-materializing the \
+             same durable session (non-destructive; generation does not advance)"
+        );
+        self.retire_locked_with_intent(identity, LifecycleRetireIntent::Reload)
+            .await?;
+        {
+            let mut entries = self.entries.write().await;
+            let entry = entries
+                .get_mut(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            entry.state = IdentityLifecycleState::Dormant;
+            entry.lease = None;
+        }
+        self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Dormant, None);
+
+        let mut bound_generation = None;
+        let result = self
+            .embody_identity_locked(
+                identity,
+                None,
+                None,
+                None,
+                &mut bound_generation,
+                EmbodimentOverrides::default(),
+            )
+            .await
+            .map(|outcome| outcome.record);
+        self.mark_bootstrap_materialization_finished(identity, &result, bound_generation);
+        let record = result?;
+        if record.session_id != before.session_id {
+            tracing::warn!(
+                %identity,
+                before = %before.session_id,
+                after = %record.session_id,
+                "reload_member: the resume fell back to a fresh session (meerkat reported the \
+                 durable snapshot typed-absent); the identity is bound to the new session"
+            );
+        }
+        Ok(MemberReloadOutcome {
+            reloaded: true,
+            disposition: MemberReloadDisposition::Discarded,
+            session_id: Some(record.session_id),
+            generation: Some(record.generation),
+        })
+    }
+
+    /// The delivery path's single automatic reload after a typed
+    /// reload-required refusal. Runs under the caller's lifecycle lock. Any
+    /// failure becomes the typed `ReloadRequired` carrying both reasons.
+    async fn reload_for_delivery_locked(
+        &self,
+        identity: &AgentIdentity,
+        refusal: &IdentityRuntimeError,
+    ) -> Result<(), IdentityRuntimeError> {
+        tracing::warn!(
+            %identity,
+            refusal = %refusal,
+            "delivery refused: member requires a cold reload; running ONE automatic \
+             non-destructive reload_member before retrying"
+        );
+        match self.reload_locked(identity).await {
+            Ok(outcome) => {
+                tracing::info!(
+                    %identity,
+                    disposition = ?outcome.disposition,
+                    "automatic reload_member completed; retrying the delivery once"
+                );
+                Ok(())
+            }
+            Err(reload_error) => Err(IdentityRuntimeError::ReloadRequired {
+                identity: identity.clone(),
+                reason: format!("{refusal}; automatic reload_member failed: {reload_error}"),
+            }),
+        }
+    }
+
+    /// Public entry for the reload verb (in-process callers and tests).
+    pub async fn reload_member(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<MemberReloadOutcome, IdentityRuntimeError> {
+        let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+        let _lifecycle_guard = lifecycle_lock.lock().await;
+        self.reload_locked(identity).await
+    }
+
+    /// Cancellation-safe reload for RPC/console boundaries that atomically
+    /// rejects a stale generated runtime alias under the same lifecycle lock
+    /// as the mutation.
+    pub async fn reload_member_alias_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+    ) -> Result<MemberReloadOutcome, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.map(str::to_owned);
+        self.run_tracked_foreground(async move {
+            let lifecycle_lock = runtime.lifecycle_lock_for(&identity).await;
+            let _lifecycle_guard = lifecycle_lock.lock().await;
+            if let Some(expected_alias) = expected_alias.as_deref() {
+                runtime
+                    .ensure_expected_member_alias_current(&identity, expected_alias)
+                    .await?;
+            }
+            runtime.reload_locked(&identity).await
+        })
+        .await
+    }
+
+    // -----------------------------------------------------------------------
+    // Health: member_health (in-process reads only; answers during a stall)
+    // -----------------------------------------------------------------------
+
+    /// Install the unified runtime's actor-loop probe verdict and forward it
+    /// to the session bridge, whose admission path fails fast while a stall
+    /// is open.
+    pub fn install_actor_loop_health(&self, health: Arc<ActorLoopHealth>) {
+        if let Some(bridge) = self.bridge.as_ref() {
+            bridge.observe_actor_loop_health(Arc::clone(&health));
+        }
+        *self
+            .actor_loop_health
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(health);
+    }
+
+    /// The installed probe verdict, if any.
+    pub fn actor_loop_health(&self) -> Option<Arc<ActorLoopHealth>> {
+        self.actor_loop_health
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The identity's lifecycle and delivery health. Every field is an
+    /// in-process read: this never touches the mob actor, so it answers while
+    /// the loop is stalled, which is exactly when an operator needs it.
+    pub async fn member_health(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<MemberHealthReport, IdentityRuntimeError> {
+        let entries = self.entries.read().await;
+        let entry = entries
+            .get(identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        let bootstrap_state = self
+            .identity_bootstrap_status()
+            .identities
+            .get(identity)
+            .map(|entry| entry.state);
+        let actor_loop = self
+            .actor_loop_health()
+            .map(|health| health.report())
+            .unwrap_or_else(ActorLoopHealthReport::unobserved);
+        let open_stall_id = (actor_loop.state == ActorLoopHealthKind::Stalled)
+            .then_some(actor_loop.stall_id)
+            .flatten();
+        Ok(MemberHealthReport {
+            identity: identity.clone(),
+            member_id: entry
+                .continuity
+                .as_ref()
+                .map(|record| record.agent_runtime_id.clone()),
+            state: entry.state,
+            bootstrap_state,
+            materialization_in_flight: bootstrap_state == Some(IdentityBootstrapState::Warming),
+            session_id: entry
+                .continuity
+                .as_ref()
+                .map(|record| record.session_id.clone()),
+            generation: entry.continuity.as_ref().map(|record| record.generation),
+            last_delivery_error: entry.last_delivery_error.clone(),
+            actor_loop,
+            open_stall_id,
+            durability: None,
+            continuity_unrecoverable: entry.continuity_unrecoverable.clone(),
+        })
+    }
+
+    fn delivery_error_class(err: &IdentityRuntimeError) -> DeliveryErrorClass {
+        match err {
+            IdentityRuntimeError::ReloadRequired { .. } => DeliveryErrorClass::ReloadRequired,
+            IdentityRuntimeError::ActorLoopStalled { .. } => DeliveryErrorClass::ActorLoopStalled,
+            IdentityRuntimeError::ActorTerminated { .. } => DeliveryErrorClass::ActorTerminated,
+            IdentityRuntimeError::CompletionFailed { .. }
+            | IdentityRuntimeError::PostAdmissionResolutionFailed { .. }
+            | IdentityRuntimeError::PostAdmissionSuperseded { .. } => {
+                DeliveryErrorClass::Completion
+            }
+            other
+                if other
+                    .to_string()
+                    .contains("did not answer within the admission budget") =>
+            {
+                DeliveryErrorClass::AdmissionTimeout
+            }
+            _ => DeliveryErrorClass::AdmissionFailed,
+        }
+    }
+
+    async fn record_delivery_error(&self, identity: &AgentIdentity, err: &IdentityRuntimeError) {
+        let record = DeliveryErrorRecord {
+            class: Self::delivery_error_class(err),
+            detail: err.to_string(),
+            at_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+                .unwrap_or(0),
+        };
+        if let Some(entry) = self.entries.write().await.get_mut(identity) {
+            entry.last_delivery_error = Some(record);
+        }
+    }
+
+    async fn record_delivery_success(&self, identity: &AgentIdentity) {
+        if let Some(entry) = self.entries.write().await.get_mut(identity)
+            && entry.last_delivery_error.is_some()
+        {
+            entry.last_delivery_error = None;
+        }
     }
 
     // -----------------------------------------------------------------------
