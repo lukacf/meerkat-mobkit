@@ -522,6 +522,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   silently drops; they now carry their prompts as inline skills, or omit them
   where no turn reads a prompt.
 
+- **The durable-callback health projection no longer fails once per second
+  with `Unsupported store operation: list_runtime_delivery_authorities`.**
+  Production-like `rpc_gateway` runs with an SDK-hosted continuity store logged
+  `durable callback health projection failed ... list_runtime_delivery_authorities`
+  at WARN on every tick of the 1 Hz delivery driver, forever, and published the
+  detached-jobs health as `degraded` (`job_health_projection_failed`) the whole
+  time. Root cause: `runtime_inbox_backlog` is read through meerkat's
+  `RuntimeDeliveryInbox::pending_delivery_total`, whose only cross-runtime
+  store verb is `RuntimeStore::list_runtime_delivery_authorities` (trait
+  default: a typed `Unsupported` refusal). Both gateway composition paths hand
+  the detached-job runtime the epoch-tracking runtime-store facade
+  (`SessionStoreBackedRuntimeStore`), and that decorator forwarded the other
+  three delivery verbs but not this one, so every tick hit the default. The
+  facade now forwards it (plus the two authority reads whose defaults route
+  through `session_authority_ops()`, so every reachable `RuntimeStore` method
+  on the decorator is an explicit choice). The projection also types the
+  backlog read instead of stringifying it: a store that answers `Unsupported`
+  yields a `RuntimeInboxBacklog::Unsupported` outcome that is announced at
+  WARN once (then DEBUG), publishes `runtime_inbox_backlog: null` with
+  `runtime_inbox_backlog_reading: "unsupported"`, and folds meerkat's
+  `Unreadable` rung into the status rather than fabricating a zero; the `u64`
+  `jobs/health` wire field refuses with a typed error rather than publishing
+  `0`. Every other failure (read error, corrupt authority) keeps its own text
+  and still surfaces on every tick. `scripts/verify-session-service-decorators.py`
+  now checks `RuntimeStore` decorators the same way it checks
+  `MobSessionService` ones (pinned meerkat-runtime trait, 79 methods,
+  `commit_prepared_session_boundary_with_fence` exempt with meerkat's own
+  decorator-opt-in reason) and fails on the pre-fix facade. Regressions: one
+  submitted delivery counts as 1 through the facade and the inner store alike;
+  the detached-job runtime over the facade projects `ok` with backlog `0` on
+  repeated ticks; a store refusing the read projects `unreadable`/`null` with
+  exactly one WARN across five ticks; a store failing the read surfaces its own
+  error on every tick.
+
 ## [0.8.31] - 2026-09-04
 
 ### Changed
