@@ -2136,6 +2136,393 @@ default_binding = "local"
         );
     }
 
+    /// Test double: a real in-memory runtime store whose one cross-runtime
+    /// delivery read answers a configured failure, so the health projection
+    /// can be driven through both the typed store refusal and a real fault.
+    struct DeliveryCensusFailingStore {
+        inner: meerkat_runtime::InMemoryRuntimeStore,
+        failure: fn() -> meerkat_runtime::store::RuntimeStoreError,
+    }
+
+    #[async_trait]
+    impl meerkat_runtime::RuntimeStore for DeliveryCensusFailingStore {
+        fn session_authority_ops(&self) -> &dyn meerkat_runtime::store::RuntimeSessionAuthorityOps {
+            self.inner.session_authority_ops()
+        }
+
+        async fn commit_session_snapshot(
+            &self,
+            runtime_id: &meerkat_runtime::LogicalRuntimeId,
+            session_delta: meerkat_runtime::store::SerializedSessionSnapshot,
+        ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+            self.inner
+                .commit_session_snapshot(runtime_id, session_delta)
+                .await
+        }
+
+        async fn commit_prepared_whole_blob_rewrite_boundary(
+            &self,
+            runtime_id: &meerkat_runtime::LogicalRuntimeId,
+            boundary: meerkat_runtime::store::PreparedWholeBlobRewriteStoreParts,
+        ) -> Result<
+            meerkat_runtime::store::WholeBlobStoreAuthority,
+            meerkat_runtime::store::RuntimeStoreError,
+        > {
+            self.inner
+                .commit_prepared_whole_blob_rewrite_boundary(runtime_id, boundary)
+                .await
+        }
+
+        async fn atomic_apply(
+            &self,
+            runtime_id: &meerkat_runtime::LogicalRuntimeId,
+            session_delta: Option<meerkat_runtime::store::SerializedSessionSnapshot>,
+            receipt: meerkat_core::lifecycle::RunBoundaryReceipt,
+            input_updates: Vec<meerkat_runtime::input_state::InputStatePersistenceRecord>,
+            session_store_key: Option<meerkat_core::types::SessionId>,
+        ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+            self.inner
+                .atomic_apply(
+                    runtime_id,
+                    session_delta,
+                    receipt,
+                    input_updates,
+                    session_store_key,
+                )
+                .await
+        }
+
+        async fn load_input_states(
+            &self,
+            runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        ) -> Result<Vec<meerkat_runtime::InputStateRow>, meerkat_runtime::store::RuntimeStoreError>
+        {
+            self.inner.load_input_states(runtime_id).await
+        }
+
+        async fn load_boundary_receipt(
+            &self,
+            runtime_id: &meerkat_runtime::LogicalRuntimeId,
+            run_id: &meerkat_core::lifecycle::RunId,
+            sequence: u64,
+        ) -> Result<
+            Option<meerkat_core::lifecycle::RunBoundaryReceipt>,
+            meerkat_runtime::store::RuntimeStoreError,
+        > {
+            self.inner
+                .load_boundary_receipt(runtime_id, run_id, sequence)
+                .await
+        }
+
+        async fn load_session_snapshot(
+            &self,
+            runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        ) -> Result<Option<Arc<Vec<u8>>>, meerkat_runtime::store::RuntimeStoreError> {
+            self.inner.load_session_snapshot(runtime_id).await
+        }
+
+        async fn clear_session_snapshot(
+            &self,
+            runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+            self.inner.clear_session_snapshot(runtime_id).await
+        }
+
+        async fn replace_session_snapshot_if_current(
+            &self,
+            runtime_id: &meerkat_runtime::LogicalRuntimeId,
+            expected_current: &[u8],
+            replacement: Vec<u8>,
+        ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
+            self.inner
+                .replace_session_snapshot_if_current(runtime_id, expected_current, replacement)
+                .await
+        }
+
+        async fn clear_session_snapshot_if_current(
+            &self,
+            runtime_id: &meerkat_runtime::LogicalRuntimeId,
+            expected_current: &[u8],
+        ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
+            self.inner
+                .clear_session_snapshot_if_current(runtime_id, expected_current)
+                .await
+        }
+
+        async fn persist_input_state(
+            &self,
+            runtime_id: &meerkat_runtime::LogicalRuntimeId,
+            state: &meerkat_runtime::input_state::InputStatePersistenceRecord,
+        ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+            self.inner.persist_input_state(runtime_id, state).await
+        }
+
+        async fn load_input_state(
+            &self,
+            runtime_id: &meerkat_runtime::LogicalRuntimeId,
+            input_id: &meerkat_core::lifecycle::InputId,
+        ) -> Result<
+            Option<meerkat_runtime::input_state::StoredInputState>,
+            meerkat_runtime::store::RuntimeStoreError,
+        > {
+            self.inner.load_input_state(runtime_id, input_id).await
+        }
+
+        async fn load_machine_lifecycle_record(
+            &self,
+            runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        ) -> Result<Option<Vec<u8>>, meerkat_runtime::store::RuntimeStoreError> {
+            self.inner.load_machine_lifecycle_record(runtime_id).await
+        }
+
+        async fn commit_machine_lifecycle(
+            &self,
+            runtime_id: &meerkat_runtime::LogicalRuntimeId,
+            commit: meerkat_runtime::store::MachineLifecycleCommit,
+            input_states: &[meerkat_runtime::input_state::InputStatePersistenceRecord],
+        ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+            self.inner
+                .commit_machine_lifecycle(runtime_id, commit, input_states)
+                .await
+        }
+
+        async fn list_runtime_delivery_authorities(
+            &self,
+        ) -> Result<
+            Vec<(
+                meerkat_runtime::LogicalRuntimeId,
+                meerkat_runtime::store::RuntimeDeliveryAuthorityRecord,
+            )>,
+            meerkat_runtime::store::RuntimeStoreError,
+        > {
+            Err((self.failure)())
+        }
+    }
+
+    fn detached_runtime_over(
+        runtime_store: Arc<dyn meerkat_runtime::RuntimeStore>,
+    ) -> DetachedCallbackJobRuntime {
+        let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let blobs: Arc<dyn meerkat_core::BlobStore> = Arc::new(Base64BlobStoreAdapter::new(binary));
+        DetachedCallbackJobRuntime::new(
+            meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+            Arc::new(meerkat::MemoryDetachedJobStore::new()),
+            blobs,
+        )
+        .with_runtime_delivery_store(runtime_store)
+    }
+
+    #[derive(Clone, Default)]
+    struct CaptureWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CaptureWriter {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(
+                &self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+            .into_owned()
+        }
+    }
+
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+        type Writer = CaptureWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Regression for the 1 Hz `durable callback health projection failed
+    /// ... list_runtime_delivery_authorities` WARN. The gateway hands the
+    /// detached job runtime the epoch-tracking runtime-store facade (both
+    /// composition paths, SDK-hosted continuity store included), and the
+    /// facade did not forward the one cross-runtime delivery read, so every
+    /// delivery-driver tick failed on the trait default. Every tick must now
+    /// count, and nothing may be classified as unsupported.
+    #[tokio::test]
+    async fn health_projection_counts_the_runtime_inbox_through_the_epoch_tracking_facade() {
+        let (runtime_store, _epochs) =
+            meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store(Arc::new(
+                meerkat_runtime::InMemoryRuntimeStore::new(),
+            ));
+        let runtime = detached_runtime_over(runtime_store);
+        for tick in 0..3 {
+            let projection = runtime
+                .health_projection()
+                .await
+                .unwrap_or_else(|error| panic!("tick {tick}: health projection failed: {error}"));
+            assert_eq!(projection["status"], json!("ok"));
+            assert_eq!(
+                projection["detached_jobs"]["runtime_inbox_backlog"],
+                json!(0)
+            );
+            assert_eq!(
+                projection["detached_jobs"]["runtime_inbox_backlog_reading"],
+                json!("counted")
+            );
+        }
+        assert!(
+            !runtime
+                .runtime_inbox_unsupported_announced
+                .load(Ordering::Acquire),
+            "a store that answers must never be classified as unsupported"
+        );
+        assert_eq!(runtime.runtime_inbox_backlog_count().await, Ok(0));
+    }
+
+    /// A runtime store that genuinely cannot enumerate delivery authorities
+    /// is a typed store property, not a per-tick fault: the projection
+    /// succeeds with `runtime_inbox_backlog: null`, the dimension reads
+    /// `unreadable` (never a fabricated zero), and the WARN naming the
+    /// operation fires exactly once across many ticks.
+    #[tokio::test]
+    async fn health_projection_types_an_unsupported_runtime_inbox_read_and_warns_once() {
+        let runtime = detached_runtime_over(Arc::new(DeliveryCensusFailingStore {
+            inner: meerkat_runtime::InMemoryRuntimeStore::new(),
+            failure: || {
+                meerkat_runtime::store::RuntimeStoreError::Unsupported(
+                    "list_runtime_delivery_authorities".to_string(),
+                )
+            },
+        }));
+        let writer = CaptureWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer.clone())
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        for tick in 0..5 {
+            let projection = runtime
+                .health_projection()
+                .await
+                .unwrap_or_else(|error| panic!("tick {tick}: unsupported must not fail: {error}"));
+            assert_eq!(projection["status"], json!("unreadable"));
+            assert_eq!(projection["detached_jobs"]["status"], json!("unreadable"));
+            assert_eq!(
+                projection["detached_jobs"]["runtime_inbox_backlog"],
+                Value::Null,
+                "an unsupported census must not publish a number"
+            );
+            assert_eq!(
+                projection["detached_jobs"]["runtime_inbox_backlog_reading"],
+                json!("unsupported")
+            );
+        }
+        let warnings = writer.contents();
+        assert_eq!(
+            warnings
+                .matches("does not support the runtime inbox backlog read")
+                .count(),
+            1,
+            "the unsupported store is announced exactly once, got: {warnings}"
+        );
+        assert!(
+            warnings.contains("list_runtime_delivery_authorities"),
+            "the announcement names the refused operation, got: {warnings}"
+        );
+        assert!(
+            runtime
+                .runtime_inbox_unsupported_announced
+                .load(Ordering::Acquire)
+        );
+        // The u64 wire contract cannot carry "unreadable": a typed error, not 0.
+        let wire = runtime.runtime_inbox_backlog_count().await;
+        assert!(
+            wire.as_ref()
+                .is_err_and(|error| error.contains("list_runtime_delivery_authorities")),
+            "jobs/health must refuse rather than fabricate a zero, got {wire:?}"
+        );
+    }
+
+    /// A store that CAN answer but fails is a real fault and must keep
+    /// surfacing on every tick with its own text; it must never be folded
+    /// into the once-only unsupported classification.
+    #[tokio::test]
+    async fn health_projection_surfaces_a_real_runtime_inbox_read_failure_every_tick() {
+        let runtime = detached_runtime_over(Arc::new(DeliveryCensusFailingStore {
+            inner: meerkat_runtime::InMemoryRuntimeStore::new(),
+            failure: || {
+                meerkat_runtime::store::RuntimeStoreError::ReadFailed(
+                    "runtime.sqlite: disk I/O error".to_string(),
+                )
+            },
+        }));
+        for tick in 0..3 {
+            let error = runtime
+                .health_projection()
+                .await
+                .expect_err("a real read failure must surface on every tick");
+            assert!(
+                error.contains("disk I/O error"),
+                "tick {tick}: the store's own failure text must survive, got: {error}"
+            );
+        }
+        assert!(
+            !runtime
+                .runtime_inbox_unsupported_announced
+                .load(Ordering::Acquire),
+            "a read failure is not an unsupported store"
+        );
+    }
+
+    #[test]
+    fn runtime_inbox_backlog_classification_is_typed() {
+        assert_eq!(
+            classify_runtime_inbox_backlog(Ok(3)),
+            Ok(RuntimeInboxBacklog::Counted(3))
+        );
+        assert_eq!(
+            classify_runtime_inbox_backlog(Err(meerkat_runtime::RuntimeDeliveryError::Store(
+                meerkat_runtime::store::RuntimeStoreError::Unsupported("list_x".to_string()),
+            ))),
+            Ok(RuntimeInboxBacklog::Unsupported {
+                operation: "list_x".to_string()
+            })
+        );
+        let corrupt = classify_runtime_inbox_backlog(Err(
+            meerkat_runtime::RuntimeDeliveryError::Corrupt("cursor ahead of sequence".to_string()),
+        ));
+        assert!(corrupt.is_err_and(|error| error.contains("cursor ahead of sequence")));
+        let read_failed =
+            classify_runtime_inbox_backlog(Err(meerkat_runtime::RuntimeDeliveryError::Store(
+                meerkat_runtime::store::RuntimeStoreError::ReadFailed("locked".to_string()),
+            )));
+        assert!(read_failed.is_err_and(|error| error.contains("locked")));
+        assert_eq!(
+            RuntimeInboxBacklog::Counted(0).reading(),
+            meerkat::JobHealthReading::Ok
+        );
+        assert_eq!(
+            RuntimeInboxBacklog::Counted(1).reading(),
+            meerkat::JobHealthReading::Degraded
+        );
+        assert_eq!(
+            RuntimeInboxBacklog::Unsupported {
+                operation: "list_x".to_string()
+            }
+            .reading(),
+            meerkat::JobHealthReading::Unreadable
+        );
+    }
+
     #[test]
     fn callback_runner_ownership_requires_exact_tool_runner_and_version() {
         let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
@@ -7369,6 +7756,67 @@ struct CallbackToolSpec {
     execution: ToolExecutionContract,
 }
 
+/// Typed outcome of the runtime-inbox backlog read behind the
+/// `runtime_inbox_backlog` health dimension.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuntimeInboxBacklog {
+    /// The store enumerated its delivery authorities; this is the exact
+    /// host-store total of committed-but-undrained deliveries.
+    Counted(u64),
+    /// The runtime store refused the cross-runtime delivery read with a typed
+    /// `RuntimeStoreError::Unsupported`. That is a property of the store, not
+    /// a fault of this tick: the dimension is unreadable (never a fabricated
+    /// zero), and the condition is announced once rather than on every tick.
+    /// A store that can answer but fails to (read error, corrupt authority)
+    /// is NOT this variant; that stays an error the caller surfaces each time.
+    Unsupported { operation: String },
+}
+
+impl RuntimeInboxBacklog {
+    /// The rung this dimension contributes to meerkat's census reading.
+    /// `Unreadable` for an unsupported store: the operator is told to look,
+    /// not told a rung the store never established.
+    fn reading(&self) -> meerkat::JobHealthReading {
+        match self {
+            Self::Counted(0) => meerkat::JobHealthReading::Ok,
+            Self::Counted(_) => meerkat::JobHealthReading::Degraded,
+            Self::Unsupported { .. } => meerkat::JobHealthReading::Unreadable,
+        }
+    }
+
+    /// Wire value for `runtime_inbox_backlog`: the count, or `null` when the
+    /// store cannot answer (a number here would claim a census that did not
+    /// happen).
+    fn count_value(&self) -> Value {
+        match self {
+            Self::Counted(total) => json!(total),
+            Self::Unsupported { .. } => Value::Null,
+        }
+    }
+
+    fn reading_label(&self) -> &'static str {
+        match self {
+            Self::Counted(_) => "counted",
+            Self::Unsupported { .. } => "unsupported",
+        }
+    }
+}
+
+/// Classify the inbox census result. Only the typed `Unsupported` store
+/// refusal becomes a non-error outcome; every other failure keeps its text and
+/// stays an error so the delivery driver surfaces it on each tick.
+fn classify_runtime_inbox_backlog(
+    result: Result<u64, meerkat_runtime::RuntimeDeliveryError>,
+) -> Result<RuntimeInboxBacklog, String> {
+    match result {
+        Ok(total) => Ok(RuntimeInboxBacklog::Counted(total)),
+        Err(meerkat_runtime::RuntimeDeliveryError::Store(
+            meerkat_runtime::store::RuntimeStoreError::Unsupported(operation),
+        )) => Ok(RuntimeInboxBacklog::Unsupported { operation }),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 #[derive(Clone)]
 struct DetachedCallbackJobRuntime {
     realm_id: String,
@@ -7376,6 +7824,10 @@ struct DetachedCallbackJobRuntime {
     service: meerkat::DetachedJobService,
     blob_store: Arc<dyn meerkat_core::BlobStore>,
     runtime_inbox: Option<meerkat_runtime::RuntimeDeliveryInbox>,
+    /// Latched on the first typed `Unsupported` answer to the runtime-inbox
+    /// backlog read; the WARN naming the operation fires on that transition
+    /// only. See [`Self::runtime_inbox_backlog`].
+    runtime_inbox_unsupported_announced: Arc<AtomicBool>,
     delivery_service: Arc<std::sync::RwLock<Option<Arc<dyn meerkat_mob::MobSessionService>>>>,
     delivery_driver_started: Arc<AtomicBool>,
     monitor_recovery_completed: Arc<AtomicBool>,
@@ -7396,6 +7848,7 @@ impl DetachedCallbackJobRuntime {
             store,
             blob_store,
             runtime_inbox: None,
+            runtime_inbox_unsupported_announced: Arc::new(AtomicBool::new(false)),
             delivery_service: Arc::new(std::sync::RwLock::new(None)),
             delivery_driver_started: Arc::new(AtomicBool::new(false)),
             monitor_recovery_completed: Arc::new(AtomicBool::new(false)),
@@ -7638,14 +8091,54 @@ impl DetachedCallbackJobRuntime {
     /// publishes a false zero exactly when a backlog is what the operator is
     /// asking about. Over-inclusion is the safe direction here: every counted
     /// row is a real undrained delivery in this host.
-    async fn runtime_inbox_backlog_count(&self) -> Result<u64, String> {
+    ///
+    /// A runtime store that refuses the cross-runtime delivery read with a
+    /// typed `Unsupported` yields [`RuntimeInboxBacklog::Unsupported`] rather
+    /// than an error, announced at WARN once per runtime (then DEBUG): the
+    /// 1 Hz delivery driver calls this on every tick, and through 0.8.32 the
+    /// gateway's own runtime-store facade did not forward the verb, so every
+    /// tick logged `durable callback health projection failed ...
+    /// list_runtime_delivery_authorities` forever. Every other failure is a
+    /// real fault of a store that CAN answer and stays an error the caller
+    /// surfaces each time.
+    async fn runtime_inbox_backlog(&self) -> Result<RuntimeInboxBacklog, String> {
         let Some(runtime_inbox) = self.runtime_inbox.clone() else {
-            return Ok(0);
+            return Ok(RuntimeInboxBacklog::Counted(0));
         };
-        runtime_inbox
-            .pending_delivery_total()
-            .await
-            .map_err(|error| error.to_string())
+        let backlog = classify_runtime_inbox_backlog(runtime_inbox.pending_delivery_total().await)?;
+        if let RuntimeInboxBacklog::Unsupported { operation } = &backlog {
+            if self
+                .runtime_inbox_unsupported_announced
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                tracing::warn!(
+                    %operation,
+                    "runtime store does not support the runtime inbox backlog read; health \
+                     projects runtime_inbox_backlog as null with an unreadable reading until \
+                     the store supports it (reported once)"
+                );
+            } else {
+                tracing::debug!(
+                    %operation,
+                    "runtime inbox backlog read still unsupported on this runtime store"
+                );
+            }
+        }
+        Ok(backlog)
+    }
+
+    /// The count for the `jobs/health` wire contract, whose
+    /// `runtime_inbox_backlog` is a plain `u64` with no "unreadable" shape. An
+    /// unsupported store is a typed error here rather than a fabricated zero.
+    async fn runtime_inbox_backlog_count(&self) -> Result<u64, String> {
+        match self.runtime_inbox_backlog().await? {
+            RuntimeInboxBacklog::Counted(total) => Ok(total),
+            RuntimeInboxBacklog::Unsupported { operation } => Err(format!(
+                "runtime store does not support {operation}; jobs/health cannot publish \
+                 runtime_inbox_backlog"
+            )),
+        }
     }
 
     async fn health_projection(&self) -> Result<Value, String> {
@@ -7659,16 +8152,13 @@ impl DetachedCallbackJobRuntime {
         // wedges: a job whose delivery was never handed to a runtime, versus a
         // delivery a runtime accepted and never drained. 0.8.23 published their
         // sum under one name, which is a number that means neither.
-        let runtime_inbox_backlog = self.runtime_inbox_backlog_count().await?;
+        let runtime_inbox_backlog = self.runtime_inbox_backlog().await?;
         // Fold mobkit's own runtime dimension into meerkat's census rung rather
         // than collapsing to a boolean. `Unreadable` outranks `Degraded`: a
         // census that could not be read may be hiding the fault, so the
-        // operator is told to look rather than told a rung.
-        let reading = health.reading().worst(if runtime_inbox_backlog > 0 {
-            meerkat::JobHealthReading::Degraded
-        } else {
-            meerkat::JobHealthReading::Ok
-        });
+        // operator is told to look rather than told a rung. An unsupported
+        // store lands on that rung too: it never established a count.
+        let reading = health.reading().worst(runtime_inbox_backlog.reading());
         let status = match reading {
             meerkat::JobHealthReading::Ok => "ok",
             meerkat::JobHealthReading::Degraded => "degraded",
@@ -7733,7 +8223,8 @@ impl DetachedCallbackJobRuntime {
                 "stale_leases": health.stale_leases,
                 "needs_attention": health.needs_attention,
                 "pending_outbox_jobs": health.pending_outbox_jobs,
-                "runtime_inbox_backlog": runtime_inbox_backlog
+                "runtime_inbox_backlog": runtime_inbox_backlog.count_value(),
+                "runtime_inbox_backlog_reading": runtime_inbox_backlog.reading_label()
             },
             "by_session": by_session
         }))

@@ -3398,6 +3398,34 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         self.inner.session_authority_ops()
     }
 
+    // The two authority verbs whose trait defaults route through
+    // `session_authority_ops()`. Forwarding them to the inner store is the
+    // same routing the default takes today; they are named here so every
+    // reachable `RuntimeStore` method on this decorator is a visible choice
+    // (scripts/verify-session-service-decorators.py fails fmt-lint otherwise)
+    // rather than an inherited default that a future meerkat can change.
+    async fn activate_head_canonical_runtime_authority(
+        &self,
+        authority: meerkat_core::VerifiedHeadCanonicalAuthority,
+    ) -> Result<
+        meerkat_runtime::store::HeadCanonicalRuntimeAuthorityActivation,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .activate_head_canonical_runtime_authority(authority)
+            .await
+    }
+
+    async fn load_session_resume_observation(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        meerkat_runtime::store::RuntimeSessionResumeObservation,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner.load_session_resume_observation(runtime_id).await
+    }
+
     fn session_persistence_profile(
         &self,
     ) -> meerkat_runtime::store::RuntimeSessionPersistenceProfile {
@@ -3786,6 +3814,25 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
                 inserted_delivery,
             )
             .await
+    }
+
+    /// The one cross-runtime delivery read. `RuntimeDeliveryInbox::
+    /// pending_delivery_total` (the `runtime_inbox_backlog` health dimension)
+    /// has no other way to find runtimes holding committed-but-undrained
+    /// rows, and the trait default is a typed `Unsupported` refusal. Through
+    /// 0.8.32 this facade did not forward it, so the gateway's 1 Hz health
+    /// projection failed on every tick with `Unsupported store operation:
+    /// list_runtime_delivery_authorities` and logged a WARN per second.
+    async fn list_runtime_delivery_authorities(
+        &self,
+    ) -> Result<
+        Vec<(
+            meerkat_runtime::LogicalRuntimeId,
+            meerkat_runtime::store::RuntimeDeliveryAuthorityRecord,
+        )>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner.list_runtime_delivery_authorities().await
     }
 
     async fn list_runtime_delivery_records(
@@ -17306,5 +17353,58 @@ image_generation = true
             // might not have had.
             assert_eq!(converged, 0);
         }
+    }
+
+    /// `RuntimeDeliveryInbox::pending_delivery_total` is the
+    /// `runtime_inbox_backlog` health dimension and reads the store through
+    /// the one cross-runtime delivery verb. Before the forward the facade
+    /// answered the trait default (`Unsupported`) and the gateway's 1 Hz
+    /// health projection failed on every tick; the count must be the inner
+    /// store's answer, not a fabricated empty census.
+    #[tokio::test]
+    async fn epoch_tracking_facade_forwards_list_runtime_delivery_authorities() {
+        let inner: Arc<dyn meerkat_runtime::RuntimeStore> =
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        let (facade, _epochs) = epoch_tracking_runtime_store(Arc::clone(&inner));
+        let inbox = meerkat_runtime::RuntimeDeliveryInbox::new(Arc::clone(&facade));
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::new("runtime-a".to_string());
+        inbox
+            .submit(
+                &runtime_id,
+                meerkat_runtime::RuntimeDeliverySubmission::new(
+                    meerkat_runtime::RuntimeDeliveryId::new("delivery-1").expect("delivery id"),
+                    meerkat_runtime::RuntimeDeliveryKind::JobNotification,
+                    "job-1",
+                    1,
+                    "lineage-1",
+                    b"{}".to_vec(),
+                )
+                .expect("submission"),
+            )
+            .await
+            .expect("submit through the facade");
+
+        let listed = facade
+            .list_runtime_delivery_authorities()
+            .await
+            .expect("facade forwards the cross-runtime delivery read");
+        assert_eq!(listed.len(), 1, "one runtime holds a committed delivery");
+        assert_eq!(listed[0].0, runtime_id);
+        assert_eq!(
+            inbox
+                .pending_delivery_total()
+                .await
+                .expect("backlog census through the facade"),
+            1
+        );
+        assert_eq!(
+            inner
+                .list_runtime_delivery_authorities()
+                .await
+                .expect("inner census")
+                .len(),
+            1,
+            "the facade's answer is the inner store's answer"
+        );
     }
 }
