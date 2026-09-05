@@ -1144,6 +1144,9 @@ pub enum DeliveryErrorClass {
     ActorTerminated,
     /// The actor round trip exceeded the admission budget.
     AdmissionTimeout,
+    /// The member's per-member admission lane was full (retryable
+    /// backpressure, meerkat 0.8.34).
+    AdmissionBacklogFull,
     /// Any other pre-admission failure.
     AdmissionFailed,
     /// A post-admission failure (the turn ran).

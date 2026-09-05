@@ -76,7 +76,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `SessionBridge::member_durability` seam. The delivery classifier matches
   the typed `MobError::MemberReloadRequired` ahead of the 0.8.33 text
   fallback, maps the bounded submit's `ActorCommandTimedOut` to the
-  admission-timeout class, and the internal submit rides
+  admission-timeout class, maps the per-member lane backpressure
+  `MobError::MemberAdmissionBacklogFull` to the typed retryable
+  `BridgeError::AdmissionBacklogFull` / `IdentityRuntimeError::AdmissionBacklogFull`
+  (delivery error class `admission_backlog_full`; never repair, never
+  reload), and the internal submit rides
   `submit_work_with_mode_bounded` / `..._and_delivery_identity_bounded` under
   the same deadline the bridge already enforces, so an abandoned delivery is
   never executed later as a ghost turn.

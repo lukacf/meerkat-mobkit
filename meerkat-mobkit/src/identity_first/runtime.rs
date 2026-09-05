@@ -157,6 +157,9 @@ fn admission_phase_error(
         BridgeAdmissionError::ReloadRequired { reason, .. } => {
             IdentityRuntimeError::ReloadRequired { identity, reason }
         }
+        BridgeAdmissionError::AdmissionBacklogFull { depth, .. } => {
+            IdentityRuntimeError::AdmissionBacklogFull { identity, depth }
+        }
         other @ (BridgeAdmissionError::ResumeRejected { .. }
         | BridgeAdmissionError::ProviderAuthRejected { .. }
         | BridgeAdmissionError::ActorAdmissionTimeout { .. }) => {
@@ -195,6 +198,9 @@ fn ingress_phase_error(identity: &AgentIdentity, err: BridgeError) -> IdentityRu
         },
         BridgeError::ReloadRequired { reason, .. } => {
             IdentityRuntimeError::ReloadRequired { identity, reason }
+        }
+        BridgeError::AdmissionBacklogFull { depth, .. } => {
+            IdentityRuntimeError::AdmissionBacklogFull { identity, depth }
         }
         other => IdentityRuntimeError::Internal(format!("bridge deliver: {other}")),
     }
@@ -286,6 +292,14 @@ pub enum IdentityRuntimeError {
     ReloadRequired {
         identity: AgentIdentity,
         reason: String,
+    },
+    /// Refused BEFORE admission: the member's per-member admission lane is
+    /// full (meerkat 0.8.34 `MemberAdmissionBacklogFull`). Per-member
+    /// backpressure, not a loop or durability verdict: RETRYABLE once the
+    /// lane drains. Nothing was delivered.
+    AdmissionBacklogFull {
+        identity: AgentIdentity,
+        depth: usize,
     },
     /// PHASE 3 of 4. The work WAS admitted and its turn reached a FAILED
     /// terminal.
@@ -448,6 +462,11 @@ impl std::fmt::Display for IdentityRuntimeError {
                  registration-authorized cold reload and one automatic reload attempt did not \
                  clear it; nothing was delivered; run mobkit/reload_member (non-destructive), \
                  never respawn_member: {reason}"
+            ),
+            Self::AdmissionBacklogFull { identity, depth } => write!(
+                f,
+                "send to {identity} refused: the member's admission lane is full ({depth} \
+                 deliveries parked); nothing was delivered; retryable once the lane drains"
             ),
             Self::CompletionFailed { identity, detail } => write!(
                 f,
@@ -8962,6 +8981,9 @@ impl IdentityRuntime {
             IdentityRuntimeError::ReloadRequired { .. } => DeliveryErrorClass::ReloadRequired,
             IdentityRuntimeError::ActorLoopStalled { .. } => DeliveryErrorClass::ActorLoopStalled,
             IdentityRuntimeError::ActorTerminated { .. } => DeliveryErrorClass::ActorTerminated,
+            IdentityRuntimeError::AdmissionBacklogFull { .. } => {
+                DeliveryErrorClass::AdmissionBacklogFull
+            }
             IdentityRuntimeError::CompletionFailed { .. }
             | IdentityRuntimeError::PostAdmissionResolutionFailed { .. }
             | IdentityRuntimeError::PostAdmissionSuperseded { .. } => {

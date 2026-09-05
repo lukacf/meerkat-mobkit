@@ -422,7 +422,7 @@ Result (`MemberHealthReport`):
 | `bootstrap_state` | `string?` | `dormant`, `warming`, `active`, `broken` when the bootstrap roster tracks the identity |
 | `materialization_in_flight` | `bool` | True while a materialization is running |
 | `session_id`, `generation` | `string?`, `integer?` | Current continuity binding |
-| `last_delivery_error` | `object?` | `{class, detail, at_unix_ms}`; `class` is `reload_required`, `actor_loop_stalled`, `actor_terminated`, `admission_timeout`, `admission_failed`, or `completion`; cleared by the next successful delivery |
+| `last_delivery_error` | `object?` | `{class, detail, at_unix_ms}`; `class` is `reload_required`, `actor_loop_stalled`, `actor_terminated`, `admission_timeout`, `admission_backlog_full` (retryable per-member backpressure), `admission_failed`, or `completion`; cleared by the next successful delivery |
 | `actor_loop` | `object` | The shared probe verdict `{state: "live" \| "stalled" \| "terminated" \| "unobserved", stall_id?, stalled_for_secs?, detail?}` |
 | `open_stall_id` | `integer?` | The open `actor_loop_stalled` correlation id while a stall is open |
 | `durability` | `"ready" \| {reload_required: {operation, reason}}` | meerkat's durability verdict for the live registration (`MeerkatMachine::durability_reload_required`); absent when the gateway's session bridge has no runtime adapter to ask |

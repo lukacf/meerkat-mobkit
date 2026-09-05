@@ -113,6 +113,19 @@ fn classify_submit_mob_error(
                 reason,
             }
         }
+        // meerkat 0.8.34: per-member single-flight lane is full. Retryable
+        // backpressure for this one member; it says nothing about the loop.
+        meerkat_mob::MobError::MemberAdmissionBacklogFull { member_id, depth } => {
+            tracing::warn!(
+                identity = %member_id,
+                depth,
+                "delivery refused: the member's admission lane is full; retry once it drains"
+            );
+            BridgeError::AdmissionBacklogFull {
+                identity: member_id,
+                depth,
+            }
+        }
         // meerkat 0.8.34: the bounded submit variants refuse (or skip) the
         // command at the caller deadline instead of leaving a ghost turn in
         // the actor queue. Same containment class as the client-side budget.
@@ -426,6 +439,17 @@ pub enum BridgeError {
         /// meerkat's reason text, verbatim.
         reason: String,
     },
+    /// meerkat 0.8.34 refused the delivery before dispatch because this
+    /// member's per-member admission lane already holds its maximum number of
+    /// parked deliveries (`MEMBER_ADMISSION_LANE_CAPACITY`). Backpressure for
+    /// exactly one member, never a verdict on the mob or the loop: RETRYABLE
+    /// once the lane drains. Never repair (the member is healthy, just busy),
+    /// never reload, never `Mob(String)`.
+    AdmissionBacklogFull {
+        identity: MobAgentIdentity,
+        /// Deliveries already parked behind the member's in-flight admission.
+        depth: usize,
+    },
     /// The work WAS admitted and its turn reached a FAILED terminal.
     ///
     /// Distinct from [`Self::Mob`] on purpose: this names an outcome, not an
@@ -535,6 +559,13 @@ impl std::fmt::Display for BridgeError {
                  registration requires a registration-authorized cold reload \
                  (mobkit/reload_member; non-destructive, same session and generation): {reason}"
             ),
+            Self::AdmissionBacklogFull { identity, depth } => write!(
+                f,
+                "session bridge delivery to member {identity} refused: the member's admission \
+                 lane is full ({depth} deliveries parked behind its in-flight admission); \
+                 nothing was queued; retry once the lane drains (this is per-member \
+                 backpressure, not a stalled loop)"
+            ),
         }
     }
 }
@@ -594,6 +625,12 @@ pub enum BridgeAdmissionError {
     ReloadRequired {
         identity: MobAgentIdentity,
         reason: String,
+    },
+    /// Refused before admission: the member's admission lane is full
+    /// (retryable per-member backpressure).
+    AdmissionBacklogFull {
+        identity: MobAgentIdentity,
+        depth: usize,
     },
     /// A legacy bridge path produced a post-admission error before a receipt
     /// existed. This is an implementation invariant failure, not a terminal
@@ -663,6 +700,12 @@ impl std::fmt::Display for BridgeAdmissionError {
                  member's runtime registration requires a registration-authorized cold reload \
                  (mobkit/reload_member): {reason}"
             ),
+            Self::AdmissionBacklogFull { identity, depth } => write!(
+                f,
+                "session bridge delivery to member {identity} refused before admission: the \
+                 member's admission lane is full ({depth} parked); nothing was queued; retry \
+                 once the lane drains"
+            ),
             Self::InvariantViolation(msg) => {
                 write!(f, "session bridge admission invariant violated: {msg}")
             }
@@ -713,6 +756,9 @@ impl From<BridgeError> for BridgeAdmissionError {
             },
             BridgeError::ReloadRequired { identity, reason } => {
                 Self::ReloadRequired { identity, reason }
+            }
+            BridgeError::AdmissionBacklogFull { identity, depth } => {
+                Self::AdmissionBacklogFull { identity, depth }
             }
             BridgeError::CompletionFailed(detail) => Self::InvariantViolation(format!(
                 "completion failure escaped before an admitted-turn receipt existed: {detail}"
@@ -772,6 +818,9 @@ impl From<BridgeAdmissionError> for BridgeError {
             },
             BridgeAdmissionError::ReloadRequired { identity, reason } => {
                 Self::ReloadRequired { identity, reason }
+            }
+            BridgeAdmissionError::AdmissionBacklogFull { identity, depth } => {
+                Self::AdmissionBacklogFull { identity, depth }
             }
             BridgeAdmissionError::InvariantViolation(detail) => Self::Mob(detail),
         }
@@ -5153,6 +5202,9 @@ impl MobSessionBridge {
             // never repair (destructive, cannot clear the degradation), never
             // `Mob(String)`.
             Err(err @ BridgeError::ReloadRequired { .. }) => return Err(err.into()),
+            // Per-member backpressure: the member is healthy, its lane is full.
+            // Retryable by the caller; never repair, never reload.
+            Err(err @ BridgeError::AdmissionBacklogFull { .. }) => return Err(err.into()),
             Err(err) if is_repairable_bridge_delivery_error(&err.to_string()) => {
                 tracing::warn!(
                     runtime_id = %runtime_id,
@@ -7596,6 +7648,51 @@ mod tests {
             "{timed_out:?}"
         );
         assert!(!is_repairable_bridge_delivery_error(&timed_out.to_string()));
+    }
+
+    /// meerkat 0.8.34's per-member lane backpressure is typed and RETRYABLE:
+    /// never repair, never reload, never `Mob(String)`.
+    #[test]
+    fn member_admission_backlog_full_classifies_typed_and_retryable() {
+        let deadline = ActorAdmissionDeadline::new(Duration::from_mins(10));
+        let member = MobAgentIdentity::from("rt-review-singleton-0");
+        let classified = classify_submit_mob_error(
+            &member,
+            meerkat_mob::MobError::MemberAdmissionBacklogFull {
+                member_id: MobAgentIdentity::from("rt-review-singleton-0"),
+                depth: 256,
+            },
+            &deadline,
+        );
+        match &classified {
+            BridgeError::AdmissionBacklogFull { identity, depth } => {
+                assert_eq!(identity.as_str(), "rt-review-singleton-0");
+                assert_eq!(*depth, 256);
+            }
+            other => panic!("expected AdmissionBacklogFull, got {other:?}"),
+        }
+        let rendered = classified.to_string();
+        assert!(
+            rendered.contains("retry once the lane drains"),
+            "{rendered}"
+        );
+        assert!(
+            !is_repairable_bridge_delivery_error(&rendered),
+            "{rendered}"
+        );
+        assert!(
+            !is_reload_required_bridge_delivery_error(&rendered),
+            "{rendered}"
+        );
+        let admission = BridgeAdmissionError::from(classified);
+        assert!(matches!(
+            admission,
+            BridgeAdmissionError::AdmissionBacklogFull { depth: 256, .. }
+        ));
+        assert!(matches!(
+            BridgeError::from(admission),
+            BridgeError::AdmissionBacklogFull { depth: 256, .. }
+        ));
     }
 
     /// The mob primitive's outcome and the machine's durability verdict
