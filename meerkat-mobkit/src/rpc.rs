@@ -1953,8 +1953,10 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/ensure_member",
                 "mobkit/list_members",
                 "mobkit/get_member",
+                "mobkit/member_health",
                 "mobkit/retire_member",
                 "mobkit/respawn_member",
+                "mobkit/reload_member",
                 "mobkit/reconcile_edges",
                 "mobkit/rediscover",
                 "mobkit/mob_events/query",
@@ -3308,6 +3310,24 @@ async fn handle_unified_rpc_json_inner(
                 response_id,
                 &request.params,
             ))
+            .await
+        }
+        "mobkit/reload_member" => {
+            Box::pin(mob_methods::handle_reload_member(
+                runtime,
+                identity_ctx.map(|ctx| &ctx.runtime),
+                response_id,
+                &request.params,
+            ))
+            .await
+        }
+        "mobkit/member_health" => {
+            mob_methods::handle_member_health(
+                runtime,
+                identity_ctx.map(|ctx| &ctx.runtime),
+                response_id,
+                &request.params,
+            )
             .await
         }
         "mobkit/reconcile_edges" => mob_methods::handle_reconcile_edges(runtime, response_id).await,
@@ -10253,6 +10273,173 @@ comms = true
         assert!(
             super::rpc_live_only_fallback_allowed(&live_only, durable_identity),
             "genuine bare live-only identities retain compatibility fallback"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    /// `mobkit/member_health` answers from identity-plane reads and
+    /// `mobkit/reload_member` reloads NON-destructively: same session id, same
+    /// generation, never the destructive reset `respawn_member` performs.
+    #[tokio::test]
+    async fn reload_member_and_member_health_rpcs_use_identity_authority()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-reload-member-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(5))
+                .build(),
+        )
+        .await?;
+        let runtime_alias = "rt:review:reload:0";
+        let continuity_store = Arc::new(LocalContinuityStore::in_memory()?);
+        let identity_rt = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store,
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "rpc-reload-member-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let identity = AgentIdentity::parse("review:reload")?;
+        let session_id = meerkat_core::types::SessionId::new();
+        identity_rt
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                    placement: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse(runtime_alias)?,
+                    session_id: session_id.clone(),
+                    generation: ContinuityGeneration::new(3),
+                    checkpoint_version: CheckpointVersion::new(0),
+                }),
+                Some(LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(1),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+        let identity_ctx = IdentityFirstContext {
+            runtime: Arc::clone(&identity_rt),
+            roster_provider: Arc::new(EmptyRosterProvider),
+            topology_provider: None,
+            customizer: None,
+            agent_memory_provider: None,
+            mob_definition: None,
+            transcript_edit_service: None,
+            compaction_floors: None,
+        };
+        let call = |id: u64, method: &'static str, params: Value| {
+            let runtime = &runtime;
+            let identity_ctx = &identity_ctx;
+            async move {
+                let raw = handle_unified_rpc_json(
+                    runtime,
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": method,
+                        "params": params,
+                    })
+                    .to_string(),
+                    Duration::from_secs(5),
+                    None,
+                    Some(identity_ctx),
+                )
+                .await;
+                serde_json::from_str::<Value>(&raw)
+            }
+        };
+
+        let health = call(
+            1,
+            "mobkit/member_health",
+            json!({ "member_id": runtime_alias }),
+        )
+        .await?;
+        assert!(
+            health["error"].is_null(),
+            "member_health failed: {health:#?}"
+        );
+        assert_eq!(health["result"]["identity"], json!("review:reload"));
+        assert_eq!(health["result"]["state"], json!("active"));
+        assert_eq!(health["result"]["generation"], json!(3));
+        assert_eq!(health["result"]["materialization_in_flight"], json!(false));
+        assert!(
+            health["result"]["actor_loop"]["state"].is_string(),
+            "the probe verdict must be present: {health:#?}"
+        );
+        assert!(
+            health["result"].get("durability").is_none(),
+            "durability is absent until meerkat exposes it: {health:#?}"
+        );
+
+        let reload = call(
+            2,
+            "mobkit/reload_member",
+            json!({ "member_id": runtime_alias }),
+        )
+        .await?;
+        assert!(
+            reload["error"].is_null(),
+            "reload_member failed: {reload:#?}"
+        );
+        assert_eq!(reload["result"]["identity_first"], json!(true));
+        assert_eq!(reload["result"]["reloaded"], json!(true));
+        assert_eq!(reload["result"]["disposition"], json!("discarded"));
+        assert_eq!(
+            reload["result"]["session_id"],
+            json!(session_id.to_string()),
+            "a reload binds the SAME durable session"
+        );
+        assert_eq!(
+            reload["result"]["generation"],
+            json!(3),
+            "a reload never advances the continuity generation (respawn_member does)"
+        );
+        let status = identity_rt.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Active);
+        assert_eq!(status.session_id, Some(session_id));
+        assert_eq!(status.generation, Some(ContinuityGeneration::new(3)));
+
+        // A stale generated alias is rejected, exactly like the other member
+        // verbs.
+        let stale = call(
+            3,
+            "mobkit/reload_member",
+            json!({ "member_id": "rt:review:reload:9" }),
+        )
+        .await?;
+        assert_eq!(
+            stale["error"]["data"]["kind"],
+            json!("stale_identity_runtime_binding"),
+            "{stale:#?}"
         );
 
         let _ = runtime.mob_handle().stop().await;

@@ -137,6 +137,8 @@ from .types import (
     FrameRecord,
     LoopIterationRecord,
     LoopRecord,
+    MemberHealth,
+    MemberReloadResult,
     MemberSnapshot,
     MemoryIndexResult,
     MemoryQueryResult,

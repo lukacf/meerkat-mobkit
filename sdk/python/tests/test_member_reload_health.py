@@ -1,0 +1,124 @@
+"""Mock-RPC tests for the non-destructive reload verb and the member health read.
+
+`reload_member` is the repair for a durability-degraded member (meerkat's
+`RecoveryRepairBlocked`); it must hit `mobkit/reload_member`, never the
+destructive `mobkit/respawn_member`. `member_health` is the in-process read
+that answers while the mob actor loop is stalled.
+"""
+
+import pytest
+
+from meerkat_mobkit import MemberHealth, MemberReloadResult
+
+from .test_rpc_method_names import make_mock_mob_handle
+
+
+@pytest.mark.asyncio
+async def test_reload_member_rpc_name_and_typed_result():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/reload_member": {
+            "reloaded": True,
+            "disposition": "discarded",
+            "session_id": "sess-1",
+            "generation": 4,
+            "identity": "review:singleton",
+            "identity_first": True,
+        }
+    })
+    result = await handle.reload_member("review:singleton")
+    assert calls[0] == ("mobkit/reload_member", {"member_id": "review:singleton"})
+    assert isinstance(result, MemberReloadResult)
+    assert result.reloaded is True
+    assert result.disposition == "discarded"
+    assert result.session_id == "sess-1"
+    assert result.generation == 4
+    assert result.identity == "review:singleton"
+
+
+@pytest.mark.asyncio
+async def test_reload_member_never_calls_respawn():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/reload_member": {"reloaded": False, "disposition": "not_current"}
+    })
+    result = await handle.reload_member("review:singleton")
+    assert [method for method, _ in calls] == ["mobkit/reload_member"]
+    assert result.reloaded is False
+    assert result.disposition == "not_current"
+    assert result.session_id is None
+    assert result.generation is None
+
+
+@pytest.mark.asyncio
+async def test_reload_member_tolerates_unknown_disposition():
+    handle, _ = make_mock_mob_handle({
+        "mobkit/reload_member": {"reloaded": False, "disposition": "some_future_value"}
+    })
+    result = await handle.reload_member("x")
+    assert result.disposition == "some_future_value"
+
+
+@pytest.mark.asyncio
+async def test_member_health_rpc_name_and_typed_result():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/member_health": {
+            "identity": "review:singleton",
+            "member_id": "rt:review:singleton:4",
+            "state": "active",
+            "bootstrap_state": "active",
+            "materialization_in_flight": False,
+            "session_id": "sess-1",
+            "generation": 4,
+            "last_delivery_error": {
+                "class": "reload_required",
+                "detail": "Runtime recovery is repair-blocked",
+                "at_unix_ms": 1_700_000_000_000,
+            },
+            "actor_loop": {"state": "stalled", "stall_id": 7, "stalled_for_secs": 42},
+            "open_stall_id": 7,
+        }
+    })
+    health = await handle.member_health("review:singleton")
+    assert calls[0] == ("mobkit/member_health", {"member_id": "review:singleton"})
+    assert isinstance(health, MemberHealth)
+    assert health.identity == "review:singleton"
+    assert health.member_id == "rt:review:singleton:4"
+    assert health.state == "active"
+    assert health.bootstrap_state == "active"
+    assert health.materialization_in_flight is False
+    assert health.session_id == "sess-1"
+    assert health.generation == 4
+    assert health.last_delivery_error["class"] == "reload_required"
+    assert health.actor_loop["state"] == "stalled"
+    assert health.open_stall_id == 7
+    # Absent until the gateway can read meerkat's durability state.
+    assert health.durability is None
+
+
+@pytest.mark.asyncio
+async def test_member_health_carries_durability_when_present():
+    handle, _ = make_mock_mob_handle({
+        "mobkit/member_health": {
+            "identity": "review:singleton",
+            "state": "active",
+            "materialization_in_flight": False,
+            "actor_loop": {"state": "live"},
+            "durability": {
+                "reload_required": {"operation": "completed_boundary_commit", "reason": "HTTP 0"}
+            },
+        }
+    })
+    health = await handle.member_health("review:singleton")
+    assert health.durability == {
+        "reload_required": {"operation": "completed_boundary_commit", "reason": "HTTP 0"}
+    }
+    assert health.open_stall_id is None
+    assert health.last_delivery_error is None
+    assert health.actor_loop == {"state": "live"}
+
+
+@pytest.mark.asyncio
+async def test_member_health_degrades_on_missing_actor_loop():
+    handle, _ = make_mock_mob_handle({"mobkit/member_health": {"identity": "x", "state": "dormant"}})
+    health = await handle.member_health("x")
+    assert health.actor_loop == {"state": "unobserved"}
+    assert health.materialization_in_flight is False

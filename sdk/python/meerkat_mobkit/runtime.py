@@ -83,6 +83,8 @@ from .types import (
     GatingDecisionResult,
     GatingEvaluateResult,
     GatingPendingEntry,
+    MemberHealth,
+    MemberReloadResult,
     MemberSnapshot,
     MemoryIndexResult,
     MemoryQueryResult,
@@ -2148,8 +2150,36 @@ class MobHandle:
         await self._runtime._rpc("mobkit/retire_member", {"member_id": member_id})
 
     async def respawn_member(self, member_id: str) -> None:
-        """Respawn a member (replace with fresh instance)."""
+        """Respawn a member (replace with fresh instance).
+
+        On an identity-first gateway this is a DESTRUCTIVE continuity reset:
+        a fresh session under an advanced generation. To clear a
+        durability-degraded member without losing its transcript use
+        :meth:`reload_member`.
+        """
         await self._runtime._rpc("mobkit/respawn_member", {"member_id": member_id})
+
+    async def reload_member(self, member_id: str) -> MemberReloadResult:
+        """Non-destructive cold reload of an identity's live member.
+
+        Same identity, same durable session id, same continuity generation:
+        the live runtime registration is discarded and the same session is
+        re-materialized from durable truth. This is the repair for a member
+        whose sends fail with the reload-required class (meerkat's
+        ``RecoveryRepairBlocked``). Identity-first gateways only.
+        """
+        raw = await self._runtime._rpc("mobkit/reload_member", {"member_id": member_id})
+        return MemberReloadResult.from_dict(raw if isinstance(raw, dict) else {})
+
+    async def member_health(self, member_id: str) -> MemberHealth:
+        """Lifecycle and delivery health for one identity, read in-process.
+
+        Unlike :meth:`member_status` this never crosses the mob actor loop,
+        so it answers while the loop is stalled and reports the open
+        ``stall_id`` and the last delivery error class.
+        """
+        raw = await self._runtime._rpc("mobkit/member_health", {"member_id": member_id})
+        return MemberHealth.from_dict(raw if isinstance(raw, dict) else {})
 
     # -----------------------------------------------------------------
     # Routing — route management

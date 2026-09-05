@@ -9,6 +9,7 @@ pub(crate) mod identity_control_target;
 pub mod identity_first;
 
 pub mod access;
+pub mod actor_loop_health;
 pub mod auth;
 pub mod baseline;
 pub mod blob_store;
@@ -66,6 +67,9 @@ pub use access::{
     ACCESS_ACTIONS, AccessConfigError, AccessControlConfig, AccessController, AccessDecision,
     AccessEffect, AccessGroup, AccessPrincipal, AccessResource, AccessRule, AccessView,
     AgentResourceAttributes, evaluate_access, validate_access_config,
+};
+pub use actor_loop_health::{
+    ActorLoopHealth, ActorLoopHealthKind, ActorLoopHealthReport, ActorLoopHealthState,
 };
 pub use auth::{
     GATEWAY_PEER_KEY_FILE, GatewayPeerKeyError, GatewayPeerKeys, Jwk, JwksCache, JwksCacheConfig,

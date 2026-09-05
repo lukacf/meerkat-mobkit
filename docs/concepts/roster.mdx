@@ -118,7 +118,9 @@ All operations are available through the gateway's JSON-RPC interface.
 | `mobkit/ensure_member` | Gateway-profile dependent | Ensure a durable identity or an ephemeral worker as described below |
 | `mobkit/member_status` | `MobMemberSnapshot` | Inspect one member's deep execution and connectivity state |
 | `mobkit/retire_member` | Acceptance acknowledgement | Retire a member |
-| `mobkit/respawn_member` | Acceptance acknowledgement | Replace a member with a fresh runtime incarnation |
+| `mobkit/respawn_member` | Acceptance acknowledgement | Replace a member with a fresh runtime incarnation (identity-first: a destructive continuity reset) |
+| `mobkit/reload_member` | `{reloaded, disposition, session_id, generation}` | Non-destructive cold reload: same identity, same durable session, same generation (identity-first only) |
+| `mobkit/member_health` | `MemberHealthReport` | Lifecycle and delivery health from in-process reads; answers while the mob actor loop is stalled |
 
 ## `ensure_member` gateway profiles
 

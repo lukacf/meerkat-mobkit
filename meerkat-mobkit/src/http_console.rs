@@ -1457,6 +1457,7 @@ fn is_console_mutating_rpc_method(method: &str) -> bool {
             | "mobkit/ensure_member"
             | "mobkit/retire_member"
             | "mobkit/respawn_member"
+            | "mobkit/reload_member"
             | "mobkit/force_cancel_member"
             | "mobkit/cancel_flow"
             | "mobkit/collect_completed"
@@ -1769,6 +1770,10 @@ fn console_rpc_access_requirements(
         | "mobkit/force_cancel_member"
         | "mobkit/delete_identity" => one(ACTION_AGENT_RETIRE, target),
         "mobkit/respawn" | "mobkit/respawn_member" => one(ACTION_AGENT_RESPAWN, target),
+        // Non-destructive cold reload: strictly less than a respawn (same
+        // session, same generation), so the respawn grant covers it and no new
+        // action vocabulary is needed.
+        "mobkit/reload_member" => one(ACTION_AGENT_RESPAWN, target),
         "mobkit/reset" | "mobkit/reset_all" => one(ACTION_AGENT_RESET, target),
         "mobkit/ensure_member"
         | "mobkit/spawn_helper"
@@ -1807,6 +1812,7 @@ fn console_rpc_access_requirements(
         | "mobkit/storage/doctor" => one(ACTION_RUNTIME_ADMIN, None),
         "mobkit/get_member"
         | "mobkit/member_status"
+        | "mobkit/member_health"
         | "mobkit/identity/resolved_tools"
         | "mobkit/identity/routing_status"
         | "mobkit/inspect_identity"
@@ -5136,6 +5142,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 "mobkit/get_member",
                 "mobkit/find_members",
                 "mobkit/member_status",
+                "mobkit/member_health",
                 "mobkit/identity/resolved_tools",
                 "mobkit/identity/routing_status",
                 "mobkit/blob/get",
@@ -5221,6 +5228,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     "mobkit/ensure_member",
                     "mobkit/retire_member",
                     "mobkit/respawn_member",
+                    "mobkit/reload_member",
                     "mobkit/force_cancel_member",
                     "mobkit/cancel_flow",
                     "mobkit/collect_completed",
@@ -7539,6 +7547,138 @@ async fn handle_console_runtime_rpc_with_visibility(
                     response_value(response_id, Some(body), None)
                 }
                 Err(err) => internal_error(response_id, format!("respawn_member failed: {err}")),
+            }
+        }
+        "mobkit/reload_member" => {
+            let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "member_id required");
+            };
+            let member_id = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
+            if let Some(error) = stale_runtime_alias_json_rpc_error(
+                "reload_member",
+                identity_runtime.as_ref(),
+                &member_id,
+            )
+            .await
+            {
+                return response_value(response_id, None, Some(error));
+            }
+            // Non-destructive by construction: same identity, same durable
+            // session, same continuity generation. Only the identity plane
+            // can honour that (it owns the continuity record and the lifecycle
+            // lock); the worker plane's only "reload" is `respawn`, which is a
+            // destructive reset, so a non-identity member is refused rather
+            // than silently downgraded.
+            let Some(identity_runtime_ref) = identity_runtime.as_ref() else {
+                return internal_error(
+                    response_id,
+                    "reload_member requires identity-first runtime authority; the worker plane \
+                     has no non-destructive reload (respawn_member is a destructive reset)",
+                );
+            };
+            let Some(identity) = identity_runtime_ref
+                .identity_for_member_mutation(&member_id)
+                .await
+            else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32001,
+                        message: format!("unknown identity: {member_id}"),
+                        data: None,
+                    }),
+                );
+            };
+            let expected_alias = crate::member_comms_id::is_reserved_generated_alias(&member_id)
+                .then_some(member_id.as_str());
+            match identity_runtime_ref
+                .reload_member_alias_tracked(&identity, expected_alias)
+                .await
+            {
+                Ok(outcome) => {
+                    let mut body = serde_json::to_value(&outcome).unwrap_or(Value::Null);
+                    body["identity_first"] = Value::Bool(true);
+                    body["identity"] = Value::String(identity.to_string());
+                    response_value(response_id, Some(body), None)
+                }
+                Err(crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
+                    response_value(
+                        response_id,
+                        None,
+                        Some(JsonRpcError {
+                            code: -32001,
+                            message: format!("unknown identity: {member_id}"),
+                            data: None,
+                        }),
+                    )
+                }
+                Err(err) => internal_error(response_id, format!("reload_member (identity): {err}")),
+            }
+        }
+        "mobkit/member_health" => {
+            let Some(member_id) = request
+                .params
+                .get("member_id")
+                .or_else(|| request.params.get("identity"))
+                .and_then(Value::as_str)
+            else {
+                return invalid_params(response_id, "member_id required");
+            };
+            let member_id = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
+            if let Some(error) = stale_runtime_alias_json_rpc_error(
+                "member_health",
+                identity_runtime.as_ref(),
+                &member_id,
+            )
+            .await
+            {
+                return response_value(response_id, None, Some(error));
+            }
+            let Some(identity_runtime_ref) = identity_runtime.as_ref() else {
+                return internal_error(
+                    response_id,
+                    "member_health requires identity-first runtime authority",
+                );
+            };
+            let identity = match identity_runtime_ref
+                .identity_for_member_mutation(&member_id)
+                .await
+            {
+                Some(identity) => identity,
+                None => match crate::identity_first::AgentIdentity::parse(&member_id) {
+                    Ok(identity) => identity,
+                    Err(_) => {
+                        return response_value(
+                            response_id,
+                            None,
+                            Some(JsonRpcError {
+                                code: -32001,
+                                message: format!("unknown identity: {member_id}"),
+                                data: None,
+                            }),
+                        );
+                    }
+                },
+            };
+            match identity_runtime_ref.member_health(&identity).await {
+                Ok(report) => response_value(
+                    response_id,
+                    Some(serde_json::to_value(&report).unwrap_or(Value::Null)),
+                    None,
+                ),
+                Err(crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
+                    response_value(
+                        response_id,
+                        None,
+                        Some(JsonRpcError {
+                            code: -32001,
+                            message: format!("unknown identity: {member_id}"),
+                            data: None,
+                        }),
+                    )
+                }
+                Err(err) => internal_error(response_id, format!("member_health failed: {err}")),
             }
         }
         "mobkit/reconcile_edges" => {
@@ -13932,6 +14072,145 @@ comms = true
         );
     }
 
+    /// Happy path for the two OB3 operator verbs on the console plane:
+    /// `mobkit/member_health` answers from identity-plane reads (state,
+    /// generation, actor-loop verdict, no `durability` until meerkat exposes
+    /// it) for both the durable identity and its current runtime alias, and
+    /// `mobkit/reload_member` reloads NON-destructively (same session id, same
+    /// generation, `discarded`), leaving the identity Active. A worker-plane
+    /// alias with no identity is refused rather than downgraded to respawn.
+    #[tokio::test]
+    async fn console_member_health_and_reload_member_happy_path()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-member-health-reload").await?;
+        let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-member-health-reload".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let identity = AgentIdentity::parse("review:singleton")?;
+        let session_id = meerkat_core::types::SessionId::new();
+        identity_runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from("worker"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                    placement: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:review:singleton:2")?,
+                    session_id: session_id.clone(),
+                    generation: ContinuityGeneration::new(2),
+                    checkpoint_version: CheckpointVersion::new(0),
+                }),
+                Some(LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(7),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+        let call = |method: &str, params: Value| {
+            let runtime = &runtime;
+            let identity_runtime = identity_runtime.clone();
+            let request = rpc_request_with_params(method, params);
+            async move {
+                Box::pin(handle_console_runtime_rpc(
+                    runtime,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(identity_runtime),
+                    None,
+                    None,
+                    request,
+                    true,
+                ))
+                .await
+            }
+        };
+
+        for requested in ["review:singleton", "rt:review:singleton:2"] {
+            let response = call("mobkit/member_health", json!({ "member_id": requested })).await;
+            assert!(
+                response["error"].is_null(),
+                "member_health({requested}) failed: {response:#?}"
+            );
+            let result = &response["result"];
+            assert_eq!(result["identity"], json!("review:singleton"));
+            assert_eq!(result["member_id"], json!("rt:review:singleton:2"));
+            assert_eq!(result["state"], json!("active"));
+            assert_eq!(result["generation"], json!(2));
+            assert_eq!(result["session_id"], json!(session_id.to_string()));
+            assert_eq!(result["materialization_in_flight"], json!(false));
+            assert!(
+                result["actor_loop"]["state"].is_string(),
+                "the probe verdict must be present: {result:#?}"
+            );
+            assert!(
+                result.get("durability").is_none(),
+                "durability is absent until meerkat exposes it: {result:#?}"
+            );
+            assert!(result.get("last_delivery_error").is_none());
+        }
+
+        let response = call(
+            "mobkit/reload_member",
+            json!({ "member_id": "review:singleton" }),
+        )
+        .await;
+        assert!(
+            response["error"].is_null(),
+            "reload_member failed: {response:#?}"
+        );
+        assert_eq!(response["result"]["identity_first"], json!(true));
+        assert_eq!(response["result"]["identity"], json!("review:singleton"));
+        assert_eq!(response["result"]["reloaded"], json!(true));
+        assert_eq!(response["result"]["disposition"], json!("discarded"));
+        assert_eq!(
+            response["result"]["session_id"],
+            json!(session_id.to_string()),
+            "a reload binds the SAME durable session"
+        );
+        assert_eq!(
+            response["result"]["generation"],
+            json!(2),
+            "a reload never advances the continuity generation (respawn_member does)"
+        );
+        let status = identity_runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Active);
+        assert_eq!(status.session_id, Some(session_id));
+        assert_eq!(status.generation, Some(ContinuityGeneration::new(2)));
+
+        // A member the identity plane does not own has no non-destructive
+        // reload; it must be refused, never routed to the destructive respawn.
+        let response = call(
+            "mobkit/reload_member",
+            json!({ "member_id": "plain-worker" }),
+        )
+        .await;
+        assert_eq!(response["error"]["code"], json!(-32001), "{response:#?}");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn console_runtime_identity_reads_reject_stale_runtime_aliases()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -14091,9 +14370,11 @@ comms = true
         for method in [
             "mobkit/get_member",
             "mobkit/member_status",
+            "mobkit/member_health",
             "mobkit/identity/resolved_tools",
             "mobkit/retire_member",
             "mobkit/respawn_member",
+            "mobkit/reload_member",
             "mobkit/force_cancel_member",
         ] {
             let param_name = if method == "mobkit/identity/resolved_tools" {

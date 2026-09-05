@@ -37,6 +37,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`mobkit/reload_member`: a non-destructive cold reload verb.** A member
+  whose runtime registration is durability-degraded (meerkat's
+  `RecoveryRepairBlocked`, "registration-authorized cold reload is required")
+  had no repair short of `retire_member` then a send, and the tempting
+  `respawn_member` is a destructive continuity reset. The new verb discards
+  the live registration and re-materializes the SAME durable session under
+  the identity's lifecycle lock: same identity alias, same `session_id`, same
+  continuity generation (implemented on the meerkat 0.8.33 API as retire with
+  the memory harvest hooks skipped, an explicit `Retiring -> Dormant`
+  transition, and a resume of the recorded session, whose executor
+  registration is where meerkat mints the cold reload). Result:
+  `{reloaded, disposition: "discarded" | "not_degraded" | "not_current",
+  session_id, generation}`. Wired on the console plane (`POST /console/rpc`,
+  gated by `agent.respawn`), the SDK stdio surface, Python
+  `MobHandle.reload_member`, TypeScript `MobHandle.reloadMember`, and
+  `docs/api/rpc.mdx`. Broken/retiring/suspended identities and worker-plane
+  members are refused typed.
+- **`mobkit/member_health`: an in-process health read for one identity.**
+  Returns lifecycle state, whether a materialization is in flight, the last
+  delivery error class (`reload_required`, `actor_loop_stalled`,
+  `actor_terminated`, `admission_timeout`, `admission_failed`, `completion`),
+  the actor-loop probe verdict, and the open `stall_id`. Unlike
+  `member_status` it never crosses the mob actor loop, so it answers during
+  the very stall it reports. Shaped to carry a `durability: "ready" |
+  {reload_required: {operation, reason}}` field once meerkat exposes it
+  (0.8.34). Python `MobHandle.member_health`, TypeScript
+  `MobHandle.memberHealth`.
+- **`ErrorEvent::ActorLoopTerminated`** (`actor_loop_terminated`): the
+  actor-loop probe's round trip resolved with the actor's command or reply
+  channel CLOSED. Terminal: the loop is gone and the process must restart.
+  Mirrored into both SDK `ErrorCategory` sets.
+
 - **A gateway that exits now says why, and a panic leaves a log line.** Both
   gateway binaries ended their run loop in silence on every designed path
   (stdin EOF, SIGINT, SIGTERM, the SDK shutdown handshake) and had no panic
@@ -228,6 +260,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and its misdescribed "virtualized editor" scroll probe is gone (the panel is
   a plain `<pre>`).
 
+- **Deliveries no longer wait the whole 600 s admission budget behind a
+  stalled mob actor loop.** OB3 2026-09-04: one repair-blocked member's inline
+  work wedged meerkat-mob's single serialized command loop; the probe paged
+  `actor_loop_stalled`, and every console send still queued behind the wedged
+  command and was abandoned after exactly `MOBKIT_BRIDGE_ACTOR_ADMISSION_SECS`
+  (600 s), five times over fifty minutes. The probe now publishes its verdict
+  into a shared `ActorLoopHealth` slot that the session bridge's admission
+  path reads: while a stall is open every actor round trip fails fast with the
+  typed `BridgeError::ActorLoopStalled { stall_id, .. }` (surfaced as
+  `IdentityRuntimeError::ActorLoopStalled`), naming the open stall so the
+  refusal joins the paged incident, and a stall that opens while a round trip
+  is already parked cuts that wait the instant the probe pages. Deliveries
+  resume on the correlated `actor_loop_recovered`. Never `Mob(String)`, never
+  routed into member repair.
+- **A dead actor is no longer reported as `actor_loop_recovered`.** The probe
+  treated any completion of its parked round trip as "the loop drains", but a
+  fail-stopped actor closes its command channel, which resolves the parked
+  probe with `ActorCommandChannelClosed` (meerkat 0.8.33 launders it into
+  `MobError::Internal` text when the phase watch is not terminal). That
+  emitted a recovery for a mob that was gone while every later send failed
+  instantly. The probe now classifies both channel-closed forms as
+  termination: it emits `ErrorEvent::ActorLoopTerminated`, logs at ERROR
+  that the process must restart, marks the shared health terminated so
+  deliveries fail fast with `ActorTerminated`, and ends (nothing left to
+  watch).
+- **Repair-blocked deliveries are typed and reloaded, not repaired or
+  stringified.** meerkat's `RecoveryRepairBlocked` refusal reached the
+  identity runtime as a bare `Internal("bridge deliver: ...")` string and
+  could only be retried into the same wall. The bridge now classifies it at
+  the boundary as `BridgeError::ReloadRequired` (matching 0.8.33's stable
+  "Runtime recovery is repair-blocked" / "registration-authorized cold reload
+  is required" fragments; 0.8.34's typed `MobError::MemberReloadRequired`
+  slots in ahead of the text match), the identity runtime runs exactly ONE
+  automatic `reload_member` under the lifecycle lock and retries the delivery
+  once, and a second refusal (or a failed reload) surfaces as the typed
+  `IdentityRuntimeError::ReloadRequired` naming the operator path. It is
+  never routed to `repair_member_for_delivery` (a destructive retire that
+  cannot clear a durability degradation and destroys queued inputs). The
+  existing admission-timeout classification is unchanged.
 - **SDK-hosted roster callbacks now receive the roster context instead of
   `{}`.** An external SDK user reported, and the maintainer confirmed, that a
   Python or TypeScript `roster(context)` callback behind `rpc_gateway` could

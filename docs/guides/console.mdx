@@ -389,6 +389,12 @@ Primary RPC methods:
 - `mobkit/console/query_timeline` - timeline replay query
 - `mobkit/console/list_identities` and `mobkit/console/inspect_identity` - identity-first inspection
 - `mobkit/blob/upload` - multipart blob upload
+- `mobkit/reload_member` - non-destructive cold reload of one identity's live
+  member (same session, same generation); the repair for a member whose sends
+  fail with the reload-required class. Gated by the `agent.respawn` action.
+  `mobkit/member_health` is the matching read (`agent.view`): lifecycle
+  state, last delivery error class, and the actor-loop probe verdict with the
+  open `stall_id`, from in-process reads that answer during a stall.
 - `mobkit/retire`, `mobkit/respawn`, `mobkit/reset`, and `mobkit/reset_all` -
   operator lifecycle actions. `reset_all` resets every identity the identity
   runtime knows (generation advance, one `identity_reset` lifecycle frame

@@ -728,6 +728,85 @@ export function parseMemberSnapshot(raw: unknown): MemberSnapshot {
   };
 }
 
+// -- MemberReloadResult / MemberHealth --------------------------------------
+
+/**
+ * Result of `mobkit/reload_member` (non-destructive cold reload).
+ *
+ * `disposition` is `"discarded"` (the live registration was replaced by a
+ * re-materialization of the SAME durable session), `"not_degraded"` (a
+ * success no-op; only produced once meerkat exposes durability state) or
+ * `"not_current"` (nothing live to reload). `sessionId` and `generation` are
+ * the binding AFTER the reload; a reload never advances the generation.
+ * Tolerate future disposition strings.
+ */
+export interface MemberReloadResult {
+  readonly reloaded: boolean;
+  readonly disposition: string;
+  readonly sessionId: string | null;
+  readonly generation: number | null;
+  readonly identity: string | null;
+}
+
+export function parseMemberReloadResult(raw: unknown): MemberReloadResult {
+  const d = asRecord(raw);
+  return {
+    reloaded: Boolean(d.reloaded ?? false),
+    disposition: String(d.disposition ?? ""),
+    sessionId: typeof d.session_id === "string" ? d.session_id : null,
+    generation: typeof d.generation === "number" ? d.generation : null,
+    identity: typeof d.identity === "string" ? d.identity : null,
+  };
+}
+
+/**
+ * Result of `mobkit/member_health`: lifecycle and delivery health read
+ * in-process, so it answers while the mob actor loop is stalled.
+ *
+ * `actorLoop.state` is `"live" | "stalled" | "terminated" | "unobserved"`;
+ * `openStallId` is set while a stall is open. `durability` is `"ready"` or
+ * `{ reload_required: { operation, reason } }` once the gateway can observe
+ * it, and `null` before that.
+ */
+export interface MemberHealth {
+  readonly identity: string;
+  readonly memberId: string | null;
+  readonly state: string;
+  readonly bootstrapState: string | null;
+  readonly materializationInFlight: boolean;
+  readonly sessionId: string | null;
+  readonly generation: number | null;
+  readonly actorLoop: Readonly<Record<string, unknown>>;
+  readonly openStallId: number | null;
+  readonly lastDeliveryError: Readonly<Record<string, unknown>> | null;
+  readonly durability: unknown | null;
+}
+
+export function parseMemberHealth(raw: unknown): MemberHealth {
+  const d = asRecord(raw);
+  const actorLoop =
+    d.actor_loop !== null && typeof d.actor_loop === "object"
+      ? (d.actor_loop as Record<string, unknown>)
+      : { state: "unobserved" };
+  const lastError =
+    d.last_delivery_error !== null && typeof d.last_delivery_error === "object"
+      ? (d.last_delivery_error as Record<string, unknown>)
+      : null;
+  return {
+    identity: String(d.identity ?? ""),
+    memberId: typeof d.member_id === "string" ? d.member_id : null,
+    state: String(d.state ?? ""),
+    bootstrapState: typeof d.bootstrap_state === "string" ? d.bootstrap_state : null,
+    materializationInFlight: Boolean(d.materialization_in_flight ?? false),
+    sessionId: typeof d.session_id === "string" ? d.session_id : null,
+    generation: typeof d.generation === "number" ? d.generation : null,
+    actorLoop,
+    openStallId: typeof d.open_stall_id === "number" ? d.open_stall_id : null,
+    lastDeliveryError: lastError,
+    durability: d.durability === undefined ? null : d.durability,
+  };
+}
+
 // -- RuntimeRouteResult ---------------------------------------------------
 
 export interface RuntimeRouteResult {
@@ -2086,6 +2165,7 @@ export const ErrorCategory = {
   COMPACTION_PERSISTENCE_REJECTED: "compaction_persistence_rejected",
   ACTOR_LOOP_STALLED: "actor_loop_stalled",
   ACTOR_LOOP_RECOVERED: "actor_loop_recovered",
+  ACTOR_LOOP_TERMINATED: "actor_loop_terminated",
   HOST_LOOP_CRASH: "host_loop_crash",
   REDISCOVER_FAILURE: "rediscover_failure",
   EVENT_LOG_FLUSH_FAILURE: "event_log_flush_failure",
@@ -2159,6 +2239,17 @@ export function parseErrorEvent(raw: unknown): ErrorEvent {
       const stallId = Number(context.stall_id ?? 0);
       const stalledFor = Number(context.stalled_for_secs ?? 0);
       message = `stall ${stallId} resolved after ${stalledFor}s`;
+      break;
+    }
+    case ErrorCategory.ACTOR_LOOP_TERMINATED: {
+      const detail = String(context.detail ?? "");
+      const observed =
+        context.stall_id === undefined || context.stall_id === null
+          ? ""
+          : ` (observed on stall ${Number(context.stall_id)})`;
+      message =
+        `the mob actor loop is gone${observed}; this is NOT a recovery, ` +
+        `the process must restart: ${detail}`;
       break;
     }
     case ErrorCategory.HOST_LOOP_CRASH:
