@@ -159,17 +159,61 @@ fn classify_submit_mob_error(
     }
 }
 
+/// Type the reload-primitive `MobError` at the bridge boundary. `Refused`
+/// (store not healthy yet, retryable later) and `TimedOut` (bounded by
+/// meerkat's `MEMBER_RELOAD_TOTAL_TIMEOUT`, names the stage) keep their class;
+/// everything else keeps the text form.
+fn classify_reload_mob_error(
+    member_id: &MobAgentIdentity,
+    error: meerkat_mob::MobError,
+) -> BridgeError {
+    match error {
+        meerkat_mob::MobError::MemberReloadRefused { session_id, reason } => {
+            tracing::warn!(
+                identity = %member_id,
+                session_id = %session_id,
+                reason = %reason,
+                "member reload refused: the store is not healthy yet; registration retained; \
+                 retry later"
+            );
+            BridgeError::ReloadRefused {
+                identity: member_id.clone(),
+                session_id: session_id.to_string(),
+                reason,
+            }
+        }
+        meerkat_mob::MobError::MemberReloadTimedOut { session_id, stage } => {
+            tracing::error!(
+                identity = %member_id,
+                session_id = %session_id,
+                stage = %stage,
+                "member reload timed out (MEMBER_RELOAD_TOTAL_TIMEOUT); inspect before retrying"
+            );
+            BridgeError::ReloadTimedOut {
+                identity: member_id.clone(),
+                session_id: session_id.to_string(),
+                stage: stage.to_string(),
+            }
+        }
+        other => BridgeError::Mob(format!("reload_member_registration: {other}")),
+    }
+}
+
 /// The member's durability verdict as meerkat reports it.
 pub(crate) fn member_durability_from_machine(
     required: Option<meerkat_runtime::SessionDurabilityReloadRequired>,
 ) -> super::types::MemberDurability {
     match required {
         None => super::types::MemberDurability::Ready,
-        Some(required) => super::types::MemberDurability::ReloadRequired {
-            operation: required.operation,
-            reason: required.reason,
-        },
+        // `SessionDurabilityReloadRequired` is `#[non_exhaustive]`: read the
+        // named fields only, never destructure or construct it.
+        Some(required) => member_durability_degraded(required.operation, required.reason),
     }
+}
+
+/// The degraded verdict in identity-first vocabulary.
+fn member_durability_degraded(operation: String, reason: String) -> super::types::MemberDurability {
+    super::types::MemberDurability::ReloadRequired { operation, reason }
 }
 
 /// What the mob primitive did to a member's runtime registration, projected
@@ -450,6 +494,28 @@ pub enum BridgeError {
         /// Deliveries already parked behind the member's in-flight admission.
         depth: usize,
     },
+    /// meerkat 0.8.34 REFUSED a member registration reload because the durable
+    /// resume authority is still unreadable: the store is not healthy yet.
+    /// The degraded registration and live shell are retained and the next
+    /// send stays reload-required. RETRYABLE once the store is healthy; a
+    /// reload attempted while commits still fail would only re-degrade the
+    /// fresh registration, so the refusal is the correct answer.
+    ReloadRefused {
+        identity: MobAgentIdentity,
+        session_id: String,
+        /// meerkat's reason, verbatim (names the unreadable authority).
+        reason: String,
+    },
+    /// meerkat 0.8.34's member registration reload exceeded
+    /// `MEMBER_RELOAD_TOTAL_TIMEOUT` (45 s) at `stage`
+    /// (`durability_reload_discard`, `live_session_revival`, or
+    /// `runtime_readiness`). NOT retryable without inspection: the reload may
+    /// have partially progressed, and the stage says where to look.
+    ReloadTimedOut {
+        identity: MobAgentIdentity,
+        session_id: String,
+        stage: String,
+    },
     /// The work WAS admitted and its turn reached a FAILED terminal.
     ///
     /// Distinct from [`Self::Mob`] on purpose: this names an outcome, not an
@@ -566,6 +632,27 @@ impl std::fmt::Display for BridgeError {
                  nothing was queued; retry once the lane drains (this is per-member \
                  backpressure, not a stalled loop)"
             ),
+            Self::ReloadRefused {
+                identity,
+                session_id,
+                reason,
+            } => write!(
+                f,
+                "session bridge reload of member {identity} (session {session_id}) refused: the \
+                 store is not healthy, the durable resume authority is still unreadable; the \
+                 registration was retained unchanged; retry later once the store is healthy: \
+                 {reason}"
+            ),
+            Self::ReloadTimedOut {
+                identity,
+                session_id,
+                stage,
+            } => write!(
+                f,
+                "session bridge reload of member {identity} (session {session_id}) timed out at \
+                 stage `{stage}` (MEMBER_RELOAD_TOTAL_TIMEOUT); the reload may have partially \
+                 progressed; inspect the member before retrying"
+            ),
         }
     }
 }
@@ -631,6 +718,19 @@ pub enum BridgeAdmissionError {
     AdmissionBacklogFull {
         identity: MobAgentIdentity,
         depth: usize,
+    },
+    /// The automatic reload before admission was refused: store not healthy
+    /// yet (retryable later).
+    ReloadRefused {
+        identity: MobAgentIdentity,
+        session_id: String,
+        reason: String,
+    },
+    /// The automatic reload before admission timed out at `stage`.
+    ReloadTimedOut {
+        identity: MobAgentIdentity,
+        session_id: String,
+        stage: String,
     },
     /// A legacy bridge path produced a post-admission error before a receipt
     /// existed. This is an implementation invariant failure, not a terminal
@@ -706,6 +806,24 @@ impl std::fmt::Display for BridgeAdmissionError {
                  member's admission lane is full ({depth} parked); nothing was queued; retry \
                  once the lane drains"
             ),
+            Self::ReloadRefused {
+                identity,
+                session_id,
+                reason,
+            } => write!(
+                f,
+                "session bridge reload of member {identity} (session {session_id}) refused before \
+                 admission: store not healthy, reload refused, retry later: {reason}"
+            ),
+            Self::ReloadTimedOut {
+                identity,
+                session_id,
+                stage,
+            } => write!(
+                f,
+                "session bridge reload of member {identity} (session {session_id}) timed out \
+                 before admission at stage `{stage}`; inspect before retrying"
+            ),
             Self::InvariantViolation(msg) => {
                 write!(f, "session bridge admission invariant violated: {msg}")
             }
@@ -760,6 +878,24 @@ impl From<BridgeError> for BridgeAdmissionError {
             BridgeError::AdmissionBacklogFull { identity, depth } => {
                 Self::AdmissionBacklogFull { identity, depth }
             }
+            BridgeError::ReloadRefused {
+                identity,
+                session_id,
+                reason,
+            } => Self::ReloadRefused {
+                identity,
+                session_id,
+                reason,
+            },
+            BridgeError::ReloadTimedOut {
+                identity,
+                session_id,
+                stage,
+            } => Self::ReloadTimedOut {
+                identity,
+                session_id,
+                stage,
+            },
             BridgeError::CompletionFailed(detail) => Self::InvariantViolation(format!(
                 "completion failure escaped before an admitted-turn receipt existed: {detail}"
             )),
@@ -822,6 +958,24 @@ impl From<BridgeAdmissionError> for BridgeError {
             BridgeAdmissionError::AdmissionBacklogFull { identity, depth } => {
                 Self::AdmissionBacklogFull { identity, depth }
             }
+            BridgeAdmissionError::ReloadRefused {
+                identity,
+                session_id,
+                reason,
+            } => Self::ReloadRefused {
+                identity,
+                session_id,
+                reason,
+            },
+            BridgeAdmissionError::ReloadTimedOut {
+                identity,
+                session_id,
+                stage,
+            } => Self::ReloadTimedOut {
+                identity,
+                session_id,
+                stage,
+            },
             BridgeAdmissionError::InvariantViolation(detail) => Self::Mob(detail),
         }
     }
@@ -4269,7 +4423,7 @@ impl SessionBridge for MobSessionBridge {
                 self.handle.reload_member_registration(&mid),
             )
             .await?
-            .map_err(|error| BridgeError::Mob(format!("reload_member_registration: {error}")))?;
+            .map_err(|error| classify_reload_mob_error(&mid, error))?;
         Ok(Some(bridge_member_reload(outcome)))
     }
 
@@ -7650,6 +7804,67 @@ mod tests {
         assert!(!is_repairable_bridge_delivery_error(&timed_out.to_string()));
     }
 
+    /// meerkat 0.8.34's reload refusal (store not healthy yet) is typed and
+    /// tells the operator to retry later; the timeout names its stage and is
+    /// not retryable without inspection. Neither is ever `Mob(String)`.
+    #[test]
+    fn reload_refused_and_timed_out_classify_typed() {
+        let member = MobAgentIdentity::from("rt-review-singleton-0");
+        let session_id = meerkat_core::types::SessionId::new();
+        let refused = classify_reload_mob_error(
+            &member,
+            meerkat_mob::MobError::MemberReloadRefused {
+                session_id: session_id.clone(),
+                reason: "durable resume authority unreadable: continuity save: HTTP 0".into(),
+            },
+        );
+        match &refused {
+            BridgeError::ReloadRefused {
+                identity,
+                session_id: refused_session,
+                reason,
+            } => {
+                assert_eq!(identity.as_str(), "rt-review-singleton-0");
+                assert_eq!(refused_session, &session_id.to_string());
+                assert!(reason.contains("HTTP 0"), "{reason}");
+            }
+            other => panic!("expected ReloadRefused, got {other:?}"),
+        }
+        let rendered = refused.to_string();
+        assert!(
+            rendered.contains("store is not healthy") && rendered.contains("retry later"),
+            "{rendered}"
+        );
+        assert!(!is_repairable_bridge_delivery_error(&rendered));
+        assert!(matches!(
+            BridgeAdmissionError::from(refused),
+            BridgeAdmissionError::ReloadRefused { .. }
+        ));
+
+        let timed_out = classify_reload_mob_error(
+            &member,
+            meerkat_mob::MobError::MemberReloadTimedOut {
+                session_id,
+                stage: "live_session_revival",
+            },
+        );
+        match &timed_out {
+            BridgeError::ReloadTimedOut { stage, .. } => {
+                assert_eq!(stage, "live_session_revival");
+            }
+            other => panic!("expected ReloadTimedOut, got {other:?}"),
+        }
+        let rendered = timed_out.to_string();
+        assert!(
+            rendered.contains("live_session_revival") && rendered.contains("inspect"),
+            "{rendered}"
+        );
+        assert!(matches!(
+            BridgeError::from(BridgeAdmissionError::from(timed_out)),
+            BridgeError::ReloadTimedOut { .. }
+        ));
+    }
+
     /// meerkat 0.8.34's per-member lane backpressure is typed and RETRYABLE:
     /// never repair, never reload, never `Mob(String)`.
     #[test]
@@ -7700,11 +7915,15 @@ mod tests {
     #[test]
     fn mob_reload_outcome_and_durability_project_into_wire_vocabulary() {
         let session_id = meerkat_core::types::SessionId::new();
-        let reload = bridge_member_reload(meerkat_mob::MemberReloadOutcome {
-            disposition: meerkat_mob::MemberReloadDisposition::NotDegraded,
-            session_id: session_id.clone(),
-            generation: meerkat_mob::ids::Generation::INITIAL,
-        });
+        // `MemberReloadOutcome` is `#[non_exhaustive]` upstream, so a test
+        // builds it through its serde form rather than a struct literal.
+        let outcome: meerkat_mob::MemberReloadOutcome = serde_json::from_value(serde_json::json!({
+            "disposition": "not_degraded",
+            "session_id": session_id,
+            "generation": 0,
+        }))
+        .expect("MemberReloadOutcome wire form");
+        let reload = bridge_member_reload(outcome);
         assert_eq!(
             reload.disposition,
             crate::identity_first::MemberReloadDisposition::NotDegraded
@@ -7715,12 +7934,10 @@ mod tests {
             member_durability_from_machine(None),
             crate::identity_first::MemberDurability::Ready
         );
-        let degraded = member_durability_from_machine(Some(
-            meerkat_runtime::SessionDurabilityReloadRequired {
-                operation: "completed_boundary_commit".to_string(),
-                reason: "continuity save: HTTP 0".to_string(),
-            },
-        ));
+        let degraded = member_durability_degraded(
+            "completed_boundary_commit".to_string(),
+            "continuity save: HTTP 0".to_string(),
+        );
         assert_eq!(
             serde_json::to_value(&degraded).expect("serialize"),
             serde_json::json!({

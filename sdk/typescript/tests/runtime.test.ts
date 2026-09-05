@@ -1748,6 +1748,7 @@ describe("MobHandle.memberHealth()", () => {
     assert.equal(health.lastDeliveryError?.class, "reload_required");
     assert.equal(health.actorLoop.state, "stalled");
     assert.equal(health.openStallId, 7);
+    assert.equal(health.lastReload, null);
     // Absent until the gateway can read meerkat's durability state.
     assert.equal(health.durability, null);
   });

@@ -1499,6 +1499,8 @@ struct CountingBridge {
     reload_registration_calls: AtomicUsize,
     /// When set, the bridge can observe meerkat's durability verdict.
     durability: Mutex<Option<meerkat_mobkit::identity_first::MemberDurability>>,
+    /// When set, the reload primitive fails with this typed error instead.
+    reload_registration_error: Mutex<Option<BridgeError>>,
 }
 
 impl CountingBridge {
@@ -1515,6 +1517,10 @@ impl CountingBridge {
 
     fn set_durability(&self, durability: meerkat_mobkit::identity_first::MemberDurability) {
         *self.durability.lock().unwrap() = Some(durability);
+    }
+
+    fn fail_reload_registration(&self, error: BridgeError) {
+        *self.reload_registration_error.lock().unwrap() = Some(error);
     }
 
     async fn set_resume_delay(&self, delay: Duration) {
@@ -1763,6 +1769,11 @@ impl SessionBridge for CountingBridge {
         &self,
         _runtime_id: &AgentRuntimeId,
     ) -> Result<Option<meerkat_mobkit::identity_first::BridgeMemberReload>, BridgeError> {
+        if let Some(error) = self.reload_registration_error.lock().unwrap().take() {
+            self.reload_registration_calls
+                .fetch_add(1, Ordering::SeqCst);
+            return Err(error);
+        }
         let Some(disposition) = *self.reload_registration_disposition.lock().unwrap() else {
             return Ok(None);
         };
@@ -2803,6 +2814,134 @@ async fn reload_member_prefers_the_mob_primitive_when_the_bridge_exposes_it() {
     assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 1);
     assert_eq!(outcome.session_id, before.session_id);
     assert_eq!(outcome.generation, before.generation);
+}
+
+/// meerkat 0.8.34: a refused reload (store not healthy yet) surfaces typed as
+/// retry-later from the verb AND from the automatic delivery reload (never
+/// folded into a generic reload-required), retires nothing, and is visible in
+/// `member_health.last_reload` with meerkat's reason; a timeout names its stage.
+#[tokio::test]
+async fn reload_refused_and_timed_out_surface_typed_and_are_recorded() {
+    use meerkat_mobkit::identity_first::ReloadAttemptOutcome;
+    let (runtime, bridge) = make_registered_counting_runtime().await;
+    let id = make_identity("triage:main");
+    let before = runtime.status(&id).await.unwrap();
+    let session = before.session_id.clone().unwrap();
+    bridge.set_deliver_session_id(session.clone()).await;
+
+    // Verb: refused.
+    bridge.fail_reload_registration(BridgeError::ReloadRefused {
+        identity: meerkat_mob::ids::AgentIdentity::from("rt-triage-main-0"),
+        session_id: session.to_string(),
+        reason: "durable resume authority unreadable: continuity save: HTTP 0".to_string(),
+    });
+    let error = runtime
+        .reload_member(&id)
+        .await
+        .expect_err("refused reload must fail");
+    match &error {
+        IdentityRuntimeError::ReloadRefused {
+            identity,
+            session_id,
+            reason,
+        } => {
+            assert_eq!(identity, &id);
+            assert_eq!(session_id, &session.to_string());
+            assert!(reason.contains("HTTP 0"), "{reason}");
+        }
+        other => panic!("expected ReloadRefused, got {other:?}"),
+    }
+    assert!(
+        error.to_string().contains("retry later"),
+        "operator guidance must say retry later: {error}"
+    );
+    assert_eq!(
+        bridge.retire_calls.load(Ordering::SeqCst),
+        0,
+        "a refusal retires nothing"
+    );
+    let health = runtime.member_health(&id).await.unwrap();
+    let last_reload = health.last_reload.clone().expect("last reload recorded");
+    assert_eq!(last_reload.outcome, ReloadAttemptOutcome::Refused);
+    assert!(
+        last_reload
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("HTTP 0"),
+        "member_health must show the refusal reason: {last_reload:?}"
+    );
+    let wire = serde_json::to_value(&health).unwrap();
+    assert_eq!(wire["last_reload"]["outcome"], serde_json::json!("refused"));
+
+    // Automatic delivery reload: refused keeps its class, one attempt only.
+    bridge.reload_required_times(1);
+    bridge.fail_reload_registration(BridgeError::ReloadRefused {
+        identity: meerkat_mob::ids::AgentIdentity::from("rt-triage-main-0"),
+        session_id: session.to_string(),
+        reason: "still unreadable".to_string(),
+    });
+    let error = runtime
+        .send(&id, &make_content())
+        .await
+        .expect_err("refused");
+    assert!(
+        matches!(error, IdentityRuntimeError::ReloadRefused { .. }),
+        "{error:?}"
+    );
+    assert_eq!(
+        bridge.deliver_calls.load(Ordering::SeqCst),
+        1,
+        "no retry after a refusal"
+    );
+    assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 0);
+    let health = runtime.member_health(&id).await.unwrap();
+    assert_eq!(
+        health.last_delivery_error.expect("recorded").class,
+        meerkat_mobkit::identity_first::DeliveryErrorClass::ReloadRefused
+    );
+
+    // Verb: timed out names the stage.
+    bridge.fail_reload_registration(BridgeError::ReloadTimedOut {
+        identity: meerkat_mob::ids::AgentIdentity::from("rt-triage-main-0"),
+        session_id: session.to_string(),
+        stage: "runtime_readiness".to_string(),
+    });
+    let error = runtime
+        .reload_member(&id)
+        .await
+        .expect_err("timed out reload must fail");
+    match &error {
+        IdentityRuntimeError::ReloadTimedOut { stage, .. } => {
+            assert_eq!(stage, "runtime_readiness");
+        }
+        other => panic!("expected ReloadTimedOut, got {other:?}"),
+    }
+    let last_reload = runtime
+        .member_health(&id)
+        .await
+        .unwrap()
+        .last_reload
+        .unwrap();
+    assert_eq!(last_reload.outcome, ReloadAttemptOutcome::TimedOut);
+    assert_eq!(last_reload.detail.as_deref(), Some("runtime_readiness"));
+
+    // A successful primitive reload records its disposition.
+    bridge.expose_reload_registration(
+        meerkat_mobkit::identity_first::MemberReloadDisposition::NotDegraded,
+    );
+    runtime.reload_member(&id).await.expect("not degraded");
+    let last_reload = runtime
+        .member_health(&id)
+        .await
+        .unwrap()
+        .last_reload
+        .unwrap();
+    assert_eq!(last_reload.outcome, ReloadAttemptOutcome::NotDegraded);
+    assert_eq!(
+        runtime.status(&id).await.unwrap().state,
+        IdentityLifecycleState::Active
+    );
 }
 
 /// meerkat 0.8.34: `member_health` carries the machine's durability verdict

@@ -37,8 +37,8 @@ use super::types::{
     FencingToken, HostRejectedBuildPark, IdentityBootstrapEntry, IdentityBootstrapMode,
     IdentityBootstrapState, IdentityBootstrapStatus, IdentityLifecycleState, IdentityStatus,
     LeaseGrant, LeaseInfo, ManagedPeerEdge, MemberHealthReport, MemberReloadDisposition,
-    MemberReloadOutcome, NotAddressable, RosterContext, SendAdmission, SessionSnapshot,
-    TopologyContext,
+    MemberReloadOutcome, NotAddressable, ReloadAttemptOutcome, ReloadAttemptRecord, RosterContext,
+    SendAdmission, SessionSnapshot, TopologyContext,
 };
 use crate::actor_loop_health::{ActorLoopHealth, ActorLoopHealthKind, ActorLoopHealthReport};
 use crate::memory::records::{
@@ -160,6 +160,20 @@ fn admission_phase_error(
         BridgeAdmissionError::AdmissionBacklogFull { depth, .. } => {
             IdentityRuntimeError::AdmissionBacklogFull { identity, depth }
         }
+        BridgeAdmissionError::ReloadRefused {
+            session_id, reason, ..
+        } => IdentityRuntimeError::ReloadRefused {
+            identity,
+            session_id,
+            reason,
+        },
+        BridgeAdmissionError::ReloadTimedOut {
+            session_id, stage, ..
+        } => IdentityRuntimeError::ReloadTimedOut {
+            identity,
+            session_id,
+            stage,
+        },
         other @ (BridgeAdmissionError::ResumeRejected { .. }
         | BridgeAdmissionError::ProviderAuthRejected { .. }
         | BridgeAdmissionError::ActorAdmissionTimeout { .. }) => {
@@ -202,7 +216,46 @@ fn ingress_phase_error(identity: &AgentIdentity, err: BridgeError) -> IdentityRu
         BridgeError::AdmissionBacklogFull { depth, .. } => {
             IdentityRuntimeError::AdmissionBacklogFull { identity, depth }
         }
+        BridgeError::ReloadRefused {
+            session_id, reason, ..
+        } => IdentityRuntimeError::ReloadRefused {
+            identity,
+            session_id,
+            reason,
+        },
+        BridgeError::ReloadTimedOut {
+            session_id, stage, ..
+        } => IdentityRuntimeError::ReloadTimedOut {
+            identity,
+            session_id,
+            stage,
+        },
         other => IdentityRuntimeError::Internal(format!("bridge deliver: {other}")),
+    }
+}
+
+/// Map the bridge's reload-primitive error. `Refused` and `TimedOut` keep
+/// their class; everything else is an internal bridge failure.
+fn reload_phase_error(identity: &AgentIdentity, err: BridgeError) -> IdentityRuntimeError {
+    let identity = identity.clone();
+    match err {
+        BridgeError::ReloadRefused {
+            session_id, reason, ..
+        } => IdentityRuntimeError::ReloadRefused {
+            identity,
+            session_id,
+            reason,
+        },
+        BridgeError::ReloadTimedOut {
+            session_id, stage, ..
+        } => IdentityRuntimeError::ReloadTimedOut {
+            identity,
+            session_id,
+            stage,
+        },
+        other => {
+            IdentityRuntimeError::Internal(format!("bridge reload_member_registration: {other}"))
+        }
     }
 }
 
@@ -300,6 +353,23 @@ pub enum IdentityRuntimeError {
     AdmissionBacklogFull {
         identity: AgentIdentity,
         depth: usize,
+    },
+    /// meerkat refused the member reload because the durable resume authority
+    /// is still unreadable: the store is not healthy yet. The degraded
+    /// registration is retained and the next send stays reload-required.
+    /// RETRYABLE once the store is healthy; nothing was delivered.
+    ReloadRefused {
+        identity: AgentIdentity,
+        session_id: String,
+        reason: String,
+    },
+    /// meerkat's bounded member reload (`MEMBER_RELOAD_TOTAL_TIMEOUT`) timed
+    /// out at `stage`. NOT retryable without inspection: the reload may have
+    /// partially progressed. Nothing was delivered.
+    ReloadTimedOut {
+        identity: AgentIdentity,
+        session_id: String,
+        stage: String,
     },
     /// PHASE 3 of 4. The work WAS admitted and its turn reached a FAILED
     /// terminal.
@@ -467,6 +537,26 @@ impl std::fmt::Display for IdentityRuntimeError {
                 f,
                 "send to {identity} refused: the member's admission lane is full ({depth} \
                  deliveries parked); nothing was delivered; retryable once the lane drains"
+            ),
+            Self::ReloadRefused {
+                identity,
+                session_id,
+                reason,
+            } => write!(
+                f,
+                "reload of {identity} (session {session_id}) refused: store not healthy, reload \
+                 refused, retry later; the registration was retained and sends stay \
+                 reload-required until the store is healthy: {reason}"
+            ),
+            Self::ReloadTimedOut {
+                identity,
+                session_id,
+                stage,
+            } => write!(
+                f,
+                "reload of {identity} (session {session_id}) timed out at stage `{stage}` \
+                 (MEMBER_RELOAD_TOTAL_TIMEOUT); not retryable without inspection: the reload may \
+                 have partially progressed"
             ),
             Self::CompletionFailed { identity, detail } => write!(
                 f,
@@ -739,6 +829,8 @@ pub(crate) struct IdentityEntry {
     /// next successful delivery. Read by `mobkit/member_health` so an
     /// operator learns WHY sends fail without spending an admission budget.
     pub last_delivery_error: Option<DeliveryErrorRecord>,
+    /// The most recent reload attempt and how it ended (see `member_health`).
+    pub last_reload: Option<ReloadAttemptRecord>,
 }
 
 /// Tracks a held lease for an identity.
@@ -3472,6 +3564,7 @@ impl IdentityRuntime {
                 continuity_unrecoverable,
                 host_rejected_build_park,
                 last_delivery_error: None,
+                last_reload: None,
             };
             entries.insert(identity.clone(), entry);
         }
@@ -7833,7 +7926,15 @@ impl IdentityRuntime {
                                     && matches!(err, IdentityRuntimeError::ReloadRequired { .. })
                                 {
                                     reload_attempted = true;
-                                    self.reload_for_delivery_locked(identity, &err).await?;
+                                    if let Err(reload_error) =
+                                        self.reload_for_delivery_locked(identity, &err).await
+                                    {
+                                        // The reload's own typed verdict (refused,
+                                        // timed out, failed) is what the operator
+                                        // sees, so it is the recorded class too.
+                                        self.record_delivery_error(identity, &reload_error).await;
+                                        return Err(reload_error);
+                                    }
                                     token = self.ensure_active_lease(identity).await?;
                                     continue;
                                 }
@@ -7880,7 +7981,15 @@ impl IdentityRuntime {
                                     && matches!(err, IdentityRuntimeError::ReloadRequired { .. })
                                 {
                                     reload_attempted = true;
-                                    self.reload_for_delivery_locked(identity, &err).await?;
+                                    if let Err(reload_error) =
+                                        self.reload_for_delivery_locked(identity, &err).await
+                                    {
+                                        // The reload's own typed verdict (refused,
+                                        // timed out, failed) is what the operator
+                                        // sees, so it is the recorded class too.
+                                        self.record_delivery_error(identity, &reload_error).await;
+                                        return Err(reload_error);
+                                    }
                                     token = self.ensure_active_lease(identity).await?;
                                     continue;
                                 }
@@ -8741,14 +8850,17 @@ impl IdentityRuntime {
         // session on this runtime) and bridges without the primitive fall
         // through to the retire-then-rematerialize path below.
         if let Some(bridge) = self.bridge.as_ref()
-            && let Some(reload) = bridge
+            && let Some(reload) = match bridge
                 .reload_member_registration(&before.agent_runtime_id)
                 .await
-                .map_err(|error| {
-                    IdentityRuntimeError::Internal(format!(
-                        "bridge reload_member_registration: {error}"
-                    ))
-                })?
+            {
+                Ok(reload) => reload,
+                Err(error) => {
+                    let error = reload_phase_error(identity, error);
+                    self.record_reload_failure(identity, &error).await;
+                    return Err(error);
+                }
+            }
         {
             match reload.disposition {
                 MemberReloadDisposition::Discarded | MemberReloadDisposition::NotDegraded => {
@@ -8770,12 +8882,14 @@ impl IdentityRuntime {
                         "reload_member: meerkat member registration reload completed \
                          (non-destructive; continuity generation does not advance)"
                     );
-                    return Ok(MemberReloadOutcome {
+                    let outcome = MemberReloadOutcome {
                         reloaded: reload.disposition == MemberReloadDisposition::Discarded,
                         disposition: reload.disposition,
                         session_id: Some(before.session_id),
                         generation: Some(before.generation),
-                    });
+                    };
+                    self.record_reload_outcome(identity, &outcome).await;
+                    return Ok(outcome);
                 }
                 MemberReloadDisposition::NotCurrent => {
                     tracing::warn!(
@@ -8820,7 +8934,13 @@ impl IdentityRuntime {
             .await
             .map(|outcome| outcome.record);
         self.mark_bootstrap_materialization_finished(identity, &result, bound_generation);
-        let record = result?;
+        let record = match result {
+            Ok(record) => record,
+            Err(error) => {
+                self.record_reload_failure(identity, &error).await;
+                return Err(error);
+            }
+        };
         if record.session_id != before.session_id {
             tracing::warn!(
                 %identity,
@@ -8830,12 +8950,56 @@ impl IdentityRuntime {
                  durable snapshot typed-absent); the identity is bound to the new session"
             );
         }
-        Ok(MemberReloadOutcome {
+        let outcome = MemberReloadOutcome {
             reloaded: true,
             disposition: MemberReloadDisposition::Discarded,
             session_id: Some(record.session_id),
             generation: Some(record.generation),
-        })
+        };
+        self.record_reload_outcome(identity, &outcome).await;
+        Ok(outcome)
+    }
+
+    fn unix_ms_now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0)
+    }
+
+    async fn record_reload_outcome(&self, identity: &AgentIdentity, outcome: &MemberReloadOutcome) {
+        let record = ReloadAttemptRecord {
+            outcome: match outcome.disposition {
+                MemberReloadDisposition::Discarded => ReloadAttemptOutcome::Discarded,
+                MemberReloadDisposition::NotDegraded => ReloadAttemptOutcome::NotDegraded,
+                MemberReloadDisposition::NotCurrent => ReloadAttemptOutcome::NotCurrent,
+            },
+            detail: None,
+            at_unix_ms: Self::unix_ms_now(),
+        };
+        if let Some(entry) = self.entries.write().await.get_mut(identity) {
+            entry.last_reload = Some(record);
+        }
+    }
+
+    async fn record_reload_failure(&self, identity: &AgentIdentity, error: &IdentityRuntimeError) {
+        let (outcome, detail) = match error {
+            IdentityRuntimeError::ReloadRefused { reason, .. } => {
+                (ReloadAttemptOutcome::Refused, reason.clone())
+            }
+            IdentityRuntimeError::ReloadTimedOut { stage, .. } => {
+                (ReloadAttemptOutcome::TimedOut, stage.clone())
+            }
+            other => (ReloadAttemptOutcome::Failed, other.to_string()),
+        };
+        let record = ReloadAttemptRecord {
+            outcome,
+            detail: Some(detail),
+            at_unix_ms: Self::unix_ms_now(),
+        };
+        if let Some(entry) = self.entries.write().await.get_mut(identity) {
+            entry.last_reload = Some(record);
+        }
     }
 
     /// The delivery path's single automatic reload after a typed
@@ -8861,6 +9025,13 @@ impl IdentityRuntime {
                 );
                 Ok(())
             }
+            // The store is not healthy yet, or the bounded reload timed out:
+            // keep the class (retry-later vs inspect) instead of folding it
+            // into a generic reload-required failure.
+            Err(
+                typed @ (IdentityRuntimeError::ReloadRefused { .. }
+                | IdentityRuntimeError::ReloadTimedOut { .. }),
+            ) => Err(typed),
             Err(reload_error) => Err(IdentityRuntimeError::ReloadRequired {
                 identity: identity.clone(),
                 reason: format!("{refusal}; automatic reload_member failed: {reload_error}"),
@@ -8969,6 +9140,7 @@ impl IdentityRuntime {
                 .map(|record| record.session_id.clone()),
             generation: entry.continuity.as_ref().map(|record| record.generation),
             last_delivery_error: entry.last_delivery_error.clone(),
+            last_reload: entry.last_reload.clone(),
             actor_loop,
             open_stall_id,
             durability,
@@ -8984,6 +9156,8 @@ impl IdentityRuntime {
             IdentityRuntimeError::AdmissionBacklogFull { .. } => {
                 DeliveryErrorClass::AdmissionBacklogFull
             }
+            IdentityRuntimeError::ReloadRefused { .. } => DeliveryErrorClass::ReloadRefused,
+            IdentityRuntimeError::ReloadTimedOut { .. } => DeliveryErrorClass::ReloadTimedOut,
             IdentityRuntimeError::CompletionFailed { .. }
             | IdentityRuntimeError::PostAdmissionResolutionFailed { .. }
             | IdentityRuntimeError::PostAdmissionSuperseded { .. } => {

@@ -80,7 +80,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `MobError::MemberAdmissionBacklogFull` to the typed retryable
   `BridgeError::AdmissionBacklogFull` / `IdentityRuntimeError::AdmissionBacklogFull`
   (delivery error class `admission_backlog_full`; never repair, never
-  reload), and the internal submit rides
+  reload), types the reload primitive's `MemberReloadRefused` (store not
+  healthy yet: retryable `ReloadRefused`, "retry later") and
+  `MemberReloadTimedOut` (`ReloadTimedOut` naming the stage; inspect before
+  retrying) on the verb and the automatic delivery reload alike, records the
+  most recent reload attempt as `member_health.last_reload` (a refusal carries
+  meerkat's reason), and the internal submit rides
   `submit_work_with_mode_bounded` / `..._and_delivery_identity_bounded` under
   the same deadline the bridge already enforces, so an abandoned delivery is
   never executed later as a ghost turn.

@@ -400,7 +400,13 @@ Result:
 
 Broken, retiring, or suspended identities are refused (`-32603`, invalid
 state); they need the reconcile/repair paths. Worker-plane members are
-refused: the worker plane has no non-destructive reload.
+refused: the worker plane has no non-destructive reload. Two typed failures
+come from meerkat's reload primitive: a refusal ("store not healthy, reload
+refused, retry later": the durable resume authority is still unreadable, the
+registration is retained, and sends stay reload-required) and a timeout
+naming the stage it reached (`MEMBER_RELOAD_TOTAL_TIMEOUT`, 45 s; inspect the
+member before retrying). Both are visible afterwards in
+`mobkit/member_health.last_reload`.
 
 ### `mobkit/member_health`
 
@@ -422,7 +428,8 @@ Result (`MemberHealthReport`):
 | `bootstrap_state` | `string?` | `dormant`, `warming`, `active`, `broken` when the bootstrap roster tracks the identity |
 | `materialization_in_flight` | `bool` | True while a materialization is running |
 | `session_id`, `generation` | `string?`, `integer?` | Current continuity binding |
-| `last_delivery_error` | `object?` | `{class, detail, at_unix_ms}`; `class` is `reload_required`, `actor_loop_stalled`, `actor_terminated`, `admission_timeout`, `admission_backlog_full` (retryable per-member backpressure), `admission_failed`, or `completion`; cleared by the next successful delivery |
+| `last_delivery_error` | `object?` | `{class, detail, at_unix_ms}`; `class` is `reload_required`, `actor_loop_stalled`, `actor_terminated`, `admission_timeout`, `admission_backlog_full` (retryable per-member backpressure), `reload_refused` (store not healthy yet, retry later), `reload_timed_out` (inspect before retrying), `admission_failed`, or `completion`; cleared by the next successful delivery |
+| `last_reload` | `object?` | `{outcome, detail?, at_unix_ms}` for the most recent reload attempt (verb or automatic); `outcome` is `discarded`, `not_degraded`, `not_current`, `refused` (detail = meerkat's reason, the store is not healthy yet), `timed_out` (detail = stage: `durability_reload_discard`, `live_session_revival`, `runtime_readiness`) or `failed` |
 | `actor_loop` | `object` | The shared probe verdict `{state: "live" \| "stalled" \| "terminated" \| "unobserved", stall_id?, stalled_for_secs?, detail?}` |
 | `open_stall_id` | `integer?` | The open `actor_loop_stalled` correlation id while a stall is open |
 | `durability` | `"ready" \| {reload_required: {operation, reason}}` | meerkat's durability verdict for the live registration (`MeerkatMachine::durability_reload_required`); absent when the gateway's session bridge has no runtime adapter to ask |

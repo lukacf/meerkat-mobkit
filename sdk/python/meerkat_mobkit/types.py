@@ -864,12 +864,17 @@ class MemberHealth:
     last_delivery_error: dict[str, Any] | None
     durability: Any | None
     bootstrap_state: str | None = None
+    #: ``{"outcome": "discarded" | "not_degraded" | "not_current" | "refused" |
+    #: "timed_out" | "failed", "detail"?, "at_unix_ms"}`` for the most recent
+    #: reload attempt; ``refused`` carries meerkat's reason (store not healthy).
+    last_reload: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MemberHealth:
         generation = data.get("generation")
         actor_loop = data.get("actor_loop")
         last_error = data.get("last_delivery_error")
+        last_reload = data.get("last_reload")
         return cls(
             identity=str(data.get("identity", "")),
             member_id=(str(data["member_id"]) if data.get("member_id") is not None else None),
@@ -886,6 +891,7 @@ class MemberHealth:
             bootstrap_state=(
                 str(data["bootstrap_state"]) if data.get("bootstrap_state") is not None else None
             ),
+            last_reload=(dict(last_reload) if isinstance(last_reload, dict) else None),
         )
 
 

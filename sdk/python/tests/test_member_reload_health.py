@@ -92,6 +92,27 @@ async def test_member_health_rpc_name_and_typed_result():
     assert health.open_stall_id == 7
     # Absent until the gateway can read meerkat's durability state.
     assert health.durability is None
+    assert health.last_reload is None
+
+
+@pytest.mark.asyncio
+async def test_member_health_carries_last_reload():
+    handle, _ = make_mock_mob_handle({
+        "mobkit/member_health": {
+            "identity": "review:singleton",
+            "state": "active",
+            "materialization_in_flight": False,
+            "actor_loop": {"state": "live"},
+            "last_reload": {
+                "outcome": "refused",
+                "detail": "durable resume authority unreadable: HTTP 0",
+                "at_unix_ms": 1_700_000_000_000,
+            },
+        }
+    })
+    health = await handle.member_health("review:singleton")
+    assert health.last_reload["outcome"] == "refused"
+    assert "HTTP 0" in health.last_reload["detail"]
 
 
 @pytest.mark.asyncio
