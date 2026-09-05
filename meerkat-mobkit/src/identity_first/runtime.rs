@@ -8715,6 +8715,60 @@ impl IdentityRuntime {
             });
         };
 
+        // meerkat 0.8.34: the mob primitive quiesces, discards, and re-registers
+        // the executor for the SAME session off the actor loop, and can tell a
+        // healthy registration apart (`not_degraded`). Preferred when the
+        // bridge exposes it; `not_current` (no live registration for the
+        // session on this runtime) and bridges without the primitive fall
+        // through to the retire-then-rematerialize path below.
+        if let Some(bridge) = self.bridge.as_ref()
+            && let Some(reload) = bridge
+                .reload_member_registration(&before.agent_runtime_id)
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!(
+                        "bridge reload_member_registration: {error}"
+                    ))
+                })?
+        {
+            match reload.disposition {
+                MemberReloadDisposition::Discarded | MemberReloadDisposition::NotDegraded => {
+                    if reload.session_id != before.session_id {
+                        tracing::warn!(
+                            %identity,
+                            continuity_session = %before.session_id,
+                            registration_session = %reload.session_id,
+                            "reload_member: meerkat reloaded a registration whose session differs \
+                             from the identity's continuity binding"
+                        );
+                    }
+                    tracing::info!(
+                        %identity,
+                        session_id = %before.session_id,
+                        generation = before.generation.get(),
+                        disposition = ?reload.disposition,
+                        registration_generation = reload.registration_generation,
+                        "reload_member: meerkat member registration reload completed \
+                         (non-destructive; continuity generation does not advance)"
+                    );
+                    return Ok(MemberReloadOutcome {
+                        reloaded: reload.disposition == MemberReloadDisposition::Discarded,
+                        disposition: reload.disposition,
+                        session_id: Some(before.session_id),
+                        generation: Some(before.generation),
+                    });
+                }
+                MemberReloadDisposition::NotCurrent => {
+                    tracing::warn!(
+                        %identity,
+                        session_id = %before.session_id,
+                        "reload_member: meerkat has no current registration for the identity's \
+                         session; falling back to retire-then-rematerialize"
+                    );
+                }
+            }
+        }
+
         tracing::info!(
             %identity,
             session_id = %before.session_id,
@@ -8865,6 +8919,10 @@ impl IdentityRuntime {
         let entry = entries
             .get(identity)
             .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        let durability = match (self.bridge.as_ref(), entry.continuity.as_ref()) {
+            (Some(bridge), Some(record)) => bridge.member_durability(&record.session_id).await,
+            _ => None,
+        };
         let bootstrap_state = self
             .identity_bootstrap_status()
             .identities
@@ -8894,7 +8952,7 @@ impl IdentityRuntime {
             last_delivery_error: entry.last_delivery_error.clone(),
             actor_loop,
             open_stall_id,
-            durability: None,
+            durability,
             continuity_unrecoverable: entry.continuity_unrecoverable.clone(),
         })
     }

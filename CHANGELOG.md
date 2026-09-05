@@ -64,6 +64,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   {reload_required: {operation, reason}}` field once meerkat exposes it
   (0.8.34). Python `MobHandle.member_health`, TypeScript
   `MobHandle.memberHealth`.
+- **meerkat 0.8.34 wiring for the reload verb and member health.**
+  `mobkit/reload_member` now calls `MobHandle::reload_member_registration`
+  when the session bridge exposes it (`SessionBridge::reload_member_registration`,
+  default `Ok(None)`): meerkat quiesces, discards and re-registers the
+  executor for the same session off the actor loop and reports
+  `discarded` / `not_degraded` / `not_current`; `not_degraded` is a success
+  no-op and `not_current` falls back to the retire-then-rematerialize path.
+  `mobkit/member_health` carries `durability` from
+  `MeerkatMachine::durability_reload_required` through the new
+  `SessionBridge::member_durability` seam. The delivery classifier matches
+  the typed `MobError::MemberReloadRequired` ahead of the 0.8.33 text
+  fallback, maps the bounded submit's `ActorCommandTimedOut` to the
+  admission-timeout class, and the internal submit rides
+  `submit_work_with_mode_bounded` / `..._and_delivery_identity_bounded` under
+  the same deadline the bridge already enforces, so an abandoned delivery is
+  never executed later as a ghost turn.
 - **`ErrorEvent::ActorLoopTerminated`** (`actor_loop_terminated`): the
   actor-loop probe's round trip resolved with the actor's command or reply
   channel CLOSED. Terminal: the loop is gone and the process must restart.

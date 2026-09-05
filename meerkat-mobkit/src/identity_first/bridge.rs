@@ -101,15 +101,92 @@ fn is_reload_required_bridge_delivery_error(error: &str) -> bool {
 fn classify_submit_mob_error(
     member_id: &MobAgentIdentity,
     error: meerkat_mob::MobError,
+    deadline: &ActorAdmissionDeadline,
 ) -> BridgeError {
-    let rendered = error.to_string();
-    if is_reload_required_bridge_delivery_error(&rendered) {
-        return BridgeError::ReloadRequired {
-            identity: member_id.clone(),
-            reason: rendered,
-        };
+    match error {
+        // meerkat 0.8.34: the durability-degraded refusal is typed at the mob
+        // boundary. Matched BEFORE the text fallback so the reason text can
+        // change without losing the class.
+        meerkat_mob::MobError::MemberReloadRequired { member_id, reason } => {
+            BridgeError::ReloadRequired {
+                identity: member_id,
+                reason,
+            }
+        }
+        // meerkat 0.8.34: the bounded submit variants refuse (or skip) the
+        // command at the caller deadline instead of leaving a ghost turn in
+        // the actor queue. Same containment class as the client-side budget.
+        meerkat_mob::MobError::ActorCommandTimedOut {
+            command_kind,
+            stage,
+        } => {
+            tracing::warn!(
+                identity = %member_id,
+                command_kind,
+                stage,
+                "bounded actor command exceeded the delivery admission budget; the command was \
+                 NOT executed"
+            );
+            BridgeError::ActorAdmissionTimeout {
+                operation: "deliver.submit_work",
+                identity: member_id.clone(),
+                waited: deadline.started.elapsed(),
+            }
+        }
+        other => {
+            let rendered = other.to_string();
+            if is_reload_required_bridge_delivery_error(&rendered) {
+                return BridgeError::ReloadRequired {
+                    identity: member_id.clone(),
+                    reason: rendered,
+                };
+            }
+            BridgeError::Mob(rendered)
+        }
     }
-    BridgeError::Mob(rendered)
+}
+
+/// The member's durability verdict as meerkat reports it.
+pub(crate) fn member_durability_from_machine(
+    required: Option<meerkat_runtime::SessionDurabilityReloadRequired>,
+) -> super::types::MemberDurability {
+    match required {
+        None => super::types::MemberDurability::Ready,
+        Some(required) => super::types::MemberDurability::ReloadRequired {
+            operation: required.operation,
+            reason: required.reason,
+        },
+    }
+}
+
+/// What the mob primitive did to a member's runtime registration, projected
+/// into identity-first vocabulary. `session_id`/`registration_generation` are
+/// meerkat's registration-level values, reported for the operator log; the
+/// identity's continuity binding is authoritative and unchanged by a reload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeMemberReload {
+    pub disposition: super::types::MemberReloadDisposition,
+    pub session_id: meerkat_core::types::SessionId,
+    pub registration_generation: u64,
+}
+
+fn bridge_member_reload(outcome: meerkat_mob::MemberReloadOutcome) -> BridgeMemberReload {
+    let disposition = match outcome.disposition {
+        meerkat_mob::MemberReloadDisposition::Discarded => {
+            super::types::MemberReloadDisposition::Discarded
+        }
+        meerkat_mob::MemberReloadDisposition::NotDegraded => {
+            super::types::MemberReloadDisposition::NotDegraded
+        }
+        meerkat_mob::MemberReloadDisposition::NotCurrent => {
+            super::types::MemberReloadDisposition::NotCurrent
+        }
+    };
+    BridgeMemberReload {
+        disposition,
+        session_id: outcome.session_id,
+        registration_generation: outcome.generation.get(),
+    }
 }
 
 fn is_recoverable_bridge_respawn_cleanup_error(error: &str) -> bool {
@@ -1342,7 +1419,7 @@ async fn submit_internal_bridge_work(
                     ),
                 )
                 .await?
-                .map_err(|err| classify_submit_mob_error(member_id, err))?,
+                .map_err(|err| classify_submit_mob_error(member_id, err, deadline))?,
             None => deadline
                 .bound(
                     "deliver.start_work",
@@ -1356,7 +1433,7 @@ async fn submit_internal_bridge_work(
                     ),
                 )
                 .await?
-                .map_err(|err| classify_submit_mob_error(member_id, err))?,
+                .map_err(|err| classify_submit_mob_error(member_id, err, deadline))?,
         };
         // Hand the handle back UNAWAITED. The caller awaits it only after the
         // admission-retry decision is settled, so a turn that ran and then
@@ -1364,37 +1441,44 @@ async fn submit_internal_bridge_work(
         // resubmitted - which would run the member's turn twice.
         return Ok(Some(turn));
     }
+    // meerkat 0.8.34: the bounded variants reserve actor channel capacity
+    // under the SAME deadline `bound` enforces client-side, and a reply that
+    // misses it closes the reply channel so the actor skips the command
+    // instead of running it as a ghost turn once the loop drains.
+    let actor_deadline = deadline.deadline.into_std();
     match work.delivery_identity {
         Some(delivery_identity) => deadline
             .bound(
                 "deliver.submit_work",
                 member_id,
-                handle.submit_work_with_mode_and_delivery_identity(
+                handle.submit_work_with_mode_and_delivery_identity_bounded(
                     entry.agent_runtime_id.clone(),
                     entry.fence_token,
                     spec,
                     handling_mode,
                     delivery_identity.clone(),
+                    actor_deadline,
                 ),
             )
             .await?
             .map(|_| None)
-            .map_err(|err| classify_submit_mob_error(member_id, err)),
+            .map_err(|err| classify_submit_mob_error(member_id, err, deadline)),
         None => deadline
             .bound(
                 "deliver.submit_work",
                 member_id,
-                handle.submit_work_with_mode(
+                handle.submit_work_with_mode_bounded(
                     entry.agent_runtime_id.clone(),
                     entry.fence_token,
                     WorkRef::new(),
                     spec,
                     handling_mode,
+                    actor_deadline,
                 ),
             )
             .await?
             .map(|_| None)
-            .map_err(|err| classify_submit_mob_error(member_id, err)),
+            .map_err(|err| classify_submit_mob_error(member_id, err, deadline)),
     }
 }
 
@@ -1696,6 +1780,28 @@ pub trait SessionBridge: Send + Sync {
     /// fails admission round trips fast while a stall is open; bridges that do
     /// not touch the mob actor ignore it.
     fn observe_actor_loop_health(&self, _health: Arc<ActorLoopHealth>) {}
+
+    /// meerkat's non-destructive member registration reload
+    /// (`MobHandle::reload_member_registration`, 0.8.34). `Ok(None)` means
+    /// this bridge exposes no such primitive and the identity runtime falls
+    /// back to retire-then-rematerialize. The identity's continuity binding is
+    /// never touched by this call.
+    async fn reload_member_registration(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+    ) -> Result<Option<BridgeMemberReload>, BridgeError> {
+        Ok(None)
+    }
+
+    /// meerkat's durability verdict for the member's live registration
+    /// (`MeerkatMachine::durability_reload_required`, 0.8.34), or `None` when
+    /// this bridge cannot observe it.
+    async fn member_durability(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Option<super::types::MemberDurability> {
+        None
+    }
 
     /// Spawn a new mob member for a freshly-created identity.
     async fn create_session(
@@ -4099,6 +4205,33 @@ impl SessionBridge for MobSessionBridge {
             .actor_loop_health
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(health);
+    }
+
+    async fn reload_member_registration(
+        &self,
+        runtime_id: &AgentRuntimeId,
+    ) -> Result<Option<BridgeMemberReload>, BridgeError> {
+        let mid = self.member_id_for_runtime_id(runtime_id).await?;
+        let outcome = self
+            .admission_deadline()
+            .bound(
+                "reload.reload_member_registration",
+                &mid,
+                self.handle.reload_member_registration(&mid),
+            )
+            .await?
+            .map_err(|error| BridgeError::Mob(format!("reload_member_registration: {error}")))?;
+        Ok(Some(bridge_member_reload(outcome)))
+    }
+
+    async fn member_durability(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Option<super::types::MemberDurability> {
+        let machine = self.session_service.as_ref()?.runtime_adapter()?;
+        Some(member_durability_from_machine(
+            machine.durability_reload_required(session_id).await,
+        ))
     }
 
     async fn raw_member_alias_exists(&self, alias: &str) -> Result<bool, BridgeError> {
@@ -7389,9 +7522,11 @@ mod tests {
             !is_repairable_bridge_delivery_error(rendered),
             "repair-blocked must never route to repair_member_for_delivery"
         );
+        let deadline = ActorAdmissionDeadline::new(Duration::from_mins(10));
         let classified = classify_submit_mob_error(
             &member,
             meerkat_mob::MobError::Internal(rendered.to_string()),
+            &deadline,
         );
         match &classified {
             BridgeError::ReloadRequired { identity, reason } => {
@@ -7418,9 +7553,90 @@ mod tests {
         let other = classify_submit_mob_error(
             &member,
             meerkat_mob::MobError::Internal("missing event injector capability for member".into()),
+            &deadline,
         );
         assert!(matches!(other, BridgeError::Mob(_)), "{other:?}");
         assert!(is_repairable_bridge_delivery_error(&other.to_string()));
+    }
+
+    /// meerkat 0.8.34 types the durability-degraded refusal; it must classify
+    /// from the VARIANT (ahead of the text fallback) and carry meerkat's
+    /// member id and reason verbatim.
+    #[test]
+    fn typed_member_reload_required_classifies_ahead_of_text() {
+        let deadline = ActorAdmissionDeadline::new(Duration::from_mins(10));
+        let member = MobAgentIdentity::from("rt-review-singleton-0");
+        let classified = classify_submit_mob_error(
+            &member,
+            meerkat_mob::MobError::MemberReloadRequired {
+                member_id: MobAgentIdentity::from("rt-review-singleton-0"),
+                reason: "durable commit could not be reconciled".to_string(),
+            },
+            &deadline,
+        );
+        match classified {
+            BridgeError::ReloadRequired { identity, reason } => {
+                assert_eq!(identity.as_str(), "rt-review-singleton-0");
+                assert_eq!(reason, "durable commit could not be reconciled");
+            }
+            other => panic!("expected ReloadRequired, got {other:?}"),
+        }
+        // The bounded submit's own deadline refusal is the admission-timeout
+        // class: contained, never repairable, never reload-required.
+        let timed_out = classify_submit_mob_error(
+            &member,
+            meerkat_mob::MobError::ActorCommandTimedOut {
+                command_kind: "SubmitWork",
+                stage: "reply",
+            },
+            &deadline,
+        );
+        assert!(
+            matches!(timed_out, BridgeError::ActorAdmissionTimeout { .. }),
+            "{timed_out:?}"
+        );
+        assert!(!is_repairable_bridge_delivery_error(&timed_out.to_string()));
+    }
+
+    /// The mob primitive's outcome and the machine's durability verdict
+    /// project into the identity-first wire vocabulary without loss.
+    #[test]
+    fn mob_reload_outcome_and_durability_project_into_wire_vocabulary() {
+        let session_id = meerkat_core::types::SessionId::new();
+        let reload = bridge_member_reload(meerkat_mob::MemberReloadOutcome {
+            disposition: meerkat_mob::MemberReloadDisposition::NotDegraded,
+            session_id: session_id.clone(),
+            generation: meerkat_mob::ids::Generation::INITIAL,
+        });
+        assert_eq!(
+            reload.disposition,
+            crate::identity_first::MemberReloadDisposition::NotDegraded
+        );
+        assert_eq!(reload.session_id, session_id);
+
+        assert_eq!(
+            member_durability_from_machine(None),
+            crate::identity_first::MemberDurability::Ready
+        );
+        let degraded = member_durability_from_machine(Some(
+            meerkat_runtime::SessionDurabilityReloadRequired {
+                operation: "completed_boundary_commit".to_string(),
+                reason: "continuity save: HTTP 0".to_string(),
+            },
+        ));
+        assert_eq!(
+            serde_json::to_value(&degraded).expect("serialize"),
+            serde_json::json!({
+                "reload_required": {
+                    "operation": "completed_boundary_commit",
+                    "reason": "continuity save: HTTP 0"
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(crate::identity_first::MemberDurability::Ready).expect("ready"),
+            serde_json::json!("ready")
+        );
     }
 
     #[tokio::test]

@@ -24,10 +24,10 @@ pub use agent_memory::{
     MEMORY_TOOL_NAME, NewAgentMemory,
 };
 pub use bridge::{
-    BridgeAdmissionError, BridgeDelivery, BridgeError, BridgeTurnError, BridgeTurnReceipt,
-    CommittedBoundaryRecoverer, CommittedBoundaryRepair, CompactionFloorRegistry, MemberInspection,
-    MobSessionBridge, ResetSuccessorBinding, ResumeFallbackReason, ResumeRejectionKind,
-    ResumeSessionOutcome, SessionBridge,
+    BridgeAdmissionError, BridgeDelivery, BridgeError, BridgeMemberReload, BridgeTurnError,
+    BridgeTurnReceipt, CommittedBoundaryRecoverer, CommittedBoundaryRepair,
+    CompactionFloorRegistry, MemberInspection, MobSessionBridge, ResetSuccessorBinding,
+    ResumeFallbackReason, ResumeRejectionKind, ResumeSessionOutcome, SessionBridge,
 };
 pub use contracts::*;
 pub use gateway_bridges::{

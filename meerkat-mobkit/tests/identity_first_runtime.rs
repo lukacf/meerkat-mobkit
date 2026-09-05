@@ -1492,11 +1492,29 @@ struct CountingBridge {
     /// Refuse the next N deliveries with the typed reload-required class
     /// (meerkat's durability-degraded `RecoveryRepairBlocked`).
     reload_required_times: AtomicUsize,
+    /// When set, the bridge exposes meerkat 0.8.34's registration reload
+    /// primitive and answers it with this disposition.
+    reload_registration_disposition:
+        Mutex<Option<meerkat_mobkit::identity_first::MemberReloadDisposition>>,
+    reload_registration_calls: AtomicUsize,
+    /// When set, the bridge can observe meerkat's durability verdict.
+    durability: Mutex<Option<meerkat_mobkit::identity_first::MemberDurability>>,
 }
 
 impl CountingBridge {
     fn reload_required_times(&self, times: usize) {
         self.reload_required_times.store(times, Ordering::SeqCst);
+    }
+
+    fn expose_reload_registration(
+        &self,
+        disposition: meerkat_mobkit::identity_first::MemberReloadDisposition,
+    ) {
+        *self.reload_registration_disposition.lock().unwrap() = Some(disposition);
+    }
+
+    fn set_durability(&self, durability: meerkat_mobkit::identity_first::MemberDurability) {
+        *self.durability.lock().unwrap() = Some(durability);
     }
 
     async fn set_resume_delay(&self, delay: Duration) {
@@ -1739,6 +1757,34 @@ impl SessionBridge for CountingBridge {
                 session_id: session_id.clone(),
             },
         )
+    }
+
+    async fn reload_member_registration(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+    ) -> Result<Option<meerkat_mobkit::identity_first::BridgeMemberReload>, BridgeError> {
+        let Some(disposition) = *self.reload_registration_disposition.lock().unwrap() else {
+            return Ok(None);
+        };
+        self.reload_registration_calls
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(Some(meerkat_mobkit::identity_first::BridgeMemberReload {
+            disposition,
+            session_id: self
+                .deliver_session_id
+                .lock()
+                .await
+                .clone()
+                .unwrap_or_else(meerkat_core::types::SessionId::new),
+            registration_generation: 0,
+        }))
+    }
+
+    async fn member_durability(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Option<meerkat_mobkit::identity_first::MemberDurability> {
+        self.durability.lock().unwrap().clone()
     }
 
     async fn deliver_admitted(
@@ -2685,6 +2731,120 @@ async fn reload_member_verb_preserves_session_and_generation() {
         ),
         "{error:?}"
     );
+}
+
+/// meerkat 0.8.34: when the bridge exposes `reload_member_registration`, the
+/// verb and the automatic delivery reload use it instead of retiring the
+/// member; `not_degraded` is a success no-op and `not_current` falls back to
+/// retire-then-rematerialize.
+#[tokio::test]
+async fn reload_member_prefers_the_mob_primitive_when_the_bridge_exposes_it() {
+    use meerkat_mobkit::identity_first::MemberReloadDisposition;
+    let (runtime, bridge) = make_registered_counting_runtime().await;
+    let id = make_identity("triage:main");
+    let before = runtime.status(&id).await.unwrap();
+    // The fake bridge otherwise reports a fresh session id per delivery,
+    // which the runtime reads as a session rotation; pin it to the binding.
+    bridge
+        .set_deliver_session_id(before.session_id.clone().unwrap())
+        .await;
+
+    bridge.expose_reload_registration(MemberReloadDisposition::NotDegraded);
+    let outcome = runtime.reload_member(&id).await.expect("reload");
+    assert_eq!(outcome.disposition, MemberReloadDisposition::NotDegraded);
+    assert!(!outcome.reloaded, "not_degraded is a success no-op");
+    assert_eq!(outcome.session_id, before.session_id);
+    assert_eq!(outcome.generation, before.generation);
+    assert_eq!(bridge.reload_registration_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        bridge.retire_calls.load(Ordering::SeqCst),
+        0,
+        "the primitive replaces retire"
+    );
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 0);
+
+    bridge.expose_reload_registration(MemberReloadDisposition::Discarded);
+    let outcome = runtime.reload_member(&id).await.expect("reload");
+    assert_eq!(outcome.disposition, MemberReloadDisposition::Discarded);
+    assert!(outcome.reloaded);
+    assert_eq!(
+        outcome.session_id, before.session_id,
+        "same durable session"
+    );
+    assert_eq!(
+        outcome.generation, before.generation,
+        "generation must not advance"
+    );
+    assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        runtime.status(&id).await.unwrap().state,
+        IdentityLifecycleState::Active
+    );
+
+    // The automatic delivery reload rides the same primitive.
+    bridge.reload_required_times(1);
+    runtime
+        .send(&id, &make_content())
+        .await
+        .expect("retry after primitive reload");
+    assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(bridge.reload_registration_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 0);
+
+    // No current registration on the runtime: fall back to the 0.8.33 path.
+    bridge.expose_reload_registration(MemberReloadDisposition::NotCurrent);
+    let outcome = runtime.reload_member(&id).await.expect("fallback reload");
+    assert_eq!(outcome.disposition, MemberReloadDisposition::Discarded);
+    assert_eq!(
+        bridge.retire_calls.load(Ordering::SeqCst),
+        1,
+        "fallback retires once"
+    );
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(outcome.session_id, before.session_id);
+    assert_eq!(outcome.generation, before.generation);
+}
+
+/// meerkat 0.8.34: `member_health` carries the machine's durability verdict
+/// when the bridge can observe it, in the documented wire shape.
+#[tokio::test]
+async fn member_health_carries_durability_when_the_bridge_observes_it() {
+    use meerkat_mobkit::identity_first::MemberDurability;
+    let (runtime, bridge) = make_registered_counting_runtime().await;
+    let id = make_identity("triage:main");
+
+    assert!(
+        runtime
+            .member_health(&id)
+            .await
+            .unwrap()
+            .durability
+            .is_none()
+    );
+
+    bridge.set_durability(MemberDurability::Ready);
+    let report = runtime.member_health(&id).await.unwrap();
+    assert_eq!(report.durability, Some(MemberDurability::Ready));
+    assert_eq!(
+        serde_json::to_value(&report).unwrap()["durability"],
+        serde_json::json!("ready")
+    );
+
+    bridge.set_durability(MemberDurability::ReloadRequired {
+        operation: "completed_boundary_commit".to_string(),
+        reason: "continuity save: HTTP 0".to_string(),
+    });
+    let wire = serde_json::to_value(runtime.member_health(&id).await.unwrap()).unwrap();
+    assert_eq!(
+        wire["durability"],
+        serde_json::json!({
+            "reload_required": {
+                "operation": "completed_boundary_commit",
+                "reason": "continuity save: HTTP 0"
+            }
+        })
+    );
+    assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 0);
 }
 
 /// `member_health` is an in-process read: it reports the probe's open stall
