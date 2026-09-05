@@ -20,6 +20,7 @@
 //! This is MobKit's only scheduling authority. It owns durable definitions,
 //! occurrence claims, firing records, and target delivery.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -36,10 +37,10 @@ use meerkat::{
     Config, CreateScheduleRequest, FactoryAgentBuilder, HostRunnable, HostRunnableError,
     HostRunnableInvocation, HostRunnableName, HostRunnableOutcome, HostRunnableRegistry,
     HostRunnableTargetBinding, IntervalTriggerSpec, MobTargetBinding, Occurrence, OccurrenceFilter,
-    OccurrencePhase, PersistentSessionService, Schedule, ScheduleRunnableHost, ScheduleService,
-    ScheduleStore, ScheduleToolDispatcher, ScheduledMobAction, ScheduledSessionAction,
-    SessionAgentBuilder, SessionTargetBinding, SqliteScheduleStore, TargetBinding, TriggerSpec,
-    UpdateScheduleRequest,
+    OccurrencePhase, PersistentSessionService, Schedule, ScheduleFilter, SchedulePhase,
+    ScheduleRunnableHost, ScheduleService, ScheduleStore, ScheduleToolDispatcher,
+    ScheduledMobAction, ScheduledSessionAction, SessionAgentBuilder, SessionTargetBinding,
+    SqliteScheduleStore, TargetBinding, TriggerSpec, UpdateScheduleRequest,
 };
 use meerkat_core::service::SessionBuildOptions;
 use meerkat_mob::runtime::MobHandle;
@@ -1176,7 +1177,8 @@ pub fn spawn_schedule_host_with_identity_runtime<B: SessionAgentBuilder + 'stati
 pub struct ScheduleClaimWatchdogConfig {
     /// Delay between probes.
     pub poll_interval: Duration,
-    /// A pending occurrence due longer ago than this counts as stalled.
+    /// A pending occurrence under an active schedule due longer ago than this
+    /// counts as stalled.
     pub overdue_threshold: Duration,
     /// While unhealthy with an unchanged report, re-log every Nth poll.
     pub heartbeat_polls: u32,
@@ -1196,11 +1198,99 @@ impl Default for ScheduleClaimWatchdogConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScheduleFiringProbe {
     Healthy,
-    /// The pipeline is not delivering and here is why, as precisely as this
-    /// side of the wire can name it.
+    /// Active overdue work is not delivering.
     Stalled {
         report: String,
     },
+    /// Reads or parent attribution failed. This is neither a confirmed
+    /// active-work stall nor evidence of health.
+    Incomplete {
+        report: String,
+    },
+}
+
+impl ScheduleFiringProbe {
+    pub(crate) fn log_at_boot(&self, config: ScheduleClaimWatchdogConfig) {
+        match self {
+            Self::Healthy => tracing::info!("schedule firing pipeline healthy at boot"),
+            Self::Stalled { report } => tracing::warn!(
+                %report,
+                poll_interval_secs = config.poll_interval.as_secs(),
+                "schedule firing pipeline is not delivering at boot; the resident claim \
+                 watchdog re-probes on its cadence and escalates to ERROR if this persists \
+                 (a restart backlog clears on the first host ticks)"
+            ),
+            Self::Incomplete { report } => tracing::error!(
+                %report,
+                "schedule firing pipeline observation incomplete at boot"
+            ),
+        }
+    }
+}
+
+/// One read-only projection, rebuilt each probe. Only the schedule owner's
+/// typed phase attributes work; an absent parent is never a tombstone.
+#[derive(Default)]
+struct PendingScheduleAttribution<'a> {
+    active: Vec<&'a Occurrence>,
+    paused: usize,
+    deleted: usize,
+    unresolved: Vec<&'a Occurrence>,
+}
+
+impl<'a> PendingScheduleAttribution<'a> {
+    fn observe(
+        schedules: &[Schedule],
+        occurrences: &'a [Occurrence],
+        overdue_before: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        let phases: BTreeMap<_, _> = schedules
+            .iter()
+            .map(|schedule| (&schedule.schedule_id, schedule.phase))
+            .collect();
+        let mut attribution = Self::default();
+        for occurrence in occurrences {
+            // The store's due-before filter is inclusive; the watchdog's
+            // threshold promises strictly more than this much lateness.
+            if occurrence.phase != OccurrencePhase::Pending
+                || occurrence.due_at_utc >= overdue_before
+            {
+                continue;
+            }
+            match phases.get(&occurrence.schedule_id) {
+                Some(SchedulePhase::Active) => attribution.active.push(occurrence),
+                Some(SchedulePhase::Paused) => attribution.paused += 1,
+                Some(SchedulePhase::Deleted) => attribution.deleted += 1,
+                None => attribution.unresolved.push(occurrence),
+            }
+        }
+        attribution
+    }
+}
+
+impl std::fmt::Display for PendingScheduleAttribution<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "overdue pending attribution: active={}, paused={}, deleted={}, unresolved={}",
+            self.active.len(),
+            self.paused,
+            self.deleted,
+            self.unresolved.len(),
+        )?;
+        for occurrence in self.unresolved.iter().take(5) {
+            write!(
+                f,
+                "; occurrence {}: parent schedule {} missing from the authoritative \
+                 listing; attribution unresolved",
+                occurrence.occurrence_id, occurrence.schedule_id,
+            )?;
+        }
+        if self.unresolved.len() > 5 {
+            f.write_str("; further unresolved parent rows elided")?;
+        }
+        Ok(())
+    }
 }
 
 /// The store's own answer to "does any host currently hold this realm's
@@ -1341,44 +1431,65 @@ pub async fn probe_schedule_firing_pipeline(
     store_path: &Path,
     overdue_threshold: Duration,
 ) -> ScheduleFiringProbe {
+    let now = match schedule_service.store().get_store_time_utc().await {
+        Ok(now) => now,
+        Err(err) => {
+            return ScheduleFiringProbe::Incomplete {
+                report: format!("schedule store clock read failed: {err}; observation incomplete"),
+            };
+        }
+    };
+    probe_schedule_firing_pipeline_at(schedule_service, store_path, overdue_threshold, now).await
+}
+
+async fn probe_schedule_firing_pipeline_at(
+    schedule_service: &ScheduleService,
+    store_path: &Path,
+    overdue_threshold: Duration,
+    now: chrono::DateTime<chrono::Utc>,
+) -> ScheduleFiringProbe {
     // 1. One poisoned schedule row fails the whole all-or-nothing list. The
     // 0.8.11 driver tolerates it per-row (its own listing skips the row
     // typed), but the poisoned schedule itself can never fire and every
     // list-backed surface (tools, RPC, console) is blind until it is
     // repaired.
-    if let Err(err) = schedule_service.list().await {
-        let mut report = format!(
-            "schedule list is failing (one poisoned schedule row fails the whole read); \
+    // Include tombstones: list() hides Deleted parents, which would make
+    // their leftover pending rows indistinguishable from missing evidence.
+    let schedules = match schedule_service
+        .list_filtered(ScheduleFilter {
+            include_deleted: true,
+            ..ScheduleFilter::default()
+        })
+        .await
+    {
+        Ok(schedules) => schedules,
+        Err(err) => {
+            let mut report = format!(
+                "schedule list is failing (one poisoned schedule row fails the whole read); \
              the firing driver skips the row as a typed fault, so that schedule will \
-             never fire and list-backed surfaces are blind until it is repaired: {err}"
-        );
-        let poisoned = triage_poisoned_rows(
-            store_path,
-            "schedule_schedules",
-            "schedule_id",
-            "schedule_json",
-            |bytes| {
-                serde_json::from_slice::<Schedule>(bytes)
-                    .map(|_| ())
-                    .map_err(|e| e.to_string())
-            },
-        );
-        if !poisoned.is_empty() {
-            report.push_str(&format!("; poisoned rows: {}", poisoned.join("; ")));
+             never fire and list-backed surfaces are blind until it is repaired: {err}; \
+             parent attribution unresolved; observation incomplete"
+            );
+            let poisoned = triage_poisoned_rows(
+                store_path,
+                "schedule_schedules",
+                "schedule_id",
+                "schedule_json",
+                |bytes| {
+                    serde_json::from_slice::<Schedule>(bytes)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                },
+            );
+            if !poisoned.is_empty() {
+                report.push_str(&format!("; poisoned rows: {}", poisoned.join("; ")));
+            }
+            return ScheduleFiringProbe::Incomplete { report };
         }
-        return ScheduleFiringProbe::Stalled { report };
-    }
+    };
 
     // 2. The claim scan's poison surface: it deserializes every occurrence.
     let store = schedule_service.store();
-    let now = match store.get_store_time_utc().await {
-        Ok(now) => now,
-        Err(err) => {
-            return ScheduleFiringProbe::Stalled {
-                report: format!("schedule store clock read failed: {err}"),
-            };
-        }
-    };
     let overdue_before = now
         - chrono::Duration::from_std(overdue_threshold)
             .unwrap_or_else(|_| chrono::Duration::seconds(120));
@@ -1396,7 +1507,8 @@ pub async fn probe_schedule_firing_pipeline(
             let mut report = format!(
                 "occurrence scan is failing (one poisoned due-window occurrence row fails \
                  the whole read); the firing driver's claim skips the row as a typed \
-                 fault, so that occurrence will never fire until it is repaired: {err}"
+                 fault, so that occurrence will never fire until it is repaired: {err}; \
+                 overdue parent attribution unresolved; observation incomplete"
             );
             let poisoned = triage_poisoned_rows(
                 store_path,
@@ -1412,20 +1524,34 @@ pub async fn probe_schedule_firing_pipeline(
             if !poisoned.is_empty() {
                 report.push_str(&format!("; poisoned rows: {}", poisoned.join("; ")));
             }
-            return ScheduleFiringProbe::Stalled { report };
+            return ScheduleFiringProbe::Incomplete { report };
         }
     };
 
-    if pending_overdue.is_empty() {
-        return ScheduleFiringProbe::Healthy;
-    }
+    let attribution =
+        PendingScheduleAttribution::observe(&schedules, &pending_overdue, overdue_before);
+    tracing::debug!(
+        active = attribution.active.len(),
+        paused = attribution.paused,
+        deleted = attribution.deleted,
+        unresolved = attribution.unresolved.len(),
+        "schedule overdue pending parent attribution (paused/deleted work is intentionally non-runnable)"
+    );
+    let Some(oldest_due) = attribution.active.iter().map(|o| o.due_at_utc).min() else {
+        return if attribution.unresolved.is_empty() {
+            ScheduleFiringProbe::Healthy
+        } else {
+            ScheduleFiringProbe::Incomplete {
+                report: format!("{attribution}; observation incomplete"),
+            }
+        };
+    };
 
-    // 3. Reads are healthy but due work is not being claimed. Classify each
-    // overdue occurrence the way the claim scan would — a classify error on
-    // ANY row (even one belonging to another schedule) aborts the whole
-    // claim transaction upstream.
+    // 3. Only active-parent overdue work supports a claim-stall diagnosis.
+    // Paused/deleted rows remain untouched, and unresolved evidence remains
+    // in the report even when some active work can be attributed.
     let mut classify_errors = Vec::new();
-    for occurrence in &pending_overdue {
+    for occurrence in &attribution.active {
         if let Err(err) = occurrence.classify_due_action(now) {
             classify_errors.push(format!(
                 "occurrence {} (due {}): {err}",
@@ -1437,13 +1563,11 @@ pub async fn probe_schedule_firing_pipeline(
         }
     }
     let mut report = format!(
-        "{} pending occurrence(s) overdue by more than {}s and never claimed (oldest due {})",
-        pending_overdue.len(),
+        "{} active-parent pending occurrence(s) overdue by more than {}s and never claimed \
+         (oldest due {}); {attribution}",
+        attribution.active.len(),
         overdue_threshold.as_secs(),
-        pending_overdue
-            .first()
-            .map(|o| o.due_at_utc.to_rfc3339())
-            .unwrap_or_default(),
+        oldest_due.to_rfc3339(),
     );
     // Do not reconstruct a fact the store will tell you. Before 0.8.22 this
     // sentence could only INFER "the firing driver's claim loop is failing
@@ -1486,7 +1610,7 @@ pub async fn probe_schedule_firing_pipeline(
     }
     if classify_errors.is_empty() {
         report.push_str(
-            "; every overdue occurrence classifies cleanly, so the abort is in the claim/lease transaction or a row outside the overdue set",
+            "; every active-parent overdue occurrence classifies cleanly, so the abort is in the claim/lease transaction or a row outside the active overdue set",
         );
     } else {
         report.push_str(&format!(
@@ -1497,6 +1621,47 @@ pub async fn probe_schedule_firing_pipeline(
     ScheduleFiringProbe::Stalled { report }
 }
 
+#[derive(Default)]
+struct ScheduleClaimWatchdogState {
+    last_probe: Option<ScheduleFiringProbe>,
+    unhealthy_polls: u32,
+}
+
+impl ScheduleClaimWatchdogState {
+    fn observe(&mut self, probe: ScheduleFiringProbe, config: ScheduleClaimWatchdogConfig) {
+        if probe == ScheduleFiringProbe::Healthy {
+            match self.last_probe.take() {
+                Some(ScheduleFiringProbe::Stalled { .. }) => {
+                    tracing::info!("schedule firing pipeline recovered");
+                }
+                Some(ScheduleFiringProbe::Incomplete { .. }) => {
+                    tracing::info!("schedule firing pipeline observation recovered");
+                }
+                _ => {}
+            }
+            self.unhealthy_polls = 0;
+            return;
+        }
+        self.unhealthy_polls = self.unhealthy_polls.saturating_add(1);
+        let changed = self.last_probe.as_ref() != Some(&probe);
+        let heartbeat = config.heartbeat_polls > 0
+            && self.unhealthy_polls.is_multiple_of(config.heartbeat_polls);
+        match &probe {
+            ScheduleFiringProbe::Stalled { report } if changed => {
+                tracing::error!(%report, "schedule firing pipeline is stalled");
+            }
+            ScheduleFiringProbe::Stalled { report } if heartbeat => {
+                tracing::warn!(%report, "schedule firing pipeline is still stalled");
+            }
+            ScheduleFiringProbe::Incomplete { report } if changed || heartbeat => {
+                tracing::error!(%report, "schedule firing pipeline observation incomplete");
+            }
+            _ => {}
+        }
+        self.last_probe = Some(probe);
+    }
+}
+
 /// Watchdog for the silent-stall failure mode above: probes the firing
 /// pipeline and logs LOUDLY when due work is not being claimed, naming the
 /// poisoned row when one is identifiable. Purely read-only — it never claims
@@ -1504,42 +1669,24 @@ pub async fn probe_schedule_firing_pipeline(
 ///
 /// Logs an ERROR when the stall report first appears or changes, a WARN
 /// heartbeat every `heartbeat_polls` while it persists, and an INFO when the
-/// pipeline recovers.
+/// pipeline recovers. Incomplete observations retain their own ERROR diagnostic
+/// without asserting an active-work stall or recovery.
 pub fn spawn_schedule_claim_watchdog(
     schedule_service: ScheduleService,
     store_path: std::path::PathBuf,
     config: ScheduleClaimWatchdogConfig,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut last_report: Option<String> = None;
-        let mut unhealthy_polls: u32 = 0;
+        let mut state = ScheduleClaimWatchdogState::default();
         loop {
             tokio::time::sleep(config.poll_interval).await;
-            match probe_schedule_firing_pipeline(
+            let probe = probe_schedule_firing_pipeline(
                 &schedule_service,
                 &store_path,
                 config.overdue_threshold,
             )
-            .await
-            {
-                ScheduleFiringProbe::Healthy => {
-                    if last_report.take().is_some() {
-                        tracing::info!("schedule firing pipeline recovered");
-                    }
-                    unhealthy_polls = 0;
-                }
-                ScheduleFiringProbe::Stalled { report } => {
-                    unhealthy_polls += 1;
-                    if last_report.as_deref() != Some(report.as_str()) {
-                        tracing::error!(%report, "schedule firing pipeline is stalled");
-                    } else if config.heartbeat_polls > 0
-                        && unhealthy_polls.is_multiple_of(config.heartbeat_polls)
-                    {
-                        tracing::warn!(%report, "schedule firing pipeline is still stalled");
-                    }
-                    last_report = Some(report);
-                }
-            }
+            .await;
+            state.observe(probe, config);
         }
     })
 }
@@ -3653,6 +3800,594 @@ schedule = true
         );
     }
 
+    fn watchdog_time(value: &str) -> chrono::DateTime<chrono::Utc> {
+        value.parse().expect("fixed watchdog fixture time")
+    }
+
+    fn watchdog_calendar(hours: Vec<u32>, minute: u32) -> TriggerSpec {
+        use meerkat_schedule::{CalendarFieldSpec, CalendarTriggerSpec};
+        TriggerSpec::Calendar(CalendarTriggerSpec {
+            timezone: "UTC".to_string(),
+            minute: CalendarFieldSpec::Values(vec![minute]),
+            hour: CalendarFieldSpec::Values(hours),
+            day_of_month: CalendarFieldSpec::Any,
+            month: CalendarFieldSpec::Any,
+            day_of_week: CalendarFieldSpec::Any,
+            year: None,
+        })
+    }
+
+    /// Persist only owner-issued schedule/occurrence writes. Delaying the
+    /// planned occurrence writes until after a parent transition stages
+    /// historical leftover Pending rows, not scheduling execution policy.
+    async fn seed_watchdog_parent(
+        store: &dyn ScheduleStore,
+        trigger: TriggerSpec,
+        revision: u64,
+        phase: SchedulePhase,
+        at_utc: chrono::DateTime<chrono::Utc>,
+        dues: &[chrono::DateTime<chrono::Utc>],
+    ) -> Schedule {
+        use meerkat_schedule::{OccurrenceOrdinal, ScheduleLifecycleInput};
+        let write = Schedule::apply(
+            None,
+            ScheduleLifecycleInput::Create(CreateScheduleRequest {
+                name: Some("watchdog-parent-fixture".to_string()),
+                description: None,
+                trigger,
+                target: TargetBinding::host_runnable(HostRunnableTargetBinding {
+                    runnable: HostRunnableName::parse("watchdog.fixture").expect("runnable"),
+                    params: None,
+                }),
+                misfire_policy: meerkat::MisfirePolicy::default(),
+                overlap_policy: meerkat::OverlapPolicy::default(),
+                missing_target_policy: meerkat::MissingTargetPolicy::default(),
+                labels: BTreeMap::new(),
+                planning_horizon_days: None,
+                planning_horizon_occurrences: None,
+            }),
+        )
+        .expect("owner-issued schedule")
+        .into_authorized_write();
+        let mut schedule = store
+            .commit_schedule_write(write)
+            .await
+            .expect("persist schedule")
+            .into_parts()
+            .1;
+        while schedule.revision.0 < revision {
+            let request = UpdateScheduleRequest {
+                misfire_policy: Some(meerkat::MisfirePolicy::CatchUpWithin {
+                    window_seconds: 86400 + schedule.revision.0,
+                }),
+                ..UpdateScheduleRequest::default()
+            };
+            let write = Schedule::apply(
+                Some(schedule),
+                ScheduleLifecycleInput::Update { request, at_utc },
+            )
+            .expect("owner-issued revision")
+            .into_authorized_write();
+            schedule = store
+                .commit_schedule_mutation(write, Vec::new())
+                .await
+                .expect("persist revision")
+                .into_parts()
+                .0
+                .into_parts()
+                .1;
+        }
+        let pending: Vec<_> = dues
+            .iter()
+            .enumerate()
+            .map(|(ordinal, due)| {
+                Occurrence::planned_write_from_schedule(
+                    &schedule,
+                    OccurrenceOrdinal(ordinal as u64),
+                    *due,
+                )
+                .expect("owner-issued pending occurrence")
+            })
+            .collect();
+        let transition = match phase {
+            SchedulePhase::Active => None,
+            SchedulePhase::Paused => Some(ScheduleLifecycleInput::Pause { at_utc }),
+            SchedulePhase::Deleted => Some(ScheduleLifecycleInput::Delete { at_utc }),
+        };
+        if let Some(transition) = transition {
+            schedule = store
+                .commit_schedule_mutation(
+                    Schedule::apply(Some(schedule), transition)
+                        .expect("owner-issued parent phase")
+                        .into_authorized_write(),
+                    Vec::new(),
+                )
+                .await
+                .expect("persist parent phase")
+                .into_parts()
+                .0
+                .into_parts()
+                .1;
+        }
+        store
+            .commit_occurrence_writes(pending)
+            .await
+            .expect("persist historical pending rows");
+        assert_eq!(schedule.phase, phase);
+        schedule
+    }
+
+    #[derive(Clone, Default)]
+    struct WatchdogLogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for WatchdogLogCapture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log capture").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for WatchdogLogCapture {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    async fn capture_watchdog_probe_at(
+        service: &ScheduleService,
+        path: &Path,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> (ScheduleFiringProbe, String) {
+        use tracing::instrument::WithSubscriber;
+        let capture = WatchdogLogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let probe = async {
+            let config = ScheduleClaimWatchdogConfig::default();
+            let probe =
+                probe_schedule_firing_pipeline_at(service, path, config.overdue_threshold, now)
+                    .await;
+            probe.log_at_boot(config);
+            ScheduleClaimWatchdogState::default().observe(probe.clone(), config);
+            probe
+        }
+        .with_subscriber(subscriber)
+        .await;
+        let log =
+            String::from_utf8(capture.0.lock().expect("log capture").clone()).expect("UTF-8 logs");
+        (probe, log)
+    }
+
+    #[tokio::test]
+    async fn schedule_claim_watchdog_nine_paused_rows_are_not_a_stall() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(SCHEDULE_STORE_FILE);
+        let store = Arc::new(SqliteScheduleStore::open(&path).expect("store"));
+        let now = watchdog_time("2026-09-04T20:00:00Z");
+        let paused_at = watchdog_time("2026-08-30T22:06:00Z");
+        let a = seed_watchdog_parent(
+            store.as_ref(),
+            watchdog_calendar(vec![6, 18], 45),
+            4,
+            SchedulePhase::Paused,
+            paused_at,
+            &[
+                watchdog_time("2026-08-31T06:45:00Z"),
+                watchdog_time("2026-08-31T18:45:00Z"),
+            ],
+        )
+        .await;
+        let b = seed_watchdog_parent(
+            store.as_ref(),
+            watchdog_calendar(vec![4], 0),
+            5,
+            SchedulePhase::Paused,
+            paused_at,
+            &[watchdog_time("2026-09-01T04:00:00Z")],
+        )
+        .await;
+        let c = seed_watchdog_parent(
+            store.as_ref(),
+            TriggerSpec::Interval(IntervalTriggerSpec {
+                start_at_utc: watchdog_time("2026-08-20T06:00:00Z"),
+                every_seconds: 43200,
+                end_at_utc: Some(watchdog_time("2026-09-03T18:00:00Z")),
+            }),
+            2,
+            SchedulePhase::Paused,
+            watchdog_time("2026-09-01T05:21:00Z"),
+            &[
+                watchdog_time("2026-09-01T06:00:00Z"),
+                watchdog_time("2026-09-01T18:00:00Z"),
+                watchdog_time("2026-09-02T06:00:00Z"),
+                watchdog_time("2026-09-02T18:00:00Z"),
+                watchdog_time("2026-09-03T06:00:00Z"),
+                watchdog_time("2026-09-03T18:00:00Z"),
+            ],
+        )
+        .await;
+        assert_eq!((a.revision.0, b.revision.0, c.revision.0), (4, 5, 2));
+        assert_eq!(a.config.updated_at_utc, paused_at);
+        assert_eq!(b.config.updated_at_utc, paused_at);
+        assert_eq!(
+            c.config.updated_at_utc,
+            watchdog_time("2026-09-01T05:21:00Z")
+        );
+        let service = ScheduleService::new(store.clone());
+        let before = store
+            .list_occurrences(OccurrenceFilter::default())
+            .await
+            .expect("rows before probe");
+        assert_eq!(before.len(), 9);
+        assert!(before.iter().all(|row| {
+            row.phase == OccurrencePhase::Pending
+                && row.lease_expires_at_utc.is_none()
+                && row.due_at_utc < now - chrono::Duration::seconds(120)
+        }));
+        let parents_before = service.list().await.expect("parents before probe");
+
+        let (probe, log) = capture_watchdog_probe_at(&service, &path, now).await;
+        assert_eq!(probe, ScheduleFiringProbe::Healthy);
+        assert!(
+            log.contains("active=0 paused=9 deleted=0 unresolved=0"),
+            "{log}"
+        );
+        assert!(!log.contains("WARN") && !log.contains("ERROR"), "{log}");
+        assert_eq!(
+            store
+                .list_occurrences(OccurrenceFilter::default())
+                .await
+                .expect("rows after probe"),
+            before
+        );
+        assert_eq!(
+            service.list().await.expect("parents after probe"),
+            parents_before
+        );
+    }
+
+    #[tokio::test]
+    async fn schedule_claim_watchdog_deleted_leftover_is_not_missing_or_stalled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(SCHEDULE_STORE_FILE);
+        let store = Arc::new(SqliteScheduleStore::open(&path).expect("store"));
+        let now = watchdog_time("2026-09-04T20:00:00Z");
+        let due = now - chrono::Duration::hours(1);
+        seed_watchdog_parent(
+            store.as_ref(),
+            TriggerSpec::Once { due_at_utc: due },
+            1,
+            SchedulePhase::Deleted,
+            now,
+            &[due],
+        )
+        .await;
+        let service = ScheduleService::new(store.clone());
+        assert!(
+            service
+                .list()
+                .await
+                .expect("ordinary list hides deleted")
+                .is_empty()
+        );
+        let before = store
+            .list_occurrences(OccurrenceFilter::default())
+            .await
+            .expect("rows");
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].phase, OccurrencePhase::Pending);
+        let (probe, log) = capture_watchdog_probe_at(&service, &path, now).await;
+        assert_eq!(probe, ScheduleFiringProbe::Healthy);
+        assert!(
+            log.contains("active=0 paused=0 deleted=1 unresolved=0"),
+            "{log}"
+        );
+        assert!(!log.contains("WARN") && !log.contains("ERROR"), "{log}");
+        assert_eq!(
+            store
+                .list_occurrences(OccurrenceFilter::default())
+                .await
+                .expect("rows"),
+            before
+        );
+    }
+
+    #[tokio::test]
+    async fn schedule_claim_watchdog_mixed_parents_count_and_oldest_only_active() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(SCHEDULE_STORE_FILE);
+        let store = Arc::new(SqliteScheduleStore::open(&path).expect("store"));
+        let now = watchdog_time("2026-09-04T20:00:00Z");
+        for phase in [SchedulePhase::Paused, SchedulePhase::Deleted] {
+            let due = now - chrono::Duration::days(2);
+            seed_watchdog_parent(
+                store.as_ref(),
+                TriggerSpec::Once { due_at_utc: due },
+                1,
+                phase,
+                now,
+                &[due],
+            )
+            .await;
+        }
+        let oldest_active = now - chrono::Duration::hours(1);
+        seed_watchdog_parent(
+            store.as_ref(),
+            TriggerSpec::Once {
+                due_at_utc: oldest_active,
+            },
+            1,
+            SchedulePhase::Active,
+            now,
+            &[
+                now - chrono::Duration::minutes(5),
+                oldest_active,
+                now - chrono::Duration::seconds(120),
+                now + chrono::Duration::hours(1),
+            ],
+        )
+        .await;
+        let service = ScheduleService::new(store.clone());
+        // Both the held and vacant observations must leave attribution unchanged.
+        let lease = acquire_test_executor_lease(store.as_ref(), "watchdog-active-control").await;
+        let (probe, log) = capture_watchdog_probe_at(&service, &path, now).await;
+        store
+            .release_executor_lease(lease)
+            .await
+            .expect("release test lease");
+        let ScheduleFiringProbe::Stalled { report } = probe else {
+            panic!("active overdue work must stall");
+        };
+        assert!(
+            report.starts_with("2 active-parent pending occurrence(s)"),
+            "{report}"
+        );
+        assert!(
+            report.contains(&format!("oldest due {}", oldest_active.to_rfc3339())),
+            "{report}"
+        );
+        assert!(
+            report.contains("active=2, paused=1, deleted=1, unresolved=0"),
+            "{report}"
+        );
+        assert!(report.contains("firing authority IS held"), "{report}");
+        assert!(
+            log.lines()
+                .any(|line| line.contains("WARN") && line.contains("not delivering at boot")),
+            "{log}"
+        );
+        assert!(
+            log.lines()
+                .any(|line| line.contains("ERROR") && line.contains("pipeline is stalled")),
+            "{log}"
+        );
+        let (vacant_probe, _) = capture_watchdog_probe_at(&service, &path, now).await;
+        assert!(
+            matches!(vacant_probe, ScheduleFiringProbe::Stalled { report }
+            if report.contains("firing authority is vacant")
+                && report.starts_with("2 active-parent pending occurrence(s)"))
+        );
+    }
+
+    #[tokio::test]
+    async fn schedule_claim_watchdog_missing_parent_is_unresolved_even_without_active_work() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(SCHEDULE_STORE_FILE);
+        let store = Arc::new(SqliteScheduleStore::open(&path).expect("store"));
+        let now = watchdog_time("2026-09-04T20:00:00Z");
+        let due = now - chrono::Duration::hours(2);
+        let parent = seed_watchdog_parent(
+            store.as_ref(),
+            TriggerSpec::Once { due_at_utc: due },
+            1,
+            SchedulePhase::Active,
+            now,
+            &[due],
+        )
+        .await;
+        // Simulate corrupt/orphaned evidence that normal foreign-key-enforced
+        // writes cannot create. Disable constraints only on this fault injector.
+        {
+            let conn = rusqlite::Connection::open(&path).expect("fault connection");
+            conn.pragma_update(None, "foreign_keys", false)
+                .expect("allow orphan fixture");
+            assert_eq!(
+                conn.execute(
+                    "DELETE FROM schedule_schedules WHERE schedule_id = ?1",
+                    [parent.schedule_id.to_string()],
+                )
+                .expect("remove parent"),
+                1
+            );
+        }
+        let service = ScheduleService::new(store.clone());
+        let (probe, log) = capture_watchdog_probe_at(&service, &path, now).await;
+        let ScheduleFiringProbe::Incomplete { report } = probe else {
+            panic!("absent parent cannot prove health or a stall");
+        };
+        assert!(
+            report.contains("active=0, paused=0, deleted=0, unresolved=1"),
+            "{report}"
+        );
+        assert!(report.contains(&parent.schedule_id.to_string()), "{report}");
+        assert!(!report.contains("firing authority"), "{report}");
+        assert!(
+            log.contains("ERROR") && log.contains("observation incomplete at boot"),
+            "{log}"
+        );
+        assert!(
+            !log.contains("WARN")
+                && !log.contains("pipeline is stalled")
+                && !log.contains("healthy at boot"),
+            "{log}"
+        );
+
+        let active_due = now - chrono::Duration::minutes(10);
+        seed_watchdog_parent(
+            store.as_ref(),
+            TriggerSpec::Once {
+                due_at_utc: active_due,
+            },
+            1,
+            SchedulePhase::Active,
+            now,
+            &[active_due],
+        )
+        .await;
+        let (mixed, _) = capture_watchdog_probe_at(&service, &path, now).await;
+        let ScheduleFiringProbe::Stalled { report } = mixed else {
+            panic!("unresolved evidence must not hide known active overdue work");
+        };
+        assert!(
+            report.contains("active=1, paused=0, deleted=0, unresolved=1"),
+            "{report}"
+        );
+        assert!(
+            report.contains(&format!("oldest due {}", active_due.to_rfc3339())),
+            "{report}"
+        );
+        assert!(report.contains(&parent.schedule_id.to_string()), "{report}");
+    }
+
+    #[tokio::test]
+    async fn schedule_claim_watchdog_poison_remains_incomplete_with_no_active_rows() {
+        for (phase, corrupt_parent) in [
+            (SchedulePhase::Paused, true),
+            (SchedulePhase::Deleted, true),
+            (SchedulePhase::Paused, false),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join(SCHEDULE_STORE_FILE);
+            let store = Arc::new(SqliteScheduleStore::open(&path).expect("store"));
+            let now = watchdog_time("2026-09-04T20:00:00Z");
+            let due = now - chrono::Duration::hours(1);
+            seed_watchdog_parent(
+                store.as_ref(),
+                TriggerSpec::Once { due_at_utc: due },
+                1,
+                phase,
+                now,
+                &[due],
+            )
+            .await;
+            let (table, column) = if corrupt_parent {
+                ("schedule_schedules", "schedule_json")
+            } else {
+                ("schedule_occurrences", "occurrence_json")
+            };
+            corrupt_first_row(&path, table, column);
+            let service = ScheduleService::new(store);
+            let (probe, log) = capture_watchdog_probe_at(&service, &path, now).await;
+            let ScheduleFiringProbe::Incomplete { report } = probe else {
+                panic!("poison must remain visible with no active rows");
+            };
+            assert!(
+                report.contains(table) && report.contains("attribution unresolved"),
+                "{report}"
+            );
+            assert!(
+                log.contains("ERROR") && log.contains("observation incomplete"),
+                "{log}"
+            );
+            assert!(
+                !log.contains("WARN")
+                    && !log.contains("pipeline is stalled")
+                    && !log.contains("healthy at boot"),
+                "{log}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn schedule_claim_watchdog_unreadable_parent_list_is_not_healthy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(SCHEDULE_STORE_FILE);
+        let store = Arc::new(SqliteScheduleStore::open(&path).expect("store"));
+        // A query failure is not a successful empty parent list.
+        rusqlite::Connection::open(&path)
+            .expect("fault connection")
+            .execute("DROP TABLE schedule_schedules", [])
+            .expect("make schedule listing unreadable");
+        let (probe, log) = capture_watchdog_probe_at(
+            &ScheduleService::new(store),
+            &path,
+            watchdog_time("2026-09-04T20:00:00Z"),
+        )
+        .await;
+        let ScheduleFiringProbe::Incomplete { report } = probe else {
+            panic!("unreadable parents cannot prove health");
+        };
+        assert!(report.contains("schedule list is failing"), "{report}");
+        assert!(report.contains("no such table"), "{report}");
+        assert!(report.contains("attribution unresolved"), "{report}");
+        assert!(log.contains("observation incomplete at boot"), "{log}");
+        assert!(!log.contains("healthy at boot"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn schedule_claim_watchdog_unreadable_clock_is_incomplete() {
+        let service = ScheduleService::new(Arc::new(meerkat_schedule::DisabledScheduleStore));
+        let probe = probe_schedule_firing_pipeline(
+            &service,
+            Path::new("unused-diagnostic-path"),
+            Duration::from_mins(2),
+        )
+        .await;
+        assert!(matches!(probe, ScheduleFiringProbe::Incomplete { report }
+            if report.contains("schedule store clock read failed")));
+    }
+
+    #[test]
+    fn schedule_claim_watchdog_dedup_heartbeat_and_incomplete_recovery() {
+        let capture = WatchdogLogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let config = ScheduleClaimWatchdogConfig::default();
+            let mut state = ScheduleClaimWatchdogState::default();
+            let stalled = ScheduleFiringProbe::Stalled {
+                report: "active overdue control".to_string(),
+            };
+            for _ in 0..10 {
+                state.observe(stalled.clone(), config);
+            }
+            let incomplete = ScheduleFiringProbe::Incomplete {
+                report: "parent evidence unavailable".to_string(),
+            };
+            state.observe(incomplete.clone(), config);
+            state.observe(incomplete, config);
+            state.observe(ScheduleFiringProbe::Healthy, config);
+        });
+        let log =
+            String::from_utf8(capture.0.lock().expect("log capture").clone()).expect("UTF-8 logs");
+        assert_eq!(log.matches("pipeline is stalled").count(), 1, "{log}");
+        assert_eq!(log.matches("pipeline is still stalled").count(), 1, "{log}");
+        assert_eq!(
+            log.matches("pipeline observation incomplete").count(),
+            1,
+            "{log}"
+        );
+        assert_eq!(
+            log.matches("pipeline observation recovered").count(),
+            1,
+            "{log}"
+        );
+        assert!(!log.contains("pipeline recovered"), "{log}");
+    }
+
     /// Healthy pipeline: future work only, nothing overdue → the watchdog has
     /// nothing to say.
     #[tokio::test]
@@ -3721,8 +4456,8 @@ schedule = true
 
         let probe =
             probe_schedule_firing_pipeline(&service, &store_path, Duration::from_mins(1)).await;
-        let ScheduleFiringProbe::Stalled { report } = probe else {
-            panic!("a poisoned schedule row must probe as Stalled");
+        let ScheduleFiringProbe::Incomplete { report } = probe else {
+            panic!("a poisoned schedule row must probe as Incomplete");
         };
         assert!(
             report.contains("schedule list is failing"),
@@ -3755,8 +4490,8 @@ schedule = true
 
         let probe =
             probe_schedule_firing_pipeline(&service, &store_path, Duration::from_mins(1)).await;
-        let ScheduleFiringProbe::Stalled { report } = probe else {
-            panic!("a poisoned occurrence row must probe as Stalled");
+        let ScheduleFiringProbe::Incomplete { report } = probe else {
+            panic!("a poisoned occurrence row must probe as Incomplete");
         };
         assert!(
             report.contains("occurrence scan is failing"),

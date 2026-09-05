@@ -1365,26 +1365,13 @@ pub async fn spawn_gateway_schedule_host<B: SessionAgentBuilder + 'static>(
         // The resident watchdog above is what escalates - if the same report
         // is still there on its cadence, it is a real stall and it says so at
         // ERROR.
-        match crate::schedule_wiring::probe_schedule_firing_pipeline(
+        crate::schedule_wiring::probe_schedule_firing_pipeline(
             &schedule_service_for_probe,
             &schedule_store_path,
             watchdog_config.overdue_threshold,
         )
         .await
-        {
-            crate::schedule_wiring::ScheduleFiringProbe::Healthy => {
-                tracing::info!("schedule firing pipeline healthy at boot");
-            }
-            crate::schedule_wiring::ScheduleFiringProbe::Stalled { report } => {
-                tracing::warn!(
-                    %report,
-                    poll_interval_secs = watchdog_config.poll_interval.as_secs(),
-                    "schedule firing pipeline is not delivering at boot; the resident claim \
-                     watchdog re-probes on its cadence and escalates to ERROR if this persists \
-                     (a restart backlog clears on the first host ticks)"
-                );
-            }
-        }
+        .log_at_boot(watchdog_config);
     } else {
         // Present-state verdict, not a prediction: the host is NOT running,
         // and the write gate is therefore still closed. Both halves are

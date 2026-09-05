@@ -242,6 +242,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Schedule watchdog stalls are attributed only to Active parents.**
+  Both gateways' periodic ERROR and boot backlog WARN now count only overdue
+  Pending occurrences whose authoritative schedule is Active; the oldest due
+  time and lease/claim diagnosis use that same set. Paused and Deleted parents'
+  leftover Pending rows remain untouched and are bucketed separately at DEBUG.
+  Missing parents and failed/poisoned reads remain explicit incomplete
+  observations with their own ERROR diagnostics, never healthy or implicitly
+  Active/Deleted. Rust callers matching `ScheduleFiringProbe` must handle the
+  new `Incomplete { report }` variant.
+
 - **A retired identity is no longer stuck in `Retiring`
   ([#404](https://github.com/lukacf/meerkat-mobkit/issues/404)).** `retire_member`
   leaves the durable identity registered in `Retiring` (member gone, session

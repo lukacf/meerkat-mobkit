@@ -158,6 +158,26 @@ Every non-loopback bind that does pass logs one WARN line on stderr naming the
 bound address and whether the console on it is authenticated or open. It cannot
 be silenced below WARN by the default filter.
 
+## Reading schedule watchdog diagnostics
+
+Both gateways probe the shared schedule service at boot and every 60 seconds.
+Only Pending occurrences more than 120 seconds overdue under an authoritative
+Active parent contribute to a firing-pipeline stall, its count, and its oldest
+due time. A boot backlog logs WARN; a new or changed periodic stall logs ERROR,
+with a WARN heartbeat every ten unchanged polls.
+
+Paused and Deleted parents can retain Pending occurrences without a firing
+fault. The DEBUG `schedule overdue pending parent attribution` record reports
+separate `active`, `paused`, `deleted`, and `unresolved` counts; the probe does
+not modify those rows. Enable `meerkat_mobkit::schedule_wiring=debug` in
+`RUST_LOG` to see these buckets.
+
+Missing parent evidence or failed/poisoned reads log **observation incomplete**
+at ERROR, including at boot, rather than claiming health or attributing a
+stall to inactive work. A mixed report retains unresolved evidence alongside
+any known active backlog. Executor owner and fencing-token observations explain
+an active backlog only; they never grant firing authority.
+
 ## Docker sketch
 
 ```yaml
