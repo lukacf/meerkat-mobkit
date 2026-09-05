@@ -9915,15 +9915,14 @@ ${JSON.stringify(document2)}`;
   }
   async function validateDocument(document2, options = {}) {
     const { signal, rkatValidate, rkat_validate, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("validate"), {
+    return callRenderRpc(rpcMethod("validate"), {
       document: document2,
-      rkat_validate: rkatValidate ?? rkat_validate ?? true,
-      ...requestOptions
-    }, { signal });
+      rkat_validate: rkatValidate ?? rkat_validate ?? true
+    }, requestOptions, signal);
   }
   async function sourceDocument(document2, options = {}) {
     const { signal, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("source"), { document: document2, ...requestOptions }, { signal });
+    return callRenderRpc(rpcMethod("source"), { document: document2 }, requestOptions, signal);
   }
   async function exportDocument(document2, options = {}) {
     const { signal, ...requestOptions } = options || {};
@@ -9931,7 +9930,25 @@ ${JSON.stringify(document2)}`;
   }
   async function deployDocument(document2, options = {}) {
     const { signal, ...requestOptions } = options || {};
+    if (requestOptions.execute === false) {
+      return callRenderRpc(rpcMethod("deploy"), { document: document2 }, requestOptions, signal);
+    }
     return callRpc(rpcMethod("deploy"), { document: document2, ...requestOptions }, { signal });
+  }
+  function hasDraftGuard(requestOptions) {
+    return DRAFT_GUARD_KEYS.some((key) => requestOptions?.[key] !== void 0 && requestOptions?.[key] !== null);
+  }
+  async function callRenderRpc(method, params, requestOptions, signal) {
+    const guardedOptions = requestOptions && typeof requestOptions === "object" ? requestOptions : {};
+    try {
+      return await callRpc(method, { ...params, ...guardedOptions }, { signal });
+    } catch (error) {
+      if (!hasDraftGuard(guardedOptions) || !isDraftGuardConflictError(error)) throw error;
+      const unguardedOptions = Object.fromEntries(
+        Object.entries(guardedOptions).filter(([key]) => !DRAFT_GUARD_KEYS.includes(key))
+      );
+      return callRpc(method, { ...params, ...unguardedOptions }, { signal });
+    }
   }
   async function deployCommandPreviewForDocument(document2, options = {}) {
     const { signal, packPath, prompt: optionPrompt, deploySettings, ...requestOptions } = options || {};
@@ -10140,12 +10157,14 @@ ${JSON.stringify(document2)}`;
       throw new Error(`${label} is not valid JSON: ${error?.message || error}`);
     }
   }
+  var DRAFT_GUARD_KEYS;
   var init_doc_ops = __esm({
     "../packages/flow-editor-core/src/rpc/doc-ops.ts"() {
       init_hydration();
       init_build_projection();
       init_flow_registry();
       init_client();
+      DRAFT_GUARD_KEYS = ["expected_revision", "expected_etag"];
     }
   });
 

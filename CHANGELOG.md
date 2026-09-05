@@ -210,6 +210,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Flow Editor: the inline source panel no longer opens empty when a
+  read-only render races the editor's own autosave.** The source preview,
+  validation and deploy-plan RPCs carry the optimistic draft store guard of
+  the registry row the UI last saw. When the autosave triggered by an
+  authoring projection had already bumped the store revision but its
+  response was not yet applied to that row, the server refused the render
+  with `mobkit/mobpacks/source draft revision conflict ... expected N, found
+  N+1` even though the submitted document was the freshest authoring state;
+  the app then left the panel open and empty behind a "Source render failed"
+  sheet. Most visible when opening the Graph-mode source file right after
+  the mode switch, whose graph-to-flow sync persists the document (#398).
+  Read-only renders now retry once without the store guard, the same one-shot
+  remedy authoring operations already had; a real deploy keeps the guard.
+  Test-side: the browser-source smoke reports the panel and validation-sheet
+  state when a source section never appears instead of a bare 120s timeout,
+  and its misdescribed "virtualized editor" scroll probe is gone (the panel is
+  a plain `<pre>`).
+
 - **SDK-hosted roster callbacks now receive the roster context instead of
   `{}`.** An external SDK user reported, and the maintainer confirmed, that a
   Python or TypeScript `roster(context)` callback behind `rpc_gateway` could

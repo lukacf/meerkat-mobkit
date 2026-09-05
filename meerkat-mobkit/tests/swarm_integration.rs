@@ -147,6 +147,25 @@ impl SessionService for CheckpointerCancelProbeSessionService {
         self.inner.has_live_session(id).await
     }
 
+    // Both cooperative boundary cancels default to `Err(Unsupported)` on the
+    // trait. The provisioner's non-runtime interrupt path calls the plain form
+    // on the service it holds (this wrapper) and absorbs only `NotRunning`, so
+    // inheriting the default would refuse every cooperative interrupt on this
+    // probe's own authority while the inner ephemeral service implements both.
+    async fn cancel_after_boundary(&self, id: &SessionId) -> Result<(), SessionError> {
+        self.inner.cancel_after_boundary(id).await
+    }
+
+    async fn cancel_after_boundary_for_run(
+        &self,
+        id: &SessionId,
+        expected_run_id: &meerkat_core::lifecycle::RunId,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .cancel_after_boundary_for_run(id, expected_run_id)
+            .await
+    }
+
     async fn read(&self, id: &SessionId) -> Result<SessionView, SessionError> {
         self.read_calls.fetch_add(1, Ordering::SeqCst);
         let gate = self.next_read_gate.lock().expect("read gate mutex").take();
@@ -338,6 +357,60 @@ impl MobSessionService for CheckpointerCancelProbeSessionService {
     ) -> Result<bool, SessionError> {
         self.inner
             .interrupt_run_with_machine_authority(session_id, expected_run_id, authority)
+            .await
+    }
+
+    // The three machine-authority siblings of the forward above. All default
+    // to `Err(Unsupported)` on the trait, and MeerkatMachine dispatches them to
+    // the service it was handed at bootstrap - this wrapper - after it has
+    // ALREADY admitted the cancel. The one that bit: `MobHandle::stop` on a
+    // member whose autonomous kickoff turn is still running issues a boundary
+    // cancel for that live run; the machine admits it and calls
+    // `cancel_after_boundary_with_machine_authority` here. With the default,
+    // the probe answered "unsupported" on its own authority and `stop()` failed
+    // with `CancelAfterBoundary: failed to apply live boundary cancel: Control
+    // failed: unsupported: ...` (#401). Whether the kickoff is still running
+    // when the test reaches `stop()` depends on runner load, which is why it
+    // passed 1/1 in isolation and failed roughly one CI run in two. Same
+    // forwarding class as the lib's `delegate_mob_session_service!`.
+    async fn interrupt_with_machine_authority(
+        &self,
+        session_id: &SessionId,
+        authority: meerkat_runtime::MachineSessionControlAuthority,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .interrupt_with_machine_authority(session_id, authority)
+            .await
+    }
+
+    // Mirrors the lib's `cancel_after_boundary_with_machine_authority_if_live`:
+    // once the machine has admitted the cancel, a run that finished (or a
+    // session that went away) between admission and dispatch proves there is
+    // nothing left to interrupt. Propagating `NotRunning`/`NotFound` back as a
+    // failed effect would wedge the machine in its pre-cancel phase and turn the
+    // kickoff-completes-mid-stop ordering into a second flake of the same test.
+    async fn cancel_after_boundary_with_machine_authority(
+        &self,
+        session_id: &SessionId,
+        expected_run_id: &meerkat_core::lifecycle::RunId,
+        authority: meerkat_runtime::MachineSessionControlAuthority,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .cancel_after_boundary_with_machine_authority(session_id, expected_run_id, authority)
+            .await
+            .or_else(|error| match error {
+                SessionError::NotFound { .. } | SessionError::NotRunning { .. } => Ok(()),
+                error => Err(error),
+            })
+    }
+
+    async fn cancel_current_after_boundary_with_machine_authority(
+        &self,
+        session_id: &SessionId,
+        authority: meerkat_runtime::MachineSessionControlAuthority,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .cancel_current_after_boundary_with_machine_authority(session_id, authority)
             .await
     }
 
