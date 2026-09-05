@@ -11672,7 +11672,112 @@ async function exerciseAuthoringOperationRunner() {
   }
 }
 
+// Read-only renders (source preview, validation, deploy plan) carry the
+// optimistic draft store guard of the row the UI last saw. When our own
+// autosave has bumped the store but its response is not applied yet, the
+// server refuses the render as a draft revision conflict; the authoring
+// runner already retries that exact race once without the guard, and #398 was
+// the source render lacking the same retry (the Graph-mode inline source panel
+// stayed empty behind a "Source render failed" sheet). This pins the retry
+// contract: fires only for a guard conflict AND only when a guard was sent,
+// re-submits the same document with just the guard keys dropped, and never
+// touches a real deploy.
+async function exerciseReadOnlyRenderDraftGuardRetry() {
+  const originalFetch = global.fetch;
+  const document = { ...storedGraphDocument };
+  const guard = { id: "f_race_mob", expected_revision: 1, expected_etag: "W/\"f_race_mob:1\"" };
+  const conflictMessage = (method) => `${method} draft revision conflict for f_race_mob: expected 1, found 2`;
+  let calls = [];
+  const conflictOnceThenResult = (result) => {
+    let refused = false;
+    return async (url, options) => {
+      const request = JSON.parse(options.body);
+      calls.push(request);
+      const hasGuard = request.params.expected_revision !== undefined || request.params.expected_etag !== undefined;
+      if (hasGuard && !refused) {
+        refused = true;
+        return { ok: true, json: async () => ({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: conflictMessage(request.method) } }) };
+      }
+      return { ok: true, json: async () => ({ jsonrpc: "2.0", id: request.id, result }) };
+    };
+  };
+  try {
+    controller.configure({ rpcUrl: "/flow-editor/rpc" });
+
+    // source: refused once with the guard, retried once without it, same document.
+    calls = [];
+    global.fetch = conflictOnceThenResult({ source: "mobkit/mobpacks/source", source_files: [] });
+    assert.deepEqual(await controller.sourceDocument(document, guard), { source: "mobkit/mobpacks/source", source_files: [] });
+    assert.equal(calls.length, 2, "one refusal, one retry");
+    assert.equal(calls[0].method, "mobkit/mobpacks/source");
+    assert.equal(calls[0].params.expected_revision, 1);
+    assert.equal(calls[0].params.expected_etag, guard.expected_etag);
+    assert.equal(calls[1].method, "mobkit/mobpacks/source");
+    assert.equal(calls[1].params.expected_revision, undefined, "retry drops expected_revision");
+    assert.equal(calls[1].params.expected_etag, undefined, "retry drops expected_etag");
+    assert.equal(calls[1].params.id, "f_race_mob", "retry keeps the non-guard request options");
+    assert.deepEqual(calls[1].params.document, document, "retry re-submits the same document");
+
+    // validate and the deploy PLAN get the same retry.
+    calls = [];
+    global.fetch = conflictOnceThenResult({ ok: true, diagnostics: [] });
+    assert.deepEqual(await controller.validateDocument(document, guard), { ok: true, diagnostics: [] });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].params.rkat_validate, true, "validate keeps its own request fields on retry");
+    assert.equal(calls[1].params.expected_revision, undefined);
+    calls = [];
+    global.fetch = conflictOnceThenResult({ plan: [] });
+    assert.deepEqual(await controller.deployDocument(document, { execute: false, ...guard }), { plan: [] });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].params.execute, false, "plan retry stays a plan");
+    assert.equal(calls[1].params.expected_revision, undefined);
+
+    // A real deploy is a write: the guard conflict surfaces, no retry.
+    calls = [];
+    global.fetch = conflictOnceThenResult({ deployed: true });
+    await assert.rejects(
+      () => controller.deployDocument(document, { execute: true, ...guard }),
+      (error) => controller.isDraftGuardConflictError(error),
+    );
+    assert.equal(calls.length, 1, "deploy execute:true is never retried");
+
+    // A conflict without any guard in the request is not ours to absorb.
+    calls = [];
+    global.fetch = async (url, options) => {
+      const request = JSON.parse(options.body);
+      calls.push(request);
+      return { ok: true, json: async () => ({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: conflictMessage(request.method) } }) };
+    };
+    await assert.rejects(() => controller.sourceDocument(document, { id: "f_race_mob" }), (error) => controller.isDraftGuardConflictError(error));
+    assert.equal(calls.length, 1, "no guard sent means nothing to drop, so no retry");
+
+    // Any other refusal propagates unchanged after a single attempt.
+    calls = [];
+    global.fetch = async (url, options) => {
+      const request = JSON.parse(options.body);
+      calls.push(request);
+      return { ok: true, json: async () => ({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "cannot render source for invalid mobpack document" } }) };
+    };
+    await assert.rejects(() => controller.sourceDocument(document, guard), /cannot render source for invalid mobpack document/);
+    assert.equal(calls.length, 1);
+
+    // A second refusal after the unguarded retry surfaces as the conflict it is.
+    calls = [];
+    global.fetch = async (url, options) => {
+      const request = JSON.parse(options.body);
+      calls.push(request);
+      return { ok: true, json: async () => ({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: conflictMessage(request.method) } }) };
+    };
+    await assert.rejects(() => controller.sourceDocument(document, guard), (error) => controller.isDraftGuardConflictError(error));
+    assert.equal(calls.length, 2, "exactly one retry, never a loop");
+  } finally {
+    global.fetch = originalFetch;
+    controller.configure({ rpcUrl: "/flow-editor/rpc" });
+  }
+}
+
 exerciseAuthoringOperationRunner()
+  .then(exerciseReadOnlyRenderDraftGuardRetry)
   .then(() => {
     console.log("controller projection metadata ok");
   })

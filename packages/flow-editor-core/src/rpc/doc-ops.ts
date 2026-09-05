@@ -41,16 +41,15 @@ export async function loadCatalogs(options = {}) {
 
 export async function validateDocument(document, options = {}) {
   const { signal, rkatValidate, rkat_validate, ...requestOptions } = options || {};
-  return callRpc(rpcMethod("validate"), {
+  return callRenderRpc(rpcMethod("validate"), {
     document,
     rkat_validate: rkatValidate ?? rkat_validate ?? true,
-    ...requestOptions,
-  }, { signal });
+  }, requestOptions, signal);
 }
 
 export async function sourceDocument(document, options = {}) {
   const { signal, ...requestOptions } = options || {};
-  return callRpc(rpcMethod("source"), { document, ...requestOptions }, { signal });
+  return callRenderRpc(rpcMethod("source"), { document }, requestOptions, signal);
 }
 
 export async function exportDocument(document, options = {}) {
@@ -60,7 +59,50 @@ export async function exportDocument(document, options = {}) {
 
 export async function deployDocument(document, options = {}) {
   const { signal, ...requestOptions } = options || {};
+  // Only the plan (`execute: false`) is a read-only render. A real deploy
+  // keeps the optimistic guard as-is: deploying a draft whose store revision
+  // moved underneath the caller is exactly what the guard is there to refuse.
+  if (requestOptions.execute === false) {
+    return callRenderRpc(rpcMethod("deploy"), { document }, requestOptions, signal);
+  }
   return callRpc(rpcMethod("deploy"), { document, ...requestOptions }, { signal });
+}
+
+const DRAFT_GUARD_KEYS = ["expected_revision", "expected_etag"];
+
+function hasDraftGuard(requestOptions) {
+  return DRAFT_GUARD_KEYS.some((key) => requestOptions?.[key] !== undefined && requestOptions?.[key] !== null);
+}
+
+// Read-only renders of the CLIENT's document: source preview, validation and
+// the deploy plan. They carry the optimistic draft store guard of the registry
+// row the caller last saw (`flowRegistryDraftGuard`), and the server refuses
+// the render with a draft revision conflict when the store has moved on.
+//
+// The store moving on is routinely OUR OWN autosave: the projection applied by
+// an authoring operation persists the row, the save reaches the server and
+// bumps the revision, and until its response has been applied to the row the
+// guard the UI hands out is one revision behind. A render issued inside that
+// window was refused even though the submitted document IS the freshest
+// authoring state; the inline source panel opened in Graph mode then stayed
+// empty behind the source-failed validation sheet for as long as the caller
+// waited (#398). `createAuthoringOperationRunner` already handles this exact
+// race for mutations with a one-shot retry without the store guard. Same
+// remedy, same scope here: the retry drops only the guard keys and re-submits
+// the same document, and it fires only when a guard was present and the
+// refusal is the guard's. Nothing here writes the store, so save-time
+// concurrency control is unaffected.
+async function callRenderRpc(method, params, requestOptions, signal) {
+  const guardedOptions = requestOptions && typeof requestOptions === "object" ? requestOptions : {};
+  try {
+    return await callRpc(method, { ...params, ...guardedOptions }, { signal });
+  } catch (error) {
+    if (!hasDraftGuard(guardedOptions) || !isDraftGuardConflictError(error)) throw error;
+    const unguardedOptions = Object.fromEntries(
+      Object.entries(guardedOptions).filter(([key]) => !DRAFT_GUARD_KEYS.includes(key)),
+    );
+    return callRpc(method, { ...params, ...unguardedOptions }, { signal });
+  }
 }
 
 export async function deployCommandPreviewForDocument(document, options = {}) {

@@ -20,9 +20,9 @@ const shouldSpawn = !process.env.MOBKIT_FLOW_EDITOR_BROWSER_URL;
 // Every `timeout:` in this file guards a question of the form "does this
 // element/section ever appear", so the only thing the bound decides is how long
 // a genuinely hung run takes to fail. Under a loaded hosted runner 30s was
-// close enough to the real settling time that the virtualized-editor scan at
-// the graph panel timed out on a docs-only change; the assertions themselves
-// were never measuring duration, so the bound was reporting load, not defects.
+// close enough to the real settling time that the graph-panel source wait
+// timed out on a docs-only change; the assertions themselves were never
+// measuring duration, so the bound was reporting load, not defects.
 const STRUCTURAL_TIMEOUT_MS = 120_000;
 
 function waitForReady(url, child) {
@@ -85,6 +85,32 @@ async function createMobThroughLibrary(page, name) {
   await page.locator(".modetoggle").waitFor({ state: "visible", timeout: STRUCTURAL_TIMEOUT_MS });
 }
 
+// The inline source panel is a plain <pre>: innerText carries the whole
+// rendered file, so the only way this wait fails is the panel never receiving
+// a document. When that happens, say what the page shows instead of a bare
+// TimeoutError: #398 was the panel sitting open and EMPTY behind a "Source
+// render failed" sheet (the read-only source render had raced our own autosave
+// and been refused as a draft revision conflict), and the 120s silence hid it.
+async function waitForSourceSections(page, panelSelector, sections) {
+  try {
+    await page.waitForFunction(({ panelSelector, sections }) => {
+      const source = document.querySelector(`${panelSelector} [role="textbox"][aria-readonly="true"]`);
+      const text = source?.innerText || "";
+      return sections.every((section) => text.includes(section));
+    }, { panelSelector, sections }, { timeout: STRUCTURAL_TIMEOUT_MS });
+  } catch (error) {
+    const state = await page.evaluate((panelSelector) => ({
+      panelPresent: !!document.querySelector(panelSelector),
+      sourceText: (document.querySelector(`${panelSelector} [role="textbox"][aria-readonly="true"]`)?.innerText || "").slice(0, 200),
+      validationSheet: (document.querySelector(".validate")?.innerText || "").replace(/\s+/g, " ").slice(0, 400),
+    }), panelSelector);
+    throw new Error(
+      `${panelSelector} never rendered ${sections.map((section) => JSON.stringify(section)).join(" and ")}: ${JSON.stringify(state)}`,
+      { cause: error },
+    );
+  }
+}
+
 async function main() {
   let server = null;
   let draftDir = null;
@@ -124,10 +150,7 @@ async function main() {
 
     const sourceBox = inlineEditor.locator('[role="textbox"][aria-readonly="true"]');
     await sourceBox.waitFor({ timeout: STRUCTURAL_TIMEOUT_MS });
-    await page.waitForFunction(() => {
-      const source = document.querySelector('.bld-toml [role="textbox"][aria-readonly="true"]');
-      return source?.innerText.includes("[profiles.") && source?.innerText.includes("[flows.");
-    }, null, { timeout: STRUCTURAL_TIMEOUT_MS });
+    await waitForSourceSections(page, ".bld-toml", ["[profiles.", "[flows."]);
     const mobToml = await sourceBox.innerText();
     if (!mobToml.includes("[profiles.") || !mobToml.includes("[flows.")) {
       throw new Error(`inline mob.toml editor did not render MobKit source: ${mobToml.slice(0, 400)}`);
@@ -135,10 +158,7 @@ async function main() {
 
     const definitionButton = inlineEditor.locator(".source-file-row", { hasText: "definition.json" });
     await definitionButton.click();
-    await page.waitForFunction(() => {
-      const source = document.querySelector('.bld-toml [role="textbox"][aria-readonly="true"]');
-      return source?.innerText.includes('"id"') && source?.innerText.includes('"profiles"');
-    }, null, { timeout: STRUCTURAL_TIMEOUT_MS });
+    await waitForSourceSections(page, ".bld-toml", ['"id"', '"profiles"']);
     const definitionJson = await sourceBox.innerText();
     if (!definitionJson.includes('"id"') || !definitionJson.includes('"profiles"')) {
       throw new Error(`inline definition.json editor did not render exported source: ${definitionJson.slice(0, 400)}`);
@@ -168,24 +188,11 @@ async function main() {
     const graphInlineEditor = page.locator(".bld-toml--graph");
     await graphInlineEditor.waitFor({ timeout: STRUCTURAL_TIMEOUT_MS });
     const graphSourceBox = graphInlineEditor.locator('[role="textbox"][aria-readonly="true"]');
-    // The editor virtualizes rows: innerText only carries RENDERED lines, and
-    // the graph panel is short enough that "[flows." can sit below the fold
-    // (hosted-runner font metrics tipped it over). Scroll the editor through
-    // its content while probing so every section materializes at least once.
-    await page.waitForFunction(() => {
-      const source = document.querySelector('.bld-toml--graph [role="textbox"][aria-readonly="true"]');
-      if (!source) return false;
-      const text = source.innerText;
-      window.__graphSourceSeen = window.__graphSourceSeen || new Set();
-      if (text.includes("[profiles.")) window.__graphSourceSeen.add("profiles");
-      if (text.includes("[flows.")) window.__graphSourceSeen.add("flows");
-      const scroller = source.closest(".cm-editor")?.querySelector(".cm-scroller") || source;
-      scroller.scrollTop = scroller.scrollTop + scroller.clientHeight;
-      if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1) {
-        scroller.scrollTop = 0;
-      }
-      return window.__graphSourceSeen.size === 2;
-    }, null, { timeout: STRUCTURAL_TIMEOUT_MS });
+    // This is the wait #398 timed out on. The earlier reading ("the editor
+    // virtualizes rows, scroll it so every section renders") was wrong: the
+    // panel is a plain <pre> and innerText already carries the whole file. The
+    // panel had simply never received a document; see waitForSourceSections.
+    await waitForSourceSections(page, ".bld-toml--graph", ["[profiles.", "[flows."]);
     const graphReadonly = await graphSourceBox.getAttribute("aria-readonly");
     if (graphReadonly !== "true") {
       throw new Error(`graph inline source editor must be read-only, got aria-readonly=${graphReadonly}`);
