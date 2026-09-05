@@ -324,10 +324,32 @@ green.
 
 When updating Meerkat dependencies, edit `meerkat-mobkit/Cargo.toml`, then run `./scripts/repo-cargo update -p ...` for the Meerkat family and `meerkat-mobkit`.
 
-Release tags are `vX.Y.Z`. The GitHub workflow validates tag/version parity,
-builds the complete binary asset set, publishes crates.io, PyPI, and npm, and
-verifies those public artifacts. Only then does it dispatch the immutable
-MobKit documentation snapshot to Meerkat. Verify all three registries directly:
+**Release protocol v1: tags validate only; they no longer build or publish.**
+After merging the final release-version/dependency commit and obtaining green
+push-to-main CI on that exact SHA, use
+`make release-candidate SOURCE_SHA=<full-sha>`. The dispatch must snapshot that
+same main SHA. It builds/signs/packages the complete binary matrix once and emits
+an immutable run/attempt/artifact/digest selection backed by signed provenance
+and outer/inner executable hashes. Save that selection outside the repo and
+obtain consumer acceptance against those bytes.
+
+The release owner then tags the same source as `vX.Y.Z` and invokes
+`make release-promote RELEASE_TAG=vX.Y.Z ARTIFACT_SELECTION=<json-file>`.
+Promotion verifies and publishes the original bytes without rebuilding or
+signing again. Assets precede SDKs, crate, registry readback, and the immutable
+MobKit documentation dispatch to Meerkat. `REGISTRY_DRY_RUN=true` suppresses all
+publication; `PUBLISH_RELEASE_PACKAGES=false` selects asset-only promotion.
+
+Use `make release-registry-retry RELEASE_TAG=vX.Y.Z` for registry-only retry
+(optional `REGISTRY_DRY_RUN=true`), and `make release-assets-recover
+RELEASE_TAG=vX.Y.Z ARTIFACT_SELECTION=<json-file>` to add missing validated
+original assets. Never replace existing hashes, rebuild expired candidates,
+re-push historical tags, or rerun historical release workflows. Recovery must
+dispatch the current workflow on main with the old tag as data. Missing originals
+or conflicting hashes fail closed. See CONTRIBUTING.md for receipt/recovery
+contracts and the full event/mode matrix.
+
+Verify all three registries directly:
 
 ```bash
 ./scripts/repo-cargo search meerkat-mobkit --limit 1

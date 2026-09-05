@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Focused behavioral tests for registry publication in the release workflow."""
+"""Offline behavioral contracts for release protocol v1 and registry publication."""
 
+import itertools
 import json
 import os
 import re
+import shutil
 import subprocess
-import tempfile
+import sys
 import unittest
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -14,23 +18,32 @@ ROOT = Path(__file__).resolve().parents[1]
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 
 
+@contextmanager
+def fixture_directory():
+    """Keep shell/Node fixtures inside the checkout, never in system scratch."""
+    directory = ROOT / f".release-workflow-fixture-{uuid.uuid4().hex}"
+    directory.mkdir()
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
 def typescript_publish_script() -> str:
     """Extract the TypeScript publication shell from the workflow verbatim."""
-    lines = RELEASE_WORKFLOW.read_text().splitlines()
-    step = lines.index("      - name: Publish TypeScript SDK")
-    run = lines.index("        run: |", step)
-    script_lines: list[str] = []
-    for line in lines[run + 1 :]:
-        if line and not line.startswith("          "):
-            break
-        script_lines.append(line[10:] if line else "")
-
+    script_lines = step_script("Publish TypeScript SDK", "publish_sdk_packages").splitlines()
     # GitHub resolves this expression before invoking the shell. Tests expose the
     # resolved value through an environment variable instead.
     script_lines = [
         'DRY_RUN="${REGISTRY_DRY_RUN:-false}"'
         if line.startswith('DRY_RUN="${{')
         else line
+        for line in script_lines
+    ]
+    # Only replace scratch allocation, not registry/error handling. The real
+    # workflow uses system mktemp; offline fixtures must stay in the checkout.
+    script_lines = [
+        '  VIEW_STDERR="$NPM_VIEW_STDERR"' if line.strip() == "VIEW_STDERR=$(mktemp)" else line
         for line in script_lines
     ]
     return "\n".join(script_lines)
@@ -47,7 +60,7 @@ def job_block(name: str) -> str:
     lines = RELEASE_WORKFLOW.read_text().splitlines()
     start = lines.index(f"  {name}:")
     for offset, line in enumerate(lines[start + 1 :], start=start + 1):
-        if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
+        if re.fullmatch(r"  [A-Za-z_][A-Za-z0-9_-]*:", line):
             return "\n".join(lines[start:offset])
     return "\n".join(lines[start:])
 
@@ -55,7 +68,15 @@ def job_block(name: str) -> str:
 def job_condition(name: str) -> str:
     """The raw `if:` expression of one job, with block scalar folding undone."""
     block = job_block(name).splitlines()
-    start = block.index("    if: >-")
+    matches = [i for i, line in enumerate(block) if line.startswith("    if:")]
+    if not matches:
+        return "true"
+    if len(matches) != 1:
+        raise AssertionError(f"multiple conditions for {name}")
+    start = matches[0]
+    value = block[start].split(":", 1)[1].strip()
+    if value not in (">-", ">", "|", "|-"):
+        return value
     body: list[str] = []
     for line in block[start + 1 :]:
         if not line.startswith("      "):
@@ -64,7 +85,7 @@ def job_condition(name: str) -> str:
     return " ".join(body)
 
 
-def evaluate_condition(expression: str, **context) -> bool:
+def evaluate_condition(expression: str, *, statuses=(), **context) -> bool:
     """Evaluate a GitHub `if:` expression under an explicit context.
 
     String assertions cannot tell a conjunction from a disjunction, which is the
@@ -72,39 +93,114 @@ def evaluate_condition(expression: str, **context) -> bool:
     matched. Any name the expression uses that the caller did not supply raises,
     so a renamed input fails loudly instead of silently reading as falsey.
     """
-    translated = (
-        expression.replace("&&", " and ")
-        .replace("||", " or ")
-        .replace("always()", "True")
-    )
-    # `!=` must survive as `!=`. A blanket `!` -> ` not ` rewrite turns it into
-    # ` not =` and raises SyntaxError, so any condition using inequality could
-    # not be evaluated at all - publish_docs is the only one that does, and it
-    # was therefore untested until the CI-gate tests reached it.
-    translated = re.sub(r"!(?!=)", " not ", translated)
-    # Flatten dotted contexts BEFORE rewriting startsWith, or the rewrite's own
-    # `.startswith` gets flattened into the identifier too.
-    translated = re.sub(r"\b(github|needs)((?:\.[A-Za-z_][A-Za-z0-9_]*)+)",
-                        lambda m: m.group(1) + m.group(2).replace(".", "_"), translated)
-    translated = re.sub(
-        r"startsWith\(([^,]+),\s*('[^']*')\)", r"\1.startswith(\2)", translated
-    )
-
-    missing = {
-        name
-        for name in re.findall(r"\b(?:github|needs)_[A-Za-z0-9_]+", translated)
-        if name not in context
+    expression = expression.strip()
+    if expression.startswith("${{") and expression.endswith("}}"):
+        expression = expression[3:-2].strip()
+    functions = {
+        "always": lambda: True,
+        "success": lambda: all(status == "success" for status in statuses),
+        "failure": lambda: "failure" in statuses,
+        "cancelled": lambda: "cancelled" in statuses,
+        "startsWith": lambda value, prefix: value.startswith(prefix),
+        "contains": lambda value, part: part in value,
     }
-    if missing:
-        raise AssertionError(f"condition references unsupplied names: {sorted(missing)}")
-    return bool(eval(translated, {"__builtins__": {}}, dict(context)))
+    tokens = re.findall(
+        r"\s+|'(?:[^']|'')*'|(?:github|needs|inputs)(?:\.[A-Za-z_][A-Za-z0-9_-]*)+"
+        r"|[A-Za-z_][A-Za-z0-9_]*|&&|\|\||==|!=|[!(),]", expression
+    )
+    if "".join(tokens) != expression:
+        raise AssertionError(f"unsupported expression syntax: {expression}")
+    translated = []
+    operators = {"&&": " and ", "||": " or ", "!": " not ",
+                 "true": "True", "false": "False"}
+    for token in tokens:
+        if token.startswith(("github.", "needs.", "inputs.")):
+            name = token.replace(".", "_").replace("-", "_")
+            if name not in context:
+                raise AssertionError(f"condition references unsupplied name: {name}")
+            translated.append(name)
+        elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token):
+            if token not in functions and token not in operators:
+                raise AssertionError(f"unsupported expression identifier: {token}")
+            translated.append(operators.get(token, token))
+        else:
+            translated.append(operators.get(token, token))
+    return bool(eval("".join(translated).strip(), {"__builtins__": {}}, {**context, **functions}))
+
+
+def job_needs(name: str) -> list[str]:
+    lines = [line for line in job_block(name).splitlines() if line.startswith("    needs:")]
+    if not lines:
+        return []
+    if len(lines) != 1 or not re.fullmatch(r"    needs: \[[a-z_, ]+\]", lines[0]):
+        raise AssertionError(f"unsupported needs declaration for {name}: {lines}")
+    return [value.strip() for value in lines[0].split("[", 1)[1][:-1].split(",")]
+
+
+def job_runs(name: str, **context) -> bool:
+    """Apply GitHub's implicit success() unless an explicit status function exists."""
+    expression = job_condition(name)
+    dependencies = job_needs(name)
+    references = set(re.findall(r"\bneeds\.([A-Za-z_][A-Za-z0-9_]*)\.", expression))
+    if references - set(dependencies):
+        raise AssertionError(f"{name} references undeclared needs: {references - set(dependencies)}")
+    statuses = []
+    for dependency in dependencies:
+        key = f"needs_{dependency}_result"
+        if key not in context:
+            raise AssertionError(f"unsupplied dependency status: {key}")
+        statuses.append(context[key])
+    # Evaluate first even if implicit success is false: missing contexts must
+    # never disappear behind a skipped dependency or short-circuited branch.
+    condition = evaluate_condition(expression, statuses=statuses, **context)
+    explicit_status = re.search(r"\b(?:always|success|failure|cancelled)\s*\(", expression)
+    return condition and (bool(explicit_status) or all(s == "success" for s in statuses))
+
+
+JOBS = (
+    "resolve_release", "require_ci_green", "release_validate", "build_binaries",
+    "collect_candidate", "verify_release_assets", "publish_github_release",
+    "publish_sdk_packages", "publish_registries", "publish_docs",
+)
+WORK_JOBS = JOBS[3:]
+
+
+def protocol_context(mode="promote", publish=True, dry=False, *, event="workflow_dispatch",
+                     tag="v0.8.31"):
+    return {
+        "github_event_name": event,
+        "github_ref": "refs/tags/v0.8.31" if event == "push" else "refs/heads/main",
+        "inputs_release_mode": mode,
+        "inputs_publish_release_packages": publish,
+        "inputs_registry_dry_run": dry,
+        "inputs_release_tag": tag,
+        "github_event_inputs_publish_release_packages": str(publish).lower(),
+        "github_event_inputs_registry_dry_run": str(dry).lower(),
+        "github_event_inputs_release_tag": tag,
+        "needs_resolve_release_outputs_mode": mode,
+        "needs_resolve_release_outputs_publish_packages": str(publish).lower(),
+        "needs_resolve_release_outputs_dry_run": str(dry).lower(),
+        "needs_resolve_release_outputs_tag": tag,
+        **{f"needs_{job}_result": "success" for job in JOBS},
+    }
+
+
+def release_results(context, failures=None):
+    """Run the actual job DAG with successful steps unless explicitly refused."""
+    context = dict(context)
+    results = {}
+    for job in JOBS:
+        result = (failures or {}).get(job, "success") if job_runs(job, **context) else "skipped"
+        results[job] = result
+        context[f"needs_{job}_result"] = result
+    return results
 
 
 def ci_gate_script() -> str:
     """The require_ci_green github-script body, extracted verbatim."""
-    lines = RELEASE_WORKFLOW.read_text().splitlines()
-    step = lines.index("      - name: Refuse unless exact-main CI is already green for this commit")
-    start = lines.index("          script: |", step)
+    lines = step_block("Refuse unless exact-main CI is already green for this commit",
+                       "require_ci_green").splitlines()
+    start = lines.index("          script: |")
     body: list[str] = []
     for line in lines[start + 1 :]:
         if line and not line.startswith("            "):
@@ -113,8 +209,7 @@ def ci_gate_script() -> str:
     return "\n".join(body)
 
 
-def run_ci_gate(runs, release_sha="deadbeef", *, is_dispatch=False,
-                registry_dry_run="", release_tag=""):
+def run_ci_gate(runs, release_sha="deadbeef", *, ci_bypass="false", raw_env=None):
     """Execute the gate under node against a stubbed workflow-run listing.
 
     The gate's decision lives in JavaScript, so asserting on its source text
@@ -131,24 +226,25 @@ const core = {
 };
 const context = { repo: { owner: "lukacf", repo: "meerkat-mobkit" } };
 const github = {
-  rest: { actions: { listWorkflowRuns: async () => ({ data: { workflow_runs: RUNS } }) } },
+  rest: { actions: { listWorkflowRuns: async (args) => {
+    calls.push({ kind: "listWorkflowRuns", args });
+    return { data: { workflow_runs: RUNS } };
+  } } },
 };
 process.env.RELEASE_SHA = %s;
-process.env.IS_DISPATCH = %s;
-process.env.REGISTRY_DRY_RUN = %s;
-process.env.RELEASE_TAG_INPUT = %s;
+process.env.CI_BYPASS = %s;
+Object.assign(process.env, %s);
 (async () => {
 %s
 })().then(() => console.log(JSON.stringify(calls)));
 """ % (
         json.dumps(runs),
         json.dumps(release_sha),
-        json.dumps("true" if is_dispatch else "false"),
-        json.dumps(registry_dry_run),
-        json.dumps(release_tag),
+        json.dumps(ci_bypass),
+        json.dumps(raw_env or {}),
         ci_gate_script(),
     )
-    with tempfile.TemporaryDirectory() as tmp:
+    with fixture_directory() as tmp:
         script = Path(tmp) / "gate.mjs"
         script.write_text(harness)
         out = subprocess.run(
@@ -215,9 +311,8 @@ def step_block(step_name: str, job: str = "build_binaries") -> str:
 
 def step_script(step_name: str, job: str = "build_binaries") -> str:
     """One step's `run: |` body, de-indented, verbatim."""
-    lines = job_block(job).splitlines()
-    step = lines.index(f"      - name: {step_name}")
-    run = lines.index("        run: |", step)
+    lines = step_block(step_name, job).splitlines()
+    run = lines.index("        run: |")
     body: list[str] = []
     for line in lines[run + 1 :]:
         if line and not line.startswith("          "):
@@ -279,7 +374,7 @@ def run_portability_check(dynsyms: str, dynamic: str, *, floor: str | None = Non
     script's decision is under test, not binutils. Only `rpc_gateway` exists
     on disk; other names in `binaries` exercise the missing-file path.
     """
-    with tempfile.TemporaryDirectory() as tmp:
+    with fixture_directory() as tmp:
         root = Path(tmp)
         bin_dir = root / "bin"
         bin_dir.mkdir()
@@ -319,7 +414,7 @@ def run_portability_step(target: str, *, gate_status: int) -> tuple[subprocess.C
     `gate_status`, so the test observes which binaries the step covers and
     whether a refusal propagates, rather than pattern-matching the YAML.
     """
-    with tempfile.TemporaryDirectory() as tmp:
+    with fixture_directory() as tmp:
         root = Path(tmp)
         scripts = root / "scripts"
         scripts.mkdir()
@@ -344,8 +439,9 @@ def run_portability_step(target: str, *, gate_status: int) -> tuple[subprocess.C
 
 class NpmReleaseWorkflowTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.fixtures = fixture_directory()
+        self.root = self.fixtures.__enter__()
+        self.addCleanup(self.fixtures.__exit__, None, None, None)
         self.bin = self.root / "bin"
         self.sdk = self.root / "sdk/typescript"
         self.bin.mkdir()
@@ -400,9 +496,6 @@ esac
         )
         npm.chmod(0o755)
 
-    def tearDown(self):
-        self.temp.cleanup()
-
     def run_publish(
         self,
         view: str,
@@ -420,6 +513,7 @@ esac
                 "FAKE_NPM_VIEW": view,
                 "FAKE_NPM_VERSION": "0.8.0",
                 "FAKE_NPM_PUBLISH_STATUS": str(publish_status),
+                "NPM_VIEW_STDERR": str(self.root / "npm.stderr"),
             }
         )
         return subprocess.run(
@@ -454,6 +548,21 @@ esac
         self.assertIn("E401", result.stderr)
         self.assertFalse(any(command.startswith("publish ") for command in self.npm_commands()))
 
+    def test_network_failure_is_not_treated_as_missing(self):
+        result = self.run_publish("network")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("EAI_AGAIN", result.stderr)
+        self.assertFalse(any(command.startswith("publish ") for command in self.npm_commands()))
+
+    def test_dry_run_never_queries_or_uploads_a_public_version(self):
+        result = self.run_publish("auth", dry_run=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("publish --access public --dry-run", self.npm_commands())
+        self.assertFalse(any(command.startswith("view ") for command in self.npm_commands()))
+        self.assertNotIn("publish --access public", self.npm_commands())
+
     def test_unexpected_exact_query_response_fails_closed(self):
         result = self.run_publish("mismatch")
 
@@ -478,7 +587,94 @@ class RegistryReadbackWorkflowTests(unittest.TestCase):
         self.assertLess(workflow.index("      - name: Publish Python SDK"), workflow.index(verification))
         self.assertLess(workflow.index("      - name: Publish TypeScript SDK"), workflow.index(verification))
         self.assertIn("python scripts/verify-published-registries.py --version", workflow)
-        self.assertIn("github.event.inputs.registry_dry_run != 'true'", workflow)
+        readback = step_block("Verify exact packages are public on every registry", "publish_registries")
+        condition = scalar(readback, "if", "        ")
+        for dry in ("false", "true", ""):
+            with self.subTest(dry=dry):
+                self.assertEqual(
+                    evaluate_condition(condition, needs_resolve_release_outputs_dry_run=dry),
+                    dry == "false",
+                )
+        self.assertIn("publish_sdk_packages", job_needs("publish_registries"))
+        self.assertIn("needs.publish_sdk_packages.result == 'success'", job_condition("publish_registries"))
+
+
+class RegistryPublicationShellTests(unittest.TestCase):
+    """No package tooling runs: the workflow shell drives recording stubs."""
+
+    def run_script(self, step, job, *, dry=False, status=0, output="published"):
+        with fixture_directory() as root:
+            bin_dir = root / "bin"
+            scripts = root / "scripts"
+            bin_dir.mkdir()
+            scripts.mkdir()
+            log = root / "commands.jsonl"
+            stub = (
+                f"#!{sys.executable}\n"
+                "import json, os, sys\n"
+                "with open(os.environ['COMMAND_LOG'], 'a') as stream:\n"
+                "    stream.write(json.dumps(sys.argv) + '\\n')\n"
+                "if sys.argv[1:2] == ['-c']:\n"
+                "    print('0.8.31')\n"
+                "else:\n"
+                "    print(os.environ['COMMAND_OUTPUT'])\n"
+                "    sys.exit(int(os.environ['COMMAND_STATUS']))\n"
+            )
+            for executable in (bin_dir / "python", scripts / "repo-cargo"):
+                executable.write_text(stub)
+                executable.chmod(0o755)
+            script = step_script(step, job).replace(
+                "${{ needs.resolve_release.outputs.dry_run }}", str(dry).lower()
+            )
+            result = subprocess.run(
+                ["bash", "-c", script], cwd=root, capture_output=True, text=True,
+                env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                     "COMMAND_LOG": str(log), "COMMAND_STATUS": str(status),
+                     "COMMAND_OUTPUT": output},
+            )
+            commands = ([json.loads(line)[1:] for line in log.read_text().splitlines()]
+                        if log.exists() else [])
+            return result, commands
+
+    def test_python_rehearsal_builds_and_checks_but_never_uploads(self):
+        for dry in (False, True):
+            with self.subTest(dry=dry):
+                result, commands = self.run_script("Publish Python SDK", "publish_sdk_packages", dry=dry)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(["-m", "build"], commands)
+                self.assertIn(["-m", "twine", "check", "dist/*"], commands)
+                self.assertEqual(
+                    ["-m", "twine", "upload", "--skip-existing", "dist/*"] in commands, not dry
+                )
+
+    def test_crate_rehearsal_passes_dry_run_and_locked_to_the_real_step(self):
+        result, commands = self.run_script("Publish Rust crate", "publish_registries", dry=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(commands, [["publish", "-p", "meerkat-mobkit", "--locked", "--dry-run"]])
+
+    def test_crate_package_exists_is_success_but_other_errors_keep_their_status(self):
+        for output, status, expected in (
+            ("published", 0, 0), ("already exists", 101, 0),
+            ("already uploaded", 101, 0), ("unauthorized", 23, 23), ("network unavailable", 7, 7),
+        ):
+            with self.subTest(output=output):
+                result, commands = self.run_script(
+                    "Publish Rust crate", "publish_registries", status=status, output=output
+                )
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                self.assertEqual(commands, [["publish", "-p", "meerkat-mobkit", "--locked"]])
+
+    def test_registry_readback_uses_workspace_version_and_preserves_refusals(self):
+        for status in (0, 23):
+            with self.subTest(status=status):
+                result, commands = self.run_script(
+                    "Verify exact packages are public on every registry", "publish_registries",
+                    status=status,
+                )
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertEqual(commands[-1],
+                                 ["scripts/verify-published-registries.py", "--version", "0.8.31"])
+                self.assertIn('["workspace"]["package"]["version"]', commands[0][-1])
 
 
 class DocsPublicationWorkflowTests(unittest.TestCase):
@@ -490,13 +686,13 @@ class DocsPublicationWorkflowTests(unittest.TestCase):
         )
 
         self.assertGreater(docs_job, registry_readback)
-        self.assertIn(
-            "needs: [publish_github_release, publish_registries]",
-            workflow[docs_job:],
+        self.assertTrue(
+            {"resolve_release", "verify_release_assets", "publish_github_release", "publish_registries"}
+            <= set(job_needs("publish_docs"))
         )
         self.assertIn("needs.publish_github_release.result == 'success'", workflow[docs_job:])
         self.assertIn("needs.publish_registries.result == 'success'", workflow[docs_job:])
-        self.assertIn("github.event.inputs.registry_dry_run != 'true'", workflow[docs_job:])
+        self.assertIn("needs.resolve_release.outputs.dry_run == 'false'", job_condition("publish_docs"))
 
     def test_docs_dispatch_carries_immutable_release_identity(self):
         workflow = RELEASE_WORKFLOW.read_text()
@@ -509,194 +705,458 @@ class DocsPublicationWorkflowTests(unittest.TestCase):
         self.assertIn("version: $version", docs_job)
         self.assertIn("release_sha=$(git rev-parse HEAD)", docs_job)
         self.assertIn("repos/lukacf/meerkat/dispatches", docs_job)
+        self.assertIn("RELEASE_TAG: ${{ needs.resolve_release.outputs.tag }}", docs_job)
+        self.assertIn('if [[ "$version" != "$tag_version" ]]', docs_job)
 
 
-class SdkPublicationOrderingTests(unittest.TestCase):
-    """The SDK must not reach a public registry before the release it belongs to.
+class ReleaseProtocolConditionsTests(unittest.TestCase):
+    """Exercise raw conditions and actual dependency skipping, without a resolver.
 
-    A PyPI upload cannot be withdrawn and an npm unpublish is 72h-limited, while
-    the five cross-compiles behind it can still fail afterwards. This repo has
-    shipped that half-release already: the v0.6.43 tag dispatch published
-    registries, then x86_64-pc-windows-msvc failed and the release assets were
-    skipped. publish_registries was gated in response; splitting the SDK out of
-    it re-opened the same hole for PyPI and npm alone.
+    The helper suite owns input rejection. Artificial outputs here deliberately
+    bypass it to prove the workflow's separate event/mode publication boundary.
     """
 
-    TAG_RELEASE = dict(
-        github_ref="refs/tags/v0.8.21",
-        github_event_name="push",
-        github_event_inputs_publish_release_packages="",
-        github_event_inputs_registry_dry_run="",
-        github_event_inputs_release_tag="",
-        needs_release_validate_result="success",
-    )
+    def test_complete_event_mode_boolean_dag_matrix(self):
+        for event, mode, publish, dry, tag in itertools.product(
+            ("push", "workflow_dispatch"),
+            ("tag", "candidate", "promote", "existing", "assets", "unknown", ""),
+            (False, True), (False, True), ("", "v0.8.31"),
+        ):
+            with self.subTest(event=event, mode=mode, publish=publish, dry=dry, tag=tag):
+                results = release_results(protocol_context(mode, publish, dry, event=event, tag=tag))
+                expected = set()
+                if event == "workflow_dispatch":
+                    if mode == "candidate":
+                        expected = {"build_binaries", "collect_candidate"}
+                    elif mode == "promote":
+                        expected = {"verify_release_assets"}
+                        if not dry:
+                            expected.add("publish_github_release")
+                        if publish:
+                            expected.update(("publish_sdk_packages", "publish_registries"))
+                            if not dry:
+                                expected.add("publish_docs")
+                    elif mode == "existing" and publish:
+                        expected = {"publish_sdk_packages", "publish_registries"}
+                        if not dry:
+                            expected.update(("verify_release_assets", "publish_docs"))
+                    elif mode == "assets" and not publish and not dry:
+                        expected = {"publish_github_release"}
+                # Tag/input validity belongs to resolve_release's tests. Here
+                # all resolver outputs are trusted artificial values, including
+                # an empty tag, so this tests raw job conditions independently.
+                actual = {job for job in WORK_JOBS if results[job] == "success"}
+                self.assertEqual(actual, expected)
 
-    def test_a_tagged_release_publishes_the_sdk_once_binaries_and_release_exist(self):
-        self.assertTrue(
-            evaluate_condition(
-                job_condition("publish_sdk_packages"),
-                **self.TAG_RELEASE,
-                needs_build_binaries_result="success",
-                needs_publish_github_release_result="success",
-            )
+    def test_tag_events_cannot_reach_any_work_job_with_artificial_promotion_outputs(self):
+        for mode, publish, dry in itertools.product(
+            ("tag", "candidate", "promote", "existing", "assets"),
+            ("", False, True), ("", False, True),
+        ):
+            context = protocol_context(mode, publish, dry, event="push")
+            for job in WORK_JOBS:
+                with self.subTest(job=job, mode=mode, publish=publish, dry=dry):
+                    self.assertFalse(job_runs(job, **context))
+
+    def test_candidate_cannot_publish_even_with_all_upstreams_success_and_any_flags(self):
+        for publish, dry in itertools.product((False, True, ""), repeat=2):
+            for job in WORK_JOBS[2:]:
+                with self.subTest(job=job, publish=publish, dry=dry):
+                    self.assertFalse(job_runs(job, **protocol_context("candidate", publish, dry)))
+
+    def test_assets_mode_allows_only_false_false_and_never_packages_or_docs(self):
+        for publish, dry in itertools.product((False, True, ""), repeat=2):
+            context = protocol_context("assets", publish, dry)
+            for job in WORK_JOBS:
+                with self.subTest(job=job, publish=publish, dry=dry):
+                    self.assertEqual(
+                        job_runs(job, **context),
+                        job == "publish_github_release" and publish is False and dry is False,
+                    )
+
+    def test_failed_or_skipped_gate_cascades_through_every_lane(self):
+        for mode, publish, dry, upstream, status in itertools.product(
+            ("candidate", "promote", "existing", "assets"),
+            (False, True), (False, True),
+            ("resolve_release", "require_ci_green", "release_validate"),
+            ("failure", "skipped", "cancelled"),
+        ):
+            with self.subTest(mode=mode, publish=publish, dry=dry, upstream=upstream, status=status):
+                results = release_results(
+                    protocol_context(mode, publish, dry), failures={upstream: status}
+                )
+                self.assertFalse({job for job in WORK_JOBS if results[job] == "success"})
+
+    def test_full_publication_stops_at_each_failed_boundary(self):
+        for upstream, downstream in (
+            ("verify_release_assets", ("publish_github_release", "publish_sdk_packages",
+                                       "publish_registries", "publish_docs")),
+            ("publish_github_release", ("publish_sdk_packages", "publish_registries", "publish_docs")),
+            ("publish_sdk_packages", ("publish_registries", "publish_docs")),
+            ("publish_registries", ("publish_docs",)),
+        ):
+            for status in ("failure", "skipped", "cancelled"):
+                with self.subTest(upstream=upstream, status=status):
+                    results = release_results(protocol_context(), {upstream: status})
+                    for job in downstream:
+                        self.assertEqual(results[job], "skipped", job)
+                    self.assertEqual(results["build_binaries"], "skipped")
+
+    def test_actual_condition_success_guards_across_all_dependency_results(self):
+        scenarios = (
+            ("publish_github_release", "promote", True, False,
+             {"release_validate", "verify_release_assets"}),
+            ("publish_github_release", "assets", False, False, {"release_validate"}),
+            ("publish_sdk_packages", "promote", True, False,
+             {"release_validate", "verify_release_assets", "publish_github_release"}),
+            ("publish_sdk_packages", "promote", True, True,
+             {"release_validate", "verify_release_assets"}),
+            ("publish_sdk_packages", "existing", True, False,
+             {"release_validate", "verify_release_assets"}),
+            ("publish_sdk_packages", "existing", True, True, {"release_validate"}),
+            ("publish_registries", "promote", True, False,
+             {"release_validate", "verify_release_assets", "publish_github_release", "publish_sdk_packages"}),
+            ("publish_registries", "promote", True, True,
+             {"release_validate", "verify_release_assets", "publish_sdk_packages"}),
+            ("publish_registries", "existing", True, False,
+             {"release_validate", "verify_release_assets", "publish_sdk_packages"}),
+            ("publish_registries", "existing", True, True,
+             {"release_validate", "publish_sdk_packages"}),
+            ("publish_docs", "promote", True, False,
+             {"publish_registries", "publish_github_release"}),
+            ("publish_docs", "existing", True, False,
+             {"publish_registries", "verify_release_assets"}),
         )
+        for job, mode, publish, dry, required in scenarios:
+            self.assertIn("always()", job_condition(job))
+            # resolve_release is already required by validation (and by the
+            # registry DAG for docs). Its failure cascade is tested above.
+            dependencies = [need for need in job_needs(job) if need != "resolve_release"]
+            for statuses in itertools.product(("success", "failure", "skipped", "cancelled"),
+                                              repeat=len(dependencies)):
+                context = protocol_context(mode, publish, dry)
+                results = dict(zip(dependencies, statuses))
+                context.update({f"needs_{need}_result": value for need, value in results.items()})
+                with self.subTest(job=job, mode=mode, dry=dry, results=results):
+                    self.assertEqual(
+                        job_runs(job, **context), all(results[need] == "success" for need in required)
+                    )
 
-    def test_a_failed_cross_compile_withholds_the_sdk(self):
-        # The v0.6.43 shape. Before the gate this published to PyPI and npm.
-        self.assertFalse(
-            evaluate_condition(
-                job_condition("publish_sdk_packages"),
-                **self.TAG_RELEASE,
-                needs_build_binaries_result="failure",
-                needs_publish_github_release_result="skipped",
-            )
-        )
+    def test_ordinary_jobs_require_implicit_success_of_every_declared_need(self):
+        for job, mode in (("require_ci_green", "candidate"), ("release_validate", "candidate"),
+                          ("build_binaries", "candidate"), ("collect_candidate", "candidate"),
+                          ("verify_release_assets", "promote")):
+            self.assertNotIn("always()", job_condition(job))
+            for statuses in itertools.product(("success", "failure", "skipped", "cancelled"),
+                                              repeat=len(job_needs(job))):
+                context = protocol_context(mode)
+                context.update({f"needs_{need}_result": value
+                                for need, value in zip(job_needs(job), statuses)})
+                with self.subTest(job=job, statuses=statuses):
+                    self.assertEqual(job_runs(job, **context), all(s == "success" for s in statuses))
 
-    def test_a_missing_github_release_withholds_the_sdk(self):
-        self.assertFalse(
-            evaluate_condition(
-                job_condition("publish_sdk_packages"),
-                **self.TAG_RELEASE,
-                needs_build_binaries_result="success",
-                needs_publish_github_release_result="failure",
-            )
-        )
+    def test_tag_mode_stops_before_heavy_validation(self):
+        results = release_results(protocol_context("tag", event="push"))
+        self.assertEqual(results["require_ci_green"], "success")
+        self.assertEqual(results["release_validate"], "skipped")
+        self.assertTrue(all(results[job] == "skipped" for job in WORK_JOBS))
 
-    def test_an_untagged_dispatch_cannot_reach_a_public_registry(self):
-        # Dispatch from main with publish_release_packages=true and dry-run off.
-        # build_binaries and publish_github_release are skipped by their own `if`
-        # because there is no tag, so before the gate this uploaded a real
-        # version to PyPI and npm off an untagged branch.
-        self.assertFalse(
-            evaluate_condition(
-                job_condition("publish_sdk_packages"),
-                github_ref="refs/heads/main",
-                github_event_name="workflow_dispatch",
-                github_event_inputs_publish_release_packages="true",
-                github_event_inputs_registry_dry_run="false",
-                github_event_inputs_release_tag="",
-                needs_release_validate_result="success",
-                needs_build_binaries_result="skipped",
-                needs_publish_github_release_result="skipped",
-            )
-        )
+    def test_registry_retry_never_calls_the_github_publisher(self):
+        for dry in (False, True):
+            context = protocol_context("existing", True, dry)
+            results = release_results(context)
+            self.assertEqual(results["publish_github_release"], "skipped")
+            self.assertEqual(results["publish_sdk_packages"], "success")
+            self.assertEqual(results["publish_registries"], "success")
+            self.assertEqual(results["verify_release_assets"], "skipped" if dry else "success")
+            self.assertEqual(results["publish_docs"], "skipped" if dry else "success")
+            for status in ("failure", "skipped"):
+                failed = release_results(context, {"verify_release_assets": status})
+                self.assertEqual(failed["publish_sdk_packages"], "success" if dry else "skipped")
 
-    def test_the_dry_run_lane_still_exercises_the_sdk_build(self):
-        # Deliberate: on a dry run the uploads are skipped inside the steps, so
-        # the job must still run or `python -m build`, `twine check` and
-        # `npm publish --dry-run` stop being exercised at all.
-        self.assertTrue(
-            evaluate_condition(
-                job_condition("publish_sdk_packages"),
-                github_ref="refs/heads/main",
-                github_event_name="workflow_dispatch",
-                github_event_inputs_publish_release_packages="true",
-                github_event_inputs_registry_dry_run="true",
-                github_event_inputs_release_tag="",
-                needs_release_validate_result="success",
-                needs_build_binaries_result="skipped",
-                needs_publish_github_release_result="skipped",
-            )
-        )
+    def test_promotion_rehearsals_always_require_verified_candidate(self):
+        for publish in (False, True):
+            for status in ("failure", "skipped", "cancelled"):
+                results = release_results(protocol_context("promote", publish, True),
+                                          {"verify_release_assets": status})
+                for job in ("publish_github_release", "publish_sdk_packages",
+                            "publish_registries", "publish_docs"):
+                    self.assertEqual(results[job], "skipped", (publish, status, job))
 
-    def test_the_sdk_is_gated_no_more_weakly_than_the_crate(self):
-        # Parity, so the two publication jobs cannot drift apart again.
-        sdk = job_condition("publish_sdk_packages")
-        crate = job_condition("publish_registries")
-        gate = (
-            "((github.event_name == 'workflow_dispatch' && "
-            "github.event.inputs.registry_dry_run == 'true') || "
-            "(needs.build_binaries.result == 'success' && "
-            "needs.publish_github_release.result == 'success'))"
-        )
-        self.assertIn(gate, sdk)
-        self.assertIn(gate, crate)
 
-    def test_the_gate_is_declared_in_needs_so_it_is_actually_waited_on(self):
-        # An `if` naming a job absent from `needs` reads as '' and never blocks.
+class WorkflowExtractorTests(unittest.TestCase):
+    def test_bounded_jobs_and_steps_cannot_borrow_guards_from_their_neighbors(self):
         block = job_block("publish_sdk_packages")
-        self.assertIn(
-            "needs: [release_validate, build_binaries, publish_github_release]", block
-        )
-
-    def test_always_is_retained_so_skipped_upstreams_do_not_skip_the_job(self):
-        self.assertIn("always()", job_condition("publish_sdk_packages"))
-
-    def test_the_bounded_slice_does_not_leak_the_next_job(self):
-        # Guards the helper itself: an unbounded slice made these assertions
-        # pass against unmodified code, because publish_registries carries the
-        # same strings.
-        block = job_block("publish_sdk_packages")
-        self.assertIn("publish_sdk_packages:", block)
         self.assertNotIn("publish_registries:", block)
         self.assertNotIn("Publish Rust crate", block)
+        step = step_block("Checkout immutable source", "verify_release_assets")
+        self.assertNotIn("github.workflow_sha", step)
+        self.assertNotIn("Checkout immutable workflow tools", step)
+        with self.assertRaises(ValueError):
+            step_script("Checkout immutable source", "verify_release_assets")
+
+    def test_missing_context_fails_even_in_short_circuited_or_skipped_conditions(self):
+        with self.assertRaisesRegex(AssertionError, "unsupplied"):
+            evaluate_condition("false && needs.resolve_release.outputs.missing == 'true'")
+        context = protocol_context()
+        context.pop("needs_resolve_release_outputs_mode")
+        context["needs_release_validate_result"] = "skipped"
+        with self.assertRaisesRegex(AssertionError, "unsupplied"):
+            job_runs("verify_release_assets", **context)
+        with self.assertRaisesRegex(AssertionError, "unsupplied"):
+            job_runs("require_ci_green")
+
+    def test_boolean_inequality_and_status_functions_are_not_relaxed(self):
+        self.assertTrue(evaluate_condition("!false && true != false && always()"))
+        self.assertFalse(evaluate_condition("success()", statuses=("skipped",)))
+        self.assertTrue(evaluate_condition("failure()", statuses=("failure",)))
+        self.assertTrue(evaluate_condition("cancelled()", statuses=("cancelled",)))
+        with self.assertRaisesRegex(AssertionError, "unsupported"):
+            evaluate_condition("unknownFunction()")
+        with self.assertRaisesRegex(AssertionError, "unsupported"):
+            evaluate_condition("1 + 1")
+
+
+class ImmutableReleaseWorkflowTests(unittest.TestCase):
+    def test_protocol_inputs_have_safe_compatibility_defaults(self):
+        head = RELEASE_WORKFLOW.read_text().split("jobs:", 1)[0]
+        self.assertIn("options: [existing, candidate, promote, assets]", head)
+        self.assertIn("default: existing", head)
+        for name in ("source_sha", "artifact_selection", "release_tag"):
+            self.assertIn(f"      {name}:", head)
+        for name in ("publish_release_packages", "registry_dry_run"):
+            start = head.index(f"      {name}:")
+            block = re.split(r"\n      \w+:", head[start:], maxsplit=1)[0]
+            self.assertIn("default: false", block)
+            self.assertIn("type: boolean", block)
+
+    def test_resolver_is_the_only_authority_for_source_and_flags(self):
+        resolve = job_block("resolve_release")
+        for output in ("mode", "sha", "version", "tag", "publish_packages", "dry_run", "ci_bypass"):
+            self.assertIn(f"      {output}: ${{{{ steps.resolve.outputs.{output} }}}}", resolve)
+        self.assertIn("run: python3 scripts/release-candidate.py resolve", resolve)
+        for variable, input_name in (
+            ("RELEASE_MODE", "release_mode"), ("SOURCE_SHA", "source_sha"),
+            ("RELEASE_TAG", "release_tag"), ("ARTIFACT_SELECTION", "artifact_selection"),
+            ("PUBLISH_RELEASE_PACKAGES", "publish_release_packages"),
+            ("REGISTRY_DRY_RUN", "registry_dry_run"),
+        ):
+            self.assertIn(f"{variable}: ${{{{ inputs.{input_name} }}}}", resolve)
+        for job in JOBS[1:]:
+            with self.subTest(job=job):
+                block = job_block(job)
+                self.assertNotRegex(
+                    block,
+                    r"(?:github\.event\.)?inputs\.(?:release_mode|source_sha|release_tag|"
+                    r"publish_release_packages|registry_dry_run)\b",
+                )
+                self.assertNotIn("github.ref_name", block)
+                self.assertNotIn("github.sha", block)
+
+    def test_every_checkout_uses_the_immutable_source_or_separate_workflow_tools(self):
+        for job in JOBS:
+            lines = job_block(job).splitlines()
+            for index, line in enumerate(lines):
+                if "uses: actions/checkout@" not in line:
+                    continue
+                name = lines[index - 1].split("- name: ", 1)[1]
+                block = step_block(name, job)
+                with self.subTest(job=job, step=name):
+                    expected = ("${{ github.workflow_sha }}"
+                                if name == "Checkout immutable workflow tools"
+                                else "${{ needs.resolve_release.outputs.sha }}")
+                    self.assertEqual(scalar(block, "ref", "          "), expected)
+                    if name == "Checkout immutable workflow tools" and job != "resolve_release":
+                        self.assertEqual(scalar(block, "path", "          "), ".release-tools")
+        self.assertIn("Checkout immutable workflow tools", job_block("resolve_release"))
+
+    def test_old_source_verifiers_and_publisher_use_pinned_tools_not_source_scripts(self):
+        for job in ("verify_release_assets", "publish_github_release"):
+            block = job_block(job)
+            self.assertIn("Checkout immutable source", block)
+            self.assertIn("Checkout immutable workflow tools", block)
+            commands = re.findall(r"python3 (\S*release-candidate\.py) (\S+)", block)
+            self.assertTrue(commands)
+            self.assertTrue(all(path == ".release-tools/scripts/release-candidate.py"
+                                for path, _ in commands))
+            for variable, output in (("RELEASE_MODE", "mode"), ("RELEASE_SHA", "sha"),
+                                     ("RELEASE_VERSION", "version"), ("RELEASE_TAG", "tag"),
+                                     ("REGISTRY_DRY_RUN", "dry_run")):
+                self.assertIn(f"{variable}: ${{{{ needs.resolve_release.outputs.{output} }}}}", block)
+
+    def test_candidate_preserves_full_locked_matrix_and_signs_before_archiving(self):
+        self.assertEqual(set(matrix_targets()), {
+            "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "aarch64-apple-darwin",
+            "x86_64-apple-darwin", "x86_64-pc-windows-msvc",
+        })
+        script = step_script("Build gateway binaries")
+        self.assertEqual(set(re.findall(r"--bin (\w+)", script)),
+                         {"mobkit_gateway", "rpc_gateway", "mobkit_repair"})
+        self.assertIn("--locked --release --target", script)
+        packaging = step_block("Package artifacts")
+        self.assertIn("VERSION: ${{ needs.resolve_release.outputs.version }}", packaging)
+        self.assertNotIn("GITHUB_REF", packaging)
+        self.assertIn('artifact="${prefix}-${VERSION}-${TARGET}.${ARCHIVE_EXT}"', packaging)
+        signing = step_block("Ad-hoc codesign macOS binaries")
+        self.assertEqual(scalar(signing, "if", "        "), "runner.os == 'macOS'")
+        self.assertIn("for bin in mobkit_gateway rpc_gateway mobkit_repair", signing)
+        self.assertIn('codesign --force --sign - "target/${{ matrix.target }}/release/${bin}"', signing)
+        block = job_block("build_binaries")
+        order = ("Apply release build profile overrides", "Build gateway binaries",
+                 "Ad-hoc codesign macOS binaries", "Package artifacts", "Attest build provenance",
+                 "Retain original provenance bundle", "Upload artifacts")
+        positions = [block.index(f"      - name: {name}") for name in order]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_original_bundles_are_retained_before_immutable_attempt_qualified_uploads(self):
+        for job, attest, retain, upload, expected_name, directory in (
+            ("build_binaries", "Attest build provenance", "Retain original provenance bundle",
+             "Upload artifacts", "mobkit-gateway-binaries-${{ matrix.target }}-${{ github.run_attempt }}", "dist"),
+            ("collect_candidate", "Attest candidate manifest", "Retain manifest provenance bundle",
+             "Upload immutable candidate manifest", "mobkit-candidate-manifest-${{ github.run_attempt }}", "candidate"),
+        ):
+            with self.subTest(job=job):
+                block = job_block(job)
+                self.assertLess(block.index(f"- name: {attest}"), block.index(f"- name: {retain}"))
+                self.assertLess(block.index(f"- name: {retain}"), block.index(f"- name: {upload}"))
+                retained = step_block(retain, job)
+                self.assertIn("BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}", retained)
+                self.assertIn(f'run: cp "$BUNDLE_PATH" {directory}/provenance.jsonl', retained)
+                artifact = step_block(upload, job)
+                self.assertIn("uses: actions/upload-artifact@v4", artifact)
+                for field, value in (("name", expected_name), ("overwrite", "false"),
+                                     ("retention-days", "90"), ("if-no-files-found", "error"),
+                                     ("path", f"{directory}/*")):
+                    self.assertEqual(scalar(artifact, field, "          "), value)
+        manifest = step_block("Attest candidate manifest", "collect_candidate")
+        self.assertEqual(scalar(manifest, "subject-path", "          "),
+                         "candidate/candidate-manifest.json")
+
+    def test_collection_binds_ci_and_upload_identity_before_emitting_acceptance(self):
+        block = job_block("collect_candidate")
+        self.assertEqual(job_needs("collect_candidate"),
+                         ["resolve_release", "require_ci_green", "build_binaries"])
+        for field in ("run_id", "run_attempt"):
+            self.assertIn(f"${{{{ needs.require_ci_green.outputs.{field} }}}}", block)
+        collect = step_script("Collect verified original artifacts", "collect_candidate")
+        self.assertIn('--ci-run-id "$CI_RUN_ID" --ci-run-attempt "$CI_RUN_ATTEMPT"', collect)
+        selection = step_block("Emit explicit acceptance selection", "collect_candidate")
+        self.assertIn("ARTIFACT_ID: ${{ steps.manifest.outputs.artifact-id }}", selection)
+        self.assertIn("ARTIFACT_DIGEST: ${{ steps.manifest.outputs.artifact-digest }}", selection)
+        self.assertIn('--artifact-id "$ARTIFACT_ID" --artifact-digest "$ARTIFACT_DIGEST"', selection)
+        self.assertLess(block.index("- name: Upload immutable candidate manifest"),
+                        block.index("- name: Emit explicit acceptance selection"))
+
+    def test_publisher_requires_strict_restaging_in_its_own_job_before_any_publish(self):
+        job = "publish_github_release"
+        stage = step_block("Reverify original candidate before publication", job)
+        publish = step_block("Publish exact original archives", job)
+        self.assertEqual(scalar(stage, "if", "        "), "needs.resolve_release.outputs.mode == 'promote'")
+        self.assertEqual(scalar(stage, "if", "        "), scalar(publish, "if", "        "))
+        self.assertIn(" stage --output-dir release-assets --proof-dir release-proofs", stage)
+        self.assertIn(" publish --assets-dir release-assets --proof-dir release-proofs", publish)
+        self.assertLess(job_block(job).index(stage), job_block(job).index(publish))
+        self.assertNotIn("continue-on-error:", job_block(job))
+        self.assertNotIn("always()", scalar(publish, "if", "        "))
+        recover = step_block("Recover explicitly selected missing original assets", job)
+        self.assertEqual(scalar(recover, "if", "        "), "needs.resolve_release.outputs.mode == 'assets'")
+        self.assertIn(".release-tools/scripts/release-candidate.py recover", recover)
+
+    def test_registry_retry_uses_read_only_public_verification_not_candidate_selection(self):
+        block = step_block("Verify existing published assets without writes", "verify_release_assets")
+        self.assertEqual(scalar(block, "if", "        "), "needs.resolve_release.outputs.mode == 'existing'")
+        self.assertIn("release-candidate.py verify-published", block)
+        selected = step_block("Verify selected candidate", "verify_release_assets")
+        self.assertEqual(scalar(selected, "if", "        "), "needs.resolve_release.outputs.mode == 'promote'")
+        self.assertIn("stage --output-dir release-assets --proof-dir release-proofs", selected)
+
+    def test_promotion_and_recovery_never_rebuild_resign_repack_or_reattest_binaries(self):
+        for job in ("verify_release_assets", "publish_github_release", "publish_sdk_packages",
+                    "publish_registries", "publish_docs"):
+            with self.subTest(job=job):
+                block = job_block(job)
+                self.assertNotRegex(block, r"(?m)^\s*(?:cargo|scripts/repo-cargo) build\b")
+                self.assertNotRegex(block, r"\b(?:codesign|strip|7z)\b")
+                self.assertNotRegex(block, r"\btar\s+-[cz]")
+                self.assertNotIn("attest-build-provenance", block)
+                self.assertNotIn("download-artifact@", block)
+                self.assertNotIn("build_binaries", job_needs(job))
+
+    def test_release_writes_are_serialized_by_explicit_tag_without_cancellation(self):
+        head = RELEASE_WORKFLOW.read_text().split("jobs:", 1)[0]
+        concurrency = head.split("concurrency:", 1)[1].split("\nenv:", 1)[0]
+        self.assertIn("inputs.release_tag", scalar(concurrency, "group", "  "))
+        self.assertIn("github.run_id", scalar(concurrency, "group", "  "))
+        self.assertEqual(scalar(concurrency, "cancel-in-progress", "  "), "false")
+
+
+class ReleasePermissionsTests(unittest.TestCase):
+    @staticmethod
+    def permissions(block, indent):
+        lines = block.splitlines()
+        marker = f"{indent}permissions:"
+        if marker not in lines:
+            return None
+        grants = {}
+        for line in lines[lines.index(marker) + 1:]:
+            if not line.strip() or line.strip().startswith("#"):
+                continue
+            if not line.startswith(indent + "  "):
+                break
+            key, value = line.strip().split(": ", 1)
+            grants[key] = value
+        return grants
+
+    def test_global_permissions_are_read_only(self):
+        self.assertEqual(self.permissions(RELEASE_WORKFLOW.read_text(), ""),
+                         {"actions": "read", "contents": "read"})
+
+    def test_attestation_grants_are_candidate_only_and_contents_write_is_publisher_only(self):
+        for job in JOBS:
+            grants = self.permissions(job_block(job), "    ") or {}
+            writes = {key for key, value in grants.items() if value == "write"}
+            expected = ({"id-token", "attestations"} if job in ("build_binaries", "collect_candidate")
+                        else {"contents"} if job == "publish_github_release" else set())
+            with self.subTest(job=job):
+                self.assertEqual(writes, expected)
+                if job in ("build_binaries", "collect_candidate"):
+                    self.assertEqual(grants.get("contents"), "read")
+        self.assertEqual(self.permissions(job_block("collect_candidate"), "    ").get("actions"), "read")
+
+    def test_no_registry_or_docs_credentials_reach_candidate_jobs(self):
+        for job in ("resolve_release", "require_ci_green", "release_validate",
+                    "build_binaries", "collect_candidate"):
+            with self.subTest(job=job):
+                self.assertNotIn("secrets.", job_block(job))
+        for secret, owner in (("PYPI_API_TOKEN", "publish_sdk_packages"),
+                              ("NPM_TOKEN", "publish_sdk_packages"),
+                              ("CARGO_REGISTRY_TOKEN", "publish_registries"),
+                              ("DOCS_PUBLISH_TOKEN", "publish_docs")):
+            for job in JOBS:
+                self.assertEqual(f"secrets.{secret}" in job_block(job), job == owner, (secret, job))
 
 
 class ExactMainCiGateTests(unittest.TestCase):
-    """The release path must refuse a commit that was never green on main.
+    """Execute the real JavaScript with a read-only Actions API stub."""
 
-    Before `require_ci_green`, `release_validate` had no `needs` at all, so a
-    tag published without anyone checking the commit. v0.8.26 was gated by hand.
-    A hand check is not a control: it is present exactly when someone remembers.
+    GREEN_RUN = {
+        "head_sha": "deadbeef", "head_branch": "main", "event": "push",
+        "status": "completed", "conclusion": "success", "run_attempt": 2,
+        "id": 42, "html_url": "https://example.invalid/actions/runs/42",
+    }
 
-    These evaluate the real `if:` expressions under a context where the gate
-    failed, rather than asserting that the string "require_ci_green" appears
-    somewhere. A job can name the gate in `needs` and still run anyway - three
-    of these jobs carry `always()`, which is precisely what makes `needs` stop
-    being a gate on its own.
-    """
-
-    # A gate failure SKIPS release_validate; it does not fail it. Every guard
-    # downstream is written against 'success', so 'skipped' is the value that
-    # actually occurs and the one worth testing.
-    GATE_FAILED = dict(
-        github_ref="refs/tags/v0.8.27",
-        github_event_name="push",
-        github_event_inputs_publish_release_packages="",
-        github_event_inputs_registry_dry_run="",
-        github_event_inputs_release_tag="",
-        needs_release_validate_result="skipped",
-        needs_build_binaries_result="skipped",
-        needs_publish_github_release_result="skipped",
-        needs_publish_registries_result="skipped",
-        needs_publish_sdk_packages_result="skipped",
-    )
-
-    def test_no_publishing_job_runs_when_the_ci_gate_did_not_pass(self):
-        for job in (
-            "publish_sdk_packages",
-            "publish_registries",
-            "publish_docs",
-        ):
-            with self.subTest(job=job):
-                self.assertFalse(
-                    evaluate_condition(job_condition(job), **self.GATE_FAILED)
-                )
-
-    def test_the_dry_run_lane_cannot_bypass_the_ci_gate(self):
-        # publish_sdk_packages and publish_registries carry a dry-run disjunct
-        # that deliberately tolerates skipped binaries. That disjunct must not
-        # also tolerate a skipped CI gate, or a dispatch would route around it.
-        for job in ("publish_sdk_packages", "publish_registries"):
-            with self.subTest(job=job):
-                self.assertFalse(
-                    evaluate_condition(
-                        job_condition(job),
-                        github_ref="refs/heads/main",
-                        github_event_name="workflow_dispatch",
-                        github_event_inputs_publish_release_packages="true",
-                        github_event_inputs_registry_dry_run="true",
-                        github_event_inputs_release_tag="",
-                        needs_release_validate_result="skipped",
-                        needs_build_binaries_result="skipped",
-                        needs_publish_github_release_result="skipped",
-                        needs_publish_sdk_packages_result="skipped",
-                    )
-                )
+    def assert_refused(self, calls):
+        self.assertEqual([c["kind"] for c in calls], ["listWorkflowRuns", "setFailed"])
 
     def test_release_validate_waits_on_the_gate_rather_than_merely_coexisting(self):
         block = job_block("release_validate")
-        self.assertIn("needs: [require_ci_green]", block)
+        self.assertEqual(job_needs("release_validate"), ["resolve_release", "require_ci_green"])
+        self.assertEqual(job_needs("require_ci_green"), ["resolve_release"])
+        self.assertIn("RELEASE_SHA: ${{ needs.resolve_release.outputs.sha }}",
+                      job_block("require_ci_green"))
+        self.assertIn("CI_BYPASS: ${{ needs.resolve_release.outputs.ci_bypass }}",
+                      job_block("require_ci_green"))
+        self.assertNotIn("inputs.", job_block("require_ci_green"))
 
     def test_the_gate_refuses_rather_than_polls(self):
         # A poll converts "this commit was never verified" into "this is taking
@@ -713,76 +1173,60 @@ class ExactMainCiGateTests(unittest.TestCase):
         self.assertIn("actions: read", workflow_permissions_without_comments())
 
     def test_a_green_exact_main_run_is_accepted(self):
-        calls = run_ci_gate(
-            [{"head_sha": "deadbeef", "head_branch": "main", "event": "push",
-              "status": "completed", "conclusion": "success",
-              "run_attempt": 1, "id": 42, "html_url": "u"}]
-        )
+        calls = run_ci_gate([self.GREEN_RUN])
         self.assertEqual([c["kind"] for c in calls].count("setFailed"), 0)
-        self.assertIn("setOutput", [c["kind"] for c in calls])
+        self.assertEqual(calls[0], {
+            "kind": "listWorkflowRuns",
+            "args": {"owner": "lukacf", "repo": "meerkat-mobkit", "workflow_id": "ci.yml",
+                     "branch": "main", "event": "push", "head_sha": "deadbeef", "per_page": 100},
+        })
+        self.assertIn({"kind": "setOutput", "name": "run_id", "value": "42"}, calls)
+        self.assertIn({"kind": "setOutput", "name": "run_attempt", "value": "2"}, calls)
 
     def test_a_completed_but_failed_run_is_refused(self):
         # THE assertion of the whole gate. Dropping `conclusion === "success"`
         # leaves a check that accepts any terminal state, including failure.
-        calls = run_ci_gate(
-            [{"head_sha": "deadbeef", "head_branch": "main", "event": "push",
-              "status": "completed", "conclusion": "failure",
-              "run_attempt": 1, "id": 42, "html_url": "u"}]
-        )
-        self.assertEqual([c["kind"] for c in calls], ["setFailed"])
+        for conclusion in ("failure", "cancelled", "skipped", "neutral", "timed_out", None):
+            with self.subTest(conclusion=conclusion):
+                self.assert_refused(run_ci_gate([{**self.GREEN_RUN, "conclusion": conclusion}]))
 
     def test_a_commit_with_no_exact_main_run_is_refused(self):
-        self.assertEqual([c["kind"] for c in run_ci_gate([])], ["setFailed"])
+        self.assert_refused(run_ci_gate([]))
 
     def test_a_pull_request_run_on_the_same_sha_is_not_accepted(self):
         # The v0.8.26 shape: the PR head was green on pull_request and had zero
         # push-to-main runs. A merge-result run answers a different question.
-        calls = run_ci_gate(
-            [{"head_sha": "deadbeef", "head_branch": "codex/x", "event": "pull_request",
-              "status": "completed", "conclusion": "success",
-              "run_attempt": 1, "id": 42, "html_url": "u"}]
-        )
-        self.assertEqual([c["kind"] for c in calls], ["setFailed"])
+        self.assert_refused(run_ci_gate([{**self.GREEN_RUN, "event": "pull_request"}]))
 
-    def test_a_pure_dry_run_dispatch_is_not_gated(self):
-        # Nothing is published on this lane, so there is no publication to
-        # verify. Gating it would skip release_validate and silently retire
-        # `python -m build`, `twine check` and `npm publish --dry-run` - the
-        # exact three checks #340 kept `always()` in order to preserve.
-        calls = run_ci_gate(
-            [], is_dispatch=True, registry_dry_run="true", release_tag=""
-        )
+    def test_only_the_resolver_can_authorize_the_ci_bypass(self):
+        calls = run_ci_gate([], ci_bypass="true")
         self.assertEqual(calls, [])
 
-    def test_the_dry_run_carve_out_does_not_cover_a_real_asset_dispatch(self):
-        # release_tag set means publish_github_release uploads real assets even
-        # with registry_dry_run on. That is a publication and must be gated.
-        calls = run_ci_gate(
-            [], is_dispatch=True, registry_dry_run="true", release_tag="v0.8.27"
-        )
-        self.assertEqual([c["kind"] for c in calls], ["setFailed"])
+        for bypass, dispatch, dry, tag in itertools.product(
+            ("false", "", "TRUE", "1"), ("true", "false"), ("true", "false"), ("", "v0.8.31"),
+        ):
+            with self.subTest(bypass=bypass, dispatch=dispatch, dry=dry, tag=tag):
+                self.assert_refused(run_ci_gate([], ci_bypass=bypass, raw_env={
+                    "IS_DISPATCH": dispatch, "REGISTRY_DRY_RUN": dry, "RELEASE_TAG_INPUT": tag,
+                }))
 
-    def test_the_dry_run_carve_out_does_not_cover_a_real_registry_dispatch(self):
-        calls = run_ci_gate(
-            [], is_dispatch=True, registry_dry_run="false", release_tag=""
-        )
-        self.assertEqual([c["kind"] for c in calls], ["setFailed"])
+    def test_wrong_source_and_wrong_main_are_rejected_independently(self):
+        for changes in ({"head_sha": "wrong"}, {"head_branch": "feature"},
+                        {"event": "workflow_dispatch"}):
+            with self.subTest(changes=changes):
+                self.assert_refused(run_ci_gate([{**self.GREEN_RUN, **changes}]))
 
-    def test_the_dry_run_carve_out_does_not_cover_a_tag_push(self):
-        # A tag push is never a dispatch, so the carve-out must not reach it
-        # even if the dry-run input is somehow populated.
-        calls = run_ci_gate(
-            [], is_dispatch=False, registry_dry_run="true", release_tag=""
-        )
-        self.assertEqual([c["kind"] for c in calls], ["setFailed"])
+    def test_resolved_source_not_dispatch_sha_is_the_ci_query_identity(self):
+        calls = run_ci_gate([{**self.GREEN_RUN, "head_sha": "old-tag-source"}],
+                            release_sha="old-tag-source",
+                            raw_env={"GITHUB_SHA": "current-main"})
+        self.assertEqual(calls[0]["args"]["head_sha"], "old-tag-source")
+        self.assertFalse(any(c["kind"] == "setFailed" for c in calls))
 
     def test_an_in_flight_run_is_refused_rather_than_awaited(self):
-        calls = run_ci_gate(
-            [{"head_sha": "deadbeef", "head_branch": "main", "event": "push",
-              "status": "in_progress", "conclusion": None,
-              "run_attempt": 1, "id": 42, "html_url": "u"}]
-        )
-        self.assertEqual([c["kind"] for c in calls], ["setFailed"])
+        for status in ("in_progress", "queued", "waiting"):
+            with self.subTest(status=status):
+                self.assert_refused(run_ci_gate([{**self.GREEN_RUN, "status": status}]))
 
     def test_the_gate_requires_main_and_push_not_merely_the_sha(self):
         # A pull_request run on the same SHA is a different question: it tests

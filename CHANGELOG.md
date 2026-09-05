@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed - release operator contract
+
+- **Tag pushes now validate only; they no longer build or publish releases.**
+  Use `make release-candidate` for an exact merged-main build, then explicitly
+  select accepted immutable artifacts with `make release-promote`. Promotion
+  preserves the original signed archive bytes. Registry retries and add-only
+  recovery use separate Make targets and never rebuild or replace published assets.
+
 ### Changed - BREAKING for host/SDK implementors
 
 - **`ConventionalPaths` gains a public `meerkat_config_toml: Option<PathBuf>`
