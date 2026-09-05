@@ -3240,6 +3240,91 @@ async fn identity_first_lazy_reconcile_serializes_with_foreground_materializatio
     runtime.shutdown().await;
 }
 
+/// #404 (OB3 2026-09-05): `retire_member` leaves the identity registered in
+/// the retired terminal form (`Retiring`), and the next topology refresh no
+/// longer lists it. Before the fix `apply_roster_controlled` refused with
+/// `InvalidState { operation: "reconcile_roster_remove", state: Retiring }` on
+/// every refresh, forever. The exact sequence must converge: the retired
+/// identity is removed and the roster snapshot is ready again.
+#[tokio::test]
+async fn identity_first_retired_identity_is_removed_by_topology_refresh() {
+    let tmp = tempfile::tempdir().unwrap();
+    let alpha = AgentIdentity::parse("agent:alpha").unwrap();
+    let beta = AgentIdentity::parse("agent:beta").unwrap();
+    let roster = Arc::new(StubRosterProvider::new(vec![
+        durable_spec(alpha.as_str()),
+        durable_spec(beta.as_str()),
+    ]));
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(StubContinuityStore))
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(roster.clone())
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-retired-identity-removal-test")
+            .identity_bootstrap_mode(IdentityBootstrapMode::LazyWithBackgroundWarm {
+                concurrency: 2,
+            })
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("initial background warm should start");
+    let identity_runtime = runtime.identity_runtime().unwrap();
+    let (ready, timed_out) = identity_runtime
+        .wait_identity_bootstrap_terminal(Duration::from_secs(5))
+        .await;
+    assert!(
+        !timed_out && ready.ready,
+        "initial roster must fully materialize"
+    );
+
+    // Step 1 (retire_member): retire beta through identity authority.
+    identity_runtime
+        .retire_tracked(&beta)
+        .await
+        .expect("retire beta");
+    assert_eq!(
+        identity_runtime.status(&beta).await.unwrap().state,
+        IdentityLifecycleState::Retiring,
+        "retire leaves the entry registered in the retired terminal form"
+    );
+
+    // Step 2 (topology refresh with the roster no longer listing beta): must
+    // converge instead of failing on the Retiring entry.
+    roster.set(vec![durable_spec(alpha.as_str())]).await;
+    runtime
+        .refresh_desired_topology()
+        .await
+        .expect("a retired identity must be removable by the roster reconciler (#404)");
+
+    assert!(
+        identity_runtime.status(&beta).await.is_err(),
+        "the retired entry must be gone after the refresh"
+    );
+    let registered = identity_runtime
+        .statuses()
+        .await
+        .into_iter()
+        .map(|status| status.identity)
+        .collect::<Vec<_>>();
+    assert_eq!(registered, vec![alpha.clone()]);
+    let bootstrap = identity_runtime.identity_bootstrap_status();
+    assert!(
+        bootstrap.complete && bootstrap.ready,
+        "the reduced roster must report ready: {bootstrap:?}"
+    );
+
+    // A second refresh (OB3 refreshed forever) is a no-op, not an error.
+    runtime
+        .refresh_desired_topology()
+        .await
+        .expect("subsequent refreshes keep converging");
+
+    runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn identity_first_lazy_reconcile_retires_members_removed_from_roster() {
     let tmp = tempfile::tempdir().unwrap();

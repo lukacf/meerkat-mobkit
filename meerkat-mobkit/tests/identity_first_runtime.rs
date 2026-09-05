@@ -2729,6 +2729,205 @@ async fn member_health_reports_open_stall_from_the_shared_verdict() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// #404: a retired identity is stuck in Retiring (OB3 2026-09-05). The roster
+// reconciler regression (retire -> topology refresh removes) lives in
+// tests/identity_first_builder.rs where the reconcile driver exists.
+// ---------------------------------------------------------------------------
+
+/// The operator's "retire then send" recovery: a send to a retired identity
+/// re-materializes the SAME durable session and generation (no fresh spawn,
+/// generation does not advance), then delivers.
+#[tokio::test]
+async fn retired_identity_send_rematerializes_the_same_session() {
+    let (runtime, bridge) = make_registered_counting_runtime().await;
+    let id = make_identity("triage:main");
+    let before = runtime.status(&id).await.unwrap();
+    bridge
+        .set_deliver_session_id(before.session_id.clone().unwrap())
+        .await;
+
+    runtime.retire(&id).await.expect("retire");
+    assert_eq!(
+        runtime.status(&id).await.unwrap().state,
+        IdentityLifecycleState::Retiring
+    );
+
+    runtime
+        .send(&id, &make_content())
+        .await
+        .expect("a send to a retired identity must re-materialize and deliver");
+
+    let after = runtime.status(&id).await.unwrap();
+    assert_eq!(after.state, IdentityLifecycleState::Active);
+    assert_eq!(after.session_id, before.session_id, "same durable session");
+    assert_eq!(
+        after.generation, before.generation,
+        "generation must not advance"
+    );
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 1, "one resume");
+    assert_eq!(
+        bridge.create_calls.load(Ordering::SeqCst),
+        0,
+        "never a fresh session"
+    );
+    assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 1);
+}
+
+/// A peer hand-off must NOT silently revive a retired target: with a<->b
+/// wired and b retired, `materialize_reachable_peers(a)` refuses b typed
+/// (`IdentityMaterializationFailure` with initiator a, operation
+/// `materialize_reachable_peers`, the pre-#404 text), b stays retired, no
+/// resume happens, and a's cycle completes. Fleet `materialize_all` skips it
+/// the same way. Only an operation addressed to b (send) revives it.
+#[tokio::test]
+async fn retired_peer_is_refused_typed_by_hand_off_hydration() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store, lease, bridge.clone());
+    let a = make_identity("triage:a");
+    let b = make_identity("triage:b");
+    let c = make_identity("triage:c");
+    for (name, token) in [("triage:a", 1), ("triage:b", 2), ("triage:c", 3)] {
+        runtime
+            .register(
+                make_spec(name),
+                IdentityLifecycleState::Active,
+                Some(make_record(name, 0, 0)),
+                Some(make_grant(name, token)),
+            )
+            .await;
+    }
+    // a is wired to both b (about to be retired) and c (healthy): the
+    // fan-out must refuse b and still complete for c.
+    runtime
+        .set_desired_peer_edges(vec![
+            ManagedPeerEdge::new(a.clone(), b.clone()).unwrap(),
+            ManagedPeerEdge::new(a.clone(), c.clone()).unwrap(),
+        ])
+        .await;
+    let captured: Arc<tokio::sync::Mutex<Vec<ErrorEvent>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let sink = captured.clone();
+    let hook: ErrorHook = Arc::new(move |event| {
+        let sink = sink.clone();
+        Box::pin(async move {
+            sink.lock().await.push(event);
+        })
+    });
+    runtime.set_error_hook(Some(hook));
+
+    runtime.retire(&b).await.expect("retire b");
+    let resumes_before = bridge.resume_calls.load(Ordering::SeqCst);
+
+    let records = runtime
+        .materialize_reachable_peers(&a)
+        .await
+        .expect("the initiator's hand-off must complete without the retired peer");
+    assert!(
+        records.iter().all(|record| record.identity != b),
+        "a retired peer must not be revived by a hand-off: {records:?}"
+    );
+    assert!(
+        records.iter().any(|record| record.identity == c),
+        "the fan-out must still complete for the healthy peers: {records:?}"
+    );
+    assert_eq!(
+        runtime.status(&c).await.unwrap().state,
+        IdentityLifecycleState::Active
+    );
+    assert_eq!(
+        runtime.status(&b).await.unwrap().state,
+        IdentityLifecycleState::Retiring,
+        "the retired peer stays retired"
+    );
+    assert_eq!(
+        bridge.resume_calls.load(Ordering::SeqCst),
+        resumes_before,
+        "no resume for a retired peer"
+    );
+    tokio::task::yield_now().await;
+    let events = captured.lock().await;
+    let refusal = events
+        .iter()
+        .find_map(|event| match event {
+            ErrorEvent::IdentityMaterializationFailure {
+                identity,
+                initiator,
+                operation,
+                error,
+            } if identity == b.as_str() => {
+                Some((initiator.clone(), operation.clone(), error.clone()))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("a typed refusal must be paged: {events:?}"));
+    assert_eq!(refusal.0.as_deref(), Some(a.as_str()));
+    assert_eq!(refusal.1, "materialize_reachable_peers");
+    assert!(
+        refusal.2.contains("Retiring") && refusal.2.contains("materialize"),
+        "the refusal keeps the typed InvalidState text: {}",
+        refusal.2
+    );
+    drop(events);
+
+    // Fleet hydration skips the retired identity the same way.
+    let all = runtime.materialize_all().await.expect("materialize_all");
+    assert!(all.iter().all(|record| record.identity != b));
+    assert_eq!(
+        runtime.status(&b).await.unwrap().state,
+        IdentityLifecycleState::Retiring
+    );
+
+    // Only a send addressed to b revives it.
+    bridge
+        .set_deliver_session_id(runtime.status(&b).await.unwrap().session_id.unwrap())
+        .await;
+    runtime
+        .send(&b, &make_content())
+        .await
+        .expect("direct send revives");
+    assert_eq!(
+        runtime.status(&b).await.unwrap().state,
+        IdentityLifecycleState::Active
+    );
+    assert_eq!(
+        bridge.resume_calls.load(Ordering::SeqCst),
+        resumes_before + 1
+    );
+}
+
+/// A retired identity whose roster profile changes is adopted like a Dormant
+/// one (the change takes effect on the next materialization) instead of
+/// wedging the reconcile with `reconcile_roster_replace`.
+#[tokio::test]
+async fn retired_identity_profile_change_is_adopted_by_the_reconciler() {
+    let (runtime, bridge) = make_registered_counting_runtime().await;
+    let id = make_identity("triage:main");
+    runtime.retire(&id).await.expect("retire");
+
+    let mut replacement = make_spec("triage:main");
+    replacement.profile = meerkat_mob::ProfileName::from("reviewer");
+    lazy_register_flow(&runtime, &[replacement], None)
+        .await
+        .expect("a retired identity's profile change must reconcile");
+    let status = runtime.status(&id).await.unwrap();
+    // Re-profiling a non-Active entry parks it Dormant (like any other
+    // non-Active entry); the next send materializes with the new profile.
+    assert_eq!(status.state, IdentityLifecycleState::Dormant);
+    assert_eq!(
+        status.profile,
+        Some(meerkat_mob::ProfileName::from("reviewer")),
+        "the new profile is adopted for the next materialization"
+    );
+    assert_eq!(
+        bridge.retire_calls.load(Ordering::SeqCst),
+        1,
+        "no second retire"
+    );
+}
+
 #[tokio::test]
 async fn identity_first_runtime_retire_validates_lease_and_sets_retiring() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
