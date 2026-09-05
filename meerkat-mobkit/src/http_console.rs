@@ -14072,6 +14072,145 @@ comms = true
         );
     }
 
+    /// Happy path for the two OB3 operator verbs on the console plane:
+    /// `mobkit/member_health` answers from identity-plane reads (state,
+    /// generation, actor-loop verdict, no `durability` until meerkat exposes
+    /// it) for both the durable identity and its current runtime alias, and
+    /// `mobkit/reload_member` reloads NON-destructively (same session id, same
+    /// generation, `discarded`), leaving the identity Active. A worker-plane
+    /// alias with no identity is refused rather than downgraded to respawn.
+    #[tokio::test]
+    async fn console_member_health_and_reload_member_happy_path()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-member-health-reload").await?;
+        let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-member-health-reload".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let identity = AgentIdentity::parse("review:singleton")?;
+        let session_id = meerkat_core::types::SessionId::new();
+        identity_runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from("worker"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                    placement: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:review:singleton:2")?,
+                    session_id: session_id.clone(),
+                    generation: ContinuityGeneration::new(2),
+                    checkpoint_version: CheckpointVersion::new(0),
+                }),
+                Some(LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(7),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+        let call = |method: &str, params: Value| {
+            let runtime = &runtime;
+            let identity_runtime = identity_runtime.clone();
+            let request = rpc_request_with_params(method, params);
+            async move {
+                Box::pin(handle_console_runtime_rpc(
+                    runtime,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(identity_runtime),
+                    None,
+                    None,
+                    request,
+                    true,
+                ))
+                .await
+            }
+        };
+
+        for requested in ["review:singleton", "rt:review:singleton:2"] {
+            let response = call("mobkit/member_health", json!({ "member_id": requested })).await;
+            assert!(
+                response["error"].is_null(),
+                "member_health({requested}) failed: {response:#?}"
+            );
+            let result = &response["result"];
+            assert_eq!(result["identity"], json!("review:singleton"));
+            assert_eq!(result["member_id"], json!("rt:review:singleton:2"));
+            assert_eq!(result["state"], json!("active"));
+            assert_eq!(result["generation"], json!(2));
+            assert_eq!(result["session_id"], json!(session_id.to_string()));
+            assert_eq!(result["materialization_in_flight"], json!(false));
+            assert!(
+                result["actor_loop"]["state"].is_string(),
+                "the probe verdict must be present: {result:#?}"
+            );
+            assert!(
+                result.get("durability").is_none(),
+                "durability is absent until meerkat exposes it: {result:#?}"
+            );
+            assert!(result.get("last_delivery_error").is_none());
+        }
+
+        let response = call(
+            "mobkit/reload_member",
+            json!({ "member_id": "review:singleton" }),
+        )
+        .await;
+        assert!(
+            response["error"].is_null(),
+            "reload_member failed: {response:#?}"
+        );
+        assert_eq!(response["result"]["identity_first"], json!(true));
+        assert_eq!(response["result"]["identity"], json!("review:singleton"));
+        assert_eq!(response["result"]["reloaded"], json!(true));
+        assert_eq!(response["result"]["disposition"], json!("discarded"));
+        assert_eq!(
+            response["result"]["session_id"],
+            json!(session_id.to_string()),
+            "a reload binds the SAME durable session"
+        );
+        assert_eq!(
+            response["result"]["generation"],
+            json!(2),
+            "a reload never advances the continuity generation (respawn_member does)"
+        );
+        let status = identity_runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Active);
+        assert_eq!(status.session_id, Some(session_id));
+        assert_eq!(status.generation, Some(ContinuityGeneration::new(2)));
+
+        // A member the identity plane does not own has no non-destructive
+        // reload; it must be refused, never routed to the destructive respawn.
+        let response = call(
+            "mobkit/reload_member",
+            json!({ "member_id": "plain-worker" }),
+        )
+        .await;
+        assert_eq!(response["error"]["code"], json!(-32001), "{response:#?}");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn console_runtime_identity_reads_reject_stale_runtime_aliases()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
