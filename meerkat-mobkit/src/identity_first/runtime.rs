@@ -4923,6 +4923,11 @@ impl IdentityRuntime {
         cancellation: &mut watch::Receiver<bool>,
         generation: u64,
     ) -> Option<Result<ContinuityRecord, IdentityRuntimeError>> {
+        // Background warm is indirect hydration: a retired identity stays
+        // retired until something addressed to it revives it.
+        if let Some(err) = self.retired_terminal_refusal(identity, "materialize").await {
+            return Some(Err(err));
+        }
         let mut bound_generation = None;
         let result = self
             .embody_identity(
@@ -5077,10 +5082,15 @@ impl IdentityRuntime {
         };
 
         match state {
-            IdentityLifecycleState::Dormant | IdentityLifecycleState::Uninitialized => {}
-            IdentityLifecycleState::Broken
-            | IdentityLifecycleState::Retiring
-            | IdentityLifecycleState::Suspended => {
+            // `Retiring` is the retired terminal form (see `retire_locked`): no
+            // live member, lease released, continuity record intact. The
+            // lifecycle lock held here means the in-transaction form cannot be
+            // observed, so re-materializing it is exactly the Dormant path and
+            // resumes the SAME durable session and generation.
+            IdentityLifecycleState::Dormant
+            | IdentityLifecycleState::Uninitialized
+            | IdentityLifecycleState::Retiring => {}
+            IdentityLifecycleState::Broken | IdentityLifecycleState::Suspended => {
                 return Err(IdentityRuntimeError::InvalidState {
                     identity: identity.clone(),
                     state,
@@ -5835,6 +5845,31 @@ impl IdentityRuntime {
         })
     }
 
+    /// A retired identity (`Retiring`, the terminal form left by
+    /// `retire_locked`) is revived ONLY by an operation addressed to it
+    /// (`send`, `dispatch`, `materialize`, `reload_member`). Indirect hydration
+    /// (a peer hand-off's `materialize_reachable_peers`, fleet
+    /// `materialize_all`, the background warm) must not silently bring a
+    /// retired member back; it is refused typed exactly as before #404 so the
+    /// initiator's cycle completes without the retired peer.
+    async fn retired_terminal_refusal(
+        &self,
+        identity: &AgentIdentity,
+        operation: &'static str,
+    ) -> Option<IdentityRuntimeError> {
+        let state = self
+            .entries
+            .read()
+            .await
+            .get(identity)
+            .map(|entry| entry.state)?;
+        (state == IdentityLifecycleState::Retiring).then(|| IdentityRuntimeError::InvalidState {
+            identity: identity.clone(),
+            state,
+            operation,
+        })
+    }
+
     async fn best_effort_materialize_identity(
         &self,
         identity: AgentIdentity,
@@ -5843,6 +5878,22 @@ impl IdentityRuntime {
     ) -> Option<ContinuityRecord> {
         let attempt_lock = self.best_effort_materialization_lock_for(&identity).await;
         let _attempt_guard = attempt_lock.lock().await;
+
+        if let Some(err) = self
+            .retired_terminal_refusal(&identity, "materialize")
+            .await
+        {
+            tracing::warn!(
+                identity = %identity,
+                initiator = initiator.map(ToString::to_string).as_deref(),
+                error = %err,
+                "identity best-effort materialization refused: the identity is retired; only a \
+                 send addressed to it re-materializes it"
+            );
+            self.record_best_effort_materialization_failure(&identity, initiator, operation, &err)
+                .await;
+            return None;
+        }
 
         if let Some(error) = self.materialization_backoff_error(&identity).await {
             tracing::debug!(
@@ -6251,9 +6302,19 @@ impl IdentityRuntime {
                 IdentityLifecycleState::Active => {
                     self.retire_locked(identity).await?;
                 }
+                // `Retiring` here is the RETIRED terminal form: `retire_locked`
+                // leaves the entry in it after the mob member is gone and the
+                // lease released, and every lifecycle mutation (including this
+                // one) runs under the identity's lifecycle lock, so the
+                // in-transaction form is never observable from this arm. There
+                // is no live member left to retire; removal is the same
+                // bookkeeping as for a Dormant entry. Refusing it is how a
+                // retired identity got stuck for every later roster reconcile
+                // (meerkat-mobkit #404, OB3 2026-09-05).
                 IdentityLifecycleState::Dormant
                 | IdentityLifecycleState::Broken
-                | IdentityLifecycleState::Uninitialized => {
+                | IdentityLifecycleState::Uninitialized
+                | IdentityLifecycleState::Retiring => {
                     let lease = self
                         .entries
                         .read()
@@ -6272,7 +6333,7 @@ impl IdentityRuntime {
                             .map_err(IdentityRuntimeError::Lease)?;
                     }
                 }
-                IdentityLifecycleState::Retiring | IdentityLifecycleState::Suspended => {
+                IdentityLifecycleState::Suspended => {
                     return Err(IdentityRuntimeError::InvalidState {
                         identity: identity.clone(),
                         state,
@@ -6321,10 +6382,10 @@ impl IdentityRuntime {
                     .await?;
                 continue;
             }
-            if matches!(
-                state,
-                IdentityLifecycleState::Retiring | IdentityLifecycleState::Suspended
-            ) {
+            // A retired (`Retiring`) entry has no live member: a profile change
+            // is adopted like on a Dormant entry and takes effect on the next
+            // materialization. Only a mid-transaction `Suspended` refuses.
+            if state == IdentityLifecycleState::Suspended {
                 return Err(IdentityRuntimeError::InvalidState {
                     identity,
                     state,
@@ -6347,8 +6408,9 @@ impl IdentityRuntime {
                 }
                 IdentityLifecycleState::Dormant
                 | IdentityLifecycleState::Broken
-                | IdentityLifecycleState::Uninitialized => {}
-                IdentityLifecycleState::Retiring | IdentityLifecycleState::Suspended => {
+                | IdentityLifecycleState::Uninitialized
+                | IdentityLifecycleState::Retiring => {}
+                IdentityLifecycleState::Suspended => {
                     return Err(IdentityRuntimeError::InvalidState {
                         identity,
                         state,
@@ -7677,8 +7739,15 @@ impl IdentityRuntime {
                     addressability: entry.spec.addressability,
                 }));
             }
-            entry.state == IdentityLifecycleState::Dormant
-                || entry.state == IdentityLifecycleState::Uninitialized
+            // A retired identity (`Retiring`, the terminal form) is
+            // re-materialized onto its recorded session exactly like a Dormant
+            // one; this is the operator's "retire then send" recovery path.
+            matches!(
+                entry.state,
+                IdentityLifecycleState::Dormant
+                    | IdentityLifecycleState::Uninitialized
+                    | IdentityLifecycleState::Retiring
+            )
         };
         if should_materialize {
             self.materialize_with_expected_member_alias(identity, expected_alias)
@@ -8145,8 +8214,15 @@ impl IdentityRuntime {
             let entry = entries
                 .get(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-            entry.state == IdentityLifecycleState::Dormant
-                || entry.state == IdentityLifecycleState::Uninitialized
+            // A retired identity (`Retiring`, the terminal form) is
+            // re-materialized onto its recorded session exactly like a Dormant
+            // one; this is the operator's "retire then send" recovery path.
+            matches!(
+                entry.state,
+                IdentityLifecycleState::Dormant
+                    | IdentityLifecycleState::Uninitialized
+                    | IdentityLifecycleState::Retiring
+            )
         };
         if should_materialize {
             self.materialize_with_expected_member_alias(identity, expected_alias)
@@ -8659,8 +8735,8 @@ impl IdentityRuntime {
     ///    meerkat-mob's retire path and its reload-required discard) and the
     ///    session runtime state is unregistered; the continuity record is NOT
     ///    touched (retire only re-upserts it under the new fence token);
-    /// 2. the identity moves `Retiring` -> `Dormant` explicitly (the only place
-    ///    that does so in-process; ordinary retire leaves `Retiring`);
+    /// 2. the entry stays in the retired terminal form (`Retiring`), which the
+    ///    embodiment door accepts exactly like `Dormant` (#404);
     /// 3. the same continuity record is embodied again: `resume_session` on
     ///    the recorded `session_id`, whose executor registration is where
     ///    meerkat mints the cold reload from durable truth.
@@ -8688,7 +8764,11 @@ impl IdentityRuntime {
         };
         match state {
             IdentityLifecycleState::Active => {}
-            IdentityLifecycleState::Dormant | IdentityLifecycleState::Uninitialized => {
+            // Dormant, uninitialized, or retired: no live registration to
+            // reload; the next send materializes lazily.
+            IdentityLifecycleState::Dormant
+            | IdentityLifecycleState::Uninitialized
+            | IdentityLifecycleState::Retiring => {
                 return Ok(MemberReloadOutcome {
                     reloaded: false,
                     disposition: MemberReloadDisposition::NotCurrent,
@@ -8696,9 +8776,7 @@ impl IdentityRuntime {
                     generation: before.as_ref().map(|record| record.generation),
                 });
             }
-            IdentityLifecycleState::Broken
-            | IdentityLifecycleState::Retiring
-            | IdentityLifecycleState::Suspended => {
+            IdentityLifecycleState::Broken | IdentityLifecycleState::Suspended => {
                 return Err(IdentityRuntimeError::InvalidState {
                     identity: identity.clone(),
                     state,
@@ -8722,17 +8800,12 @@ impl IdentityRuntime {
             "reload_member: discarding the live member registration and re-materializing the \
              same durable session (non-destructive; generation does not advance)"
         );
+        // Leaves the entry in the retired terminal form (`Retiring`, lease
+        // released, continuity intact), which `embody_identity_locked` accepts
+        // exactly like Dormant: the same door the plain retire-then-send
+        // recovery takes (#404).
         self.retire_locked_with_intent(identity, LifecycleRetireIntent::Reload)
             .await?;
-        {
-            let mut entries = self.entries.write().await;
-            let entry = entries
-                .get_mut(identity)
-                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-            entry.state = IdentityLifecycleState::Dormant;
-            entry.lease = None;
-        }
-        self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Dormant, None);
 
         let mut bound_generation = None;
         let result = self

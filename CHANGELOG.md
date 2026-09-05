@@ -242,6 +242,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A retired identity is no longer stuck in `Retiring`
+  ([#404](https://github.com/lukacf/meerkat-mobkit/issues/404)).** `retire_member`
+  leaves the durable identity registered in `Retiring` (member gone, session
+  archived, lease released), but the roster reconciler refused that state:
+  every later topology refresh failed with `cannot reconcile_roster_remove
+  identity ... in state Retiring`, forever (OB3 2026-09-05), and neither a
+  send nor the embodiment door would re-materialize it. `Retiring` after
+  `retire_locked` IS the retired terminal form (the console's
+  `retired`/`RetiredReadable`, `reset_all`'s leaving-fleet classification and
+  the delegate sweeper already read it that way), and every lifecycle
+  mutation runs under the identity's lifecycle lock, so lock-holders can never
+  observe the in-transaction form. The reconciler now removes or re-profiles a
+  `Retiring` entry exactly like a `Dormant` one, and `send` / `materialize`
+  re-embody it onto the SAME durable session and generation (the operator's
+  "retire then send" recovery). `reload_member`'s retire-then-rematerialize
+  path shares that door instead of flipping the state to `Dormant` by hand,
+  and reports `not_current` for a retired identity. Revival is explicit:
+  only an operation addressed to the identity (`send`, `dispatch`,
+  `materialize`, `reload_member`) re-materializes it, while indirect
+  hydration (a peer hand-off's `materialize_reachable_peers`, fleet
+  `materialize_all`, the background warm) still refuses a retired identity
+  typed (`identity_materialization_failure` with the initiator, as before),
+  so a hand-off never silently brings a retired member back.
+  `respawn_member` remains the destructive continuity reset; unchanged.
 - **Flow Editor: the inline source panel no longer opens empty when a
   read-only render races the editor's own autosave.** The source preview,
   validation and deploy-plan RPCs carry the optimistic draft store guard of
