@@ -101,15 +101,169 @@ fn is_reload_required_bridge_delivery_error(error: &str) -> bool {
 fn classify_submit_mob_error(
     member_id: &MobAgentIdentity,
     error: meerkat_mob::MobError,
+    deadline: &ActorAdmissionDeadline,
 ) -> BridgeError {
-    let rendered = error.to_string();
-    if is_reload_required_bridge_delivery_error(&rendered) {
-        return BridgeError::ReloadRequired {
-            identity: member_id.clone(),
-            reason: rendered,
-        };
+    match error {
+        // meerkat 0.8.34: the durability-degraded refusal is typed at the mob
+        // boundary. Matched BEFORE the text fallback so the reason text can
+        // change without losing the class.
+        meerkat_mob::MobError::MemberReloadRequired { member_id, reason } => {
+            BridgeError::ReloadRequired {
+                identity: member_id,
+                reason,
+            }
+        }
+        // meerkat 0.8.34: per-member single-flight lane is full. Retryable
+        // backpressure for this one member; it says nothing about the loop.
+        meerkat_mob::MobError::MemberAdmissionBacklogFull { member_id, depth } => {
+            tracing::warn!(
+                identity = %member_id,
+                depth,
+                "delivery refused: the member's admission lane is full; retry once it drains"
+            );
+            BridgeError::AdmissionBacklogFull {
+                identity: member_id,
+                depth,
+            }
+        }
+        // A reply deadline can expire after runtime admission has started.
+        // Preserve the observation, never infer execution fate from it.
+        meerkat_mob::MobError::ActorCommandTimedOut {
+            command_kind,
+            stage,
+        } => {
+            tracing::warn!(
+                identity = %member_id,
+                command_kind,
+                stage,
+                "bounded actor command exceeded the delivery admission budget; execution fate \
+                 is not established by this timeout"
+            );
+            BridgeError::ActorAdmissionTimeout {
+                operation: "deliver.submit_work",
+                identity: member_id.clone(),
+                waited: deadline.started.elapsed(),
+                command: Some(ActorCommandTimeout {
+                    command_kind,
+                    stage,
+                }),
+            }
+        }
+        other => {
+            let rendered = other.to_string();
+            if is_reload_required_bridge_delivery_error(&rendered) {
+                return BridgeError::ReloadRequired {
+                    identity: member_id.clone(),
+                    reason: rendered,
+                };
+            }
+            BridgeError::Mob(rendered)
+        }
     }
-    BridgeError::Mob(rendered)
+}
+
+/// Type the reload-primitive `MobError` at the bridge boundary. `Refused`
+/// (store not healthy yet, retryable later) and `TimedOut` (bounded by
+/// meerkat's `MEMBER_RELOAD_TOTAL_TIMEOUT`, names the stage) keep their class;
+/// everything else keeps the text form.
+fn classify_reload_mob_error(
+    member_id: &MobAgentIdentity,
+    error: meerkat_mob::MobError,
+    deadline: &ActorAdmissionDeadline,
+) -> BridgeError {
+    match error {
+        meerkat_mob::MobError::ActorCommandTimedOut {
+            command_kind,
+            stage,
+        } => BridgeError::ActorAdmissionTimeout {
+            operation: "reload.reload_member_registration",
+            identity: member_id.clone(),
+            waited: deadline.started.elapsed(),
+            command: Some(ActorCommandTimeout {
+                command_kind,
+                stage,
+            }),
+        },
+        meerkat_mob::MobError::MemberReloadRefused { session_id, reason } => {
+            tracing::warn!(
+                identity = %member_id,
+                session_id = %session_id,
+                reason = %reason,
+                "member reload refused: the store is not healthy yet; registration retained; \
+                 retry later"
+            );
+            BridgeError::ReloadRefused {
+                identity: member_id.clone(),
+                session_id: session_id.to_string(),
+                reason,
+            }
+        }
+        meerkat_mob::MobError::MemberReloadTimedOut { session_id, stage } => {
+            tracing::error!(
+                identity = %member_id,
+                session_id = %session_id,
+                stage = %stage,
+                "member reload timed out (MEMBER_RELOAD_TOTAL_TIMEOUT); inspect before retrying"
+            );
+            BridgeError::ReloadTimedOut {
+                identity: member_id.clone(),
+                session_id: session_id.to_string(),
+                stage: stage.to_string(),
+            }
+        }
+        other => BridgeError::Mob(format!("reload_member_registration: {other}")),
+    }
+}
+
+/// A missing degradation marker is not a positive readiness observation:
+/// upstream also returns `None` for an absent registration.
+pub(crate) fn member_durability_from_machine(
+    required: Option<meerkat_runtime::SessionDurabilityReloadRequired>,
+) -> Option<super::types::MemberDurability> {
+    match required {
+        None => None,
+        // `SessionDurabilityReloadRequired` is `#[non_exhaustive]`: read the
+        // named fields only, never destructure or construct it.
+        Some(required) => Some(member_durability_degraded(
+            required.operation,
+            required.reason,
+        )),
+    }
+}
+
+/// The degraded verdict in identity-first vocabulary.
+fn member_durability_degraded(operation: String, reason: String) -> super::types::MemberDurability {
+    super::types::MemberDurability::ReloadRequired { operation, reason }
+}
+
+/// What the mob primitive did to a member's runtime registration, projected
+/// into identity-first vocabulary. `session_id`/`registration_generation` are
+/// meerkat's registration-level values, reported for the operator log; the
+/// identity's continuity binding is authoritative and unchanged by a reload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeMemberReload {
+    pub disposition: super::types::MemberReloadDisposition,
+    pub session_id: meerkat_core::types::SessionId,
+    pub registration_generation: u64,
+}
+
+fn bridge_member_reload(outcome: meerkat_mob::MemberReloadOutcome) -> BridgeMemberReload {
+    let disposition = match outcome.disposition {
+        meerkat_mob::MemberReloadDisposition::Discarded => {
+            super::types::MemberReloadDisposition::Discarded
+        }
+        meerkat_mob::MemberReloadDisposition::NotDegraded => {
+            super::types::MemberReloadDisposition::NotDegraded
+        }
+        meerkat_mob::MemberReloadDisposition::NotCurrent => {
+            super::types::MemberReloadDisposition::NotCurrent
+        }
+    };
+    BridgeMemberReload {
+        disposition,
+        session_id: outcome.session_id,
+        registration_generation: outcome.generation.get(),
+    }
 }
 
 fn is_recoverable_bridge_respawn_cleanup_error(error: &str) -> bool {
@@ -250,6 +404,78 @@ fn fresh_member_spec_from_pre_delivery_entry(
 // BridgeError
 // ---------------------------------------------------------------------------
 
+/// Upstream actor-command deadline observations, not an execution verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct ActorCommandTimeout {
+    pub command_kind: &'static str,
+    pub stage: &'static str,
+}
+
+pub(crate) fn actor_timeout_data(
+    operation: &'static str,
+    waited: Duration,
+    command: Option<ActorCommandTimeout>,
+) -> serde_json::Value {
+    match command {
+        Some(command) => serde_json::json!({
+            "kind": "mob_actor_command_timed_out",
+            "command_kind": command.command_kind,
+            "stage": command.stage,
+            "deadline_reached": true,
+        }),
+        None => serde_json::json!({
+            "kind": "actor_admission_timeout",
+            "operation": operation,
+            "waited_ms": u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
+            "deadline_reached": true,
+        }),
+    }
+}
+
+pub(crate) fn fmt_actor_timeout(
+    f: &mut std::fmt::Formatter<'_>,
+    operation: &str,
+    identity: &dyn std::fmt::Display,
+    waited: Duration,
+    command: Option<ActorCommandTimeout>,
+) -> std::fmt::Result {
+    write!(
+        f,
+        "actor call `{operation}` for {identity} did not answer within the admission budget \
+         ({waited:?})"
+    )?;
+    if let Some(command) = command {
+        write!(
+            f,
+            "; command `{}` at stage `{}`",
+            command.command_kind, command.stage
+        )?;
+    }
+    f.write_str(
+        "; execution fate and stall scope are not established by this timeout; \
+         consult runtime idempotency and durable fate before retrying",
+    )
+}
+
+/// Whether the probe refused an unpolled call or interrupted its observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActorCallObservation {
+    BeforeCall,
+    InFlight,
+}
+
+impl std::fmt::Display for ActorCallObservation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::BeforeCall => "this actor call was not started",
+            Self::InFlight => {
+                "observation of an in-flight actor call ended; execution fate is not established"
+            }
+        })
+    }
+}
+
 /// Errors from session bridge operations.
 #[derive(Debug)]
 pub enum BridgeError {
@@ -296,8 +522,8 @@ pub enum BridgeError {
     /// The observation is exactly: THIS round trip, for THIS member, was not
     /// answered in time. Loop-scope verdicts belong to the ActorLoopStalled
     /// probe, whose timed heartbeat is the only observation that can honestly
-    /// make them. This is containment, not a repair: the delivery did NOT
-    /// happen. Never treat it as a repairable stale-runtime-state error:
+    /// make them. This bounds observation, not execution: delivery may have
+    /// started. Never treat it as a repairable stale-runtime-state error:
     /// repairing a member cannot unblock whatever the wait was parked on.
     ActorAdmissionTimeout {
         /// Which actor round trip expired, e.g. `deliver.submit_work`.
@@ -306,10 +532,13 @@ pub enum BridgeError {
         identity: MobAgentIdentity,
         /// Total time this delivery attempt spent waiting on the actor.
         waited: Duration,
+        /// Exact upstream command/stage when reported; absent for a local
+        /// observation deadline, which supplies no upstream stage evidence.
+        command: Option<ActorCommandTimeout>,
     },
     /// The actor-loop probe has an OPEN stall, so this delivery was refused
-    /// before (or the instant after) it would have queued a command onto the
-    /// wedged loop. Circuit breaker, not a timeout: the caller waited at most
+    /// before the call or while its observation was in flight. The latter
+    /// does not retract a command. Circuit breaker, not a timeout: the caller waited at most
     /// until the stall opened, never the admission budget (OB3 2026-09-04
     /// waited 600 s per send behind a stall the probe had already paged).
     /// `stall_id` is the `ErrorEvent::ActorLoopStalled` correlation id, so the
@@ -325,6 +554,7 @@ pub enum BridgeError {
         stall_id: u64,
         /// How long the stall had been open when this delivery was refused.
         stalled_for: Duration,
+        observation: ActorCallObservation,
     },
     /// The actor-loop probe observed the actor's channels CLOSED: the loop is
     /// gone and nothing in this process can restart it. Every delivery fails
@@ -336,6 +566,7 @@ pub enum BridgeError {
         identity: MobAgentIdentity,
         /// The channel-closed evidence the probe observed.
         detail: String,
+        observation: ActorCallObservation,
     },
     /// meerkat refused admission because the member's runtime registration is
     /// durability-degraded and requires a registration-authorized cold reload
@@ -348,6 +579,39 @@ pub enum BridgeError {
         identity: MobAgentIdentity,
         /// meerkat's reason text, verbatim.
         reason: String,
+    },
+    /// meerkat 0.8.34 refused the delivery before dispatch because this
+    /// member's per-member admission lane already holds its maximum number of
+    /// parked deliveries (`MEMBER_ADMISSION_LANE_CAPACITY`). Backpressure for
+    /// exactly one member, never a verdict on the mob or the loop: RETRYABLE
+    /// once the lane drains. Never repair (the member is healthy, just busy),
+    /// never reload, never `Mob(String)`.
+    AdmissionBacklogFull {
+        identity: MobAgentIdentity,
+        /// Deliveries already parked behind the member's in-flight admission.
+        depth: usize,
+    },
+    /// meerkat 0.8.34 REFUSED a member registration reload because the durable
+    /// resume authority is still unreadable: the store is not healthy yet.
+    /// The degraded registration and live shell are retained and the next
+    /// send stays reload-required. RETRYABLE once the store is healthy; a
+    /// reload attempted while commits still fail would only re-degrade the
+    /// fresh registration, so the refusal is the correct answer.
+    ReloadRefused {
+        identity: MobAgentIdentity,
+        session_id: String,
+        /// meerkat's reason, verbatim (names the unreadable authority).
+        reason: String,
+    },
+    /// meerkat 0.8.34's member registration reload exceeded
+    /// `MEMBER_RELOAD_TOTAL_TIMEOUT` (45 s) at `stage`
+    /// (`durability_reload_discard`, `live_session_revival`, or
+    /// `runtime_readiness`). NOT retryable without inspection: the reload may
+    /// have partially progressed, and the stage says where to look.
+    ReloadTimedOut {
+        identity: MobAgentIdentity,
+        session_id: String,
+        stage: String,
     },
     /// The work WAS admitted and its turn reached a FAILED terminal.
     ///
@@ -423,40 +687,65 @@ impl std::fmt::Display for BridgeError {
                 operation,
                 identity,
                 waited,
-            } => write!(
-                f,
-                "session bridge actor call `{operation}` for member {identity} did not answer \
-                 within the admission budget ({waited:?}). This observation cannot establish \
-                 scope: the shared actor loop may be stalled, OR only this member's round trip \
-                 is blocked while the loop drains others (production 2026-08-14 was the latter)"
-            ),
+                command,
+            } => fmt_actor_timeout(f, operation, identity, *waited, *command),
             Self::ActorLoopStalled {
                 operation,
                 identity,
                 stall_id,
                 stalled_for,
+                observation,
             } => write!(
                 f,
-                "session bridge refused actor call `{operation}` for member {identity}: the mob \
+                "session bridge actor call `{operation}` for member {identity}: the mob \
                  actor loop has an open stall (stall_id {stall_id}, open for {stalled_for:?}); \
-                 the delivery was NOT queued behind it and did not wait the admission budget. \
-                 Deliveries resume when actor_loop_recovered arrives with stall_id {stall_id}"
+                 {observation}. Actor recovery is reported with stall_id {stall_id}; \
+                 inspect runtime fate before retrying an in-flight call"
             ),
             Self::ActorTerminated {
                 operation,
                 identity,
                 detail,
+                observation,
             } => write!(
                 f,
-                "session bridge refused actor call `{operation}` for member {identity}: the mob \
+                "session bridge actor call `{operation}` for member {identity}: the mob \
                  actor loop TERMINATED ({detail}); this is not a stall and will not recover, \
-                 the process must restart"
+                 the process must restart; {observation}"
             ),
             Self::ReloadRequired { identity, reason } => write!(
                 f,
                 "session bridge delivery to member {identity} refused: the member's runtime \
                  registration requires a registration-authorized cold reload \
                  (mobkit/reload_member; non-destructive, same session and generation): {reason}"
+            ),
+            Self::AdmissionBacklogFull { identity, depth } => write!(
+                f,
+                "session bridge delivery to member {identity} refused: the member's admission \
+                 lane is full ({depth} deliveries parked behind its in-flight admission); \
+                 nothing was queued; retry once the lane drains (this is per-member \
+                 backpressure, not a stalled loop)"
+            ),
+            Self::ReloadRefused {
+                identity,
+                session_id,
+                reason,
+            } => write!(
+                f,
+                "session bridge reload of member {identity} (session {session_id}) refused: the \
+                 store is not healthy, the durable resume authority is still unreadable; the \
+                 registration was retained unchanged; retry later once the store is healthy: \
+                 {reason}"
+            ),
+            Self::ReloadTimedOut {
+                identity,
+                session_id,
+                stage,
+            } => write!(
+                f,
+                "session bridge reload of member {identity} (session {session_id}) timed out at \
+                 stage `{stage}` (MEMBER_RELOAD_TOTAL_TIMEOUT); the reload may have partially \
+                 progressed; inspect the member before retrying"
             ),
         }
     }
@@ -470,14 +759,14 @@ impl std::error::Error for BridgeError {}
 /// This enum deliberately cannot represent a terminal failure or a
 /// post-admission projection failure. Those states exist only in
 /// [`BridgeTurnError`], returned by [`BridgeTurnReceipt::wait`]. Keeping the
-/// two transition errors disjoint makes it impossible to report "the turn
-/// ran" from the admission edge of the state machine.
+/// two transition errors disjoint avoids inventing a terminal outcome when
+/// no receipt was observed. A missing receipt does not prove nonexecution.
 #[derive(Debug)]
 pub enum BridgeAdmissionError {
     /// The bridge cannot create completion-bearing receipts. Nothing was
     /// submitted.
     CompletionUnsupported(String),
-    /// The underlying mob operation failed before admission.
+    /// The underlying mob operation failed before a receipt was observed.
     Mob(String),
     /// A required field was missing or invalid before admission.
     InvalidInput(String),
@@ -499,24 +788,47 @@ pub enum BridgeAdmissionError {
         operation: &'static str,
         identity: MobAgentIdentity,
         waited: Duration,
+        command: Option<ActorCommandTimeout>,
     },
-    /// Refused before admission: the actor loop has an open probe stall.
+    /// The probe observed a stall; `observation` distinguishes early refusal
+    /// from an interrupted in-flight observation.
     ActorLoopStalled {
         operation: &'static str,
         identity: MobAgentIdentity,
         stall_id: u64,
         stalled_for: Duration,
+        observation: ActorCallObservation,
     },
-    /// Refused before admission: the actor loop terminated.
+    /// The probe observed termination; an in-flight call's fate is unknown.
     ActorTerminated {
         operation: &'static str,
         identity: MobAgentIdentity,
         detail: String,
+        observation: ActorCallObservation,
     },
     /// Refused before admission: the member needs a cold reload.
     ReloadRequired {
         identity: MobAgentIdentity,
         reason: String,
+    },
+    /// Refused before admission: the member's admission lane is full
+    /// (retryable per-member backpressure).
+    AdmissionBacklogFull {
+        identity: MobAgentIdentity,
+        depth: usize,
+    },
+    /// The automatic reload before admission was refused: store not healthy
+    /// yet (retryable later).
+    ReloadRefused {
+        identity: MobAgentIdentity,
+        session_id: String,
+        reason: String,
+    },
+    /// The automatic reload before admission timed out at `stage`.
+    ReloadTimedOut {
+        identity: MobAgentIdentity,
+        session_id: String,
+        stage: String,
     },
     /// A legacy bridge path produced a post-admission error before a receipt
     /// existed. This is an implementation invariant failure, not a terminal
@@ -532,7 +844,7 @@ impl std::fmt::Display for BridgeAdmissionError {
                 "session bridge does not support completion-bearing delivery: {msg}; \
                  nothing was submitted"
             ),
-            Self::Mob(msg) => write!(f, "session bridge mob error before admission: {msg}"),
+            Self::Mob(msg) => write!(f, "session bridge mob error before receipt: {msg}"),
             Self::InvalidInput(msg) => {
                 write!(f, "session bridge invalid input before admission: {msg}")
             }
@@ -552,39 +864,59 @@ impl std::fmt::Display for BridgeAdmissionError {
                 operation,
                 identity,
                 waited,
-            } => write!(
-                f,
-                "session bridge actor call `{operation}` for member {identity} did not answer \
-                 within the admission budget ({waited:?}). This observation cannot establish \
-                 scope: the shared actor loop may be stalled, OR only this member's round trip \
-                 is blocked while the loop drains others (production 2026-08-14 was the latter)"
-            ),
+                command,
+            } => fmt_actor_timeout(f, operation, identity, *waited, *command),
             Self::ActorLoopStalled {
                 operation,
                 identity,
                 stall_id,
                 stalled_for,
+                observation,
             } => write!(
                 f,
-                "session bridge refused actor call `{operation}` for member {identity} before \
-                 admission: the mob actor loop has an open stall (stall_id {stall_id}, open for \
-                 {stalled_for:?}); nothing was queued. Deliveries resume when \
-                 actor_loop_recovered arrives with stall_id {stall_id}"
+                "session bridge actor call `{operation}` for member {identity}: \
+                 the mob actor loop has an open stall (stall_id {stall_id}, open for \
+                 {stalled_for:?}); {observation}"
             ),
             Self::ActorTerminated {
                 operation,
                 identity,
                 detail,
+                observation,
             } => write!(
                 f,
-                "session bridge refused actor call `{operation}` for member {identity} before \
-                 admission: the mob actor loop TERMINATED ({detail}); the process must restart"
+                "session bridge actor call `{operation}` for member {identity}: \
+                 the mob actor loop TERMINATED ({detail}); the process must restart; {observation}"
             ),
             Self::ReloadRequired { identity, reason } => write!(
                 f,
                 "session bridge delivery to member {identity} refused before admission: the \
                  member's runtime registration requires a registration-authorized cold reload \
                  (mobkit/reload_member): {reason}"
+            ),
+            Self::AdmissionBacklogFull { identity, depth } => write!(
+                f,
+                "session bridge delivery to member {identity} refused before admission: the \
+                 member's admission lane is full ({depth} parked); nothing was queued; retry \
+                 once the lane drains"
+            ),
+            Self::ReloadRefused {
+                identity,
+                session_id,
+                reason,
+            } => write!(
+                f,
+                "session bridge reload of member {identity} (session {session_id}) refused before \
+                 admission: store not healthy, reload refused, retry later: {reason}"
+            ),
+            Self::ReloadTimedOut {
+                identity,
+                session_id,
+                stage,
+            } => write!(
+                f,
+                "session bridge reload of member {identity} (session {session_id}) timed out \
+                 before admission at stage `{stage}`; inspect before retrying"
             ),
             Self::InvariantViolation(msg) => {
                 write!(f, "session bridge admission invariant violated: {msg}")
@@ -609,34 +941,61 @@ impl From<BridgeError> for BridgeAdmissionError {
                 operation,
                 identity,
                 waited,
+                command,
             } => Self::ActorAdmissionTimeout {
                 operation,
                 identity,
                 waited,
+                command,
             },
             BridgeError::ActorLoopStalled {
                 operation,
                 identity,
                 stall_id,
                 stalled_for,
+                observation,
             } => Self::ActorLoopStalled {
                 operation,
                 identity,
                 stall_id,
                 stalled_for,
+                observation,
             },
             BridgeError::ActorTerminated {
                 operation,
                 identity,
                 detail,
+                observation,
             } => Self::ActorTerminated {
                 operation,
                 identity,
                 detail,
+                observation,
             },
             BridgeError::ReloadRequired { identity, reason } => {
                 Self::ReloadRequired { identity, reason }
             }
+            BridgeError::AdmissionBacklogFull { identity, depth } => {
+                Self::AdmissionBacklogFull { identity, depth }
+            }
+            BridgeError::ReloadRefused {
+                identity,
+                session_id,
+                reason,
+            } => Self::ReloadRefused {
+                identity,
+                session_id,
+                reason,
+            },
+            BridgeError::ReloadTimedOut {
+                identity,
+                session_id,
+                stage,
+            } => Self::ReloadTimedOut {
+                identity,
+                session_id,
+                stage,
+            },
             BridgeError::CompletionFailed(detail) => Self::InvariantViolation(format!(
                 "completion failure escaped before an admitted-turn receipt existed: {detail}"
             )),
@@ -668,34 +1027,61 @@ impl From<BridgeAdmissionError> for BridgeError {
                 operation,
                 identity,
                 waited,
+                command,
             } => Self::ActorAdmissionTimeout {
                 operation,
                 identity,
                 waited,
+                command,
             },
             BridgeAdmissionError::ActorLoopStalled {
                 operation,
                 identity,
                 stall_id,
                 stalled_for,
+                observation,
             } => Self::ActorLoopStalled {
                 operation,
                 identity,
                 stall_id,
                 stalled_for,
+                observation,
             },
             BridgeAdmissionError::ActorTerminated {
                 operation,
                 identity,
                 detail,
+                observation,
             } => Self::ActorTerminated {
                 operation,
                 identity,
                 detail,
+                observation,
             },
             BridgeAdmissionError::ReloadRequired { identity, reason } => {
                 Self::ReloadRequired { identity, reason }
             }
+            BridgeAdmissionError::AdmissionBacklogFull { identity, depth } => {
+                Self::AdmissionBacklogFull { identity, depth }
+            }
+            BridgeAdmissionError::ReloadRefused {
+                identity,
+                session_id,
+                reason,
+            } => Self::ReloadRefused {
+                identity,
+                session_id,
+                reason,
+            },
+            BridgeAdmissionError::ReloadTimedOut {
+                identity,
+                session_id,
+                stage,
+            } => Self::ReloadTimedOut {
+                identity,
+                session_id,
+                stage,
+            },
             BridgeAdmissionError::InvariantViolation(detail) => Self::Mob(detail),
         }
     }
@@ -1101,6 +1487,7 @@ impl ActorAdmissionDeadline {
         state: &ActorLoopHealthState,
         operation: &'static str,
         identity: &MobAgentIdentity,
+        observation: ActorCallObservation,
     ) -> Option<BridgeError> {
         match state {
             ActorLoopHealthState::Live => None,
@@ -1110,14 +1497,15 @@ impl ActorAdmissionDeadline {
                     identity = %identity,
                     stall_id,
                     stalled_for_ms = since.elapsed().as_millis(),
-                    "delivery refused: the mob actor loop has an open stall; not queueing the \
-                     command behind it (deliveries resume on the correlated actor_loop_recovered)"
+                    %observation,
+                    "actor call observation ended: the mob actor loop has an open stall"
                 );
                 Some(BridgeError::ActorLoopStalled {
                     operation,
                     identity: identity.clone(),
                     stall_id: *stall_id,
                     stalled_for: since.elapsed(),
+                    observation,
                 })
             }
             ActorLoopHealthState::Terminated { detail, .. } => {
@@ -1125,12 +1513,14 @@ impl ActorAdmissionDeadline {
                     operation,
                     identity = %identity,
                     detail = %detail,
+                    %observation,
                     "delivery refused: the mob actor loop terminated; the process must restart"
                 );
                 Some(BridgeError::ActorTerminated {
                     operation,
                     identity: identity.clone(),
                     detail: detail.clone(),
+                    observation,
                 })
             }
         }
@@ -1154,7 +1544,12 @@ impl ActorAdmissionDeadline {
         // attempt, so a stall that opens between two serialized hops still
         // cuts the attempt short.
         if let Some(health) = self.health.as_ref()
-            && let Some(refusal) = Self::refusal_for(&health.snapshot(), operation, identity)
+            && let Some(refusal) = Self::refusal_for(
+                &health.snapshot(),
+                operation,
+                identity,
+                ActorCallObservation::BeforeCall,
+            )
         {
             return Err(refusal);
         }
@@ -1181,15 +1576,21 @@ impl ActorAdmissionDeadline {
         };
         match outcome {
             Ok(Ok(value)) => Ok(value),
-            Ok(Err(state)) => Err(Self::refusal_for(&state, operation, identity).unwrap_or(
-                // `unhealthy()` only resolves on a refusing state; keep the
-                // arm total without inventing a new failure class.
-                BridgeError::ActorAdmissionTimeout {
-                    operation,
-                    identity: identity.clone(),
-                    waited: self.started.elapsed(),
-                },
-            )),
+            Ok(Err(state)) => {
+                Err(
+                    Self::refusal_for(&state, operation, identity, ActorCallObservation::InFlight)
+                        .unwrap_or(
+                            // `unhealthy()` only resolves on a refusing state; keep the
+                            // arm total without inventing a new failure class.
+                            BridgeError::ActorAdmissionTimeout {
+                                operation,
+                                identity: identity.clone(),
+                                waited: self.started.elapsed(),
+                                command: None,
+                            },
+                        ),
+                )
+            }
             Err(_) => {
                 let waited = self.started.elapsed();
                 tracing::warn!(
@@ -1206,6 +1607,7 @@ impl ActorAdmissionDeadline {
                     operation,
                     identity: identity.clone(),
                     waited,
+                    command: None,
                 })
             }
         }
@@ -1342,7 +1744,7 @@ async fn submit_internal_bridge_work(
                     ),
                 )
                 .await?
-                .map_err(|err| classify_submit_mob_error(member_id, err))?,
+                .map_err(|err| classify_submit_mob_error(member_id, err, deadline))?,
             None => deadline
                 .bound(
                     "deliver.start_work",
@@ -1356,7 +1758,7 @@ async fn submit_internal_bridge_work(
                     ),
                 )
                 .await?
-                .map_err(|err| classify_submit_mob_error(member_id, err))?,
+                .map_err(|err| classify_submit_mob_error(member_id, err, deadline))?,
         };
         // Hand the handle back UNAWAITED. The caller awaits it only after the
         // admission-retry decision is settled, so a turn that ran and then
@@ -1364,37 +1766,42 @@ async fn submit_internal_bridge_work(
         // resubmitted - which would run the member's turn twice.
         return Ok(Some(turn));
     }
+    // The upstream deadline can skip still-queued work, but cannot retract
+    // admission already in progress. Neither deadline proves nonexecution.
+    let actor_deadline = deadline.deadline.into_std();
     match work.delivery_identity {
         Some(delivery_identity) => deadline
             .bound(
                 "deliver.submit_work",
                 member_id,
-                handle.submit_work_with_mode_and_delivery_identity(
+                handle.submit_work_with_mode_and_delivery_identity_bounded(
                     entry.agent_runtime_id.clone(),
                     entry.fence_token,
                     spec,
                     handling_mode,
                     delivery_identity.clone(),
+                    actor_deadline,
                 ),
             )
             .await?
             .map(|_| None)
-            .map_err(|err| classify_submit_mob_error(member_id, err)),
+            .map_err(|err| classify_submit_mob_error(member_id, err, deadline)),
         None => deadline
             .bound(
                 "deliver.submit_work",
                 member_id,
-                handle.submit_work_with_mode(
+                handle.submit_work_with_mode_bounded(
                     entry.agent_runtime_id.clone(),
                     entry.fence_token,
                     WorkRef::new(),
                     spec,
                     handling_mode,
+                    actor_deadline,
                 ),
             )
             .await?
             .map(|_| None)
-            .map_err(|err| classify_submit_mob_error(member_id, err)),
+            .map_err(|err| classify_submit_mob_error(member_id, err, deadline)),
     }
 }
 
@@ -1696,6 +2103,28 @@ pub trait SessionBridge: Send + Sync {
     /// fails admission round trips fast while a stall is open; bridges that do
     /// not touch the mob actor ignore it.
     fn observe_actor_loop_health(&self, _health: Arc<ActorLoopHealth>) {}
+
+    /// meerkat's non-destructive member registration reload
+    /// (`MobHandle::reload_member_registration`, 0.8.34). `Ok(None)` means
+    /// this bridge exposes no such primitive and the identity runtime falls
+    /// back to retire-then-rematerialize. The identity's continuity binding is
+    /// never touched by this call.
+    async fn reload_member_registration(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+    ) -> Result<Option<BridgeMemberReload>, BridgeError> {
+        Ok(None)
+    }
+
+    /// meerkat's durability verdict for the member's live registration
+    /// (`MeerkatMachine::durability_reload_required`, 0.8.34), or `None` when
+    /// this bridge cannot observe it.
+    async fn member_durability(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Option<super::types::MemberDurability> {
+        None
+    }
 
     /// Spawn a new mob member for a freshly-created identity.
     async fn create_session(
@@ -4101,6 +4530,31 @@ impl SessionBridge for MobSessionBridge {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(health);
     }
 
+    async fn reload_member_registration(
+        &self,
+        runtime_id: &AgentRuntimeId,
+    ) -> Result<Option<BridgeMemberReload>, BridgeError> {
+        let mid = self.member_id_for_runtime_id(runtime_id).await?;
+        let deadline = self.admission_deadline();
+        let outcome = deadline
+            .bound(
+                "reload.reload_member_registration",
+                &mid,
+                self.handle.reload_member_registration(&mid),
+            )
+            .await?
+            .map_err(|error| classify_reload_mob_error(&mid, error, &deadline))?;
+        Ok(Some(bridge_member_reload(outcome)))
+    }
+
+    async fn member_durability(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Option<super::types::MemberDurability> {
+        let machine = self.session_service.as_ref()?.runtime_adapter()?;
+        member_durability_from_machine(machine.durability_reload_required(session_id).await)
+    }
+
     async fn raw_member_alias_exists(&self, alias: &str) -> Result<bool, BridgeError> {
         let members = self.handle.list_members_including_retiring().await;
         let authoritative_members = self.runtime_members.read().await;
@@ -5020,6 +5474,9 @@ impl MobSessionBridge {
             // never repair (destructive, cannot clear the degradation), never
             // `Mob(String)`.
             Err(err @ BridgeError::ReloadRequired { .. }) => return Err(err.into()),
+            // Per-member backpressure: the member is healthy, its lane is full.
+            // Retryable by the caller; never repair, never reload.
+            Err(err @ BridgeError::AdmissionBacklogFull { .. }) => return Err(err.into()),
             Err(err) if is_repairable_bridge_delivery_error(&err.to_string()) => {
                 tracing::warn!(
                     runtime_id = %runtime_id,
@@ -7203,10 +7660,12 @@ mod tests {
                 operation,
                 identity,
                 waited,
+                command,
             } => {
                 assert_eq!(operation, "deliver.submit_work");
                 assert_eq!(identity.as_str(), "rt-agent-alpha-0");
                 assert!(waited >= Duration::from_millis(20), "waited {waited:?}");
+                assert_eq!(command, None);
             }
             other => panic!("expected a typed admission timeout, got {other:?}"),
         }
@@ -7278,6 +7737,10 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("stall_id 42"), "{rendered}");
         assert!(
+            rendered.contains("this actor call was not started"),
+            "{rendered}"
+        );
+        assert!(
             !is_repairable_bridge_delivery_error(&rendered),
             "a stalled loop is not stale runtime state: {rendered}"
         );
@@ -7324,9 +7787,22 @@ mod tests {
             started.elapsed()
         );
         assert!(
-            matches!(error, BridgeError::ActorLoopStalled { stall_id: 7, .. }),
+            matches!(
+                error,
+                BridgeError::ActorLoopStalled {
+                    stall_id: 7,
+                    observation: ActorCallObservation::InFlight,
+                    ..
+                }
+            ),
             "{error:?}"
         );
+        assert!(
+            error
+                .to_string()
+                .contains("execution fate is not established")
+        );
+        assert!(!error.to_string().contains("nothing was queued"));
     }
 
     /// The correlated resolution reopens the delivery path: after
@@ -7389,9 +7865,11 @@ mod tests {
             !is_repairable_bridge_delivery_error(rendered),
             "repair-blocked must never route to repair_member_for_delivery"
         );
+        let deadline = ActorAdmissionDeadline::new(Duration::from_mins(10));
         let classified = classify_submit_mob_error(
             &member,
             meerkat_mob::MobError::Internal(rendered.to_string()),
+            &deadline,
         );
         match &classified {
             BridgeError::ReloadRequired { identity, reason } => {
@@ -7418,9 +7896,233 @@ mod tests {
         let other = classify_submit_mob_error(
             &member,
             meerkat_mob::MobError::Internal("missing event injector capability for member".into()),
+            &deadline,
         );
         assert!(matches!(other, BridgeError::Mob(_)), "{other:?}");
         assert!(is_repairable_bridge_delivery_error(&other.to_string()));
+    }
+
+    /// meerkat 0.8.34 types the durability-degraded refusal; it must classify
+    /// from the VARIANT (ahead of the text fallback) and carry meerkat's
+    /// member id and reason verbatim.
+    #[test]
+    fn typed_member_reload_required_classifies_ahead_of_text() {
+        let deadline = ActorAdmissionDeadline::new(Duration::from_mins(10));
+        let member = MobAgentIdentity::from("rt-review-singleton-0");
+        let classified = classify_submit_mob_error(
+            &member,
+            meerkat_mob::MobError::MemberReloadRequired {
+                member_id: MobAgentIdentity::from("rt-review-singleton-0"),
+                reason: "durable commit could not be reconciled".to_string(),
+            },
+            &deadline,
+        );
+        match classified {
+            BridgeError::ReloadRequired { identity, reason } => {
+                assert_eq!(identity.as_str(), "rt-review-singleton-0");
+                assert_eq!(reason, "durable commit could not be reconciled");
+            }
+            other => panic!("expected ReloadRequired, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn actor_deadline_stages_survive_admission_round_trip_without_fate_claims() {
+        let deadline = ActorAdmissionDeadline::new(Duration::from_secs(1));
+        let member = MobAgentIdentity::from("rt-review-singleton-0");
+        for stage in ["actor_command_admission", "actor_command_reply"] {
+            let upstream = meerkat_mob::MobError::ActorCommandTimedOut {
+                command_kind: "SubmitWork",
+                stage,
+            };
+            let expected = upstream.structured_data().expect("upstream timeout data");
+            let error = classify_submit_mob_error(&member, upstream, &deadline);
+            let admission = BridgeAdmissionError::from(error);
+            for display in [
+                admission.to_string(),
+                BridgeError::from(admission).to_string(),
+            ] {
+                assert!(display.contains("SubmitWork") && display.contains(stage));
+                assert!(display.contains("execution fate"));
+                assert!(!display.contains("NOT executed") && !display.contains("never started"));
+                assert!(!is_repairable_bridge_delivery_error(&display));
+                assert!(!is_reload_required_bridge_delivery_error(&display));
+            }
+            let data = actor_timeout_data(
+                "deliver.submit_work",
+                Duration::ZERO,
+                Some(ActorCommandTimeout {
+                    command_kind: "SubmitWork",
+                    stage,
+                }),
+            );
+            assert_eq!(data, expected);
+            assert!(data.get("executed").is_none());
+            assert!(data.get("retryable").is_none());
+        }
+    }
+
+    /// meerkat 0.8.34's reload refusal (store not healthy yet) is typed and
+    /// tells the operator to retry later; the timeout names its stage and is
+    /// not retryable without inspection. Neither is ever `Mob(String)`.
+    #[test]
+    fn reload_refused_and_timed_out_classify_typed() {
+        let deadline = ActorAdmissionDeadline::new(Duration::from_secs(1));
+        let member = MobAgentIdentity::from("rt-review-singleton-0");
+        let session_id = meerkat_core::types::SessionId::new();
+        let refused = classify_reload_mob_error(
+            &member,
+            meerkat_mob::MobError::MemberReloadRefused {
+                session_id: session_id.clone(),
+                reason: "durable resume authority unreadable: continuity save: HTTP 0".into(),
+            },
+            &deadline,
+        );
+        match &refused {
+            BridgeError::ReloadRefused {
+                identity,
+                session_id: refused_session,
+                reason,
+            } => {
+                assert_eq!(identity.as_str(), "rt-review-singleton-0");
+                assert_eq!(refused_session, &session_id.to_string());
+                assert!(reason.contains("HTTP 0"), "{reason}");
+            }
+            other => panic!("expected ReloadRefused, got {other:?}"),
+        }
+        let rendered = refused.to_string();
+        assert!(
+            rendered.contains("store is not healthy") && rendered.contains("retry later"),
+            "{rendered}"
+        );
+        assert!(!is_repairable_bridge_delivery_error(&rendered));
+        assert!(matches!(
+            BridgeAdmissionError::from(refused),
+            BridgeAdmissionError::ReloadRefused { .. }
+        ));
+
+        let timed_out = classify_reload_mob_error(
+            &member,
+            meerkat_mob::MobError::MemberReloadTimedOut {
+                session_id,
+                stage: "live_session_revival",
+            },
+            &deadline,
+        );
+        match &timed_out {
+            BridgeError::ReloadTimedOut { stage, .. } => {
+                assert_eq!(stage, "live_session_revival");
+            }
+            other => panic!("expected ReloadTimedOut, got {other:?}"),
+        }
+        let rendered = timed_out.to_string();
+        assert!(
+            rendered.contains("live_session_revival") && rendered.contains("inspect"),
+            "{rendered}"
+        );
+        assert!(matches!(
+            BridgeError::from(BridgeAdmissionError::from(timed_out)),
+            BridgeError::ReloadTimedOut { .. }
+        ));
+        for stage in ["actor_command_admission", "actor_command_reply"] {
+            let error = classify_reload_mob_error(
+                &member,
+                meerkat_mob::MobError::ActorCommandTimedOut {
+                    command_kind: "ReloadMemberRegistration",
+                    stage,
+                },
+                &deadline,
+            );
+            assert!(matches!(error, BridgeError::ActorAdmissionTimeout {
+                command: Some(ActorCommandTimeout { command_kind: "ReloadMemberRegistration", stage: actual }),
+                ..
+            } if actual == stage));
+        }
+    }
+
+    /// meerkat 0.8.34's per-member lane backpressure is typed and RETRYABLE:
+    /// never repair, never reload, never `Mob(String)`.
+    #[test]
+    fn member_admission_backlog_full_classifies_typed_and_retryable() {
+        let deadline = ActorAdmissionDeadline::new(Duration::from_mins(10));
+        let member = MobAgentIdentity::from("rt-review-singleton-0");
+        let classified = classify_submit_mob_error(
+            &member,
+            meerkat_mob::MobError::MemberAdmissionBacklogFull {
+                member_id: MobAgentIdentity::from("rt-review-singleton-0"),
+                depth: 256,
+            },
+            &deadline,
+        );
+        match &classified {
+            BridgeError::AdmissionBacklogFull { identity, depth } => {
+                assert_eq!(identity.as_str(), "rt-review-singleton-0");
+                assert_eq!(*depth, 256);
+            }
+            other => panic!("expected AdmissionBacklogFull, got {other:?}"),
+        }
+        let rendered = classified.to_string();
+        assert!(
+            rendered.contains("retry once the lane drains"),
+            "{rendered}"
+        );
+        assert!(
+            !is_repairable_bridge_delivery_error(&rendered),
+            "{rendered}"
+        );
+        assert!(
+            !is_reload_required_bridge_delivery_error(&rendered),
+            "{rendered}"
+        );
+        let admission = BridgeAdmissionError::from(classified);
+        assert!(matches!(
+            admission,
+            BridgeAdmissionError::AdmissionBacklogFull { depth: 256, .. }
+        ));
+        assert!(matches!(
+            BridgeError::from(admission),
+            BridgeError::AdmissionBacklogFull { depth: 256, .. }
+        ));
+    }
+
+    /// The mob primitive's outcome and the machine's durability verdict
+    /// project into the identity-first wire vocabulary without loss.
+    #[test]
+    fn mob_reload_outcome_and_durability_project_into_wire_vocabulary() {
+        let session_id = meerkat_core::types::SessionId::new();
+        // `MemberReloadOutcome` is `#[non_exhaustive]` upstream, so a test
+        // builds it through its serde form rather than a struct literal.
+        let outcome: meerkat_mob::MemberReloadOutcome = serde_json::from_value(serde_json::json!({
+            "disposition": "not_degraded",
+            "session_id": session_id,
+            "generation": 0,
+        }))
+        .expect("MemberReloadOutcome wire form");
+        let reload = bridge_member_reload(outcome);
+        assert_eq!(
+            reload.disposition,
+            crate::identity_first::MemberReloadDisposition::NotDegraded
+        );
+        assert_eq!(reload.session_id, session_id);
+
+        assert_eq!(member_durability_from_machine(None), None);
+        let degraded = member_durability_degraded(
+            "completed_boundary_commit".to_string(),
+            "continuity save: HTTP 0".to_string(),
+        );
+        assert_eq!(
+            serde_json::to_value(&degraded).expect("serialize"),
+            serde_json::json!({
+                "reload_required": {
+                    "operation": "completed_boundary_commit",
+                    "reason": "continuity save: HTTP 0"
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(crate::identity_first::MemberDurability::Ready).expect("ready"),
+            serde_json::json!("ready")
+        );
     }
 
     #[tokio::test]

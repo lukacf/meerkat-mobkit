@@ -5602,7 +5602,7 @@ fn identity_error_response(
         error: Some(JsonRpcError {
             code,
             message,
-            data: None,
+            data: err.structured_data(),
         }),
     }
 }
@@ -8163,6 +8163,32 @@ shell = true
             "LeaseLost has its own identity-plane code"
         );
         assert!(error.message.contains("lease lost"));
+    }
+
+    #[test]
+    fn identity_actor_timeout_rpc_preserves_owner_observations() {
+        for stage in ["actor_command_admission", "actor_command_reply"] {
+            let err = crate::identity_first::IdentityRuntimeError::ActorAdmissionTimeout {
+                identity: crate::identity_first::AgentIdentity::parse("review:singleton")
+                    .expect("valid identity"),
+                operation: "deliver.submit_work",
+                waited: std::time::Duration::from_millis(5),
+                command: Some(crate::identity_first::ActorCommandTimeout {
+                    command_kind: "SubmitWork",
+                    stage,
+                }),
+            };
+            let error = identity_error_response(json!("req-1"), &err)
+                .error
+                .expect("RPC error");
+            assert_eq!(error.data, err.structured_data());
+            let data = error.data.expect("timeout data");
+            assert_eq!(data["stage"], stage);
+            assert!(data.get("executed").is_none());
+            assert!(data.get("retryable").is_none());
+            assert!(error.message.contains("execution fate"));
+            assert!(!error.message.contains("never started"));
+        }
     }
 
     #[test]

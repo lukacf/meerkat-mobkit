@@ -3197,6 +3197,15 @@ pub enum ConsoleSendError {
     IdempotencyConflict(String),
     State(&'static str),
     Dispatch(String),
+    /// An observation timeout, with no implied execution or retry verdict.
+    AdmissionTimeout {
+        identity: String,
+        operation: &'static str,
+        waited: Duration,
+        command: Option<crate::identity_first::ActorCommandTimeout>,
+    },
+    ActorProbe(Box<crate::identity_first::IdentityRuntimeError>),
+    RuntimeOperation(Box<crate::identity_first::IdentityRuntimeError>),
     Log(ConsoleLogError),
 }
 
@@ -3219,6 +3228,18 @@ impl std::fmt::Display for ConsoleSendError {
             Self::IdempotencyConflict(key) => write!(f, "idempotency key conflict: {key}"),
             Self::State(message) => write!(f, "console send state error: {message}"),
             Self::Dispatch(message) => write!(f, "dispatch failed: {message}"),
+            Self::AdmissionTimeout {
+                identity,
+                operation,
+                waited,
+                command,
+            } => crate::identity_first::bridge::fmt_actor_timeout(
+                f, operation, identity, *waited, *command,
+            ),
+            Self::ActorProbe(error) => {
+                write!(f, "actor probe interrupted send observation: {error}")
+            }
+            Self::RuntimeOperation(error) => write!(f, "runtime operation failed: {error}"),
             Self::Log(err) => write!(f, "console log error: {err}"),
         }
     }

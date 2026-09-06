@@ -1716,6 +1716,37 @@ describe("MobHandle.reloadMember()", () => {
 });
 
 describe("MobHandle.memberHealth()", () => {
+  for (const stage of ["actor_command_admission", "actor_command_reply"]) {
+    it(`preserves ${stage} observations without inventing a fate`, async () => {
+      const { handle, calls, setResponse } = createMockRuntime();
+      const data = {
+        kind: "mob_actor_command_timed_out",
+        command_kind: "SubmitWork",
+        stage,
+        deadline_reached: true,
+      };
+      setResponse(() => ({
+        identity: "x",
+        state: "active",
+        last_delivery_error: { class: "admission_timeout", detail: "unobserved", data, at_unix_ms: 1 },
+      }));
+      const health = await handle.memberHealth("x");
+      assert.deepEqual(health.lastDeliveryError?.data, data);
+      assert.equal("executed" in data, false);
+      assert.equal("retryable" in data, false);
+      calls.length = 0;
+      setResponse(() => {
+        throw new RpcError(-32603, "observation deadline", "request-1", "mobkit/send_message", data);
+      });
+      await assert.rejects(handle.send("x", "turn"), (error: unknown) => {
+        assert.ok(error instanceof RpcError);
+        assert.deepEqual(error.data, data);
+        return true;
+      });
+      assert.deepEqual(calls.map(call => call.method), ["mobkit/send_message"]);
+    });
+  }
+
   it("sends mobkit/member_health and parses the report", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => ({
@@ -1748,6 +1779,7 @@ describe("MobHandle.memberHealth()", () => {
     assert.equal(health.lastDeliveryError?.class, "reload_required");
     assert.equal(health.actorLoop.state, "stalled");
     assert.equal(health.openStallId, 7);
+    assert.equal(health.lastReload, null);
     // Absent until the gateway can read meerkat's durability state.
     assert.equal(health.durability, null);
   });

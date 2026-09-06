@@ -68,7 +68,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde::Deserialize;
 
-use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
+use meerkat_client::{BlockAssembler, LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
 use meerkat_core::{Message, Provider, UserMessage};
 
 use crate::identity_first::agent_memory::{
@@ -3868,10 +3868,13 @@ pub async fn complete_text(
     .with_max_tokens(profile.params.max_output_tokens)
     .with_temperature(profile.params.temperature);
     let mut stream = client.stream(&request);
-    let mut text = String::new();
+    let mut assembler = BlockAssembler::new();
     while let Some(event) = stream.next().await {
         match event.map_err(classify_llm_error)? {
-            LlmEvent::TextDelta { delta, .. } => text.push_str(&delta),
+            LlmEvent::AssistantOutput { blocks } => {
+                assembler = BlockAssembler::from_final_blocks(blocks);
+            }
+            LlmEvent::TextDelta { delta, meta } => assembler.on_text_delta(&delta, meta),
             LlmEvent::Done { outcome } => match outcome {
                 LlmDoneOutcome::Success { stop_reason } => {
                     // Do NOT discard stop_reason. A MaxTokens stop arrives with a
@@ -3886,10 +3889,20 @@ pub async fn complete_text(
                 }
                 LlmDoneOutcome::Error { error } => return Err(classify_llm_error(error)),
             },
-            _ => {}
+            LlmEvent::ReasoningDelta { .. }
+            | LlmEvent::ReasoningComplete { .. }
+            | LlmEvent::ToolCallDelta { .. }
+            | LlmEvent::ToolCallComplete { .. }
+            | LlmEvent::ServerToolContent { .. }
+            | LlmEvent::UsageUpdate { .. }
+            | LlmEvent::WireLiveness => {}
         }
     }
-    Ok(text)
+    Ok(meerkat_core::types::BlockAssistantMessage::new(
+        assembler.finalize(),
+        meerkat_core::StopReason::EndTurn,
+    )
+    .to_string())
 }
 
 fn classify_llm_error(error: LlmError) -> StewardError {
@@ -3897,6 +3910,8 @@ fn classify_llm_error(error: LlmError) -> StewardError {
         LlmError::AuthenticationFailed { .. } | LlmError::InvalidApiKey => {
             StewardError::Auth(error.to_string())
         }
+        // Policy stops must not enter the auth-refresh or parse-repair retry paths.
+        LlmError::PolicyStop { .. } => StewardError::Client(error.to_string()),
         other => StewardError::Client(other.to_string()),
     }
 }
@@ -4094,6 +4109,99 @@ mod tests {
     use std::sync::Mutex as StdMutex;
 
     const REALM: &str = "family";
+
+    #[tokio::test]
+    async fn complete_text_uses_final_assistant_output() {
+        use meerkat_core::AssistantBlock;
+
+        for provisional in [None, Some("discarded provisional text")] {
+            for blocks in [
+                Vec::new(),
+                vec![
+                    AssistantBlock::Text {
+                        text: "{".to_string(),
+                        meta: None,
+                    },
+                    AssistantBlock::Reasoning {
+                        text: "not answer text".to_string(),
+                        meta: None,
+                    },
+                    AssistantBlock::Text {
+                        text: "}".to_string(),
+                        meta: None,
+                    },
+                ],
+            ] {
+                let expected = if blocks.is_empty() { "" } else { "{}" };
+                let mut events = Vec::new();
+                if let Some(delta) = provisional {
+                    events.push(LlmEvent::TextDelta {
+                        delta: delta.to_string(),
+                        meta: None,
+                    });
+                }
+                events.push(LlmEvent::AssistantOutput { blocks });
+                events.push(LlmEvent::Done {
+                    outcome: LlmDoneOutcome::Success {
+                        stop_reason: meerkat_core::StopReason::EndTurn,
+                    },
+                });
+                let client = meerkat_client::TestClient::new(events);
+                assert_eq!(
+                    complete_text(&StewardProfile::embedded_default(), &client, "test".into())
+                        .await
+                        .expect("completion"),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_text_final_output_preserves_truncation() {
+        let client = meerkat_client::TestClient::new(vec![
+            LlmEvent::AssistantOutput { blocks: Vec::new() },
+            LlmEvent::Done {
+                outcome: LlmDoneOutcome::Success {
+                    stop_reason: meerkat_core::StopReason::MaxTokens,
+                },
+            },
+        ]);
+        let profile = StewardProfile::embedded_default();
+        assert!(matches!(
+            complete_text(&profile, &client, "test".into()).await,
+            Err(StewardError::Truncated { max_output_tokens })
+                if max_output_tokens == profile.params.max_output_tokens
+        ));
+    }
+
+    #[tokio::test]
+    async fn policy_stop_is_not_auth_or_successful_text() {
+        let stop = LlmError::PolicyStop {
+            code: "misalignment_policy_violation".to_string(),
+            message: "operator review required".to_string(),
+        };
+        assert!(!stop.is_retryable());
+        assert!(matches!(
+            classify_llm_error(stop.clone()),
+            StewardError::Client(message)
+                if message.contains("misalignment_policy_violation")
+        ));
+        let client = meerkat_client::TestClient::new(vec![
+            LlmEvent::TextDelta {
+                delta: "invalid JSON must not be repaired after a policy stop".to_string(),
+                meta: None,
+            },
+            LlmEvent::Done {
+                outcome: LlmDoneOutcome::Error { error: stop },
+            },
+        ]);
+        assert!(matches!(
+            complete_text(&StewardProfile::embedded_default(), &client, "test".into()).await,
+            Err(StewardError::Client(message))
+                if message.contains("misalignment_policy_violation")
+        ));
+    }
 
     // -- scripted LLM (the Distiller's shape) --------------------------------
 

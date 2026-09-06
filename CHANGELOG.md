@@ -17,6 +17,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed - BREAKING for host/SDK implementors
 
+- **Actor timeout evidence is preserved without an execution verdict.**
+  Rust literals/matches for `BridgeError::ActorAdmissionTimeout` and
+  `BridgeAdmissionError::ActorAdmissionTimeout` must handle the new
+  `command: Option<ActorCommandTimeout>` field (`command_kind`, `stage`).
+  `IdentityRuntimeError::ActorAdmissionTimeout` and
+  `ConsoleSendError::{AdmissionTimeout, ActorProbe, RuntimeOperation}` are new variants;
+  `IdentityRuntimeError::structured_data()` exposes their observations.
+  `DeliveryErrorRecord` gains optional `data`. RPC `error.data`, console
+  error data, and SDK member-health records preserve upstream command/stage
+  exactly, without `executed: false` or `retryable: true`. A reply deadline
+  can follow runtime admission; neither a timeout nor missing flags proves
+  nonexecution. Timeouts never trigger automatic repair, reload, or retry.
+  Runtime idempotency and durable fate remain authoritative.
+  `BridgeError`, `BridgeAdmissionError`, and `IdentityRuntimeError` variants
+  `ActorLoopStalled` / `ActorTerminated` also gain
+  `observation: ActorCallObservation` (`BeforeCall` / `InFlight`), keeping a
+  true early refusal distinct from a probe interrupting an already-started call.
+- **Reload integration adds exhaustive Rust error/health variants.**
+  `BridgeError`, `BridgeAdmissionError`, and `IdentityRuntimeError` gain
+  `AdmissionBacklogFull`, `ReloadRefused`, and `ReloadTimedOut`;
+  `DeliveryErrorClass` gains the same three variants. `MemberHealthReport`
+  gains `last_reload: Option<ReloadAttemptRecord>`; Rust literals must add it.
+  `BridgeMemberReload`, `ReloadAttemptRecord`, and `ReloadAttemptOutcome`
+  are public, and `SessionBridge` gains defaulted
+  `reload_member_registration` and `member_durability` observation seams.
+- **Reload health is observational.** The upstream primitive's `not_current`
+  is a no-op, not permission to retire/rematerialize. `last_reload` records
+  early no-ops and failures as well as primitive outcomes. Custom durability
+  reads run without the fleet entries lock; absence of an upstream degradation
+  marker no longer reports `ready`, because it also covers absent registrations.
+  `ReloadAttemptRecord.data` retains actor timeout/probe observations from
+  explicit and automatic reloads instead of flattening them to reload-required.
+
 - **`ConventionalPaths` gains a public `meerkat_config_toml: Option<PathBuf>`
   field.** The struct is all-`pub` and not `#[non_exhaustive]`, so a Rust
   host that builds it with a struct literal must add the field
@@ -52,16 +85,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `respawn_member` is a destructive continuity reset. The new verb discards
   the live registration and re-materializes the SAME durable session under
   the identity's lifecycle lock: same identity alias, same `session_id`, same
-  continuity generation (implemented on the meerkat 0.8.33 API as retire with
-  the memory harvest hooks skipped, an explicit `Retiring -> Dormant`
-  transition, and a resume of the recorded session, whose executor
-  registration is where meerkat mints the cold reload). Result:
+  continuity generation. Bridges without the upstream primitive retain the
+  legacy retire/resume path with memory harvest skipped; revival goes through
+  the existing addressed embodiment door, never a shell-forced
+  `Retiring -> Dormant` transition. Result:
   `{reloaded, disposition: "discarded" | "not_degraded" | "not_current",
   session_id, generation}`. Wired on the console plane (`POST /console/rpc`,
   gated by `agent.respawn`), the SDK stdio surface, Python
   `MobHandle.reload_member`, TypeScript `MobHandle.reloadMember`, and
-  `docs/api/rpc.mdx`. Broken/retiring/suspended identities and worker-plane
-  members are refused typed.
+  `docs/api/rpc.mdx`. Broken/suspended identities and worker-plane members are
+  refused typed. Retired identities return `not_current` without revival;
+  only an operation addressed to them can use the existing revival door.
 - **`mobkit/member_health`: an in-process health read for one identity.**
   Returns lifecycle state, whether a materialization is in flight, the last
   delivery error class (`reload_required`, `actor_loop_stalled`,
@@ -72,6 +106,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   {reload_required: {operation, reason}}` field once meerkat exposes it
   (0.8.34). Python `MobHandle.member_health`, TypeScript
   `MobHandle.memberHealth`.
+- **meerkat 0.8.34 wiring for the reload verb and member health.**
+  `mobkit/reload_member` now calls `MobHandle::reload_member_registration`
+  when the session bridge exposes it (`SessionBridge::reload_member_registration`,
+  default `Ok(None)`): meerkat quiesces, discards and re-registers the
+  executor for the same session off the actor loop and reports
+  `discarded` / `not_degraded` / `not_current`; `not_degraded` is a success
+  no-op and `not_current` is a no-op with no destructive fallback.
+  `mobkit/member_health` carries `durability` from
+  `MeerkatMachine::durability_reload_required` through the new
+  `SessionBridge::member_durability` seam. The delivery classifier matches
+  the typed `MobError::MemberReloadRequired` ahead of the 0.8.33 text
+  fallback, maps the bounded submit's `ActorCommandTimedOut` to the
+  admission-timeout class, maps the per-member lane backpressure
+  `MobError::MemberAdmissionBacklogFull` to the typed retryable
+  `BridgeError::AdmissionBacklogFull` / `IdentityRuntimeError::AdmissionBacklogFull`
+  (delivery error class `admission_backlog_full`; never repair, never
+  reload), types the reload primitive's `MemberReloadRefused` (store not
+  healthy yet: retryable `ReloadRefused`, "retry later") and
+  `MemberReloadTimedOut` (`ReloadTimedOut` naming the stage; inspect before
+  retrying) on the verb and the automatic delivery reload alike, records the
+  most recent reload attempt as `member_health.last_reload` (a refusal carries
+  meerkat's reason), and the internal submit rides
+  `submit_work_with_mode_bounded` / `..._and_delivery_identity_bounded` under
+  the same deadline the bridge already enforces. The deadline can skip
+  still-queued work but cannot retract runtime admission already in progress.
 - **`ErrorEvent::ActorLoopTerminated`** (`actor_loop_terminated`): the
   actor-loop probe's round trip resolved with the actor's command or reply
   channel CLOSED. Terminal: the loop is gone and the process must restart.
@@ -250,6 +309,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Memory completions consume canonical assistant output.** The distiller,
+  steward, and hygienist now replace provisional deltas with
+  `LlmEvent::AssistantOutput` through upstream `BlockAssembler`, preserving
+  final-only, corrected, and empty final output without duplicating text or
+  exposing reasoning. `LlmError::PolicyStop` remains a terminal client error:
+  no authentication refresh, parse repair, automatic retry, or fallback.
+  Output truncation remains distinct from successful completion.
+
 - **Schedule watchdog stalls are attributed only to Active parents.**
   Both gateways' periodic ERROR and boot backlog WARN now count only overdue
   Pending occurrences whose authoritative schedule is Active; the oldest due
@@ -278,7 +345,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   path shares that door instead of flipping the state to `Dormant` by hand,
   and reports `not_current` for a retired identity. Revival is explicit:
   only an operation addressed to the identity (`send`, `dispatch`,
-  `materialize`, `reload_member`) re-materializes it, while indirect
+  `materialize`) re-materializes it, while indirect
   hydration (a peer hand-off's `materialize_reachable_peers`, fleet
   `materialize_all`, the background warm) still refuses a retired identity
   typed (`identity_materialization_failure` with the initiator, as before),

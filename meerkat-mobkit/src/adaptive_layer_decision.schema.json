@@ -871,7 +871,7 @@
         },
         "peer_description": {
           "default": "",
-          "description": "Human-readable description of this member's role, visible to peers.",
+          "description": "Human-readable description of this member's role, shown to peers in\ndiscovery: it becomes the member's `PeerMeta.description`, which other\nmembers read through the `peers` tool and the `mob.peer_added`\nlifecycle notice.\n\nNOT this member's system prompt. The member's own prompt is assembled\nfrom [`Self::skills`] resolved against the definition's `[skills.<id>]`\ntables (inline or path content); see the mobs guide, \"Member system\nprompt\". A profile has no prompt key, and `MobDefinition::from_toml`\nrefuses one (see [`UnsupportedProfileKey`]).",
           "type": "string"
         },
         "provider": {
@@ -1597,7 +1597,7 @@
         },
         "comms": {
           "default": false,
-          "description": "Enable comms tools (peer messaging).",
+          "description": "Enable comms tools (peer messaging).\n\nMust be `true` for every profile that spawns a member. A member's\nidentity, roster entry, wiring, peer messaging, and supervisor bridge\nare keyed on its comms name, and the facade composes comms tools\nwhenever that name is set, so `build_agent_config` rejects\n`comms = false` instead of silently ignoring it. The serde default is\n`false`, which means omitting the key is rejected too. A member that\nmust not message peers keeps comms on and uses [`Self::read_only`] or a\nper-spawn `tool_access_policy` deny list.",
           "type": "boolean"
         },
         "image_generation": {

@@ -1492,11 +1492,38 @@ struct CountingBridge {
     /// Refuse the next N deliveries with the typed reload-required class
     /// (meerkat's durability-degraded `RecoveryRepairBlocked`).
     reload_required_times: AtomicUsize,
+    /// When set, the bridge exposes meerkat 0.8.34's registration reload
+    /// primitive and answers it with this disposition.
+    reload_registration_disposition:
+        Mutex<Option<meerkat_mobkit::identity_first::MemberReloadDisposition>>,
+    reload_registration_calls: AtomicUsize,
+    /// When set, the bridge can observe meerkat's durability verdict.
+    durability: Mutex<Option<meerkat_mobkit::identity_first::MemberDurability>>,
+    /// When set, the reload primitive fails with this typed error instead.
+    reload_registration_error: Mutex<Option<BridgeError>>,
+    delivery_error: Mutex<Option<BridgeError>>,
+    durability_gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    durability_started: tokio::sync::Notify,
 }
 
 impl CountingBridge {
     fn reload_required_times(&self, times: usize) {
         self.reload_required_times.store(times, Ordering::SeqCst);
+    }
+
+    fn expose_reload_registration(
+        &self,
+        disposition: meerkat_mobkit::identity_first::MemberReloadDisposition,
+    ) {
+        *self.reload_registration_disposition.lock().unwrap() = Some(disposition);
+    }
+
+    fn set_durability(&self, durability: meerkat_mobkit::identity_first::MemberDurability) {
+        *self.durability.lock().unwrap() = Some(durability);
+    }
+
+    fn fail_reload_registration(&self, error: BridgeError) {
+        *self.reload_registration_error.lock().unwrap() = Some(error);
     }
 
     async fn set_resume_delay(&self, delay: Duration) {
@@ -1741,12 +1768,53 @@ impl SessionBridge for CountingBridge {
         )
     }
 
+    async fn reload_member_registration(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+    ) -> Result<Option<meerkat_mobkit::identity_first::BridgeMemberReload>, BridgeError> {
+        if let Some(error) = self.reload_registration_error.lock().unwrap().take() {
+            self.reload_registration_calls
+                .fetch_add(1, Ordering::SeqCst);
+            return Err(error);
+        }
+        let Some(disposition) = *self.reload_registration_disposition.lock().unwrap() else {
+            return Ok(None);
+        };
+        self.reload_registration_calls
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(Some(meerkat_mobkit::identity_first::BridgeMemberReload {
+            disposition,
+            session_id: self
+                .deliver_session_id
+                .lock()
+                .await
+                .clone()
+                .unwrap_or_else(meerkat_core::types::SessionId::new),
+            registration_generation: 0,
+        }))
+    }
+
+    async fn member_durability(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Option<meerkat_mobkit::identity_first::MemberDurability> {
+        let gate = self.durability_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            self.durability_started.notify_one();
+            gate.notified().await;
+        }
+        self.durability.lock().unwrap().clone()
+    }
+
     async fn deliver_admitted(
         &self,
         runtime_id: &AgentRuntimeId,
         delivery: BridgeDelivery,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         self.deliver_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(error) = self.delivery_error.lock().unwrap().take() {
+            return Err(error);
+        }
         if self
             .reload_required_times
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
@@ -2685,6 +2753,663 @@ async fn reload_member_verb_preserves_session_and_generation() {
         ),
         "{error:?}"
     );
+}
+
+/// meerkat 0.8.34: when the bridge exposes `reload_member_registration`, the
+/// verb and the automatic delivery reload use it instead of retiring the
+/// member; both `not_degraded` and `not_current` are no-ops.
+#[tokio::test]
+async fn reload_member_prefers_the_mob_primitive_when_the_bridge_exposes_it() {
+    use meerkat_mobkit::identity_first::MemberReloadDisposition;
+    let (runtime, bridge) = make_registered_counting_runtime().await;
+    let id = make_identity("triage:main");
+    let before = runtime.status(&id).await.unwrap();
+    // The fake bridge otherwise reports a fresh session id per delivery,
+    // which the runtime reads as a session rotation; pin it to the binding.
+    bridge
+        .set_deliver_session_id(before.session_id.clone().unwrap())
+        .await;
+
+    bridge.expose_reload_registration(MemberReloadDisposition::NotDegraded);
+    let outcome = runtime.reload_member(&id).await.expect("reload");
+    assert_eq!(outcome.disposition, MemberReloadDisposition::NotDegraded);
+    assert!(!outcome.reloaded, "not_degraded is a success no-op");
+    assert_eq!(outcome.session_id, before.session_id);
+    assert_eq!(outcome.generation, before.generation);
+    assert_eq!(bridge.reload_registration_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        bridge.retire_calls.load(Ordering::SeqCst),
+        0,
+        "the primitive replaces retire"
+    );
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 0);
+
+    bridge.expose_reload_registration(MemberReloadDisposition::Discarded);
+    let outcome = runtime.reload_member(&id).await.expect("reload");
+    assert_eq!(outcome.disposition, MemberReloadDisposition::Discarded);
+    assert!(outcome.reloaded);
+    assert_eq!(
+        outcome.session_id, before.session_id,
+        "same durable session"
+    );
+    assert_eq!(
+        outcome.generation, before.generation,
+        "generation must not advance"
+    );
+    assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        runtime.status(&id).await.unwrap().state,
+        IdentityLifecycleState::Active
+    );
+
+    // The automatic delivery reload rides the same primitive.
+    bridge.reload_required_times(1);
+    runtime
+        .send(&id, &make_content())
+        .await
+        .expect("retry after primitive reload");
+    assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(bridge.reload_registration_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 0);
+
+    // No current registration is not authority for a destructive fallback.
+    bridge.expose_reload_registration(MemberReloadDisposition::NotCurrent);
+    let outcome = runtime.reload_member(&id).await.expect("no-op reload");
+    assert_eq!(outcome.disposition, MemberReloadDisposition::NotCurrent);
+    assert!(!outcome.reloaded);
+    assert_eq!(
+        bridge.retire_calls.load(Ordering::SeqCst),
+        0,
+        "not_current must not retire"
+    );
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(outcome.session_id, before.session_id);
+    assert_eq!(outcome.generation, before.generation);
+}
+
+#[tokio::test]
+async fn actor_timeout_observations_reach_health_without_retry_or_reload() {
+    use meerkat_mobkit::identity_first::{ActorCommandTimeout, DeliveryErrorClass};
+    for stage in ["actor_command_admission", "actor_command_reply"] {
+        let (runtime, bridge) = make_registered_counting_runtime().await;
+        let id = make_identity("triage:main");
+        let before = runtime.status(&id).await.unwrap();
+        *bridge.delivery_error.lock().unwrap() = Some(BridgeError::ActorAdmissionTimeout {
+            operation: "deliver.submit_work",
+            identity: meerkat_mob::AgentIdentity::from("rt-triage-main-0"),
+            waited: Duration::from_millis(20),
+            command: Some(ActorCommandTimeout {
+                command_kind: "SubmitWork",
+                stage,
+            }),
+        });
+        let error = runtime.send(&id, &make_content()).await.unwrap_err();
+        assert!(matches!(
+            &error,
+            IdentityRuntimeError::ActorAdmissionTimeout { .. }
+        ));
+        let expected = serde_json::json!({
+            "kind": "mob_actor_command_timed_out",
+            "command_kind": "SubmitWork",
+            "stage": stage,
+            "deadline_reached": true,
+        });
+        assert_eq!(error.structured_data(), Some(expected.clone()));
+        assert!(error.to_string().contains(stage));
+        assert!(!error.to_string().contains("never started"));
+        let report = runtime.member_health(&id).await.unwrap();
+        let last = report.last_delivery_error.as_ref().unwrap();
+        assert_eq!(last.class, DeliveryErrorClass::AdmissionTimeout);
+        assert_eq!(last.data, Some(expected.clone()));
+        assert_eq!(
+            serde_json::to_value(&report).unwrap()["last_delivery_error"]["data"],
+            expected
+        );
+        assert!(report.last_reload.is_none());
+        assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(bridge.reload_registration_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 0);
+        let after = runtime.status(&id).await.unwrap();
+        assert_eq!(after.session_id, before.session_id);
+        assert_eq!(after.generation, before.generation);
+    }
+}
+
+#[tokio::test]
+async fn native_reload_requires_current_identity_lease_before_bridge_mutation() {
+    use meerkat_mobkit::identity_first::{MemberReloadDisposition, ReloadAttemptOutcome};
+    for behavior in [
+        None,
+        Some(RenewBehavior::Lost),
+        Some(RenewBehavior::RenewRotatedToken),
+    ] {
+        let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+        let lease = Arc::new(ControlledLeaseProvider::new(
+            Duration::ZERO,
+            Duration::from_mins(5),
+            behavior.unwrap_or(RenewBehavior::Lost),
+        ));
+        let bridge = Arc::new(CountingBridge::default());
+        bridge.expose_reload_registration(MemberReloadDisposition::Discarded);
+        let runtime = make_runtime_with_bridge(store, lease.clone(), bridge.clone());
+        let id = make_identity("triage:main");
+        let record = make_record("triage:main", 0, 0);
+        bridge
+            .set_deliver_session_id(record.session_id.clone())
+            .await;
+        let grant = if behavior.is_some() {
+            Some(acquire_controlled_grant(&lease, &id).await)
+        } else {
+            None
+        };
+        runtime
+            .register(
+                make_spec("triage:main"),
+                IdentityLifecycleState::Active,
+                Some(record.clone()),
+                grant.clone(),
+            )
+            .await;
+
+        let result = runtime.reload_member(&id).await;
+        let expected_reload_calls = match behavior {
+            None => {
+                assert!(matches!(
+                    result,
+                    Err(IdentityRuntimeError::NoActiveLease(_))
+                ));
+                assert_eq!(lease.renew_calls(), 0);
+                0
+            }
+            Some(RenewBehavior::Lost) => {
+                assert!(matches!(result, Err(IdentityRuntimeError::LeaseLost(_))));
+                assert_eq!(lease.renew_calls(), 1);
+                assert_eq!(
+                    runtime.status(&id).await.unwrap().state,
+                    IdentityLifecycleState::Broken
+                );
+                0
+            }
+            Some(RenewBehavior::RenewRotatedToken) => {
+                let outcome = result.expect("renewed lease permits native reload");
+                assert_eq!(outcome.session_id, Some(record.session_id));
+                assert_eq!(outcome.generation, Some(record.generation));
+                assert!(
+                    runtime
+                        .status(&id)
+                        .await
+                        .unwrap()
+                        .lease
+                        .unwrap()
+                        .fencing_token
+                        > grant.unwrap().fencing_token
+                );
+                assert_eq!(lease.renew_calls(), 1);
+                1
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            bridge.reload_registration_calls.load(Ordering::SeqCst),
+            expected_reload_calls
+        );
+        assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            runtime
+                .member_health(&id)
+                .await
+                .unwrap()
+                .last_reload
+                .unwrap()
+                .outcome,
+            if expected_reload_calls == 0 {
+                ReloadAttemptOutcome::Failed
+            } else {
+                ReloadAttemptOutcome::Discarded
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn dispatch_preserves_timeout_and_probe_observations_without_retry_or_reload() {
+    use meerkat_mobkit::identity_first::{
+        ActorCallObservation, ActorCommandTimeout, DeliveryErrorClass,
+    };
+    for case in 0..5 {
+        let (runtime, bridge) = make_registered_counting_runtime().await;
+        let id = make_identity("triage:main");
+        let before = runtime.status(&id).await.unwrap();
+        bridge
+            .set_deliver_session_id(before.session_id.clone().unwrap())
+            .await;
+        let member = meerkat_mob::AgentIdentity::from("rt-triage-main-0");
+        let (failure, expected_class) = match case {
+            0..=2 => (
+                BridgeError::ActorAdmissionTimeout {
+                    operation: "deliver.submit_work",
+                    identity: member,
+                    waited: Duration::from_millis(20),
+                    command: if case == 0 {
+                        None
+                    } else {
+                        Some(ActorCommandTimeout {
+                            command_kind: "SubmitWork",
+                            stage: if case == 1 {
+                                "actor_command_admission"
+                            } else {
+                                "actor_command_reply"
+                            },
+                        })
+                    },
+                },
+                DeliveryErrorClass::AdmissionTimeout,
+            ),
+            3 => (
+                BridgeError::ActorLoopStalled {
+                    operation: "deliver.submit_work",
+                    identity: member,
+                    stall_id: 17,
+                    stalled_for: Duration::from_secs(1),
+                    observation: ActorCallObservation::InFlight,
+                },
+                DeliveryErrorClass::ActorLoopStalled,
+            ),
+            _ => (
+                BridgeError::ActorTerminated {
+                    operation: "deliver.submit_work",
+                    identity: member,
+                    detail: "actor reply channel closed".into(),
+                    observation: ActorCallObservation::InFlight,
+                },
+                DeliveryErrorClass::ActorTerminated,
+            ),
+        };
+        *bridge.delivery_error.lock().unwrap() = Some(failure);
+        let mut input = make_dispatch_input();
+        input.idempotency_key = Some(DispatchIdempotencyKey::new("dispatch-observation"));
+        input.correlation_id = Some(meerkat_mobkit::identity_first::CorrelationId::new(
+            "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+        ));
+        let error = runtime.dispatch(&id, &input).await.unwrap_err();
+        let data = error
+            .structured_data()
+            .expect("dispatch observation stays typed");
+        assert!(data.get("executed").is_none());
+        assert!(data.get("retryable").is_none());
+        if case == 1 || case == 2 {
+            assert_eq!(data["command_kind"], "SubmitWork");
+            assert_eq!(
+                data["stage"],
+                if case == 1 {
+                    "actor_command_admission"
+                } else {
+                    "actor_command_reply"
+                }
+            );
+        } else if case >= 3 {
+            assert_eq!(data["observation"], "in_flight");
+        }
+        let report = runtime.member_health(&id).await.unwrap();
+        let last = report.last_delivery_error.unwrap();
+        assert_eq!(last.class, expected_class);
+        assert_eq!(last.data, Some(data));
+        assert!(report.last_reload.is_none());
+        assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(bridge.reload_registration_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 0);
+        let after = runtime.status(&id).await.unwrap();
+        assert_eq!(after.session_id, before.session_id);
+        assert_eq!(after.generation, before.generation);
+
+        input.idempotency_key = Some(DispatchIdempotencyKey::new("new-successful-dispatch"));
+        runtime
+            .dispatch(&id, &input)
+            .await
+            .expect("a later dispatch succeeds");
+        assert!(
+            runtime
+                .member_health(&id)
+                .await
+                .unwrap()
+                .last_delivery_error
+                .is_none()
+        );
+        assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 2);
+    }
+}
+
+#[tokio::test]
+async fn member_health_does_not_lock_entries_while_awaiting_custom_durability() {
+    let (runtime, bridge) = make_registered_counting_runtime().await;
+    let id = make_identity("triage:main");
+    let gate = Arc::new(tokio::sync::Notify::new());
+    *bridge.durability_gate.lock().unwrap() = Some(Arc::clone(&gate));
+    let health = runtime.member_health(&id);
+    tokio::pin!(health);
+    tokio::select! {
+        () = bridge.durability_started.notified() => {}
+        result = &mut health => panic!("health should wait for the custom bridge: {result:?}"),
+    }
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        runtime.register(
+            make_spec("triage:other"),
+            IdentityLifecycleState::Dormant,
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect("a custom durability read must not block fleet entry writes");
+    gate.notify_one();
+    assert!(health.await.unwrap().durability.is_none());
+}
+
+#[tokio::test]
+async fn reload_actor_observations_remain_typed_on_explicit_and_automatic_paths() {
+    use meerkat_mobkit::identity_first::{
+        ActorCallObservation, ActorCommandTimeout, ReloadAttemptOutcome,
+    };
+    for automatic in [false, true] {
+        for case in 0..5 {
+            let (runtime, bridge) = make_registered_counting_runtime().await;
+            let id = make_identity("triage:main");
+            let member = meerkat_mob::AgentIdentity::from("rt-triage-main-0");
+            let error = match case {
+                0..=2 => BridgeError::ActorAdmissionTimeout {
+                    operation: "reload.reload_member_registration",
+                    identity: member,
+                    waited: Duration::from_millis(20),
+                    command: match case {
+                        0 => None,
+                        _ => Some(ActorCommandTimeout {
+                            command_kind: "ReloadMemberRegistration",
+                            stage: if case == 1 {
+                                "actor_command_admission"
+                            } else {
+                                "actor_command_reply"
+                            },
+                        }),
+                    },
+                },
+                3 => BridgeError::ActorLoopStalled {
+                    operation: "reload.reload_member_registration",
+                    identity: member,
+                    stall_id: 17,
+                    stalled_for: Duration::from_secs(1),
+                    observation: ActorCallObservation::InFlight,
+                },
+                _ => BridgeError::ActorTerminated {
+                    operation: "reload.reload_member_registration",
+                    identity: member,
+                    detail: "actor reply channel closed".into(),
+                    observation: ActorCallObservation::InFlight,
+                },
+            };
+            bridge.fail_reload_registration(error);
+            let error = if automatic {
+                bridge.reload_required_times(1);
+                runtime.send(&id, &make_content()).await.unwrap_err()
+            } else {
+                runtime.reload_member(&id).await.unwrap_err()
+            };
+            let data = error
+                .structured_data()
+                .expect("reload observation must remain typed");
+            assert!(data.get("executed").is_none());
+            assert!(data.get("retryable").is_none());
+            assert!(error.to_string().contains("execution fate"));
+            let health = runtime.member_health(&id).await.unwrap();
+            let last = health.last_reload.unwrap();
+            assert_eq!(last.data, Some(data.clone()));
+            assert_eq!(
+                last.outcome,
+                if case <= 2 {
+                    ReloadAttemptOutcome::TimedOut
+                } else {
+                    ReloadAttemptOutcome::Failed
+                }
+            );
+            if automatic {
+                assert_eq!(health.last_delivery_error.unwrap().data, Some(data));
+            }
+            assert_eq!(
+                bridge.deliver_calls.load(Ordering::SeqCst),
+                usize::from(automatic)
+            );
+            assert_eq!(bridge.reload_registration_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 0);
+        }
+    }
+}
+
+#[tokio::test]
+async fn last_reload_records_early_noops_and_failures_without_reviving_retired_identity() {
+    use meerkat_mobkit::identity_first::ReloadAttemptOutcome;
+    let (runtime, bridge) = make_registered_counting_runtime().await;
+    for (state, expected) in [
+        (
+            IdentityLifecycleState::Dormant,
+            ReloadAttemptOutcome::NotCurrent,
+        ),
+        (
+            IdentityLifecycleState::Uninitialized,
+            ReloadAttemptOutcome::NotCurrent,
+        ),
+        (
+            IdentityLifecycleState::Retiring,
+            ReloadAttemptOutcome::NotCurrent,
+        ),
+        (IdentityLifecycleState::Broken, ReloadAttemptOutcome::Failed),
+        (
+            IdentityLifecycleState::Suspended,
+            ReloadAttemptOutcome::Failed,
+        ),
+    ] {
+        let id = make_identity("triage:early");
+        runtime
+            .register(
+                make_spec("triage:early"),
+                state,
+                Some(make_record("triage:early", 0, 0)),
+                None,
+            )
+            .await;
+        let result = runtime.reload_member(&id).await;
+        assert_eq!(result.is_err(), expected == ReloadAttemptOutcome::Failed);
+        let health = runtime.member_health(&id).await.unwrap();
+        assert_eq!(health.last_reload.unwrap().outcome, expected);
+        assert_eq!(health.state, state);
+    }
+    assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 0);
+
+    let id = make_identity("triage:main");
+    bridge.fail_retire.store(true, Ordering::SeqCst);
+    runtime.reload_member(&id).await.expect_err("retire failed");
+    assert_eq!(
+        runtime
+            .member_health(&id)
+            .await
+            .unwrap()
+            .last_reload
+            .unwrap()
+            .outcome,
+        ReloadAttemptOutcome::Failed
+    );
+}
+
+/// meerkat 0.8.34: a refused reload (store not healthy yet) surfaces typed as
+/// retry-later from the verb AND from the automatic delivery reload (never
+/// folded into a generic reload-required), retires nothing, and is visible in
+/// `member_health.last_reload` with meerkat's reason; a timeout names its stage.
+#[tokio::test]
+async fn reload_refused_and_timed_out_surface_typed_and_are_recorded() {
+    use meerkat_mobkit::identity_first::ReloadAttemptOutcome;
+    let (runtime, bridge) = make_registered_counting_runtime().await;
+    let id = make_identity("triage:main");
+    let before = runtime.status(&id).await.unwrap();
+    let session = before.session_id.clone().unwrap();
+    bridge.set_deliver_session_id(session.clone()).await;
+
+    // Verb: refused.
+    bridge.fail_reload_registration(BridgeError::ReloadRefused {
+        identity: meerkat_mob::ids::AgentIdentity::from("rt-triage-main-0"),
+        session_id: session.to_string(),
+        reason: "durable resume authority unreadable: continuity save: HTTP 0".to_string(),
+    });
+    let error = runtime
+        .reload_member(&id)
+        .await
+        .expect_err("refused reload must fail");
+    match &error {
+        IdentityRuntimeError::ReloadRefused {
+            identity,
+            session_id,
+            reason,
+        } => {
+            assert_eq!(identity, &id);
+            assert_eq!(session_id, &session.to_string());
+            assert!(reason.contains("HTTP 0"), "{reason}");
+        }
+        other => panic!("expected ReloadRefused, got {other:?}"),
+    }
+    assert!(
+        error.to_string().contains("retry later"),
+        "operator guidance must say retry later: {error}"
+    );
+    assert_eq!(
+        bridge.retire_calls.load(Ordering::SeqCst),
+        0,
+        "a refusal retires nothing"
+    );
+    let health = runtime.member_health(&id).await.unwrap();
+    let last_reload = health.last_reload.clone().expect("last reload recorded");
+    assert_eq!(last_reload.outcome, ReloadAttemptOutcome::Refused);
+    assert!(
+        last_reload
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("HTTP 0"),
+        "member_health must show the refusal reason: {last_reload:?}"
+    );
+    let wire = serde_json::to_value(&health).unwrap();
+    assert_eq!(wire["last_reload"]["outcome"], serde_json::json!("refused"));
+
+    // Automatic delivery reload: refused keeps its class, one attempt only.
+    bridge.reload_required_times(1);
+    bridge.fail_reload_registration(BridgeError::ReloadRefused {
+        identity: meerkat_mob::ids::AgentIdentity::from("rt-triage-main-0"),
+        session_id: session.to_string(),
+        reason: "still unreadable".to_string(),
+    });
+    let error = runtime
+        .send(&id, &make_content())
+        .await
+        .expect_err("refused");
+    assert!(
+        matches!(error, IdentityRuntimeError::ReloadRefused { .. }),
+        "{error:?}"
+    );
+    assert_eq!(
+        bridge.deliver_calls.load(Ordering::SeqCst),
+        1,
+        "no retry after a refusal"
+    );
+    assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 0);
+    let health = runtime.member_health(&id).await.unwrap();
+    assert_eq!(
+        health.last_delivery_error.expect("recorded").class,
+        meerkat_mobkit::identity_first::DeliveryErrorClass::ReloadRefused
+    );
+
+    // Verb: timed out names the stage.
+    bridge.fail_reload_registration(BridgeError::ReloadTimedOut {
+        identity: meerkat_mob::ids::AgentIdentity::from("rt-triage-main-0"),
+        session_id: session.to_string(),
+        stage: "runtime_readiness".to_string(),
+    });
+    let error = runtime
+        .reload_member(&id)
+        .await
+        .expect_err("timed out reload must fail");
+    match &error {
+        IdentityRuntimeError::ReloadTimedOut { stage, .. } => {
+            assert_eq!(stage, "runtime_readiness");
+        }
+        other => panic!("expected ReloadTimedOut, got {other:?}"),
+    }
+    let last_reload = runtime
+        .member_health(&id)
+        .await
+        .unwrap()
+        .last_reload
+        .unwrap();
+    assert_eq!(last_reload.outcome, ReloadAttemptOutcome::TimedOut);
+    assert_eq!(last_reload.detail.as_deref(), Some("runtime_readiness"));
+
+    // A successful primitive reload records its disposition.
+    bridge.expose_reload_registration(
+        meerkat_mobkit::identity_first::MemberReloadDisposition::NotDegraded,
+    );
+    runtime.reload_member(&id).await.expect("not degraded");
+    let last_reload = runtime
+        .member_health(&id)
+        .await
+        .unwrap()
+        .last_reload
+        .unwrap();
+    assert_eq!(last_reload.outcome, ReloadAttemptOutcome::NotDegraded);
+    assert_eq!(
+        runtime.status(&id).await.unwrap().state,
+        IdentityLifecycleState::Active
+    );
+}
+
+/// meerkat 0.8.34: `member_health` carries the machine's durability verdict
+/// when the bridge can observe it, in the documented wire shape.
+#[tokio::test]
+async fn member_health_carries_durability_when_the_bridge_observes_it() {
+    use meerkat_mobkit::identity_first::MemberDurability;
+    let (runtime, bridge) = make_registered_counting_runtime().await;
+    let id = make_identity("triage:main");
+
+    assert!(
+        runtime
+            .member_health(&id)
+            .await
+            .unwrap()
+            .durability
+            .is_none()
+    );
+
+    bridge.set_durability(MemberDurability::Ready);
+    let report = runtime.member_health(&id).await.unwrap();
+    assert_eq!(report.durability, Some(MemberDurability::Ready));
+    assert_eq!(
+        serde_json::to_value(&report).unwrap()["durability"],
+        serde_json::json!("ready")
+    );
+
+    bridge.set_durability(MemberDurability::ReloadRequired {
+        operation: "completed_boundary_commit".to_string(),
+        reason: "continuity save: HTTP 0".to_string(),
+    });
+    let wire = serde_json::to_value(runtime.member_health(&id).await.unwrap()).unwrap();
+    assert_eq!(
+        wire["durability"],
+        serde_json::json!({
+            "reload_required": {
+                "operation": "completed_boundary_commit",
+                "reason": "continuity save: HTTP 0"
+            }
+        })
+    );
+    assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 0);
 }
 
 /// `member_health` is an in-process read: it reports the probe's open stall

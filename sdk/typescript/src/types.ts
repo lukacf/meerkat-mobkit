@@ -779,6 +779,10 @@ export interface MemberHealth {
   readonly actorLoop: Readonly<Record<string, unknown>>;
   readonly openStallId: number | null;
   readonly lastDeliveryError: Readonly<Record<string, unknown>> | null;
+  /** Most recent reload attempt: `{outcome: "discarded" | "not_degraded" |
+   *  "not_current" | "refused" | "timed_out" | "failed", detail?, at_unix_ms}`;
+   *  `refused` carries meerkat's reason (store not healthy). */
+  readonly lastReload: Readonly<Record<string, unknown>> | null;
   readonly durability: unknown | null;
 }
 
@@ -803,6 +807,10 @@ export function parseMemberHealth(raw: unknown): MemberHealth {
     actorLoop,
     openStallId: typeof d.open_stall_id === "number" ? d.open_stall_id : null,
     lastDeliveryError: lastError,
+    lastReload:
+      d.last_reload !== null && typeof d.last_reload === "object"
+        ? (d.last_reload as Record<string, unknown>)
+        : null,
     durability: d.durability === undefined ? null : d.durability,
   };
 }

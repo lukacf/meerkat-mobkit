@@ -393,14 +393,22 @@ Result:
 | Field | Type | Description |
 |-------|------|-------------|
 | `reloaded` | `bool` | Whether a live registration was actually replaced |
-| `disposition` | `"discarded" \| "not_degraded" \| "not_current"` | `discarded`: reloaded; `not_degraded`: success no-op (only once the gateway can observe durability state); `not_current`: nothing live to reload (dormant/uninitialized), the next send materializes lazily |
+| `disposition` | `"discarded" \| "not_degraded" \| "not_current"` | `discarded`: reloaded; `not_degraded`: success no-op; `not_current`: nothing current to reload, including dormant/uninitialized or retired identities; an addressed send may materialize lazily |
 | `session_id` | `string` | The bound durable session after the reload (unchanged by a `discarded` reload) |
 | `generation` | `integer` | The continuity generation after the reload (never advanced by a reload) |
 | `identity` | `string` | The durable identity |
 
-Broken, retiring, or suspended identities are refused (`-32603`, invalid
-state); they need the reconcile/repair paths. Worker-plane members are
-refused: the worker plane has no non-destructive reload.
+Broken or suspended identities are refused (`-32603`, invalid
+state); they need the reconcile/repair paths. Retired identities return
+`not_current` without being revived. The primitive's `not_current` is also a
+no-op, not a fallback to retire/rematerialize. Worker-plane members are
+refused: the worker plane has no non-destructive reload. Two typed failures
+come from meerkat's reload primitive: a refusal ("store not healthy, reload
+refused, retry later": the durable resume authority is still unreadable, the
+registration is retained, and sends stay reload-required) and a timeout
+naming the stage it reached (`MEMBER_RELOAD_TOTAL_TIMEOUT`, 45 s; inspect the
+member before retrying). Both are visible afterwards in
+`mobkit/member_health.last_reload`.
 
 ### `mobkit/member_health`
 
@@ -422,11 +430,35 @@ Result (`MemberHealthReport`):
 | `bootstrap_state` | `string?` | `dormant`, `warming`, `active`, `broken` when the bootstrap roster tracks the identity |
 | `materialization_in_flight` | `bool` | True while a materialization is running |
 | `session_id`, `generation` | `string?`, `integer?` | Current continuity binding |
-| `last_delivery_error` | `object?` | `{class, detail, at_unix_ms}`; `class` is `reload_required`, `actor_loop_stalled`, `actor_terminated`, `admission_timeout`, `admission_failed`, or `completion`; cleared by the next successful delivery |
+| `last_delivery_error` | `object?` | `{class, detail, data?, at_unix_ms}`; `class` is `reload_required`, `actor_loop_stalled`, `actor_terminated`, `admission_timeout`, `admission_backlog_full` (retryable per-member backpressure), `reload_refused` (store not healthy yet, retry later), `reload_timed_out` (inspect before retrying), `admission_failed`, or `completion`; cleared by the next successful delivery |
+| `last_reload` | `object?` | `{outcome, detail?, data?, at_unix_ms}` for the most recent reload attempt (verb or automatic); `outcome` is `discarded`, `not_degraded`, `not_current`, `refused` (detail = meerkat's reason), `timed_out` (detail = reload stage or actor timeout observation), or `failed`; `data` preserves structured actor timeout/probe observations |
 | `actor_loop` | `object` | The shared probe verdict `{state: "live" \| "stalled" \| "terminated" \| "unobserved", stall_id?, stalled_for_secs?, detail?}` |
 | `open_stall_id` | `integer?` | The open `actor_loop_stalled` correlation id while a stall is open |
-| `durability` | `"ready" \| {reload_required: {operation, reason}}` | Present once the gateway can read meerkat's durability state (meerkat 0.8.34); absent before |
+| `durability` | `"ready" \| {reload_required: {operation, reason}}` | A bridge-observed durability verdict; absent when unobservable. The built-in bridge reports degradation only: an absent `durability_reload_required` marker also covers absent registrations and cannot establish `ready` |
 | `continuity_unrecoverable` | `object?` | Terminal heal verdict for a Broken identity |
+
+Actor timeouts preserve `{kind: "mob_actor_command_timed_out", command_kind,
+stage, deadline_reached: true}` in RPC `error.data`, console error data, and
+`last_delivery_error.data`. The upstream stages include
+`actor_command_admission` and `actor_command_reply`; the latter may follow
+runtime admission. A local observation timeout has kind
+`actor_admission_timeout` and no invented upstream command/stage.
+Neither form asserts execution fate or retryability: absent `executed` or
+`retryable` fields are not a nonexecution verdict. Consult runtime idempotency
+and durable fate; MobKit does not automatically retry or reload on a timeout.
+The same observations survive an explicit or automatic reload. In-flight
+probe interruptions carry `observation: "in_flight"`, distinct from a true
+`"before_call"` refusal, and do not settle the reload worker's execution fate.
+Custom `SessionBridge::member_durability` implementations may await their own
+I/O, but do not hold the runtime's fleet entries lock.
+
+Admission backpressure and reload failures retain sanitized owner data across
+send/dispatch errors, console REST/RPC, and health: `mob_member_admission_backlog_full`
+carries `depth`, `mob_member_reload_refused` carries its kind only, and
+`mob_member_reload_timed_out` carries the original `stage`. These payloads add
+no execution or retry verdict and omit backend refusal details. Native reload
+validates the identity's existing lease before invoking Meerkat's registration
+primitive; absent or lost ownership refuses without discarding the registration.
 
 ### `mobkit/reconcile_edges`
 

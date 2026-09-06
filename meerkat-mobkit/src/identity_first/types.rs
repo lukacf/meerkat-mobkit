@@ -1121,8 +1121,8 @@ pub struct MemberReloadOutcome {
 /// Durability verdict of a member's live runtime registration.
 ///
 /// Wire: `"ready"` or `{"reload_required": {"operation": ..., "reason": ...}}`.
-/// Populated once meerkat exposes `is_durability_ready` (0.8.34); absent from
-/// `mobkit/member_health` until then.
+/// Omitted when the bridge cannot establish a verdict. A missing degradation
+/// marker alone cannot distinguish a ready registration from an absent one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemberDurability {
@@ -1144,10 +1144,48 @@ pub enum DeliveryErrorClass {
     ActorTerminated,
     /// The actor round trip exceeded the admission budget.
     AdmissionTimeout,
+    /// The member's per-member admission lane was full (retryable
+    /// backpressure, meerkat 0.8.34).
+    AdmissionBacklogFull,
+    /// The automatic reload was refused: store not healthy yet (retry later).
+    ReloadRefused,
+    /// The automatic reload timed out at a stage (inspect before retrying).
+    ReloadTimedOut,
     /// Any other pre-admission failure.
     AdmissionFailed,
     /// A post-admission failure (the turn ran).
     Completion,
+}
+
+/// Outcome class of the most recent reload attempt for an identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReloadAttemptOutcome {
+    Discarded,
+    NotDegraded,
+    NotCurrent,
+    /// meerkat refused: store not healthy yet; registration retained.
+    Refused,
+    /// meerkat's bounded reload timed out at `detail` (the stage).
+    TimedOut,
+    /// Any other failure (detail carries the error text).
+    Failed,
+}
+
+/// The most recent reload attempt (verb or automatic), so an operator can see
+/// why a member is still reload-required (for example a refusal naming the
+/// unreadable store) without re-running the reload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReloadAttemptRecord {
+    pub outcome: ReloadAttemptOutcome,
+    /// Reason (refused), stage (timed out) or error text (failed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Structured timeout/probe observations; not an execution-fate verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    /// Unix epoch milliseconds when the attempt finished.
+    pub at_unix_ms: u64,
 }
 
 /// One recorded delivery failure.
@@ -1155,6 +1193,10 @@ pub enum DeliveryErrorClass {
 pub struct DeliveryErrorRecord {
     pub class: DeliveryErrorClass,
     pub detail: String,
+    /// Structured observations from the error owner. Missing execution or
+    /// retry flags must not be interpreted as a verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
     /// Unix epoch milliseconds when the failure was recorded.
     pub at_unix_ms: u64,
 }
@@ -1184,6 +1226,11 @@ pub struct MemberHealthReport {
     /// delivery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_delivery_error: Option<DeliveryErrorRecord>,
+    /// The most recent reload attempt (verb or automatic) and how it ended;
+    /// a `refused` outcome carries meerkat's reason so the operator can judge
+    /// store health.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reload: Option<ReloadAttemptRecord>,
     /// The actor-loop probe's current verdict (shared across every member:
     /// the loop is one).
     pub actor_loop: crate::actor_loop_health::ActorLoopHealthReport,

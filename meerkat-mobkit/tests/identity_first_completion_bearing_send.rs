@@ -98,9 +98,9 @@ enum CompletionScript {
     /// Gates are per-CALL, not per-session, which is the whole point: it lets a
     /// test release one delivery's terminal and prove a sibling's is untouched.
     GateThenSucceed,
-    /// Fail immediately with a scripted bridge error - BEFORE a receipt
-    /// exists, i.e. nothing was admitted.
+    /// Fail immediately without returning a receipt.
     AdmissionFail(fn() -> BridgeAdmissionError),
+    ActorTimeout(&'static str),
     /// Admit (so a receipt IS returned), park until released, then fail the
     /// turn. This is the only way to script "the turn ran and failed", which
     /// `Fail` cannot express because it never admits.
@@ -243,8 +243,19 @@ impl SessionBridge for PhaseScriptedBridge {
     ) -> Result<BridgeTurnReceipt, BridgeAdmissionError> {
         self.completion_calls.fetch_add(1, Ordering::SeqCst);
         match self.script {
-            // Fails BEFORE a receipt exists - nothing was admitted.
+            // No receipt is observed; this alone establishes no execution fate.
             CompletionScript::AdmissionFail(make) => Err(make()),
+            CompletionScript::ActorTimeout(stage) => {
+                Err(BridgeAdmissionError::ActorAdmissionTimeout {
+                    operation: "deliver.start_work",
+                    identity: meerkat_mob::AgentIdentity::from("rt-agent-alpha-0"),
+                    waited: Duration::from_millis(50),
+                    command: Some(meerkat_mobkit::identity_first::ActorCommandTimeout {
+                        command_kind: "StartWork",
+                        stage,
+                    }),
+                })
+            }
             CompletionScript::GateThenSucceed
             | CompletionScript::GateThenFail(_)
             | CompletionScript::GateThenSucceedUnresolved(_) => {
@@ -546,8 +557,7 @@ async fn an_ingress_only_bridge_is_unavailable_not_failed_and_never_falls_back()
     );
 }
 
-/// T2. Admission failure: the turn never started, so it is `AdmissionFailed`,
-/// not any of the three "the turn ran" phases.
+/// T2. No receipt was observed before timeout. Execution fate stays unknown.
 #[tokio::test]
 async fn an_admission_failure_is_typed_as_admission_and_not_as_completion() {
     let bridge = PhaseScriptedBridge::new(CompletionScript::AdmissionFail(|| {
@@ -555,27 +565,49 @@ async fn an_admission_failure_is_typed_as_admission_and_not_as_completion() {
             operation: "deliver.submit_work",
             identity: meerkat_mob::AgentIdentity::from("rt-agent-alpha-0"),
             waited: Duration::from_millis(50),
+            command: None,
         }
     }));
     let runtime = make_runtime(Some(Arc::clone(&bridge) as Arc<dyn SessionBridge>));
     let alice = register_bound(&runtime, "alice", 1).await;
 
     match runtime.send_awaiting_commit(&alice, &content("turn")).await {
-        Err(IdentityRuntimeError::AdmissionFailed { detail, .. }) => assert!(
-            detail.contains("deliver.submit_work"),
-            "the admission detail must name the round trip that expired: {detail}"
+        Err(error @ IdentityRuntimeError::ActorAdmissionTimeout { .. }) => assert!(
+            error.to_string().contains("deliver.submit_work"),
+            "the timeout must name the round trip that expired: {error}"
         ),
-        other => panic!(
-            "a blocked actor means the turn NEVER STARTED. Typing it as a completion \
-             failure would tell a caller not to retry something that never ran. \
-             Got: {other:?}"
-        ),
+        other => panic!("timeout must remain a typed observation, got: {other:?}"),
     }
     assert_eq!(
         bridge.ingress_calls(),
         0,
         "no fallback on admission failure"
     );
+}
+
+/// T3. Admitted, turn ran and FAILED: exactly one submit, no retry.
+#[tokio::test]
+async fn completion_lane_preserves_both_actor_deadline_stages_without_retry() {
+    for stage in ["actor_command_admission", "actor_command_reply"] {
+        let bridge = PhaseScriptedBridge::new(CompletionScript::ActorTimeout(stage));
+        let runtime = make_runtime(Some(Arc::clone(&bridge) as Arc<dyn SessionBridge>));
+        let alice = register_bound(&runtime, "alice", 1).await;
+        let error = runtime
+            .send_awaiting_commit(&alice, &content("turn"))
+            .await
+            .unwrap_err();
+        let data = error.structured_data().expect("typed timeout");
+        assert_eq!(data["command_kind"], "StartWork");
+        assert_eq!(data["stage"], stage);
+        assert!(data.get("executed").is_none());
+        assert!(data.get("retryable").is_none());
+        assert!(!error.to_string().contains("never started"));
+        assert_eq!(bridge.completion_calls(), 1);
+        assert_eq!(bridge.ingress_calls(), 0);
+        let health = runtime.member_health(&alice).await.unwrap();
+        assert_eq!(health.last_delivery_error.unwrap().data, Some(data));
+        assert!(health.last_reload.is_none());
+    }
 }
 
 /// T3. Admitted, turn ran and FAILED: exactly one submit, no retry.

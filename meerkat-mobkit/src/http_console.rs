@@ -1187,6 +1187,26 @@ fn identity_runtime_error_to_console_send_error(
         crate::identity_first::IdentityRuntimeError::InvalidState { .. } => {
             ConsoleSendError::Retired(identity.to_string())
         }
+        crate::identity_first::IdentityRuntimeError::ActorAdmissionTimeout {
+            operation,
+            waited,
+            command,
+            ..
+        } => ConsoleSendError::AdmissionTimeout {
+            identity: identity.to_string(),
+            operation,
+            waited,
+            command,
+        },
+        error @ (crate::identity_first::IdentityRuntimeError::ActorLoopStalled { .. }
+        | crate::identity_first::IdentityRuntimeError::ActorTerminated { .. }) => {
+            ConsoleSendError::ActorProbe(Box::new(error))
+        }
+        error @ (crate::identity_first::IdentityRuntimeError::AdmissionBacklogFull { .. }
+        | crate::identity_first::IdentityRuntimeError::ReloadRefused { .. }
+        | crate::identity_first::IdentityRuntimeError::ReloadTimedOut { .. }) => {
+            ConsoleSendError::RuntimeOperation(Box::new(error))
+        }
         other => ConsoleSendError::Dispatch(other.to_string()),
     }
 }
@@ -1513,6 +1533,38 @@ fn console_read_only_rpc_error(response_id: Value) -> Value {
 }
 
 fn console_send_error_response(err: ConsoleSendError) -> axum::response::Response {
+    if let Some(data) = console_send_error_data(&err) {
+        let (status, kind) = match &err {
+            ConsoleSendError::ActorProbe(_) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "actor_probe_unhealthy")
+            }
+            ConsoleSendError::RuntimeOperation(error) => match error.as_ref() {
+                crate::identity_first::IdentityRuntimeError::AdmissionBacklogFull { .. } => {
+                    (StatusCode::TOO_MANY_REQUESTS, "admission_backlog_full")
+                }
+                crate::identity_first::IdentityRuntimeError::ReloadRefused { .. } => {
+                    (StatusCode::SERVICE_UNAVAILABLE, "reload_refused")
+                }
+                crate::identity_first::IdentityRuntimeError::ReloadTimedOut { .. } => {
+                    (StatusCode::GATEWAY_TIMEOUT, "reload_timed_out")
+                }
+                _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
+            },
+            ConsoleSendError::AdmissionTimeout { .. } => {
+                (StatusCode::GATEWAY_TIMEOUT, "admission_timeout")
+            }
+            _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
+        };
+        return (
+            status,
+            Json(json!({
+                "error": kind,
+                "message": console_send_public_message(&err),
+                "data": data,
+            })),
+        )
+            .into_response();
+    }
     let (status, code) = match &err {
         ConsoleSendError::UnknownIdentity(_) => (StatusCode::NOT_FOUND, "unknown_identity"),
         ConsoleSendError::AmbiguousIdentity { .. } => {
@@ -1524,7 +1576,12 @@ fn console_send_error_response(err: ConsoleSendError) -> axum::response::Respons
         | ConsoleSendError::InvalidHandlingMode(_)
         | ConsoleSendError::InvalidRequest(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
         ConsoleSendError::IdempotencyConflict(_) => (StatusCode::CONFLICT, "idempotency_conflict"),
-        ConsoleSendError::State(_) | ConsoleSendError::Dispatch(_) | ConsoleSendError::Log(_) => {
+        ConsoleSendError::State(_)
+        | ConsoleSendError::Dispatch(_)
+        | ConsoleSendError::Log(_)
+        | ConsoleSendError::ActorProbe(_)
+        | ConsoleSendError::RuntimeOperation(_)
+        | ConsoleSendError::AdmissionTimeout { .. } => {
             (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
         }
     };
@@ -1541,9 +1598,12 @@ fn console_send_rpc_code(err: &ConsoleSendError) -> i64 {
         | ConsoleSendError::InvalidRequest(_) => -32602,
         ConsoleSendError::IdempotencyConflict(_) => -32009,
         ConsoleSendError::Retired(_) => -32004,
-        ConsoleSendError::State(_) | ConsoleSendError::Dispatch(_) | ConsoleSendError::Log(_) => {
-            -32000
-        }
+        ConsoleSendError::State(_)
+        | ConsoleSendError::Dispatch(_)
+        | ConsoleSendError::Log(_)
+        | ConsoleSendError::ActorProbe(_)
+        | ConsoleSendError::RuntimeOperation(_)
+        | ConsoleSendError::AdmissionTimeout { .. } => -32000,
     }
 }
 
@@ -1556,12 +1616,49 @@ fn console_send_json_rpc_error(err: ConsoleSendError) -> JsonRpcError {
     JsonRpcError {
         code,
         message: console_send_public_message(&err),
-        data: None,
+        data: console_send_error_data(&err),
+    }
+}
+
+fn console_send_error_data(err: &ConsoleSendError) -> Option<Value> {
+    match err {
+        ConsoleSendError::ActorProbe(error) | ConsoleSendError::RuntimeOperation(error) => {
+            error.structured_data()
+        }
+        ConsoleSendError::AdmissionTimeout {
+            operation,
+            waited,
+            command,
+            ..
+        } => Some(crate::identity_first::bridge::actor_timeout_data(
+            operation, *waited, *command,
+        )),
+        _ => None,
     }
 }
 
 fn console_send_public_message(err: &ConsoleSendError) -> String {
     match err {
+        ConsoleSendError::ActorProbe(_) => {
+            "actor probe ended the send observation; inspect runtime fate for in-flight calls"
+                .to_string()
+        }
+        ConsoleSendError::RuntimeOperation(error) => {
+            tracing::warn!(target: "mobkit::console", error = %err, "console send runtime operation failed");
+            match error.as_ref() {
+                crate::identity_first::IdentityRuntimeError::AdmissionBacklogFull { .. } => {
+                    "member admission backlog is full"
+                }
+                crate::identity_first::IdentityRuntimeError::ReloadRefused { .. } => {
+                    "member reload was refused; inspect member health"
+                }
+                crate::identity_first::IdentityRuntimeError::ReloadTimedOut { .. } => {
+                    "member reload timed out; inspect member health before retrying"
+                }
+                _ => "console send failed",
+            }
+            .to_string()
+        }
         ConsoleSendError::State(_) | ConsoleSendError::Dispatch(_) | ConsoleSendError::Log(_) => {
             tracing::warn!(target: "mobkit::console", error = %err, "console send internal error");
             "console send failed".to_string()
@@ -4771,7 +4868,18 @@ fn console_identity_error_response(
         crate::identity_first::IdentityRuntimeError::UnknownIdentity(identity) => {
             invalid_params(response_id, format!("identity not found: {identity}"))
         }
-        other => internal_error(response_id, format!("{operation} failed: {other}")),
+        other => match other.structured_data() {
+            Some(data) => response_value(
+                response_id,
+                None,
+                Some(JsonRpcError {
+                    code: -32000,
+                    message: format!("{operation} failed: {other}"),
+                    data: Some(data),
+                }),
+            ),
+            None => internal_error(response_id, format!("{operation} failed: {other}")),
+        },
     }
 }
 
@@ -7613,7 +7721,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                         }),
                     )
                 }
-                Err(err) => internal_error(response_id, format!("reload_member (identity): {err}")),
+                Err(err) => console_identity_error_response(response_id, "reload_member", err),
             }
         }
         "mobkit/member_health" => {
@@ -10420,6 +10528,7 @@ mod tests {
     struct RecordingIdentityBridge {
         session_id: meerkat_core::types::SessionId,
         handling_modes: Arc<Mutex<Vec<HandlingMode>>>,
+        reload_error: Mutex<Option<BridgeError>>,
     }
 
     #[async_trait::async_trait]
@@ -10473,6 +10582,16 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SessionBridge for RecordingIdentityBridge {
+        async fn reload_member_registration(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+        ) -> Result<Option<crate::identity_first::BridgeMemberReload>, BridgeError> {
+            match self.reload_error.lock().expect("reload error mutex").take() {
+                Some(error) => Err(error),
+                None => Ok(None),
+            }
+        }
+
         async fn create_session(
             &self,
             _identity: &AgentIdentity,
@@ -11045,6 +11164,84 @@ comms = true
         assert!(!message.contains("secret backend DSN"));
     }
 
+    #[tokio::test]
+    async fn console_timeout_data_preserves_stages_without_execution_or_retry_verdicts() {
+        for stage in ["actor_command_admission", "actor_command_reply"] {
+            let make_error =
+                || crate::identity_first::IdentityRuntimeError::ActorAdmissionTimeout {
+                    identity: crate::identity_first::AgentIdentity::parse("test:member")
+                        .expect("valid identity"),
+                    operation: "deliver.submit_work",
+                    waited: Duration::from_millis(5),
+                    command: Some(crate::identity_first::ActorCommandTimeout {
+                        command_kind: "SubmitWork",
+                        stage,
+                    }),
+                };
+            let expected = make_error().structured_data().expect("timeout data");
+            let response = super::console_send_rpc_error(
+                json!(7),
+                super::identity_runtime_error_to_console_send_error("test:member", make_error()),
+            );
+            assert_eq!(response["error"]["data"], expected);
+            assert!(
+                response["error"]["message"]
+                    .as_str()
+                    .expect("timeout message")
+                    .contains(stage)
+            );
+            assert!(response["error"]["data"].get("executed").is_none());
+            assert!(response["error"]["data"].get("retryable").is_none());
+            let response = super::console_send_error_response(
+                super::identity_runtime_error_to_console_send_error("test:member", make_error()),
+            );
+            assert_eq!(response.status(), axum::http::StatusCode::GATEWAY_TIMEOUT);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("HTTP body");
+            let body: Value = serde_json::from_slice(&body).expect("JSON body");
+            assert_eq!(body["data"], expected);
+        }
+    }
+
+    #[test]
+    fn console_timeout_probe_data_preserves_before_call_and_in_flight_observations() {
+        use crate::identity_first::{ActorCallObservation, IdentityRuntimeError};
+        for observation in [
+            ActorCallObservation::BeforeCall,
+            ActorCallObservation::InFlight,
+        ] {
+            for terminated in [false, true] {
+                let identity = AgentIdentity::parse("test:member").expect("valid identity");
+                let error = if terminated {
+                    IdentityRuntimeError::ActorTerminated {
+                        identity,
+                        operation: "deliver.submit_work",
+                        observation,
+                        detail: "private backend detail".to_string(),
+                    }
+                } else {
+                    IdentityRuntimeError::ActorLoopStalled {
+                        identity,
+                        operation: "deliver.submit_work",
+                        observation,
+                        stall_id: 3,
+                        stalled_for: Duration::from_secs(1),
+                    }
+                };
+                let expected = error.structured_data().expect("probe observation");
+                let response = super::console_send_rpc_error(
+                    json!(7),
+                    super::identity_runtime_error_to_console_send_error("test:member", error),
+                );
+                assert_eq!(response["error"]["data"], expected);
+                assert!(!response.to_string().contains("private backend detail"));
+                assert!(response["error"]["data"].get("executed").is_none());
+                assert!(response["error"]["data"].get("retryable").is_none());
+            }
+        }
+    }
+
     #[test]
     fn console_send_json_rpc_error_hides_backend_details() {
         let response = super::console_send_rpc_error(
@@ -11055,6 +11252,72 @@ comms = true
         assert_eq!(response["error"]["code"], json!(-32000));
         assert_eq!(response["error"]["message"], json!("console send failed"));
         assert!(!response.to_string().contains("secret backend DSN"));
+    }
+
+    #[tokio::test]
+    async fn console_send_runtime_failures_preserve_owner_data_and_hide_backend_details() {
+        use crate::identity_first::IdentityRuntimeError;
+        use axum::http::StatusCode;
+        for (kind, expected_status, expected_data) in [
+            (
+                "admission_backlog_full",
+                StatusCode::TOO_MANY_REQUESTS,
+                json!({"kind": "mob_member_admission_backlog_full", "depth": 8}),
+            ),
+            (
+                "reload_refused",
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"kind": "mob_member_reload_refused"}),
+            ),
+            (
+                "reload_timed_out",
+                StatusCode::GATEWAY_TIMEOUT,
+                json!({"kind": "mob_member_reload_timed_out", "stage": "resume_lifecycle"}),
+            ),
+        ] {
+            let make_error = || {
+                let identity = AgentIdentity::parse("test:member").expect("valid identity");
+                match kind {
+                    "admission_backlog_full" => {
+                        IdentityRuntimeError::AdmissionBacklogFull { identity, depth: 8 }
+                    }
+                    "reload_refused" => IdentityRuntimeError::ReloadRefused {
+                        identity,
+                        session_id: "private session detail".to_string(),
+                        reason: "secret backend DSN".to_string(),
+                    },
+                    "reload_timed_out" => IdentityRuntimeError::ReloadTimedOut {
+                        identity,
+                        session_id: "private session detail".to_string(),
+                        stage: "resume_lifecycle".to_string(),
+                    },
+                    _ => unreachable!(),
+                }
+            };
+            assert_eq!(make_error().structured_data(), Some(expected_data.clone()));
+            let rpc = super::console_send_rpc_error(
+                json!(7),
+                super::identity_runtime_error_to_console_send_error("test:member", make_error()),
+            );
+            assert_eq!(rpc["error"]["code"], json!(-32000));
+            assert_eq!(rpc["error"]["data"], expected_data);
+            let response = super::console_send_error_response(
+                super::identity_runtime_error_to_console_send_error("test:member", make_error()),
+            );
+            assert_eq!(response.status(), expected_status);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("HTTP body");
+            let body: Value = serde_json::from_slice(&body).expect("JSON body");
+            assert_eq!(body["error"], kind);
+            assert_eq!(body["data"], expected_data);
+            for response in [rpc, body] {
+                assert!(!response.to_string().contains("secret backend DSN"));
+                assert!(!response.to_string().contains("private session detail"));
+            }
+            assert!(expected_data.get("executed").is_none());
+            assert!(expected_data.get("retryable").is_none());
+        }
     }
 
     #[test]
@@ -14212,6 +14475,75 @@ comms = true
     }
 
     #[tokio::test]
+    async fn console_timeout_reload_route_preserves_command_stage()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-reload-timeout").await?;
+        let store = Arc::new(LocalContinuityStore::in_memory()?);
+        let lease_provider = Arc::new(LocalLeaseProvider::new());
+        let session_id = meerkat_core::types::SessionId::new();
+        let bridge = Arc::new(RecordingIdentityBridge {
+            session_id: session_id.clone(),
+            handling_modes: Arc::new(Mutex::new(Vec::new())),
+            reload_error: Mutex::new(None),
+        });
+        let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: store.clone(),
+            lease_provider: lease_provider.clone(),
+            runtime_instance_id: "console-reload-timeout".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        register_leased_active_identity(
+            &identity_runtime,
+            &store,
+            &lease_provider,
+            "console-reload-timeout",
+            &AgentIdentity::parse("test:member")?,
+        )
+        .await?;
+        for stage in ["actor_command_admission", "actor_command_reply"] {
+            *bridge.reload_error.lock().expect("reload error mutex") =
+                Some(BridgeError::ActorAdmissionTimeout {
+                    operation: "reload.reload_member_registration",
+                    identity: meerkat_mob::AgentIdentity::from("rt-test-member-0"),
+                    waited: Duration::from_millis(5),
+                    command: Some(crate::identity_first::ActorCommandTimeout {
+                        command_kind: "ReloadMemberRegistration",
+                        stage,
+                    }),
+                });
+            let response = Box::pin(handle_console_runtime_rpc(
+                &runtime,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(identity_runtime.clone()),
+                None,
+                None,
+                rpc_request_with_params(
+                    "mobkit/reload_member",
+                    json!({"member_id": "test:member"}),
+                ),
+                true,
+            ))
+            .await;
+            assert_eq!(
+                response["error"]["data"]["command_kind"],
+                "ReloadMemberRegistration"
+            );
+            assert_eq!(response["error"]["data"]["stage"], stage);
+            assert!(response["error"]["data"].get("executed").is_none());
+            assert!(response["error"]["data"].get("retryable").is_none());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn console_runtime_identity_reads_reject_stale_runtime_aliases()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let (_temp_dir, runtime) =
@@ -15020,6 +15352,7 @@ comms = true
             bridge: Some(Arc::new(RecordingIdentityBridge {
                 session_id: record.session_id.clone(),
                 handling_modes: handling_modes.clone(),
+                reload_error: Mutex::new(None),
             })),
             default_timeout: None,
         }));
@@ -15163,6 +15496,7 @@ comms = true
             bridge: Some(Arc::new(RecordingIdentityBridge {
                 session_id: record.session_id.clone(),
                 handling_modes: handling_modes.clone(),
+                reload_error: Mutex::new(None),
             })),
             default_timeout: None,
         }));

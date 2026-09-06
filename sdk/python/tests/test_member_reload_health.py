@@ -92,6 +92,27 @@ async def test_member_health_rpc_name_and_typed_result():
     assert health.open_stall_id == 7
     # Absent until the gateway can read meerkat's durability state.
     assert health.durability is None
+    assert health.last_reload is None
+
+
+@pytest.mark.asyncio
+async def test_member_health_carries_last_reload():
+    handle, _ = make_mock_mob_handle({
+        "mobkit/member_health": {
+            "identity": "review:singleton",
+            "state": "active",
+            "materialization_in_flight": False,
+            "actor_loop": {"state": "live"},
+            "last_reload": {
+                "outcome": "refused",
+                "detail": "durable resume authority unreadable: HTTP 0",
+                "at_unix_ms": 1_700_000_000_000,
+            },
+        }
+    })
+    health = await handle.member_health("review:singleton")
+    assert health.last_reload["outcome"] == "refused"
+    assert "HTTP 0" in health.last_reload["detail"]
 
 
 @pytest.mark.asyncio
@@ -122,3 +143,44 @@ async def test_member_health_degrades_on_missing_actor_loop():
     health = await handle.member_health("x")
     assert health.actor_loop == {"state": "unobserved"}
     assert health.materialization_in_flight is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["actor_command_admission", "actor_command_reply"])
+async def test_timeout_observations_survive_health_and_rpc_errors(stage):
+    from meerkat_mobkit.errors import RpcError
+
+    data = {
+        "kind": "mob_actor_command_timed_out",
+        "command_kind": "SubmitWork",
+        "stage": stage,
+        "deadline_reached": True,
+    }
+    handle, _ = make_mock_mob_handle({
+        "mobkit/member_health": {
+            "identity": "x",
+            "state": "active",
+            "last_delivery_error": {
+                "class": "admission_timeout",
+                "detail": "execution fate not established",
+                "data": data,
+                "at_unix_ms": 1,
+            },
+        }
+    })
+    health = await handle.member_health("x")
+    assert health.last_delivery_error["data"] == data
+    error = RpcError(-32603, "observation deadline", data=data)
+    calls = []
+
+    async def timed_out_rpc(method, params=None):
+        calls.append(method)
+        raise error
+
+    handle._runtime._rpc = timed_out_rpc
+    with pytest.raises(RpcError) as caught:
+        await handle.send("x", "turn")
+    assert caught.value.data == data
+    assert calls == ["mobkit/send_message"]
+    assert "executed" not in error.data
+    assert "retryable" not in error.data
