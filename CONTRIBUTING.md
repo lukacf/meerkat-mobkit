@@ -62,6 +62,207 @@ PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -v
 - **Rust**: `make fmt` for formatting, `make lint` for clippy
 - **Python**: Type annotations required on all public functions
 
+## Releases: protocol v1
+
+**Tag pushes validate only. They do not build or publish.** Publication requires
+an explicit selection of accepted, immutable candidate artifacts. `make release`
+still means a local optimized build; it is not a publication command.
+
+Prepare the release-version/dependency changes in a PR, merge it, and wait for
+successful `ci.yml` **push-to-main** CI on the exact merged commit. Candidate
+production must run from that final commit, not a PR head or an earlier build.
+
+```bash
+# Dispatch from main; refuse if GitHub's dispatch SHA differs from SOURCE_SHA.
+make release-candidate SOURCE_SHA=<full-merged-commit-sha>
+```
+
+The existing release workflow builds all five targets and all three executables,
+checks Linux portability, signs macOS executables, and packages them once.
+Candidate mode never runs GitHub release, registry, or documentation publishers.
+Archive versions come from the pinned workspace, not the branch name.
+
+The completed candidate run's summary contains a versioned JSON selection.
+Save it unchanged outside the repository, for example as `accepted-candidate.json`.
+It binds the repository, run and attempt, immutable manifest artifact ID and ZIP
+digest, and manifest file hash. The attested manifest binds the exact source,
+version, CI evidence, all five target artifact identities, and all 15 archive
+and inner-executable hashes. The manifest's own artifact identity is outside the
+manifest to avoid a self-referential hash.
+
+Inner members follow the unchanged producer: Unix archives contain the executable
+basename, and Windows ZIPs contain exactly
+`target/<exact-target>/release/<exact-binary>.exe`. These paths are derived from
+the supported target/binary inventory, never chosen by the manifest. Other nested
+paths, links, duplicate members, and extra files are refused.
+
+The selection has this strict shape (use the actual values emitted by the run,
+not placeholders). IDs are integers; digests are 64 lowercase hex characters:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "accepted-candidate",
+  "repository": "lukacf/meerkat-mobkit",
+  "run_id": 123,
+  "run_attempt": 1,
+  "manifest_artifact": {
+    "id": 456,
+    "digest": "<artifact ZIP SHA-256>",
+    "manifest_sha256": "<candidate-manifest.json SHA-256>"
+  }
+}
+```
+
+Give consumers the selected artifacts and hashes for acceptance. Acceptance is
+external to this workflow; the workflow does not claim to have performed consumer
+tests. If the source, run, attempt, archives, or signed executable bytes change,
+obtain a new candidate selection and repeat acceptance.
+
+After acceptance, the release owner creates `vX.Y.Z` on the **same merged source
+SHA**. Its automatic workflow validates the tag and exact-main CI only. The owner
+then explicitly promotes the accepted selection:
+
+```bash
+make release-promote RELEASE_TAG=vX.Y.Z \
+  ARTIFACT_SELECTION=/absolute/path/accepted-candidate.json
+
+# Asset-only promotion (no registries or docs):
+make release-promote RELEASE_TAG=vX.Y.Z \
+  ARTIFACT_SELECTION=/absolute/path/accepted-candidate.json \
+  PUBLISH_RELEASE_PACKAGES=false
+
+# Verify the selected candidate and exercise package dry-runs; publish nothing:
+make release-promote RELEASE_TAG=vX.Y.Z \
+  ARTIFACT_SELECTION=/absolute/path/accepted-candidate.json \
+  REGISTRY_DRY_RUN=true
+```
+
+Promotion verifies the original signed provenance, including the certificate's
+source digest and workflow identity, run/attempt, artifact ZIP digests, archive
+hashes, and every inner executable hash. It copies the original archives, index,
+and checksums without rebuilding, signing, stripping, or recompressing anything.
+A tag mismatch, missing/expired artifact, changed attempt, or failed verification
+refuses publication; there is no fallback build. Do not rerun an accepted
+candidate's jobs and assume the old selection still applies.
+
+Real publication proceeds in order: verified public binary assets, Python and
+TypeScript packages, Rust crate, exact registry readback, then immutable docs.
+New releases retain the original candidate manifest, selection, and provenance
+proofs. Existing flat `index.json` and `checksums.sha256` keep their archive-only
+contract.
+
+### Recovery without replacing published bytes
+
+```bash
+# Registry-only retry against an explicit existing tag:
+make release-registry-retry RELEASE_TAG=vX.Y.Z
+
+# Registry-only dry-run; no GitHub asset mutation:
+make release-registry-retry RELEASE_TAG=vX.Y.Z REGISTRY_DRY_RUN=true
+
+# Add explicitly selected missing ORIGINAL assets to an existing release:
+make release-assets-recover RELEASE_TAG=vX.Y.Z \
+  ARTIFACT_SELECTION=/absolute/path/original-artifacts.json
+```
+
+Registry retries read back the complete published asset set and never invoke the
+GitHub asset publisher. Complete candidate-era releases retain sufficient public
+proof for registry retries after Actions artifact expiry. Legacy releases are not
+retroactively assigned candidate receipts.
+
+Asset recovery accepts the original accepted-candidate selection, or a versioned
+`original-assets` selection for a legacy release. Legacy selections explicitly
+name the source/version, original run/attempt and artifact IDs/ZIP digests, and
+missing archive names with outer/inner hashes. Their signed source provenance must
+match the existing tag and original release index/checksums. This is not permission
+to create a release or rebuild a historical binary.
+
+Legacy ZIPs may omit a retained provenance bundle. Only that legacy recovery path
+can retrieve the original signed attestation from GitHub instead. An invalid
+retained bundle does not trigger fallback, and accepted candidates always require
+their retained original bundles.
+
+The legacy selection uses the following shape. `metadata` hashes identify the
+existing release metadata; `artifacts` identifies original Actions ZIPs, not
+GitHub release asset IDs. List only the archives explicitly authorized for
+addition, even when the original ZIP also contains sibling binaries:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "original-assets",
+  "repository": "lukacf/meerkat-mobkit",
+  "source_sha": "<full tagged source SHA>",
+  "version": "0.8.31",
+  "tag": "v0.8.31",
+  "run_id": 123,
+  "run_attempt": 1,
+  "metadata": {
+    "index.json": "<original SHA-256>",
+    "checksums.sha256": "<original SHA-256>"
+  },
+  "artifacts": [{
+    "id": 456,
+    "name": "<original Actions artifact name>",
+    "digest": "<original artifact ZIP SHA-256>",
+    "target": "x86_64-pc-windows-msvc",
+    "archives": [{
+      "name": "mobkit-rpc-gateway-0.8.31-x86_64-pc-windows-msvc.zip",
+      "target": "x86_64-pc-windows-msvc",
+      "binary": "rpc_gateway",
+      "size": 1234,
+      "sha256": "<original archive SHA-256>",
+      "inner": {
+        "name": "target/x86_64-pc-windows-msvc/release/rpc_gateway.exe",
+        "size": 5678,
+        "sha256": "<original executable SHA-256>"
+      }
+    }]
+  }]
+}
+```
+
+Uploads are add-only: a matching existing file is a no-op; any conflicting hash
+refuses before writes. Never delete or replace published assets, including the
+existing `v0.8.31` Windows archives. Missing originals, absent original provenance,
+or missing legacy index/checksums with no original-byte source require explicit
+operator intervention, not regeneration. A partial draft with no matching
+selection receipt similarly requires explicit owner cleanup.
+
+All supported recovery runs use the current workflow on `main`, with the old tag
+as an explicit input. **Do not rerun historical release jobs or re-push old tags.**
+GitHub reruns historical workflow code; the new safeguards cannot rewrite those
+old snapshots.
+
+### Dispatch modes and publication booleans
+
+The workflow's safe default mode is `existing`. `release_tag` by itself no longer
+builds or publishes assets. `P` means `publish_release_packages`, and `D` means
+`registry_dry_run`. Any required-field/schema/source validation failure refuses.
+
+| Event / mode | Inputs | Result |
+|---|---|---|
+| Tag push | All dispatch inputs ignored | Validation only; no binary/package builds or publication |
+| `candidate` | Exact source; P=false, D=false | Candidate build only |
+| `candidate` | P=true or D=true | Refuse contradictory publication inputs |
+| `promote` | Tag + selection; P=false, D=false | Publish original assets only |
+| `promote` | Tag + selection; P=true, D=false | Assets, registries, then docs |
+| `promote` | Tag + selection; P=false, D=true | Candidate verification only |
+| `promote` | Tag + selection; P=true, D=true | Candidate verification + package dry-runs; no publication |
+| `existing` | Tag; P=true, D=false | Registry retry after public asset verification; then docs |
+| `existing` | Tag; P=true, D=true | Tagged package dry-runs only |
+| `existing` | P=false, either D | Validation only |
+| `existing` | No tag; P=true, D=true | Pure package dry-run; the only exact-main CI exemption |
+| `existing` | No tag; P=true, D=false | Refuse untagged publication |
+| `assets` | Existing release/tag + original selection; P=false, D=false | Add selected missing original assets only |
+| `assets` | P=true or D=true | Refuse ambiguous recovery inputs |
+
+Facade commands use the owner's `gh` authentication, with `GH_TOKEN` and
+`GITHUB_API_TOKEN` removed from the local dispatch subprocess environment. Workflow
+jobs use their scoped GitHub token. No facade command creates a tag or selects a
+candidate by "latest successful" run.
+
 ## License
 
 By contributing, you agree that your contributions will be dual-licensed
