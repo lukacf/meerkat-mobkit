@@ -4823,7 +4823,12 @@ actions = ["agent.view"]
         assert!(futures::poll!(&mut call).is_pending());
         assert_eq!(bridge.state.lock().await.pending.len(), 1);
 
-        tokio::time::advance(PROVIDER_CALLBACK_TIMEOUT - Duration::from_secs(1)).await;
+        tokio::time::advance(
+            PROVIDER_CALLBACK_TIMEOUT
+                .checked_sub(Duration::from_secs(1))
+                .expect("callback timeout exceeds one second"),
+        )
+        .await;
         assert!(futures::poll!(&mut call).is_pending());
         tokio::time::advance(Duration::from_secs(1)).await;
         assert_eq!(
