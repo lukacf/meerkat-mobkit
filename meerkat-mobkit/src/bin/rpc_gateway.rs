@@ -4812,6 +4812,243 @@ actions = ["agent.view"]
         assert!(bridge.state.lock().await.pending.is_empty());
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn callback_blocked_stdout_times_out_without_enqueuing_or_leaking_pending() {
+        let (stdout_tx, mut stdout_rx) = mpsc::channel(1);
+        stdout_tx
+            .try_send(GatewayStdoutLine::plain("occupied".to_string()))
+            .expect("fill writer queue");
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        let mut call = Box::pin(bridge.call("callback/build_agent", json!({})));
+        assert!(futures::poll!(&mut call).is_pending());
+        assert_eq!(bridge.state.lock().await.pending.len(), 1);
+
+        tokio::time::advance(PROVIDER_CALLBACK_TIMEOUT - Duration::from_secs(1)).await;
+        assert!(futures::poll!(&mut call).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(
+            call.await.expect_err("full stdout must not hang forever"),
+            "callback stdout send timed out after 130s; delivery outcome unknown"
+        );
+        assert!(bridge.state.lock().await.pending.is_empty());
+        assert_eq!(
+            stdout_rx.recv().await.expect("original line").to_string(),
+            "occupied"
+        );
+        assert!(matches!(
+            stdout_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn callback_closed_stdout_fails_immediately_and_cleans_pending() {
+        for close_while_blocked in [false, true] {
+            let (stdout_tx, stdout_rx) = mpsc::channel(1);
+            stdout_tx
+                .try_send(GatewayStdoutLine::plain("occupied".to_string()))
+                .expect("fill writer queue");
+            let bridge = StdioCallbackBridge::new(stdout_tx);
+            let mut call = Box::pin(bridge.call("callback/build_agent", json!({})));
+            if close_while_blocked {
+                assert!(futures::poll!(&mut call).is_pending());
+            }
+            drop(stdout_rx);
+            let start = tokio::time::Instant::now();
+            assert_eq!(call.await, Err("stdout channel closed".to_string()));
+            assert_eq!(tokio::time::Instant::now(), start);
+            assert!(bridge.state.lock().await.pending.is_empty());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn callback_close_wakes_stdout_blocked_call_without_late_send() {
+        let (stdout_tx, mut stdout_rx) = mpsc::channel(1);
+        stdout_tx
+            .try_send(GatewayStdoutLine::plain("occupied".to_string()))
+            .expect("fill writer queue");
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        let mut call = Box::pin(bridge.call("callback/build_agent", json!({})));
+        assert!(futures::poll!(&mut call).is_pending());
+        bridge.close().await;
+        let start = tokio::time::Instant::now();
+        assert_eq!(
+            call.await,
+            Err("callback response channel dropped".to_string())
+        );
+        assert_eq!(tokio::time::Instant::now(), start);
+        assert!(bridge.state.lock().await.pending.is_empty());
+        stdout_rx.recv().await.expect("original line");
+        assert!(matches!(
+            stdout_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn callback_stdout_admission_and_response_share_one_deadline() {
+        let (stdout_tx, mut stdout_rx) = mpsc::channel(1);
+        stdout_tx
+            .try_send(GatewayStdoutLine::plain("occupied".to_string()))
+            .expect("fill writer queue");
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        let start = tokio::time::Instant::now();
+        let mut call = Box::pin(bridge.call("callback/build_agent", json!({})));
+        assert!(futures::poll!(&mut call).is_pending());
+        tokio::time::advance(Duration::from_secs(100)).await;
+        stdout_rx.recv().await.expect("free queue capacity");
+        assert!(futures::poll!(&mut call).is_pending());
+        let request: Value =
+            serde_json::from_str(&stdout_rx.recv().await.expect("request admitted to writer"))
+                .expect("callback JSON");
+        tokio::time::advance(Duration::from_secs(30)).await;
+        assert_eq!(
+            call.await,
+            Err("callback timed out after 130s; execution outcome unknown".to_string())
+        );
+        assert_eq!(
+            tokio::time::Instant::now() - start,
+            PROVIDER_CALLBACK_TIMEOUT
+        );
+        assert!(bridge.state.lock().await.pending.is_empty());
+
+        // A host can complete after the caller times out. It must not satisfy
+        // a later callback or turn the earlier timeout into a non-execution claim.
+        bridge
+            .route_callback_response(json!({
+                "id": request["id"], "result": {"completed": true},
+            }))
+            .await;
+        let mut next = Box::pin(bridge.call("callback/build_agent", json!({})));
+        assert!(futures::poll!(&mut next).is_pending());
+        let next_request: Value =
+            serde_json::from_str(&stdout_rx.recv().await.expect("next request"))
+                .expect("next callback JSON");
+        assert_ne!(request["id"], next_request["id"]);
+        bridge
+            .route_callback_response(json!({
+                "id": next_request["id"], "result": {"current": true},
+            }))
+            .await;
+        assert_eq!(next.await, Ok(json!({"current": true})));
+        assert!(bridge.state.lock().await.pending.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn callback_host_error_remains_distinct_from_transport_timeout() {
+        let (stdout_tx, mut stdout_rx) = mpsc::channel(1);
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        let mut call = Box::pin(bridge.call("callback/build_agent", json!({})));
+        assert!(futures::poll!(&mut call).is_pending());
+        let request: Value =
+            serde_json::from_str(&stdout_rx.recv().await.expect("callback request"))
+                .expect("callback JSON");
+        bridge
+            .route_callback_response(json!({
+                "id": request["id"], "error": {"message": "host refused build"},
+            }))
+            .await;
+        assert_eq!(
+            call.await,
+            Err("callback error: host refused build".to_string())
+        );
+        assert!(bridge.state.lock().await.pending.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn callback_reliable_notification_reports_blocked_and_closed_stdout() {
+        let (stdout_tx, mut stdout_rx) = mpsc::channel(1);
+        stdout_tx
+            .try_send(GatewayStdoutLine::plain("occupied".to_string()))
+            .expect("fill writer queue");
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        let mut notify = Box::pin(bridge.notify_reliable("callback/after_create", json!({})));
+        assert!(futures::poll!(&mut notify).is_pending());
+        tokio::time::advance(PROVIDER_CALLBACK_TIMEOUT).await;
+        assert_eq!(
+            notify.await,
+            Err("callback stdout send timed out after 130s; delivery outcome unknown".to_string())
+        );
+        stdout_rx.recv().await.expect("original line");
+        assert!(matches!(
+            stdout_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        drop(stdout_rx);
+        assert_eq!(
+            bridge
+                .notify_reliable("callback/after_create", json!({}))
+                .await,
+            Err("stdout channel closed".to_string())
+        );
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test(start_paused = true)]
+    async fn callback_live_output_blocked_writer_times_out_without_claiming_rejection() {
+        let (machine, binding) = stale_public_observation_binding();
+        let (stdout_tx, mut stdout_rx) = mpsc::channel(1);
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        let mut call = Box::pin(bridge.call_live_public_observation(machine, binding, json!({})));
+        assert!(futures::poll!(&mut call).is_pending());
+        let mut line = stdout_rx.recv().await.expect("writer owns callback line");
+        tokio::time::advance(PROVIDER_CALLBACK_TIMEOUT).await;
+        assert_eq!(
+            call.await,
+            Err("callback stdout write timed out after 130s; delivery outcome unknown".to_string())
+        );
+        assert!(bridge.state.lock().await.pending.is_empty());
+        line.settle_delivery(true).await;
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test(start_paused = true)]
+    async fn callback_live_output_early_sdk_ack_still_waits_for_writer_settlement() {
+        for delivered in [false, true] {
+            let (machine, binding) = stale_public_observation_binding();
+            let (stdout_tx, mut stdout_rx) = mpsc::channel(1);
+            let bridge = StdioCallbackBridge::new(stdout_tx);
+            let mut call =
+                Box::pin(bridge.call_live_public_observation(machine, binding, json!({})));
+            assert!(futures::poll!(&mut call).is_pending());
+            let mut line = stdout_rx.recv().await.expect("writer owns callback line");
+            let request: Value = serde_json::from_str(&line).expect("callback JSON");
+            bridge
+                .route_callback_response(json!({
+                    "id": request["id"], "result": {"accepted": true},
+                }))
+                .await;
+            assert!(
+                futures::poll!(&mut call).is_pending(),
+                "an SDK acknowledgement cannot replace writer settlement"
+            );
+            line.settle_delivery(delivered).await;
+            let expected = if delivered {
+                Ok(json!({"accepted": true}))
+            } else {
+                Err("live output publication rejected before write".to_string())
+            };
+            assert_eq!(call.await, expected);
+            assert!(bridge.state.lock().await.pending.is_empty());
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[tokio::test(start_paused = true)]
+    async fn callback_live_output_closed_writer_cleans_pending() {
+        let (machine, binding) = stale_public_observation_binding();
+        let (stdout_tx, stdout_rx) = mpsc::channel(1);
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        drop(stdout_rx);
+        assert_eq!(
+            bridge
+                .call_live_public_observation(machine, binding, json!({}))
+                .await,
+            Err("stdout channel closed".to_string())
+        );
+        assert!(bridge.state.lock().await.pending.is_empty());
+    }
+
     #[tokio::test]
     async fn callback_builder_delegates_absent_session_compaction_reconciliation() {
         let tmp = tempfile::tempdir().expect("temp dir");
@@ -7554,29 +7791,59 @@ impl StdioCallbackBridge {
         }
     }
 
-    /// Send a notification with reliable delivery (async, waits for channel space).
-    /// Use for callbacks where delivery must not be silently lost.
-    async fn notify_reliable(&self, method: &str, params: Value) {
+    async fn send_stdout(
+        &self,
+        line: GatewayStdoutLine,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), String> {
+        match tokio::time::timeout_at(deadline, self.stdout_tx.send(line)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err("stdout channel closed".to_string()),
+            Err(_) => Err(format!(
+                "callback stdout send timed out after {}s; delivery outcome unknown",
+                PROVIDER_CALLBACK_TIMEOUT.as_secs()
+            )),
+        }
+    }
+
+    async fn send_callback(
+        &self,
+        line: GatewayStdoutLine,
+        response: &mut oneshot::Receiver<Value>,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), String> {
+        tokio::select! {
+            biased;
+            // EOF must wake a callback even while stdout has no capacity.
+            _ = response => Err("callback response channel dropped".to_string()),
+            result = self.send_stdout(line, deadline) => result,
+        }
+    }
+
+    /// Wait boundedly for notification admission; failures must be reported.
+    /// Queue admission alone does not acknowledge delivery to the SDK.
+    async fn notify_reliable(&self, method: &str, params: Value) -> Result<(), String> {
+        let deadline = tokio::time::Instant::now() + PROVIDER_CALLBACK_TIMEOUT;
         let notification = json!({
             "jsonrpc": "2.0",
             "method": method,
             "params": params,
         });
-        if let Ok(line) = serde_json::to_string(&notification) {
-            if let Err(e) = self.stdout_tx.send(GatewayStdoutLine::plain(line)).await {
-                eprintln!("[mobkit-gateway] failed to deliver {method}: {e}");
-            }
-        }
+        let line = serde_json::to_string(&notification).map_err(|error| error.to_string())?;
+        self.send_stdout(GatewayStdoutLine::plain(line), deadline)
+            .await
     }
 
     /// Send a callback request to Python and wait for the response.
     async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+        // Admission and response share the existing provider callback window.
+        let deadline = tokio::time::Instant::now() + PROVIDER_CALLBACK_TIMEOUT;
         let id = self
             .counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let id_str = format!("cb-{id}");
 
-        let (tx, rx) = oneshot::channel();
+        let (tx, mut rx) = oneshot::channel();
         {
             let mut state = self.state.lock().await;
             if state.closed {
@@ -7598,13 +7865,16 @@ impl StdioCallbackBridge {
                 return Err(e.to_string());
             }
         };
-        if let Err(_) = self.stdout_tx.send(GatewayStdoutLine::plain(line)).await {
+        if let Err(error) = self
+            .send_callback(GatewayStdoutLine::plain(line), &mut rx, deadline)
+            .await
+        {
             self.state.lock().await.pending.remove(&id_str);
-            return Err("stdout channel closed".to_string());
+            return Err(error);
         }
 
         // Wait for Python to respond (routed by the stdin multiplexer)
-        match tokio::time::timeout(PROVIDER_CALLBACK_TIMEOUT, rx).await {
+        match tokio::time::timeout_at(deadline, rx).await {
             Ok(Ok(value)) => {
                 if let Some(error) = value.get("error") {
                     Err(format!(
@@ -7622,7 +7892,7 @@ impl StdioCallbackBridge {
             Err(_) => {
                 self.state.lock().await.pending.remove(&id_str);
                 Err(format!(
-                    "callback timed out after {}s",
+                    "callback timed out after {}s; execution outcome unknown",
                     PROVIDER_CALLBACK_TIMEOUT.as_secs()
                 ))
             }
@@ -7643,12 +7913,13 @@ impl StdioCallbackBridge {
         binding: meerkat_live::ProviderWebrtcBinding,
         params: impl serde::Serialize,
     ) -> Result<Value, String> {
+        let deadline = tokio::time::Instant::now() + PROVIDER_CALLBACK_TIMEOUT;
         let id = self
             .counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let id_str = format!("cb-{id}");
 
-        let (tx, rx) = oneshot::channel();
+        let (tx, mut rx) = oneshot::channel();
         {
             let mut state = self.state.lock().await;
             if state.closed {
@@ -7671,23 +7942,53 @@ impl StdioCallbackBridge {
             }
         };
         let (line, written) = GatewayStdoutLine::public_observation(machine, binding, line);
-        if self.stdout_tx.send(line).await.is_err() {
+        if let Err(error) = self.send_callback(line, &mut rx, deadline).await {
             self.state.lock().await.pending.remove(&id_str);
-            return Err("stdout channel closed".to_string());
+            return Err(error);
         }
-        match written.await {
-            Ok(true) => {}
-            Ok(false) => {
+        let mut early_response = None;
+        let delivery = tokio::time::timeout_at(deadline, written);
+        tokio::pin!(delivery);
+        let delivery = tokio::select! {
+            biased;
+            delivery = &mut delivery => delivery,
+            response = &mut rx => match response {
+                Ok(value) => {
+                    // The SDK can acknowledge before the writer task settles.
+                    // Keep that response, but still require writer delivery.
+                    early_response = Some(value);
+                    delivery.await
+                }
+                Err(_) => {
+                    self.state.lock().await.pending.remove(&id_str);
+                    return Err("callback response channel dropped".to_string());
+                }
+            },
+        };
+        match delivery {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => {
                 self.state.lock().await.pending.remove(&id_str);
                 return Err("live output publication rejected before write".to_string());
             }
-            Err(_) => {
+            Ok(Err(_)) => {
                 self.state.lock().await.pending.remove(&id_str);
                 return Err("stdout channel closed".to_string());
             }
+            Err(_) => {
+                self.state.lock().await.pending.remove(&id_str);
+                return Err(format!(
+                    "callback stdout write timed out after {}s; delivery outcome unknown",
+                    PROVIDER_CALLBACK_TIMEOUT.as_secs()
+                ));
+            }
         }
 
-        match tokio::time::timeout(PROVIDER_CALLBACK_TIMEOUT, rx).await {
+        let response = match early_response {
+            Some(value) => Ok(Ok(value)),
+            None => tokio::time::timeout_at(deadline, rx).await,
+        };
+        match response {
             Ok(Ok(value)) => {
                 if let Some(error) = value.get("error") {
                     Err(format!(
@@ -7705,7 +8006,7 @@ impl StdioCallbackBridge {
             Err(_) => {
                 self.state.lock().await.pending.remove(&id_str);
                 Err(format!(
-                    "callback timed out after {}s",
+                    "callback timed out after {}s; execution outcome unknown",
                     PROVIDER_CALLBACK_TIMEOUT.as_secs()
                 ))
             }
@@ -11931,16 +12232,22 @@ external_addressable = true
             move |session_id: meerkat_core::types::SessionId, ctx| {
                 let b = after_bridge.clone();
                 Box::pin(async move {
-                    b.notify_reliable(
-                        "callback/after_create",
-                        json!({
-                            "session_id": session_id.to_string(),
-                            "model": ctx.model,
-                            "labels": ctx.labels,
-                            "system_prompt": ctx.system_prompt,
-                        }),
-                    )
-                    .await;
+                    if let Err(error) = b
+                        .notify_reliable(
+                            "callback/after_create",
+                            json!({
+                                "session_id": session_id.to_string(),
+                                "model": ctx.model,
+                                "labels": ctx.labels,
+                                "system_prompt": ctx.system_prompt,
+                            }),
+                        )
+                        .await
+                    {
+                        eprintln!(
+                            "[mobkit-gateway] failed to deliver callback/after_create: {error}"
+                        );
+                    }
                 })
             },
         ))
