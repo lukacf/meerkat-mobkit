@@ -1281,6 +1281,7 @@ pub fn handle_mobkit_rpc_json(
 }
 
 /// Identity-first runtime context passed to the RPC handler.
+#[derive(Clone)]
 pub struct IdentityFirstContext {
     pub runtime: std::sync::Arc<crate::identity_first::IdentityRuntime>,
     pub roster_provider: std::sync::Arc<dyn crate::identity_first::contracts::RosterProvider>,

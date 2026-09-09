@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed - corrected 0.8.33 companion release
+
+- Pin the complete Meerkat dependency family to registry `0.8.35`, retaining
+  the identity-first runtime, builder, completion, typed health, memory and SDK
+  integration from the prior candidate. The `0.8.32` tag and candidate are not
+  replaced or promoted by this release.
+- Bound stdio callback queue admission, live writer settlement and SDK response
+  with one 130-second provider deadline. Closed writers and callback transport
+  shutdown wake pending callers; reliable notification failures are reported.
+  A timeout leaves delivery/execution fate unknown. An early live SDK response
+  is retained but cannot replace successful writer settlement.
+- Forward standalone turn admission through both session-service decorators to
+  the original inner owner. The original notification sender, request and
+  terminal result remain unchanged; decorators never fabricate admission.
+- Keep timed-out compaction under runtime-owned exact-input observation instead
+  of retiring a turn whose rewritten provisional checkpoint can still commit.
+  Caller loss and the secondary observation deadline retain completion and
+  profile-cleanup ownership. Only successful finalized completion for the same
+  incarnation permits restoration; custom compositions must supply the
+  persistent service's exact observer, not its bootstrap adapter override.
+
 ### Changed - release operator contract
 
 - **Tag pushes now validate only; they no longer build or publish releases.**

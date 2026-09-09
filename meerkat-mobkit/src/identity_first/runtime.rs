@@ -84,7 +84,7 @@ fn interaction_id_for_delivery<'a>(
 /// identity was reset, retired or rebound while its turn ran, and the turn's
 /// result belongs to an embodiment that no longer exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CapturedIncarnation {
+pub(crate) struct CapturedIncarnation {
     runtime_id: Option<AgentRuntimeId>,
     generation: Option<u64>,
     fencing_token: Option<FencingToken>,
@@ -1808,9 +1808,10 @@ impl Drop for MultiRuntimeForegroundCompletion {
 /// Internal result of one dispatch attempt: the caller-facing admission plus
 /// the concrete bridge session that accepted the work (scheduler delivery
 /// needs the latter; RPC callers do not).
-struct DispatchOutcome {
+pub(crate) struct DispatchOutcome {
     admission: DispatchAdmission,
-    session_id: Option<SessionId>,
+    pub(crate) session_id: Option<SessionId>,
+    pub(crate) incarnation: CapturedIncarnation,
 }
 
 /// Exact result of the one concrete embodiment door shared by eager restore,
@@ -3975,7 +3976,7 @@ impl IdentityRuntime {
     /// remains in the runtime's join set and reaches its explicit
     /// commit/rollback boundary. Graceful shutdown closes admission and joins
     /// every such task before lease renewal or the mob actor is stopped.
-    async fn run_tracked_foreground<T, F>(
+    pub(crate) async fn run_tracked_foreground<T, F>(
         self: &Arc<Self>,
         operation: F,
     ) -> Result<T, IdentityRuntimeError>
@@ -8288,7 +8289,7 @@ impl IdentityRuntime {
     /// detected the alias divergence it was there for. The alias is instead
     /// revalidated after relock by re-running the ORIGINAL expected alias
     /// through `ensure_expected_member_alias_current`, which is the authority.
-    async fn capture_incarnation(
+    pub(crate) async fn capture_incarnation(
         &self,
         identity: &AgentIdentity,
     ) -> Result<CapturedIncarnation, IdentityRuntimeError> {
@@ -8425,6 +8426,17 @@ impl IdentityRuntime {
         expected_alias: Option<&str>,
         input: &DispatchInput,
     ) -> Result<DispatchOutcome, IdentityRuntimeError> {
+        self.dispatch_with_expected_incarnation(identity, expected_alias, None, input)
+            .await
+    }
+
+    pub(crate) async fn dispatch_with_expected_incarnation(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        expected: Option<&CapturedIncarnation>,
+        input: &DispatchInput,
+    ) -> Result<DispatchOutcome, IdentityRuntimeError> {
         let should_materialize = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -8440,7 +8452,7 @@ impl IdentityRuntime {
                     | IdentityLifecycleState::Retiring
             )
         };
-        if should_materialize {
+        if should_materialize && expected.is_none() {
             self.materialize_with_expected_member_alias(identity, expected_alias)
                 .await?;
         }
@@ -8450,10 +8462,20 @@ impl IdentityRuntime {
             self.ensure_expected_member_alias_current(identity, expected_alias)
                 .await?;
         }
-        self.materialize_reachable_peers(identity).await?;
+        if expected.is_none() {
+            self.materialize_reachable_peers(identity).await?;
+        }
 
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        if let Some(expected) = expected
+            && self.capture_incarnation(identity).await? != *expected
+        {
+            return Err(IdentityRuntimeError::PostAdmissionSuperseded {
+                identity: identity.clone(),
+                detail: "maintenance incarnation changed before dispatch".to_string(),
+            });
+        }
         if let Some(expected_alias) = expected_alias {
             self.ensure_expected_member_alias_current(identity, expected_alias)
                 .await?;
@@ -8619,6 +8641,7 @@ impl IdentityRuntime {
                 completion_baseline,
             },
             session_id: dispatched_session_id,
+            incarnation: self.capture_incarnation(identity).await?,
         })
     }
 
@@ -8797,6 +8820,94 @@ impl IdentityRuntime {
     ) -> Result<FencingToken, IdentityRuntimeError> {
         self.retire_locked_with_intent(identity, LifecycleRetireIntent::Retire)
             .await
+    }
+
+    /// Change a maintenance build input and rebuild only the captured owner.
+    /// The existing retire and embodiment doors share one lifecycle lock.
+    pub(crate) async fn rebuild_compaction_owner(
+        &self,
+        identity: &AgentIdentity,
+        expected: &CapturedIncarnation,
+        expected_alias: Option<&str>,
+        change: super::bridge::CompactionFloorChange<'_>,
+    ) -> Result<(ContinuityRecord, CapturedIncarnation), IdentityRuntimeError> {
+        let lock = self.lifecycle_lock_for(identity).await;
+        let _guard = lock.lock().await;
+        if self.capture_incarnation(identity).await? != *expected {
+            return Err(IdentityRuntimeError::PostAdmissionSuperseded {
+                identity: identity.clone(),
+                detail: "maintenance owner changed before profile rebuild".to_string(),
+            });
+        }
+        if let Some(alias) = expected_alias {
+            self.ensure_expected_member_alias_current(identity, alias)
+                .await?;
+        }
+        let before = self.status(identity).await?;
+        if before.state != IdentityLifecycleState::Active {
+            return Err(IdentityRuntimeError::InvalidState {
+                identity: identity.clone(),
+                state: before.state,
+                operation: "compact_member",
+            });
+        }
+        self.retire_locked(identity).await?;
+        match change.floor {
+            Some(floor) => {
+                change
+                    .registry
+                    .set_owned(identity, change.operation_id, floor);
+            }
+            None => {
+                change.registry.clear_owned(identity, change.operation_id);
+            }
+        }
+        let mut generation = None;
+        let result = self
+            .embody_identity_locked(
+                identity,
+                None,
+                None,
+                None,
+                &mut generation,
+                EmbodimentOverrides::default(),
+            )
+            .await
+            .map(|outcome| outcome.record);
+        self.mark_bootstrap_materialization_finished(identity, &result, generation);
+        change
+            .registry
+            .finish_owned_build(identity, change.operation_id);
+        if result.is_err() && change.floor.is_some() {
+            change.registry.clear_owned(identity, change.operation_id);
+        }
+        let record = result?;
+        if before.session_id.as_ref() != Some(&record.session_id) {
+            if change.floor.is_some() {
+                change.registry.clear_owned(identity, change.operation_id);
+            }
+            return Err(IdentityRuntimeError::PostAdmissionSuperseded {
+                identity: identity.clone(),
+                detail: "maintenance rebuild did not retain the captured durable session"
+                    .to_string(),
+            });
+        }
+        Ok((record, self.capture_incarnation(identity).await?))
+    }
+
+    pub(crate) async fn invalidate_superseded_compaction_floor(
+        &self,
+        identity: &AgentIdentity,
+        expected: &CapturedIncarnation,
+        floors: &super::bridge::CompactionFloorRegistry,
+        operation_id: &str,
+    ) {
+        let lock = self.lifecycle_lock_for(identity).await;
+        let _guard = lock.lock().await;
+        if !matches!(self.capture_incarnation(identity).await, Ok(current) if current == *expected)
+        {
+            floors.clear_owned(identity, operation_id);
+        }
     }
 
     /// Retire the identity's mob member while the caller holds the lifecycle

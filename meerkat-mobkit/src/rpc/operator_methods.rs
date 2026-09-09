@@ -57,10 +57,8 @@ const DEFAULT_COMPACT_FLOOR_TOKENS: u64 = 1024;
 /// Default budget for the forced-compaction maintenance turn.
 const DEFAULT_COMPACT_TIMEOUT_MS: u64 = 60_000;
 
-/// Bound for the post-timeout transcript read that decides whether the forced
-/// compaction had already landed. It reads the same session whose turn just
-/// missed its budget, so the evidence clause is worth a few seconds and never
-/// worth a second unbounded wait.
+/// Secondary observation budget after the caller's deadline. Expiry reports
+/// pending ownership; it does not cancel the exact-input observer or its cleanup.
 const COMPACT_TIMEOUT_EVIDENCE_BUDGET: Duration = Duration::from_secs(5);
 
 /// Default keep-last-N for `bound_member_transcript`.
@@ -234,211 +232,486 @@ pub(super) async fn handle_compact_member(
         Ok(target) => target,
         Err(response) => return *response,
     };
-    let identity = target.identity;
-
-    // The identity's CURRENT registered spec: the rebuild re-materializes on
-    // exactly this spec, so nothing but the armed floor changes in the build.
-    let Some(spec) = identity_rt
-        .roster_inspect()
-        .await
-        .remove(&identity)
-        .map(|(spec, _)| spec)
+    let Some(observer) = runtime
+        .mob_runtime()
+        .committed_boundary_recoverer()
+        .and_then(|owner| owner.runtime_completion_observer())
     else {
-        // Mirror the destructive identity verbs: an identity this gateway
-        // does not own is the typed identity-plane refusal.
-        return identity_error_response(
+        return rpc_error(
             response_id,
-            &crate::identity_first::IdentityRuntimeError::UnknownIdentity(identity),
+            OPERATOR_VERB_UNAVAILABLE_CODE,
+            "compact_member requires the persistent session owner's exact completion observer"
+                .to_string(),
         );
     };
+    let operation = CompactOperation {
+        ctx: ctx.clone(),
+        identity: target.identity,
+        expected_alias: target.expected_alias,
+        observer,
+        admission: Arc::new(IdentityCompactionAdmission),
+        floors: Arc::clone(floors),
+        floor,
+        timeout_ms,
+        response_id: response_id.clone(),
+        operation_id: meerkat_core::SessionId::new().to_string(),
+    };
+    let (early_tx, mut early_rx) = tokio::sync::oneshot::channel();
+    let owned =
+        identity_rt.run_tracked_foreground(async move { Ok(operation.run(early_tx).await) });
+    tokio::pin!(owned);
+    tokio::select! {
+        biased;
+        Ok(response) = &mut early_rx => response,
+        result = &mut owned => match result {
+            Ok(response) => response,
+            Err(error) => identity_error_response(response_id, &error),
+        }
+    }
+}
 
-    // Arm the floor, then rebuild the member so a FRESH agent build lowers it
-    // into `SessionBuildOptions::auto_compact_threshold_override`. Identity
-    // respawn only re-fences authority (the live agent keeps its old build),
-    // so the rebuild is the real quiesce-and-rematerialize cycle: retire the
-    // member to roster absence (durable session preserved), then restore_flow
-    // resumes the SAME session through the bridge, whose spawn-spec build
-    // applies the armed floor. Every exit path below disarms the registry;
-    // error paths additionally attempt the restore rebuild so a failed verb
-    // does not leave a live floored build.
-    floors.set(&identity, floor);
-    let session_id = match rebuild_member_for_fresh_build(
-        ctx,
-        &identity,
-        target.expected_alias.as_deref(),
-        spec.clone(),
+#[async_trait::async_trait]
+trait CompactCompletionObserver: Send + Sync {
+    async fn observe(
+        &self,
+        session_id: &meerkat_core::SessionId,
+        key: &str,
+        input_id: &mut Option<meerkat_core::lifecycle::InputId>,
+    ) -> Result<Option<meerkat_runtime::CompletionOutcome>, meerkat_runtime::RuntimeDriverError>;
+}
+
+#[async_trait::async_trait]
+trait CompactAdmission: Send + Sync {
+    async fn dispatch(
+        &self,
+        runtime: &crate::identity_first::IdentityRuntime,
+        identity: &AgentIdentity,
+        incarnation: &crate::identity_first::runtime::CapturedIncarnation,
+        input: &crate::identity_first::DispatchInput,
+    ) -> Result<
+        crate::identity_first::runtime::DispatchOutcome,
+        crate::identity_first::IdentityRuntimeError,
+    >;
+}
+
+struct IdentityCompactionAdmission;
+
+#[async_trait::async_trait]
+impl CompactAdmission for IdentityCompactionAdmission {
+    async fn dispatch(
+        &self,
+        runtime: &crate::identity_first::IdentityRuntime,
+        identity: &AgentIdentity,
+        incarnation: &crate::identity_first::runtime::CapturedIncarnation,
+        input: &crate::identity_first::DispatchInput,
+    ) -> Result<
+        crate::identity_first::runtime::DispatchOutcome,
+        crate::identity_first::IdentityRuntimeError,
+    > {
+        runtime
+            .dispatch_with_expected_incarnation(identity, None, Some(incarnation), input)
+            .await
+    }
+}
+
+fn compaction_admission_is_uncertain(error: &crate::identity_first::IdentityRuntimeError) -> bool {
+    use crate::identity_first::{ActorCallObservation, IdentityRuntimeError};
+    !matches!(
+        error,
+        IdentityRuntimeError::AdmissionBacklogFull { .. }
+            | IdentityRuntimeError::ReloadRequired { .. }
+            | IdentityRuntimeError::NoActiveLease(_)
+            | IdentityRuntimeError::InvalidState { .. }
+            | IdentityRuntimeError::StaleRuntimeAlias { .. }
+            | IdentityRuntimeError::PostAdmissionSuperseded { .. }
+            | IdentityRuntimeError::ActorLoopStalled {
+                observation: ActorCallObservation::BeforeCall,
+                ..
+            }
+            | IdentityRuntimeError::ActorTerminated {
+                observation: ActorCallObservation::BeforeCall,
+                ..
+            }
     )
-    .await
+}
+
+#[async_trait::async_trait]
+impl CompactCompletionObserver for meerkat_runtime::MeerkatMachine {
+    async fn observe(
+        &self,
+        session_id: &meerkat_core::SessionId,
+        key: &str,
+        input_id: &mut Option<meerkat_core::lifecycle::InputId>,
+    ) -> Result<Option<meerkat_runtime::CompletionOutcome>, meerkat_runtime::RuntimeDriverError>
     {
-        Ok(session_id) => session_id,
-        Err(detail) => {
-            floors.clear(&identity);
-            return rpc_error(
-                response_id,
-                -32000,
-                format!("compact_member could not rebuild the member with the floor: {detail}"),
+        use meerkat_runtime::SessionServiceRuntimeExt;
+        if input_id.is_none() {
+            *input_id = self
+                .input_state_by_idempotency_key(session_id, key)
+                .await?
+                .map(|state| state.state.input_id);
+        }
+        match input_id.as_ref() {
+            Some(id) => self.input_terminal_completion(session_id, id).await,
+            None => Ok(None),
+        }
+    }
+}
+
+struct CompactOperation {
+    ctx: IdentityFirstContext,
+    identity: AgentIdentity,
+    expected_alias: Option<String>,
+    observer: Arc<dyn CompactCompletionObserver>,
+    admission: Arc<dyn CompactAdmission>,
+    floors: Arc<crate::identity_first::CompactionFloorRegistry>,
+    floor: NonZeroU64,
+    timeout_ms: u64,
+    response_id: Value,
+    operation_id: String,
+}
+
+impl CompactOperation {
+    fn error(&self, kind: &str, stage: &str, detail: impl std::fmt::Display) -> JsonRpcResponse {
+        self.error_with_data(kind, stage, detail, serde_json::Map::new())
+    }
+
+    fn error_with_data(
+        &self,
+        kind: &str,
+        stage: &str,
+        detail: impl std::fmt::Display,
+        mut data: serde_json::Map<String, Value>,
+    ) -> JsonRpcResponse {
+        tracing::warn!(identity = %self.identity, operation_id = %self.operation_id,
+            kind, stage, %detail, "compaction operation did not report completed restoration");
+        data.insert("kind".to_string(), serde_json::json!(kind));
+        data.insert("stage".to_string(), serde_json::json!(stage));
+        data.insert(
+            "operation_id".to_string(),
+            serde_json::json!(self.operation_id),
+        );
+        data.insert(
+            "identity".to_string(),
+            serde_json::json!(self.identity.as_str()),
+        );
+        JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: self.response_id.clone(),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: detail.to_string(),
+                data: Some(Value::Object(data)),
+            }),
+        }
+    }
+
+    async fn run(self, early_tx: tokio::sync::oneshot::Sender<JsonRpcResponse>) -> JsonRpcResponse {
+        let Ok(_operation_guard) = self.floors.operation_lock(&self.identity).try_lock_owned()
+        else {
+            return self.error(
+                "compact_member_busy",
+                "admission",
+                "compaction already owns this member",
+            );
+        };
+        if self.floors.get(&self.identity).is_some() {
+            return self.error(
+                "compact_member_busy",
+                "admission",
+                "a prior compaction floor remains unsettled",
             );
         }
-    };
-
-    let before = match ctx.transcript_edit_service.as_ref() {
-        Some(service) => match read_transcript_facts(service, &session_id).await {
-            Ok(facts) => Some(facts),
-            Err(err) => {
-                floors.clear(&identity);
-                let (_, restore) = restore_after_floor(ctx, &identity, spec.clone()).await;
-                return rpc_error(
-                    response_id,
-                    -32000,
-                    format!(
-                        "compact_member aborted reading the transcript before compaction: {err}\
-                         {restore}"
-                    ),
+        let runtime = &self.ctx.runtime;
+        let initial = match runtime.capture_incarnation(&self.identity).await {
+            Ok(initial) => initial,
+            Err(error) => return identity_error_response(self.response_id.clone(), &error),
+        };
+        let before_session = match runtime.status(&self.identity).await {
+            Ok(status) => match status.session_id {
+                Some(session) => session,
+                None => {
+                    return self.error(
+                        "compact_member_refused",
+                        "before",
+                        "member has no durable session",
+                    );
+                }
+            },
+            Err(error) => return identity_error_response(self.response_id.clone(), &error),
+        };
+        let before = match self.ctx.transcript_edit_service.as_ref() {
+            Some(service) => match tokio::time::timeout(
+                COMPACT_TIMEOUT_EVIDENCE_BUDGET,
+                read_transcript_facts(service, &before_session),
+            )
+            .await
+            {
+                Ok(Ok(facts)) => Some(facts),
+                Ok(Err(error)) => {
+                    return self.error("compact_member_observation_failed", "before", error);
+                }
+                Err(_) => {
+                    return self.error(
+                        "compact_member_observation_failed",
+                        "before",
+                        "preparation transcript read timed out; no floor installed",
+                    );
+                }
+            },
+            None => None,
+        };
+        let (record, incarnation) = match runtime
+            .rebuild_compaction_owner(
+                &self.identity,
+                &initial,
+                self.expected_alias.as_deref(),
+                crate::identity_first::bridge::CompactionFloorChange {
+                    registry: &self.floors,
+                    operation_id: &self.operation_id,
+                    floor: Some(self.floor),
+                },
+            )
+            .await
+        {
+            Ok(owner) => owner,
+            Err(error) => {
+                return self.error("compact_member_rebuild_failed", "floor_install", error);
+            }
+        };
+        let session_id = record.session_id;
+        let key = format!("mobkit-compact:{}", self.operation_id);
+        let input = crate::identity_first::DispatchInput::system(
+            "[mobkit-gateway operator verb compact_member] Maintenance turn: transcript compaction \
+             was forced for this turn. Reply with a brief acknowledgement only.",
+        )
+        .with_idempotency(&key)
+        .with_correlation(&self.operation_id);
+        let mut early_tx = Some(early_tx);
+        let mut had_observation_failure = false;
+        let observed_incarnation = match self
+            .admission
+            .dispatch(runtime, &self.identity, &incarnation, &input)
+            .await
+        {
+            Ok(admission) if admission.session_id.as_ref() == Some(&session_id) => {
+                admission.incarnation
+            }
+            Ok(_) => {
+                runtime
+                    .invalidate_superseded_compaction_floor(
+                        &self.identity,
+                        &incarnation,
+                        &self.floors,
+                        &self.operation_id,
+                    )
+                    .await;
+                return self.error(
+                    "compact_member_superseded",
+                    "dispatch",
+                    "maintenance session changed",
                 );
             }
-        },
-        None => None,
-    };
-
-    // One queued maintenance turn: the forced compaction fires at this turn's
-    // pre-LLM boundary. The prompt lands in the post-compaction transcript.
-    let nudge = meerkat_core::ContentInput::Text(
-        "[mobkit-gateway operator verb compact_member] Maintenance turn: transcript compaction \
-         was forced for this turn. Reply with a brief acknowledgement only."
-            .to_string(),
-    );
-    let admission = match identity_rt
-        .send_admission_tracked(
-            &identity,
-            None,
-            &nudge,
-            meerkat_core::types::HandlingMode::Queue,
-            None,
-        )
-        .await
-    {
-        Ok(admission) => admission,
-        Err(err) => {
-            floors.clear(&identity);
-            let (_, restore) = restore_after_floor(ctx, &identity, spec.clone()).await;
-            return rpc_error(
-                response_id,
-                -32000,
-                format!("compact_member maintenance turn was not admitted: {err}{restore}"),
-            );
-        }
-    };
-    if let Err(err) = identity_rt
-        .wait_for_completion(
-            &identity,
-            admission.completion_baseline,
-            Duration::from_millis(timeout_ms),
-        )
-        .await
-    {
-        floors.clear(&identity);
-        let (rolled_back, restore) = restore_after_floor(ctx, &identity, spec.clone()).await;
-        // Honest timeout semantics: the wait gave up, not the turn. The
-        // rollback rebuild that just ran retires the member, and mob
-        // retirement quiesces the session's active runtime turn before
-        // retiring it (`cancel_active_runtime_turn_before_retire`, under the
-        // retirement deadline), so a landed rollback IS the interrupt - no
-        // second cancel path is introduced here. A failed rollback leaves the
-        // turn running on the floored build, and the caller must be told so
-        // rather than left to infer that the timeout stopped anything.
-        let turn_fate = if rolled_back {
-            "; the in-flight maintenance turn was quiesced by the rollback rebuild \
-             (mob retirement cancels the active runtime turn before retiring)"
-        } else {
-            "; the maintenance turn may still be running on the floored build, so this member \
-             can stay briefly unresponsive and later reads on it may queue"
+            Err(error) if compaction_admission_is_uncertain(&error) => {
+                had_observation_failure = true;
+                let mut data = serde_json::Map::new();
+                if let Some(observation) = error.structured_data() {
+                    data.insert("admission_observation".to_string(), observation);
+                }
+                if let Some(sender) = early_tx.take() {
+                    let response = self.error_with_data(
+                        "compact_member_admission_pending", "admission_pending",
+                        format!("maintenance admission outcome is unknown: {error}; original key and cleanup ownership retained without resubmission"),
+                        data,
+                    );
+                    let _ = sender.send(response);
+                }
+                incarnation
+            }
+            Err(error) => {
+                self.floors.clear_owned(&self.identity, &self.operation_id);
+                return self.error("compact_member_admission_failed", "dispatch", error);
+            }
         };
-        // The forced compaction fires at the turn's PRE-LLM boundary, so it
-        // can already be durable when the wait expires. This evidence read
-        // touches the same session that just failed to answer in time, so it
-        // gets its own short bound: unproven evidence is dropped from the
-        // message, never traded for a second hang.
-        let compaction_evidence = match (before.as_ref(), ctx.transcript_edit_service.as_ref()) {
-            (Some(before), Some(service)) => {
-                match tokio::time::timeout(
-                    COMPACT_TIMEOUT_EVIDENCE_BUDGET,
-                    read_transcript_facts(service, &session_id),
-                )
-                .await
-                {
-                    Ok(Ok(after)) if &after != before => {
-                        "; the forced compaction rewrite IS durably applied \
-                         (transcript facts changed before the timeout)"
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(self.timeout_ms);
+        let secondary_deadline = deadline + COMPACT_TIMEOUT_EVIDENCE_BUDGET;
+        let mut timed_out = false;
+        let mut input_id = None;
+        let outcome = loop {
+            if !matches!(
+                runtime.capture_incarnation(&self.identity).await,
+                Ok(current) if current == observed_incarnation
+            ) {
+                runtime
+                    .invalidate_superseded_compaction_floor(
+                        &self.identity,
+                        &observed_incarnation,
+                        &self.floors,
+                        &self.operation_id,
+                    )
+                    .await;
+                return self.error(
+                    "compact_member_superseded",
+                    "terminal",
+                    "maintenance incarnation changed; no rebuild attempted",
+                );
+            }
+            let now = tokio::time::Instant::now();
+            timed_out |= now >= deadline;
+            if now >= secondary_deadline
+                && let Some(sender) = early_tx.take()
+            {
+                let response = self.error(
+                    "compact_member_timeout", "terminal_pending",
+                    format!("compact_member maintenance turn did not complete within {}ms; exact terminal is pending/unknown; runtime retains completion and profile-cleanup ownership, no retire or rebuild attempted", self.timeout_ms),
+                );
+                let _ = sender.send(response);
+            }
+            let observation = self.observer.observe(&session_id, &key, &mut input_id);
+            match tokio::time::timeout(COMPACT_TIMEOUT_EVIDENCE_BUDGET, observation).await {
+                Ok(Ok(Some(outcome))) => {
+                    timed_out |= tokio::time::Instant::now() >= deadline;
+                    break outcome;
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => {
+                    had_observation_failure = true;
+                    tracing::warn!(identity = %self.identity, operation_id = %self.operation_id,
+                        %error, "exact compaction terminal read failed; ownership retained");
+                    if let Some(sender) = early_tx.take() {
+                        let response = self.error(
+                            "compact_member_observation_failed", "terminal_pending",
+                            format!("exact compaction terminal is unknown after read failure: {error}; runtime retains completion and profile-cleanup ownership, no retire or rebuild attempted"),
+                        );
+                        let _ = sender.send(response);
                     }
-                    Ok(Ok(_)) => {
-                        "; the forced compaction rewrite had not durably applied at \
-                                  timeout"
-                    }
-                    Ok(Err(_)) | Err(_) => "",
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                Err(_) => {
+                    tracing::warn!(identity = %self.identity, operation_id = %self.operation_id,
+                        "exact compaction terminal read timed out; ownership retained");
                 }
             }
-            _ => "",
+            tokio::time::sleep(Duration::from_millis(20)).await;
         };
-        return rpc_error(
-            response_id,
-            -32000,
-            format!(
-                "compact_member maintenance turn did not complete within {timeout_ms}ms: \
-                 {err}{turn_fate}{compaction_evidence}{restore}"
-            ),
-        );
-    }
-
-    // Disarm and rebuild at the original profile threshold. The compaction
-    // rewrite is already durable; this rebuild only swaps the live build.
-    floors.clear(&identity);
-    if let Err(detail) = rebuild_member_for_fresh_build(ctx, &identity, None, spec).await {
-        return rpc_error(
-            response_id,
-            -32000,
-            format!(
-                "compact_member forced the compaction but the restore rebuild failed: {detail}; \
-                 the member keeps the temporary floor ({floor} tokens) until its next rebuild"
-            ),
-        );
-    }
-
-    let after = match ctx.transcript_edit_service.as_ref() {
-        Some(service) => match read_transcript_facts(service, &session_id).await {
-            Ok(facts) => Some(facts),
-            Err(err) => {
-                return rpc_error(
-                    response_id,
-                    -32000,
-                    format!(
-                        "compact_member completed but reading the post-compaction transcript \
-                         failed: {err}"
-                    ),
-                );
+        let failure_metadata = match &outcome {
+            meerkat_runtime::CompletionOutcome::Abandoned { error, .. }
+            | meerkat_runtime::CompletionOutcome::AbandonedWithError { error, .. }
+            | meerkat_runtime::CompletionOutcome::CompletedWithFinalizationFailure { error }
+            | meerkat_runtime::CompletionOutcome::RuntimeTerminated { error, .. } => {
+                Some(serde_json::json!(error))
             }
-        },
-        None => None,
-    };
-
-    let messages_before = before.as_ref().map(|(count, _, _)| *count);
-    let messages_after = after.as_ref().map(|(count, _, _)| *count);
-    let compaction_applied = match (messages_before, messages_after) {
-        (Some(before), Some(after)) => Some(after < before),
-        _ => None,
-    };
-    rpc_result(
-        response_id,
-        serde_json::json!({
-            "identity": identity.as_str(),
-            "session_id": session_id.to_string(),
-            "floor_tokens": floor.get(),
-            "messages_before": messages_before,
-            "messages_after": messages_after,
-            "compaction_applied": compaction_applied,
-            "head_revision": after.as_ref().and_then(|(_, head, _)| head.clone()),
-            "last_rewrite_reason": after.as_ref().and_then(|(_, _, reason)| reason.clone()),
-        }),
-    )
+            _ => None,
+        };
+        let terminal_error = match outcome {
+            meerkat_runtime::CompletionOutcome::Completed(result)
+                if result.session_id == session_id =>
+            {
+                None
+            }
+            meerkat_runtime::CompletionOutcome::Completed(_) => Some("wrong_session"),
+            meerkat_runtime::CompletionOutcome::CompletedWithoutResult => {
+                Some("completed_without_result")
+            }
+            meerkat_runtime::CompletionOutcome::CallbackPending { .. } => Some("callback_pending"),
+            meerkat_runtime::CompletionOutcome::CallbackBatchPending { .. } => {
+                Some("callback_batch_pending")
+            }
+            meerkat_runtime::CompletionOutcome::Cancelled => Some("cancelled"),
+            meerkat_runtime::CompletionOutcome::Abandoned { .. } => Some("abandoned"),
+            meerkat_runtime::CompletionOutcome::AbandonedWithError { .. } => {
+                Some("abandoned_with_error")
+            }
+            meerkat_runtime::CompletionOutcome::CompletedWithFinalizationFailure { .. } => {
+                Some("completed_with_finalization_failure")
+            }
+            meerkat_runtime::CompletionOutcome::RuntimeTerminated { .. } => {
+                Some("runtime_terminated")
+            }
+        };
+        if let Some(class) = terminal_error {
+            let deadline_detail = if timed_out {
+                format!(
+                    "maintenance turn did not complete within {}ms; ",
+                    self.timeout_ms
+                )
+            } else {
+                String::new()
+            };
+            let mut data = serde_json::Map::new();
+            data.insert("completion_type".to_string(), serde_json::json!(class));
+            data.insert(
+                "observation_timed_out".to_string(),
+                serde_json::json!(timed_out),
+            );
+            if let Some(error) = failure_metadata {
+                data.insert("error".to_string(), error);
+            }
+            return self.error_with_data("compact_member_completion_failed", "terminal", format!(
+                "compact_member {deadline_detail}exact input ended as {class}; profile restoration was not authorized"
+            ), data);
+        }
+        if let Err(error) = runtime
+            .rebuild_compaction_owner(
+                &self.identity,
+                &observed_incarnation,
+                None,
+                crate::identity_first::bridge::CompactionFloorChange {
+                    registry: &self.floors,
+                    operation_id: &self.operation_id,
+                    floor: None,
+                },
+            )
+            .await
+        {
+            runtime
+                .invalidate_superseded_compaction_floor(
+                    &self.identity,
+                    &observed_incarnation,
+                    &self.floors,
+                    &self.operation_id,
+                )
+                .await;
+            return self.error("compact_member_rebuild_failed", "profile_restore", error);
+        }
+        if timed_out {
+            return self.error(
+                "compact_member_timeout", "profile_restored",
+                format!("compact_member maintenance turn did not complete within {}ms; the exact maintenance input completed after the observation deadline; member rebuilt at its original threshold", self.timeout_ms),
+            );
+        }
+        if had_observation_failure {
+            return self.error(
+                "compact_member_observation_failed", "profile_restored",
+                "maintenance observation failed before exact completion; the original input later completed and its profile was restored",
+            );
+        }
+        let after = match self.ctx.transcript_edit_service.as_ref() {
+            Some(service) => match read_transcript_facts(service, &session_id).await {
+                Ok(facts) => Some(facts),
+                Err(error) => {
+                    return self.error("compact_member_observation_failed", "after", error);
+                }
+            },
+            None => None,
+        };
+        let messages_before = before.as_ref().map(|(count, _, _)| *count);
+        let messages_after = after.as_ref().map(|(count, _, _)| *count);
+        rpc_result(
+            self.response_id,
+            serde_json::json!({
+                "identity": self.identity.as_str(),
+                "session_id": session_id.to_string(),
+                "floor_tokens": self.floor.get(),
+                "messages_before": messages_before,
+                "messages_after": messages_after,
+                "compaction_applied": messages_before.zip(messages_after).map(|(before, after)| after < before),
+                "head_revision": after.as_ref().and_then(|(_, head, _)| head.clone()),
+                "last_rewrite_reason": after.as_ref().and_then(|(_, _, reason)| reason.clone()),
+            }),
+        )
+    }
 }
 
 /// Tear the identity's live member down and re-materialize it onto the SAME
@@ -459,6 +732,7 @@ pub(super) async fn handle_compact_member(
 /// the durable continuity binding needed for a same-session resume is
 /// incomplete - materializing a fresh session would abandon the transcript
 /// this verb exists to compact.
+#[cfg(test)]
 async fn rebuild_member_for_fresh_build(
     ctx: &IdentityFirstContext,
     identity: &AgentIdentity,
@@ -518,35 +792,6 @@ async fn rebuild_member_for_fresh_build(
         .await
         .map(|record| record.session_id)
         .map_err(|err| format!("re-materialization: {err}"))
-}
-
-/// Best-effort restore rebuild for `compact_member` error paths, after the
-/// floor registry entry was cleared.
-///
-/// Returns whether the rollback rebuild actually landed, plus a suffix for the
-/// error message stating what the member build is left with. The landed flag
-/// is load-bearing on the timeout path: the rebuild retires the member, and
-/// mob retirement quiesces the session's active runtime turn before retiring,
-/// so a landed rollback is also what stops an in-flight maintenance turn.
-async fn restore_after_floor(
-    ctx: &IdentityFirstContext,
-    identity: &AgentIdentity,
-    spec: crate::identity_first::DurableAgentSpec,
-) -> (bool, String) {
-    match rebuild_member_for_fresh_build(ctx, identity, None, spec).await {
-        Ok(_) => (
-            true,
-            "; the temporary floor was rolled back (member rebuilt at its original threshold)"
-                .to_string(),
-        ),
-        Err(detail) => (
-            false,
-            format!(
-                "; rollback rebuild also failed ({detail}) - the member keeps the temporary \
-                 floor until its next rebuild"
-            ),
-        ),
-    }
 }
 
 /// `mobkit/bound_member_transcript`: one audited keep-last-N transcript
@@ -827,6 +1072,8 @@ mod tests {
         gate_armed: Arc<AtomicBool>,
         in_call: Arc<AtomicBool>,
         release: Arc<tokio::sync::Notify>,
+        maintenance_only: Arc<AtomicBool>,
+        fail_maintenance: Arc<AtomicBool>,
     }
 
     impl meerkat_client::LlmClient for GatedUsageLlmClient {
@@ -848,17 +1095,29 @@ mod tests {
             >,
         > {
             use futures::StreamExt;
-            let gate_armed = self.gate_armed.load(Ordering::SeqCst);
+            let maintenance = serde_json::to_string(&request.messages)
+                .expect("test request")
+                .contains("[mobkit-gateway operator verb compact_member]");
+            let gate_armed = self.gate_armed.load(Ordering::SeqCst)
+                && (!self.maintenance_only.load(Ordering::SeqCst) || maintenance);
+            let fail = maintenance && self.fail_maintenance.load(Ordering::SeqCst);
             let in_call = Arc::clone(&self.in_call);
             let release = Arc::clone(&self.release);
             let input_tokens = self.input_tokens;
             Box::pin(
                 futures::stream::once(async move {
-                    in_call.store(true, Ordering::SeqCst);
                     if gate_armed {
+                        in_call.store(true, Ordering::SeqCst);
                         release.notified().await;
                     }
                     in_call.store(false, Ordering::SeqCst);
+                    if fail {
+                        return futures::stream::iter(vec![Err(
+                            meerkat_client::LlmError::InvalidRequest {
+                                message: "injected terminal maintenance failure".to_string(),
+                            },
+                        )]);
+                    }
                     let [usage, done] =
                         crate::mob_handle_runtime::test_llm_usage::usage_then_done_with(
                             request,
@@ -905,6 +1164,7 @@ mod tests {
         _temp_dir: tempfile::TempDir,
         runtime: crate::UnifiedRuntime,
         concrete: Arc<meerkat_session::PersistentSessionService<meerkat::FactoryAgentBuilder>>,
+        adapter: Arc<meerkat_runtime::MeerkatMachine>,
         identity_runtime: Arc<IdentityRuntime>,
         floors: Arc<crate::identity_first::CompactionFloorRegistry>,
         identity: AgentIdentity,
@@ -912,6 +1172,8 @@ mod tests {
         gate_armed: Arc<AtomicBool>,
         in_call: Arc<AtomicBool>,
         release: Arc<tokio::sync::Notify>,
+        maintenance_only: Arc<AtomicBool>,
+        fail_maintenance: Arc<AtomicBool>,
     }
 
     impl OperatorVerbHarness {
@@ -1085,6 +1347,8 @@ mod tests {
         let gate_armed = Arc::new(AtomicBool::new(false));
         let in_call = Arc::new(AtomicBool::new(false));
         let release = Arc::new(tokio::sync::Notify::new());
+        let maintenance_only = Arc::new(AtomicBool::new(false));
+        let fail_maintenance = Arc::new(AtomicBool::new(false));
         let definition = meerkat_mob::MobDefinition::from_toml(&format!(
             r#"
 [mob]
@@ -1098,12 +1362,12 @@ comms = true
 "#
         ))
         .expect("mob definition");
-        let mob_spec = crate::mob_handle_runtime::MobBootstrapSpec::new(
+        let mut mob_spec = crate::mob_handle_runtime::MobBootstrapSpec::new(
             definition,
             meerkat_mob::MobStorage::in_memory(),
             concrete.clone(),
         )
-        .with_session_runtime_adapter(adapter)
+        .with_session_runtime_adapter(Arc::clone(&adapter))
         .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
@@ -1112,8 +1376,11 @@ comms = true
                 gate_armed: Arc::clone(&gate_armed),
                 in_call: Arc::clone(&in_call),
                 release: Arc::clone(&release),
+                maintenance_only: Arc::clone(&maintenance_only),
+                fail_maintenance: Arc::clone(&fail_maintenance),
             })),
         });
+        mob_spec.committed_boundary_recoverer = Some(concrete.clone());
         let mut runtime = crate::UnifiedRuntime::bootstrap(
             mob_spec,
             crate::MobKitConfig {
@@ -1246,6 +1513,7 @@ comms = true
             _temp_dir: temp_dir,
             runtime,
             concrete,
+            adapter,
             identity_runtime,
             floors,
             identity,
@@ -1253,6 +1521,8 @@ comms = true
             gate_armed,
             in_call,
             release,
+            maintenance_only,
+            fail_maintenance,
         }
     }
 
@@ -1388,6 +1658,624 @@ comms = true
         let _ = harness.runtime.mob_handle().stop().await;
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn autonomous_compaction_exact_input_completion_survives_observation_timeout() {
+        use meerkat_runtime::SessionServiceRuntimeExt;
+
+        let harness = operator_verb_harness("worker:main", "operator-exact-input").await;
+        let completion_runtime =
+            meerkat_mob::MobSessionService::runtime_adapter(harness.concrete.as_ref())
+                .expect("persistent service runtime adapter");
+        assert!(!Arc::ptr_eq(&completion_runtime, &harness.adapter));
+        let configured_observer = harness
+            .runtime
+            .mob_runtime()
+            .committed_boundary_recoverer()
+            .expect("concrete owner")
+            .runtime_completion_observer()
+            .expect("owner observer");
+        assert!(
+            Arc::ptr_eq(&configured_observer, &completion_runtime),
+            "operator observer must use the concrete service, not the live-empty bootstrap override"
+        );
+        let fat = "seeded transcript ballast ".repeat(160);
+        for turn in 0..4 {
+            harness.run_turn(format!("turn {turn}: {fat}")).await;
+        }
+        let ctx = harness.identity_ctx();
+        let spec = harness
+            .identity_runtime
+            .roster_inspect()
+            .await
+            .remove(&harness.identity)
+            .expect("registered spec")
+            .0;
+        harness.floors.set(
+            &harness.identity,
+            NonZeroU64::new(256).expect("positive floor"),
+        );
+        let session_id =
+            rebuild_member_for_fresh_build(&ctx, &harness.identity, None, spec.clone())
+                .await
+                .expect("install floor");
+        let member_id = meerkat_mob::AgentIdentity::from(
+            crate::member_comms_id::mob_member_id_str(harness.identity.as_str()).into_owned(),
+        );
+        let handle = harness.runtime.mob_handle();
+        let member = handle
+            .get_member(&member_id)
+            .await
+            .expect("read member")
+            .expect("member present");
+        assert_eq!(
+            member.runtime_mode,
+            meerkat_mob::MobRuntimeMode::AutonomousHost
+        );
+        let runtime_id = member.agent_runtime_id.clone();
+        let fence = member.fence_token;
+        let correlation = meerkat_core::SessionId::new().to_string();
+        let key = format!("mobkit-compact-proof:{correlation}");
+        let delivery = meerkat_mob::store::MobDeliveryIdentity::new(&key, &correlation)
+            .expect("caller-owned delivery identity");
+        harness.gate_armed.store(true, Ordering::SeqCst);
+        handle
+            .submit_work_with_mode_and_delivery_identity(
+                runtime_id.clone(),
+                fence,
+                meerkat_mob::WorkSpec::new(
+                    "exact input compaction maintenance",
+                    meerkat_mob::WorkOrigin::Internal,
+                ),
+                meerkat_core::types::HandlingMode::Queue,
+                delivery,
+            )
+            .await
+            .expect("one autonomous ingress admission");
+        let input = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let Some(input) = completion_runtime
+                    .input_state_by_idempotency_key(&session_id, &key)
+                    .await
+                    .expect("owner admission read")
+                {
+                    break input.state.input_id;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("exact key resolves within backstop");
+        assert!(
+            completion_runtime
+                .input_state_by_idempotency_key(&session_id, "unrelated-operation")
+                .await
+                .expect("unrelated key read")
+                .is_none()
+        );
+        let completion = async {
+            loop {
+                if let Some(completion) = completion_runtime
+                    .input_terminal_completion(&session_id, &input)
+                    .await
+                    .expect("exact rich terminal read")
+                {
+                    break completion;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        };
+        tokio::pin!(completion);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), &mut completion)
+                .await
+                .is_err(),
+            "admission alone cannot complete a held input"
+        );
+        harness.gate_armed.store(false, Ordering::SeqCst);
+        harness.release.notify_one();
+        let outcome = tokio::time::timeout(Duration::from_secs(30), &mut completion).await;
+        if outcome.is_err() {
+            let state = completion_runtime
+                .input_state(&session_id, &input)
+                .await
+                .expect("exact input diagnostic");
+            eprintln!(
+                "exact input timeout: key={key} input={input:?} state={state:?} in_call={}",
+                harness.in_call.load(Ordering::SeqCst),
+            );
+        }
+        let outcome = outcome.expect("original input completion within backstop");
+        match outcome {
+            meerkat_runtime::CompletionOutcome::Completed(result) => {
+                assert_eq!(result.session_id, session_id);
+            }
+            other => panic!("expected exact successful terminal, got {other:?}"),
+        }
+        harness.floors.clear(&harness.identity);
+        let restored = rebuild_member_for_fresh_build(&ctx, &harness.identity, None, spec)
+            .await
+            .expect("restore only after rich exact input completion");
+        assert_eq!(restored, session_id);
+        let before = harness.settled_transcript_count().await;
+        harness.run_turn("post-exact-input probe".to_string()).await;
+        crate::test_wait::poll_until(
+            "member accepts durable work after exact input settlement",
+            crate::test_wait::STRUCTURAL_BACKSTOP,
+            async || harness.transcript_facts().await.0 > before,
+        )
+        .await;
+        harness.runtime.mob_handle().stop().await.expect("stop mob");
+    }
+
+    async fn held_compaction_harness(name: &str) -> Arc<OperatorVerbHarness> {
+        let harness = Arc::new(operator_verb_harness("worker:main", name).await);
+        let fat = "seeded transcript ballast ".repeat(160);
+        for turn in 0..4 {
+            harness.run_turn(format!("turn {turn}: {fat}")).await;
+        }
+        harness.maintenance_only.store(true, Ordering::SeqCst);
+        harness.gate_armed.store(true, Ordering::SeqCst);
+        harness
+    }
+
+    fn start_held_compaction(harness: &Arc<OperatorVerbHarness>) -> tokio::task::JoinHandle<Value> {
+        let harness = Arc::clone(harness);
+        tokio::spawn(async move {
+            rpc(
+                &harness,
+                "mobkit/compact_member",
+                serde_json::json!({
+                    "identity": harness.member_alias,
+                    "floor_tokens": 256,
+                    "timeout_ms": 1,
+                }),
+            )
+            .await
+        })
+    }
+
+    async fn wait_for_held_compaction(harness: &OperatorVerbHarness) {
+        crate::test_wait::poll_until(
+            "maintenance LLM holds the admitted compaction",
+            crate::test_wait::STRUCTURAL_BACKSTOP,
+            async || harness.in_call.load(Ordering::SeqCst),
+        )
+        .await;
+    }
+
+    async fn release_compaction_and_join(harness: &OperatorVerbHarness) {
+        harness.gate_armed.store(false, Ordering::SeqCst);
+        harness.release.notify_one();
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.identity_runtime.join_foreground_operations(),
+        )
+        .await
+        .expect("owned compaction cleanup finishes");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compact_member_secondary_timeout_retains_owner_without_retire_or_second_send() {
+        let harness = held_compaction_harness("operator-secondary-timeout").await;
+        let caller = start_held_compaction(&harness);
+        wait_for_held_compaction(&harness).await;
+        let before = harness
+            .identity_runtime
+            .status(&harness.identity)
+            .await
+            .expect("status");
+        let response = tokio::time::timeout(Duration::from_secs(15), caller)
+            .await
+            .expect("secondary observation is bounded")
+            .expect("caller task");
+        assert_eq!(response["error"]["data"]["kind"], "compact_member_timeout");
+        assert_eq!(response["error"]["data"]["stage"], "terminal_pending");
+        assert!(response["result"].is_null());
+        assert!(harness.floors.get(&harness.identity).is_some());
+        assert!(harness.in_call.load(Ordering::SeqCst));
+        let after = harness
+            .identity_runtime
+            .status(&harness.identity)
+            .await
+            .expect("status");
+        assert_eq!(
+            after.state,
+            crate::identity_first::IdentityLifecycleState::Active
+        );
+        assert_eq!(after.session_id, before.session_id);
+        assert_eq!(after.agent_runtime_id, before.agent_runtime_id);
+        let concurrent = rpc(
+            &harness,
+            "mobkit/compact_member",
+            serde_json::json!({
+                "identity": harness.member_alias, "timeout_ms": 1,
+            }),
+        )
+        .await;
+        assert_eq!(concurrent["error"]["data"]["kind"], "compact_member_busy");
+        release_compaction_and_join(&harness).await;
+        assert!(harness.floors.get(&harness.identity).is_none());
+        let settled = harness
+            .identity_runtime
+            .status(&harness.identity)
+            .await
+            .expect("settled");
+        assert_eq!(
+            settled.state,
+            crate::identity_first::IdentityLifecycleState::Active
+        );
+        assert_eq!(settled.session_id, before.session_id);
+        harness
+            .run_turn("after pending-owner settlement".to_string())
+            .await;
+        harness.runtime.mob_handle().stop().await.expect("stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compact_member_caller_drop_keeps_exact_completion_and_profile_cleanup_owned() {
+        let harness = held_compaction_harness("operator-caller-drop").await;
+        let caller = start_held_compaction(&harness);
+        wait_for_held_compaction(&harness).await;
+        let original = harness
+            .identity_runtime
+            .status(&harness.identity)
+            .await
+            .expect("status");
+        caller.abort();
+        assert!(caller.await.expect_err("caller cancelled").is_cancelled());
+        assert!(harness.floors.get(&harness.identity).is_some());
+        release_compaction_and_join(&harness).await;
+        assert!(harness.floors.get(&harness.identity).is_none());
+        let restored = harness
+            .identity_runtime
+            .status(&harness.identity)
+            .await
+            .expect("restored");
+        assert_eq!(restored.session_id, original.session_id);
+        assert_eq!(
+            restored.state,
+            crate::identity_first::IdentityLifecycleState::Active
+        );
+        harness.run_turn("after caller dropped".to_string()).await;
+        harness.runtime.mob_handle().stop().await.expect("stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compact_member_failed_exact_terminal_does_not_authorize_rebuild() {
+        let harness = held_compaction_harness("operator-terminal-failure").await;
+        harness.fail_maintenance.store(true, Ordering::SeqCst);
+        let caller = start_held_compaction(&harness);
+        wait_for_held_compaction(&harness).await;
+        let before = harness
+            .identity_runtime
+            .status(&harness.identity)
+            .await
+            .expect("status");
+        release_compaction_and_join(&harness).await;
+        let response = caller.await.expect("caller result");
+        assert_eq!(
+            response["error"]["data"]["kind"],
+            "compact_member_completion_failed"
+        );
+        assert!(
+            response["error"]["data"]["completion_type"]
+                .as_str()
+                .is_some()
+        );
+        assert!(response["result"].is_null());
+        assert!(harness.floors.get(&harness.identity).is_some());
+        let after = harness
+            .identity_runtime
+            .status(&harness.identity)
+            .await
+            .expect("status");
+        assert_eq!(after.session_id, before.session_id);
+        assert_eq!(after.agent_runtime_id, before.agent_runtime_id);
+        harness.runtime.mob_handle().stop().await.expect("stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compact_member_superseded_incarnation_cannot_restore_or_revive_retired_member() {
+        let harness = held_compaction_harness("operator-superseded").await;
+        let caller = start_held_compaction(&harness);
+        wait_for_held_compaction(&harness).await;
+        harness
+            .identity_runtime
+            .retire_tracked(&harness.identity)
+            .await
+            .expect("explicit retire");
+        let retired = harness
+            .identity_runtime
+            .status(&harness.identity)
+            .await
+            .expect("retired");
+        release_compaction_and_join(&harness).await;
+        let response = caller.await.expect("caller");
+        assert_eq!(
+            response["error"]["data"]["kind"],
+            "compact_member_superseded"
+        );
+        let after = harness
+            .identity_runtime
+            .status(&harness.identity)
+            .await
+            .expect("status");
+        assert_eq!(
+            after.state,
+            crate::identity_first::IdentityLifecycleState::Retiring
+        );
+        assert!(harness.floors.get(&harness.identity).is_none());
+        assert_eq!(after.session_id, retired.session_id);
+        assert_eq!(after.agent_runtime_id, retired.agent_runtime_id);
+        harness.runtime.mob_handle().stop().await.expect("stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compact_member_stale_pre_admission_owner_cannot_revive_retired_target() {
+        let harness = operator_verb_harness("worker:main", "operator-stale-before-admit").await;
+        let expected = harness
+            .identity_runtime
+            .capture_incarnation(&harness.identity)
+            .await
+            .expect("capture owner");
+        harness
+            .identity_runtime
+            .retire_tracked(&harness.identity)
+            .await
+            .expect("retire");
+        let input = crate::identity_first::DispatchInput::system("must never be admitted")
+            .with_idempotency("stale-maintenance")
+            .with_correlation(meerkat_core::SessionId::new().to_string());
+        let result = harness
+            .identity_runtime
+            .dispatch_with_expected_incarnation(&harness.identity, None, Some(&expected), &input)
+            .await;
+        assert!(matches!(
+            result,
+            Err(crate::identity_first::IdentityRuntimeError::PostAdmissionSuperseded { .. })
+        ));
+        let after = harness
+            .identity_runtime
+            .status(&harness.identity)
+            .await
+            .expect("status");
+        assert_eq!(
+            after.state,
+            crate::identity_first::IdentityLifecycleState::Retiring
+        );
+        assert!(harness.floors.get(&harness.identity).is_none());
+        harness.runtime.mob_handle().stop().await.expect("stop");
+    }
+
+    struct FailingCompletionObserver {
+        inner: Arc<meerkat_runtime::MeerkatMachine>,
+        failing: AtomicBool,
+    }
+
+    struct AdmissionReplyLost {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl CompactAdmission for AdmissionReplyLost {
+        async fn dispatch(
+            &self,
+            runtime: &crate::identity_first::IdentityRuntime,
+            identity: &AgentIdentity,
+            incarnation: &crate::identity_first::runtime::CapturedIncarnation,
+            input: &crate::identity_first::DispatchInput,
+        ) -> Result<
+            crate::identity_first::runtime::DispatchOutcome,
+            crate::identity_first::IdentityRuntimeError,
+        > {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            IdentityCompactionAdmission
+                .dispatch(runtime, identity, incarnation, input)
+                .await?;
+            Err(
+                crate::identity_first::IdentityRuntimeError::ActorAdmissionTimeout {
+                    identity: identity.clone(),
+                    operation: "test.admission_reply",
+                    waited: Duration::from_millis(1),
+                    command: None,
+                },
+            )
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compact_member_uncertain_admission_keeps_original_key_and_cleanup_without_resend() {
+        use meerkat_runtime::SessionServiceRuntimeExt;
+        let harness = held_compaction_harness("operator-admission-uncertain").await;
+        let admission = Arc::new(AdmissionReplyLost {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let observer = meerkat_mob::MobSessionService::runtime_adapter(harness.concrete.as_ref())
+            .expect("persistent owner");
+        let operation_id = meerkat_core::SessionId::new().to_string();
+        let key = format!("mobkit-compact:{operation_id}");
+        let operation = CompactOperation {
+            ctx: harness.identity_ctx(),
+            identity: harness.identity.clone(),
+            expected_alias: None,
+            observer: observer.clone(),
+            admission: admission.clone(),
+            floors: harness.floors.clone(),
+            floor: NonZeroU64::new(256).expect("floor"),
+            timeout_ms: 1,
+            response_id: serde_json::json!(1),
+            operation_id,
+        };
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let runtime = harness.identity_runtime.clone();
+        let owner = tokio::spawn(async move {
+            runtime
+                .run_tracked_foreground(async move { Ok(operation.run(sender).await) })
+                .await
+        });
+        wait_for_held_compaction(&harness).await;
+        let response = tokio::time::timeout(Duration::from_secs(15), receiver)
+            .await
+            .expect("bounded admission response")
+            .expect("response");
+        assert_eq!(
+            response.error.expect("error").data.expect("data")["kind"],
+            "compact_member_admission_pending"
+        );
+        assert!(!owner.is_finished());
+        assert!(harness.floors.get(&harness.identity).is_some());
+        let session = harness
+            .identity_runtime
+            .status(&harness.identity)
+            .await
+            .expect("status")
+            .session_id
+            .expect("session");
+        let original = observer
+            .input_state_by_idempotency_key(&session, &key)
+            .await
+            .expect("input read")
+            .expect("admitted original input")
+            .state
+            .input_id;
+        release_compaction_and_join(&harness).await;
+        let response = owner.await.expect("owner").expect("result");
+        assert_eq!(
+            response.error.expect("timeout error").data.expect("data")["stage"],
+            "profile_restored"
+        );
+        assert_eq!(admission.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            observer
+                .input_state_by_idempotency_key(&session, &key)
+                .await
+                .expect("same-key read")
+                .expect("original input retained")
+                .state
+                .input_id,
+            original,
+        );
+        assert!(harness.floors.get(&harness.identity).is_none());
+        harness
+            .run_turn("after lost admission reply".to_string())
+            .await;
+        harness.runtime.mob_handle().stop().await.expect("stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compact_member_preparation_read_failure_does_not_install_or_strand_floor() {
+        let harness = operator_verb_harness("worker:main", "operator-preflight-read").await;
+        let other = operator_verb_harness("worker:other", "operator-other-store").await;
+        let before = harness
+            .identity_runtime
+            .capture_incarnation(&harness.identity)
+            .await
+            .expect("capture");
+        let mut ctx = harness.identity_ctx();
+        ctx.transcript_edit_service = Some(other.concrete.clone());
+        let operation = CompactOperation {
+            ctx,
+            identity: harness.identity.clone(),
+            expected_alias: None,
+            observer: meerkat_mob::MobSessionService::runtime_adapter(harness.concrete.as_ref())
+                .expect("observer"),
+            admission: Arc::new(IdentityCompactionAdmission),
+            floors: harness.floors.clone(),
+            floor: NonZeroU64::new(256).expect("floor"),
+            timeout_ms: 1,
+            response_id: serde_json::json!(1),
+            operation_id: meerkat_core::SessionId::new().to_string(),
+        };
+        let (sender, _receiver) = tokio::sync::oneshot::channel();
+        let response = operation.run(sender).await;
+        assert_eq!(
+            response.error.expect("read error").data.expect("data")["stage"],
+            "before"
+        );
+        assert!(harness.floors.get(&harness.identity).is_none());
+        assert_eq!(
+            harness
+                .identity_runtime
+                .capture_incarnation(&harness.identity)
+                .await
+                .expect("owner"),
+            before,
+        );
+        harness.runtime.mob_handle().stop().await.expect("stop");
+        other.runtime.mob_handle().stop().await.expect("stop other");
+    }
+
+    #[async_trait::async_trait]
+    impl CompactCompletionObserver for FailingCompletionObserver {
+        async fn observe(
+            &self,
+            session_id: &meerkat_core::SessionId,
+            key: &str,
+            input_id: &mut Option<meerkat_core::lifecycle::InputId>,
+        ) -> Result<Option<meerkat_runtime::CompletionOutcome>, meerkat_runtime::RuntimeDriverError>
+        {
+            if self.failing.load(Ordering::SeqCst) {
+                return Err(meerkat_runtime::RuntimeDriverError::Internal(
+                    "injected observation outage".to_string(),
+                ));
+            }
+            CompactCompletionObserver::observe(self.inner.as_ref(), session_id, key, input_id).await
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compact_member_observation_error_retains_original_input_and_cleanup_owner() {
+        let harness = held_compaction_harness("operator-read-error").await;
+        let observer = Arc::new(FailingCompletionObserver {
+            inner: meerkat_mob::MobSessionService::runtime_adapter(harness.concrete.as_ref())
+                .expect("persistent owner"),
+            failing: AtomicBool::new(true),
+        });
+        let operation = CompactOperation {
+            ctx: harness.identity_ctx(),
+            identity: harness.identity.clone(),
+            expected_alias: None,
+            observer: observer.clone(),
+            admission: Arc::new(IdentityCompactionAdmission),
+            floors: harness.floors.clone(),
+            floor: NonZeroU64::new(256).expect("floor"),
+            timeout_ms: 1,
+            response_id: serde_json::json!(1),
+            operation_id: meerkat_core::SessionId::new().to_string(),
+        };
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let runtime = harness.identity_runtime.clone();
+        let owner = tokio::spawn(async move {
+            runtime
+                .run_tracked_foreground(async move { Ok(operation.run(sender).await) })
+                .await
+        });
+        wait_for_held_compaction(&harness).await;
+        let response = tokio::time::timeout(Duration::from_secs(15), receiver)
+            .await
+            .expect("bounded read error response")
+            .expect("response");
+        assert_eq!(
+            response.error.expect("error").data.expect("data")["stage"],
+            "terminal_pending"
+        );
+        assert!(harness.floors.get(&harness.identity).is_some());
+        assert!(
+            !owner.is_finished(),
+            "read failure cannot end admitted operation custody"
+        );
+        observer.failing.store(false, Ordering::SeqCst);
+        release_compaction_and_join(&harness).await;
+        let response = owner.await.expect("owner task").expect("owned result");
+        assert_eq!(
+            response.error.expect("deadline error").data.expect("data")["stage"],
+            "profile_restored"
+        );
+        assert!(harness.floors.get(&harness.identity).is_none());
+        harness.run_turn("after observer outage".to_string()).await;
+        harness.runtime.mob_handle().stop().await.expect("stop");
+    }
+
     /// Honest timeout semantics: when the maintenance-turn wait gives up, the
     /// error must state what actually happened to the turn - the rollback
     /// rebuild's retire quiesces it, or, when the rollback did not land, it
@@ -1428,7 +2316,9 @@ comms = true
         );
         assert!(
             message.contains("quiesced by the rollback rebuild")
-                || message.contains("may still be running on the floored build"),
+                || message.contains("may still be running on the floored build")
+                || message
+                    .contains("exact maintenance input completed after the observation deadline"),
             "the error must state the in-flight turn's actual fate: {message}"
         );
         assert!(
@@ -1449,6 +2339,16 @@ comms = true
         // both render as no growth, which is how this failed CI at `3 -> 3`.
         // Third instance of this split in this file: the seeded-length read and
         // the sibling forced-compaction probe were both fixed the same way.
+        let restored = harness
+            .identity_runtime
+            .status(&harness.identity)
+            .await
+            .expect("post-timeout identity status");
+        assert_eq!(
+            restored.state,
+            crate::identity_first::IdentityLifecycleState::Active,
+            "rollback must leave the member usable: {response:#?}; status={restored:#?}"
+        );
         let count_before_probe = harness.settled_transcript_count().await;
         harness
             .run_turn("post-timeout probe turn".to_string())

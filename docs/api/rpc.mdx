@@ -1066,15 +1066,37 @@ pre-LLM boundary), then disarms the floor and respawns again.
 Params: `identity` (required), `floor_tokens` (default `1024`), `timeout_ms`
 (default `60000`, budget for the maintenance turn).
 
-On `timeout_ms` expiry the verb disarms the floor and rolls the member back to
-its original threshold. That rollback rebuild retires the member, and mob
-retirement quiesces the session's active runtime turn before retiring, so a
-landed rollback also stops the maintenance turn. The error states which
-happened: the turn was quiesced by the rollback, or - when the rollback itself
-failed - it may still be running on the floored build, leaving the member
-briefly unresponsive. Because the forced compaction fires at the turn's pre-LLM
-boundary, it may already be durable when the wait expires; the error reports
-that from the transcript when a bounded re-read can confirm it.
+`timeout_ms` bounds observation, not execution. The operation submits exactly
+once with a caller-owned idempotency key and reads that input's rich finalized
+completion through the persistent session owner's runtime adapter. A completion
+cursor, `Consumed` input phase, or accepted interrupt is not completion proof.
+
+After the deadline, the RPC remains an error even if compaction completes later.
+The existing five-second secondary observation budget allows exact late
+completion and profile restoration to be reported. If it expires, `error.data`
+reports `kind: "compact_member_timeout"`, `stage: "terminal_pending"` and an
+`operation_id`; the runtime still owns completion and profile cleanup. Dropping
+the RPC caller does not drop that ownership. Read failures likewise report
+pending/unknown fate and retain the same input's observer, without resending.
+Concurrent compaction of the same identity refuses while that operation owns it.
+An uncertain admission reply follows the same original key through these reads;
+it never causes a second submission. The pending-operation record is separate
+from the build override, which applies only to the intended maintenance build.
+
+Only an exact successful terminal for the captured session and incarnation
+authorizes clearing the floor and rebuilding the same session. A failed terminal
+preserves its `completion_type` and typed error metadata; supersession refuses
+restoration rather than reviving a retired identity or touching its replacement.
+Supersession invalidates only that operation's obsolete override; it does not
+rebuild the member or let the old floor leak into a later incarnation.
+No timeout triggers retirement, transcript discard, or a synthetic healthy state.
+
+Stock persistent compositions supply the exact observer. Custom compositions
+must forward `CommittedBoundaryRecoverer::runtime_completion_observer` or use
+`MobBootstrapSpec::with_runtime_completion_observer` with the **concrete
+persistent session service's** canonical runtime adapter. This is separate from
+the bootstrap adapter override. Missing capability returns `-32016` before
+installing a floor; an observer-only injection does not claim recovery support.
 
 Result: `identity`, `session_id`, `floor_tokens`, `messages_before`,
 `messages_after`, `compaction_applied`, `head_revision`,

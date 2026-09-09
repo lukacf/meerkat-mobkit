@@ -4801,6 +4801,17 @@ macro_rules! delegate_mob_session_service {
         #[async_trait]
         impl MobSessionService for $wrapper {
 
+            async fn start_turn_with_admission_notification(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                req: meerkat_core::service::StartTurnRequest,
+                admitted: tokio::sync::oneshot::Sender<()>,
+            ) -> Result<meerkat_core::RunResult, SessionError> {
+                self.inner
+                    .start_turn_with_admission_notification(session_id, req, admitted)
+                    .await
+            }
+
             async fn load_session_for_resume(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -5767,6 +5778,17 @@ impl meerkat_core::service::SessionServiceHistoryExt for AfterCreateMobSessionSe
 
 #[async_trait]
 impl MobSessionService for AfterCreateMobSessionService {
+    async fn start_turn_with_admission_notification(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        req: meerkat_core::service::StartTurnRequest,
+        admitted: tokio::sync::oneshot::Sender<()>,
+    ) -> Result<meerkat_core::RunResult, SessionError> {
+        self.inner
+            .start_turn_with_admission_notification(session_id, req, admitted)
+            .await
+    }
+
     async fn load_session_for_resume(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -6617,6 +6639,22 @@ impl MobBootstrapSpec {
         if registry.is_some() {
             self.tool_consequence_policy_registry = registry;
         }
+        self
+    }
+
+    /// Supply the persistent session owner's exact completion reader for
+    /// operator maintenance. This is independent of the bootstrap adapter.
+    /// Existing recovery behavior is preserved; an absent recoverer stays unsupported.
+    pub fn with_runtime_completion_observer(
+        mut self,
+        observer: Arc<meerkat_runtime::MeerkatMachine>,
+    ) -> Self {
+        self.committed_boundary_recoverer = Some(Arc::new(
+            crate::identity_first::bridge::CompletionObservedRecoverer {
+                inner: self.committed_boundary_recoverer.take(),
+                observer,
+            },
+        ));
         self
     }
 
@@ -12053,6 +12091,15 @@ comms = true
     struct ForwardingProbe {
         calls: Mutex<Vec<&'static str>>,
         cancel_outcome: std::sync::atomic::AtomicU8,
+        turn_request: Mutex<
+            Option<(
+                meerkat_core::types::SessionId,
+                meerkat_core::service::StartTurnRequest,
+            )>,
+        >,
+        turn_admission: tokio::sync::Notify,
+        turn_terminal: tokio::sync::Notify,
+        turn_outcome: std::sync::atomic::AtomicU8,
     }
 
     impl ForwardingProbe {
@@ -12230,6 +12277,42 @@ comms = true
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        async fn start_turn_with_admission_notification(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+            req: meerkat_core::service::StartTurnRequest,
+            admitted: tokio::sync::oneshot::Sender<()>,
+        ) -> Result<meerkat_core::RunResult, SessionError> {
+            self.record("start_turn_with_admission_notification");
+            *self.turn_request.lock().expect("turn request") = Some((session_id.clone(), req));
+            self.turn_admission.notified().await;
+            let outcome = self.turn_outcome.load(std::sync::atomic::Ordering::Relaxed);
+            if outcome == 1 {
+                return Err(SessionError::NotRunning {
+                    id: session_id.clone(),
+                });
+            }
+            admitted.send(()).expect("original admission observer");
+            self.turn_terminal.notified().await;
+            if outcome == 2 {
+                return Err(SessionError::NotFound {
+                    id: session_id.clone(),
+                });
+            }
+            Ok(meerkat_core::RunResult {
+                text: "owner terminal result".to_string(),
+                session_id: session_id.clone(),
+                usage: meerkat_core::types::Usage::default(),
+                turns: 3,
+                tool_calls: 2,
+                terminal_cause_kind: None,
+                structured_output: None,
+                extraction_error: None,
+                schema_warnings: None,
+                skill_diagnostics: None,
+            })
+        }
+
         // 0.8.22 made `materialize_session_resume_verdict` REQUIRED, deliberately
         // without a default, so that a PERSISTENT decorator cannot inherit a
         // composition that converges nothing and silently resume from stale
@@ -12432,6 +12515,149 @@ comms = true
     // code means the default build compiles the forwards and asserts nothing
     // about them - which is the same silent-coverage shape the required-method
     // change exists to remove.
+    #[tokio::test]
+    async fn explicit_completion_observer_is_independent_of_bootstrap_and_recovery() {
+        let definition = MobDefinition::from_toml(
+            "[mob]\nid = \"completion-observer\"\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
+        )
+        .expect("definition");
+        let bootstrap = Arc::new(meerkat_runtime::MeerkatMachine::ephemeral());
+        let observer = Arc::new(meerkat_runtime::MeerkatMachine::ephemeral());
+        let spec = MobBootstrapSpec::new(
+            definition,
+            MobStorage::in_memory(),
+            Arc::new(ForwardingProbe::default()),
+        )
+        .with_session_runtime_adapter(bootstrap)
+        .with_runtime_completion_observer(observer.clone());
+        let owner = spec
+            .committed_boundary_recoverer
+            .expect("explicit observer facade");
+        assert!(Arc::ptr_eq(
+            &owner.runtime_completion_observer().expect("observer"),
+            &observer,
+        ));
+        assert!(matches!(
+            owner
+                .recover_committed_boundary(&meerkat_core::SessionId::new())
+                .await
+                .expect("unsupported recovery"),
+            crate::identity_first::CommittedBoundaryRepair::Unsupported,
+        ));
+    }
+
+    #[tokio::test]
+    async fn mob_session_wrappers_preserve_owner_turn_admission_and_terminal_result() {
+        for after_create in [false, true] {
+            for outcome in [0, 1, 2] {
+                let probe = Arc::new(ForwardingProbe::default());
+                probe
+                    .turn_outcome
+                    .store(outcome, std::sync::atomic::Ordering::Relaxed);
+                let wrapper: Arc<dyn MobSessionService> = if after_create {
+                    Arc::new(AfterCreateMobSessionService {
+                        inner: probe.clone(),
+                        after_hook: Arc::new(|_, _| {
+                            panic!("starting a turn must not run an after-create hook")
+                        }),
+                    })
+                } else {
+                    Arc::new(PreBuildMobSessionService {
+                        inner: probe.clone(),
+                        hook: Arc::new(|_| panic!("starting a turn must not run a pre-build hook")),
+                        dispatch_taint: None,
+                        after_create_hook: None,
+                        runtime_adapter_override: None,
+                        session_read_absorber: None,
+                        archived_terminal_authority: None,
+                    })
+                };
+                let session_id = meerkat_core::types::SessionId::new();
+                let req = meerkat_core::service::StartTurnRequest {
+                    prompt: meerkat_core::ContentInput::Text("unchanged prompt".to_string()),
+                    injected_context: Vec::new(),
+                    system_prompt: Some("unchanged system prompt".to_string()),
+                    event_tx: None,
+                    runtime: meerkat_core::service::StartTurnRuntimeSemantics {
+                        input_identity: None,
+                        handling_mode: meerkat_core::types::HandlingMode::Steer,
+                        turn_tool_overlay: None,
+                        typed_turn_appends: Vec::new(),
+                        turn_metadata: None,
+                    },
+                };
+                let (sender, mut admitted) = tokio::sync::oneshot::channel();
+                let mut turn = Box::pin(wrapper.start_turn_with_admission_notification(
+                    &session_id,
+                    req,
+                    sender,
+                ));
+                assert!(futures::poll!(&mut turn).is_pending());
+                assert!(matches!(
+                    admitted.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                ));
+                let (forwarded_session, forwarded_req) = probe
+                    .turn_request
+                    .lock()
+                    .expect("turn request")
+                    .take()
+                    .expect("owner received request");
+                assert_eq!(forwarded_session, session_id);
+                assert_eq!(
+                    forwarded_req.prompt,
+                    meerkat_core::ContentInput::Text("unchanged prompt".to_string())
+                );
+                assert_eq!(
+                    forwarded_req.system_prompt.as_deref(),
+                    Some("unchanged system prompt")
+                );
+                assert_eq!(
+                    forwarded_req.runtime.handling_mode,
+                    meerkat_core::types::HandlingMode::Steer,
+                    "transparent forwarding must not normalize the owner's request"
+                );
+                assert_eq!(
+                    probe.calls(),
+                    vec!["start_turn_with_admission_notification"]
+                );
+
+                probe.turn_admission.notify_one();
+                if outcome == 1 {
+                    assert!(matches!(
+                        turn.await,
+                        Err(SessionError::NotRunning { id }) if id == session_id
+                    ));
+                    assert!(matches!(
+                        admitted.try_recv(),
+                        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+                    ));
+                    continue;
+                }
+                assert!(futures::poll!(&mut turn).is_pending());
+                assert_eq!(admitted.try_recv(), Ok(()));
+                assert!(
+                    futures::poll!(&mut turn).is_pending(),
+                    "owner admission is not terminal completion"
+                );
+                probe.turn_terminal.notify_one();
+                let result = turn.await;
+                if outcome == 2 {
+                    assert!(matches!(
+                        result,
+                        Err(SessionError::NotFound { id }) if id == session_id
+                    ));
+                } else {
+                    let result = result.expect("owner terminal result");
+                    assert_eq!(result.session_id, session_id);
+                    assert_eq!(result.text, "owner terminal result");
+                    assert_eq!(result.turns, 3);
+                    assert_eq!(result.tool_calls, 2);
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn mob_session_wrappers_forward_committed_parent_boundary_exactly_once() {
         let probe = Arc::new(ForwardingProbe::default());

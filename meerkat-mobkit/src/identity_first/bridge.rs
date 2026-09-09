@@ -1844,6 +1844,12 @@ pub enum CommittedBoundaryRepair {
 /// expose the concrete heal API.
 #[async_trait]
 pub trait CommittedBoundaryRecoverer: Send + Sync {
+    /// The persistent session owner's exact completion reader, not a bootstrap
+    /// adapter override whose live driver may not contain this input.
+    fn runtime_completion_observer(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
+        None
+    }
+
     /// Attempt recovery for the given durable session.
     ///
     /// # Errors
@@ -1855,6 +1861,28 @@ pub trait CommittedBoundaryRecoverer: Send + Sync {
         &self,
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<CommittedBoundaryRepair, BridgeError>;
+}
+
+pub(crate) struct CompletionObservedRecoverer {
+    pub(crate) inner: Option<Arc<dyn CommittedBoundaryRecoverer>>,
+    pub(crate) observer: Arc<meerkat_runtime::MeerkatMachine>,
+}
+
+#[async_trait]
+impl CommittedBoundaryRecoverer for CompletionObservedRecoverer {
+    fn runtime_completion_observer(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
+        Some(Arc::clone(&self.observer))
+    }
+
+    async fn recover_committed_boundary(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<CommittedBoundaryRepair, BridgeError> {
+        match &self.inner {
+            Some(inner) => inner.recover_committed_boundary(session_id).await,
+            None => Ok(CommittedBoundaryRepair::Unsupported),
+        }
+    }
 }
 
 /// The production heal authority: meerkat's `PersistentSessionService`
@@ -1870,6 +1898,10 @@ impl<B> CommittedBoundaryRecoverer for meerkat_session::PersistentSessionService
 where
     B: meerkat_session::SessionAgentBuilder + 'static,
 {
+    fn runtime_completion_observer(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
+        MobSessionService::runtime_adapter(self)
+    }
+
     async fn recover_committed_boundary(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -2544,10 +2576,96 @@ fn unmasked_resume_divergence(
 /// the next boot rather than freezing a compact-every-turn build.
 #[derive(Debug, Default)]
 pub struct CompactionFloorRegistry {
-    floors: std::sync::Mutex<std::collections::BTreeMap<String, std::num::NonZeroU64>>,
+    floors: std::sync::Mutex<std::collections::BTreeMap<String, CompactionFloorEntry>>,
+    operations: std::sync::Mutex<
+        std::collections::BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
+    >,
+}
+
+#[derive(Debug)]
+struct CompactionFloorEntry {
+    floor: std::num::NonZeroU64,
+    operation_id: Option<String>,
+    apply_to_build: bool,
+}
+
+pub(crate) struct CompactionFloorChange<'a> {
+    pub(crate) registry: &'a CompactionFloorRegistry,
+    pub(crate) operation_id: &'a str,
+    pub(crate) floor: Option<std::num::NonZeroU64>,
 }
 
 impl CompactionFloorRegistry {
+    pub(crate) fn set_owned(
+        &self,
+        identity: &AgentIdentity,
+        operation_id: &str,
+        floor: std::num::NonZeroU64,
+    ) {
+        self.floors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                identity.to_string(),
+                CompactionFloorEntry {
+                    floor,
+                    operation_id: Some(operation_id.to_string()),
+                    apply_to_build: true,
+                },
+            );
+    }
+
+    pub(crate) fn finish_owned_build(&self, identity: &AgentIdentity, operation_id: &str) {
+        let mut floors = self
+            .floors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = floors.get_mut(identity.as_str())
+            && entry.operation_id.as_deref() == Some(operation_id)
+        {
+            entry.apply_to_build = false;
+        }
+    }
+
+    pub(crate) fn clear_owned(&self, identity: &AgentIdentity, operation_id: &str) {
+        let mut floors = self
+            .floors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if floors
+            .get(identity.as_str())
+            .is_some_and(|entry| entry.operation_id.as_deref() == Some(operation_id))
+        {
+            floors.remove(identity.as_str());
+        }
+    }
+
+    fn for_build(&self, identity: &AgentIdentity) -> Option<std::num::NonZeroU64> {
+        self.floors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(identity.as_str())
+            .filter(|entry| entry.apply_to_build)
+            .map(|entry| entry.floor)
+    }
+
+    pub(crate) fn operation_lock(&self, identity: &AgentIdentity) -> Arc<tokio::sync::Mutex<()>> {
+        let mut operations = self
+            .operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(lock) = operations
+            .get(identity.as_str())
+            .and_then(std::sync::Weak::upgrade)
+        {
+            return lock;
+        }
+        operations.retain(|_, lock| lock.strong_count() > 0);
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        operations.insert(identity.to_string(), Arc::downgrade(&lock));
+        lock
+    }
+
     /// Record a temporary floor for `identity`, returning any previous one.
     pub fn set(
         &self,
@@ -2557,7 +2675,15 @@ impl CompactionFloorRegistry {
         self.floors
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(identity.as_str().to_string(), floor)
+            .insert(
+                identity.as_str().to_string(),
+                CompactionFloorEntry {
+                    floor,
+                    operation_id: None,
+                    apply_to_build: true,
+                },
+            )
+            .map(|entry| entry.floor)
     }
 
     /// Clear the floor for `identity`, returning it if one was recorded.
@@ -2566,6 +2692,7 @@ impl CompactionFloorRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(identity.as_str())
+            .map(|entry| entry.floor)
     }
 
     /// The floor currently recorded for `identity`, if any.
@@ -2574,7 +2701,7 @@ impl CompactionFloorRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(identity.as_str())
-            .copied()
+            .map(|entry| entry.floor)
     }
 }
 
@@ -2897,7 +3024,7 @@ impl MobSessionBridge {
         spec: &DurableAgentSpec,
         spawn_spec: &mut SpawnMemberSpec,
     ) -> Result<(), BridgeError> {
-        let Some(floor) = self.compaction_floors.get(identity) else {
+        let Some(floor) = self.compaction_floors.for_build(identity) else {
             return Ok(());
         };
         let Some(mut profile) = spawn_spec
@@ -7876,6 +8003,7 @@ mod tests {
                 assert_eq!(identity.as_str(), "rt-review-singleton-0");
                 assert!(reason.contains("cold reload is required"), "{reason}");
             }
+
             other => panic!("expected ReloadRequired, got {other:?}"),
         }
         assert!(
@@ -7900,6 +8028,32 @@ mod tests {
         );
         assert!(matches!(other, BridgeError::Mob(_)), "{other:?}");
         assert!(is_repairable_bridge_delivery_error(&other.to_string()));
+    }
+
+    #[test]
+    fn maintenance_floor_is_single_build_scoped_and_old_owner_cannot_clear_replacement() {
+        let floors = CompactionFloorRegistry::default();
+        let identity = AgentIdentity::parse("worker:main").expect("identity");
+        let low = std::num::NonZeroU64::new(256).expect("floor");
+        let high = std::num::NonZeroU64::new(512).expect("replacement floor");
+        floors.set_owned(&identity, "old-operation", low);
+        assert_eq!(floors.for_build(&identity), Some(low));
+        floors.finish_owned_build(&identity, "old-operation");
+        assert_eq!(
+            floors.get(&identity),
+            Some(low),
+            "pending cleanup remains observable"
+        );
+        assert_eq!(
+            floors.for_build(&identity),
+            None,
+            "later incarnations cannot inherit the override"
+        );
+        floors.set_owned(&identity, "new-operation", high);
+        floors.clear_owned(&identity, "old-operation");
+        assert_eq!(floors.for_build(&identity), Some(high));
+        floors.clear_owned(&identity, "new-operation");
+        assert_eq!(floors.get(&identity), None);
     }
 
     /// meerkat 0.8.34 types the durability-degraded refusal; it must classify
