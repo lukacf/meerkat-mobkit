@@ -64,6 +64,14 @@ PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -v
 
 ## Releases: protocol v1
 
+Repository development, CI and candidate builds use Rust `1.97.0`, pinned in
+`rust-toolchain.toml` and the workflows. Floating `stable` selected Rust `1.98.1`
+on hosted Linux and exceeded the query-depth limit while compiling the published
+Meerkat `0.8.35` warm-revival future. The fixed toolchain keeps build inputs
+reproducible without changing dependency bytes, features or recursion limits.
+All required gates still run; upgrading the pin requires qualifying CI and the
+complete candidate matrix together.
+
 **Tag pushes validate only. They do not build or publish.** Publication requires
 an explicit selection of accepted, immutable candidate artifacts. `make release`
 still means a local optimized build; it is not a publication command.

@@ -2,6 +2,8 @@
 """Focused contracts for the pull-request CI workflow."""
 
 import unittest
+import re
+import tomllib
 from pathlib import Path
 
 
@@ -20,6 +22,16 @@ def job_block(name: str) -> str:
 
 
 class CiWorkflowTests(unittest.TestCase):
+    def test_ci_and_release_use_the_repository_toolchain(self):
+        toolchain = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]
+        version = toolchain["channel"]
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
+        for name in ("ci.yml", "release.yml", "e2e-live.yml"):
+            source = (ROOT / ".github/workflows" / name).read_text()
+            installs = re.findall(r"uses:\s*dtolnay/rust-toolchain@(\S+)", source)
+            self.assertTrue(installs, f"{name} must install its build toolchain")
+            self.assertEqual(set(installs), {version}, name)
+
     def test_workspace_nextest_preserves_all_failure_evidence(self):
         commands = [
             line.strip()

@@ -201,7 +201,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.0
 
       - name: Install Node
         uses: actions/setup-node@v4
@@ -276,7 +276,7 @@ jobs:
           ref: ${{ needs.resolve_release.outputs.sha }}
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.0
         with:
           targets: ${{ matrix.target }}
 
@@ -683,7 +683,7 @@ jobs:
           ref: ${{ needs.resolve_release.outputs.sha }}
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.0
 
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
