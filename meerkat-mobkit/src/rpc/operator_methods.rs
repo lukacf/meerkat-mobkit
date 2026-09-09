@@ -1213,6 +1213,62 @@ mod tests {
                 .expect("seed turn completed");
         }
 
+        /// Observe the exact probe's finalized receipt before tearing down the
+        /// runtime; a session-wide completion cursor can precede finalization.
+        async fn run_exact_probe(&self, text: &str) {
+            use meerkat_runtime::SessionServiceRuntimeExt;
+            let owner = meerkat_mob::MobSessionService::runtime_adapter(self.concrete.as_ref())
+                .expect("persistent completion owner");
+            let session = self
+                .identity_runtime
+                .status(&self.identity)
+                .await
+                .expect("probe identity")
+                .session_id
+                .expect("probe session");
+            let correlation = meerkat_core::SessionId::new().to_string();
+            let key = format!("operator-probe:{correlation}");
+            self.identity_runtime
+                .dispatch_admission_tracked(
+                    &self.identity,
+                    None,
+                    &crate::identity_first::DispatchInput::system(text)
+                        .with_correlation(correlation)
+                        .with_idempotency(&key),
+                )
+                .await
+                .expect("exact probe admitted");
+            tokio::time::timeout(Duration::from_secs(30), async {
+                let mut input_id = None;
+                loop {
+                    if input_id.is_none() {
+                        input_id = owner
+                            .input_state_by_idempotency_key(&session, &key)
+                            .await
+                            .expect("probe input read")
+                            .map(|state| state.state.input_id);
+                    }
+                    if let Some(id) = &input_id
+                        && let Some(outcome) = owner
+                            .input_terminal_completion(&session, id)
+                            .await
+                            .expect("probe terminal read")
+                    {
+                        match outcome {
+                            meerkat_runtime::CompletionOutcome::Completed(result) => {
+                                assert_eq!(result.session_id, session);
+                                break;
+                            }
+                            other => panic!("probe did not complete successfully: {other:?}"),
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("exact probe finalizes within backstop");
+        }
+
         async fn transcript_facts(&self) -> (usize, Option<String>) {
             let service: Arc<dyn crate::memory::hygienist::TranscriptEditSessionService> =
                 Arc::clone(&self.concrete) as _;
@@ -1906,7 +1962,7 @@ comms = true
         );
         assert_eq!(settled.session_id, before.session_id);
         harness
-            .run_turn("after pending-owner settlement".to_string())
+            .run_exact_probe("after pending-owner settlement")
             .await;
         harness.runtime.mob_handle().stop().await.expect("stop");
     }
@@ -1936,7 +1992,7 @@ comms = true
             restored.state,
             crate::identity_first::IdentityLifecycleState::Active
         );
-        harness.run_turn("after caller dropped".to_string()).await;
+        harness.run_exact_probe("after caller dropped").await;
         harness.runtime.mob_handle().stop().await.expect("stop");
     }
 
@@ -2156,9 +2212,7 @@ comms = true
             original,
         );
         assert!(harness.floors.get(&harness.identity).is_none());
-        harness
-            .run_turn("after lost admission reply".to_string())
-            .await;
+        harness.run_exact_probe("after lost admission reply").await;
         harness.runtime.mob_handle().stop().await.expect("stop");
     }
 
@@ -2272,7 +2326,7 @@ comms = true
             "profile_restored"
         );
         assert!(harness.floors.get(&harness.identity).is_none());
-        harness.run_turn("after observer outage".to_string()).await;
+        harness.run_exact_probe("after observer outage").await;
         harness.runtime.mob_handle().stop().await.expect("stop");
     }
 
