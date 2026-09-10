@@ -16279,6 +16279,26 @@ comms = true
             .resolve_bridge_session_id(&mid)
             .await
             .unwrap_or_else(|| panic!("spawned worker has no bridge session id"));
+        // Spawn admits the autonomous kickoff without waiting for its turn.
+        // Establish that turn's successful completion before shutdown can
+        // interrupt it; a resolved callback or failed kickoff is not enough.
+        let kickoffs = runtime
+            .handle
+            .wait_for_members_kickoff_complete(
+                std::slice::from_ref(&mid),
+                Some(std::time::Duration::from_secs(5)),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("pre-restart kickoff did not resolve: {e}"));
+        let [(identity, snapshot)] = kickoffs.as_slice() else {
+            panic!("kickoff barrier must return the one targeted worker");
+        };
+        assert_eq!(identity, &mid);
+        assert_eq!(
+            snapshot.kickoff.as_ref().map(|kickoff| kickoff.phase),
+            Some(meerkat_mob::MobMemberKickoffPhase::Started),
+            "restart fixture requires a successfully completed initial turn: {snapshot:?}"
+        );
         // Dropping `MobRuntime` is not a process boundary: the actor and its
         // checkpointer own independent handles and may still append to the
         // custom store. Starting the replacement at that point creates two
