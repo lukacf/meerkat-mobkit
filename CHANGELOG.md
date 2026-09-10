@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed - corrected 0.8.33 companion release
 
-- Pin the complete Meerkat dependency family to registry `0.8.35`, retaining
+- Pin the complete Meerkat dependency family to registry `0.8.36`, retaining
   the identity-first runtime, builder, completion, typed health, memory and SDK
   integration from the prior candidate. The `0.8.32` tag and candidate are not
   replaced or promoted by this release.
+- Include the upstream shared-SQLite cold-resume/cleanup fixes and
+  run-result-aware checkpoint terminal-completion correlation.
 - Bound stdio callback queue admission, live writer settlement and SDK response
   with one 130-second provider deadline. Closed writers and callback transport
   shutdown wake pending callers; reliable notification failures are reported.
