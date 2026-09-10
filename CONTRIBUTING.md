@@ -238,6 +238,11 @@ or missing legacy index/checksums with no original-byte source require explicit
 operator intervention, not regeneration. A partial draft with no matching
 selection receipt similarly requires explicit owner cleanup.
 
+After creating a new draft, the publisher allows up to 30 successful list reads
+for GitHub's draft visibility to settle. It never repeats creation or retries
+API errors. If visibility still fails, the empty unbound draft is retained for
+explicit owner cleanup; the tag and accepted candidate bytes remain unchanged.
+
 All supported recovery runs use the current workflow on `main`, with the old tag
 as an explicit input. **Do not rerun historical release jobs or re-push old tags.**
 GitHub reruns historical workflow code; the new safeguards cannot rewrite those

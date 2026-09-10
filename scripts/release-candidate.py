@@ -34,6 +34,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import time
 import tomllib
 import uuid
 import zipfile
@@ -693,6 +694,18 @@ def release_for_tag(tag):
     return matching[0] if matching else None
 
 
+def newly_created_release_for_tag(tag):
+    # Draft creation can precede visibility in the releases-list API. Retry
+    # only a successful empty read, never creation or a failed API request.
+    for attempt in range(30):
+        release = release_for_tag(tag)
+        if release is not None:
+            return release
+        if attempt < 29:
+            time.sleep(1)
+    return None
+
+
 def release_inventory(release):
     pages = api(repo_endpoint(f"releases/{integer(release['id'], 'release ID')}/assets?per_page=100"), pages=True)
     items = [item for page in pages for item in page]
@@ -862,7 +875,7 @@ def publish(args):
         else:
             run(["gh", "release", "create", tag, "--repo", repository(), "--verify-tag",
                  "--draft", "--title", tag, "--notes", "Original accepted MobKit candidate; see attached selection and provenance."])
-            release = release_for_tag(tag)
+            release = newly_created_release_for_tag(tag)
             require(release is not None and release["draft"] is True, "new draft release missing")
             require(not release_inventory(release), "new draft unexpectedly contains assets")
         # Bind first. If this upload fails, a later attempt refuses the unbound draft.

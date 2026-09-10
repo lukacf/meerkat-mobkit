@@ -94,7 +94,12 @@ elif args[0] == "api":
         else:
             emit(value)
     elif endpoint.endswith("/releases?per_page=100"):
-        emit([[state["release"]]] if state.get("release") else [[]])
+        if state.get("release") and state.get("hidden_new_draft_reads", 0):
+            state["hidden_new_draft_reads"] -= 1
+            state_path.write_text(json.dumps(state))
+            emit([[]])
+        else:
+            emit([[state["release"]]] if state.get("release") else [[]])
     elif "/releases/" in endpoint and endpoint.endswith("/assets?per_page=100"):
         emit([state["release"]["assets"]])
     elif "/releases/assets/" in endpoint:
@@ -113,6 +118,7 @@ elif args[:2] == ["release", "create"]:
         fail("unsafe release creation")
     state["release"] = {"id": 800, "tag_name": args[2], "draft": True,
                         "name": args[2], "body": "original metadata", "assets": []}
+    state["hidden_new_draft_reads"] = state.get("new_draft_visibility_delay", 0)
     state_path.write_text(json.dumps(state))
 elif args[:2] == ["release", "upload"]:
     path = Path(args[3])
@@ -835,6 +841,39 @@ class CandidateProtocolTests(unittest.TestCase):
             self.assertIn(item, self.state["release"]["assets"])
         uploads = [call for call in self.writes() if call["args"][1] == "upload"]
         self.assertEqual(len(uploads), 23)
+
+    def test_new_draft_visibility_lag_retries_reads_not_creation(self):
+        self.staged()
+        self.state["new_draft_visibility_delay"] = 2
+        self.save()
+        with mock.patch.object(helper.time, "sleep") as sleep:
+            self.publish()
+        self.assertEqual(sleep.call_args_list, [mock.call(1), mock.call(1)])
+        creates = [call for call in self.writes() if call["args"][1] == "create"]
+        self.assertEqual(len(creates), 1)
+        uploads = [call for call in self.writes() if call["args"][1] == "upload"]
+        self.assertEqual(Path(uploads[0]["args"][3]).name, helper.SELECTION)
+        self.assertFalse(self.state["release"]["draft"])
+
+    def test_new_draft_visibility_timeout_leaves_empty_unbound_draft(self):
+        self.staged()
+        self.state["new_draft_visibility_delay"] = 30
+        self.save()
+        with mock.patch.object(helper.time, "sleep") as sleep:
+            _, error = self.publish(success=False)
+        self.assertIn("new draft release missing", error)
+        self.assertEqual(sleep.call_count, 29)
+        self.assertEqual([call["args"][1] for call in self.writes()], ["create"])
+        self.assertTrue(self.state["release"]["draft"])
+        self.assertEqual(self.state["release"]["assets"], [])
+
+    def test_new_draft_lookup_does_not_retry_api_errors_or_duplicates(self):
+        with mock.patch.object(helper, "release_for_tag", side_effect=helper.ProtocolError("API refusal")) as lookup:
+            with mock.patch.object(helper.time, "sleep") as sleep:
+                with self.assertRaisesRegex(helper.ProtocolError, "API refusal"):
+                    helper.newly_created_release_for_tag(TAG)
+            lookup.assert_called_once_with(TAG)
+            sleep.assert_not_called()
 
     def test_conflicting_existing_archive_or_receipt_and_unbound_draft_refuse_before_write(self):
         self.staged()
