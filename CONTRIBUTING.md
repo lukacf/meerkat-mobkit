@@ -62,6 +62,12 @@ PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -v
 - **Rust**: `make fmt` for formatting, `make lint` for clippy
 - **Python**: Type annotations required on all public functions
 
+Rust commands use `scripts/repo-cargo`, which defaults to repo/worktree-scoped
+cache directories. Explicit `CARGO_HOME` and `CARGO_TARGET_DIR` values are
+preserved for isolated build environments; `scripts/repo-cargo --print-env`
+reports the selected roots and `--doctor` checks them. Keep custom roots outside
+the checkout and use the same roots for validation and normal Git hooks.
+
 ## Releases: protocol v1
 
 Repository development, CI and candidate builds use Rust `1.97.0`, pinned in
