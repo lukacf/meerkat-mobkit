@@ -380,11 +380,44 @@ impl meerkat_core::AgentLlmClient for ReplaySanitizingAgentLlmClient {
         self.inner.model()
     }
 
+    fn request_pressure(
+        &self,
+        messages: &[Message],
+        tools: &[Arc<meerkat_core::ToolDef>],
+        max_tokens: u32,
+        temperature: Option<f32>,
+        provider_params: Option<&meerkat_core::lifecycle::run_primitive::ProviderParamsOverride>,
+    ) -> Result<Option<meerkat_core::ProviderRequestPressure>, meerkat_core::AgentError> {
+        let sanitized: Vec<Message> = messages
+            .iter()
+            .cloned()
+            .map(sanitize_message_for_stateless_replay)
+            .collect();
+        self.inner
+            .request_pressure(&sanitized, tools, max_tokens, temperature, provider_params)
+    }
+
     fn prepare_model_fallback(
         &self,
         failure: &meerkat_core::AgentError,
-    ) -> Option<meerkat_core::agent::AgentLlmFallbackSwitch> {
-        self.inner.prepare_model_fallback(failure)
+        request: &meerkat_core::model_fallback::ModelFallbackRequest<'_>,
+    ) -> Result<
+        meerkat_core::AgentLlmFallbackSwitch,
+        Vec<meerkat_core::AgentLlmFallbackSkippedTarget>,
+    > {
+        let sanitized: Vec<Message> = request
+            .messages
+            .iter()
+            .cloned()
+            .map(sanitize_message_for_stateless_replay)
+            .collect();
+        self.inner.prepare_model_fallback(
+            failure,
+            &meerkat_core::model_fallback::ModelFallbackRequest {
+                messages: &sanitized,
+                ..*request
+            },
+        )
     }
 
     fn commit_model_fallback(
@@ -431,9 +464,8 @@ impl meerkat_core::AgentLlmClient for ReplaySanitizingAgentLlmClient {
     // through `sanitize_message_for_stateless_replay` before the inner client
     // sees it. Forwarding the caller's unsanitized messages would author a
     // cache proof over bytes this wrapper never puts on the wire. The empty
-    // default is the truthful "no target lowering available", which is also
-    // what `request_pressure` (same measurement class, same reason) already
-    // answers here.
+    // default remains truthful "no target lowering available"; pressure and
+    // fallback admission above instead delegate with the sanitized messages.
 }
 
 #[async_trait]
@@ -11079,10 +11111,14 @@ realm_profile = "worker-v2"
         fn prepare_model_fallback(
             &self,
             _failure: &meerkat_core::AgentError,
-        ) -> Option<meerkat_core::agent::AgentLlmFallbackSwitch> {
+            _request: &meerkat_core::model_fallback::ModelFallbackRequest<'_>,
+        ) -> Result<
+            meerkat_core::AgentLlmFallbackSwitch,
+            Vec<meerkat_core::AgentLlmFallbackSkippedTarget>,
+        > {
             self.fallback_prepare_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            None
+            Err(Vec::new())
         }
 
         fn commit_model_fallback(
@@ -11143,8 +11179,18 @@ realm_profile = "worker-v2"
             meerkat_core::AgentLlmClient::prepare_model_fallback(
                 &wrapped,
                 &meerkat_core::AgentError::ConfigError("probe".to_string()),
+                &meerkat_core::model_fallback::ModelFallbackRequest {
+                    messages: &[],
+                    tools: &[],
+                    max_tokens: 512,
+                    temperature: None,
+                    provider_params: None,
+                    output_schema: None,
+                    attempt: 3,
+                },
             )
-            .is_none()
+            .expect_err("no proposal should forward")
+            .is_empty()
         );
         meerkat_core::AgentLlmClient::commit_model_fallback(&wrapped, &previous, &target)
             .expect("fallback activation should forward");

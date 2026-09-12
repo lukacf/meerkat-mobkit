@@ -88,6 +88,37 @@ class TestParseAgentEvent:
         assert ev.type == "future_event"
         assert ev.data == {"type": "future_event", "foo": "bar"}
 
+    def test_fallback_resume_hold_keeps_typed_reason(self):
+        reason = {
+            "reason_type": "model_fallback_resume_held",
+            "provider": "openai",
+            "model": "gpt-5.5",
+            "reason": "context_fit",
+        }
+        event = parse_agent_event({
+            "type": "run_failed",
+            "session_id": "session-held",
+            "error_report": {"class": "config", "reason": reason, "message": "held"},
+        })
+        assert isinstance(event, RunFailed)
+        assert event.reason_type == "model_fallback_resume_held"
+        assert event.error_report["reason"] == reason
+
+    def test_fallback_observations_preserve_the_open_event_payload(self):
+        for kind in (
+            "model_fallback_skipped", "model_fallback_staged",
+            "model_fallback_committed", "model_fallback_target_failed",
+        ):
+            raw = {
+                "type": kind,
+                "target": {"provider": "openai", "model": "gpt-5.5"},
+                "retry": {"plan": {"attempt": 3}},
+            }
+            event = parse_agent_event(raw)
+            assert isinstance(event, UnknownEvent)
+            assert event.type == kind
+            assert event.data == raw
+
     def test_all_events_are_event_subclass(self):
         ev = parse_agent_event({"type": "text_delta", "delta": "x"})
         assert isinstance(ev, Event)

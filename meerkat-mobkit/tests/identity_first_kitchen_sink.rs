@@ -110,6 +110,7 @@ fn author_definition(model: &str) -> MobDefinition {
             ProfileName::from(name),
             ProfileBinding::Inline(Box::new(Profile {
                 model: model.to_string(),
+                model_fallback: None,
                 provider: None,
                 self_hosted_server_id: None,
                 image_generation_provider: None,
@@ -152,6 +153,7 @@ fn critic_definition(model: &str) -> MobDefinition {
             ProfileName::from(name),
             ProfileBinding::Inline(Box::new(Profile {
                 model: model.to_string(),
+                model_fallback: None,
                 provider: None,
                 self_hosted_server_id: None,
                 image_generation_provider: None,

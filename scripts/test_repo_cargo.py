@@ -18,7 +18,6 @@ class RepoCargoCacheTests(unittest.TestCase):
         shutil.copyfile(
             Path(__file__).with_name("repo-cargo"), self.repo / "scripts" / "repo-cargo"
         )
-        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         self.env = {
             key: value for key, value in os.environ.items()
             if not key.startswith("GIT_")
@@ -27,6 +26,7 @@ class RepoCargoCacheTests(unittest.TestCase):
         self.env["HOME"] = str(self.root / "home")
         self.env["XDG_CACHE_HOME"] = str(self.root / "cache")
         self.env["RUST_LANE_ID"] = "fixture-lane"
+        subprocess.run(["git", "init", "-q", str(self.repo)], env=self.env, check=True)
 
     def run_wrapper(self, **overrides):
         result = subprocess.run(

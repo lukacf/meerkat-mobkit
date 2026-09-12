@@ -18,6 +18,40 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("parseAgentEvent", () => {
+  it("preserves the typed fallback resume hold", () => {
+    const reason = {
+      reason_type: "model_fallback_resume_held",
+      provider: "openai",
+      model: "gpt-5.5",
+      reason: "context_fit",
+    };
+    const event = parseAgentEvent({
+      type: "run_failed",
+      session_id: "session-held",
+      error_report: { class: "config", message: "held", reason },
+    });
+    assert.ok(isRunFailed(event));
+    assert.equal(event.errorReport?.reasonType, "model_fallback_resume_held");
+    assert.deepEqual(event.errorReport?.reason, reason);
+  });
+
+  it("preserves fallback observations through the open event payload", () => {
+    for (const type of [
+      "model_fallback_skipped", "model_fallback_staged",
+      "model_fallback_committed", "model_fallback_target_failed",
+    ]) {
+      const raw = {
+        type,
+        target: { provider: "openai", model: "gpt-5.5" },
+        retry: { plan: { attempt: 3 } },
+      };
+      const event = parseAgentEvent(raw);
+      assert.equal(event.type, type);
+      assert.ok("data" in event);
+      assert.deepEqual(event.data, raw);
+    }
+  });
+
   it("parses run_started", () => {
     const event = parseAgentEvent({
       type: "run_started",

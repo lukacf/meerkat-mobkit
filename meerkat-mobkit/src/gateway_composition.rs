@@ -1522,6 +1522,54 @@ default_binding = "local"
         Ok(())
     }
 
+    #[test]
+    fn host_model_fallback_defaults_off_and_preserves_explicit_policy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        for enabled in [false, true] {
+            std::fs::write(
+                &path,
+                format!(
+                    "[model_fallback]\nenabled = {enabled}\n\
+                     chain = [{{ model = \"gpt-5.5\", provider = \"openai\" }}]\n\
+                     [model_fallback.policy]\ntrigger_after_attempts = 5\n"
+                ),
+            )?;
+            let config = load_gateway_host_config(&path)?;
+            assert_eq!(config.model_fallback.enabled, Some(enabled));
+            assert_eq!(config.model_fallback.chain.len(), 1);
+            assert_eq!(config.model_fallback.policy.trigger_after_attempts, 5);
+            assert!(!config.model_fallback.policy.cross_provider);
+        }
+        std::fs::write(&path, "")?;
+        assert!(!load_gateway_host_config(&path)?.model_fallback.is_enabled());
+        Ok(())
+    }
+
+    #[test]
+    fn host_model_fallback_invalid_policy_is_an_explicit_init_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("fallback.toml");
+        for declaration in [
+            "[model_fallback]\nenabled = true\n",
+            "[model_fallback]\nuse_catalog_default_chain = true\n",
+            "[model_fallback]\nenabeld = false\n",
+            "[model_fallback.policy]\ncross_providre = true\n",
+            "[model_fallback.policy]\ntrigger_after_attempts = 0\n",
+            "[model_fallback.policy]\nmin_context_headroom = 1.0\n",
+            "[[model_fallback.chain]]\nmodel = \"gpt-5.5\"\nunknown = true\n",
+        ] {
+            std::fs::write(&path, declaration)?;
+            let error = load_gateway_host_config(&path)
+                .err()
+                .ok_or("invalid fallback unexpectedly accepted")?;
+            assert!(error.to_string().contains("fallback.toml"), "{error}");
+        }
+        Ok(())
+    }
+
     /// A named file that cannot be read or parsed is a typed refusal that
     /// names the path, never a silent `Config::default()`.
     #[test]

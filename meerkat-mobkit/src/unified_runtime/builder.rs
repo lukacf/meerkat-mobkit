@@ -2201,6 +2201,28 @@ runtime_mode = "autonomous_host"
         .expect("custom Meerkat config should still build a usable session service");
     }
 
+    #[test]
+    fn model_fallback_host_config_survives_compaction_composition() {
+        let mut config = meerkat::Config::default();
+        config.model_fallback.enabled = Some(false);
+        config.model_fallback.policy.trigger_after_attempts = 7;
+        let expected = config.model_fallback.clone();
+        let builder = UnifiedRuntimeBuilder::default()
+            .meerkat_config(config)
+            .compaction(meerkat_core::config::CompactionRuntimeConfig {
+                auto_compact_threshold: 120_000,
+                auto_compact_threshold_explicit: true,
+                ..Default::default()
+            });
+        let effective = builder
+            .effective_meerkat_config()
+            .expect("config")
+            .expect("present");
+        assert_eq!(effective.model_fallback, expected);
+        assert_eq!(effective.compaction.auto_compact_threshold, 120_000);
+        assert!(!meerkat::Config::default().model_fallback.is_enabled());
+    }
+
     #[tokio::test]
     async fn definition_based_persistent_spec_uses_configured_max_sessions() {
         let definition = meerkat_mob::MobDefinition::from_toml(

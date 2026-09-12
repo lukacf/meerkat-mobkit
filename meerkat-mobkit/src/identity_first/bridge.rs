@@ -7007,6 +7007,27 @@ mod tests {
         assert!(spawn.override_profile.is_none());
     }
 
+    #[test]
+    fn build_spawn_spec_keeps_profile_fallback_policy_under_model_override() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let mut base = profile_with_provider("openai");
+        base.model_fallback = Some(meerkat_core::config::ModelFallbackConfig {
+            enabled: Some(false),
+            ..Default::default()
+        });
+        let mut draft = draft_with_provider_params(None);
+        draft.model = Some("gpt-5.5".to_string());
+        let spawn =
+            build_spawn_spec(&runtime_id, &durable_spec(), &draft, Some(&base)).expect("spawn");
+        assert_eq!(
+            spawn
+                .override_profile
+                .expect("pinned profile")
+                .model_fallback,
+            base.model_fallback
+        );
+    }
+
     /// Why `member_id_for_runtime_id` and the wire projection return errors
     /// instead of deriving an id when the runtime_members mapping is missing.
     ///

@@ -58,11 +58,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
+use meerkat_core::model_fallback::ModelFallbackRequest;
 use meerkat_core::service::{CreateSessionRequest, SessionBuildOptions};
 use meerkat_core::types::{AssistantBlock, Message, ToolDef};
 use meerkat_core::{
-    AgentError, AgentLlmClient, AgentLlmFallbackSwitch, CompiledSchema, LlmStreamResult,
-    OutputSchema, ProviderParamsOverride, ProviderRequestPressure, SchemaError, SessionLlmIdentity,
+    AgentError, AgentLlmClient, AgentLlmFallbackSkippedTarget, AgentLlmFallbackSwitch,
+    CompiledSchema, LlmStreamResult, OutputSchema, ProviderParamsOverride, ProviderRequestPressure,
+    SchemaError, SessionLlmIdentity,
 };
 
 use crate::member_comms_id;
@@ -293,8 +295,12 @@ impl AgentLlmClient for TaintObservingLlmClient {
         self.inner.model()
     }
 
-    fn prepare_model_fallback(&self, failure: &AgentError) -> Option<AgentLlmFallbackSwitch> {
-        self.inner.prepare_model_fallback(failure)
+    fn prepare_model_fallback(
+        &self,
+        failure: &AgentError,
+        request: &ModelFallbackRequest<'_>,
+    ) -> Result<AgentLlmFallbackSwitch, Vec<AgentLlmFallbackSkippedTarget>> {
+        self.inner.prepare_model_fallback(failure, request)
     }
 
     fn commit_model_fallback(

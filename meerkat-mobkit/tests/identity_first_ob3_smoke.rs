@@ -97,6 +97,7 @@ fn ob3_definition(model: &str) -> MobDefinition {
         ProfileName::from("personal"),
         ProfileBinding::Inline(Box::new(Profile {
             model: model.to_string(),
+            model_fallback: None,
             provider: None,
             self_hosted_server_id: None,
             image_generation_provider: None,
@@ -121,6 +122,7 @@ fn ob3_definition(model: &str) -> MobDefinition {
         ProfileName::from("review"),
         ProfileBinding::Inline(Box::new(Profile {
             model: model.to_string(),
+            model_fallback: None,
             provider: None,
             self_hosted_server_id: None,
             image_generation_provider: None,

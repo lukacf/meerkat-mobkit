@@ -1368,6 +1368,34 @@ default_binding = "local"
         assert!(gateway_agent_config(&quiet).self_hosted.models.is_empty());
     }
 
+    #[test]
+    fn model_fallback_host_policy_survives_gateway_overlays() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[model_fallback]\nenabled = false\n\
+             chain = [{ model = \"gpt-5.5\", provider = \"openai\" }]\n\
+             [model_fallback.policy]\ntrigger_after_attempts = 7\n",
+        )
+        .expect("write config");
+        let options = parse_gateway_runtime_options(
+            &json!({"runtime_options": {
+                "meerkat_config_path": path,
+                "member_comms_address": "127.0.0.1:0",
+                "compaction": {"auto_compact_threshold": 120000}
+            }}),
+            None,
+        )
+        .expect("parse");
+        let config = gateway_agent_config(&options);
+        assert_eq!(config.model_fallback.enabled, Some(false));
+        assert_eq!(config.model_fallback.chain.len(), 1);
+        assert_eq!(config.model_fallback.policy.trigger_after_attempts, 7);
+        assert_eq!(config.compaction.auto_compact_threshold, 120_000);
+        assert_eq!(config.comms.mode, meerkat_core::CommsRuntimeMode::Tcp);
+    }
+
     /// A missing or malformed host config is an init refusal that names the
     /// option and the file, never a silent `Config::default()`.
     #[test]

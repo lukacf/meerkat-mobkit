@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed - explicit model fallback safety
+
+- Pin the Meerkat dependency family to published `0.8.37`. Automatic fallback
+  now defaults off and requires an explicit non-empty chain. Whole-table
+  profile, mob-runtime and host policy precedence preserves explicit disable;
+  unknown fallback keys and the removed catalog-default switch are rejected.
+- Forward the full materialized fallback request and typed admission result
+  through replay and taint decorators. Replay pressure uses the same sanitized
+  messages as dispatch; admission and pressure probes do not mark ingestion.
+- Preserve typed fallback observations and resume-hold error reasons through
+  the existing console and SDK event payloads. Unsafe **new provenance-bearing**
+  fallback resumes may be held upstream; historical unmarked sessions are not
+  automatically inferred, reverted or migrated. Explicit operator resume masks
+  are unchanged. No fallback overlay, reversion or new repair CLI is introduced.
+- Honor explicit `CARGO_HOME` and `CARGO_TARGET_DIR` in `scripts/repo-cargo`
+  while preserving its default repo/worktree isolation.
+
 ### Fixed - corrected 0.8.33 companion release
 
 - Pin the complete Meerkat dependency family to registry `0.8.36`, retaining

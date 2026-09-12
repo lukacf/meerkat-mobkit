@@ -2706,6 +2706,8 @@ mod tests {
     fn gateway_agent_config_layers_compaction_over_the_host_config() -> anyhow::Result<()> {
         let mut host = Config::default();
         host.merge_toml_str(HOST_CONFIG_FIXTURE)?;
+        host.model_fallback.enabled = Some(false);
+        host.model_fallback.policy.trigger_after_attempts = 7;
         let pinned = meerkat_mobkit::parse_compaction_policy(&json!({
             "auto_compact_threshold": 120_000
         }))
@@ -2723,9 +2725,11 @@ mod tests {
         );
         assert_eq!(config.compaction.auto_compact_threshold, 120_000);
         assert!(config.compaction.auto_compact_threshold_explicit);
+        assert_eq!(config.model_fallback, host.model_fallback);
 
         let defaulted = gateway_agent_config(None, None)?;
         assert!(defaulted.self_hosted.models.is_empty());
+        assert!(!defaulted.model_fallback.is_enabled());
         Ok(())
     }
 

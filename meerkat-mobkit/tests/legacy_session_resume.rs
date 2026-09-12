@@ -60,6 +60,7 @@ fn current_session_json() -> Value {
         backend: None,
         config_generation: None,
         auth_binding: None,
+        model_fallback: None,
         // 0.7 typed ownership fact: legacy rows do NOT carry this.
         mob_member_binding: None,
     };
