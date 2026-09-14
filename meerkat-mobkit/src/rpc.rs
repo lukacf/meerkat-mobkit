@@ -1563,7 +1563,7 @@ pub fn handle_unified_rpc_json_with_live_arc<'a>(
 /// result is known.
 pub struct SerializedRpcResponseDelivery {
     pub response: String,
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     delivery: Option<crate::live_wiring::LiveRpcResponseDeliveryCustody>,
 }
 
@@ -1572,12 +1572,12 @@ impl SerializedRpcResponseDelivery {
     pub fn plain(response: String) -> Self {
         Self {
             response,
-            #[cfg(feature = "experimental-gpt-live")]
+            #[cfg(feature = "openai-live")]
             delivery: None,
         }
     }
 
-    #[cfg(all(test, feature = "experimental-gpt-live-test"))]
+    #[cfg(all(test, feature = "openai-live-test"))]
     pub(crate) fn with_delivery_for_test(
         response: String,
         delivery: meerkat::surface::LiveWebrtcAnswerDeliveryCustody,
@@ -1590,7 +1590,7 @@ impl SerializedRpcResponseDelivery {
         }
     }
 
-    #[cfg(all(test, feature = "experimental-gpt-live"))]
+    #[cfg(all(test, feature = "openai-live"))]
     pub(crate) fn with_open_delivery_for_test(
         response: String,
         delivery: crate::live_wiring::LiveOpenResponseDeliveryCustody,
@@ -1605,7 +1605,7 @@ impl SerializedRpcResponseDelivery {
 
     /// Commit or reject live publication after the outer response write.
     pub async fn settle_delivery(&mut self, delivered: bool) -> Result<(), String> {
-        #[cfg(feature = "experimental-gpt-live")]
+        #[cfg(feature = "openai-live")]
         if let Some(custody) = self.delivery.take() {
             return if delivered {
                 custody.delivered().await
@@ -1615,7 +1615,7 @@ impl SerializedRpcResponseDelivery {
         }
         // Keep the public async contract identical when live custody is not
         // compiled in. The experimental branch above performs the real await.
-        #[cfg(not(feature = "experimental-gpt-live"))]
+        #[cfg(not(feature = "openai-live"))]
         std::future::ready(()).await;
         let _ = delivered;
         Ok(())
@@ -1624,7 +1624,7 @@ impl SerializedRpcResponseDelivery {
 
 impl Drop for SerializedRpcResponseDelivery {
     fn drop(&mut self) {
-        #[cfg(feature = "experimental-gpt-live")]
+        #[cfg(feature = "openai-live")]
         drop(self.delivery.take());
     }
 }
@@ -1640,7 +1640,7 @@ pub fn handle_unified_rpc_json_with_live_arc_delivery<'a>(
     live: Option<&'a crate::live_wiring::LiveRpcHandler>,
 ) -> Pin<Box<dyn Future<Output = SerializedRpcResponseDelivery> + Send + 'a>> {
     Box::pin(async move {
-        #[cfg(feature = "experimental-gpt-live")]
+        #[cfg(feature = "openai-live")]
         {
             let (response, mut delivery) = crate::live_wiring::capture_live_rpc_response_delivery(
                 handle_unified_rpc_json_inner(
@@ -1661,7 +1661,7 @@ pub fn handle_unified_rpc_json_with_live_arc_delivery<'a>(
             }
             SerializedRpcResponseDelivery { response, delivery }
         }
-        #[cfg(not(feature = "experimental-gpt-live"))]
+        #[cfg(not(feature = "openai-live"))]
         SerializedRpcResponseDelivery {
             response: handle_unified_rpc_json_inner(
                 runtime.as_ref(),
@@ -2023,7 +2023,7 @@ async fn handle_unified_rpc_json_inner(
                 if live.is_some_and(
                     crate::live_wiring::LiveRpcHandler::supports_live_execution_identity_v1,
                 ) {
-                    #[cfg(feature = "experimental-gpt-live")]
+                    #[cfg(feature = "openai-live")]
                     methods.extend_from_slice(&[
                         "mobkit/live/replacement_required",
                         "mobkit/live/playback_owner/register",
@@ -4912,7 +4912,7 @@ async fn handle_unified_rpc_json_inner(
         }
         method
             if method.starts_with("mobkit/live/")
-                || cfg!(feature = "experimental-gpt-live") && method == "live/webrtc/answer" =>
+                || cfg!(feature = "openai-live") && method == "live/webrtc/answer" =>
         {
             match live {
                 None => crate::live_wiring::live_unavailable_response(response_id),

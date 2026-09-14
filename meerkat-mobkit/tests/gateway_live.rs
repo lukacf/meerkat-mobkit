@@ -117,6 +117,30 @@ fn init_params(state_dir: &tempfile::TempDir, live: Value) -> Value {
     })
 }
 
+#[cfg(feature = "openai-live")]
+fn openai_live_init_params(state_dir: &tempfile::TempDir) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": "init",
+        "method": "mobkit/init",
+        "params": {
+            "persistent_state": state_dir.path(),
+            "mob_config": MOB_CONFIG,
+            "runtime_options": {
+                "openai_live": {
+                    "principal": "root",
+                    "realm": "family",
+                    "auth_binding": {
+                        "realm": "family",
+                        "binding": "openai-api-key"
+                    },
+                    "voice": "marin"
+                }
+            }
+        }
+    })
+}
+
 #[cfg(feature = "experimental-gpt-live")]
 fn experimental_init_params(state_dir: &tempfile::TempDir) -> Value {
     json!({
@@ -170,6 +194,43 @@ fn live_methods_answer_unavailable_without_opt_in() {
     assert_eq!(caps["result"]["feature_capabilities"], json!([]));
     let methods = caps["result"]["methods"].as_array().expect("methods");
     assert!(!methods.iter().any(|m| m == "mobkit/live/open"), "{caps}");
+}
+
+#[cfg(feature = "openai-live")]
+#[test]
+fn openai_live_registration_is_app_opt_in_without_http_mount() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let mut gateway = Gateway::start();
+    gateway.send(openai_live_init_params(&state_dir));
+    let init = gateway.wait_for_response("init", Duration::from_mins(1));
+    assert!(init["result"]["contract_version"].is_string(), "{init}");
+    let base = init["result"]["http_base_url"]
+        .as_str()
+        .expect("http_base_url");
+
+    gateway.send(json!({
+        "jsonrpc": "2.0", "id": "caps", "method": "mobkit/capabilities", "params": {}
+    }));
+    let caps = gateway.wait_for_response("caps", Duration::from_secs(15));
+    assert_eq!(
+        caps["result"]["feature_capabilities"],
+        json!([
+            "live.execution_identity.v1",
+            "live.execution.client_context.v1"
+        ]),
+        "the public gpt-live-1 build must advertise only strict identity selection and client-context execution"
+    );
+    let methods = caps["result"]["methods"].as_array().expect("methods");
+    assert!(
+        methods.iter().any(|method| method == "mobkit/live/open"),
+        "the explicit stdio registration must install the live handler: {caps}"
+    );
+
+    assert_eq!(
+        ureq_get_status(&format!("{base}/live/ws")),
+        404,
+        "public stdio registration must not mount the HTTP live route"
+    );
 }
 
 #[cfg(feature = "experimental-gpt-live")]
@@ -297,7 +358,7 @@ fn live_opt_in_advertises_methods_and_mounts_the_ws_route() {
 /// receipt claim. A full truncate round-trip needs a live provider channel;
 /// the command mapping is covered by the shared
 /// `live_command_result_from_machine_authority` unit coverage.
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[test]
 fn live_truncate_answers_typed_errors_without_active_custody() {
     let state_dir = tempfile::tempdir().expect("state dir");

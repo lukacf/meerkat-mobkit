@@ -61,6 +61,7 @@ import {
   type ActiveLiveChannelHandle,
   type ExperimentalLiveChannelStatus,
   experimentalLiveGatewayConfigToWire,
+  openAiLiveGatewayConfigToWire,
   liveOpenExecutionIdentityParams,
   type LivePlaybackOwner,
   type LivePlaybackOwnerReadiness,
@@ -822,6 +823,11 @@ export class MobKitRuntime {
     if (this._config.experimentalLiveConfig != null) {
       runtimeOptions.experimental_live = experimentalLiveGatewayConfigToWire(
         this._config.experimentalLiveConfig,
+      );
+    }
+    if (this._config.openaiLiveConfig != null) {
+      runtimeOptions.openai_live = openAiLiveGatewayConfigToWire(
+        this._config.openaiLiveConfig,
       );
     }
     params.runtime_options = runtimeOptions;

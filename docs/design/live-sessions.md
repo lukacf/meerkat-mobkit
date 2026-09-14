@@ -160,6 +160,54 @@ owner, register readiness, answer, wait for generated activation, and only
 then release media and return the active handle. Stock crates.io builds remain
 portable and advertise none of these experimental capability atoms.
 
+## Public GPT Live registration (`runtime_options.openai_live`)
+
+Meerkat 0.8.38 ships a public OpenAI Live path for the released `gpt-live-1`
+catalog row behind the `openai-live` feature (mobkit forwards it as
+`meerkat-mobkit/openai-live`). It reuses the strict channel machinery above
+(pending/active receipts, WebRTC answer, playback custody, client-context
+delegation) but has no operator, Gate0 qualification, or factory identity:
+the released catalog row, the host's configured OpenAI API-key binding, and
+the compiled feature are the admission.
+
+The gateway registers it through one explicit stdio object. Every field is
+host-owned; callers cannot select a model, provider, or binding:
+
+```json
+"runtime_options": {
+  "openai_live": {
+    "principal": "user:luka",
+    "realm": "family",
+    "auth_binding": { "realm": "family", "binding": "openai-api-key", "profile": "luka" },
+    "voice": "marin",
+    "session_instructions": "optional trusted voice guidance"
+  }
+}
+```
+
+`principal`, `realm`, `voice`, and `auth_binding.{realm, binding}` are required
+non-empty strings; `auth_binding.profile` and `session_instructions` are
+optional (omitted or `null`). `auth_binding.realm` must equal `realm`, the
+binding origin is always `Configured`, and unknown fields anywhere in the
+object are rejected. The gateway fixes the execution identity to provider
+OpenAI, model `gpt-live-1`, and that binding, then composes the public open
+authority. Like `experimental_live`, the registration is independent of
+`runtime_options.live` and does not mount the HTTP `/live/ws` route.
+
+Capabilities advertise `live.execution_identity.v1` and
+`live.execution.client_context.v1`. Callers select the platform profile
+`openai.gpt-live-1.client-context.v1` (SDK constant
+`OPENAI_GPT_LIVE_PUBLIC_CLIENT_CONTEXT_PROFILE_ID`) through the versioned
+`execution_identity` request; it is a reserved id that hosts cannot rename or
+override. The SDK builders expose it as `openaiLive(...)` /
+`openai_live(...)`.
+
+`runtime_options.experimental_live` (the private ChatGPT-brokered
+`gpt-live-1-codex` path, feature `experimental-gpt-live`) is deprecated. It
+still composes on top of `openai-live` for hosts that carry Gate0 evidence,
+but configuring both `experimental_live` and `openai_live` in one init is
+rejected at parse time.
+
 ## Images (meerkat 0.7.27, mobkit 0.7.32)
 
 Still-image input rides the SAME transport and RPC surface: the wire chunk

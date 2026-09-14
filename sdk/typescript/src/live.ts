@@ -12,9 +12,17 @@ const EXECUTION_MODE_CAPABILITIES: Readonly<Record<LiveExecutionMode, string>> =
   function_bridge: LIVE_EXECUTION_FUNCTION_BRIDGE_V1,
   client_context: LIVE_EXECUTION_CLIENT_CONTEXT_V1,
 };
+/**
+ * Public Live (`gpt-live-1`) client-context execution profile served by a
+ * gateway registered through `runtime_options.openai_live`. Callers select it
+ * through `live/open { execution_identity: { version: "v1", profile_id } }`.
+ */
+export const OPENAI_GPT_LIVE_PUBLIC_CLIENT_CONTEXT_PROFILE_ID =
+  "openai.gpt-live-1.client-context.v1" as const;
 const RESERVED_GPT_LIVE_PROFILE_IDS = new Set([
   "openai.gpt-live-1-codex.client-context.v1",
   "openai.gpt-live-1-codex.function-bridge.v1",
+  OPENAI_GPT_LIVE_PUBLIC_CLIENT_CONTEXT_PROFILE_ID,
 ]);
 
 export interface LiveAuthBindingRef {
@@ -23,6 +31,22 @@ export interface LiveAuthBindingRef {
   readonly profile?: string;
 }
 
+/**
+ * Public OpenAI Live (`gpt-live-1`) host registration
+ * (`runtime_options.openai_live`). The gateway fixes the execution identity
+ * (provider OpenAI, model `gpt-live-1`, this configured API-key binding); the
+ * host names only the principal, realm, binding, voice, and optional trusted
+ * session instructions. Requires a gateway compiled with `openai-live`.
+ */
+export interface OpenAiLiveGatewayConfig {
+  readonly principal: string;
+  readonly realm: string;
+  readonly authBinding: LiveAuthBindingRef;
+  readonly voice: string;
+  readonly sessionInstructions?: string;
+}
+
+/** DEPRECATED private ChatGPT-brokered registration; prefer {@link OpenAiLiveGatewayConfig}. */
 export interface ExperimentalLiveGatewayConfig {
   readonly principal: string;
   readonly realm: string;
@@ -37,6 +61,51 @@ export interface ExperimentalLiveGatewayConfig {
 export interface ExperimentalLiveExecutionProfileConfig {
   readonly profileId: string;
   readonly sessionInstructions: string;
+}
+
+function liveAuthBindingToWire(
+  realm: string,
+  authBinding: LiveAuthBindingRef,
+  context: string,
+): Record<string, unknown> {
+  const bindingRealm = requireString(authBinding.realm, `${context} authBinding.realm`);
+  if (bindingRealm !== realm) {
+    throw new TypeError(`${context} auth binding realm must equal realm`);
+  }
+  const wire: Record<string, unknown> = {
+    realm: bindingRealm,
+    binding: requireString(authBinding.binding, `${context} authBinding.binding`),
+  };
+  if (authBinding.profile !== undefined) {
+    wire.profile = requireString(authBinding.profile, `${context} authBinding.profile`);
+  }
+  return wire;
+}
+
+export function openAiLiveGatewayConfigToWire(
+  config: OpenAiLiveGatewayConfig,
+): Record<string, unknown> {
+  assertExactKeys(
+    asRecord(config, "openai live config"),
+    ["principal", "realm", "authBinding", "voice", "sessionInstructions"],
+    "openai live config",
+  );
+  const principal = requireString(config.principal, "openai live principal");
+  const realm = requireString(config.realm, "openai live realm");
+  const voice = requireString(config.voice, "openai live voice");
+  const result: Record<string, unknown> = {
+    principal,
+    realm,
+    auth_binding: liveAuthBindingToWire(realm, config.authBinding, "openai live"),
+    voice,
+  };
+  if (config.sessionInstructions !== undefined) {
+    result.session_instructions = requireString(
+      config.sessionInstructions,
+      "openai live sessionInstructions",
+    );
+  }
+  return result;
 }
 
 export function experimentalLiveGatewayConfigToWire(
@@ -71,26 +140,7 @@ export function experimentalLiveGatewayConfigToWire(
     "experimental live gate0Qualification",
   );
   const voice = requireString(config.voice, "experimental live voice");
-  const bindingRealm = requireString(
-    config.authBinding.realm,
-    "experimental live authBinding.realm",
-  );
-  if (bindingRealm !== realm) {
-    throw new TypeError("experimental live auth binding realm must equal realm");
-  }
-  const authBinding: Record<string, unknown> = {
-    realm: bindingRealm,
-    binding: requireString(
-      config.authBinding.binding,
-      "experimental live authBinding.binding",
-    ),
-  };
-  if (config.authBinding.profile !== undefined) {
-    authBinding.profile = requireString(
-      config.authBinding.profile,
-      "experimental live authBinding.profile",
-    );
-  }
+  const authBinding = liveAuthBindingToWire(realm, config.authBinding, "experimental live");
   const result: Record<string, unknown> = {
     principal,
     realm,

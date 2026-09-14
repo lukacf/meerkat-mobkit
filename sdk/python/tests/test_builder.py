@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from meerkat_mobkit import (
     ExperimentalLiveGatewayConfig,
+    OpenAiLiveGatewayConfig,
     ExperimentalLiveExecutionProfileConfig,
     IdentityBootstrapMode,
     LiveAuthBindingRef,
@@ -93,6 +94,36 @@ class TestBuilderChain:
         params = MobKitRuntime(b._config)._build_init_params()
 
         assert "experimental_live" not in params["runtime_options"]
+        assert "openai_live" not in params["runtime_options"]
+
+    def test_openai_live_reaches_public_runtime_option(self):
+        b = MobKit.builder().openai_live(
+            OpenAiLiveGatewayConfig(
+                principal="user:luka",
+                realm="family",
+                auth_binding=LiveAuthBindingRef(
+                    realm="family", binding="openai-api-key", profile="luka"
+                ),
+                voice="marin",
+                session_instructions="You are Reachy's voice embodiment.",
+            )
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["openai_live"] == {
+            "principal": "user:luka",
+            "realm": "family",
+            "auth_binding": {
+                "realm": "family",
+                "binding": "openai-api-key",
+                "profile": "luka",
+            },
+            "voice": "marin",
+            "session_instructions": "You are Reachy's voice embodiment.",
+        }
+        assert "experimental_live" not in params["runtime_options"]
+        with pytest.raises(TypeError, match="OpenAiLiveGatewayConfig"):
+            MobKit.builder().openai_live({"principal": "user:luka"})
 
     def test_experimental_live_reaches_strict_runtime_option(self):
         b = MobKit.builder().experimental_live(

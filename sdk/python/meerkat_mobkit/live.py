@@ -14,9 +14,15 @@ _EXECUTION_MODE_CAPABILITIES: dict[str, str] = {
     "client_context": LIVE_EXECUTION_CLIENT_CONTEXT_V1,
 }
 
+# Public Live (``gpt-live-1``) client-context execution profile served by a
+# gateway registered through ``runtime_options.openai_live``. Callers select
+# it through ``live/open { execution_identity: { version: "v1", profile_id } }``.
+OPENAI_GPT_LIVE_PUBLIC_CLIENT_CONTEXT_PROFILE_ID = "openai.gpt-live-1.client-context.v1"
+
 _RESERVED_GPT_LIVE_PROFILE_IDS = {
     "openai.gpt-live-1-codex.client-context.v1",
     "openai.gpt-live-1-codex.function-bridge.v1",
+    OPENAI_GPT_LIVE_PUBLIC_CLIENT_CONTEXT_PROFILE_ID,
 }
 
 
@@ -80,6 +86,48 @@ class LiveAuthBindingRef:
 
 
 @dataclass(frozen=True)
+class OpenAiLiveGatewayConfig:
+    """Public OpenAI Live (``gpt-live-1``) host registration.
+
+    Serialized as ``runtime_options.openai_live``. The gateway fixes the
+    execution identity (provider OpenAI, model ``gpt-live-1``, this configured
+    API-key binding); the host names only the principal, realm, binding,
+    voice, and optional trusted session instructions. Requires a gateway
+    compiled with ``openai-live``. Mutually exclusive with the deprecated
+    :class:`ExperimentalLiveGatewayConfig`.
+    """
+
+    principal: str
+    realm: str
+    auth_binding: LiveAuthBindingRef
+    voice: str
+    session_instructions: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        values = {
+            "principal": self.principal,
+            "realm": self.realm,
+            "voice": self.voice,
+        }
+        for name, value in values.items():
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"openai live {name} must be a non-empty string")
+        if not isinstance(self.auth_binding, LiveAuthBindingRef):
+            raise TypeError("openai live auth_binding must be a LiveAuthBindingRef")
+        if self.auth_binding.realm != self.realm:
+            raise ValueError("openai live auth binding realm must equal realm")
+        result: dict[str, Any] = {
+            **values,
+            "auth_binding": self.auth_binding.to_dict(),
+        }
+        if self.session_instructions is not None:
+            result["session_instructions"] = _non_empty(
+                self.session_instructions, "openai live session_instructions"
+            )
+        return result
+
+
+@dataclass(frozen=True)
 class ExperimentalLiveExecutionProfileConfig:
     """One host-trusted, caller-selectable live instruction profile."""
 
@@ -103,7 +151,9 @@ class ExperimentalLiveExecutionProfileConfig:
 
 @dataclass(frozen=True)
 class ExperimentalLiveGatewayConfig:
-    """Explicit host registration for the pre-release GPT Live lane.
+    """DEPRECATED explicit host registration for the pre-release GPT Live lane.
+
+    Prefer :class:`OpenAiLiveGatewayConfig` (``runtime_options.openai_live``).
 
     No field defaults an authority decision. The gateway remains disabled
     when this object is absent, and a build without matching Gate0 evidence

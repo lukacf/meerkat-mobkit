@@ -560,6 +560,29 @@ describe("MobKitRuntime", () => {
     const params = (rt as any)._buildInitParams();
 
     assert.equal("experimental_live" in params.runtime_options, false);
+    assert.equal("openai_live" in params.runtime_options, false);
+  });
+
+  it("builds the public openai live registration", () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._config.openaiLiveConfig = {
+      principal: "user:luka",
+      realm: "family",
+      authBinding: { realm: "family", binding: "openai-api-key", profile: "luka" },
+      voice: "marin",
+      sessionInstructions: "You are Reachy's voice embodiment.",
+    };
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.deepEqual(params.runtime_options.openai_live, {
+      principal: "user:luka",
+      realm: "family",
+      auth_binding: { realm: "family", binding: "openai-api-key", profile: "luka" },
+      voice: "marin",
+      session_instructions: "You are Reachy's voice embodiment.",
+    });
+    assert.equal("experimental_live" in params.runtime_options, false);
   });
 
   it("builds the explicit experimental live registration", () => {

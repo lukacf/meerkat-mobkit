@@ -6,8 +6,10 @@ import {
   LIVE_EXECUTION_CLIENT_CONTEXT_V1,
   LIVE_EXECUTION_FUNCTION_BRIDGE_V1,
   LIVE_EXECUTION_IDENTITY_V1,
+  OPENAI_GPT_LIVE_PUBLIC_CLIENT_CONTEXT_PROFILE_ID,
   activeLiveChannelHandleToWire,
   experimentalLiveGatewayConfigToWire,
+  openAiLiveGatewayConfigToWire,
   liveChannelHandleToWire,
   liveExecutionIdentityV1ToWire,
   liveOpenExecutionIdentityParams,
@@ -31,6 +33,72 @@ const fixture = JSON.parse(
     "utf8",
   ),
 ) as Record<string, unknown>;
+
+describe("openai live gateway registration", () => {
+  it("serializes the public gpt-live-1 registration exactly", () => {
+    assert.deepEqual(
+      openAiLiveGatewayConfigToWire({
+        principal: "user:luka",
+        realm: "family",
+        authBinding: { realm: "family", binding: "openai-api-key", profile: "luka" },
+        voice: "marin",
+        sessionInstructions: "You are Reachy's voice embodiment.",
+      }),
+      fixture.openai_live_gateway_config,
+    );
+    assert.deepEqual(
+      openAiLiveGatewayConfigToWire({
+        principal: "user:luka",
+        realm: "family",
+        authBinding: { realm: "family", binding: "openai-api-key" },
+        voice: "marin",
+      }),
+      {
+        principal: "user:luka",
+        realm: "family",
+        auth_binding: { realm: "family", binding: "openai-api-key" },
+        voice: "marin",
+      },
+    );
+  });
+
+  it("publishes the public client-context profile id from the shared fixture", () => {
+    assert.equal(
+      OPENAI_GPT_LIVE_PUBLIC_CLIENT_CONTEXT_PROFILE_ID,
+      fixture.openai_live_public_profile_id,
+    );
+  });
+
+  it("rejects cross-realm bindings, blank fields, and authority-bearing keys", () => {
+    const base = {
+      principal: "user:luka",
+      realm: "family",
+      authBinding: { realm: "family", binding: "openai-api-key" },
+      voice: "marin",
+    };
+    assert.throws(() =>
+      openAiLiveGatewayConfigToWire({
+        ...base,
+        authBinding: { realm: "other", binding: "openai-api-key" },
+      }),
+    );
+    assert.throws(() => openAiLiveGatewayConfigToWire({ ...base, voice: " " }));
+    assert.throws(() =>
+      openAiLiveGatewayConfigToWire({ ...base, sessionInstructions: " " }),
+    );
+    for (const forbidden of [
+      "model",
+      "provider",
+      "factoryKind",
+      "gate0Qualification",
+      "executionProfiles",
+    ]) {
+      assert.throws(() =>
+        openAiLiveGatewayConfigToWire({ ...base, [forbidden]: "forbidden" } as never),
+      );
+    }
+  });
+});
 
 describe("experimental live gateway registration", () => {
   it("serializes every authority-bearing field without defaults", () => {
@@ -110,6 +178,12 @@ describe("experimental live gateway registration", () => {
         {
           profileId: "openai.gpt-live-1-codex.function-bridge.v1",
           sessionInstructions: "relabel FunctionBridge",
+        },
+      ],
+      [
+        {
+          profileId: OPENAI_GPT_LIVE_PUBLIC_CLIENT_CONTEXT_PROFILE_ID,
+          sessionInstructions: "relabel the public profile",
         },
       ],
       [

@@ -80,7 +80,7 @@ feature-depth = 1
 # transport-streamable-http-server feature. Remove when Meerkat lifts to
 # rmcp >= 1.4.0.
 # RUSTSEC-2026-0150: audiopus_sys 0.2.2 unmaintained. Transitive and ONLY
-# under `experimental-gpt-live`:
+# under `openai-live` (and therefore `experimental-gpt-live`):
 #     audiopus_sys 0.2.2 <- opus 0.3.1 <- meerkat-live <- meerkat <- mobkit
 # The advisory is `informational = "unmaintained"` with `patched = []`, i.e. NO
 # vulnerability and no patched release; crates.io's latest audiopus_sys IS
@@ -94,7 +94,7 @@ feature-depth = 1
 # from our own tree: OB3 ships meerkat-live and its production lock contains
 # ZERO opus / audiopus_sys / webrtc, with live cargo-deny passing. So this is
 # confined to the OPTIONAL realtime audio/WebRTC path; an embedder that does
-# not enable `experimental-gpt-live` never acquires the dependency and is not
+# not enable `openai-live` never acquires the dependency and is not
 # waiving anything.
 # 0.8.31 FOLLOW-UP: migrate to a maintained fork - `vnrit-audiopus-sys` 0.2.3
 # carries the build fix - or vendor the CMake correction. Remove this waiver
