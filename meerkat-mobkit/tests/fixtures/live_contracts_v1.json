@@ -18,6 +18,18 @@
       }
     ]
   },
+  "openai_live_gateway_config": {
+    "principal": "user:luka",
+    "realm": "family",
+    "auth_binding": {
+      "realm": "family",
+      "binding": "openai-api-key",
+      "profile": "luka"
+    },
+    "voice": "marin",
+    "session_instructions": "You are Reachy's voice embodiment."
+  },
+  "openai_live_public_profile_id": "openai.gpt-live-1.client-context.v1",
   "execution_identity": {
     "version": "v1",
     "profile_id": "homecore.reachy.open-room.v1"

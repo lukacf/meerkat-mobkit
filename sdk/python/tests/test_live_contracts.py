@@ -7,6 +7,7 @@ from meerkat_mobkit.live import (
     LIVE_EXECUTION_CLIENT_CONTEXT_V1,
     LIVE_EXECUTION_FUNCTION_BRIDGE_V1,
     LIVE_EXECUTION_IDENTITY_V1,
+    OPENAI_GPT_LIVE_PUBLIC_CLIENT_CONTEXT_PROFILE_ID,
     ActiveLiveChannelHandle,
     ExperimentalLiveChannelStatus,
     ExperimentalLiveExecutionProfileConfig,
@@ -19,6 +20,7 @@ from meerkat_mobkit.live import (
     LivePlaybackOwnerReadiness,
     PendingLiveChannelHandle,
     LiveReplacementRequired,
+    OpenAiLiveGatewayConfig,
     live_open_execution_identity_params,
     live_execution_mode_capability,
     supports_live_execution_mode,
@@ -31,6 +33,76 @@ from meerkat_mobkit.types import CapabilitiesResult
 def contracts_fixture():
     path = Path(__file__).parents[3] / "meerkat-mobkit/tests/fixtures/live_contracts_v1.json"
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_openai_live_gateway_registration_matches_shared_fixture(contracts_fixture):
+    config = OpenAiLiveGatewayConfig(
+        principal="user:luka",
+        realm="family",
+        auth_binding=LiveAuthBindingRef(
+            realm="family", binding="openai-api-key", profile="luka"
+        ),
+        voice="marin",
+        session_instructions="You are Reachy's voice embodiment.",
+    )
+    assert config.to_dict() == contracts_fixture["openai_live_gateway_config"]
+    assert (
+        OPENAI_GPT_LIVE_PUBLIC_CLIENT_CONTEXT_PROFILE_ID
+        == contracts_fixture["openai_live_public_profile_id"]
+    )
+    minimal = OpenAiLiveGatewayConfig(
+        principal="user:luka",
+        realm="family",
+        auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+        voice="marin",
+    )
+    assert minimal.to_dict() == {
+        "principal": "user:luka",
+        "realm": "family",
+        "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+        "voice": "marin",
+    }
+
+
+def test_openai_live_gateway_registration_rejects_drift():
+    with pytest.raises(ValueError, match="realm must equal"):
+        OpenAiLiveGatewayConfig(
+            principal="user:luka",
+            realm="family",
+            auth_binding=LiveAuthBindingRef(realm="other", binding="openai-api-key"),
+            voice="marin",
+        ).to_dict()
+    with pytest.raises(ValueError, match="voice"):
+        OpenAiLiveGatewayConfig(
+            principal="user:luka",
+            realm="family",
+            auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+            voice=" ",
+        ).to_dict()
+    with pytest.raises(ValueError, match="session_instructions"):
+        OpenAiLiveGatewayConfig(
+            principal="user:luka",
+            realm="family",
+            auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+            voice="marin",
+            session_instructions=" ",
+        ).to_dict()
+    with pytest.raises(TypeError):
+        OpenAiLiveGatewayConfig(
+            principal="user:luka",
+            realm="family",
+            auth_binding={"realm": "family", "binding": "openai-api-key"},
+            voice="marin",
+        ).to_dict()
+    for field in ["model", "provider", "factory_kind", "gate0_qualification"]:
+        with pytest.raises(TypeError):
+            OpenAiLiveGatewayConfig(
+                principal="user:luka",
+                realm="family",
+                auth_binding=LiveAuthBindingRef(realm="family", binding="openai-api-key"),
+                voice="marin",
+                **{field: "forbidden"},
+            )
 
 
 def test_experimental_live_gateway_registration_is_explicit_and_strict(
@@ -98,6 +170,7 @@ def test_experimental_live_execution_profiles_reject_authority_and_drift():
             for profile_id in [
                 "openai.gpt-live-1-codex.client-context.v1",
                 "openai.gpt-live-1-codex.function-bridge.v1",
+                OPENAI_GPT_LIVE_PUBLIC_CLIENT_CONTEXT_PROFILE_ID,
             ]
         ],
     ]:

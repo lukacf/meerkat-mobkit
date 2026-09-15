@@ -658,6 +658,8 @@ class MobKitRuntime:
             runtime_options["experimental_live"] = (
                 self._config.experimental_live_config.to_dict()
             )
+        if self._config.openai_live_config is not None:
+            runtime_options["openai_live"] = self._config.openai_live_config.to_dict()
         if self._config.declare_spec_update_expected_revision is not None:
             runtime_options["mob_composition"] = {"authority": "authoritative"}
             runtime_options["declare_spec_update"] = {

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Sequence
 
 from .identity_first_models import IdentityBootstrapMode, RoleMigrationDeclaration
-from .live import ExperimentalLiveGatewayConfig
+from .live import ExperimentalLiveGatewayConfig, OpenAiLiveGatewayConfig
 
 
 @dataclass
@@ -53,6 +53,7 @@ class MobKitBuilderConfig:
     agent_customizer: Any | None = None
     identity_bootstrap_mode: IdentityBootstrapMode | None = None
     experimental_live_config: ExperimentalLiveGatewayConfig | None = None
+    openai_live_config: OpenAiLiveGatewayConfig | None = None
 
 
 class MobKitBuilder:
@@ -215,14 +216,29 @@ class MobKitBuilder:
         self._config.meerkat_config_path = text
         return self
 
+    def openai_live(self, config: OpenAiLiveGatewayConfig) -> MobKitBuilder:
+        """Install the public OpenAI Live (``gpt-live-1``) host registration.
+
+        Serialized as ``runtime_options.openai_live``. Disabled by default and
+        requires a gateway binary compiled with ``openai-live``. It exposes
+        stdio RPC only and does not mount an HTTP live route. Mutually
+        exclusive with the deprecated :meth:`experimental_live`.
+        """
+        if not isinstance(config, OpenAiLiveGatewayConfig):
+            raise TypeError("openai_live requires OpenAiLiveGatewayConfig")
+        config.to_dict()
+        self._config.openai_live_config = config
+        return self
+
     def experimental_live(
         self, config: ExperimentalLiveGatewayConfig
     ) -> MobKitBuilder:
-        """Install the explicit pre-release GPT Live host registration.
+        """DEPRECATED: install the pre-release GPT Live host registration.
 
-        This is disabled by default and requires a gateway binary compiled
-        with ``experimental-gpt-live`` plus matching Gate0 build evidence.
-        It exposes stdio RPC only and does not mount an HTTP live route.
+        Prefer :meth:`openai_live`. This is disabled by default and requires a
+        gateway binary compiled with ``experimental-gpt-live`` plus matching
+        Gate0 build evidence. It exposes stdio RPC only and does not mount an
+        HTTP live route.
         """
         if not isinstance(config, ExperimentalLiveGatewayConfig):
             raise TypeError("experimental_live requires ExperimentalLiveGatewayConfig")

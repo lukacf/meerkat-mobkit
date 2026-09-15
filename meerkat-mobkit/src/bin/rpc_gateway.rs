@@ -128,12 +128,19 @@ struct GatewayRuntimeOptions {
     workgraph: GatewayWorkgraphOption,
     /// Live (realtime) transport opt-in (default off). Persistent mode only.
     live: GatewayLiveOption,
-    /// Strict experimental GPT Live registration. Independent from the
-    /// ordinary WebSocket live option so opting in does not mount an HTTP
-    /// route. Every authority-bearing value is explicit and absence keeps
-    /// capability projection fail-closed.
+    /// DEPRECATED strict experimental GPT Live registration (private
+    /// ChatGPT-brokered path). Independent from the ordinary WebSocket live
+    /// option so opting in does not mount an HTTP route. Every
+    /// authority-bearing value is explicit and absence keeps capability
+    /// projection fail-closed. Mutually exclusive with `openai_live`.
     #[cfg(feature = "experimental-gpt-live")]
     experimental_live: Option<GatewayExperimentalLiveOption>,
+    /// Public OpenAI Live (`gpt-live-1`) registration. Independent from the
+    /// ordinary WebSocket live option so opting in does not mount an HTTP
+    /// route. The host names the principal, realm, configured OpenAI API-key
+    /// binding, and voice; absence keeps capability projection fail-closed.
+    #[cfg(feature = "openai-live")]
+    openai_live: Option<GatewayOpenAiLiveOption>,
     /// SDK-registered deterministic schedule targets
     /// (`runtime_options.host_runnables`): each name registers a schedule
     /// host runnable whose fire forwards over the callback bridge as
@@ -233,6 +240,22 @@ struct GatewayExperimentalLiveOption {
     binding: meerkat_core::AuthBindingRef,
     voice: String,
     execution_profiles: Vec<GatewayExperimentalLiveExecutionProfile>,
+}
+
+/// `runtime_options.openai_live`: the public Live (`gpt-live-1`) host
+/// registration. The execution identity is fixed by the gateway (provider
+/// OpenAI, model `gpt-live-1`, this configured binding); the host supplies
+/// only the principal, realm, binding, voice, and optional trusted session
+/// instructions. There is no factory identity, Gate0 qualification, or named
+/// execution profile catalogue on this path.
+#[cfg(feature = "openai-live")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GatewayOpenAiLiveOption {
+    principal: String,
+    realm: meerkat_core::RealmId,
+    binding: meerkat_core::AuthBindingRef,
+    voice: String,
+    session_instructions: Option<String>,
 }
 
 /// `runtime_options.workgraph` wire forms. Booleans keep the original
@@ -360,6 +383,23 @@ fn operator_scope_recall_inert(
         })
 }
 
+impl GatewayRuntimeOptions {
+    /// True when a strict GPT Live stdio registration (public `openai_live`
+    /// or deprecated `experimental_live`) was configured. Either one needs the
+    /// persistent live inputs even when the ordinary WebSocket door is off.
+    fn strict_live_registered(&self) -> bool {
+        #[cfg(feature = "experimental-gpt-live")]
+        if self.experimental_live.is_some() {
+            return true;
+        }
+        #[cfg(feature = "openai-live")]
+        if self.openai_live.is_some() {
+            return true;
+        }
+        false
+    }
+}
+
 impl Default for GatewayRuntimeOptions {
     fn default() -> Self {
         Self {
@@ -385,6 +425,8 @@ impl Default for GatewayRuntimeOptions {
             live: GatewayLiveOption::Disabled,
             #[cfg(feature = "experimental-gpt-live")]
             experimental_live: None,
+            #[cfg(feature = "openai-live")]
+            openai_live: None,
             host_runnables: Vec::new(),
             runtime_store_ephemeral: false,
             mob_storage_ephemeral: false,
@@ -1658,7 +1700,7 @@ default_binding = "local"
         StdioCallbackBridge::new(stdout_tx)
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn stale_public_observation_binding() -> (
         Arc<meerkat_runtime::MeerkatMachine>,
         meerkat_live::ProviderWebrtcBinding,
@@ -1674,10 +1716,10 @@ default_binding = "local"
         )
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     struct PublicationTestSideband;
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[async_trait]
     impl meerkat_live::ProviderWebrtcSidebandSession for PublicationTestSideband {
         async fn send_command(
@@ -1704,13 +1746,13 @@ default_binding = "local"
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     struct PublicationTestAnswerTransport;
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     struct PublicationTestPendingBoundReady;
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[async_trait]
     impl meerkat_live::ProviderWebrtcPendingBoundReadyResolver for PublicationTestPendingBoundReady {
         async fn resolve(self: Box<Self>) -> Result<u64, meerkat_live::ProviderWebrtcBrokerError> {
@@ -1718,7 +1760,7 @@ default_binding = "local"
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[async_trait]
     impl meerkat_live::LiveWebrtcAnswerTransport for PublicationTestAnswerTransport {
         async fn answer_admitted_offer(
@@ -1770,16 +1812,16 @@ default_binding = "local"
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     struct PublicationTestBoundReadyBinder;
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     struct PublicationTestBoundReadyCustody {
         authority:
             Option<meerkat_runtime::meerkat_machine::LiveWebrtcAnswerExecutionBindingAuthority>,
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[async_trait]
     impl meerkat::surface::LiveWebrtcBoundReadyCustody for PublicationTestBoundReadyCustody {
         async fn commit(mut self: Box<Self>) -> Result<(), String> {
@@ -1798,7 +1840,7 @@ default_binding = "local"
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[async_trait]
     impl meerkat::surface::LiveWebrtcBoundReadyBinder for PublicationTestBoundReadyBinder {
         async fn bind_answer_ready(
@@ -1834,7 +1876,7 @@ default_binding = "local"
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live-test")]
     async fn current_public_observation_binding() -> (
         Arc<meerkat_runtime::MeerkatMachine>,
         meerkat_live::ProviderWebrtcBinding,
@@ -1925,7 +1967,7 @@ default_binding = "local"
         (machine, provider_binding)
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test]
     async fn live_public_observation_ack_waits_for_outer_writer_settlement() {
         let (machine, binding) = stale_public_observation_binding();
@@ -1947,7 +1989,7 @@ default_binding = "local"
         assert!(delivered.await.expect("writer settlement"));
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test]
     async fn dropped_live_public_observation_rejects_delivery() {
         let (machine, binding) = stale_public_observation_binding();
@@ -1957,7 +1999,7 @@ default_binding = "local"
         assert!(!delivered.await.expect("drop settlement"));
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test]
     async fn queued_stale_live_public_observation_is_rejected_before_write() {
         let (machine, binding) = stale_public_observation_binding();
@@ -1969,7 +2011,7 @@ default_binding = "local"
         );
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live-test")]
     #[tokio::test]
     async fn live_public_observation_requires_writer_and_sdk_queue_ack() {
         let (machine, binding) = current_public_observation_binding().await;
@@ -4535,6 +4577,162 @@ actions = ["agent.view"]
         }
     }
 
+    #[cfg(feature = "openai-live")]
+    #[test]
+    fn gateway_openai_live_registration_is_explicit_and_strict() {
+        let defaults = parse_gateway_runtime_options(&json!({}), None).expect("defaults");
+        assert!(defaults.openai_live.is_none());
+        assert!(!defaults.strict_live_registered());
+
+        let options = parse_gateway_runtime_options(
+            &json!({
+                "runtime_options": {
+                    "openai_live": {
+                        "principal": "user:luka",
+                        "realm": "family",
+                        "auth_binding": {
+                            "realm": "family",
+                            "binding": "openai-api-key",
+                            "profile": "luka"
+                        },
+                        "voice": "marin",
+                        "session_instructions": "You are Reachy's voice embodiment."
+                    }
+                }
+            }),
+            None,
+        )
+        .expect("public registration");
+        let realm = meerkat_core::RealmId::parse("family").expect("realm");
+        assert_eq!(
+            options.openai_live,
+            Some(GatewayOpenAiLiveOption {
+                principal: "user:luka".to_string(),
+                realm: realm.clone(),
+                binding: meerkat_core::AuthBindingRef {
+                    realm: realm.clone(),
+                    binding: meerkat_core::BindingId::parse("openai-api-key").expect("binding"),
+                    profile: Some(meerkat_core::ProfileId::parse("luka").expect("profile")),
+                    origin: meerkat_core::BindingOrigin::Configured,
+                },
+                voice: "marin".to_string(),
+                session_instructions: Some("You are Reachy's voice embodiment.".to_string()),
+            })
+        );
+        assert!(options.strict_live_registered());
+
+        let minimal = parse_gateway_runtime_options(
+            &json!({
+                "runtime_options": {
+                    "openai_live": {
+                        "principal": "user:luka",
+                        "realm": "family",
+                        "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                        "voice": "marin",
+                        "session_instructions": null
+                    }
+                }
+            }),
+            None,
+        )
+        .expect("minimal public registration");
+        let minimal = minimal.openai_live.expect("registered");
+        assert_eq!(minimal.binding.profile, None);
+        assert_eq!(minimal.session_instructions, None);
+
+        for invalid in [
+            json!("gpt-live-1"),
+            json!({"principal": "user:luka", "realm": "family", "voice": "marin"}),
+            json!({
+                "principal": " ",
+                "realm": "family",
+                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "voice": "marin"
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "auth_binding": {"realm": "other", "binding": "openai-api-key"},
+                "voice": "marin"
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "auth_binding": {"realm": "family", "binding": "openai-api-key", "token": "x"},
+                "voice": "marin"
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "voice": " "
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "voice": "marin",
+                "session_instructions": " "
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "voice": "marin",
+                "model": "gpt-live-1"
+            }),
+            json!({
+                "principal": "user:luka",
+                "realm": "family",
+                "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                "voice": "marin",
+                "execution_profiles": []
+            }),
+        ] {
+            let error = parse_gateway_runtime_options(
+                &json!({"runtime_options": {"openai_live": invalid}}),
+                None,
+            )
+            .err()
+            .expect("invalid public registration must fail");
+            assert!(error.contains("openai_live"), "{error}");
+        }
+    }
+
+    #[cfg(feature = "experimental-gpt-live")]
+    #[test]
+    fn gateway_rejects_both_strict_live_registrations_at_once() {
+        let error = parse_gateway_runtime_options(
+            &json!({
+                "runtime_options": {
+                    "openai_live": {
+                        "principal": "user:luka",
+                        "realm": "family",
+                        "auth_binding": {"realm": "family", "binding": "openai-api-key"},
+                        "voice": "marin"
+                    },
+                    "experimental_live": {
+                        "principal": "user:luka",
+                        "realm": "family",
+                        "factory_kind": "private-live",
+                        "factory_version": "v1",
+                        "gate0_qualification": "gate0-v1",
+                        "auth_binding": {"realm": "family", "binding": "chatgpt-oauth"},
+                        "voice": "marin"
+                    }
+                }
+            }),
+            None,
+        )
+        .err()
+        .expect("both strict registrations must be rejected");
+        assert!(error.contains("mutually"), "{error}");
+        assert!(
+            error.contains("openai_live") && error.contains("experimental_live"),
+            "{error}"
+        );
+    }
+
     #[cfg(feature = "experimental-gpt-live")]
     #[test]
     fn gateway_experimental_live_registration_is_explicit_and_strict() {
@@ -5016,7 +5214,7 @@ actions = ["agent.view"]
         );
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test(start_paused = true)]
     async fn callback_live_output_blocked_writer_times_out_without_claiming_rejection() {
         let (machine, binding) = stale_public_observation_binding();
@@ -5034,7 +5232,7 @@ actions = ["agent.view"]
         line.settle_delivery(true).await;
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test(start_paused = true)]
     async fn callback_live_output_early_sdk_ack_still_waits_for_writer_settlement() {
         for delivered in [false, true] {
@@ -5066,7 +5264,7 @@ actions = ["agent.view"]
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test(start_paused = true)]
     async fn callback_live_output_closed_writer_cleans_pending() {
         let (machine, binding) = stale_public_observation_binding();
@@ -5464,6 +5662,132 @@ fn validate_gateway_identity_bootstrap_intent(
     Ok(())
 }
 
+/// Parse the shared `auth_binding {realm, binding, profile}` object of a
+/// strict live registration. The binding realm must equal the registration
+/// realm and the origin is always `Configured`: callers never mint a binding.
+#[cfg(feature = "openai-live")]
+fn parse_gateway_live_auth_binding(
+    object: &serde_json::Map<String, Value>,
+    option_name: &str,
+    realm: &meerkat_core::RealmId,
+) -> Result<meerkat_core::AuthBindingRef, String> {
+    let binding_object = object
+        .get("auth_binding")
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("runtime_options.{option_name}.auth_binding must be an object"))?;
+    let binding_supported = ["realm", "binding", "profile"];
+    let binding_unsupported = binding_object
+        .keys()
+        .filter(|key| !binding_supported.contains(&key.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !binding_unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.{option_name}.auth_binding fields: {}",
+            binding_unsupported.join(", ")
+        ));
+    }
+    let binding_string = |name: &str| -> Result<String, String> {
+        binding_object
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                format!(
+                    "runtime_options.{option_name}.auth_binding.{name} must be a non-empty string"
+                )
+            })
+    };
+    let binding_realm =
+        meerkat_core::RealmId::parse(binding_string("realm")?).map_err(|error| {
+            format!("runtime_options.{option_name}.auth_binding.realm is invalid: {error}")
+        })?;
+    if binding_realm != *realm {
+        return Err(format!(
+            "runtime_options.{option_name}.auth_binding.realm must equal {option_name}.realm"
+        ));
+    }
+    let binding = meerkat_core::BindingId::parse(binding_string("binding")?).map_err(|error| {
+        format!("runtime_options.{option_name}.auth_binding.binding is invalid: {error}")
+    })?;
+    let profile = match binding_object.get("profile") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let profile = value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "runtime_options.{option_name}.auth_binding.profile must be a non-empty string or null"
+                    )
+                })?;
+            Some(meerkat_core::ProfileId::parse(profile).map_err(|error| {
+                format!("runtime_options.{option_name}.auth_binding.profile is invalid: {error}")
+            })?)
+        }
+    };
+    Ok(meerkat_core::AuthBindingRef {
+        realm: binding_realm,
+        binding,
+        profile,
+        origin: meerkat_core::BindingOrigin::Configured,
+    })
+}
+
+#[cfg(feature = "openai-live")]
+fn parse_gateway_openai_live_option(value: &Value) -> Result<GatewayOpenAiLiveOption, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "runtime_options.openai_live must be an object".to_string())?;
+    let supported = [
+        "principal",
+        "realm",
+        "auth_binding",
+        "voice",
+        "session_instructions",
+    ];
+    let unsupported = object
+        .keys()
+        .filter(|key| !supported.contains(&key.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.openai_live fields: {}",
+            unsupported.join(", ")
+        ));
+    }
+    let required_string = |name: &str| -> Result<String, String> {
+        object
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| format!("runtime_options.openai_live.{name} must be a non-empty string"))
+    };
+    let principal = required_string("principal")?;
+    let realm_text = required_string("realm")?;
+    let realm = meerkat_core::RealmId::parse(&realm_text)
+        .map_err(|error| format!("runtime_options.openai_live.realm is invalid: {error}"))?;
+    let binding = parse_gateway_live_auth_binding(object, "openai_live", &realm)?;
+    let voice = required_string("voice")?;
+    let session_instructions = match object.get("session_instructions") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(required_string("session_instructions")?),
+    };
+    Ok(GatewayOpenAiLiveOption {
+        principal,
+        realm,
+        binding,
+        voice,
+        session_instructions,
+    })
+}
+
 #[cfg(feature = "experimental-gpt-live")]
 fn parse_gateway_experimental_live_option(
     value: &Value,
@@ -5520,68 +5844,7 @@ fn parse_gateway_experimental_live_option(
     .map_err(|error| {
         format!("runtime_options.experimental_live Gate0 qualification is invalid: {error}")
     })?;
-    let binding_object = object
-        .get("auth_binding")
-        .and_then(Value::as_object)
-        .ok_or_else(|| {
-            "runtime_options.experimental_live.auth_binding must be an object".to_string()
-        })?;
-    let binding_supported = ["realm", "binding", "profile"];
-    let binding_unsupported = binding_object
-        .keys()
-        .filter(|key| !binding_supported.contains(&key.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    if !binding_unsupported.is_empty() {
-        return Err(format!(
-            "unsupported runtime_options.experimental_live.auth_binding fields: {}",
-            binding_unsupported.join(", ")
-        ));
-    }
-    let binding_string = |name: &str| -> Result<String, String> {
-        binding_object
-            .get(name)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .ok_or_else(|| {
-                format!(
-                    "runtime_options.experimental_live.auth_binding.{name} must be a non-empty string"
-                )
-            })
-    };
-    let binding_realm =
-        meerkat_core::RealmId::parse(binding_string("realm")?).map_err(|error| {
-            format!("runtime_options.experimental_live.auth_binding.realm is invalid: {error}")
-        })?;
-    if binding_realm != realm {
-        return Err(
-            "runtime_options.experimental_live.auth_binding.realm must equal experimental_live.realm"
-                .to_string(),
-        );
-    }
-    let binding = meerkat_core::BindingId::parse(binding_string("binding")?).map_err(|error| {
-        format!("runtime_options.experimental_live.auth_binding.binding is invalid: {error}")
-    })?;
-    let profile = match binding_object.get("profile") {
-        None | Some(Value::Null) => None,
-        Some(value) => {
-            let profile = value
-                .as_str()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| {
-                    "runtime_options.experimental_live.auth_binding.profile must be a non-empty string or null"
-                        .to_string()
-                })?;
-            Some(meerkat_core::ProfileId::parse(profile).map_err(|error| {
-                format!(
-                    "runtime_options.experimental_live.auth_binding.profile is invalid: {error}"
-                )
-            })?)
-        }
-    };
+    let binding = parse_gateway_live_auth_binding(object, "experimental_live", &realm)?;
     let execution_profiles = match object.get("execution_profiles") {
         None => Vec::new(),
         Some(value) => {
@@ -5625,6 +5888,7 @@ fn parse_gateway_experimental_live_option(
                 if [
                     meerkat::GPT_LIVE_CLIENT_CONTEXT_PROFILE_ID,
                     meerkat::GPT_LIVE_FUNCTION_BRIDGE_PROFILE_ID,
+                    meerkat::GPT_LIVE_PUBLIC_CLIENT_CONTEXT_PROFILE_ID,
                 ]
                 .contains(&profile_id.as_str())
                 {
@@ -5650,12 +5914,7 @@ fn parse_gateway_experimental_live_option(
         realm,
         factory,
         qualification,
-        binding: meerkat_core::AuthBindingRef {
-            realm: binding_realm,
-            binding,
-            profile,
-            origin: meerkat_core::BindingOrigin::Configured,
-        },
+        binding,
         voice: required_string("voice")?,
         execution_profiles,
     })
@@ -5718,6 +5977,8 @@ fn parse_gateway_runtime_options(
         "live",
         #[cfg(feature = "experimental-gpt-live")]
         "experimental_live",
+        #[cfg(feature = "openai-live")]
+        "openai_live",
         "host_runnables",
         "runtime_store",
         "mob_storage",
@@ -5926,6 +6187,19 @@ fn parse_gateway_runtime_options(
     #[cfg(feature = "experimental-gpt-live")]
     if let Some(value) = runtime_options.get("experimental_live") {
         parsed.experimental_live = Some(parse_gateway_experimental_live_option(value)?);
+    }
+    #[cfg(feature = "openai-live")]
+    if let Some(value) = runtime_options.get("openai_live") {
+        parsed.openai_live = Some(parse_gateway_openai_live_option(value)?);
+    }
+    #[cfg(feature = "experimental-gpt-live")]
+    if parsed.experimental_live.is_some() && parsed.openai_live.is_some() {
+        return Err(
+            "runtime_options.experimental_live and runtime_options.openai_live are mutually \
+             exclusive: register exactly one strict GPT Live path (experimental_live is \
+             deprecated; prefer openai_live)"
+                .to_string(),
+        );
     }
     if let Some(value) = runtime_options.get("host_runnables") {
         let entries = value.as_array().ok_or_else(|| {
@@ -7326,13 +7600,13 @@ fn run_single_shot(args: &[String]) {
 
 struct GatewayStdoutLine {
     response: meerkat_mobkit::SerializedRpcResponseDelivery,
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     public_observation_delivery: Option<oneshot::Sender<bool>>,
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     public_observation_binding: Option<LivePublicObservationBinding>,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 struct LivePublicObservationBinding {
     machine: Arc<meerkat_runtime::MeerkatMachine>,
     binding: meerkat_live::ProviderWebrtcBinding,
@@ -7342,9 +7616,9 @@ impl GatewayStdoutLine {
     fn plain(line: String) -> Self {
         Self {
             response: meerkat_mobkit::SerializedRpcResponseDelivery::plain(line),
-            #[cfg(feature = "experimental-gpt-live")]
+            #[cfg(feature = "openai-live")]
             public_observation_delivery: None,
-            #[cfg(feature = "experimental-gpt-live")]
+            #[cfg(feature = "openai-live")]
             public_observation_binding: None,
         }
     }
@@ -7352,14 +7626,14 @@ impl GatewayStdoutLine {
     fn delivery(response: meerkat_mobkit::SerializedRpcResponseDelivery) -> Self {
         Self {
             response,
-            #[cfg(feature = "experimental-gpt-live")]
+            #[cfg(feature = "openai-live")]
             public_observation_delivery: None,
-            #[cfg(feature = "experimental-gpt-live")]
+            #[cfg(feature = "openai-live")]
             public_observation_binding: None,
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn public_observation(
         machine: Arc<meerkat_runtime::MeerkatMachine>,
         binding: meerkat_live::ProviderWebrtcBinding,
@@ -7376,7 +7650,7 @@ impl GatewayStdoutLine {
         )
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     async fn acquire_public_observation_custody(
         &self,
     ) -> Result<Option<meerkat_runtime::meerkat_machine::LiveBindingPublicationCustody>, ()> {
@@ -7398,7 +7672,7 @@ impl GatewayStdoutLine {
 
     async fn settle_delivery(&mut self, delivered: bool) {
         let _ = self.response.settle_delivery(delivered).await;
-        #[cfg(feature = "experimental-gpt-live")]
+        #[cfg(feature = "openai-live")]
         if let Some(public_observation_delivery) = self.public_observation_delivery.take() {
             let _ = public_observation_delivery.send(delivered);
         }
@@ -7407,7 +7681,7 @@ impl GatewayStdoutLine {
 
 impl Drop for GatewayStdoutLine {
     fn drop(&mut self) {
-        #[cfg(feature = "experimental-gpt-live")]
+        #[cfg(feature = "openai-live")]
         if let Some(public_observation_delivery) = self.public_observation_delivery.take() {
             let _ = public_observation_delivery.send(false);
         }
@@ -7422,7 +7696,7 @@ impl std::ops::Deref for GatewayStdoutLine {
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 struct GatewayExperimentalLiveSessionBindingAuthority {
     handle: meerkat_mob::MobHandle,
     machine: Arc<meerkat_runtime::MeerkatMachine>,
@@ -7431,7 +7705,7 @@ struct GatewayExperimentalLiveSessionBindingAuthority {
     allowed_binding: meerkat_core::AuthBindingRef,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 impl GatewayExperimentalLiveSessionBindingAuthority {
     async fn resolve_exact_member(
         &self,
@@ -7478,7 +7752,7 @@ impl GatewayExperimentalLiveSessionBindingAuthority {
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[async_trait]
 impl meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority
     for GatewayExperimentalLiveSessionBindingAuthority
@@ -7563,14 +7837,14 @@ impl meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[derive(Clone)]
 struct StdioExperimentalLivePublicObservationPublisher {
     machine: Arc<meerkat_runtime::MeerkatMachine>,
     callback_bridge: StdioCallbackBridge,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 impl StdioExperimentalLivePublicObservationPublisher {
     fn new(
         machine: Arc<meerkat_runtime::MeerkatMachine>,
@@ -7583,7 +7857,7 @@ impl StdioExperimentalLivePublicObservationPublisher {
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[async_trait]
 impl meerkat::experimental_gpt_live::ExperimentalLivePublicObservationPublisher
     for StdioExperimentalLivePublicObservationPublisher
@@ -7628,7 +7902,7 @@ impl std::fmt::Display for GatewayStdoutLine {
 }
 
 async fn write_gateway_stdout_line(line: &mut GatewayStdoutLine) -> bool {
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     let _public_observation_custody = match line.acquire_public_observation_custody().await {
         Ok(custody) => custody,
         Err(()) => return false,
@@ -7939,7 +8213,7 @@ impl StdioCallbackBridge {
     /// the bounded SDK queue entry. A stale binding, writer failure, missing
     /// consumer, or queue overflow is returned to the provider pump as a
     /// delivery failure instead of silently losing playback authority.
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     async fn call_live_public_observation(
         &self,
         machine: Arc<meerkat_runtime::MeerkatMachine>,
@@ -11780,16 +12054,8 @@ external_addressable = true
         // the projection sink and machine authorities are
         // persistent-service seams.
         let live_inputs = if matches!(gateway_options.live, GatewayLiveOption::Enabled { .. })
-            || cfg!(feature = "experimental-gpt-live") && {
-                #[cfg(feature = "experimental-gpt-live")]
-                {
-                    gateway_options.experimental_live.is_some()
-                }
-                #[cfg(not(feature = "experimental-gpt-live"))]
-                {
-                    false
-                }
-            } {
+            || gateway_options.strict_live_registered()
+        {
             Some((
                 Arc::clone(&concrete_service),
                 live_machine,
@@ -13137,84 +13403,153 @@ external_addressable = true
         } else {
             app
         };
-        #[cfg(feature = "experimental-gpt-live")]
-        let capability_provider = if let Some(experimental) =
-            gateway_options.experimental_live.as_ref()
-        {
-            let mob_mcp_state = runtime
-                .mob_runtime()
-                .agent_mob_mcp_state()
-                .unwrap_or_else(|| {
-                    fail_init(
-                        &request_id,
-                        -32602,
-                        "runtime_options.experimental_live requires the owning Mob MCP state"
-                            .to_string(),
-                    )
-                });
-            let access = gateway_options
-                .access
-                .clone()
-                .unwrap_or_else(meerkat_mobkit::AccessController::disabled);
-            let binding_authority = Arc::new(GatewayExperimentalLiveSessionBindingAuthority {
-                handle: runtime.mob_handle(),
-                machine: Arc::clone(&live_machine),
-                access,
-                principal: experimental.principal.clone(),
-                allowed_binding: experimental.binding.clone(),
-            });
-            let transport =
-                Arc::new(meerkat::experimental_gpt_live::ExperimentalGptLiveWebrtcTransport::new());
-            let open_authority = Arc::new(
-                meerkat::experimental_gpt_live::ExperimentalGptLiveOpenAuthority::new(
-                    meerkat::experimental_gpt_live::ExperimentalGptLiveOpenAuthorityConfig {
-                        agent_factory: live_agent_factory.clone(),
-                        config_source: live_ctx.experimental_live_config_source(),
-                        binding_authority,
-                        execution_identity: meerkat_core::SessionLlmIdentity {
-                            model: "gpt-live-1-codex".to_string(),
-                            provider: meerkat_core::Provider::OpenAI,
-                            self_hosted_server_id: None,
-                            provider_params: None,
-                            auth_binding: Some(experimental.binding.clone()),
+        #[cfg(feature = "openai-live")]
+        let capability_provider = {
+            // Shared strict-registration inputs: the owning Mob MCP state, the
+            // durable-session binding authority scoped to the registered
+            // principal and exact configured binding, the sealed WebRTC
+            // transport, and the stdio public-observation publisher. Both
+            // strict paths compose these identically; only the open authority
+            // and its admission differ.
+            let strict_live_inputs =
+                |option_name: &str, principal: &str, binding: &meerkat_core::AuthBindingRef| {
+                    let mob_mcp_state = runtime
+                    .mob_runtime()
+                    .agent_mob_mcp_state()
+                    .unwrap_or_else(|| {
+                        fail_init(
+                            &request_id,
+                            -32602,
+                            format!(
+                                "runtime_options.{option_name} requires the owning Mob MCP state"
+                            ),
+                        )
+                    });
+                    let access = gateway_options
+                        .access
+                        .clone()
+                        .unwrap_or_else(meerkat_mobkit::AccessController::disabled);
+                    let binding_authority =
+                        Arc::new(GatewayExperimentalLiveSessionBindingAuthority {
+                            handle: runtime.mob_handle(),
+                            machine: Arc::clone(&live_machine),
+                            access,
+                            principal: principal.to_string(),
+                            allowed_binding: binding.clone(),
+                        });
+                    let transport = Arc::new(
+                        meerkat::experimental_gpt_live::ExperimentalGptLiveWebrtcTransport::new(),
+                    );
+                    let publisher = Arc::new(StdioExperimentalLivePublicObservationPublisher::new(
+                        Arc::clone(&live_machine),
+                        bridge.clone(),
+                    ));
+                    (mob_mcp_state, binding_authority, transport, publisher)
+                };
+            let mut capability_provider: Option<
+                meerkat_mobkit::live_wiring::LiveCapabilityProvider,
+            > = None;
+            #[cfg(feature = "experimental-gpt-live")]
+            if let Some(experimental) = gateway_options.experimental_live.as_ref() {
+                let (mob_mcp_state, binding_authority, transport, publisher) = strict_live_inputs(
+                    "experimental_live",
+                    &experimental.principal,
+                    &experimental.binding,
+                );
+                let open_authority = Arc::new(
+                    meerkat::experimental_gpt_live::ExperimentalGptLiveOpenAuthority::new(
+                        meerkat::experimental_gpt_live::ExperimentalGptLiveOpenAuthorityConfig {
+                            agent_factory: live_agent_factory.clone(),
+                            config_source: live_ctx.experimental_live_config_source(),
+                            binding_authority,
+                            execution_identity: meerkat_core::SessionLlmIdentity {
+                                model: "gpt-live-1-codex".to_string(),
+                                provider: meerkat_core::Provider::OpenAI,
+                                self_hosted_server_id: None,
+                                provider_params: None,
+                                auth_binding: Some(experimental.binding.clone()),
+                            },
+                            realm: experimental.realm.clone(),
+                            factory_identity: experimental.factory.clone(),
+                            transport: Arc::clone(&transport),
+                            voice: experimental.voice.clone(),
                         },
-                        realm: experimental.realm.clone(),
-                        factory_identity: experimental.factory.clone(),
-                        transport: Arc::clone(&transport),
-                        voice: experimental.voice.clone(),
-                    },
-                )
-                .unwrap_or_else(|error| {
-                    fail_init(
-                        &request_id,
-                        -32602,
-                        format!("runtime_options.experimental_live composition failed: {error}"),
                     )
-                }),
-            );
-            meerkat_mobkit::live_wiring::LiveCapabilityProvider::experimental(
-                Arc::new(live_agent_factory.clone()),
-                experimental.realm.clone(),
-                experimental.factory.clone(),
-                open_authority,
-                transport,
-                mob_mcp_state,
-                Arc::new(StdioExperimentalLivePublicObservationPublisher::new(
-                    Arc::clone(&live_machine),
-                    bridge.clone(),
-                )),
-            )
-        } else {
-            meerkat_mobkit::live_wiring::LiveCapabilityProvider::disabled()
+                    .unwrap_or_else(|error| {
+                        fail_init(
+                            &request_id,
+                            -32602,
+                            format!(
+                                "runtime_options.experimental_live composition failed: {error}"
+                            ),
+                        )
+                    }),
+                );
+                capability_provider = Some(
+                    meerkat_mobkit::live_wiring::LiveCapabilityProvider::experimental(
+                        Arc::new(live_agent_factory.clone()),
+                        experimental.realm.clone(),
+                        experimental.factory.clone(),
+                        open_authority,
+                        transport,
+                        mob_mcp_state,
+                        publisher,
+                    ),
+                );
+            }
+            // Parsing rejects both registrations at once, so this never
+            // overrides an experimental provider.
+            if let Some(public) = gateway_options.openai_live.as_ref() {
+                let (mob_mcp_state, binding_authority, transport, publisher) =
+                    strict_live_inputs("openai_live", &public.principal, &public.binding);
+                let open_authority = Arc::new(
+                    meerkat::experimental_gpt_live::ExperimentalGptLiveOpenAuthority::new_public(
+                        meerkat::experimental_gpt_live::PublicGptLiveOpenAuthorityConfig {
+                            agent_factory: live_agent_factory.clone(),
+                            config_source: live_ctx.experimental_live_config_source(),
+                            binding_authority,
+                            execution_identity: meerkat_core::SessionLlmIdentity {
+                                model: meerkat::GPT_LIVE_PUBLIC_MODEL.to_string(),
+                                provider: meerkat_core::Provider::OpenAI,
+                                self_hosted_server_id: None,
+                                provider_params: None,
+                                auth_binding: Some(public.binding.clone()),
+                            },
+                            realm: public.realm.clone(),
+                            transport: Arc::clone(&transport),
+                            voice: public.voice.clone(),
+                            session_instructions: public.session_instructions.clone(),
+                        },
+                    )
+                    .unwrap_or_else(|error| {
+                        fail_init(
+                            &request_id,
+                            -32602,
+                            format!("runtime_options.openai_live composition failed: {error}"),
+                        )
+                    }),
+                );
+                capability_provider =
+                    Some(meerkat_mobkit::live_wiring::LiveCapabilityProvider::public(
+                        Arc::new(live_agent_factory.clone()),
+                        public.realm.clone(),
+                        open_authority,
+                        transport,
+                        mob_mcp_state,
+                        publisher,
+                    ));
+            }
+            capability_provider
+                .unwrap_or_else(meerkat_mobkit::live_wiring::LiveCapabilityProvider::disabled)
         };
-        #[cfg(feature = "experimental-gpt-live")]
+        #[cfg(feature = "openai-live")]
         let handler = meerkat_mobkit::live_wiring::live_rpc_handler_with_capabilities(
             live_ctx,
             live_service,
             live_machine,
             capability_provider,
         );
-        #[cfg(not(feature = "experimental-gpt-live"))]
+        #[cfg(not(feature = "openai-live"))]
         let handler =
             meerkat_mobkit::live_wiring::live_rpc_handler(live_ctx, live_service, live_machine);
         (app, Some(handler))

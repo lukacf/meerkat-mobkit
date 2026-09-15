@@ -19,7 +19,7 @@
 import { existsSync } from "node:fs";
 import type { SessionAgentBuilder, ErrorCallback } from "./agent-builder.js";
 import type { MobKitRuntime } from "./runtime.js";
-import type { ExperimentalLiveGatewayConfig } from "./live.js";
+import type { ExperimentalLiveGatewayConfig, OpenAiLiveGatewayConfig } from "./live.js";
 import type { JobCredentialResolver } from "./jobs.js";
 import type {
   ContinuityStore,
@@ -140,6 +140,7 @@ export interface MobKitBuilderConfig {
   topologyProvider: TopologyProvider | null;
   jobCredentialResolver: JobCredentialResolver | null;
   experimentalLiveConfig: ExperimentalLiveGatewayConfig | null;
+  openaiLiveConfig: OpenAiLiveGatewayConfig | null;
 }
 
 function defaultConfig(): MobKitBuilderConfig {
@@ -181,6 +182,7 @@ function defaultConfig(): MobKitBuilderConfig {
     topologyProvider: null,
     jobCredentialResolver: null,
     experimentalLiveConfig: null,
+    openaiLiveConfig: null,
   };
 }
 
@@ -300,7 +302,20 @@ export class MobKitBuilder {
   }
 
   /**
-   * Install the explicit pre-release GPT Live stdio registration.
+   * Install the public OpenAI Live (`gpt-live-1`) stdio registration
+   * (`runtime_options.openai_live`).
+   *
+   * The gateway remains disabled when omitted. The selected binary must be
+   * compiled with `openai-live`. Mutually exclusive with `experimentalLive`.
+   */
+  openaiLive(config: OpenAiLiveGatewayConfig): this {
+    this._config.openaiLiveConfig = config;
+    return this;
+  }
+
+  /**
+   * DEPRECATED: install the explicit pre-release GPT Live stdio registration
+   * (private ChatGPT-brokered path). Prefer {@link openaiLive}.
    *
    * The gateway remains disabled when omitted. The selected binary must be
    * compiled with `experimental-gpt-live` and matching Gate0 evidence.

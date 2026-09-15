@@ -9,23 +9,30 @@
 //! provider-open, attachment, token-mint, playback settlement, or fail-closed
 //! cleanup choreography. Until that generic facade is published, stock
 //! 0.8.26 builds retain the preexisting ordinary websocket implementation
-//! behind the mutually exclusive non-experimental cfg.
+//! behind the mutually exclusive non-live cfg.
+//!
+//! Feature gating: the strict GPT Live machinery here (WebRTC answer, strict
+//! pending/active custody, capability projection, public observation) is
+//! compiled under `openai-live`, which serves the released public
+//! `gpt-live-1` path via [`LiveCapabilityProvider::public`]. The deprecated
+//! private ChatGPT-brokered path adds only its factory identity under
+//! `experimental-gpt-live` via [`LiveCapabilityProvider::experimental`].
 
 use std::sync::Arc;
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 use std::sync::Mutex as StdMutex;
 
 use async_trait::async_trait;
 use meerkat::AgentFactory;
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 use meerkat::ExperimentalLiveFactoryIdentity;
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 use meerkat::session_runtime::errors::LiveOpenError;
 use meerkat::session_runtime::errors::LiveOpenPrecheckError;
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 use meerkat::session_runtime::live_orchestration::precheck_identity;
 use meerkat::session_runtime::live_orchestration::realtime_projection_messages;
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 use meerkat::session_runtime::live_orchestration::{
     LiveSeedWindow, RealtimeSessionOpenProjectionError,
 };
@@ -33,14 +40,14 @@ use meerkat::session_runtime::realtime_credentials::RealtimeCurrentConfigSource;
 // The host + its config are needed by the DEFAULT build now, because the
 // stock truncate path routes through the owner seam. Only the projection
 // type remains experimental-only.
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 use meerkat::surface::ServiceLiveProjection;
 use meerkat::surface::{ServiceMemberLiveHost, ServiceMemberLiveHostConfig};
 use meerkat_client::realtime_session::{RealtimeSessionFactory, RealtimeSessionOpenConfig};
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 use meerkat_contracts::LivePlaybackCompleteParams;
 use meerkat_contracts::LiveTruncateParams;
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 use meerkat_contracts::{BridgeLiveControlVerb, LiveInputChunkWire, WireLiveResponseModality};
 use meerkat_contracts::{
     LiveChannelParams, LiveCloseResult, LiveCommitInputParams, LiveCommitInputResult,
@@ -48,18 +55,18 @@ use meerkat_contracts::{
     LiveSendInputResult, LiveStatusResult, LiveTruncateResult, RealtimeTurningMode,
     WireLiveAdapterStatus, WireLiveDegradationReason,
 };
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 use meerkat_contracts::{LiveOpenResult, RealtimeCapabilities};
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 use meerkat_core::RealmId;
 use meerkat_core::live_adapter::{LiveAdapterCommand, LiveProjectionSnapshot};
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 use meerkat_core::live_adapter::{
     LiveAudioConfig, LiveChannelCapabilities, LiveContinuityMode, LiveTransportBootstrap,
 };
 use meerkat_core::types::SessionId;
 use meerkat_core::{Config, ConfigError, Provider, SessionLlmIdentity};
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 use meerkat_live::LiveChannelCloseObservation;
 use meerkat_live::{
     LiveAdapterHost, LiveAdapterHostError, LiveChannelCloseFeedback, LiveChannelId,
@@ -72,7 +79,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 use crate::access::{ACTION_AGENT_SEND, AccessView};
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcResponse};
 
@@ -90,7 +97,7 @@ const INVALID_PARAMS_CODE: i64 = -32602;
 const METHOD_NOT_FOUND_CODE: i64 = -32601;
 const INTERNAL_ERROR_CODE: i64 = -32000;
 
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 mod ordinary_compat {
     use super::*;
     use std::collections::HashMap;
@@ -986,7 +993,7 @@ mod ordinary_compat {
     }
 }
 
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 use ordinary_compat::GatewayLiveProjectionSink;
 
 /// Operation-specific authority input for a future authenticated HTTP live
@@ -1010,11 +1017,11 @@ pub(crate) trait AuthenticatedHttpLiveAuthority: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LiveOperation {
     Open,
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     ReplacementRequired,
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     PlaybackOwnerRegister,
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     PlaybackOwnerRevoke,
     Status,
     Close,
@@ -1023,9 +1030,9 @@ pub(crate) enum LiveOperation {
     CommitInput,
     Interrupt,
     Truncate,
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     PlaybackComplete,
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     WebrtcAnswer,
 }
 
@@ -1033,11 +1040,11 @@ impl LiveOperation {
     fn from_method(method: &str) -> Option<Self> {
         match method {
             "mobkit/live/open" => Some(Self::Open),
-            #[cfg(feature = "experimental-gpt-live")]
+            #[cfg(feature = "openai-live")]
             "mobkit/live/replacement_required" => Some(Self::ReplacementRequired),
-            #[cfg(feature = "experimental-gpt-live")]
+            #[cfg(feature = "openai-live")]
             "mobkit/live/playback_owner/register" => Some(Self::PlaybackOwnerRegister),
-            #[cfg(feature = "experimental-gpt-live")]
+            #[cfg(feature = "openai-live")]
             "mobkit/live/playback_owner/revoke" => Some(Self::PlaybackOwnerRevoke),
             "mobkit/live/status" => Some(Self::Status),
             "mobkit/live/close" => Some(Self::Close),
@@ -1046,9 +1053,9 @@ impl LiveOperation {
             "mobkit/live/commit_input" => Some(Self::CommitInput),
             "mobkit/live/interrupt" => Some(Self::Interrupt),
             "mobkit/live/truncate" => Some(Self::Truncate),
-            #[cfg(feature = "experimental-gpt-live")]
+            #[cfg(feature = "openai-live")]
             "mobkit/live/playback_complete" => Some(Self::PlaybackComplete),
-            #[cfg(feature = "experimental-gpt-live")]
+            #[cfg(feature = "openai-live")]
             meerkat_live::LIVE_WEBRTC_ANSWER_METHOD => Some(Self::WebrtcAnswer),
             _ => None,
         }
@@ -1105,7 +1112,7 @@ impl LiveSurfaceAuthority {
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[async_trait]
 trait ExactLiveSessionOwner: Send + Sync {
     async fn owns_session(&self, canonical_session_id: &SessionId) -> bool;
@@ -1116,13 +1123,13 @@ trait ExactLiveSessionOwner: Send + Sync {
     ) -> Result<(), meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityError>;
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 struct MobHandleLiveSessionOwner {
     handle: meerkat_mob::MobHandle,
     member_identity: meerkat_mob::AgentIdentity,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[async_trait]
 impl ExactLiveSessionOwner for MobHandleLiveSessionOwner {
     async fn owns_session(&self, canonical_session_id: &SessionId) -> bool {
@@ -1166,7 +1173,7 @@ impl ExactLiveSessionOwner for MobHandleLiveSessionOwner {
 /// Meerkat realm credential-policy authority that can mint the opaque binding
 /// witness. Missing principals, stale sessions, and ABAC denials therefore
 /// cannot reach credential materialization.
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 pub struct MobkitExperimentalLiveSessionBindingAuthority {
     owner: Arc<dyn ExactLiveSessionOwner>,
     machine: Arc<MeerkatMachine>,
@@ -1178,7 +1185,7 @@ pub struct MobkitExperimentalLiveSessionBindingAuthority {
 /// Realm policy that mints only the exact opaque binding-use witness.
 /// MobKit attaches the generated AuthMachine lease from the same machine that
 /// owns the revalidated member session.
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[async_trait]
 pub trait MobkitExperimentalLiveBindingUsePolicy: Send + Sync {
     async fn authorize_binding_use(
@@ -1191,7 +1198,7 @@ pub trait MobkitExperimentalLiveBindingUsePolicy: Send + Sync {
     >;
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 impl MobkitExperimentalLiveSessionBindingAuthority {
     /// Bind a request-scoped access snapshot to the exact current member
     /// whose bridge session was selected by MobKit's authoritative target
@@ -1219,7 +1226,7 @@ impl MobkitExperimentalLiveSessionBindingAuthority {
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[async_trait]
 impl meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority
     for MobkitExperimentalLiveSessionBindingAuthority
@@ -1318,7 +1325,7 @@ impl RealtimeCurrentConfigSource for EnvRealtimeConfigSource {
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[async_trait]
 impl meerkat::experimental_gpt_live::ExperimentalLiveCurrentConfigSource
     for EnvRealtimeConfigSource
@@ -1336,7 +1343,7 @@ impl meerkat::experimental_gpt_live::ExperimentalLiveCurrentConfigSource
 pub struct GatewayLiveContext {
     pub host: Arc<LiveAdapterHost>,
     pub ws_state: Arc<LiveWsState>,
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     pub webrtc_state: Arc<meerkat_live::LiveWebrtcState>,
     /// The exact current-Config snapshot owner shared by ordinary realtime
     /// credential resolution and an opt-in experimental live authority.
@@ -1354,7 +1361,7 @@ impl GatewayLiveContext {
     /// Project the same immutable current-Config owner into Meerkat's
     /// experimental admission seam without coupling the host to the public
     /// OpenAI realtime credential trait.
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[must_use]
     pub fn experimental_live_config_source(
         &self,
@@ -1373,7 +1380,7 @@ impl GatewayLiveContext {
 /// (`meerkat_live::DEFAULT_LIVE_TOOL_TIMEOUT`). Credentials resolve PER OPEN
 /// via the facade's `PerOpenCredentialRealtimeSessionFactory` over
 /// [`EnvRealtimeConfigSource`].
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 pub fn attach_live<B: SessionAgentBuilder + 'static>(
     service: Arc<PersistentSessionService<B>>,
     machine: Arc<MeerkatMachine>,
@@ -1397,7 +1404,7 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
         Arc::clone(&projection) as Arc<dyn LiveChannelStatusFeedback>,
         Arc::clone(&projection) as Arc<dyn LiveWsTokenAuthority>,
     ));
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     let webrtc_state = Arc::new(meerkat_live::LiveWebrtcState::new(
         Arc::clone(&host),
         Arc::clone(&projection) as Arc<dyn LiveChannelCloseFeedback>,
@@ -1410,7 +1417,7 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
     GatewayLiveContext {
         host,
         ws_state,
-        #[cfg(feature = "experimental-gpt-live")]
+        #[cfg(feature = "openai-live")]
         webrtc_state,
         config_source,
         session_factory,
@@ -1423,7 +1430,7 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
 /// published Meerkat 0.8.26 surface. This compatibility path is excluded
 /// from experimental builds, whose projection and lifecycle authority are
 /// exclusively the shared generic Meerkat facades above.
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 pub fn attach_live<B: SessionAgentBuilder + 'static>(
     service: Arc<PersistentSessionService<B>>,
     machine: Arc<MeerkatMachine>,
@@ -1496,7 +1503,7 @@ struct GatewayLiveOpenParams {
     turning_mode: Option<RealtimeTurningMode>,
     #[serde(default)]
     transport: Option<LiveOpenTransport>,
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[serde(default)]
     execution_identity: Option<meerkat_contracts::WireLiveExecutionIdentityOverrideV1>,
     /// v1 realtime-model override (design §6): members whose text model is
@@ -1527,7 +1534,7 @@ struct GatewayLiveOpenParams {
     seed_max_chars: Option<usize>,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GatewayLiveWebrtcAnswerParams {
@@ -1542,7 +1549,7 @@ struct GatewayLiveWebrtcAnswerParams {
     offer_sdp: String,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StrictLiveReceiptParams {
@@ -1554,7 +1561,7 @@ struct StrictLiveReceiptParams {
     activation_receipt: Option<String>,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StrictLivePlaybackOwnerRegisterParams {
@@ -1563,7 +1570,7 @@ struct StrictLivePlaybackOwnerRegisterParams {
     pending_receipt: String,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StrictLivePlaybackOwnerRevokeParams {
@@ -1575,7 +1582,7 @@ struct StrictLivePlaybackOwnerRevokeParams {
     activation_receipt: Option<String>,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StrictLiveSendInputParams {
@@ -1585,7 +1592,7 @@ struct StrictLiveSendInputParams {
     chunk: LiveInputChunkWire,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StrictLiveCommitInputParams {
@@ -1596,7 +1603,7 @@ struct StrictLiveCommitInputParams {
     response_modality: Option<WireLiveResponseModality>,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StrictLiveActiveChannelParams {
@@ -1605,7 +1612,7 @@ struct StrictLiveActiveChannelParams {
     activation_receipt: String,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StrictLiveTruncateParams {
@@ -1618,7 +1625,7 @@ struct StrictLiveTruncateParams {
     reported_playback_prefix: Option<String>,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StrictLivePlaybackCompleteParams {
@@ -1628,7 +1635,7 @@ struct StrictLivePlaybackCompleteParams {
     output_id: String,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GatewayLiveReplacementRequiredParams {
@@ -1662,7 +1669,7 @@ fn live_error(rpc_id: Value, code: i64, message: impl Into<String>) -> JsonRpcRe
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 fn live_open_error_response(rpc_id: Value, error: LiveOpenError) -> JsonRpcResponse {
     let code = match &error {
         LiveOpenError::SessionNotFound { .. }
@@ -1724,18 +1731,18 @@ type LiveRpcDispatch = Arc<
         + Sync,
 >;
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 tokio::task_local! {
     static LIVE_RPC_RESPONSE_DELIVERY: Arc<StdMutex<Option<LiveRpcResponseDeliveryCustody>>>;
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[async_trait]
 trait LiveOpenPublicationCleanup: Send + Sync {
     async fn cleanup(&self) -> Result<(), String>;
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 struct LiveOpenPublicationCleanupOwner<B: SessionAgentBuilder + 'static> {
     host: Arc<ServiceMemberLiveHost<B>>,
     authority: Arc<dyn meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider>,
@@ -1743,7 +1750,7 @@ struct LiveOpenPublicationCleanupOwner<B: SessionAgentBuilder + 'static> {
     channel: LiveChannelId,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[async_trait]
 impl<B: SessionAgentBuilder + 'static> LiveOpenPublicationCleanup
     for LiveOpenPublicationCleanupOwner<B>
@@ -1760,12 +1767,12 @@ impl<B: SessionAgentBuilder + 'static> LiveOpenPublicationCleanup
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 pub(crate) struct LiveOpenResponseDeliveryCustody {
     cleanup: Option<Arc<dyn LiveOpenPublicationCleanup>>,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 impl LiveOpenResponseDeliveryCustody {
     fn new(cleanup: Arc<dyn LiveOpenPublicationCleanup>) -> Self {
         Self {
@@ -1786,7 +1793,7 @@ impl LiveOpenResponseDeliveryCustody {
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 impl Drop for LiveOpenResponseDeliveryCustody {
     fn drop(&mut self) {
         let Some(cleanup) = self.cleanup.take() else {
@@ -1800,13 +1807,13 @@ impl Drop for LiveOpenResponseDeliveryCustody {
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 pub(crate) enum LiveRpcResponseDeliveryCustody {
     WebrtcAnswer(meerkat::surface::LiveWebrtcAnswerDeliveryCustody),
     Open(LiveOpenResponseDeliveryCustody),
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 impl LiveRpcResponseDeliveryCustody {
     pub(crate) async fn delivered(self) -> Result<(), String> {
         match self {
@@ -1830,7 +1837,7 @@ impl LiveRpcResponseDeliveryCustody {
 /// Run one RPC dispatch with request-local custody for an accepted WebRTC
 /// answer or strict live open. The caller settles it only after the outer
 /// transport has published (or failed to publish) the serialized response.
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 pub(crate) async fn capture_live_rpc_response_delivery<F, T>(
     future: F,
 ) -> (T, Option<LiveRpcResponseDeliveryCustody>)
@@ -1848,21 +1855,21 @@ where
     (output, delivery)
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 fn retain_live_webrtc_answer_delivery(
     custody: meerkat::surface::LiveWebrtcAnswerDeliveryCustody,
 ) -> impl std::future::Future<Output = Result<(), String>> {
     retain_live_rpc_response_delivery(LiveRpcResponseDeliveryCustody::WebrtcAnswer(custody))
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 fn retain_live_open_response_delivery(
     custody: LiveOpenResponseDeliveryCustody,
 ) -> impl std::future::Future<Output = Result<(), String>> {
     retain_live_rpc_response_delivery(LiveRpcResponseDeliveryCustody::Open(custody))
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 async fn retain_live_rpc_response_delivery(
     custody: LiveRpcResponseDeliveryCustody,
 ) -> Result<(), String> {
@@ -1891,29 +1898,34 @@ async fn retain_live_rpc_response_delivery(
 }
 
 /// Side-effect-free capability projection owned by the same configured
-/// Meerkat factory that will admit experimental live opens.
+/// Meerkat factory that will admit strict GPT Live opens.
 ///
 /// Stock MobKit composition uses [`Self::disabled`]. An embedding host may
-/// opt in only by supplying its already-configured factory, exact realm, and
-/// exact experimental factory identity. Every capabilities request
-/// revalidates those predicates upstream, so stale Gate0, realm, operator, or
-/// factory state fails closed to an empty capability list.
+/// opt in through [`Self::public`] (released `gpt-live-1`, `openai-live`) by
+/// supplying its already-configured factory, exact realm, and the composed
+/// open authority, or through the deprecated [`Self::experimental`] path,
+/// which additionally pins the exact experimental factory identity. Every
+/// capabilities request revalidates those predicates upstream, so stale
+/// realm, binding, Gate0, operator, or factory state fails closed to an
+/// empty capability list.
 #[derive(Clone)]
 pub struct LiveCapabilityProvider {
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     configured: Option<Arc<ConfiguredLiveCapabilityProvider>>,
-    #[cfg(not(feature = "experimental-gpt-live"))]
+    #[cfg(not(feature = "openai-live"))]
     _disabled: (),
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 struct ConfiguredLiveCapabilityProvider {
     factory: Arc<AgentFactory>,
     realm: RealmId,
-    experimental_factory: ExperimentalLiveFactoryIdentity,
-    #[cfg(feature = "experimental-gpt-live")]
+    /// Exact experimental factory identity pinned by the deprecated private
+    /// registration. The public `gpt-live-1` path has no factory identity:
+    /// its admission is the catalog row plus the configured binding, both
+    /// already sealed inside `open_authority`.
+    experimental_factory: Option<ExperimentalLiveFactoryIdentity>,
     open_authority: Arc<dyn meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider>,
-    #[cfg(feature = "experimental-gpt-live")]
     answer_transport: Arc<dyn meerkat_live::LiveWebrtcAnswerTransport>,
     public_observation_publisher:
         Arc<dyn meerkat::experimental_gpt_live::ExperimentalLivePublicObservationPublisher>,
@@ -1924,7 +1936,7 @@ struct ConfiguredLiveCapabilityProvider {
     phase_authority_composed: bool,
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[derive(Clone)]
 enum ExperimentalLiveActivatorRegistration {
     Uncomposed(Arc<meerkat_mob_mcp::MobMcpState>),
@@ -1942,22 +1954,80 @@ impl LiveCapabilityProvider {
     #[must_use]
     pub fn disabled() -> Self {
         Self {
-            #[cfg(feature = "experimental-gpt-live")]
+            #[cfg(feature = "openai-live")]
             configured: None,
-            #[cfg(not(feature = "experimental-gpt-live"))]
+            #[cfg(not(feature = "openai-live"))]
             _disabled: (),
         }
     }
 
-    /// Opt in using the one atomic host registration required for a usable
-    /// experimental channel: qualification, per-open authority, and sealed
-    /// WebRTC answer transport.
+    /// Opt in to the public Live (`gpt-live-1`) path using the one atomic
+    /// host registration required for a usable strict channel: the composed
+    /// per-open authority (which seals the host-owned execution identity and
+    /// configured OpenAI binding) and the sealed WebRTC answer transport.
+    ///
+    /// There is no operator, Gate0, or factory identity on this path. The
+    /// advertised capability atoms come from
+    /// `open_authority.execution_feature_capabilities()`.
+    #[cfg(feature = "openai-live")]
+    #[must_use]
+    pub fn public(
+        factory: Arc<AgentFactory>,
+        realm: RealmId,
+        open_authority: Arc<
+            dyn meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider,
+        >,
+        answer_transport: Arc<dyn meerkat_live::LiveWebrtcAnswerTransport>,
+        mob_mcp_state: Arc<meerkat_mob_mcp::MobMcpState>,
+        public_observation_publisher: Arc<
+            dyn meerkat::experimental_gpt_live::ExperimentalLivePublicObservationPublisher,
+        >,
+    ) -> Self {
+        Self::configured(
+            factory,
+            realm,
+            None,
+            open_authority,
+            answer_transport,
+            mob_mcp_state,
+            public_observation_publisher,
+        )
+    }
+
+    /// Opt in to the DEPRECATED private ChatGPT-brokered path using the one
+    /// atomic host registration required for a usable experimental channel:
+    /// qualification, per-open authority, and sealed WebRTC answer transport.
     #[cfg(feature = "experimental-gpt-live")]
     #[must_use]
     pub fn experimental(
         factory: Arc<AgentFactory>,
         realm: RealmId,
         experimental_factory: ExperimentalLiveFactoryIdentity,
+        open_authority: Arc<
+            dyn meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider,
+        >,
+        answer_transport: Arc<dyn meerkat_live::LiveWebrtcAnswerTransport>,
+        mob_mcp_state: Arc<meerkat_mob_mcp::MobMcpState>,
+        public_observation_publisher: Arc<
+            dyn meerkat::experimental_gpt_live::ExperimentalLivePublicObservationPublisher,
+        >,
+    ) -> Self {
+        Self::configured(
+            factory,
+            realm,
+            Some(experimental_factory),
+            open_authority,
+            answer_transport,
+            mob_mcp_state,
+            public_observation_publisher,
+        )
+    }
+
+    #[cfg(feature = "openai-live")]
+    fn configured(
+        factory: Arc<AgentFactory>,
+        realm: RealmId,
+        experimental_factory: Option<ExperimentalLiveFactoryIdentity>,
         open_authority: Arc<
             dyn meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider,
         >,
@@ -1982,7 +2052,7 @@ impl LiveCapabilityProvider {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn compose_for_host<B: SessionAgentBuilder + 'static>(
         &self,
         machine: Arc<MeerkatMachine>,
@@ -2027,11 +2097,11 @@ impl LiveCapabilityProvider {
     /// recognized by MobKit's strict wire contract.
     #[must_use]
     pub fn feature_capabilities(&self) -> Vec<crate::live_contracts::FeatureCapability> {
-        #[cfg(not(feature = "experimental-gpt-live"))]
+        #[cfg(not(feature = "openai-live"))]
         {
             Vec::new()
         }
-        #[cfg(feature = "experimental-gpt-live")]
+        #[cfg(feature = "openai-live")]
         {
             let Some(configured) = &self.configured else {
                 return Vec::new();
@@ -2079,7 +2149,7 @@ impl LiveCapabilityProvider {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn open_authority(
         &self,
     ) -> Option<&dyn meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider> {
@@ -2088,7 +2158,7 @@ impl LiveCapabilityProvider {
             .map(|configured| configured.open_authority.as_ref())
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn open_authority_arc(
         &self,
     ) -> Option<Arc<dyn meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider>>
@@ -2098,14 +2168,14 @@ impl LiveCapabilityProvider {
             .map(|configured| Arc::clone(&configured.open_authority))
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn answer_transport(&self) -> Option<&Arc<dyn meerkat_live::LiveWebrtcAnswerTransport>> {
         self.configured
             .as_ref()
             .map(|configured| &configured.answer_transport)
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn bound_ready_binder(&self) -> Option<Arc<dyn meerkat::surface::LiveWebrtcBoundReadyBinder>> {
         self.configured.as_ref().and_then(|configured| {
             let live_adapter_host = configured.live_adapter_host.as_ref()?;
@@ -2122,7 +2192,7 @@ impl LiveCapabilityProvider {
         })
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     async fn pending_replacement_required(
         &self,
         session_id: &SessionId,
@@ -2218,7 +2288,7 @@ pub fn live_rpc_handler<B: SessionAgentBuilder + 'static>(
 
 /// Erase `handle_live_method` with an explicit, revalidating capability
 /// provider installed by the embedding application.
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 pub fn live_rpc_handler_with_capabilities<B: SessionAgentBuilder + 'static>(
     ctx: Arc<GatewayLiveContext>,
     service: Arc<PersistentSessionService<B>>,
@@ -2226,7 +2296,7 @@ pub fn live_rpc_handler_with_capabilities<B: SessionAgentBuilder + 'static>(
     capability_provider: LiveCapabilityProvider,
 ) -> LiveRpcHandler {
     let shared_live_host = Arc::new(shared_live_host(&ctx, &service, &machine));
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     let capability_provider = capability_provider.compose_for_host(
         Arc::clone(&machine),
         Arc::clone(&shared_live_host),
@@ -2275,7 +2345,7 @@ pub fn live_rpc_handler_with_capabilities<B: SessionAgentBuilder + 'static>(
 
 /// Stock 0.8.26 registration keeps the preexisting ordinary live dispatcher
 /// and projects no experimental capability.
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 pub fn live_rpc_handler_with_capabilities<B: SessionAgentBuilder + 'static>(
     ctx: Arc<GatewayLiveContext>,
     service: Arc<PersistentSessionService<B>>,
@@ -2336,7 +2406,7 @@ fn shared_live_host<B: SessionAgentBuilder + 'static>(
         instance_id: None,
         backend: None,
     });
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     let host = host.with_webrtc_cleanup_state(Arc::clone(&ctx.webrtc_state));
     host
 }
@@ -2379,7 +2449,7 @@ fn parse_live_params<T: DeserializeOwned>(
 /// `machine` are passed alongside the (deliberately non-generic)
 /// [`GatewayLiveContext`] because open/refresh must re-project the member
 /// session and every handler resolves results through machine authority.
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[allow(
     clippy::too_many_arguments,
     reason = "published live RPC boundary keeps each authority input explicit"
@@ -2415,7 +2485,7 @@ pub async fn handle_live_method<B: SessionAgentBuilder + 'static>(
 /// Dispatch the published 0.8.26 ordinary live API without constructing the
 /// newer generic Meerkat host facade. Surface authority remains enforced
 /// before the original handler sequence runs.
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 #[allow(
     clippy::too_many_arguments,
     reason = "published live RPC boundary keeps each authority input explicit"
@@ -2471,7 +2541,7 @@ pub async fn handle_live_method<B: SessionAgentBuilder + 'static>(
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 // A dispatch entry point legitimately carries the whole call context; splitting
 // it into a struct would only move the arity behind a constructor.
 #[allow(clippy::too_many_arguments)]
@@ -2554,7 +2624,7 @@ async fn handle_live_method_with_host<B: SessionAgentBuilder + 'static>(
             )
             .await
         }
-        #[cfg(feature = "experimental-gpt-live")]
+        #[cfg(feature = "openai-live")]
         "mobkit/live/replacement_required" => {
             let Some(session_id) = resolved_session else {
                 return live_error(
@@ -2588,13 +2658,13 @@ async fn handle_live_method_with_host<B: SessionAgentBuilder + 'static>(
         "mobkit/live/send_input" => handle_live_send_input(ctx, machine, params, rpc_id).await,
         "mobkit/live/commit_input" => handle_live_commit_input(ctx, machine, params, rpc_id).await,
         "mobkit/live/interrupt" => handle_live_interrupt(ctx, machine, params, rpc_id).await,
-        #[cfg(feature = "experimental-gpt-live")]
+        #[cfg(feature = "openai-live")]
         "mobkit/live/truncate" => handle_live_truncate(shared_live_host, params, rpc_id).await,
-        #[cfg(feature = "experimental-gpt-live")]
+        #[cfg(feature = "openai-live")]
         "mobkit/live/playback_complete" => {
             handle_live_playback_complete(shared_live_host, params, rpc_id).await
         }
-        #[cfg(feature = "experimental-gpt-live")]
+        #[cfg(feature = "openai-live")]
         meerkat_live::LIVE_WEBRTC_ANSWER_METHOD => {
             handle_live_webrtc_answer(shared_live_host, capability_provider, params, rpc_id).await
         }
@@ -2602,7 +2672,7 @@ async fn handle_live_method_with_host<B: SessionAgentBuilder + 'static>(
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 fn local_live_execution_mode(
     mode: meerkat_core::LiveExecutionMode,
 ) -> crate::live_contracts::LiveExecutionMode {
@@ -2616,7 +2686,7 @@ fn local_live_execution_mode(
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 fn validate_strict_custody_target(
     custody: &meerkat::surface::ExperimentalLiveChannelCustodyStatus,
     resolved_session: &SessionId,
@@ -2631,7 +2701,7 @@ fn validate_strict_custody_target(
     Ok(())
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 fn strict_target<'a>(
     resolved_session: Option<&'a SessionId>,
     canonical_target_identity: Option<&'a str>,
@@ -2642,7 +2712,7 @@ fn strict_target<'a>(
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 async fn strict_custody_by_activation<B: SessionAgentBuilder + 'static>(
     shared_live_host: &ServiceMemberLiveHost<B>,
     channel_id: &LiveChannelId,
@@ -2664,7 +2734,7 @@ async fn strict_custody_by_activation<B: SessionAgentBuilder + 'static>(
     Ok(custody)
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 async fn reject_missing_receipt_for_strict_channel<B: SessionAgentBuilder + 'static>(
     shared_live_host: &ServiceMemberLiveHost<B>,
     machine: &MeerkatMachine,
@@ -2701,7 +2771,7 @@ async fn reject_missing_receipt_for_strict_channel<B: SessionAgentBuilder + 'sta
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn handle_strict_experimental_live_method<B: SessionAgentBuilder + 'static>(
     _ctx: &GatewayLiveContext,
@@ -3332,7 +3402,7 @@ async fn handle_strict_experimental_live_method<B: SessionAgentBuilder + 'static
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 fn strict_control_response(
     rpc_id: Value,
     result: Result<
@@ -3349,7 +3419,7 @@ fn strict_control_response(
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 async fn handle_live_replacement_required(
     capability_provider: &LiveCapabilityProvider,
     session_id: &SessionId,
@@ -3417,7 +3487,7 @@ async fn handle_live_replacement_required(
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 async fn handle_live_webrtc_answer<B: SessionAgentBuilder + 'static>(
     shared_live_host: &ServiceMemberLiveHost<B>,
     capability_provider: &LiveCapabilityProvider,
@@ -3619,7 +3689,7 @@ fn apply_live_open_identity_selection(
     }
 }
 
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 mod ordinary_open_helpers {
     use super::*;
 
@@ -3829,13 +3899,13 @@ mod ordinary_open_helpers {
     }
 }
 
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 use ordinary_open_helpers::*;
 
 /// A8: build a `LiveProjectionSnapshot` from the resolved open config.
 /// `snapshot_version = 0` is the open-time placeholder; the refresh path
 /// overwrites it via `host.next_snapshot_version(channel_id)` (R8).
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 fn build_live_projection_snapshot(
     session_id: &SessionId,
     open_config: &RealtimeSessionOpenConfig,
@@ -3859,7 +3929,7 @@ fn build_live_projection_snapshot(
     }
 }
 
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 #[allow(clippy::too_many_lines)]
 async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     ctx: &GatewayLiveContext,
@@ -4200,7 +4270,7 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 #[allow(clippy::too_many_lines)]
 async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     ctx: &GatewayLiveContext,
@@ -4211,7 +4281,7 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     params: &Value,
     rpc_id: Value,
 ) -> JsonRpcResponse {
-    #[cfg(not(feature = "experimental-gpt-live"))]
+    #[cfg(not(feature = "openai-live"))]
     let _ = &canonical_target_identity;
     // This is a projection label only, never an ownership witness. Durable
     // target resolution and channel ownership remain upstream/machine-owned.
@@ -4226,9 +4296,9 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
         Ok(p) => p,
         Err(resp) => return *resp,
     };
-    #[cfg(not(feature = "experimental-gpt-live"))]
+    #[cfg(not(feature = "openai-live"))]
     let _ = capability_provider;
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     if let Some(execution_identity) = parsed.execution_identity.as_ref() {
         let Some(target_identity) = canonical_target_identity else {
             return live_error(
@@ -4455,7 +4525,7 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 fn experimental_live_open_error_response(
     rpc_id: Value,
     error: meerkat::session_runtime::live_orchestration::ExperimentalLiveChannelOpenError,
@@ -4507,7 +4577,7 @@ fn live_refresh_result_from_machine_authority(
     }
 }
 
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 fn live_close_result_from_machine_authority(
     authority: &meerkat_runtime::meerkat_machine::LiveCloseResultAuthority,
 ) -> LiveCloseResult {
@@ -4884,7 +4954,7 @@ async fn handle_live_status(
     }
 }
 
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 async fn handle_live_close(
     ctx: &GatewayLiveContext,
     machine: &Arc<MeerkatMachine>,
@@ -4985,7 +5055,7 @@ async fn handle_live_close(
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 async fn handle_live_close(
     ctx: &GatewayLiveContext,
     machine: &Arc<MeerkatMachine>,
@@ -4994,7 +5064,7 @@ async fn handle_live_close(
     params: &Value,
     rpc_id: Value,
 ) -> JsonRpcResponse {
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     let _ = (ctx, machine);
     let parsed: LiveChannelParams = match parse_live_params(params, &rpc_id) {
         Ok(p) => p,
@@ -5002,7 +5072,7 @@ async fn handle_live_close(
     };
     let channel_id = LiveChannelId::new(&parsed.channel_id);
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     {
         let status = match shared_live_host
             .close_live_channel(capability_provider.open_authority(), &channel_id)
@@ -5021,7 +5091,7 @@ async fn handle_live_close(
         }
     }
 
-    #[cfg(not(feature = "experimental-gpt-live"))]
+    #[cfg(not(feature = "openai-live"))]
     {
         let _ = (shared_live_host, capability_provider);
 
@@ -5169,9 +5239,9 @@ async fn handle_live_refresh<B: SessionAgentBuilder + 'static>(
     // on `snapshot_version` for stale-refresh detection see strictly
     // increasing generations. Refresh carries no audio policy; the format
     // negotiated by the shared open pipeline stays in force.
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     let mut snapshot = build_live_projection_snapshot(&session_id, &open_config);
-    #[cfg(not(feature = "experimental-gpt-live"))]
+    #[cfg(not(feature = "openai-live"))]
     let mut snapshot = build_live_projection_snapshot(&session_id, &open_config, None);
     match ctx.host.next_snapshot_version(&channel_id).await {
         Ok(v) => snapshot.snapshot_version = v,
@@ -5417,7 +5487,7 @@ async fn handle_live_interrupt(
     }
 }
 
-#[cfg(not(feature = "experimental-gpt-live"))]
+#[cfg(not(feature = "openai-live"))]
 /// A7: `mobkit/live/truncate` - truncate an assistant item at the given
 /// playback cursor, through Meerkat's OWNER SEAM.
 ///
@@ -5493,7 +5563,7 @@ async fn handle_live_truncate<B: SessionAgentBuilder + 'static>(
 /// Truncate one exact machine-sealed assistant output at the playback
 /// owner's measured cursor. MobKit accepts no provider item or caller-minted
 /// interaction identity on this boundary.
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 async fn handle_live_truncate<B: SessionAgentBuilder + 'static>(
     shared_live_host: &ServiceMemberLiveHost<B>,
     params: &Value,
@@ -5543,7 +5613,7 @@ async fn handle_live_truncate<B: SessionAgentBuilder + 'static>(
     }
 }
 
-#[cfg(feature = "experimental-gpt-live")]
+#[cfg(feature = "openai-live")]
 async fn handle_live_playback_complete<B: SessionAgentBuilder + 'static>(
     shared_live_host: &ServiceMemberLiveHost<B>,
     params: &Value,
@@ -5581,13 +5651,13 @@ async fn handle_live_playback_complete<B: SessionAgentBuilder + 'static>(
 mod tests {
     use super::*;
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     use std::sync::atomic::AtomicBool;
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     use meerkat::experimental_gpt_live::ExperimentalLiveBoundChannelActivator as _;
 
     #[test]
@@ -5618,7 +5688,7 @@ mod tests {
                 .feature_capabilities()
                 .is_empty()
         );
-        #[cfg(feature = "experimental-gpt-live")]
+        #[cfg(feature = "openai-live")]
         assert!(
             LiveCapabilityProvider::disabled()
                 .bound_ready_binder()
@@ -5626,7 +5696,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "experimental-gpt-live"))]
+    #[cfg(not(feature = "openai-live"))]
     #[test]
     fn published_meerkat_compatibility_keeps_only_the_ordinary_live_contract() {
         assert_eq!(
@@ -5644,13 +5714,13 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     struct StaticSessionOwner(bool);
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     struct NoBinderOpenAuthority;
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[async_trait]
     impl meerkat::experimental_gpt_live::ExperimentalLiveOpenAuthorityProvider
         for NoBinderOpenAuthority
@@ -5685,13 +5755,13 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     struct UnusedAnswerTransport;
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     struct UnusedPublicObservationPublisher;
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[async_trait]
     impl meerkat::experimental_gpt_live::ExperimentalLivePublicObservationPublisher
         for UnusedPublicObservationPublisher
@@ -5707,16 +5777,16 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     struct UnusedBoundChannelActivator;
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     struct PendingReplacementActivator {
         reads: AtomicUsize,
         pending: meerkat::surface::ExperimentalLiveReplacementRequired,
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[async_trait]
     impl meerkat::experimental_gpt_live::ExperimentalLiveBoundChannelActivator
         for UnusedBoundChannelActivator
@@ -5751,7 +5821,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[async_trait]
     impl meerkat::experimental_gpt_live::ExperimentalLiveBoundChannelActivator
         for PendingReplacementActivator
@@ -5794,7 +5864,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[async_trait]
     impl meerkat_live::LiveWebrtcAnswerTransport for UnusedAnswerTransport {
         async fn answer_admitted_offer(
@@ -5836,10 +5906,10 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     struct ReceiptSideband;
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat_live::ProviderWebrtcSidebandSession for ReceiptSideband {
         async fn send_command(
@@ -5866,16 +5936,16 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     struct ReceiptAnswerTransport {
         accepted: AtomicUsize,
         rejected: AtomicUsize,
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     struct ReceiptPendingBoundReady;
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat_live::ProviderWebrtcPendingBoundReadyResolver for ReceiptPendingBoundReady {
         async fn resolve(self: Box<Self>) -> Result<u64, meerkat_live::ProviderWebrtcBrokerError> {
@@ -5883,7 +5953,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat_live::LiveWebrtcAnswerTransport for ReceiptAnswerTransport {
         async fn answer_admitted_offer(
@@ -5937,12 +6007,12 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     struct TestControlPlane {
         binding: meerkat_live::ProviderWebrtcBinding,
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat::experimental_gpt_live::ExperimentalGptLiveControlPlane for TestControlPlane {
         async fn active_binding(
@@ -5986,13 +6056,13 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     struct OrderingActivator {
         machine_bound: Arc<AtomicBool>,
         calls: AtomicUsize,
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat::experimental_gpt_live::ExperimentalLiveBoundChannelActivator for OrderingActivator {
         async fn prepare_bound_channel(
@@ -6029,7 +6099,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     struct TestBoundReadyCustody {
         authority:
             Option<meerkat_runtime::meerkat_machine::LiveWebrtcAnswerExecutionBindingAuthority>,
@@ -6040,7 +6110,7 @@ mod tests {
         rolled_back: Arc<AtomicBool>,
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat::surface::LiveWebrtcBoundReadyCustody for TestBoundReadyCustody {
         async fn commit(mut self: Box<Self>) -> Result<(), String> {
@@ -6069,7 +6139,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     struct OrderingBinder {
         activator: Arc<OrderingActivator>,
         machine_bound: Arc<AtomicBool>,
@@ -6077,7 +6147,7 @@ mod tests {
         rolled_back: Arc<AtomicBool>,
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     #[async_trait]
     impl meerkat::surface::LiveWebrtcBoundReadyBinder for OrderingBinder {
         async fn bind_answer_ready(
@@ -6128,15 +6198,14 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[test]
     fn configured_registration_without_authority_binder_does_not_advertise() {
         let provider = LiveCapabilityProvider {
             configured: Some(Arc::new(ConfiguredLiveCapabilityProvider {
                 factory: Arc::new(AgentFactory::minimal()),
                 realm: RealmId::parse("mob.homecore").expect("realm"),
-                experimental_factory: ExperimentalLiveFactoryIdentity::parse("private-live", "v1")
-                    .expect("factory identity"),
+                experimental_factory: None,
                 open_authority: Arc::new(NoBinderOpenAuthority),
                 answer_transport: Arc::new(UnusedAnswerTransport),
                 public_observation_publisher: Arc::new(UnusedPublicObservationPublisher),
@@ -6152,7 +6221,7 @@ mod tests {
         assert!(provider.bound_ready_binder().is_none());
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn replacement_open_result(channel_id: &str) -> meerkat_contracts::LiveOpenResult {
         serde_json::from_value(serde_json::json!({
             "channel_id": channel_id,
@@ -6177,7 +6246,7 @@ mod tests {
         .expect("replacement open result")
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn replacement_capability_provider(
         activator: Arc<PendingReplacementActivator>,
     ) -> LiveCapabilityProvider {
@@ -6185,8 +6254,7 @@ mod tests {
             configured: Some(Arc::new(ConfiguredLiveCapabilityProvider {
                 factory: Arc::new(AgentFactory::minimal()),
                 realm: RealmId::parse("mob.homecore").expect("realm"),
-                experimental_factory: ExperimentalLiveFactoryIdentity::parse("private-live", "v1")
-                    .expect("factory identity"),
+                experimental_factory: None,
                 open_authority: Arc::new(NoBinderOpenAuthority),
                 answer_transport: Arc::new(UnusedAnswerTransport),
                 public_observation_publisher: Arc::new(UnusedPublicObservationPublisher),
@@ -6197,7 +6265,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test]
     async fn replacement_read_uses_canonical_identity_and_is_retryable_until_bind() {
         let activator = Arc::new(PendingReplacementActivator {
@@ -6231,7 +6299,7 @@ mod tests {
         assert_eq!(activator.reads.load(Ordering::SeqCst), 1);
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[async_trait]
     impl ExactLiveSessionOwner for StaticSessionOwner {
         async fn owns_session(&self, _canonical_session_id: &SessionId) -> bool {
@@ -6253,10 +6321,10 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     struct UnavailableDurableSourceOwner;
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[async_trait]
     impl ExactLiveSessionOwner for UnavailableDurableSourceOwner {
         async fn owns_session(&self, _canonical_session_id: &SessionId) -> bool {
@@ -6274,13 +6342,13 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     struct CountingCredentialPolicy {
         calls: AtomicUsize,
         allow: bool,
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[async_trait]
     impl MobkitExperimentalLiveBindingUsePolicy for CountingCredentialPolicy {
         async fn authorize_binding_use(
@@ -6330,12 +6398,12 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn test_live_machine() -> Arc<MeerkatMachine> {
         Arc::new(MeerkatMachine::ephemeral())
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn live_binding() -> meerkat_core::AuthBindingRef {
         meerkat_core::AuthBindingRef {
             realm: meerkat_core::RealmId::parse("mob.homecore").expect("realm"),
@@ -6345,7 +6413,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn access_view(subject: Option<&str>) -> AccessView {
         crate::access::AccessController::new(crate::access::AccessControlConfig {
             enabled: true,
@@ -6356,7 +6424,7 @@ mod tests {
         .view_for_subject(subject)
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn expect_live_binding_authority_error(
         result: Result<
             meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthorization,
@@ -6370,7 +6438,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test]
     async fn stale_session_is_denied_before_credential_policy() {
         let credential_policy = Arc::new(CountingCredentialPolicy {
@@ -6398,7 +6466,7 @@ mod tests {
         assert_eq!(credential_policy.calls.load(Ordering::SeqCst), 0);
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test]
     async fn unavailable_durable_source_is_denied_before_credential_policy() {
         let credential_policy = Arc::new(CountingCredentialPolicy {
@@ -6426,7 +6494,7 @@ mod tests {
         assert_eq!(credential_policy.calls.load(Ordering::SeqCst), 0);
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test]
     async fn agent_send_denial_is_enforced_before_credential_policy() {
         let credential_policy = Arc::new(CountingCredentialPolicy {
@@ -6454,7 +6522,7 @@ mod tests {
         assert_eq!(credential_policy.calls.load(Ordering::SeqCst), 0);
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test]
     async fn missing_principal_is_denied_before_credential_policy() {
         let credential_policy = Arc::new(CountingCredentialPolicy {
@@ -6482,7 +6550,7 @@ mod tests {
         assert_eq!(credential_policy.calls.load(Ordering::SeqCst), 0);
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test]
     async fn durable_source_preflight_and_exact_access_return_machine_authorization() {
         let credential_policy = Arc::new(CountingCredentialPolicy {
@@ -6513,7 +6581,7 @@ mod tests {
         assert_eq!(credential_policy.calls.load(Ordering::SeqCst), 1);
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     async fn stage_receipt_answer_on_machine(
         machine: Arc<MeerkatMachine>,
         token: &str,
@@ -6572,7 +6640,7 @@ mod tests {
         (session_id, channel_id, readiness)
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     async fn staged_receipt_answer_machine(
         token: &str,
     ) -> (
@@ -6587,7 +6655,7 @@ mod tests {
         (machine, session_id, channel_id, readiness)
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     async fn coordinated_receipt_answer_fixture(
         token: &str,
     ) -> (
@@ -6644,7 +6712,7 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     #[tokio::test]
     async fn receipt_answer_activates_after_atomic_bind_and_commits_after_delivery() {
         let (
@@ -6677,7 +6745,7 @@ mod tests {
         assert!(!rolled_back.load(Ordering::SeqCst));
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     #[tokio::test]
     async fn failed_outer_publication_rejects_transport_without_binding_pending_custody() {
         let (
@@ -6714,7 +6782,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "experimental-gpt-live-test")]
+    #[cfg(feature = "openai-live-test")]
     #[tokio::test]
     async fn playback_owner_loss_rpc_revokes_active_receipt_authority() {
         let persistence = meerkat::PersistenceBundle::new(
@@ -6852,12 +6920,12 @@ mod tests {
         assert_eq!(status.result, Some(serde_json::json!({"phase": "revoked"})));
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     struct CountingOpenPublicationCleanup {
         calls: Arc<AtomicUsize>,
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[async_trait]
     impl LiveOpenPublicationCleanup for CountingOpenPublicationCleanup {
         async fn cleanup(&self) -> Result<(), String> {
@@ -6866,7 +6934,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn open_publication_response(
         cleanup_calls: Arc<AtomicUsize>,
     ) -> crate::rpc::SerializedRpcResponseDelivery {
@@ -6880,7 +6948,7 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test]
     async fn strict_open_delivery_commits_publication_without_cleanup() {
         let cleanup_calls = Arc::new(AtomicUsize::new(0));
@@ -6892,7 +6960,7 @@ mod tests {
         assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test]
     async fn strict_open_rejected_publication_runs_exact_cleanup_once() {
         let cleanup_calls = Arc::new(AtomicUsize::new(0));
@@ -6909,7 +6977,7 @@ mod tests {
         assert_eq!(cleanup_calls.load(Ordering::SeqCst), 1);
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     #[tokio::test]
     async fn dropped_strict_open_publication_schedules_cleanup() {
         let cleanup_calls = Arc::new(AtomicUsize::new(0));
@@ -6924,7 +6992,7 @@ mod tests {
         assert_eq!(cleanup_calls.load(Ordering::SeqCst), 1);
     }
 
-    #[cfg(feature = "experimental-gpt-live")]
+    #[cfg(feature = "openai-live")]
     fn test_session_id() -> SessionId {
         SessionId::parse("00000000-0000-0000-0000-000000000001").unwrap()
     }
@@ -7025,7 +7093,7 @@ mod tests {
             .expect("static config source");
         assert!(served_again.realm.contains_key("live-wiring-test"));
 
-        #[cfg(feature = "experimental-gpt-live")]
+        #[cfg(feature = "openai-live")]
         {
             let experimental = meerkat::experimental_gpt_live::ExperimentalLiveCurrentConfigSource::current_config(&source)
                 .await

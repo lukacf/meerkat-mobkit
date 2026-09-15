@@ -7,10 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added - public GPT Live (`gpt-live-1`)
+
+- New `openai-live` Cargo feature forwarding meerkat's public OpenAI Live
+  path (`meerkat/openai-live`, `meerkat-mob/openai-live`,
+  `meerkat-mob-mcp/openai-live`, `meerkat-openai?/live`). The neutral GPT Live
+  runtime machinery in `live_wiring`, `rpc`, and the stdio gateway now gates
+  on `openai-live`; `experimental-gpt-live` builds on it and keeps only the
+  deprecated private ChatGPT-brokered operator, Gate0, and factory-identity
+  admission. Test twins: `openai-live-test`, and `test-realtime-fixtures`
+  now needs only `openai-live`.
+- New `runtime_options.openai_live` gateway registration
+  (`{principal, realm, auth_binding {realm, binding, profile?}, voice,
+  session_instructions?}`) composing `ExperimentalGptLiveOpenAuthority::new_public`
+  with the host-fixed `gpt-live-1` OpenAI execution identity, plus
+  `LiveCapabilityProvider::public`. Configuring both `openai_live` and the
+  deprecated `experimental_live` is rejected.
+- SDKs: `OpenAiLiveGatewayConfig` with builder `openaiLive` / `openai_live`,
+  and the reserved public profile id constant
+  `OPENAI_GPT_LIVE_PUBLIC_CLIENT_CONTEXT_PROFILE_ID`
+  (`openai.gpt-live-1.client-context.v1`), which experimental
+  `execution_profiles` may not reuse.
+
+### Changed
+
+- Pin the Meerkat dependency family to published `0.8.38`, which ships the
+  public GPT Live execution path this release wires into the gateway.
+
 ### Fixed - explicit model fallback safety
 
-- Pin the Meerkat dependency family to published `0.8.37`. Automatic fallback
-  now defaults off and requires an explicit non-empty chain. Whole-table
+- Automatic fallback now defaults off and requires an explicit non-empty
+  chain (the Meerkat pin this release ships is `0.8.38`, above). Whole-table
   profile, mob-runtime and host policy precedence preserves explicit disable;
   unknown fallback keys and the removed catalog-default switch are rejected.
 - Forward the full materialized fallback request and typed admission result
