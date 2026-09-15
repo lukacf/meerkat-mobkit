@@ -29,10 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (`openai.gpt-live-1.client-context.v1`), which experimental
   `execution_profiles` may not reuse.
 
+### Changed
+
+- Pin the Meerkat dependency family to published `0.8.38`, which ships the
+  public GPT Live execution path this release wires into the gateway.
+
 ### Fixed - explicit model fallback safety
 
-- Pin the Meerkat dependency family to published `0.8.37`. Automatic fallback
-  now defaults off and requires an explicit non-empty chain. Whole-table
+- Automatic fallback now defaults off and requires an explicit non-empty
+  chain (the Meerkat pin this release ships is `0.8.38`, above). Whole-table
   profile, mob-runtime and host policy precedence preserves explicit disable;
   unknown fallback keys and the removed catalog-default switch are rejected.
 - Forward the full materialized fallback request and typed admission result

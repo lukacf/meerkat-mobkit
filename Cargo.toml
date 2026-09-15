@@ -150,25 +150,3 @@ opt-level = 0
 
 [profile.release.package.meerkat-live]
 opt-level = 0
-
-# TEMPORARY dev override, remove before release
-[patch.crates-io]
-meerkat = { path = "/home/luka/src/wt/meerkat-public-live/meerkat" }
-meerkat-client = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-client" }
-meerkat-comms = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-comms" }
-meerkat-contracts = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-contracts" }
-meerkat-core = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-core" }
-meerkat-live = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-live" }
-meerkat-mcp = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-mcp" }
-meerkat-memory = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-memory" }
-meerkat-mob = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-mob" }
-meerkat-mob-mcp = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-mob-mcp" }
-meerkat-models = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-models" }
-meerkat-openai = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-openai" }
-meerkat-runtime = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-runtime" }
-meerkat-schedule = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-schedule" }
-meerkat-session = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-session" }
-meerkat-sqlite = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-sqlite" }
-meerkat-store = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-store" }
-meerkat-store-conformance = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-store-conformance" }
-meerkat-tools = { path = "/home/luka/src/wt/meerkat-public-live/meerkat-tools" }
