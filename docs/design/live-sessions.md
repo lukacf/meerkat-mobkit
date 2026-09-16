@@ -342,9 +342,12 @@ adds summary seeding, existing-member execution, authenticated readiness, and
 truthful unmeasured dialogue retention. The reviewed descendant additionally
 fences explicit receipt-close against delayed replacement preparation and
 registration, without cancelling a fresh same-agent call.
+The public reviewed pin is
+[`34838b2d0e5c63c9206b79c3cae48d9961e99e05`](https://github.com/lukacf/meerkat/commit/34838b2d0e5c63c9206b79c3cae48d9961e99e05),
+tracked by [lukacf/meerkat#1124](https://github.com/lukacf/meerkat/pull/1124).
 `.cargo/config.toml` temporarily patches the full Meerkat family to this
-immutable commit in a local Git checkpoint. These machine-local bindings are
-for development only, not registry publication or a portable release build.
+exact HTTPS Git revision. CI and other checkouts can fetch the same source;
+it is a development pin, not a claim that these APIs are registry-published.
 Remove the patch table and regenerate `Cargo.lock` only after the released
 dependencies contain these APIs and pass the console voice qualification;
 the version number alone is not sufficient evidence. Rebinding to the
