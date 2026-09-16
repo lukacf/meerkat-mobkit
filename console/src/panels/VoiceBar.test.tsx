@@ -47,6 +47,10 @@ describe("voice controls", () => {
     expect(screen.getByRole("button", { name: "End voice conversation" })).toBeEnabled();
     view.rerender(<VoiceBar state={{ ...activeState, phase: "connecting" }} {...controls} />);
     expect(screen.getByRole("status")).toHaveTextContent("Connecting");
+    view.rerender(<VoiceBar state={{ ...activeState, phase: "connecting", connectionStage: "context" }} {...controls} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Preparing context");
+    view.rerender(<VoiceBar state={{ ...activeState, phase: "connecting", connectionStage: "recovery" }} {...controls} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Reconnecting");
   });
 
   it("shows startup errors and silence termination as dismissible non-modal messages", () => {
@@ -89,6 +93,8 @@ describe("voice and text composer", () => {
   it("keeps Alpha's voice controls above Beta's usable text input after navigation", () => {
     const alpha = props("Alpha");
     const view = render(<ChatPane {...alpha} onVoiceToggle={vi.fn()} voiceActive />);
+    expect(screen.getByRole("textbox")).toHaveAttribute("placeholder", "Message Alpha (background agent)…");
+    expect(screen.getByText("· text to background agent")).toBeInTheDocument();
     const beta = props("Beta");
     view.rerender(<ChatPane {...beta} onVoiceToggle={vi.fn()} />);
     expect(screen.getByRole("region", { name: "Voice with Alpha" })).toBeInTheDocument();
@@ -96,6 +102,7 @@ describe("voice and text composer", () => {
     const input = screen.getByRole("textbox");
     expect(input).toBeEnabled();
     expect(input).toHaveAttribute("placeholder", "Message Beta…");
+    expect(screen.queryByText("· text to background agent")).not.toBeInTheDocument();
     expect(screen.getByTestId("voice-bar").compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(screen.getByTestId("chat-send:identity:beta"));
     expect(beta.onSend).toHaveBeenCalledWith([]);

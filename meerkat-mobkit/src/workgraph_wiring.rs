@@ -1952,6 +1952,20 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for AdmissionStoreProbe {
+        #[cfg(feature = "openai-live")]
+        async fn commit_live_delegation_final_transcript(
+            &self,
+            _machine: &meerkat_runtime::MeerkatMachine,
+            _session_id: &meerkat_core::SessionId,
+            _provisional: meerkat_core::ProvisionalLiveHandoff,
+            _final_event: meerkat_core::RealtimeTranscriptEvent,
+        ) -> Result<meerkat_core::FinalLiveUserTranscriptCommitEvidence, meerkat_core::SessionError>
+        {
+            Err(meerkat_core::SessionError::Unsupported(
+                "admission probe has no Live commit authority".into(),
+            ))
+        }
+
         // meerkat 0.8.30 made `enqueue_committed_parent_session_boundary_after_runtime_turn`
         // REQUIRED, deleting the default that returned `Unsupported` for a
         // persistent profile and `Ok(0)` otherwise. That default is exactly how
@@ -2180,6 +2194,20 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for SwitchableStore {
+        #[cfg(feature = "openai-live")]
+        async fn commit_live_delegation_final_transcript(
+            &self,
+            _machine: &meerkat_runtime::MeerkatMachine,
+            _session_id: &meerkat_core::SessionId,
+            _provisional: meerkat_core::ProvisionalLiveHandoff,
+            _final_event: meerkat_core::RealtimeTranscriptEvent,
+        ) -> Result<meerkat_core::FinalLiveUserTranscriptCommitEvidence, meerkat_core::SessionError>
+        {
+            Err(meerkat_core::SessionError::Unsupported(
+                "switchable store has no Live commit authority".into(),
+            ))
+        }
+
         // meerkat 0.8.30 made `enqueue_committed_parent_session_boundary_after_runtime_turn`
         // REQUIRED, deleting the default that returned `Unsupported` for a
         // persistent profile and `Ok(0)` otherwise. That default is exactly how

@@ -147,6 +147,15 @@ session-runtime/workgraph wiring. Console delegation must use that owning Mob
 MCP state, not a second state constructed after bootstrap. The standalone
 gateway installs this seam when console voice is configured.
 
+Session-service decorators must also forward the feature-owned
+`MobSessionService::commit_live_delegation_final_transcript` hook unchanged,
+including the same `MeerkatMachine` reference. This hook is now required when
+Live is enabled: previously its default refusal let voice connect while
+preventing spoken requests from reaching background execution. The owner
+commits the final transcript and projects its Live provenance to that machine.
+The pre-build and after-create decorators forward this hook and the Live
+bridge eligibility, snapshot, and operation hooks to the owning service.
+
 ### HTTP request fencing
 
 Both gateway HTTP apps install a console request controller; without the above
@@ -178,6 +187,18 @@ request. Strict owner/register, owner/revoke, status, answer, close, refresh and
 interrupt calls are routed only to the authenticated owner's current channel.
 Raw legacy open, guessed playback completion and provider-native identifiers
 are not alternative console paths.
+
+Browser close gates microphone transmission and speaker gain immediately but
+keeps the muted WebRTC connection alive while the shared host drains provider
+acknowledgements. It releases all local resources after confirmation or the
+five-second browser deadline; page unload and disposal release them immediately.
+A missing server confirmation still blocks a new voice request and retains the
+exact close for retry.
+
+In client delegation, typed composer input continues through ordinary background
+agent admission. The shared canonical-context mirror carries those user-data
+updates and resulting answers into Live. It must not turn typed input into
+trusted instructions or invent a native Live user-text command.
 
 The console selects the upstream `ProviderManagedUnmeasured` playback policy:
 continuous browser WebRTC has no trustworthy per-output consumed-completion
@@ -342,9 +363,13 @@ adds summary seeding, existing-member execution, authenticated readiness, and
 truthful unmeasured dialogue retention. The reviewed descendant additionally
 fences explicit receipt-close against delayed replacement preparation and
 registration, without cancelling a fresh same-agent call.
-The public reviewed pin is
+The initial shared-owner pin was
 [`34838b2d0e5c63c9206b79c3cae48d9961e99e05`](https://github.com/lukacf/meerkat/commit/34838b2d0e5c63c9206b79c3cae48d9961e99e05),
 tracked by [lukacf/meerkat#1124](https://github.com/lukacf/meerkat/pull/1124).
+The current repair development pin is
+[`d7318919e4ce29ce96e05f8466bcbb8d4baabb0c`](https://github.com/lukacf/meerkat/commit/d7318919e4ce29ce96e05f8466bcbb8d4baabb0c),
+which adds failed-provider cleanup, per-message context provenance, and
+post-commit mirror notifications for RPC and mob-owned executors.
 `.cargo/config.toml` temporarily patches the full Meerkat family to this
 exact HTTPS Git revision. CI and other checkouts can fetch the same source;
 it is a development pin, not a claim that these APIs are registry-published.

@@ -44,6 +44,7 @@ impl LiveContextSummarizer for FactorySummarizer {
         &self,
         snapshot: LiveContextSummarySnapshot<'_>,
     ) -> Result<String, LiveContextSummaryError> {
+        let started = std::time::Instant::now();
         let client = self
             .factory
             .build_llm_client_for_identity_with_auth_lease(
@@ -55,14 +56,23 @@ impl LiveContextSummarizer for FactorySummarizer {
             .map_err(|_| {
                 LiveContextSummaryError::Producer("summary client is unavailable".to_string())
             })?;
-        super::summary::summarize_context(
+        let result = super::summary::summarize_context(
             client.as_ref(),
             &snapshot.llm_identity().model,
             snapshot.messages(),
             snapshot.max_output_bytes(),
         )
-        .await
-        .map_err(|error| LiveContextSummaryError::Producer(format!("summary rejected: {error:?}")))
+        .await;
+        tracing::info!(
+            model = %snapshot.llm_identity().model,
+            elapsed_ms = started.elapsed().as_millis(),
+            output_bytes = ?result.as_ref().ok().map(String::len),
+            error = ?result.as_ref().err(),
+            "console voice context summary finished"
+        );
+        result.map_err(|error| {
+            LiveContextSummaryError::Producer(format!("summary rejected: {error:?}"))
+        })
     }
 }
 
@@ -235,10 +245,15 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use tower::ServiceExt as _;
 
+    // These real hosts share upstream process-wide projection budgets.
+    static SHARED_HOST_TEST_LOCK: Mutex<()> = Mutex::const_new(());
+
     #[derive(Default)]
     struct ProviderCapture {
         creates: AtomicUsize,
         body: StdMutex<Option<Value>>,
+        disconnect: tokio::sync::Notify,
+        disconnected: tokio::sync::Notify,
     }
 
     // Only the external provider is simulated. HTTP, WebSocket sideband,
@@ -275,13 +290,25 @@ mod tests {
                     })),
                 )
             }
-            async fn attach(upgrade: WebSocketUpgrade) -> axum::response::Response {
-                upgrade.on_upgrade(|mut socket| async move {
+            async fn attach(
+                State(capture): State<Arc<ProviderCapture>>,
+                upgrade: WebSocketUpgrade,
+            ) -> axum::response::Response {
+                upgrade.on_upgrade(move |mut socket| async move {
                     let session = json!({"id":"console_voice_fixture","model":"gpt-live-1","status":"active","expires_at":12345.5});
                     socket.send(SocketMessage::Text(json!({
                         "type":"session.started","event_id":"started","session":session
                     }).to_string().into())).await.expect("session started");
-                    while let Some(Ok(message)) = socket.recv().await {
+                    loop {
+                        let message = tokio::select! {
+                            _ = capture.disconnect.notified() => {
+                                drop(socket);
+                                capture.disconnected.notify_one();
+                                return;
+                            }
+                            message = socket.recv() => message,
+                        };
+                        let Some(Ok(message)) = message else { break; };
                         let SocketMessage::Text(text) = message else { continue; };
                         let event: Value = serde_json::from_str(&text).expect("provider command");
                         match event["type"].as_str() {
@@ -410,6 +437,16 @@ mod tests {
     #[tokio::test]
     async fn console_voice_actual_shared_host_opens_owned_pending_channel_without_mutating_background()
      {
+        exercise_shared_host(false).await;
+    }
+
+    #[tokio::test]
+    async fn console_voice_actual_shared_host_closes_after_provider_disconnect() {
+        exercise_shared_host(true).await;
+    }
+
+    async fn exercise_shared_host(disconnect_provider: bool) {
+        let _guard = SHARED_HOST_TEST_LOCK.lock().await;
         let contract: Value =
             serde_json::from_str(include_str!("../../tests/fixtures/console_voice_v1.json"))
                 .expect("shared voice contract");
@@ -458,17 +495,22 @@ mod tests {
             runtime_store,
             blobs,
         ));
-        let definition = meerkat_mob::MobDefinition::from_toml(
+        let definition = meerkat_mob::MobDefinition::from_toml(&format!(
             r#"
     [mob]
-    id = "console-voice-real-host"
+    id = "console-voice-{suffix}"
     [profiles.agent]
     model = "gpt-5.5"
     external_addressable = true
     [profiles.agent.tools]
     comms = true
     "#,
-        )
+            suffix = if disconnect_provider {
+                "disconnect"
+            } else {
+                "normal"
+            },
+        ))
         .expect("definition");
         let mut spec = MobBootstrapSpec::new(
             definition,
@@ -592,6 +634,8 @@ mod tests {
         let pending = &opened["result"];
         assert_eq!(pending["execution_mode"], "client_context");
         assert_eq!(pending["target_identity"], "agent-a");
+        assert_eq!(pending["capabilities"]["text_in"], false);
+        assert_eq!(pending["capabilities"]["text_out"], false);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(!opened.to_string().contains("sk-voice-test-only"));
         let registered = rpc(&app, &token, "mobkit/live/playback_owner/register", json!({
@@ -704,13 +748,21 @@ mod tests {
                 .contains("The background agent is configured for the test conversation.")
         );
         assert!(body["session"]["tools"].is_null());
-        let closed = rpc(
-            &app,
-            &token,
-            "mobkit/console/voice/close",
-            json!({"identity":"agent-a","request_id":"voice-request"}),
+        if disconnect_provider {
+            provider.capture.disconnect.notify_one();
+            provider.capture.disconnected.notified().await;
+        }
+        let closed = tokio::time::timeout(
+            Duration::from_secs(5),
+            rpc(
+                &app,
+                &token,
+                "mobkit/console/voice/close",
+                json!({"identity":"agent-a","request_id":"voice-request"}),
+            ),
         )
-        .await;
+        .await
+        .expect("exact close must complete within the browser teardown deadline");
         assert_eq!(closed["result"], json!({"phase":"closed"}), "{closed}");
         let closed_replacement = rpc(
             &app,
@@ -738,6 +790,22 @@ mod tests {
             "gpt-5.5"
         );
         assert_eq!(runtime.mob_handle().list_members().await.len(), 1);
+        let reopened = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/open",
+            json!({"identity":"agent-a","request_id":"voice-reopened"}),
+        )
+        .await;
+        assert!(reopened["error"].is_null(), "{reopened}");
+        let reclosed = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/close",
+            json!({"identity":"agent-a","request_id":"voice-reopened"}),
+        )
+        .await;
+        assert_eq!(reclosed["result"], json!({"phase":"closed"}), "{reclosed}");
         controller.shutdown().await.expect("voice shutdown");
         runtime.shutdown().await;
     }
@@ -969,6 +1037,10 @@ impl Session {
         method: &str,
         params: Value,
     ) -> Result<(Value, Option<LiveRpcResponseDeliveryCustody>), VoiceError> {
+        let channel_id = params
+            .get("channel_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let surface = self
             .shared
             .guard(Arc::clone(&self.grant), self.identity.clone())?;
@@ -986,7 +1058,13 @@ impl Session {
             if let Some(delivery) = delivery {
                 let _ = delivery.rejected().await;
             }
-            tracing::warn!(error = ?response.error, "console live control refused by shared host");
+            tracing::warn!(
+                method,
+                identity = %self.identity,
+                channel_id,
+                error = ?response.error,
+                "console live control refused by shared host"
+            );
             return Err(VoiceError::HostFailed);
         }
         Ok((response.result.ok_or(VoiceError::HostFailed)?, delivery))

@@ -160,7 +160,7 @@ function pending(identity = target.identity, id = "channel-a") {
     pending_receipt: "pending-receipt",
     transport: { transport: "webrtc", token: "opaque-bootstrap", answer_method: "live/webrtc/answer" },
     capabilities: {
-      audio_in: true, audio_out: true, text_in: true, text_out: true, image_in: false,
+      audio_in: true, audio_out: true, text_in: false, text_out: false, image_in: false,
       video_in: false, transcript_supported: true, barge_in_supported: true, provider_native_resume: false,
     },
     continuity: { mode: "fresh" },
@@ -423,18 +423,22 @@ test("actual microphone activity refreshes timeout; muted input does not", async
   assert.equal(h.controller.getSnapshot().phase, "idle");
 });
 
-test("replacement stops local media immediately and waits for confirmed remote close before opening next agent", async () => {
+test("replacement mutes immediately and drains the old transport before opening the next agent", async () => {
   const h = harness();
   await h.controller.start(target);
   const closing = deferred<unknown>();
   h.setRpc((method) => method === "mobkit/console/voice/close" ? closing.promise : undefined);
   const replacement = h.controller.start(other);
-  assert.equal(h.streams[0].tracks[0].stopped, true);
-  assert.equal(h.peers[0].connectionState, "closed");
+  assert.equal(h.streams[0].tracks[0].enabled, false);
+  assert.equal(h.contexts[0].gains[0].gain.value, 0);
+  assert.equal(h.streams[0].tracks[0].stopped, false);
+  assert.equal(h.peers[0].connectionState, "connected");
   await flush();
   assert.equal(h.calls.filter((call) => call.method.endsWith("/open")).length, 1);
   closing.resolve({ phase: "closed" });
   await replacement;
+  assert.equal(h.streams[0].tracks[0].stopped, true);
+  assert.equal(h.peers[0].connectionState, "closed");
   assert.equal(h.controller.getSnapshot().phase, "active");
   assert.equal(h.controller.getSnapshot().target?.identity, other.identity);
   const closeIndex = h.calls.findIndex((call) => call.method.endsWith("/close"));
@@ -501,6 +505,30 @@ test("pending activation does not enable media and has a bounded deadline", asyn
   assert.equal(h.clock.timers.size, 0);
 });
 
+test("context preparation is distinct from media connection and its timeout does not blame microphone permission", async () => {
+  const h = harness();
+  h.setRpc(method => method === "mobkit/console/voice/open" ? new Promise(() => {}) : undefined);
+  const start = h.controller.start(target);
+  await flush();
+  assert.equal(h.controller.getSnapshot().connectionStage, "context");
+  assert.equal(h.peers.length, 0);
+  await h.clock.advance(VOICE_CONNECT_TIMEOUT_MS);
+  await start;
+  assert.match(h.controller.getSnapshot().error!, /voice context timed out/);
+  assert.doesNotMatch(h.controller.getSnapshot().error!, /microphone permissions|your network/);
+  assert.equal(h.streams[0].tracks[0].stopped, true);
+});
+
+test("summary failures identify gateway preparation without exposing its upstream response", async () => {
+  const h = harness();
+  h.setRpc(method => method === "mobkit/console/voice/open"
+    ? Promise.reject(new Error("summary rejected: Oversized private-source-data"))
+    : undefined);
+  await h.controller.start(target);
+  assert.match(h.controller.getSnapshot().error!, /could not prepare.*voice context/);
+  assert.doesNotMatch(h.controller.getSnapshot().error!, /Oversized|private-source-data/);
+});
+
 test("permission denial, permission timeout, and late permission grants clean up without opening remote voice", async () => {
   const denied = harness();
   denied.setMedia(() => Promise.reject(Object.assign(new Error("denied"), { name: "NotAllowedError" })));
@@ -523,17 +551,68 @@ test("permission denial, permission timeout, and late permission grants clean up
   assert.equal(h.calls.length, 0);
 });
 
-test("unconfirmed teardown fails closed and can be retried explicitly", async () => {
+test("close keeps muted WebRTC alive until the gateway confirms finalization", async () => {
+  const h = harness();
+  await h.controller.start(target);
+  const closing = deferred<unknown>();
+  h.setRpc((method) => method.endsWith("/close") ? closing.promise : undefined);
+  const close = h.controller.close();
+  assert.equal(h.streams[0].tracks[0].enabled, false);
+  assert.equal(h.contexts[0].gains[0].gain.value, 0);
+  await flush();
+  assert.equal(h.controller.getSnapshot().phase, "closing");
+  assert.equal(h.peers[0].connectionState, "connected");
+  assert.equal(h.peers[0].channel.readyState, "open");
+  assert.equal(h.streams[0].tracks[0].stopped, false);
+  assert.equal(h.contexts[0].state, "running");
+  closing.resolve({ phase: "closed" });
+  await close;
+  assert.equal(h.controller.getSnapshot().phase, "idle");
+  assert.equal(h.peers[0].connectionState, "closed");
+  assert.equal(h.streams[0].tracks[0].stopped, true);
+  assert.equal(h.contexts[0].state, "closed");
+});
+
+test.each(["dispose", "pagehide"])("%s immediately releases an older draining attempt during agent replacement", async (operation) => {
+  const h = harness();
+  await h.controller.start(target);
+  const closing = deferred<unknown>();
+  h.setRpc((method) => method.endsWith("/close") ? closing.promise : undefined);
+  const replacement = h.controller.start(other);
+  await flush();
+  assert.equal(h.peers[0].connectionState, "connected");
+  assert.equal(h.streams[0].tracks[0].stopped, false);
+  if (operation === "pagehide") h.pagehide();
+  else h.controller.dispose();
+  assert.equal(h.peers[0].connectionState, "closed");
+  assert.equal(h.streams[0].tracks[0].stopped, true);
+  assert.ok(h.contexts.every(context => context.state === "closed"));
+  if (operation === "pagehide") {
+    assert.deepEqual(h.pagehideCalls, [{ identity: target.identity, request_id: "request-1" }]);
+  }
+  closing.resolve({ phase: "closed" });
+  await replacement;
+  await flush();
+  assert.ok(h.streams.every(stream => stream.tracks.every(track => track.stopped)));
+  assert.equal(h.calls.filter(call => call.method.endsWith("/open")).length, 1);
+});
+
+test("unconfirmed teardown releases muted WebRTC at the deadline and remains retryable", async () => {
   const h = harness();
   await h.controller.start(target);
   h.setRpc((method) => method.endsWith("/close") ? new Promise(() => {}) : undefined);
   const close = h.controller.close();
   await flush();
-  await h.clock.advance(VOICE_TEARDOWN_TIMEOUT_MS);
+  await h.clock.advance(VOICE_TEARDOWN_TIMEOUT_MS - 1);
+  assert.equal(h.streams[0].tracks[0].enabled, false);
+  assert.equal(h.contexts[0].gains[0].gain.value, 0);
+  assert.equal(h.peers[0].connectionState, "connected");
+  await h.clock.advance(1);
   await close;
   assert.equal(h.controller.getSnapshot().phase, "error");
   assert.match(h.controller.getSnapshot().error!, /not confirmed voice closure/);
   assert.equal(h.streams[0].tracks[0].stopped, true);
+  assert.equal(h.peers[0].connectionState, "closed");
   await h.controller.start(other);
   assert.equal(h.calls.filter((call) => call.method.endsWith("/open")).length, 1);
   h.setRpc(undefined);
@@ -600,7 +679,7 @@ test("server errors never surface raw credentials or transport data", async () =
   await h.controller.start(target);
   assert.equal(h.controller.getSnapshot().phase, "error");
   assert.doesNotMatch(h.controller.getSnapshot().error!, /sk-real|credential|full-body/);
-  assert.match(h.controller.getSnapshot().error!, /network and gateway/);
+  assert.match(h.controller.getSnapshot().error!, /prepare.*voice context/);
 });
 
 test("every post-open handshake failure fences the remote request and stops media", async () => {

@@ -25,7 +25,7 @@ function pendingHandle(channelId, identity) {
     pending_receipt: `pending-${channelId}`,
     transport: { transport: "webrtc", token: `token-${channelId}`, answer_method: "live/webrtc/answer" },
     capabilities: {
-      audio_in: true, audio_out: true, text_in: true, text_out: true,
+      audio_in: true, audio_out: true, text_in: false, text_out: false,
       image_in: false, video_in: false, transcript_supported: true,
       barge_in_supported: true, provider_native_resume: false,
     },

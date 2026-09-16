@@ -172,6 +172,9 @@ jobs:
       - run: scripts/repo-cargo build -p meerkat-mobkit --example library_mode_reference
       - run: npm --prefix console run e2e:browser --silent
       - run: npm --prefix console run e2e:voice --silent
+      # Validate paid-lane evidence and continuous silent audio without credentials.
+      - run: node console/voice-e2e-live.cjs --self-test
+      - run: node console/voice-e2e-live.cjs --self-test-audio
       # Seeded memory-console lane (deterministic; the LIVE lane
       # e2e:memory:live is creds-gated acceptance and never runs in CI).
       # CARGO_INCREMENTAL=0 guards the known rustc ICE, same as flow-editor.

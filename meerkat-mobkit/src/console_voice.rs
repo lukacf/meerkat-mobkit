@@ -655,8 +655,8 @@ mod tests {
                 capabilities: WireLiveChannelCapabilities {
                     audio_in: true,
                     audio_out: true,
-                    text_in: true,
-                    text_out: true,
+                    text_in: false,
+                    text_out: false,
                     image_in: false,
                     video_in: false,
                     transcript_supported: true,

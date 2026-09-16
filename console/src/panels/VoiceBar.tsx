@@ -133,7 +133,11 @@ export function VoiceBar({
   const status = state.phase === "requesting"
     ? "Allow microphone access"
     : state.phase === "connecting"
-      ? "Connecting"
+      ? state.connectionStage === "context"
+        ? "Preparing context"
+        : state.connectionStage === "recovery"
+          ? "Reconnecting"
+          : "Connecting audio"
       : state.phase === "closing"
         ? "Ending voice"
         : active

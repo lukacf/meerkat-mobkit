@@ -18778,7 +18778,7 @@ function VoiceBar({
   if (!state.target && !state.error && !state.notice) return null;
   const active = state.phase === "active";
   const transitioning = state.phase === "requesting" || state.phase === "connecting";
-  const status = state.phase === "requesting" ? "Allow microphone access" : state.phase === "connecting" ? "Connecting" : state.phase === "closing" ? "Ending voice" : active ? state.microphoneMuted ? "Microphone muted" : "Listening" : "Voice ended";
+  const status = state.phase === "requesting" ? "Allow microphone access" : state.phase === "connecting" ? state.connectionStage === "context" ? "Preparing context" : state.connectionStage === "recovery" ? "Reconnecting" : "Connecting audio" : state.phase === "closing" ? "Ending voice" : active ? state.microphoneMuted ? "Microphone muted" : "Listening" : "Voice ended";
   return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
     "section",
     {
@@ -19851,7 +19851,7 @@ function ChatPane({
             /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
               "textarea",
               {
-                placeholder: readOnly ? "View-only console" : sendWithheld ? `You can view ${agentLabel} but not message it` : `Message ${agentLabel}\u2026`,
+                placeholder: readOnly ? "View-only console" : sendWithheld ? `You can view ${agentLabel} but not message it` : voiceActive ? `Message ${agentLabel} (background agent)\u2026` : `Message ${agentLabel}\u2026`,
                 value: draft,
                 disabled: readOnly || sendWithheld,
                 onChange: (e) => {
@@ -19901,6 +19901,7 @@ function ChatPane({
           "To: ",
           /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("b", { style: { color: "var(--ink-muted)" }, children: agentLabel })
         ] }),
+        voiceActive && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7 text to background agent" }),
         /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
         /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "mono", children: identity }),
         agent?.role && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
@@ -20887,7 +20888,7 @@ function parseReplacement(raw) {
   if (result.required !== true || !["canonical_context", "delegation_result"].includes(String(result.reason)) || typeof result.canonical_seed_cursor !== "number" || !Number.isSafeInteger(result.canonical_seed_cursor) || result.canonical_seed_cursor < 0) throw new VoiceError("The gateway returned an invalid voice recovery response.");
   return parsePendingLiveChannelHandle(result.replacement);
 }
-function voiceError(error) {
+function voiceError(error, stage) {
   if (error instanceof VoiceError) return error.message;
   const name = error instanceof Error ? error.name : "";
   if (name === "NotAllowedError" || name === "PermissionDeniedError") {
@@ -20904,6 +20905,9 @@ function voiceError(error) {
   }
   if (jsonRpcErrorCode(error) === -32601 || /not configured|unavailable|not supported/i.test(errorMessage(error))) {
     return "Voice is unavailable. Ask your administrator to enable OpenAI GPT Live on this gateway.";
+  }
+  if (stage === "context") {
+    return "The gateway could not prepare the agent's voice context. Check the gateway log before trying again.";
   }
   return "Voice could not connect. Check your network and gateway configuration, then try again.";
 }
@@ -20924,6 +20928,7 @@ function createVoiceSession(baseUrl, environment) {
   let removePagehide;
   let serial = Promise.resolve();
   let teardownBlock;
+  const retainedAttempts = /* @__PURE__ */ new Set();
   const publish = (patch) => {
     snapshot = { ...snapshot, ...patch };
     for (const listener of listeners) listener();
@@ -20938,7 +20943,7 @@ function createVoiceSession(baseUrl, environment) {
     });
     return serial;
   };
-  function bounded(promise, milliseconds, signal) {
+  function bounded(promise, milliseconds, signal, timeoutMessage = "Voice connection timed out. Check microphone permissions and your network, then try again.") {
     return new Promise((resolve, reject) => {
       let settled = false;
       const finish = (action) => {
@@ -20949,16 +20954,19 @@ function createVoiceSession(baseUrl, environment) {
         action();
       };
       const cancelled = () => finish(() => reject(new Cancelled()));
-      const timer = env.setTimeout(() => finish(() => reject(new VoiceError(
-        "Voice connection timed out. Check microphone permissions and your network, then try again."
-      ))), Math.max(0, milliseconds));
+      const timer = env.setTimeout(() => finish(() => reject(new VoiceError(timeoutMessage))), Math.max(0, milliseconds));
       signal?.addEventListener("abort", cancelled, { once: true });
       promise.then((value) => finish(() => resolve(value)), (error) => finish(() => reject(error)));
       if (signal?.aborted) cancelled();
     });
   }
   function connecting(attempt, promise) {
-    return bounded(promise, attempt.deadline - env.now(), attempt.abort.signal);
+    return bounded(
+      promise,
+      attempt.deadline - env.now(),
+      attempt.abort.signal,
+      attempt.connectionStage === "context" ? "Preparing the agent's voice context timed out. Check the gateway's summary service, then try again." : attempt.connectionStage === "transport" ? "The voice media connection timed out. Check the gateway and your network, then try again." : void 0
+    );
   }
   async function pollDelay(attempt) {
     let timer;
@@ -21005,9 +21013,7 @@ function createVoiceSession(baseUrl, environment) {
     attempt.speaker = void 0;
     attempt.gain = void 0;
   }
-  function cleanupLocal(attempt) {
-    if (attempt.localClosed) return;
-    attempt.localClosed = true;
+  function quiesceLocal(attempt) {
     attempt.abort.abort();
     if (attempt.sampleTimer !== void 0) env.clearTimeout(attempt.sampleTimer);
     if (attempt.silenceTimer !== void 0) env.clearTimeout(attempt.silenceTimer);
@@ -21015,6 +21021,14 @@ function createVoiceSession(baseUrl, environment) {
     if (attempt.recoveryTimer !== void 0) env.clearTimeout(attempt.recoveryTimer);
     if (attempt.activityTimer !== void 0) env.clearTimeout(attempt.activityTimer);
     attempt.activityDirty = false;
+    for (const track of attempt.stream?.getTracks() ?? []) track.enabled = false;
+    if (attempt.gain) attempt.gain.gain.value = 0;
+    attempt.audio?.pause();
+  }
+  function cleanupLocal(attempt) {
+    if (attempt.localClosed) return;
+    quiesceLocal(attempt);
+    attempt.localClosed = true;
     cleanupPeer(attempt);
     for (const track of attempt.stream?.getTracks() ?? []) {
       track.onended = null;
@@ -21031,19 +21045,28 @@ function createVoiceSession(baseUrl, environment) {
     return { identity: attempt.target.identity, request_id: attempt.requestId };
   }
   async function teardown(attempt) {
-    cleanupLocal(attempt);
-    if (!attempt.openSent) return;
+    quiesceLocal(attempt);
+    if (!attempt.openSent) {
+      cleanupLocal(attempt);
+      retainedAttempts.delete(attempt);
+      return;
+    }
     if (attempt.teardown) return attempt.teardown;
     attempt.teardown = (async () => {
-      const raw = await bounded(
-        env.rpc("mobkit/console/voice/close", closeParams(attempt), VOICE_TEARDOWN_TIMEOUT_MS),
-        VOICE_TEARDOWN_TIMEOUT_MS
-      );
-      const result = parseExperimentalLiveChannelStatus(raw);
-      if (result.phase !== "closed" && result.phase !== "revoked") {
-        throw new VoiceError("The gateway did not confirm voice closure.");
+      try {
+        const raw = await bounded(
+          env.rpc("mobkit/console/voice/close", closeParams(attempt), VOICE_TEARDOWN_TIMEOUT_MS),
+          VOICE_TEARDOWN_TIMEOUT_MS
+        );
+        const result = parseExperimentalLiveChannelStatus(raw);
+        if (result.phase !== "closed" && result.phase !== "revoked") {
+          throw new VoiceError("The gateway did not confirm voice closure.");
+        }
+        if (teardownBlock === attempt) teardownBlock = void 0;
+        retainedAttempts.delete(attempt);
+      } finally {
+        cleanupLocal(attempt);
       }
-      if (teardownBlock === attempt) teardownBlock = void 0;
     })();
     try {
       await attempt.teardown;
@@ -21054,7 +21077,7 @@ function createVoiceSession(baseUrl, environment) {
     }
   }
   async function stop(attempt, error = null, notice = null) {
-    cleanupLocal(attempt);
+    quiesceLocal(attempt);
     if (current === attempt) publish({ phase: "closing", error, notice });
     try {
       await teardown(attempt);
@@ -21066,7 +21089,7 @@ function createVoiceSession(baseUrl, environment) {
       if (current === attempt) {
         publish({
           phase: "error",
-          error: "Your microphone and speaker are off, but the gateway has not confirmed voice closure. Close again to retry before starting another session.",
+          error: `${error ? `${error} ` : ""}Your microphone and speaker are off, but the gateway has not confirmed voice closure. Close again to retry before starting another session.`,
           notice: null
         });
       }
@@ -21074,7 +21097,7 @@ function createVoiceSession(baseUrl, environment) {
   }
   function fail(attempt, message) {
     if (!owns(attempt)) return;
-    cleanupLocal(attempt);
+    quiesceLocal(attempt);
     void enqueue(() => stop(attempt, message));
   }
   function transportLost(attempt, peer, message) {
@@ -21091,7 +21114,8 @@ function createVoiceSession(baseUrl, environment) {
     attempt.recoveryTimer = env.setTimeout(() => {
       fail(attempt, RECOVERY_TIMEOUT_MESSAGE);
     }, VOICE_RECOVERY_TIMEOUT_MS);
-    publish({ phase: "connecting" });
+    attempt.connectionStage = "recovery";
+    publish({ phase: "connecting", connectionStage: "recovery" });
     requestReplacement(attempt);
   }
   function activity(attempt) {
@@ -21146,7 +21170,7 @@ function createVoiceSession(baseUrl, environment) {
         scheduleSilence(attempt);
         return;
       }
-      cleanupLocal(attempt);
+      quiesceLocal(attempt);
       void enqueue(() => stop(attempt, null, "Voice closed after 15 minutes of silence."));
     }, VOICE_SILENCE_TIMEOUT_MS - (env.now() - attempt.lastActivity));
   }
@@ -21271,6 +21295,9 @@ function createVoiceSession(baseUrl, environment) {
     assertOwns(attempt);
     attempt.pending = pending;
     if (pending.targetIdentity !== attempt.target.identity || pending.executionMode !== "client_context" || pending.transport.transport !== "webrtc" || pending.transport.answerMethod !== "live/webrtc/answer" || !pending.capabilities.audioIn || !pending.capabilities.audioOut) throw new VoiceError("The gateway returned an incompatible GPT Live voice session.");
+    attempt.connectionStage = "transport";
+    publish({ connectionStage: "transport" });
+    assertOwns(attempt);
     preparePeer(attempt);
     const offer = await connecting(attempt, attempt.peer.createOffer());
     assertOwns(attempt);
@@ -21411,7 +21438,7 @@ function createVoiceSession(baseUrl, environment) {
             scheduleSilence(attempt);
             sampleActivity(attempt);
           } catch (error) {
-            if (!(error instanceof Cancelled)) await stop(attempt, voiceError(error));
+            if (!(error instanceof Cancelled)) await stop(attempt, voiceError(error, attempt.connectionStage));
           }
         });
       }
@@ -21443,7 +21470,9 @@ function createVoiceSession(baseUrl, environment) {
       if (attempt.stream.getAudioTracks().length === 0) {
         throw new VoiceError("No microphone audio track was available. Check your microphone and try again.");
       }
-      publish({ phase: "connecting" });
+      attempt.connectionStage = "context";
+      publish({ phase: "connecting", connectionStage: "context" });
+      assertOwns(attempt);
       attempt.openSent = true;
       const raw = await connecting(attempt, env.rpc("mobkit/console/voice/open", {
         identity: attempt.target.identity,
@@ -21464,7 +21493,7 @@ function createVoiceSession(baseUrl, environment) {
         await teardown(attempt).catch(() => {
         });
       } else {
-        await stop(attempt, voiceError(error));
+        await stop(attempt, voiceError(error, attempt.connectionStage));
       }
     }
   }
@@ -21485,7 +21514,7 @@ function createVoiceSession(baseUrl, environment) {
         return Promise.resolve();
       }
       const previous = current;
-      if (previous) cleanupLocal(previous);
+      if (previous) quiesceLocal(previous);
       let requestId;
       try {
         requestId = env.randomId();
@@ -21506,6 +21535,7 @@ function createVoiceSession(baseUrl, environment) {
         localClosed: false,
         lastActivity: env.now()
       };
+      retainedAttempts.add(attempt);
       current = attempt;
       publish({
         phase: "requesting",
@@ -21513,7 +21543,8 @@ function createVoiceSession(baseUrl, environment) {
         microphoneMuted: false,
         speakerMuted: false,
         error: null,
-        notice: null
+        notice: null,
+        connectionStage: void 0
       });
       if (!owns(attempt)) {
         return enqueue(async () => {
@@ -21550,8 +21581,10 @@ function createVoiceSession(baseUrl, environment) {
         });
         removePagehide ?? (removePagehide = env.onPagehide(() => {
           pageHidden = true;
-          const active = current ?? teardownBlock;
-          if (active?.openSent) env.pagehideClose(closeParams(active));
+          for (const retained of retainedAttempts) {
+            cleanupLocal(retained);
+            if (retained.openSent) env.pagehideClose(closeParams(retained));
+          }
           controller.dispose();
         }));
       } catch (error) {
@@ -21580,7 +21613,7 @@ function createVoiceSession(baseUrl, environment) {
         return Promise.resolve();
       }
       current ?? (current = attempt);
-      cleanupLocal(attempt);
+      quiesceLocal(attempt);
       publish({ phase: "closing" });
       return enqueue(async () => {
         await stop(attempt);
@@ -21614,6 +21647,7 @@ function createVoiceSession(baseUrl, environment) {
       removePagehide?.();
       removePagehide = void 0;
       listeners.clear();
+      for (const attempt of retainedAttempts) cleanupLocal(attempt);
       void controller.close();
     }
   };

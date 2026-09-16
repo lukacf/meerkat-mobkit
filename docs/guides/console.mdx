@@ -168,6 +168,14 @@ agent's context; it does not change the background agent's text model.
 The voice strip above the composer names the voice agent and shows separate
 waveforms for your microphone and the live model's audio.
 
+Startup distinguishes **Preparing context** from **Connecting audio**. Context
+preparation is a separate, tool-free summary request using the background
+agent's model and credentials; it does not change that agent's model or
+reasoning settings. The summary targets compact notes rather than replaying
+logs, and uses low or disabled OpenAI reasoning where the model catalog supports
+it. Preparation timeouts identify the gateway stage rather than blaming
+microphone permission.
+
 The microphone and speaker controls are independent. Muting speakers silences
 local playback, not the conversation; the model's output waveform continues
 to show incoming audio. End the conversation with the close button.
@@ -177,12 +185,66 @@ tabs, or open an operator panel. Starting voice on another agent ends the
 previous voice conversation before opening the new one. Text composers remain
 usable throughout, including for the agent currently in voice mode.
 
+With GPT Live client delegation, typed messages go to the background agent;
+the composer labels that destination during voice. Its canonical context and
+results are mirrored into the voice conversation. This follows
+[OpenAI's typed-input contract](https://developers.openai.com/api/docs/guides/live-delegation#accept-typed-input):
+typed text is user data for the backend, not a live-model instruction or a
+native spoken turn. Chats with other agents do not change the voice target.
+
 Voice ends automatically after **15 minutes of silence**, not after 15
 minutes of total call time. Text messages do not extend that audio inactivity
 window. Ending voice or closing the console releases the browser's microphone
-and playback resources. If Meerkat provides a recovery connection, the console
+and playback resources. The close button immediately mutes microphone
+transmission and playback, retaining the muted WebRTC transport for up to five
+seconds while the server finalizes. Transport and capture resources are then
+released even if finalization fails; an unconfirmed close remains retryable.
+If Meerkat provides a recovery connection, the console
 reconnects to the same voice agent without changing your mute settings;
 unrecoverable audio connection loss ends voice.
+
+#### Voice acceptance tests
+
+The offline browser lane uses real local WebRTC peers without paid provider
+calls. The opt-in live lane starts a separate authenticated console and uses
+real `gpt-live-1`, real `gpt-5.5` background/peer calls, and original synthetic
+speech fixtures instead of capturing a person's microphone:
+
+```bash
+npm --prefix console run e2e:voice
+node console/voice-e2e-live.cjs --self-test
+
+# Requires OPENAI_API_KEY; this lane makes billed OpenAI calls.
+npm --prefix console run build
+npm --prefix console run e2e:voice:live
+```
+
+The live runner builds the voice-enabled gateway through `scripts/repo-cargo`.
+Set `MOBKIT_VOICE_GATEWAY_BIN` to an already-built current gateway to reuse it.
+Missing credentials fail the selected live lane; they do not produce a skip
+that looks like a passing acceptance run. The runner does not use an existing
+console or record microphone input.
+
+Coverage includes spoken requests, typed-value recall, peer results arriving
+after an initial answer, and close/reopen while background work remains pending.
+Expected native transcript content must have fresh non-silent audio nearby;
+packets, old audio peaks, or mirrored voice text masquerading as a background
+answer are not sufficient. Late ordinary background facts may reach the new
+voice conversation through current canonical context, but old receipts must
+not control it.
+
+The public API does not expose pending canonical-mirror acknowledgements.
+Exact close while an append awaits its provider acknowledgement is therefore
+covered separately by deterministic Meerkat owner tests. The paid console lane
+does not infer that hidden state from an unfinished background task.
+
+The optional summary-latency benchmark makes three billed `gpt-5.5` calls and
+checks a five-second summary budget while retaining exact context values:
+
+```bash
+./scripts/repo-cargo test -p meerkat-mobkit --features openai-live --lib \
+  console_voice_summary_live_latency_and_context_retention -- --ignored --nocapture
+```
 
 ### Signals rail - event feed
 

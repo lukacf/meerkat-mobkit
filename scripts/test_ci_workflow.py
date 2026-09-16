@@ -86,6 +86,12 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("-- -D warnings", block)
         self.assertIn('CARGO_INCREMENTAL: "0"', block)
 
+    def test_console_checks_live_voice_evidence_without_paid_calls(self):
+        block = job_block("console")
+        self.assertIn("node console/voice-e2e-live.cjs --self-test\n", block)
+        self.assertIn("node console/voice-e2e-live.cjs --self-test-audio\n", block)
+        self.assertNotIn("run e2e:voice:live", block)
+
     def test_gate_requires_every_job_it_lists(self):
         """A job absent from `gate` can fail without failing the check suite.
 

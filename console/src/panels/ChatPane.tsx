@@ -1204,7 +1204,9 @@ export function ChatPane({
                 ? "View-only console"
                 : sendWithheld
                   ? `You can view ${agentLabel} but not message it`
-                  : `Message ${agentLabel}…`
+                  : voiceActive
+                    ? `Message ${agentLabel} (background agent)…`
+                    : `Message ${agentLabel}…`
             }
             value={draft}
             disabled={readOnly || sendWithheld}
@@ -1244,6 +1246,7 @@ export function ChatPane({
         </div>
         <div className="composer__footer">
           <span>To: <b style={{ color: "var(--ink-muted)" }}>{agentLabel}</b></span>
+          {voiceActive && <span>· text to background agent</span>}
           <span>·</span>
           <span className="mono">{identity}</span>
           {agent?.role && (<>

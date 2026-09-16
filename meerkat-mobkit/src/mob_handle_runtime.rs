@@ -4832,6 +4832,46 @@ macro_rules! delegate_mob_session_service {
 
         #[async_trait]
         impl MobSessionService for $wrapper {
+            #[cfg(feature = "openai-live")]
+            async fn commit_live_delegation_final_transcript(
+                &self,
+                machine: &meerkat_runtime::MeerkatMachine,
+                session_id: &meerkat_core::SessionId,
+                provisional: meerkat_core::ProvisionalLiveHandoff,
+                final_event: meerkat_core::RealtimeTranscriptEvent,
+            ) -> Result<meerkat_core::FinalLiveUserTranscriptCommitEvidence, SessionError> {
+                self.inner
+                    .commit_live_delegation_final_transcript(machine, session_id, provisional, final_event)
+                    .await
+            }
+
+            #[cfg(feature = "openai-live")]
+            async fn validate_live_bridge_member_eligibility(
+                &self,
+                session_id: &meerkat_core::SessionId,
+            ) -> Result<(), SessionError> {
+                self.inner.validate_live_bridge_member_eligibility(session_id).await
+            }
+
+            #[cfg(feature = "openai-live")]
+            async fn capture_live_bridge_execution_snapshot(
+                &self,
+                session_id: &meerkat_core::SessionId,
+                agent_identity: &str,
+            ) -> Result<meerkat_mob::LiveBridgeExecutionSnapshot, SessionError> {
+                self.inner
+                    .capture_live_bridge_execution_snapshot(session_id, agent_identity)
+                    .await
+            }
+
+            #[cfg(feature = "openai-live")]
+            async fn start_live_bridge_member_operation(
+                &self,
+                request: meerkat_mob::LiveBridgeOperationRequest,
+                cancellation: meerkat_mob::LiveBridgeOperationCancellationSignal,
+            ) -> Result<meerkat_mob::LiveBridgeOperationTerminalFuture, meerkat_mob::LiveBridgeOperationStartError> {
+                self.inner.start_live_bridge_member_operation(request, cancellation).await
+            }
 
             async fn start_turn_with_admission_notification(
                 &self,
@@ -5810,6 +5850,54 @@ impl meerkat_core::service::SessionServiceHistoryExt for AfterCreateMobSessionSe
 
 #[async_trait]
 impl MobSessionService for AfterCreateMobSessionService {
+    #[cfg(feature = "openai-live")]
+    async fn commit_live_delegation_final_transcript(
+        &self,
+        machine: &meerkat_runtime::MeerkatMachine,
+        session_id: &meerkat_core::SessionId,
+        provisional: meerkat_core::ProvisionalLiveHandoff,
+        final_event: meerkat_core::RealtimeTranscriptEvent,
+    ) -> Result<meerkat_core::FinalLiveUserTranscriptCommitEvidence, SessionError> {
+        self.inner
+            .commit_live_delegation_final_transcript(machine, session_id, provisional, final_event)
+            .await
+    }
+
+    #[cfg(feature = "openai-live")]
+    async fn validate_live_bridge_member_eligibility(
+        &self,
+        session_id: &meerkat_core::SessionId,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .validate_live_bridge_member_eligibility(session_id)
+            .await
+    }
+
+    #[cfg(feature = "openai-live")]
+    async fn capture_live_bridge_execution_snapshot(
+        &self,
+        session_id: &meerkat_core::SessionId,
+        agent_identity: &str,
+    ) -> Result<meerkat_mob::LiveBridgeExecutionSnapshot, SessionError> {
+        self.inner
+            .capture_live_bridge_execution_snapshot(session_id, agent_identity)
+            .await
+    }
+
+    #[cfg(feature = "openai-live")]
+    async fn start_live_bridge_member_operation(
+        &self,
+        request: meerkat_mob::LiveBridgeOperationRequest,
+        cancellation: meerkat_mob::LiveBridgeOperationCancellationSignal,
+    ) -> Result<
+        meerkat_mob::LiveBridgeOperationTerminalFuture,
+        meerkat_mob::LiveBridgeOperationStartError,
+    > {
+        self.inner
+            .start_live_bridge_member_operation(request, cancellation)
+            .await
+    }
+
     async fn start_turn_with_admission_notification(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -11843,6 +11931,19 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+        #[cfg(feature = "openai-live")]
+        async fn commit_live_delegation_final_transcript(
+            &self,
+            _machine: &meerkat_runtime::MeerkatMachine,
+            _session_id: &meerkat_core::SessionId,
+            _provisional: meerkat_core::ProvisionalLiveHandoff,
+            _final_event: meerkat_core::RealtimeTranscriptEvent,
+        ) -> Result<meerkat_core::FinalLiveUserTranscriptCommitEvidence, SessionError> {
+            Err(SessionError::Unsupported(
+                "absorber probe has no Live commit authority".into(),
+            ))
+        }
+
         // meerkat 0.8.30 made `enqueue_committed_parent_session_boundary_after_runtime_turn`
         // REQUIRED, deleting the default that returned `Unsupported` for a
         // persistent profile and `Ok(0)` otherwise. That default is exactly how
@@ -12136,6 +12237,16 @@ comms = true
     #[derive(Default)]
     struct ForwardingProbe {
         calls: Mutex<Vec<&'static str>>,
+        #[cfg(feature = "openai-live")]
+        live_machine: Mutex<Option<Arc<meerkat_runtime::MeerkatMachine>>>,
+        #[cfg(feature = "openai-live")]
+        live_commit: Mutex<
+            Option<(
+                meerkat_core::SessionId,
+                meerkat_core::ProvisionalLiveHandoff,
+                meerkat_core::RealtimeTranscriptEvent,
+            )>,
+        >,
         cancel_outcome: std::sync::atomic::AtomicU8,
         turn_request: Mutex<
             Option<(
@@ -12323,6 +12434,51 @@ comms = true
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        #[cfg(feature = "openai-live")]
+        async fn commit_live_delegation_final_transcript(
+            &self,
+            machine: &meerkat_runtime::MeerkatMachine,
+            session_id: &meerkat_core::SessionId,
+            provisional: meerkat_core::ProvisionalLiveHandoff,
+            final_event: meerkat_core::RealtimeTranscriptEvent,
+        ) -> Result<meerkat_core::FinalLiveUserTranscriptCommitEvidence, SessionError> {
+            assert!(std::ptr::eq(
+                machine,
+                self.live_machine
+                    .lock()
+                    .expect("live machine")
+                    .as_deref()
+                    .expect("expected machine"),
+            ));
+            self.record("commit_live_delegation_final_transcript");
+            *self.live_commit.lock().expect("live commit") =
+                Some((session_id.clone(), provisional, final_event));
+            Err(SessionError::NotFound {
+                id: session_id.clone(),
+            })
+        }
+
+        #[cfg(feature = "openai-live")]
+        async fn validate_live_bridge_member_eligibility(
+            &self,
+            _session_id: &meerkat_core::SessionId,
+        ) -> Result<(), SessionError> {
+            self.record("validate_live_bridge_member_eligibility");
+            Ok(())
+        }
+
+        #[cfg(feature = "openai-live")]
+        async fn capture_live_bridge_execution_snapshot(
+            &self,
+            session_id: &meerkat_core::SessionId,
+            _agent_identity: &str,
+        ) -> Result<meerkat_mob::LiveBridgeExecutionSnapshot, SessionError> {
+            self.record("capture_live_bridge_execution_snapshot");
+            Err(SessionError::NotFound {
+                id: session_id.clone(),
+            })
+        }
+
         async fn start_turn_with_admission_notification(
             &self,
             session_id: &meerkat_core::types::SessionId,
@@ -12752,6 +12908,81 @@ comms = true
                 "enqueue_committed_parent_session_boundary_after_runtime_turn",
             ],
             "each wrapper must delegate exactly once and add no semantic step",
+        );
+    }
+
+    #[cfg(feature = "openai-live")]
+    #[tokio::test]
+    async fn console_voice_mob_session_wrappers_forward_transcript_commit_and_bridge_preflight() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let machine = Arc::new(meerkat_runtime::MeerkatMachine::ephemeral());
+        *probe.live_machine.lock().expect("live machine") = Some(machine.clone());
+        let pre_build: Arc<dyn MobSessionService> = Arc::new(PreBuildMobSessionService {
+            inner: probe.clone(),
+            hook: Arc::new(|_| panic!("live commit must not invoke a build hook")),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        });
+        let after_create: Arc<dyn MobSessionService> = Arc::new(AfterCreateMobSessionService {
+            inner: probe.clone(),
+            after_hook: Arc::new(|_, _| panic!("live commit must not invoke a create hook")),
+        });
+        let session_id = meerkat_core::SessionId::new();
+        let provisional = meerkat_core::ProvisionalLiveHandoff::new(
+            meerkat_core::LiveUserTurnCorrelation::new(
+                meerkat_core::LiveChannelId::new("voice-forwarding"),
+                meerkat_core::InteractionId::new(),
+                meerkat_core::OpaqueProviderCorrelation::new("delegation", "user-turn")
+                    .expect("provider correlation"),
+            )
+            .expect("turn correlation"),
+            "unchanged spoken request",
+            meerkat_core::LiveHandoffInputProvenance::NormalizedHandoff,
+        )
+        .expect("provisional input");
+        let final_event = meerkat_core::RealtimeTranscriptEvent::UserTranscriptFinal {
+            item_id: "user-turn".to_string(),
+            previous_item_id: Some("previous-turn".to_string()),
+            content_index: 2,
+            text: "unchanged final transcript".to_string(),
+        };
+        for wrapper in [pre_build, after_create] {
+            assert!(
+                matches!(
+                    wrapper                    .commit_live_delegation_final_transcript(
+                        &machine,
+                        &session_id, provisional.clone(), final_event.clone(),
+                    ).await,
+                    Err(SessionError::NotFound { id }) if id == session_id
+                ),
+                "the inner owner's result must replace the trait's Unsupported default"
+            );
+            assert_eq!(
+                probe.live_commit.lock().expect("live commit").take(),
+                Some((session_id.clone(), provisional.clone(), final_event.clone())),
+            );
+            wrapper
+                .validate_live_bridge_member_eligibility(&session_id)
+                .await
+                .expect("inner eligibility");
+            assert!(matches!(
+                wrapper.capture_live_bridge_execution_snapshot(&session_id, "agent-a").await,
+                Err(SessionError::NotFound { id }) if id == session_id
+            ));
+        }
+        assert_eq!(
+            probe.calls(),
+            [
+                "commit_live_delegation_final_transcript",
+                "validate_live_bridge_member_eligibility",
+                "capture_live_bridge_execution_snapshot",
+                "commit_live_delegation_final_transcript",
+                "validate_live_bridge_member_eligibility",
+                "capture_live_bridge_execution_snapshot",
+            ]
         );
     }
 

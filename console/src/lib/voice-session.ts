@@ -32,6 +32,7 @@ export interface VoiceSessionSnapshot {
   readonly speakerMuted: boolean;
   readonly error: string | null;
   readonly notice: string | null;
+  readonly connectionStage?: "context" | "transport" | "recovery";
 }
 
 /** Browser seams are injectable so lifecycle tests require neither hardware nor credentials. */
@@ -133,7 +134,7 @@ function parseReplacement(raw: unknown): PendingLiveChannelHandle | null {
   return parsePendingLiveChannelHandle(result.replacement);
 }
 
-function voiceError(error: unknown): string {
+function voiceError(error: unknown, stage?: VoiceSessionSnapshot["connectionStage"]): string {
   if (error instanceof VoiceError) return error.message;
   const name = error instanceof Error ? error.name : "";
   if (name === "NotAllowedError" || name === "PermissionDeniedError") {
@@ -151,6 +152,9 @@ function voiceError(error: unknown): string {
   if (jsonRpcErrorCode(error) === -32601 || /not configured|unavailable|not supported/i.test(errorMessage(error))) {
     return "Voice is unavailable. Ask your administrator to enable OpenAI GPT Live on this gateway.";
   }
+  if (stage === "context") {
+    return "The gateway could not prepare the agent's voice context. Check the gateway log before trying again.";
+  }
   // Never expose upstream response bodies, SDP, or bootstrap receipts in UI errors.
   return "Voice could not connect. Check your network and gateway configuration, then try again.";
 }
@@ -160,6 +164,7 @@ interface Attempt {
   readonly requestId: string;
   readonly abort: AbortController;
   deadline: number;
+  connectionStage?: VoiceSessionSnapshot["connectionStage"];
   context?: AudioContext;
   stream?: MediaStream;
   remote?: MediaStream;
@@ -223,6 +228,7 @@ export function createVoiceSession(
   let removePagehide: (() => void) | undefined;
   let serial: Promise<void> = Promise.resolve();
   let teardownBlock: Attempt | undefined;
+  const retainedAttempts = new Set<Attempt>();
 
   const publish = (patch: Partial<VoiceSessionSnapshot>) => {
     snapshot = { ...snapshot, ...patch };
@@ -238,7 +244,12 @@ export function createVoiceSession(
     return serial;
   };
 
-  function bounded<T>(promise: Promise<T>, milliseconds: number, signal?: AbortSignal): Promise<T> {
+  function bounded<T>(
+    promise: Promise<T>,
+    milliseconds: number,
+    signal?: AbortSignal,
+    timeoutMessage = "Voice connection timed out. Check microphone permissions and your network, then try again.",
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       let settled = false;
       const finish = (action: () => void) => {
@@ -249,9 +260,7 @@ export function createVoiceSession(
         action();
       };
       const cancelled = () => finish(() => reject(new Cancelled()));
-      const timer = env.setTimeout(() => finish(() => reject(new VoiceError(
-        "Voice connection timed out. Check microphone permissions and your network, then try again.",
-      ))), Math.max(0, milliseconds));
+      const timer = env.setTimeout(() => finish(() => reject(new VoiceError(timeoutMessage))), Math.max(0, milliseconds));
       signal?.addEventListener("abort", cancelled, { once: true });
       promise.then((value) => finish(() => resolve(value)), (error) => finish(() => reject(error)));
       if (signal?.aborted) cancelled();
@@ -259,7 +268,16 @@ export function createVoiceSession(
   }
 
   function connecting<T>(attempt: Attempt, promise: Promise<T>): Promise<T> {
-    return bounded(promise, attempt.deadline - env.now(), attempt.abort.signal);
+    return bounded(
+      promise,
+      attempt.deadline - env.now(),
+      attempt.abort.signal,
+      attempt.connectionStage === "context"
+        ? "Preparing the agent's voice context timed out. Check the gateway's summary service, then try again."
+        : attempt.connectionStage === "transport"
+          ? "The voice media connection timed out. Check the gateway and your network, then try again."
+          : undefined,
+    );
   }
 
   async function pollDelay(attempt: Attempt) {
@@ -309,9 +327,7 @@ export function createVoiceSession(
     attempt.gain = undefined;
   }
 
-  function cleanupLocal(attempt: Attempt) {
-    if (attempt.localClosed) return;
-    attempt.localClosed = true;
+  function quiesceLocal(attempt: Attempt) {
     attempt.abort.abort();
     if (attempt.sampleTimer !== undefined) env.clearTimeout(attempt.sampleTimer);
     if (attempt.silenceTimer !== undefined) env.clearTimeout(attempt.silenceTimer);
@@ -319,6 +335,15 @@ export function createVoiceSession(
     if (attempt.recoveryTimer !== undefined) env.clearTimeout(attempt.recoveryTimer);
     if (attempt.activityTimer !== undefined) env.clearTimeout(attempt.activityTimer);
     attempt.activityDirty = false;
+    for (const track of attempt.stream?.getTracks() ?? []) track.enabled = false;
+    if (attempt.gain) attempt.gain.gain.value = 0;
+    attempt.audio?.pause();
+  }
+
+  function cleanupLocal(attempt: Attempt) {
+    if (attempt.localClosed) return;
+    quiesceLocal(attempt);
+    attempt.localClosed = true;
     cleanupPeer(attempt);
     for (const track of attempt.stream?.getTracks() ?? []) {
       track.onended = null;
@@ -336,20 +361,30 @@ export function createVoiceSession(
   }
 
   async function teardown(attempt: Attempt) {
-    cleanupLocal(attempt);
-    if (!attempt.openSent) return;
+    quiesceLocal(attempt);
+    if (!attempt.openSent) {
+      cleanupLocal(attempt);
+      retainedAttempts.delete(attempt);
+      return;
+    }
     if (attempt.teardown) return attempt.teardown;
     attempt.teardown = (async () => {
       // The request-scoped close also fences an open whose response has not reached the browser.
-      const raw = await bounded(
-        env.rpc("mobkit/console/voice/close", closeParams(attempt), VOICE_TEARDOWN_TIMEOUT_MS),
-        VOICE_TEARDOWN_TIMEOUT_MS,
-      );
-      const result = parseExperimentalLiveChannelStatus(raw);
-      if (result.phase !== "closed" && result.phase !== "revoked") {
-        throw new VoiceError("The gateway did not confirm voice closure.");
+      try {
+        // Muted WebRTC stays connected while provider acknowledgements drain.
+        const raw = await bounded(
+          env.rpc("mobkit/console/voice/close", closeParams(attempt), VOICE_TEARDOWN_TIMEOUT_MS),
+          VOICE_TEARDOWN_TIMEOUT_MS,
+        );
+        const result = parseExperimentalLiveChannelStatus(raw);
+        if (result.phase !== "closed" && result.phase !== "revoked") {
+          throw new VoiceError("The gateway did not confirm voice closure.");
+        }
+        if (teardownBlock === attempt) teardownBlock = undefined;
+        retainedAttempts.delete(attempt);
+      } finally {
+        cleanupLocal(attempt);
       }
-      if (teardownBlock === attempt) teardownBlock = undefined;
     })();
     try {
       await attempt.teardown;
@@ -361,7 +396,7 @@ export function createVoiceSession(
   }
 
   async function stop(attempt: Attempt, error: string | null = null, notice: string | null = null) {
-    cleanupLocal(attempt);
+    quiesceLocal(attempt);
     if (current === attempt) publish({ phase: "closing", error, notice });
     try {
       await teardown(attempt);
@@ -373,7 +408,7 @@ export function createVoiceSession(
       if (current === attempt) {
         publish({
           phase: "error",
-          error: "Your microphone and speaker are off, but the gateway has not confirmed voice closure. Close again to retry before starting another session.",
+          error: `${error ? `${error} ` : ""}Your microphone and speaker are off, but the gateway has not confirmed voice closure. Close again to retry before starting another session.`,
           notice: null,
         });
       }
@@ -382,7 +417,7 @@ export function createVoiceSession(
 
   function fail(attempt: Attempt, message: string) {
     if (!owns(attempt)) return;
-    cleanupLocal(attempt);
+    quiesceLocal(attempt);
     void enqueue(() => stop(attempt, message));
   }
 
@@ -400,7 +435,8 @@ export function createVoiceSession(
     attempt.recoveryTimer = env.setTimeout(() => {
       fail(attempt, RECOVERY_TIMEOUT_MESSAGE);
     }, VOICE_RECOVERY_TIMEOUT_MS);
-    publish({ phase: "connecting" });
+    attempt.connectionStage = "recovery";
+    publish({ phase: "connecting", connectionStage: "recovery" });
     // The owner closes transport before preparing replacement credentials and summary.
     // Keep polling while gated, with one fixed deadline for discovery and activation.
     requestReplacement(attempt);
@@ -466,7 +502,7 @@ export function createVoiceSession(
         scheduleSilence(attempt);
         return;
       }
-      cleanupLocal(attempt);
+      quiesceLocal(attempt);
       void enqueue(() => stop(attempt, null, "Voice closed after 15 minutes of silence."));
     }, VOICE_SILENCE_TIMEOUT_MS - (env.now() - attempt.lastActivity));
   }
@@ -619,6 +655,9 @@ export function createVoiceSession(
       pending.transport.answerMethod !== "live/webrtc/answer" ||
       !pending.capabilities.audioIn || !pending.capabilities.audioOut
     ) throw new VoiceError("The gateway returned an incompatible GPT Live voice session.");
+    attempt.connectionStage = "transport";
+    publish({ connectionStage: "transport" });
+    assertOwns(attempt);
     preparePeer(attempt);
     const offer = await connecting(attempt, attempt.peer!.createOffer());
     assertOwns(attempt);
@@ -764,7 +803,7 @@ export function createVoiceSession(
             scheduleSilence(attempt);
             sampleActivity(attempt);
           } catch (error) {
-            if (!(error instanceof Cancelled)) await stop(attempt, voiceError(error));
+            if (!(error instanceof Cancelled)) await stop(attempt, voiceError(error, attempt.connectionStage));
           }
         });
       }
@@ -799,7 +838,9 @@ export function createVoiceSession(
       if (attempt.stream.getAudioTracks().length === 0) {
         throw new VoiceError("No microphone audio track was available. Check your microphone and try again.");
       }
-      publish({ phase: "connecting" });
+      attempt.connectionStage = "context";
+      publish({ phase: "connecting", connectionStage: "context" });
+      assertOwns(attempt);
       attempt.openSent = true;
       const raw = await connecting(attempt, env.rpc("mobkit/console/voice/open", {
         identity: attempt.target.identity, request_id: attempt.requestId,
@@ -818,7 +859,7 @@ export function createVoiceSession(
       if (error instanceof Cancelled) {
         await teardown(attempt).catch(() => {});
       } else {
-        await stop(attempt, voiceError(error));
+        await stop(attempt, voiceError(error, attempt.connectionStage));
       }
     }
   }
@@ -840,7 +881,7 @@ export function createVoiceSession(
         return Promise.resolve();
       }
       const previous = current;
-      if (previous) cleanupLocal(previous);
+      if (previous) quiesceLocal(previous);
       let requestId: string;
       try {
         requestId = env.randomId();
@@ -859,10 +900,12 @@ export function createVoiceSession(
         nodes: [], openSent: false, localClosed: false,
         lastActivity: env.now(),
       };
+      retainedAttempts.add(attempt);
       current = attempt;
       publish({
         phase: "requesting", target: attempt.target,
         microphoneMuted: false, speakerMuted: false, error: null, notice: null,
+        connectionStage: undefined,
       });
       if (!owns(attempt)) {
         return enqueue(async () => {
@@ -897,8 +940,10 @@ export function createVoiceSession(
         void media.catch(() => {});
         removePagehide ??= env.onPagehide(() => {
           pageHidden = true;
-          const active = current ?? teardownBlock;
-          if (active?.openSent) env.pagehideClose(closeParams(active));
+          for (const retained of retainedAttempts) {
+            cleanupLocal(retained);
+            if (retained.openSent) env.pagehideClose(closeParams(retained));
+          }
           controller.dispose();
         });
       } catch (error) {
@@ -925,7 +970,7 @@ export function createVoiceSession(
         return Promise.resolve();
       }
       current ??= attempt;
-      cleanupLocal(attempt);
+      quiesceLocal(attempt);
       publish({ phase: "closing" });
       return enqueue(async () => {
         await stop(attempt);
@@ -959,6 +1004,7 @@ export function createVoiceSession(
       removePagehide?.();
       removePagehide = undefined;
       listeners.clear();
+      for (const attempt of retainedAttempts) cleanupLocal(attempt);
       void controller.close();
     },
   };
