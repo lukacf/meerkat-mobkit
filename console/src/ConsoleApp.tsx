@@ -155,6 +155,9 @@ import { SignalsRail } from "./panels/SignalsRail";
 import { ChatPane, type StagedAttachment } from "./panels/ChatPane";
 import { MobKitDock } from "./panels/MobKitDock";
 import { PendingStack, type PendingItem } from "./panels/PendingStack";
+import { VoiceBar } from "./panels/VoiceBar";
+import { useVoiceController } from "./lib/use-voice-controller";
+import { useVoiceReadiness } from "./lib/use-voice-readiness";
 
 interface ConsoleAppProps {
   baseUrl: string;
@@ -616,6 +619,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const consoleController = React.useMemo(
     () => createMobKitConsoleController({ transport: consoleTransport }),
     [consoleTransport],
+  );
+  const { voice, state: voiceState } = useVoiceController(baseUrl);
+  const sampleVoiceWaveform = React.useCallback(
+    (source: "microphone" | "speaker", samples: Float32Array) => voice?.sampleWaveform(source, samples),
+    [voice],
   );
 
   // --- Low-frequency React state (UI-driven) ---
@@ -2026,6 +2034,26 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       experience?.runtime_capabilities?.can_send_messages === false);
   const consoleReadOnlyRef = React.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
+  const hasVoiceHost = experience?.voice?.readiness_method === "mobkit/console/voice/readiness";
+  const voiceReadiness = useVoiceReadiness(
+    baseUrl,
+    dock.focusedTarget?.kind === "agent-chat"
+      ? dock.focusedTarget.identity || dock.focusedTarget.memberId
+      : null,
+    voiceState.target?.identity ?? null,
+    hasVoiceHost && !consoleReadOnly && voice !== null,
+  );
+  React.useEffect(() => {
+    const target = voiceState.target;
+    if (!experience || !voice || !target || !["requesting", "connecting", "active"].includes(voiceState.phase)) return;
+    const voiceAgent = agents.find((agent) =>
+      [agent.identity, agent.member_id, agent.agent_id].includes(target.identity),
+    );
+    if (!hasVoiceHost || voiceReadiness[target.identity] === false || consoleReadOnly || voiceAgent?.affordances?.can_send_message !== true) {
+      setActionError("Voice ended because OpenAI voice readiness or permission to message this agent could no longer be confirmed.");
+      void voice.close();
+    }
+  }, [agents, consoleReadOnly, experience, hasVoiceHost, voice, voiceReadiness, voiceState.phase, voiceState.target]);
   const normalizedTopology = React.useMemo(
     () => normalizeConsoleTopologyQuery(topologyQueryResult, {
       agents,
@@ -3874,6 +3902,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // RENDER: CHAT PANEL — reads from 3 identity-keyed refs
   // =========================================================================
 
+  const voiceBar = (
+    <VoiceBar
+      state={voiceState}
+      sampleWaveform={sampleVoiceWaveform}
+      onClose={() => void voice?.close()}
+      onToggleMicrophone={() => voice?.toggleMicrophone()}
+      onToggleSpeaker={() => voice?.toggleSpeaker()}
+    />
+  );
+
   function renderChatPanel(panel: {
     id: string;
     target?: MobKitDockTarget | null;
@@ -4019,6 +4057,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         loadingOlderHistory={identityLog.olderHistoryLoading === true}
         onLoadOlder={() => void loadOlderIdentityTimeline(identity)}
         stackSlot={stackSlot}
+        voiceSlot={dock.viewState.focusedPanelId === panel.id ? voiceBar : null}
+        onVoiceToggle={
+          voice && voiceReadiness[identity] === true && agent?.affordances?.can_send_message === true
+            ? () => {
+                if (voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error") {
+                  void voice.close();
+                } else {
+                  void voice.start({ identity, label: target.title || agent?.label || identity });
+                }
+              }
+            : undefined
+        }
+        voiceActive={voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error"}
+        voiceDisabled={voiceState.phase === "closing"}
         workGraphActions={workGraphCardActions(identity)}
       />
     );
@@ -4472,6 +4524,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
               openDockTarget(target);
             }}
           />
+          {dock.focusedTarget?.kind !== "agent-chat" ? voiceBar : null}
         </div>
         {railVisible ? (
           <>

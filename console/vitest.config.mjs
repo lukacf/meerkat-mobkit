@@ -53,6 +53,10 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     include: [
+      "console/src/lib/voice-session.test.ts",
+      "console/src/lib/use-voice-readiness.test.tsx",
+      "console/src/lib/use-voice-controller.test.tsx",
+      "console/src/panels/VoiceBar.test.tsx",
       "packages/console-core/src/dock.test.ts",
       "packages/console-components/src/conversation/council-card.test.tsx",
       "packages/console-components/src/conversation/work-graph-card.test.tsx",

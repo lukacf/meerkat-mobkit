@@ -1,0 +1,5 @@
+{
+  "readiness_request": { "identity": "agent-a" },
+  "readiness_available": { "identity": "agent-a", "available": true },
+  "readiness_unavailable": { "identity": "agent-a", "available": false }
+}

@@ -486,6 +486,7 @@ fn console_json_router_with_state(state: ConsoleJsonState) -> Router {
 
 pub async fn console_json_handler(
     State(state): State<ConsoleJsonState>,
+    voice: Option<axum::Extension<crate::console_voice::ConsoleVoiceController>>,
     headers: HeaderMap,
     uri: Uri,
 ) -> impl IntoResponse {
@@ -555,7 +556,7 @@ pub async fn console_json_handler(
         snapshot
     });
 
-    let response = handle_console_rest_json_route_with_snapshot_access_memory_and_workgraph(
+    let mut response = handle_console_rest_json_route_with_snapshot_access_memory_and_workgraph(
         &state.decisions,
         &ConsoleRestJsonRequest {
             method: "GET".to_string(),
@@ -567,12 +568,26 @@ pub async fn console_json_handler(
         state.memory_panel.is_some(),
         state.workgraph.is_some(),
     );
+    if response.status == 200
+        && uri.path() == "/console/experience"
+        && !state.decisions.console.read_only
+        && let Some(voice) = voice
+    {
+        let auth = console_request_auth_context(&state, &headers, &uri);
+        if voice.0.configured() && auth.as_ref().is_some_and(|auth| auth.principal.is_some()) {
+            response.body["voice"] = json!({
+                "available": false,
+                "readiness_method": crate::console_voice::VOICE_READINESS_METHOD
+            });
+        }
+    }
     let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (status, Json::<Value>(response.body))
 }
 
 pub async fn console_rpc_handler(
     State(state): State<ConsoleJsonState>,
+    voice: Option<axum::Extension<crate::console_voice::ConsoleVoiceController>>,
     headers: HeaderMap,
     uri: Uri,
     Json(request): Json<Value>,
@@ -620,6 +635,25 @@ pub async fn console_rpc_handler(
     // Mutating methods may still be blocked by console.read_only.
     let is_authenticated = true;
     let read_only = state.decisions.console.read_only;
+    if matches!(
+        request_method.as_str(),
+        crate::console_voice::VOICE_OPEN_METHOD
+            | crate::console_voice::VOICE_READINESS_METHOD
+            | crate::console_voice::VOICE_CLOSE_METHOD
+            | crate::console_voice::VOICE_ANSWER_RECEIVED_METHOD
+            | crate::console_voice::VOICE_REPLACEMENT_METHOD
+            | crate::console_voice::VOICE_ACTIVITY_METHOD
+    ) || crate::console_voice::is_channel_method(&request_method)
+    {
+        let response = handle_console_voice_rpc(
+            &state,
+            voice.as_ref().map(|extension| &extension.0),
+            &auth_context,
+            parsed_request,
+        )
+        .await;
+        return (StatusCode::OK, Json::<Value>(response));
+    }
     let Some(runtime) = &state.runtime else {
         let response_value = Box::pin(handle_console_aggregator_rpc(
             state.console_aggregator.clone(),
@@ -662,6 +696,177 @@ pub async fn console_rpc_handler(
         state.job_health_projection.as_ref(),
     );
     (StatusCode::OK, Json::<Value>(response_value))
+}
+
+async fn handle_console_voice_rpc(
+    state: &ConsoleJsonState,
+    controller: Option<&crate::console_voice::ConsoleVoiceController>,
+    auth: &ConsoleHttpAuthContext,
+    request: JsonRpcRequest,
+) -> Value {
+    use crate::console_voice::{
+        VOICE_ACTIVITY_METHOD, VOICE_ANSWER_RECEIVED_METHOD, VOICE_CLOSE_METHOD, VOICE_OPEN_METHOD,
+        VOICE_READINESS_METHOD, VOICE_REPLACEMENT_METHOD, VoiceActivity, VoiceAnswerReceived,
+        VoiceError, VoiceReadiness, VoiceRequest,
+    };
+
+    if request.jsonrpc != JSONRPC_VERSION || request.id.is_none() {
+        return invalid_params(
+            request.id.unwrap_or(Value::Null),
+            "Voice lifecycle requires a JSON-RPC 2.0 request with an id",
+        );
+    }
+    let id = request.id.unwrap_or(Value::Null);
+    let error = |error: VoiceError| response_value(id.clone(), None, Some(error.rpc_error()));
+    let Some(principal) = auth
+        .principal
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return error(VoiceError::Unauthorized);
+    };
+    let retains_teardown_access = matches!(
+        request.method.as_str(),
+        VOICE_CLOSE_METHOD
+            | "mobkit/live/close"
+            | "mobkit/live/status"
+            | "mobkit/live/playback_owner/revoke"
+    );
+    if !retains_teardown_access {
+        if state.decisions.console.read_only {
+            return console_read_only_rpc_error(id);
+        }
+        if let (Some(runtime), Some(access)) = (
+            state.runtime.as_ref(),
+            state.access.as_ref().filter(|access| access.enabled()),
+        ) {
+            prime_access_cache_from_runtime(runtime, access).await;
+        }
+        if let Some(denial) = console_rpc_access_violation(
+            auth.access_view.as_ref(),
+            &request.method,
+            &request.params,
+        ) {
+            return response_value(id, None, Some(denial));
+        }
+    }
+    if request.method == VOICE_READINESS_METHOD {
+        let parsed: VoiceReadiness = match serde_json::from_value(request.params) {
+            Ok(parsed) => parsed,
+            Err(_) => return error(VoiceError::InvalidRequest),
+        };
+        let Some(controller) = controller else {
+            return response_value(
+                id,
+                Some(json!({"identity":parsed.identity,"available":false})),
+                None,
+            );
+        };
+        return match tokio::time::timeout(
+            Duration::from_secs(5),
+            controller.ready(principal, &parsed.identity),
+        )
+        .await
+        .unwrap_or(Ok(false))
+        {
+            Ok(available) => response_value(
+                id,
+                Some(json!({"identity":parsed.identity,"available":available})),
+                None,
+            ),
+            Err(failure) => error(failure),
+        };
+    }
+    if crate::console_voice::is_channel_method(&request.method) {
+        let Some(controller) = controller else {
+            return error(VoiceError::Unavailable);
+        };
+        return match controller
+            .dispatch_channel(principal, &request.method, request.params)
+            .await
+        {
+            Ok(value) => response_value(id, Some(value), None),
+            Err(failure) => error(failure),
+        };
+    }
+    let answer: Option<VoiceAnswerReceived> = if request.method == VOICE_ANSWER_RECEIVED_METHOD {
+        match serde_json::from_value(request.params.clone()) {
+            Ok(parsed) => Some(parsed),
+            Err(_) => return error(VoiceError::InvalidRequest),
+        }
+    } else {
+        None
+    };
+    let activity: Option<VoiceActivity> = if request.method == VOICE_ACTIVITY_METHOD {
+        match serde_json::from_value(request.params.clone()) {
+            Ok(parsed) => Some(parsed),
+            Err(_) => return error(VoiceError::InvalidRequest),
+        }
+    } else {
+        None
+    };
+    let parsed: VoiceRequest = if let Some(answer) = &answer {
+        VoiceRequest {
+            identity: answer.identity.clone(),
+            request_id: answer.request_id.clone(),
+        }
+    } else if let Some(activity) = &activity {
+        VoiceRequest {
+            identity: activity.identity.clone(),
+            request_id: activity.request_id.clone(),
+        }
+    } else {
+        match serde_json::from_value(request.params.clone()) {
+            Ok(parsed) => parsed,
+            Err(_) => return error(VoiceError::InvalidRequest),
+        }
+    };
+    // Teardown retains the authenticated request owner after view/send/auth
+    // readiness revocation. It never promotes a missing principal to stdio.
+    let Some(controller) = controller else {
+        return error(VoiceError::Unavailable);
+    };
+    match request.method.as_str() {
+        VOICE_OPEN_METHOD => match controller.open(principal, parsed).await {
+            Ok(pending) => match serde_json::to_value(pending) {
+                Ok(value) => response_value(id, Some(value), None),
+                Err(_) => error(VoiceError::HostFailed),
+            },
+            Err(failure) => error(failure),
+        },
+        VOICE_CLOSE_METHOD => match controller.close(principal, parsed).await {
+            Ok(()) => response_value(id, Some(json!({ "phase": "closed" })), None),
+            Err(failure) => error(failure),
+        },
+        VOICE_ANSWER_RECEIVED_METHOD => {
+            let Some(answer) = answer else {
+                return error(VoiceError::InvalidRequest);
+            };
+            match controller
+                .answer_received(principal, parsed, &answer.channel_id)
+                .await
+            {
+                Ok(()) => response_value(id, Some(json!({"accepted":true})), None),
+                Err(failure) => error(failure),
+            }
+        }
+        VOICE_REPLACEMENT_METHOD => {
+            match controller.replacement_required(principal, parsed).await {
+                Ok(value) => response_value(id, Some(value), None),
+                Err(failure) => error(failure),
+            }
+        }
+        VOICE_ACTIVITY_METHOD => {
+            let Some(activity) = activity else {
+                return error(VoiceError::InvalidRequest);
+            };
+            match controller.note_activity(principal, activity).await {
+                Ok(()) => response_value(id, Some(json!({"accepted":true})), None),
+                Err(failure) => error(failure),
+            }
+        }
+        _ => error(VoiceError::InvalidRequest),
+    }
 }
 
 fn decorate_console_job_projection(
@@ -1473,6 +1678,7 @@ fn is_console_mutating_rpc_method(method: &str) -> bool {
         "mobkit/retire"
             | "mobkit/reset_all"
             | "mobkit/console/send"
+            | crate::console_voice::VOICE_OPEN_METHOD
             | "mobkit/blob/upload"
             | "mobkit/ensure_member"
             | "mobkit/retire_member"
@@ -1814,6 +2020,18 @@ fn console_rpc_access_requirements(
             one(ACTION_RUNTIME_ADMIN, None)
         }
         "mobkit/console/send" => one(ACTION_AGENT_SEND, identity),
+        crate::console_voice::VOICE_OPEN_METHOD
+        | crate::console_voice::VOICE_READINESS_METHOD
+        | crate::console_voice::VOICE_ANSWER_RECEIVED_METHOD
+        | crate::console_voice::VOICE_REPLACEMENT_METHOD
+        | crate::console_voice::VOICE_ACTIVITY_METHOD => Some(vec![
+            (ACTION_AGENT_VIEW, identity.clone()),
+            (ACTION_AGENT_SEND, identity),
+        ]),
+        method if crate::console_voice::is_channel_method(method) => Some(vec![
+            (ACTION_AGENT_VIEW, identity.clone()),
+            (ACTION_AGENT_SEND, identity),
+        ]),
         "mobkit/agent_memory/remember" => one(ACTION_AGENT_MEMORY_WRITE, identity),
         // Update is a supersede — a write within the record's lineage.
         "mobkit/agent_memory/update" => one(ACTION_AGENT_MEMORY_WRITE, identity),
@@ -10978,6 +11196,33 @@ comms = true
     fn read_only_mutating_methods_include_state_draining_collect_completed() {
         assert!(super::is_console_mutating_rpc_method(
             "mobkit/collect_completed"
+        ));
+    }
+
+    #[test]
+    fn console_voice_open_requires_view_and_send_but_close_retains_owned_cleanup() {
+        let params = json!({ "identity": "agent-a", "request_id": "request-a" });
+        assert_eq!(
+            super::console_rpc_access_requirements(
+                crate::console_voice::VOICE_OPEN_METHOD,
+                &params
+            ),
+            Some(vec![
+                (
+                    crate::access::ACTION_AGENT_VIEW,
+                    Some("agent-a".to_string())
+                ),
+                (
+                    crate::access::ACTION_AGENT_SEND,
+                    Some("agent-a".to_string())
+                ),
+            ])
+        );
+        assert!(super::is_console_mutating_rpc_method(
+            crate::console_voice::VOICE_OPEN_METHOD
+        ));
+        assert!(!super::is_console_mutating_rpc_method(
+            crate::console_voice::VOICE_CLOSE_METHOD
         ));
     }
 

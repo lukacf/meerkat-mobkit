@@ -2204,8 +2204,7 @@ dependencies = [
 [[package]]
 name = "meerkat"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92367171f1629645038e55397c52e368577e1fd601a1a2b058ae460a8e8cb597"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2250,8 +2249,7 @@ dependencies = [
 [[package]]
 name = "meerkat-anthropic"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fa17dcc4468823eebad7065eff703672425873f5d5f7510e33bfb263d4ba425"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2275,8 +2273,7 @@ dependencies = [
 [[package]]
 name = "meerkat-auth-core"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd7065350ab18d32e650168b94862d7c8b3d1cf9d5af806c29107ce2499aae5b"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "axum",
@@ -2308,8 +2305,7 @@ dependencies = [
 [[package]]
 name = "meerkat-capabilities"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f6040afd885eedb70c877a5fe3a0ab0a8a003292cebe25636e9acb35eb25074"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "inventory",
  "meerkat-core",
@@ -2321,8 +2317,7 @@ dependencies = [
 [[package]]
 name = "meerkat-client"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "873d262e25f05cb9accb11a0f96a6789795aab5d460c06227ae5859edd3717e9"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "meerkat-anthropic",
  "meerkat-core",
@@ -2334,8 +2329,7 @@ dependencies = [
 [[package]]
 name = "meerkat-comms"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bda287335e30857733e764bedd82037abb064b7c9f46f16d147844bb1d227373"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "base64",
@@ -2370,8 +2364,7 @@ dependencies = [
 [[package]]
 name = "meerkat-contracts"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b41fb68a418c37407ad011e16efff5cc6b5bd99377faa43ffacb7becb3f3b62"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "base64",
  "chrono",
@@ -2392,8 +2385,7 @@ dependencies = [
 [[package]]
 name = "meerkat-copilot"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6840bfc34c25b431b86a35f77c378aa4b22075c5eac4bd5312bb78440abf4b5"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2415,8 +2407,7 @@ dependencies = [
 [[package]]
 name = "meerkat-core"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "506fbcfeef4e9b2bb479dcb1b2e79c28d72620a9815ef03a00c5eba175812381"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "base64",
@@ -2448,8 +2439,7 @@ dependencies = [
 [[package]]
 name = "meerkat-gemini"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "455035013ebe0c830b69baaad7d3b5f91b87374b23156a2ca18a36736b5d984f"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2474,8 +2464,7 @@ dependencies = [
 [[package]]
 name = "meerkat-hooks"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eba4017fd910b1ac0a54d65d0a7def3332af0c783682fe2a89a7511811b4f84d"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2497,8 +2486,7 @@ dependencies = [
 [[package]]
 name = "meerkat-jobs"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef2c06e0ab6509ac8064c99e30c7e40667e2cd23ebb4a2f06bac983de4329c33"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2517,8 +2505,7 @@ dependencies = [
 [[package]]
 name = "meerkat-live"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fa9f2a778d61de1f4699f2a1ee33693685b3ff24f5a4ad8caaf6ce5687160ab"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "axum",
@@ -2542,8 +2529,7 @@ dependencies = [
 [[package]]
 name = "meerkat-llm-core"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "065f3d22ebe9250f7dbe95528322107d53d6aeebe32bd84e11673e4b229db800"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2568,8 +2554,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-derive"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2889d5c905d3966094793a8f759c33948930219509a4e4feb5435043f9922377"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -2578,8 +2563,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-dsl"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4404e84f36d756dadc106c3e1580f5c59d92fd338836e61a2aa691f8b34e5d26"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "meerkat-machine-dsl-core",
 ]
@@ -2587,8 +2571,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-dsl-core"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e4cf226102a97499413c8a7d7f8b839af3c4990cf7d6d84ffc97f81042f5456"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2598,8 +2581,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-kernels"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c94ae949534e6991efe530e94f280d76bda6d891cae00bb163906cb4c9d003e"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "indexmap",
  "meerkat-core",
@@ -2611,8 +2593,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-schema"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "117f7a3ac5315a7e22779eee6c8d2181d1197d87cc0388bc70152d8b152428fd"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "indexmap",
  "meerkat-core",
@@ -2625,8 +2606,7 @@ dependencies = [
 [[package]]
 name = "meerkat-mcp"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7e5aa13882974b2a6c71eb178cedd9ff7398bb6873853937895d4afec2bb7b3"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "futures",
@@ -2650,8 +2630,7 @@ dependencies = [
 [[package]]
 name = "meerkat-memory"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7737392bca9c56ff07908ba9ed9b0b7a824eb9814265935b7f6eed7e707c0498"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "hnsw_rs",
@@ -2673,8 +2652,7 @@ dependencies = [
 [[package]]
 name = "meerkat-mob"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c953c38128beb9227e1910001a29f4f775969f5949c8486d247b912b799b4e0e"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2714,8 +2692,7 @@ dependencies = [
 [[package]]
 name = "meerkat-mob-mcp"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97d9c0c964b910bfd2827944ada5bab9e04baa5807f417d85c886dab9f64c268"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2802,8 +2779,7 @@ dependencies = [
 [[package]]
 name = "meerkat-models"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96975e027ef7a775f853773c0aa3a489f62d3ac27eda8d22c35f3520ef9895cc"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "meerkat-core",
 ]
@@ -2811,8 +2787,7 @@ dependencies = [
 [[package]]
 name = "meerkat-openai"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d11ca415a6419207739dcd2e4ce22df339aff15c52027cf31fe741a788f007db"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2842,8 +2817,7 @@ dependencies = [
 [[package]]
 name = "meerkat-providers"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7917330b742430444cafdbe84f9058279afd9518410fb8b1ec6994a465043baf"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "meerkat-auth-core",
  "meerkat-llm-core",
@@ -2852,8 +2826,7 @@ dependencies = [
 [[package]]
 name = "meerkat-runtime"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d25b82e1dfd758f089d1f2df872d849a992affea8688e6077f7eebe814604b8f"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2884,8 +2857,7 @@ dependencies = [
 [[package]]
 name = "meerkat-schedule"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf1b575674a6ea3e4e8140d340f0ef82347ec5740584ee092a03685dc21faad1"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2910,8 +2882,7 @@ dependencies = [
 [[package]]
 name = "meerkat-session"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c67e504f249b2234515fd13aee118cd59b8e4a2cefe6e6724b7c85c6de315592"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "futures",
@@ -2936,8 +2907,7 @@ dependencies = [
 [[package]]
 name = "meerkat-skills"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b33a5966db5d204ba282385fb61f97562840b597945c1221a7cd80143bf8783"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "indexmap",
@@ -2959,8 +2929,7 @@ dependencies = [
 [[package]]
 name = "meerkat-sqlite"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9698d4fcfacf927310d86216e1c43e7e0d75f87e95fdc9c5aa36c247f71579a3"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "rusqlite",
  "thiserror 2.0.19",
@@ -2969,8 +2938,7 @@ dependencies = [
 [[package]]
 name = "meerkat-store"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44eb9e5f0efa93bc735b1160ae0060d9daf66b506a4403c5efd85abf026267ed"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2994,8 +2962,7 @@ dependencies = [
 [[package]]
 name = "meerkat-store-conformance"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d55c3c16fd3743345cbc67910e4e8c3c5b32ce6ca25412673a205e4a2adc63c4"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "meerkat-core",
@@ -3007,8 +2974,7 @@ dependencies = [
 [[package]]
 name = "meerkat-tools"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ae51538f62bbc586e50e97ceee0e4fee6edb1a51acd25924d0a5880af5e9066"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "base64",
@@ -3048,8 +3014,7 @@ dependencies = [
 [[package]]
 name = "meerkat-workgraph"
 version = "0.8.38"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b6e2680fe5440bdab8e9b0f43a3f06a49faf458c674056ea0bae141a71a0cfa"
+source = "git+file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint?rev=0b36e303e85674ebe85b2a06160db292e3b1a636#0b36e303e85674ebe85b2a06160db292e3b1a636"
 dependencies = [
  "async-trait",
  "chrono",

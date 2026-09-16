@@ -76,6 +76,203 @@ fn decision_state() -> meerkat_mobkit::RuntimeDecisionState {
     .expect("decision state builds")
 }
 
+async fn voice_rpc(
+    state: meerkat_mobkit::RuntimeDecisionState,
+    method: &str,
+    authenticated: bool,
+) -> (axum::http::StatusCode, Value) {
+    voice_rpc_with_params(
+        state,
+        method,
+        authenticated,
+        json!({"identity":"agent-a", "request_id":"request-a"}),
+        None,
+    )
+    .await
+}
+
+async fn voice_rpc_with_params(
+    mut state: meerkat_mobkit::RuntimeDecisionState,
+    method: &str,
+    authenticated: bool,
+    params: Value,
+    access: Option<meerkat_mobkit::AccessController>,
+) -> (axum::http::StatusCode, Value) {
+    use tower::ServiceExt;
+    state.trusted_oidc.discovery_json = json!({
+        "issuer": "https://trusted.mobkit.localhost",
+        "jwks_uri": "https://trusted.mobkit.localhost/.well-known/jwks.json"
+    })
+    .to_string();
+    let app = meerkat_mobkit::console_json_router_with_aggregator_and_access(
+        state,
+        meerkat_mobkit::MobKitConsoleAggregator::new(std::sync::Arc::new(
+            meerkat_mobkit::InMemoryConsoleLogStore::default(),
+        )),
+        access,
+    )
+    .layer(axum::Extension(
+        meerkat_mobkit::console_voice::ConsoleVoiceController::default(),
+    ));
+    let mut request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/console/rpc")
+        .header("content-type", "application/json");
+    if authenticated {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+        header.kid = Some("kid-current".to_string());
+        let token = jsonwebtoken::encode(
+            &header,
+            &json!({
+                "iss": "https://trusted.mobkit.localhost",
+                "aud": "meerkat-console",
+                "sub": "alice@example.com",
+                "email": "alice@example.com",
+                "provider": "google_oauth",
+                "exp": chrono::Utc::now().timestamp() + 300
+            }),
+            &jsonwebtoken::EncodingKey::from_secret(b"phase8-trusted-current-secret"),
+        )
+        .expect("token");
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    let response = app
+        .oneshot(
+            request
+                .body(axum::body::Body::from(
+                    json!({
+                        "jsonrpc": "2.0", "id": 1, "method": method,
+                        "params": params
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    (status, serde_json::from_slice(&body).expect("json"))
+}
+
+#[tokio::test]
+async fn console_voice_readiness_is_target_scoped_and_false_without_a_host() {
+    let contract: Value = serde_json::from_str(include_str!("fixtures/console_voice_v1.json"))
+        .expect("shared voice contract");
+    let mut state = decision_state();
+    state.console.require_app_auth = true;
+    let (_, readiness) = voice_rpc_with_params(
+        state.clone(),
+        "mobkit/console/voice/readiness",
+        true,
+        json!({"identity":"agent-a"}),
+        None,
+    )
+    .await;
+    assert_eq!(readiness["result"], contract["readiness_unavailable"]);
+    let (_, malformed) = voice_rpc_with_params(
+        state,
+        "mobkit/console/voice/readiness",
+        true,
+        json!({"identity":"agent-a", "request_id":"unexpected"}),
+        None,
+    )
+    .await;
+    assert_eq!(malformed["error"]["code"], -32602);
+}
+
+#[tokio::test]
+async fn console_voice_channel_activation_rechecks_agent_permissions_before_dispatch() {
+    let mut state = decision_state();
+    state.console.require_app_auth = true;
+    let access = meerkat_mobkit::AccessController::new(meerkat_mobkit::AccessControlConfig {
+        enabled: true,
+        admins: vec!["someone-else@example.com".to_string()],
+        ..Default::default()
+    })
+    .expect("access controller");
+    for method in [
+        "mobkit/console/voice/readiness",
+        "mobkit/console/voice/replacement",
+        "mobkit/console/voice/activity",
+        "mobkit/live/playback_owner/register",
+        "live/webrtc/answer",
+        "mobkit/console/voice/answer_received",
+    ] {
+        let (_, response) = voice_rpc_with_params(
+            state.clone(),
+            method,
+            true,
+            json!({"identity":"agent-a", "request_id":"request-a", "channel_id":"channel-a"}),
+            Some(access.clone()),
+        )
+        .await;
+        assert_eq!(
+            response["error"]["data"]["kind"], "access_denied",
+            "{method}: {response}"
+        );
+    }
+    let (_, closed) = voice_rpc_with_params(
+        state,
+        "mobkit/console/voice/close",
+        true,
+        json!({"identity":"agent-a", "request_id":"request-a"}),
+        Some(access),
+    )
+    .await;
+    assert_eq!(closed["result"]["phase"], "closed");
+}
+
+#[tokio::test]
+async fn console_voice_http_never_promotes_anonymous_console_access_to_live_authority() {
+    for method in [
+        "mobkit/console/voice/open",
+        "mobkit/console/voice/readiness",
+        "mobkit/console/voice/close",
+    ] {
+        let (status, response) = voice_rpc(decision_state(), method, false).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(response["error"]["data"]["kind"], "access_denied");
+    }
+}
+
+#[tokio::test]
+async fn console_voice_does_not_expose_measured_output_transport() {
+    let mut state = decision_state();
+    state.console.require_app_auth = true;
+    for method in [
+        "mobkit/console/voice/outputs/poll",
+        "mobkit/console/voice/outputs/ack",
+    ] {
+        let (_, response) = voice_rpc(state.clone(), method, true).await;
+        assert_eq!(response["error"]["code"], -32601);
+    }
+}
+
+#[tokio::test]
+async fn console_voice_http_requires_real_console_auth_and_a_composed_voice_host() {
+    let mut state = decision_state();
+    state.console.require_app_auth = true;
+    let (status, _) = voice_rpc(state.clone(), "mobkit/console/voice/open", false).await;
+    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+    let (status, response) = voice_rpc(state, "mobkit/console/voice/open", true).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(response["error"]["data"]["kind"], "voice_unavailable");
+}
+
+#[tokio::test]
+async fn console_voice_http_read_only_blocks_open_but_not_owned_cancel_fencing() {
+    let mut state = decision_state();
+    state.console.require_app_auth = true;
+    state.console.read_only = true;
+    let (_, open) = voice_rpc(state.clone(), "mobkit/console/voice/open", true).await;
+    assert_eq!(open["error"]["data"]["kind"], "read_only");
+    let (_, close) = voice_rpc(state, "mobkit/console/voice/close", true).await;
+    assert_eq!(close["result"], json!({"phase":"closed"}));
+}
+
 #[test]
 fn phase0_contract_004_console_rest_sse_contract_version_is_pinned_and_enforced() {
     let artifact: Value = serde_json::from_str(include_str!(

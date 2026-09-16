@@ -312,6 +312,7 @@ export interface ConsoleExperience {
     live_snapshot?: ConsoleHealthSnapshot;
   }>;
   access?: ConsoleAccessSection;
+  voice?: { available?: boolean; readiness_method?: string };
   memory?: ConsoleMemorySection;
   workgraph?: ConsoleWorkGraphSection;
 }

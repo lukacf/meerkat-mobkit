@@ -35,7 +35,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use base64::Engine;
 use meerkat_mobkit::contact_directory::ContactDirectory;
 use meerkat_mobkit::runtime::cross_mob_control::{
     ControlAuthorizer, ControlGrantTable, ControlListenAddr,
@@ -45,14 +44,13 @@ use meerkat_mobkit::unified_runtime::EventLogError;
 use meerkat_mobkit::unified_runtime::types::IdentityAuthorityReleaseOutcome;
 use meerkat_mobkit::unified_runtime::types::RetiredSupervisorCleanupOutcome;
 use meerkat_mobkit::{
-    AuthPolicy, AuthProvider, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore,
-    ConsolePolicy, ConsoleUiConfig, DiscoverySpec, EventLogConfig, EventLogStore, EventQuery,
-    InMemoryMetadataStore, LocalJsonMemoryBackendConfig, MOBKIT_CONTRACT_VERSION,
-    MemoryBackendConfig, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig,
-    ObjectStoreBlobStore, PersistedEvent, PersistentMetadataStore, PreSpawnData, ReleaseMetadata,
-    RestartPolicy, RuntimeDecisionState, RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute,
-    STORAGE_RESOLUTION_CODE, SqliteConsoleLogStore, SqliteMetadataStore, TrustedOidcRuntimeConfig,
-    UnifiedRuntime, UnifiedRuntimeShutdownReport, handle_mobkit_rpc_json,
+    Base64BlobStoreAdapter, BinaryBlobStore, ConsolePolicy, ConsoleUiConfig, DiscoverySpec,
+    EventLogConfig, EventLogStore, EventQuery, InMemoryMetadataStore, LocalJsonMemoryBackendConfig,
+    MOBKIT_CONTRACT_VERSION, MemoryBackendConfig, MobBootstrapOptions, MobBootstrapSpec,
+    MobKitConfig, ModuleConfig, ObjectStoreBlobStore, PersistedEvent, PersistentMetadataStore,
+    PreSpawnData, RestartPolicy, RuntimeDecisionState, RuntimeOptions, RuntimeRoute,
+    STORAGE_RESOLUTION_CODE, SqliteConsoleLogStore, SqliteMetadataStore, UnifiedRuntime,
+    UnifiedRuntimeShutdownReport, handle_mobkit_rpc_json,
     load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::{mob_definition_may_use_image_generation, mob_definition_may_use_shell},
     start_mobkit_runtime,
@@ -141,6 +139,10 @@ struct GatewayRuntimeOptions {
     /// binding, and voice; absence keeps capability projection fail-closed.
     #[cfg(feature = "openai-live")]
     openai_live: Option<GatewayOpenAiLiveOption>,
+    /// Authenticated HTTP voice uses the shared summary/existing-member owner.
+    /// Exclusive with the independently composed stdin/legacy live owners.
+    #[cfg(feature = "openai-live")]
+    console_voice: Option<GatewayOpenAiLiveOption>,
     /// SDK-registered deterministic schedule targets
     /// (`runtime_options.host_runnables`): each name registers a schedule
     /// host runnable whose fire forwards over the callback bridge as
@@ -249,14 +251,7 @@ struct GatewayExperimentalLiveOption {
 /// instructions. There is no factory identity, Gate0 qualification, or named
 /// execution profile catalogue on this path.
 #[cfg(feature = "openai-live")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GatewayOpenAiLiveOption {
-    principal: String,
-    realm: meerkat_core::RealmId,
-    binding: meerkat_core::AuthBindingRef,
-    voice: String,
-    session_instructions: Option<String>,
-}
+type GatewayOpenAiLiveOption = meerkat_mobkit::public_live_config::PublicLiveRegistration;
 
 /// `runtime_options.workgraph` wire forms. Booleans keep the original
 /// semantics (on with defaulted store placement / off). A string is an
@@ -393,7 +388,7 @@ impl GatewayRuntimeOptions {
             return true;
         }
         #[cfg(feature = "openai-live")]
-        if self.openai_live.is_some() {
+        if self.openai_live.is_some() || self.console_voice.is_some() {
             return true;
         }
         false
@@ -427,6 +422,8 @@ impl Default for GatewayRuntimeOptions {
             experimental_live: None,
             #[cfg(feature = "openai-live")]
             openai_live: None,
+            #[cfg(feature = "openai-live")]
+            console_voice: None,
             host_runnables: Vec::new(),
             runtime_store_ephemeral: false,
             mob_storage_ephemeral: false,
@@ -4579,6 +4576,42 @@ actions = ["agent.view"]
 
     #[cfg(feature = "openai-live")]
     #[test]
+    fn console_voice_registration_requires_authenticated_exclusive_composition() {
+        let registration = json!({
+            "principal":"voice@example.com", "realm":"voice",
+            "auth_binding":{"realm":"voice","binding":"openai"}, "voice":"marin"
+        });
+        let options = json!({
+            "auth_config":{"provider":"jwt","shared_secret":"test-console-signing-key",
+                "email_allowlist":["voice@example.com"]},
+            "console_voice":registration
+        });
+        let parsed = parse_gateway_runtime_options(&json!({"runtime_options":options}), None)
+            .expect("console voice registration");
+        assert!(parsed.console_voice.is_some());
+        assert!(parsed.openai_live.is_none());
+        assert!(parsed.strict_live_registered());
+        for (field, value) in [
+            ("auth_config", Value::Null),
+            ("console_require_app_auth", json!(false)),
+            ("openai_live", registration.clone()),
+            ("live", json!(true)),
+        ] {
+            let mut invalid = options.clone();
+            if value.is_null() {
+                invalid.as_object_mut().expect("object").remove(field);
+            } else {
+                invalid[field] = value;
+            }
+            assert!(
+                parse_gateway_runtime_options(&json!({"runtime_options":invalid}), None).is_err(),
+                "{field} must not bypass console voice composition"
+            );
+        }
+    }
+
+    #[cfg(feature = "openai-live")]
+    #[test]
     fn gateway_openai_live_registration_is_explicit_and_strict() {
         let defaults = parse_gateway_runtime_options(&json!({}), None).expect("defaults");
         assert!(defaults.openai_live.is_none());
@@ -5510,11 +5543,12 @@ actions = ["agent.view"]
         let gateway_phase_budget = GATEWAY_RPC_DRAIN_TIMEOUT
             + meerkat_mobkit::gateway_composition::GATEWAY_HTTP_DRAIN_TIMEOUT
             + meerkat_mobkit::gateway_composition::GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT
-            + GATEWAY_STDOUT_DRAIN_TIMEOUT;
-        assert_eq!(gateway_phase_budget, Duration::from_secs(327));
+            + GATEWAY_STDOUT_DRAIN_TIMEOUT
+            + meerkat_mobkit::console_voice::CONSOLE_VOICE_SHUTDOWN_TIMEOUT;
+        assert_eq!(gateway_phase_budget, Duration::from_secs(337));
         assert_eq!(
             Duration::from_millis(GATEWAY_SHUTDOWN_HORIZON_MS),
-            Duration::from_secs(337)
+            Duration::from_secs(347)
         );
         assert_eq!(
             Duration::from_millis(GATEWAY_SHUTDOWN_HORIZON_MS).saturating_sub(gateway_phase_budget),
@@ -5665,7 +5699,7 @@ fn validate_gateway_identity_bootstrap_intent(
 /// Parse the shared `auth_binding {realm, binding, profile}` object of a
 /// strict live registration. The binding realm must equal the registration
 /// realm and the origin is always `Configured`: callers never mint a binding.
-#[cfg(feature = "openai-live")]
+#[cfg(feature = "experimental-gpt-live")]
 fn parse_gateway_live_auth_binding(
     object: &serde_json::Map<String, Value>,
     option_name: &str,
@@ -5739,53 +5773,8 @@ fn parse_gateway_live_auth_binding(
 
 #[cfg(feature = "openai-live")]
 fn parse_gateway_openai_live_option(value: &Value) -> Result<GatewayOpenAiLiveOption, String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "runtime_options.openai_live must be an object".to_string())?;
-    let supported = [
-        "principal",
-        "realm",
-        "auth_binding",
-        "voice",
-        "session_instructions",
-    ];
-    let unsupported = object
-        .keys()
-        .filter(|key| !supported.contains(&key.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    if !unsupported.is_empty() {
-        return Err(format!(
-            "unsupported runtime_options.openai_live fields: {}",
-            unsupported.join(", ")
-        ));
-    }
-    let required_string = |name: &str| -> Result<String, String> {
-        object
-            .get(name)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .ok_or_else(|| format!("runtime_options.openai_live.{name} must be a non-empty string"))
-    };
-    let principal = required_string("principal")?;
-    let realm_text = required_string("realm")?;
-    let realm = meerkat_core::RealmId::parse(&realm_text)
-        .map_err(|error| format!("runtime_options.openai_live.realm is invalid: {error}"))?;
-    let binding = parse_gateway_live_auth_binding(object, "openai_live", &realm)?;
-    let voice = required_string("voice")?;
-    let session_instructions = match object.get("session_instructions") {
-        None | Some(Value::Null) => None,
-        Some(_) => Some(required_string("session_instructions")?),
-    };
-    Ok(GatewayOpenAiLiveOption {
-        principal,
-        realm,
-        binding,
-        voice,
-        session_instructions,
-    })
+    GatewayOpenAiLiveOption::parse(value)
+        .map_err(|error| format!("runtime_options.openai_live: {error}"))
 }
 
 #[cfg(feature = "experimental-gpt-live")]
@@ -5979,6 +5968,8 @@ fn parse_gateway_runtime_options(
         "experimental_live",
         #[cfg(feature = "openai-live")]
         "openai_live",
+        #[cfg(feature = "openai-live")]
+        "console_voice",
         "host_runnables",
         "runtime_store",
         "mob_storage",
@@ -6191,6 +6182,25 @@ fn parse_gateway_runtime_options(
     #[cfg(feature = "openai-live")]
     if let Some(value) = runtime_options.get("openai_live") {
         parsed.openai_live = Some(parse_gateway_openai_live_option(value)?);
+    }
+    #[cfg(feature = "openai-live")]
+    if let Some(value) = runtime_options.get("console_voice") {
+        parsed.console_voice = Some(
+            GatewayOpenAiLiveOption::parse(value)
+                .map_err(|error| format!("runtime_options.console_voice: {error}"))?,
+        );
+        if parsed.openai_live.is_some() || !matches!(parsed.live, GatewayLiveOption::Disabled) {
+            return Err("console_voice is exclusive with openai_live and live; one shared live owner is required".to_string());
+        }
+        #[cfg(feature = "experimental-gpt-live")]
+        if parsed.experimental_live.is_some() {
+            return Err("console_voice is exclusive with experimental_live".to_string());
+        }
+        if parsed.decisions.is_none() || parsed.console_require_app_auth == Some(false) {
+            return Err(
+                "console_voice requires auth_config and authenticated console access".to_string(),
+            );
+        }
     }
     #[cfg(feature = "experimental-gpt-live")]
     if parsed.experimental_live.is_some() && parsed.openai_live.is_some() {
@@ -6638,97 +6648,12 @@ fn parse_gateway_mob_storage_config(value: &Value) -> Result<bool, String> {
 }
 
 fn parse_gateway_auth_config(value: &Value) -> Result<RuntimeDecisionState, String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "runtime_options.auth_config must be a JSON object".to_string())?;
-    let provider = object
-        .get("provider")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            if object.contains_key("sharedSecret") || object.contains_key("shared_secret") {
-                Some("jwt")
-            } else {
-                None
-            }
+    meerkat_mobkit::console_auth_config::parse_console_auth_config(value)
+        .map(|mut decisions| {
+            decisions.release_metadata.support_matrix = "lts".to_string();
+            decisions
         })
-        .ok_or_else(|| "runtime_options.auth_config.provider is required".to_string())?;
-    if provider != "jwt" {
-        return Err(format!(
-            "unsupported runtime_options.auth_config.provider '{provider}'"
-        ));
-    }
-    let shared_secret = object
-        .get("shared_secret")
-        .or_else(|| object.get("sharedSecret"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            "runtime_options.auth_config.shared_secret must be a non-empty string".to_string()
-        })?;
-    let issuer = object
-        .get("issuer")
-        .and_then(Value::as_str)
-        .unwrap_or("http://127.0.0.1/mobkit-gateway");
-    let audience = object
-        .get("audience")
-        .and_then(Value::as_str)
-        .unwrap_or("persistent-gateway");
-    let email_allowlist = object
-        .get("email_allowlist")
-        .or_else(|| object.get("emailAllowlist"))
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(shared_secret.as_bytes());
-    let discovery_json = serde_json::to_string(&json!({
-        "issuer": issuer,
-        "jwks_uri": "http://127.0.0.1/mobkit-gateway/jwks.json"
-    }))
-    .map_err(|err| format!("failed to build trusted OIDC discovery: {err}"))?;
-    let jwks_json = serde_json::to_string(&json!({
-        "keys": [{
-            "kty": "oct",
-            "alg": "HS256",
-            "k": key
-        }]
-    }))
-    .map_err(|err| format!("failed to build trusted JWKS: {err}"))?;
-    Ok(RuntimeDecisionState {
-        bigquery: BigQueryNaming {
-            dataset: "default_dataset".to_string(),
-            table: "default_table".to_string(),
-        },
-        modules: vec![],
-        auth: AuthPolicy {
-            default_provider: AuthProvider::GenericOidc,
-            email_allowlist,
-        },
-        trusted_oidc: TrustedOidcRuntimeConfig {
-            discovery_json,
-            jwks_json,
-            audience: audience.to_string(),
-        },
-        console: ConsolePolicy {
-            require_app_auth: true,
-            ..ConsolePolicy::default()
-        },
-        ops: RuntimeOpsPolicy::default(),
-        release_metadata: ReleaseMetadata {
-            targets: vec![
-                "crates.io".to_string(),
-                "npm".to_string(),
-                "pypi".to_string(),
-                "github-releases".to_string(),
-            ],
-            support_matrix: "lts".to_string(),
-        },
-    })
+        .map_err(|error| format!("runtime_options.{error}"))
 }
 
 fn apply_gateway_runtime_config_to_request(
@@ -7946,10 +7871,10 @@ const GATEWAY_RPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const GATEWAY_STDOUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
-// The bounded gateway phases total at most 327 seconds (5 + 5 + 312 + 5).
+// The bounded gateway phases total at most 337 seconds (5 + 5 + 10 + 312 + 5).
 // Advertise another 10 seconds for response delivery and process reaping so
 // an SDK never races the gateway's own deadline and preempts a valid callback.
-const GATEWAY_SHUTDOWN_HORIZON_MS: u64 = 337_000;
+const GATEWAY_SHUTDOWN_HORIZON_MS: u64 = 347_000;
 
 #[derive(Debug)]
 struct GatewayShutdownRequest {
@@ -13367,6 +13292,40 @@ external_addressable = true
         );
     }
     let app = runtime.build_reference_app_router(decision_state);
+    #[cfg(feature = "openai-live")]
+    let (live_inputs, console_voice_controller) =
+        if let Some(registration) = gateway_options.console_voice.clone() {
+            let Some((service, machine, factory)) = live_inputs else {
+                fail_init(
+                    &request_id,
+                    -32602,
+                    "console_voice requires persistent sessions".to_string(),
+                );
+            };
+            let controller = meerkat_mobkit::console_voice::ConsoleVoiceController::with_live_host(
+                &runtime,
+                service,
+                machine,
+                factory,
+                gateway_agent_config(&gateway_options),
+                registration,
+            )
+            .unwrap_or_else(|error| {
+                fail_init(
+                    &request_id,
+                    -32602,
+                    format!("console_voice composition failed: {error}"),
+                )
+            });
+            (None, controller)
+        } else {
+            (
+                live_inputs,
+                meerkat_mobkit::console_voice::ConsoleVoiceController::default(),
+            )
+        };
+    #[cfg(not(feature = "openai-live"))]
+    let console_voice_controller = meerkat_mobkit::console_voice::ConsoleVoiceController::default();
     // Live (realtime) transport: mount the live WebSocket router on the SAME
     // HTTP listener the console uses (no second port — a LAN client or the
     // host's reverse proxy reaches it at {base}/live/ws), and erase the
@@ -13556,7 +13515,8 @@ external_addressable = true
     } else {
         (app, None)
     };
-    let http_server = http_binding.serve(app);
+    let http_server =
+        http_binding.serve(app.layer(axum::Extension(console_voice_controller.clone())));
 
     // 8. Send init response via stdout channel
     let loaded_modules = runtime.loaded_modules().await;
@@ -13756,6 +13716,9 @@ external_addressable = true
         .shutdown(
             http_server,
             || async move {
+                if let Err(error) = console_voice_controller.shutdown().await {
+                    tracing::warn!(%error, "console voice shutdown did not attest complete cleanup");
+                }
                 event_drain_task.abort();
                 let _ = event_drain_task.await;
             },

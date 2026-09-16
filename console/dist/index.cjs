@@ -37,7 +37,7 @@ module.exports = __toCommonJS(index_exports);
 var import_client = require("react-dom/client");
 
 // src/ConsoleApp.tsx
-var import_react34 = __toESM(require("react"));
+var import_react37 = __toESM(require("react"));
 
 // node_modules/clsx/dist/clsx.mjs
 function r(e) {
@@ -12417,6 +12417,11 @@ function SpriteSheet() {
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "M12 18v3" }),
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "M8 21h8" })
     ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("symbol", { id: "i-voice", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "M4 10v4M8 5v14M12 8v8M16 3v18M20 9v6" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("symbol", { id: "i-mic-off", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "m3 3 18 18M9 9v3a3 3 0 0 0 5.1 2.1M9 4.5A3 3 0 0 1 15 6v4M5 11a7 7 0 0 0 12 5M19 11a7 7 0 0 1-.5 2.6M12 18v3M8 21h8" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("symbol", { id: "i-speaker", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "m11 5-6 4H2v6h3l6 4zM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("symbol", { id: "i-speaker-off", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "m11 5-6 4H2v6h3l6 4zM16 9l6 6M22 9l-6 6" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("symbol", { id: "i-close", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "m6 6 12 12M18 6 6 18" }) }),
     /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("symbol", { id: "i-ellipsis", viewBox: "0 0 24 24", children: [
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("circle", { cx: "5", cy: "12", r: "2" }),
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("circle", { cx: "12", cy: "12", r: "2" }),
@@ -18666,7 +18671,197 @@ function SignalsRail({
 }
 
 // src/panels/ChatPane.tsx
+var import_react32 = __toESM(require("react"));
+
+// src/panels/VoiceBar.tsx
 var import_react31 = __toESM(require("react"));
+var import_jsx_runtime41 = require("react/jsx-runtime");
+function Glyph({ name }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "voice-glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(Icon, { name }) });
+}
+function VoiceButton({
+  agentLabel,
+  active = false,
+  disabled = false,
+  onClick
+}) {
+  const label = active ? `End voice with ${agentLabel}` : `Start voice with ${agentLabel}`;
+  return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+    "button",
+    {
+      type: "button",
+      className: "composer__voice",
+      "aria-label": label,
+      "aria-pressed": active,
+      title: label,
+      disabled,
+      onClick,
+      "data-testid": "voice-start",
+      children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(Glyph, { name: "i-voice" })
+    }
+  );
+}
+function AudioWaveform({
+  source,
+  sampleWaveform,
+  active
+}) {
+  const canvasRef = import_react31.default.useRef(null);
+  import_react31.default.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const samples = new Float32Array(512);
+    const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let frame = 0;
+    let lastDraw = -Infinity;
+    let width = 0;
+    let height = 0;
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      width = rect.width;
+      height = rect.height;
+      const scale = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(width * scale);
+      canvas.height = Math.round(height * scale);
+      context.setTransform(scale, 0, 0, scale, 0, 0);
+    };
+    const draw = (now) => {
+      frame = window.requestAnimationFrame(draw);
+      if (document.hidden || now - lastDraw < (motionQuery.matches ? 125 : 33)) return;
+      lastDraw = now;
+      if (!width || !height) return;
+      samples.fill(0);
+      if (active) sampleWaveform(source, samples);
+      const color = getComputedStyle(canvas).color;
+      context.clearRect(0, 0, width, height);
+      const middle = height / 2;
+      context.strokeStyle = color;
+      context.globalAlpha = 0.18;
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(0, middle);
+      context.lineTo(width, middle);
+      context.stroke();
+      context.globalAlpha = 1;
+      context.lineWidth = 1.7;
+      context.lineJoin = "round";
+      context.beginPath();
+      for (let index = 0; index < samples.length; index += 1) {
+        const x = index * width / (samples.length - 1);
+        const amplitude = Math.max(-1, Math.min(1, samples[index] * 2.4));
+        const y = middle - amplitude * (middle - 3);
+        if (index === 0) context.moveTo(x, y);
+        else context.lineTo(x, y);
+      }
+      context.stroke();
+    };
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(canvas);
+    frame = window.requestAnimationFrame(draw);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [active, sampleWaveform, source]);
+  return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("canvas", { className: `voice-waveform voice-waveform--${source}`, ref: canvasRef, "aria-hidden": "true" });
+}
+function VoiceBar({
+  state,
+  sampleWaveform,
+  onClose,
+  onToggleMicrophone,
+  onToggleSpeaker
+}) {
+  if (!state.target && !state.error && !state.notice) return null;
+  const active = state.phase === "active";
+  const transitioning = state.phase === "requesting" || state.phase === "connecting";
+  const status = state.phase === "requesting" ? "Allow microphone access" : state.phase === "connecting" ? "Connecting" : state.phase === "closing" ? "Ending voice" : active ? state.microphoneMuted ? "Microphone muted" : "Listening" : "Voice ended";
+  return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+    "section",
+    {
+      className: "voice-bar",
+      "aria-label": state.target ? `Voice with ${state.target.label}` : "Voice",
+      "data-testid": "voice-bar",
+      "data-phase": state.phase,
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__header", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__heading", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "voice-bar__indicator", "aria-hidden": "true" }),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__titles", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "voice-bar__name", title: state.target?.label, children: state.target ? /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
+                "Voice with ",
+                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("strong", { children: state.target.label })
+              ] }) : "Voice" }),
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "voice-bar__status", role: "status", children: status })
+            ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__controls", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+              "button",
+              {
+                className: "voice-bar__control",
+                type: "button",
+                "aria-label": state.microphoneMuted ? "Unmute microphone" : "Mute microphone",
+                title: state.microphoneMuted ? "Unmute microphone" : "Mute microphone",
+                "aria-pressed": state.microphoneMuted,
+                disabled: !active,
+                onClick: onToggleMicrophone,
+                children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(Glyph, { name: state.microphoneMuted ? "i-mic-off" : "i-mic" })
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+              "button",
+              {
+                className: "voice-bar__control",
+                type: "button",
+                "aria-label": state.speakerMuted ? "Unmute speakers" : "Mute speakers",
+                title: state.speakerMuted ? "Unmute speakers" : "Mute speakers",
+                "aria-pressed": state.speakerMuted,
+                disabled: !active,
+                onClick: onToggleSpeaker,
+                children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(Glyph, { name: state.speakerMuted ? "i-speaker-off" : "i-speaker" })
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "voice-bar__separator", "aria-hidden": "true" }),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+              "button",
+              {
+                className: "voice-bar__control voice-bar__control--close",
+                type: "button",
+                "aria-label": active || transitioning ? "End voice conversation" : "Dismiss voice",
+                title: active || transitioning ? "End voice conversation" : "Dismiss voice",
+                onClick: onClose,
+                disabled: state.phase === "closing",
+                children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(Glyph, { name: "i-close" })
+              }
+            )
+          ] })
+        ] }),
+        (active || transitioning) && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__channels", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__channel", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__channel-label", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "You" }),
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: state.microphoneMuted ? "Muted" : "Microphone" })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(AudioWaveform, { source: "microphone", sampleWaveform, active: active && !state.microphoneMuted })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__channel", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__channel-label", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "Agent" }),
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: state.speakerMuted ? "Speakers muted" : "Live audio" })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(AudioWaveform, { source: "speaker", sampleWaveform, active })
+          ] })
+        ] }),
+        state.error && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("p", { className: "voice-bar__message voice-bar__message--error", role: "alert", children: state.error }),
+        state.notice && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("p", { className: "voice-bar__message", role: "status", children: state.notice })
+      ]
+    }
+  );
+}
 
 // src/lib/composer-attachment-text.ts
 function composerImageFileKey(file) {
@@ -18738,7 +18933,7 @@ function stripConsoleBlobReferencesFromText(value, references = consoleBlobRefer
 }
 
 // src/panels/ChatPane.tsx
-var import_jsx_runtime41 = require("react/jsx-runtime");
+var import_jsx_runtime42 = require("react/jsx-runtime");
 var ALLOWED_IMAGE_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 var MAX_ATTACHMENTS = 4;
 var MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -19082,9 +19277,9 @@ function CopyInlineButton({
   label,
   className = ""
 }) {
-  const [outcome, setOutcome] = import_react31.default.useState("idle");
-  const resetTimer = import_react31.default.useRef(null);
-  import_react31.default.useEffect(
+  const [outcome, setOutcome] = import_react32.default.useState("idle");
+  const resetTimer = import_react32.default.useRef(null);
+  import_react32.default.useEffect(
     () => () => {
       if (resetTimer.current) clearTimeout(resetTimer.current);
     },
@@ -19099,7 +19294,7 @@ function CopyInlineButton({
     resetTimer.current = setTimeout(() => setOutcome("idle"), 1400);
   }
   const title = outcome === "copied" ? "Copied" : outcome === "failed" ? "Copy failed" : label;
-  return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
     "button",
     {
       "aria-label": title,
@@ -19143,25 +19338,29 @@ function ChatPane({
   isLoadingHistory = false,
   onLoadOlder,
   stackSlot,
+  voiceSlot,
+  onVoiceToggle,
+  voiceActive = false,
+  voiceDisabled = false,
   workGraphActions = null
 }) {
-  const bodyRef = import_react31.default.useRef(null);
-  const preserveOlderHistoryScrollRef = import_react31.default.useRef(false);
-  const olderHistoryScrollHeightRef = import_react31.default.useRef(0);
-  const olderHistoryScrollTopRef = import_react31.default.useRef(0);
-  const activeTurnFrameRef = import_react31.default.useRef(0);
-  const [visibleTurnIndexes, setVisibleTurnIndexes] = import_react31.default.useState([]);
-  const messages = import_react31.default.useMemo(() => {
+  const bodyRef = import_react32.default.useRef(null);
+  const preserveOlderHistoryScrollRef = import_react32.default.useRef(false);
+  const olderHistoryScrollHeightRef = import_react32.default.useRef(0);
+  const olderHistoryScrollTopRef = import_react32.default.useRef(0);
+  const activeTurnFrameRef = import_react32.default.useRef(0);
+  const [visibleTurnIndexes, setVisibleTurnIndexes] = import_react32.default.useState([]);
+  const messages = import_react32.default.useMemo(() => {
     return buildChatMessages(entries);
   }, [entries]);
-  const turns = import_react31.default.useMemo(() => buildChatTurns(messages), [messages]);
-  const lastAgentMessageId = import_react31.default.useMemo(() => {
+  const turns = import_react32.default.useMemo(() => buildChatTurns(messages), [messages]);
+  const lastAgentMessageId = import_react32.default.useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       if (messages[i].kind === "agent") return messages[i].id;
     }
     return null;
   }, [messages]);
-  const scrollSignature = import_react31.default.useMemo(() => {
+  const scrollSignature = import_react32.default.useMemo(() => {
     const last = messages[messages.length - 1];
     const lastTextLength = last?.text?.length ?? 0;
     const lastBlockLength = last?.blocks ? JSON.stringify(last.blocks).length : last?.workGraphEntry ? JSON.stringify(last.workGraphEntry).length : 0;
@@ -19174,7 +19373,7 @@ function ChatPane({
       phase ?? ""
     ].join(":");
   }, [identity, messages, phase]);
-  import_react31.default.useLayoutEffect(() => {
+  import_react32.default.useLayoutEffect(() => {
     if (preserveOlderHistoryScrollRef.current && bodyRef.current) {
       const node = bodyRef.current;
       const addedHeight = node.scrollHeight - olderHistoryScrollHeightRef.current;
@@ -19197,12 +19396,12 @@ function ChatPane({
       window.cancelAnimationFrame(secondFrame);
     };
   }, [scrollSignature]);
-  import_react31.default.useEffect(() => {
+  import_react32.default.useEffect(() => {
     if (!loadingOlderHistory && preserveOlderHistoryScrollRef.current) {
       preserveOlderHistoryScrollRef.current = false;
     }
   }, [loadingOlderHistory]);
-  const updateActiveTurn = import_react31.default.useCallback(() => {
+  const updateActiveTurn = import_react32.default.useCallback(() => {
     activeTurnFrameRef.current = 0;
     const body = bodyRef.current;
     if (!body || turns.length <= 1) {
@@ -19243,16 +19442,16 @@ function ChatPane({
       return nextIndexes;
     });
   }, [turns.length]);
-  const scheduleActiveTurnUpdate = import_react31.default.useCallback(() => {
+  const scheduleActiveTurnUpdate = import_react32.default.useCallback(() => {
     if (activeTurnFrameRef.current) {
       return;
     }
     activeTurnFrameRef.current = window.requestAnimationFrame(updateActiveTurn);
   }, [updateActiveTurn]);
-  import_react31.default.useEffect(() => {
+  import_react32.default.useEffect(() => {
     scheduleActiveTurnUpdate();
   }, [scheduleActiveTurnUpdate, scrollSignature]);
-  import_react31.default.useEffect(() => {
+  import_react32.default.useEffect(() => {
     updateActiveTurn();
     window.addEventListener("resize", scheduleActiveTurnUpdate);
     return () => {
@@ -19277,17 +19476,17 @@ function ChatPane({
     }
     onLoadOlder?.();
   }
-  const transcriptText = import_react31.default.useMemo(() => transcriptCopyText(messages), [messages]);
+  const transcriptText = import_react32.default.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
   const canAttachImages = !readOnly && agent?.model_capabilities?.image_input === true;
   const sendWithheld = accessEnforcing && agent?.affordances?.can_send_message === false;
-  const [dragActive, setDragActive] = import_react31.default.useState(false);
-  const [attachmentError, setAttachmentError] = import_react31.default.useState(null);
-  const resolvedDraftBlobRefs = import_react31.default.useRef("");
-  const railRef = import_react31.default.useRef(null);
-  const [railHeight, setRailHeight] = import_react31.default.useState(null);
-  import_react31.default.useEffect(() => {
+  const [dragActive, setDragActive] = import_react32.default.useState(false);
+  const [attachmentError, setAttachmentError] = import_react32.default.useState(null);
+  const resolvedDraftBlobRefs = import_react32.default.useRef("");
+  const railRef = import_react32.default.useRef(null);
+  const [railHeight, setRailHeight] = import_react32.default.useState(null);
+  import_react32.default.useEffect(() => {
     const nav = railRef.current;
     if (!nav || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries2) => {
@@ -19299,9 +19498,9 @@ function ChatPane({
     return () => observer.disconnect();
   }, [turns.length > 1]);
   const railWindow = windowTurnRail(turns.length, railHeight);
-  const turnRail = turns.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("nav", { className: "conv-turn-rail", "aria-label": "Conversation turns", ref: railRef, children: /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("ol", { className: "conv-turn-rail__list", children: [
-    railWindow.overflow > 0 && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("li", { className: "conv-turn-rail__item", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+  const turnRail = turns.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("nav", { className: "conv-turn-rail", "aria-label": "Conversation turns", ref: railRef, children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("ol", { className: "conv-turn-rail__list", children: [
+    railWindow.overflow > 0 && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("li", { className: "conv-turn-rail__item", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
         "button",
         {
           "aria-label": `Jump to the ${railWindow.overflow} earlier turns`,
@@ -19314,7 +19513,7 @@ function ChatPane({
             }
           },
           type: "button",
-          children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+          children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
             "span",
             {
               className: "conv-turn-rail__tick conv-turn-rail__tick--overflow",
@@ -19323,20 +19522,20 @@ function ChatPane({
           )
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "conv-turn-preview__title", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv-turn-preview__title", children: [
           railWindow.overflow,
           " earlier turns"
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "conv-turn-preview__body", children: "Jump to the start of the visible history." })
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "conv-turn-preview__body", children: "Jump to the start of the visible history." })
       ] })
     ] }, "rail-overflow"),
     turns.slice(railWindow.start).map((turn, railIndex) => {
       const turnIndex = railWindow.start + railIndex;
       const preview = chatTurnPreview(turn);
       const isVisibleTurn = visibleTurnIndexes.includes(turnIndex);
-      return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("li", { className: "conv-turn-rail__item", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("li", { className: "conv-turn-rail__item", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
           "button",
           {
             "aria-current": isVisibleTurn ? "true" : void 0,
@@ -19350,12 +19549,12 @@ function ChatPane({
               }
             },
             type: "button",
-            children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "conv-turn-rail__tick", "aria-hidden": "true" })
+            children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "conv-turn-rail__tick", "aria-hidden": "true" })
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "conv-turn-preview__title", children: preview.title }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "conv-turn-preview__body", children: preview.body })
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "conv-turn-preview__title", children: preview.title }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "conv-turn-preview__body", children: preview.body })
         ] })
       ] }, turn.id);
     })
@@ -19408,7 +19607,7 @@ function ChatPane({
       return current.filter((item) => item.id !== id);
     });
   }
-  import_react31.default.useEffect(() => {
+  import_react32.default.useEffect(() => {
     if (!canAttachImages) return;
     const refs = consoleBlobReferencesFromText(draft);
     if (refs.length === 0) {
@@ -19466,23 +19665,23 @@ function ChatPane({
       setAttachmentError("send failed; images retained");
     }
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "conv__head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "conv__avatar", children: initial }),
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { style: { minWidth: 0 }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "conv__title", children: agentLabel }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "conv__identity", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "conv__avatar", children: initial }),
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { style: { minWidth: 0 }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "conv__title", children: agentLabel }),
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv__identity", children: [
           identity,
           agent?.role ? ` \xB7 ${agent.role}` : ""
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "conv__actions", children: [
-        onInspect ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("button", { className: "conv__action", onClick: onInspect, "data-testid": "conv-action:details", children: inspectLabel }) : null,
-        agent?.affordances?.can_respawn && onRespawn ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("button", { className: "conv__action", onClick: onRespawn, "data-testid": "conv-action:respawn", children: respawnLabel }) : null,
-        agent?.affordances?.can_retire && onRetire ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", children: retireLabel }) : null
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv__actions", children: [
+        onInspect ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "conv__action", onClick: onInspect, "data-testid": "conv-action:details", children: inspectLabel }) : null,
+        agent?.affordances?.can_respawn && onRespawn ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "conv__action", onClick: onRespawn, "data-testid": "conv-action:respawn", children: respawnLabel }) : null,
+        agent?.affordances?.can_retire && onRetire ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", children: retireLabel }) : null
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
       "div",
       {
         className: "conv__body",
@@ -19497,7 +19696,7 @@ function ChatPane({
         },
         ref: bodyRef,
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
             CopyInlineButton,
             {
               className: "msg__copy--transcript",
@@ -19505,7 +19704,7 @@ function ChatPane({
               text: transcriptText
             }
           ),
-          hasOlderHistory && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+          hasOlderHistory && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
             "button",
             {
               className: "conv__history",
@@ -19515,7 +19714,7 @@ function ChatPane({
               children: loadingOlderHistory ? "Loading history" : "Load older history"
             }
           ),
-          messages.length === 0 && isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+          messages.length === 0 && isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
             "div",
             {
               className: "msg msg--origin",
@@ -19523,50 +19722,50 @@ function ChatPane({
               "aria-live": "polite",
               "aria-busy": "true",
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "msg__time" }),
-                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "msg__typing", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {})
+                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time" }),
+                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {})
                   ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "msg__typing-label", children: "Loading conversation\u2026" })
+                  /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__typing-label", children: "Loading conversation\u2026" })
                 ] }) })
               ]
             }
           ),
-          messages.length === 0 && !isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "msg msg--origin", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "msg__time" }),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "msg__text", children: [
+          messages.length === 0 && !isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "msg msg--origin", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time" }),
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__text", children: [
               "No messages yet. Say hello to ",
               agentLabel,
               "."
             ] }) })
           ] }),
-          turns.map((turn, turnIndex) => /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+          turns.map((turn, turnIndex) => /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
             "div",
             {
               "aria-label": `Turn ${turnIndex + 1}`,
               className: "conv-turn",
               "data-chat-turn-index": turnIndex,
               "data-testid": `chat-turn:${identity}:${turnIndex}`,
-              children: turn.messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "msg__time", children: m.time }),
-                /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "msg__bubble", children: [
-                  (m.kind === "user" || m.kind === "agent") && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(CopyInlineButton, { label: `Copy ${m.kind === "user" ? "message" : "turn"}`, text: msgCopyText(m) }),
+              children: turn.messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time", children: m.time }),
+                /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "msg__bubble", children: [
+                  (m.kind === "user" || m.kind === "agent") && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(CopyInlineButton, { label: `Copy ${m.kind === "user" ? "message" : "turn"}`, text: msgCopyText(m) }),
                   m.kind === "council" && m.councilEntry ? (
                     // No actions prop: council participants are destroyed
                     // before the tool returns, so the card is observational
                     // by construction.
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(CouncilCard, { entry: m.councilEntry })
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(CouncilCard, { entry: m.councilEntry })
                   ) : null,
-                  m.kind === "workgraph" && m.workGraphEntry ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(WorkGraphCard, { entry: m.workGraphEntry, actions: workGraphActions }) : m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(ConversationRichContent, { blocks: m.blocks, displayNormalization: false }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "msg__text", children: m.text }),
-                  m.workedFor && !(phase && m.id === lastAgentMessageId) && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "msg__worked", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { children: [
+                  m.kind === "workgraph" && m.workGraphEntry ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(WorkGraphCard, { entry: m.workGraphEntry, actions: workGraphActions }) : m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(ConversationRichContent, { blocks: m.blocks, displayNormalization: false }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__text", children: m.text }),
+                  m.workedFor && !(phase && m.id === lastAgentMessageId) && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "msg__worked", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { children: [
                       "Worked for ",
                       m.workedFor
                     ] }),
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
                       CopyInlineButton,
                       {
                         className: "msg__copy--inline",
@@ -19580,7 +19779,7 @@ function ChatPane({
             },
             turn.id
           )),
-          phase && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+          phase && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
             "div",
             {
               className: "msg msg--typing",
@@ -19588,14 +19787,14 @@ function ChatPane({
               "aria-live": "polite",
               "aria-label": `${agentLabel} is ${phaseLabel(phase)}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "msg__time" }),
-                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "msg__typing", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {})
+                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time" }),
+                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {})
                   ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase) })
+                  /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase) })
                 ] }) })
               ]
             }
@@ -19605,8 +19804,9 @@ function ChatPane({
     ),
     turnRail,
     stackSlot,
-    /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "composer", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "composer", children: [
+      voiceSlot,
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
         "div",
         {
           className: `composer__shell${dragActive && canAttachImages ? " is-drag-active" : ""}`,
@@ -19644,11 +19844,11 @@ function ChatPane({
             }
           },
           children: [
-            staged.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "composer__attachments", children: staged.map((item) => /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "composer__attachment", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("img", { alt: "", src: item.previewUrl }),
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("button", { "aria-label": "Remove attachment", onClick: () => removeAttachment(item.id), type: "button", children: "\xD7" })
+            staged.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "composer__attachments", children: staged.map((item) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "composer__attachment", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("img", { alt: "", src: item.previewUrl }),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { "aria-label": "Remove attachment", onClick: () => removeAttachment(item.id), type: "button", children: "\xD7" })
             ] }, item.id)) }),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
               "textarea",
               {
                 placeholder: readOnly ? "View-only console" : sendWithheld ? `You can view ${agentLabel} but not message it` : `Message ${agentLabel}\u2026`,
@@ -19667,10 +19867,19 @@ function ChatPane({
                 "data-testid": `chat-composer:${identity}`
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "composer__row", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "composer__chip mono", children: agent?.role || "agent" }),
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "composer__spacer" }),
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "composer__row", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "composer__chip mono", children: agent?.role || "agent" }),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "composer__spacer" }),
+              onVoiceToggle && !readOnly && !sendWithheld && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+                VoiceButton,
+                {
+                  agentLabel,
+                  active: voiceActive,
+                  disabled: voiceDisabled,
+                  onClick: onVoiceToggle
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
                 "button",
                 {
                   className: "composer__send",
@@ -19687,41 +19896,41 @@ function ChatPane({
           ]
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "composer__footer", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "composer__footer", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { children: [
           "To: ",
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("b", { style: { color: "var(--ink-muted)" }, children: agentLabel })
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("b", { style: { color: "var(--ink-muted)" }, children: agentLabel })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "mono", children: identity }),
-        agent?.role && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: agent.role })
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "mono", children: identity }),
+        agent?.role && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: agent.role })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "dot", style: {
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "dot", style: {
           background: state === "active" || state === "running" ? "var(--ok)" : state.includes("degrade") ? "var(--warn)" : state === "retired" ? "var(--ink-faint)" : "var(--ink-dim)"
         } }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: state }),
-        phase && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { style: { color: "var(--accent)" }, children: phase })
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: state }),
+        phase && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { style: { color: "var(--accent)" }, children: phase })
         ] }),
-        readOnly && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "view only" })
+        readOnly && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "view only" })
         ] }),
-        !readOnly && sendWithheld && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "send not permitted" })
+        !readOnly && sendWithheld && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "send not permitted" })
         ] }),
-        !readOnly && !canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "model cannot see images" })
+        !readOnly && !canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "model cannot see images" })
         ] }),
-        attachmentError && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { style: { color: "var(--bad)" }, children: attachmentError })
+        attachmentError && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { style: { color: "var(--bad)" }, children: attachmentError })
         ] })
       ] })
     ] })
@@ -19729,8 +19938,8 @@ function ChatPane({
 }
 
 // src/panels/MobKitDock.tsx
-var import_react32 = __toESM(require("react"));
-var import_jsx_runtime42 = require("react/jsx-runtime");
+var import_react33 = __toESM(require("react"));
+var import_jsx_runtime43 = require("react/jsx-runtime");
 function tabPanelCount(node) {
   if (!node) return 0;
   if (node.kind === "panel") return 1;
@@ -19751,7 +19960,7 @@ function MobKitDock({
   onOpenTargetInPanel
 }) {
   const activeTab = viewState.tabs.find((t) => t.id === viewState.activeTabId) || viewState.tabs[0];
-  import_react32.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     function onKey(e) {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
@@ -19786,22 +19995,22 @@ function MobKitDock({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [viewState, onSplitPanel, onClosePanel, onCreateTab, onSelectTab]);
-  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "mkdock", "data-testid": "mkdock", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "wstabs", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "mkdock", "data-testid": "mkdock", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "wstabs", children: [
       viewState.tabs.map((t) => {
         const isActive = t.id === activeTab?.id;
         const count = tabPanelCount(t.layout);
-        return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+        return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
           "div",
           {
             className: `wstab ${isActive ? "is-active" : ""}`,
             onClick: () => onSelectTab(t.id),
             "data-testid": `wstab:${t.id}`,
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "wstab__mark" }),
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "wstab__name", children: t.title || "untitled" }),
-              count > 1 && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "wstab__count", children: count }),
-              viewState.tabs.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "wstab__mark" }),
+              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "wstab__name", children: t.title || "untitled" }),
+              count > 1 && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "wstab__count", children: count }),
+              viewState.tabs.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
                 "button",
                 {
                   className: "wstab__close",
@@ -19819,7 +20028,7 @@ function MobKitDock({
           t.id
         );
       }),
-      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
         "button",
         {
           className: "wstab__add",
@@ -19831,7 +20040,7 @@ function MobKitDock({
         }
       )
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "dock", children: activeTab && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "dock", children: activeTab && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
       DockLayout,
       {
         node: activeTab.layout,
@@ -19851,9 +20060,9 @@ function MobKitDock({
 function DockLayout(props) {
   const { node } = props;
   if (node.kind === "panel") {
-    return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(PaneView, { panelId: node.panelId, ...props });
+    return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(PaneView, { panelId: node.panelId, ...props });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(SplitView, { node, ...props });
+  return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(SplitView, { node, ...props });
 }
 function SplitView(props) {
   const { node } = props;
@@ -19861,7 +20070,7 @@ function SplitView(props) {
   const ratio = typeof node.ratio === "number" ? Math.max(0.1, Math.min(0.9, node.ratio)) : 0.5;
   const direction = node.direction;
   const style = direction === "horizontal" ? { gridTemplateColumns: `${ratio * 100}% 6px ${(1 - ratio) * 100}%` } : { gridTemplateRows: `${ratio * 100}% 6px ${(1 - ratio) * 100}%` };
-  const hostRef = import_react32.default.useRef(null);
+  const hostRef = import_react33.default.useRef(null);
   function startDrag(e) {
     e.preventDefault();
     const host = hostRef.current;
@@ -19881,15 +20090,15 @@ function SplitView(props) {
     window.addEventListener("pointerup", end);
     window.addEventListener("pointercancel", end);
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
     "div",
     {
       ref: hostRef,
       className: `split split--${direction === "horizontal" ? "h" : "v"}`,
       style,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(DockLayout, { ...props, node: node.first }),
-        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(DockLayout, { ...props, node: node.first }),
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
           "div",
           {
             className: `split__handle split__handle--${direction === "horizontal" ? "h" : "v"}`,
@@ -19897,7 +20106,7 @@ function SplitView(props) {
             "data-testid": `split-handle:${node.id}`
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(DockLayout, { ...props, node: node.second })
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(DockLayout, { ...props, node: node.second })
       ]
     }
   );
@@ -19919,16 +20128,16 @@ function PaneView({
   const title = panel.title || panel.target?.title || "untitled";
   const target = panel.target;
   const subId = target?.kind === "agent-chat" ? target.identity || target.memberId : target?.kind === "identity-inspect" ? target.identity : void 0;
-  const [menuOpen, setMenuOpen] = import_react32.default.useState(false);
-  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+  const [menuOpen, setMenuOpen] = import_react33.default.useState(false);
+  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
     "div",
     {
       className: `pane ${isFocused ? "is-focused" : ""}`,
       onMouseDown: () => onFocusPanel(panelId),
       "data-testid": `pane:${panelId}`,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "pane__bar", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "pane__bar", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
             "button",
             {
               className: "pane__title",
@@ -19940,14 +20149,14 @@ function PaneView({
               "data-testid": `pane-title:${panelId}`,
               title: "Retarget pane",
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "pane__title-text", children: title }),
-                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "pane__caret", children: "\u25BE" })
+                /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "pane__title-text", children: title }),
+                /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "pane__caret", children: "\u25BE" })
               ]
             }
           ),
-          subId && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "pane__id", children: subId }),
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "pane__spacer" }),
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+          subId && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "pane__id", children: subId }),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "pane__spacer" }),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
             "button",
             {
               className: "pane__btn",
@@ -19960,7 +20169,7 @@ function PaneView({
               children: "\u25E8"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
             "button",
             {
               className: "pane__btn",
@@ -19973,7 +20182,7 @@ function PaneView({
               children: "\u2B13"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
             "button",
             {
               className: "pane__btn pane__close",
@@ -19986,7 +20195,7 @@ function PaneView({
               children: "\xD7"
             }
           ),
-          menuOpen && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+          menuOpen && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
             PaneMenu,
             {
               agents,
@@ -19999,7 +20208,7 @@ function PaneView({
             }
           )
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "pane__body", children: renderPanelBody({ id: panelId, target }) })
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "pane__body", children: renderPanelBody({ id: panelId, target }) })
       ]
     }
   );
@@ -20014,27 +20223,27 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
     ["logs", "Logs"],
     ["health", "Health"]
   ].filter(([kind]) => !visibleControls || visibleControls.includes(kind));
-  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "pane-menu__scrim", onMouseDown: onClose }),
-    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "pane-menu", onMouseDown: (e) => e.stopPropagation(), children: [
-      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "pane-menu__label", children: "Views" }),
-      controls.map(([kind, label]) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(import_jsx_runtime43.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "pane-menu__scrim", onMouseDown: onClose }),
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "pane-menu", onMouseDown: (e) => e.stopPropagation(), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "pane-menu__label", children: "Views" }),
+      controls.map(([kind, label]) => /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
         "button",
         {
           className: "pane-menu__item",
           onClick: () => onPick(buildControlTarget2(kind)),
           "data-testid": `pane-menu-view:${kind}`,
           children: [
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: label }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "pane-menu__id", children: "view" })
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { children: label }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "pane-menu__id", children: "view" })
           ]
         },
         kind
       )),
-      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "pane-menu__sep" }),
-      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "pane-menu__label", children: "Agents" }),
-      agents.slice(0, 14).map((a) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "pane-menu__sep" }),
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "pane-menu__label", children: "Agents" }),
+      agents.slice(0, 14).map((a) => /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
         "button",
         {
           className: "pane-menu__item",
@@ -20042,9 +20251,9 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
           onClick: () => onPick(buildDockTarget2(a)),
           "data-testid": `pane-menu-agent:${a.member_id}`,
           children: [
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "agent__dot" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: a.label }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "pane-menu__id", children: a.identity || a.member_id })
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "agent__dot" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { children: a.label }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "pane-menu__id", children: a.identity || a.member_id })
           ]
         },
         a.member_id
@@ -20054,8 +20263,8 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
 }
 
 // src/panels/PendingStack.tsx
-var import_react33 = __toESM(require("react"));
-var import_jsx_runtime43 = require("react/jsx-runtime");
+var import_react34 = __toESM(require("react"));
+var import_jsx_runtime44 = require("react/jsx-runtime");
 function StackHead({
   count,
   agentBusy,
@@ -20063,8 +20272,8 @@ function StackHead({
   onToggleCollapsed,
   onClear
 }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "stack__head", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "stack__head", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
       "button",
       {
         type: "button",
@@ -20073,18 +20282,18 @@ function StackHead({
         "aria-expanded": !collapsed,
         "aria-label": collapsed ? "Expand pending queue" : "Collapse pending queue",
         title: collapsed ? "Expand queue" : "Collapse queue",
-        children: /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stack__head-chev", children: collapsed ? "\u25B8" : "\u25BE" })
+        children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stack__head-chev", children: collapsed ? "\u25B8" : "\u25BE" })
       }
     ),
-    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { children: "Queue" }),
-    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stack__head-count", children: String(count).padStart(2, "0") }),
-    !collapsed && count > 1 && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stack__head-hint", children: "\xB7 drains top \u2192 bottom" }),
-    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stack__head-spacer" }),
-    /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { className: `stack__head-phase ${agentBusy ? "" : "is-idle"}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("b", {}),
+    /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { children: "Queue" }),
+    /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stack__head-count", children: String(count).padStart(2, "0") }),
+    !collapsed && count > 1 && /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stack__head-hint", children: "\xB7 drains top \u2192 bottom" }),
+    /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stack__head-spacer" }),
+    /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("span", { className: `stack__head-phase ${agentBusy ? "" : "is-idle"}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("b", {}),
       agentBusy ? "Agent busy" : "Agent idle \xB7 draining"
     ] }),
-    count > 0 && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+    count > 0 && /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
       "button",
       {
         type: "button",
@@ -20122,9 +20331,9 @@ function StackItem({
   onDrop,
   onDragEnd
 }) {
-  const taRef = import_react33.default.useRef(null);
-  const [draft, setDraft] = import_react33.default.useState(item.text);
-  import_react33.default.useEffect(() => {
+  const taRef = import_react34.default.useRef(null);
+  const [draft, setDraft] = import_react34.default.useState(item.text);
+  import_react34.default.useEffect(() => {
     if (item.editing && taRef.current) {
       taRef.current.focus();
       const len = taRef.current.value.length;
@@ -20133,7 +20342,7 @@ function StackItem({
       taRef.current.style.height = taRef.current.scrollHeight + "px";
     }
   }, [item.editing]);
-  import_react33.default.useEffect(() => {
+  import_react34.default.useEffect(() => {
     setDraft(item.text);
   }, [item.text, item.editing]);
   const handleEditKey = (e) => {
@@ -20158,7 +20367,7 @@ function StackItem({
     dropHint === "below" ? "drop-target drop-below" : ""
   ].filter(Boolean).join(" ");
   const longText = item.text.length > 90 || /\n/.test(item.text);
-  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
     "li",
     {
       className: cls,
@@ -20180,19 +20389,19 @@ function StackItem({
         }
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "stk-item__lead", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { className: "stk-item__grip", "aria-label": "Drag to reorder", title: "Drag to reorder", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {})
+        /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "stk-item__lead", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("span", { className: "stk-item__grip", "aria-label": "Drag to reorder", title: "Drag to reorder", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {})
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-item__queue-glyph", "aria-hidden": "true", children: "\u2935" })
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-item__queue-glyph", "aria-hidden": "true", children: "\u2935" })
         ] }),
-        item.editing ? /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "stk-item__edit", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+        item.editing ? /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "stk-item__edit", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
             "textarea",
             {
               ref: taRef,
@@ -20208,19 +20417,19 @@ function StackItem({
               "data-testid": `pending-item-edit:${item.id}`
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "stk-item__edit-row", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-kbd", children: "Esc" }),
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "stk-item__edit-row", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("span", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-kbd", children: "Esc" }),
               " cancel"
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-kbd", children: "\u21B5" }),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("span", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-kbd", children: "\u21B5" }),
               " save \xB7 ",
-              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-kbd", children: "\u21E7\u21B5" }),
+              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-kbd", children: "\u21E7\u21B5" }),
               " newline"
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-item__edit-spacer" }),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-item__edit-spacer" }),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
               "button",
               {
                 type: "button",
@@ -20229,7 +20438,7 @@ function StackItem({
                 children: "Cancel"
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
               "button",
               {
                 type: "button",
@@ -20239,8 +20448,8 @@ function StackItem({
               }
             )
           ] })
-        ] }) : /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "stk-item__body", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "stk-item__body", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
             "div",
             {
               className: `stk-item__text ${item.expanded ? "stk-item__text--expanded" : ""}`,
@@ -20250,14 +20459,14 @@ function StackItem({
               children: item.text
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "stk-item__meta", children: [
-            isHead && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-item__head-tag", children: "Next" }),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { children: timeAgo(item.addedAt) }),
-            item.status === "promoting" && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-item__sending", children: "SENDING\u2026" })
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "stk-item__meta", children: [
+            isHead && /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-item__head-tag", children: "Next" }),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { children: timeAgo(item.addedAt) }),
+            item.status === "promoting" && /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-item__sending", children: "SENDING\u2026" })
           ] })
         ] }),
-        !item.editing && /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "stk-item__actions", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
+        !item.editing && /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "stk-item__actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
             "button",
             {
               type: "button",
@@ -20268,12 +20477,12 @@ function StackItem({
               title: "Send now and interrupt at the next cooperative pause",
               "data-testid": `pending-steer:${item.id}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-btn__glyph", children: "\u21AA" }),
+                /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-btn__glyph", children: "\u21AA" }),
                 " Steer"
               ]
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
             "button",
             {
               type: "button",
@@ -20282,10 +20491,10 @@ function StackItem({
               "aria-label": "Edit message",
               title: "Edit message",
               "data-testid": `pending-edit:${item.id}`,
-              children: /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-btn__glyph", children: "\u270E" })
+              children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-btn__glyph", children: "\u270E" })
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
             "button",
             {
               type: "button",
@@ -20294,7 +20503,7 @@ function StackItem({
               "aria-label": "Remove from queue",
               title: "Remove from queue",
               "data-testid": `pending-trash:${item.id}`,
-              children: /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-btn__glyph", children: "\xD7" })
+              children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-btn__glyph", children: "\xD7" })
             }
           )
         ] })
@@ -20315,16 +20524,16 @@ function PendingStack3({
   onClearAll,
   onToggleExpand
 }) {
-  const [, setTick] = import_react33.default.useState(0);
-  import_react33.default.useEffect(() => {
+  const [, setTick] = import_react34.default.useState(0);
+  import_react34.default.useEffect(() => {
     const t = window.setInterval(() => setTick((n) => n + 1), 1e4);
     return () => window.clearInterval(t);
   }, []);
-  const [dragId, setDragId] = import_react33.default.useState(null);
-  const [dropTarget, setDropTarget] = import_react33.default.useState({ id: null, where: null });
-  const [collapsed, setCollapsed] = import_react33.default.useState(false);
-  const lastCount = import_react33.default.useRef(0);
-  import_react33.default.useEffect(() => {
+  const [dragId, setDragId] = import_react34.default.useState(null);
+  const [dropTarget, setDropTarget] = import_react34.default.useState({ id: null, where: null });
+  const [collapsed, setCollapsed] = import_react34.default.useState(false);
+  const lastCount = import_react34.default.useRef(0);
+  import_react34.default.useEffect(() => {
     if (items.length > lastCount.current) setCollapsed(false);
     lastCount.current = items.length;
   }, [items.length]);
@@ -20364,14 +20573,14 @@ function PendingStack3({
     setDragId(null);
     setDropTarget({ id: null, where: null });
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
     "section",
     {
       className: `stack ${collapsed ? "is-collapsed" : ""} ${reducedMotion ? "reduced-motion" : ""}`,
       "aria-label": "Pending message queue",
       "data-testid": "pending-stack",
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
           StackHead,
           {
             count: items.length,
@@ -20381,7 +20590,7 @@ function PendingStack3({
             onClear: onClearAll
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("ol", { className: "stack__list", role: "list", children: items.map((item, i) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("ol", { className: "stack__list", role: "list", children: items.map((item, i) => /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
           StackItem,
           {
             item,
@@ -20407,8 +20616,1070 @@ function PendingStack3({
   );
 }
 
+// src/lib/use-voice-controller.ts
+var import_react35 = __toESM(require("react"));
+
+// ../sdk/typescript/src/live.ts
+function asRecord3(value, context) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError(`${context} must be an object`);
+  }
+  return value;
+}
+function assertExactKeys(value, allowed, context) {
+  const unknown = Object.keys(value).find((key) => !allowed.includes(key));
+  if (unknown !== void 0) {
+    throw new TypeError(`${context} contains unknown field ${unknown}`);
+  }
+}
+function requireString(value, context) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new TypeError(`${context} must be a non-empty string`);
+  }
+  return value;
+}
+function requireBoolean(value, context) {
+  if (typeof value !== "boolean") {
+    throw new TypeError(`${context} must be a boolean`);
+  }
+  return value;
+}
+function parseExecutionMode(raw, context) {
+  const mode = requireString(raw, `${context}.execution_mode`);
+  if (mode !== "function_bridge" && mode !== "client_context") {
+    throw new TypeError(`${context}.execution_mode is unknown`);
+  }
+  return mode;
+}
+function parsePendingLiveChannelHandle(raw) {
+  const d = asRecord3(raw, "pending live channel handle");
+  assertExactKeys(
+    d,
+    [
+      "channel_id",
+      "target_identity",
+      "execution_mode",
+      "pending_receipt",
+      "transport",
+      "capabilities",
+      "continuity"
+    ],
+    "pending live channel handle"
+  );
+  return {
+    channelId: requireString(d.channel_id, "pending live channel handle.channel_id"),
+    targetIdentity: requireString(
+      d.target_identity,
+      "pending live channel handle.target_identity"
+    ),
+    executionMode: parseExecutionMode(d.execution_mode, "pending live channel handle"),
+    pendingReceipt: requireString(
+      d.pending_receipt,
+      "pending live channel handle.pending_receipt"
+    ),
+    transport: parseTransport(d.transport),
+    capabilities: parseCapabilities(d.capabilities),
+    continuity: parseContinuity(d.continuity)
+  };
+}
+function parseActiveLiveChannelHandle(raw) {
+  const d = asRecord3(raw, "active live channel handle");
+  assertExactKeys(
+    d,
+    ["channel_id", "target_identity", "execution_mode", "activation_receipt"],
+    "active live channel handle"
+  );
+  return {
+    channelId: requireString(d.channel_id, "active live channel handle.channel_id"),
+    targetIdentity: requireString(
+      d.target_identity,
+      "active live channel handle.target_identity"
+    ),
+    executionMode: parseExecutionMode(d.execution_mode, "active live channel handle"),
+    activationReceipt: requireString(
+      d.activation_receipt,
+      "active live channel handle.activation_receipt"
+    )
+  };
+}
+function parseLivePlaybackOwnerReadiness(raw) {
+  const d = asRecord3(raw, "playback owner readiness");
+  assertExactKeys(d, ["channel_id", "readiness_receipt"], "playback owner readiness");
+  return {
+    channelId: requireString(d.channel_id, "playback owner readiness.channel_id"),
+    readinessReceipt: requireString(
+      d.readiness_receipt,
+      "playback owner readiness.readiness_receipt"
+    )
+  };
+}
+function parseExperimentalLiveChannelStatus(raw) {
+  const d = asRecord3(raw, "experimental live channel status");
+  const phase = requireString(d.phase, "experimental live channel status.phase");
+  if (phase === "pending" || phase === "revoked" || phase === "closed") {
+    assertExactKeys(d, ["phase"], "experimental live channel status");
+    return { phase };
+  }
+  if (phase === "active") {
+    assertExactKeys(d, ["phase", "handle"], "experimental live channel status");
+    return { phase, handle: parseActiveLiveChannelHandle(d.handle) };
+  }
+  throw new TypeError("experimental live channel status.phase is unknown");
+}
+function parseTransport(raw) {
+  const d = asRecord3(raw, "transport");
+  const kind = requireString(d.transport, "transport.transport");
+  if (kind === "websocket") {
+    assertExactKeys(d, ["transport", "url", "token"], "websocket transport");
+    return {
+      transport: "websocket",
+      url: requireString(d.url, "transport.url"),
+      token: requireString(d.token, "transport.token")
+    };
+  }
+  if (kind === "webrtc") {
+    assertExactKeys(d, ["transport", "token", "answer_method", "http_url"], "webrtc transport");
+    const result = {
+      transport: "webrtc",
+      token: requireString(d.token, "transport.token"),
+      answerMethod: requireString(d.answer_method, "transport.answer_method")
+    };
+    if (d.http_url !== void 0) result.httpUrl = requireString(d.http_url, "transport.http_url");
+    return result;
+  }
+  if (kind === "unknown") {
+    assertExactKeys(d, ["transport", "debug"], "unknown transport");
+    return { transport: "unknown", debug: requireString(d.debug, "transport.debug") };
+  }
+  throw new TypeError(`unknown live transport ${kind}`);
+}
+function parseCapabilities(raw) {
+  const d = asRecord3(raw, "capabilities");
+  const keys = [
+    "audio_in",
+    "audio_out",
+    "text_in",
+    "text_out",
+    "image_in",
+    "video_in",
+    "transcript_supported",
+    "barge_in_supported",
+    "provider_native_resume"
+  ];
+  assertExactKeys(d, keys, "capabilities");
+  return {
+    audioIn: requireBoolean(d.audio_in, "capabilities.audio_in"),
+    audioOut: requireBoolean(d.audio_out, "capabilities.audio_out"),
+    textIn: requireBoolean(d.text_in, "capabilities.text_in"),
+    textOut: requireBoolean(d.text_out, "capabilities.text_out"),
+    imageIn: requireBoolean(d.image_in, "capabilities.image_in"),
+    videoIn: requireBoolean(d.video_in, "capabilities.video_in"),
+    transcriptSupported: requireBoolean(d.transcript_supported, "capabilities.transcript_supported"),
+    bargeInSupported: requireBoolean(d.barge_in_supported, "capabilities.barge_in_supported"),
+    providerNativeResume: requireBoolean(d.provider_native_resume, "capabilities.provider_native_resume")
+  };
+}
+function parseContinuity(raw) {
+  const d = asRecord3(raw, "continuity");
+  const mode = requireString(d.mode, "continuity.mode");
+  if (mode === "fresh" || mode === "transcript_only" || mode === "degraded") {
+    assertExactKeys(d, ["mode"], "continuity");
+    return { mode };
+  }
+  if (mode === "provider_native_resume") {
+    assertExactKeys(d, ["mode", "provider_session_id"], "continuity");
+    return {
+      mode,
+      providerSessionId: requireString(d.provider_session_id, "continuity.provider_session_id")
+    };
+  }
+  if (mode === "unknown") {
+    assertExactKeys(d, ["mode", "debug"], "continuity");
+    return { mode, debug: requireString(d.debug, "continuity.debug") };
+  }
+  throw new TypeError(`unknown live continuity mode ${mode}`);
+}
+
+// src/lib/voice-session.ts
+var VOICE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
+var VOICE_CONNECT_TIMEOUT_MS = 3e4;
+var VOICE_RECOVERY_TIMEOUT_MS = 3e4;
+var VOICE_TEARDOWN_TIMEOUT_MS = 5e3;
+var VOICE_REPLACEMENT_POLL_INTERVAL_MS = 1e3;
+var VOICE_ACTIVITY_REPORT_INTERVAL_MS = 5e3;
+var SAMPLE_INTERVAL_MS = 100;
+var POLL_INTERVAL_MS = 100;
+var RECOVERY_TIMEOUT_MESSAGE = "Voice recovery timed out. Check your network and voice access, then start again.";
+async function queryVoiceAvailability(baseUrl, identity) {
+  if (!identity?.trim()) return false;
+  try {
+    const readiness = await callConsoleRpc2(
+      baseUrl,
+      "mobkit/console/voice/readiness",
+      { identity },
+      VOICE_TEARDOWN_TIMEOUT_MS
+    );
+    return readiness?.identity === identity && readiness.available === true;
+  } catch {
+    return false;
+  }
+}
+function browserEnvironment(baseUrl) {
+  return {
+    voiceAvailable: (identity) => queryVoiceAvailability(baseUrl, identity),
+    createAudioContext: () => {
+      if (typeof AudioContext === "undefined") {
+        throw new VoiceError("Voice requires a browser with Web Audio and WebRTC support.");
+      }
+      return new AudioContext();
+    },
+    getUserMedia: () => {
+      if (!globalThis.navigator?.mediaDevices?.getUserMedia) {
+        throw new VoiceError("Microphone access requires HTTPS or localhost and a supported browser.");
+      }
+      return navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false
+      });
+    },
+    createPeerConnection: () => new RTCPeerConnection(),
+    createMediaStream: (tracks) => new MediaStream(tracks ?? []),
+    createAudioElement: () => document.createElement("audio"),
+    rpc: (method, params, timeoutMs) => callConsoleRpc2(baseUrl, method, params, timeoutMs),
+    pagehideClose: (params) => {
+      void fetch(`${baseUrl}${CONSOLE_RPC_PATHS2.jsonRpc}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "voice-pagehide",
+          method: "mobkit/console/voice/close",
+          params
+        }),
+        keepalive: true
+      }).catch(() => {
+      });
+    },
+    onPagehide: (listener) => {
+      window.addEventListener("pagehide", listener);
+      return () => window.removeEventListener("pagehide", listener);
+    },
+    now: () => Date.now(),
+    randomId: () => crypto.randomUUID(),
+    setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
+    clearTimeout: (timer) => clearTimeout(timer)
+  };
+}
+var VoiceError = class extends Error {
+};
+var Cancelled = class extends Error {
+};
+function parseReplacement(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new VoiceError("The gateway returned an invalid voice recovery response.");
+  }
+  const result = raw;
+  const keys = result.required === false ? ["required"] : ["required", "reason", "replacement", "canonical_seed_cursor"];
+  if (Object.keys(result).some((key) => !keys.includes(key))) {
+    throw new VoiceError("The gateway returned an invalid voice recovery response.");
+  }
+  if (result.required === false) return null;
+  if (result.required !== true || !["canonical_context", "delegation_result"].includes(String(result.reason)) || typeof result.canonical_seed_cursor !== "number" || !Number.isSafeInteger(result.canonical_seed_cursor) || result.canonical_seed_cursor < 0) throw new VoiceError("The gateway returned an invalid voice recovery response.");
+  return parsePendingLiveChannelHandle(result.replacement);
+}
+function voiceError(error) {
+  if (error instanceof VoiceError) return error.message;
+  const name = error instanceof Error ? error.name : "";
+  if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+    return "Microphone permission was denied. Allow microphone access in your browser, then start voice again.";
+  }
+  if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+    return "No microphone was found. Connect a microphone and start voice again.";
+  }
+  if (name === "NotReadableError") {
+    return "The microphone is unavailable or in use. Check your device and browser settings.";
+  }
+  if (jsonRpcErrorCode(error) === -32030) {
+    return "You do not have permission to start voice for this agent.";
+  }
+  if (jsonRpcErrorCode(error) === -32601 || /not configured|unavailable|not supported/i.test(errorMessage(error))) {
+    return "Voice is unavailable. Ask your administrator to enable OpenAI GPT Live on this gateway.";
+  }
+  return "Voice could not connect. Check your network and gateway configuration, then try again.";
+}
+function createVoiceSession(baseUrl, environment) {
+  const env = environment ?? browserEnvironment(baseUrl);
+  const listeners = /* @__PURE__ */ new Set();
+  let snapshot = {
+    phase: "idle",
+    target: null,
+    microphoneMuted: false,
+    speakerMuted: false,
+    error: null,
+    notice: null
+  };
+  let current;
+  let disposed = false;
+  let pageHidden = false;
+  let removePagehide;
+  let serial = Promise.resolve();
+  let teardownBlock;
+  const publish = (patch) => {
+    snapshot = { ...snapshot, ...patch };
+    for (const listener of listeners) listener();
+  };
+  const owns = (attempt) => current === attempt && !attempt.abort.signal.aborted && !disposed;
+  const assertOwns = (attempt) => {
+    if (!owns(attempt)) throw new Cancelled();
+  };
+  const enqueue = (operation) => {
+    const next = serial.then(operation, operation);
+    serial = next.catch(() => {
+    });
+    return serial;
+  };
+  function bounded(promise, milliseconds, signal) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (action) => {
+        if (settled) return;
+        settled = true;
+        env.clearTimeout(timer);
+        signal?.removeEventListener("abort", cancelled);
+        action();
+      };
+      const cancelled = () => finish(() => reject(new Cancelled()));
+      const timer = env.setTimeout(() => finish(() => reject(new VoiceError(
+        "Voice connection timed out. Check microphone permissions and your network, then try again."
+      ))), Math.max(0, milliseconds));
+      signal?.addEventListener("abort", cancelled, { once: true });
+      promise.then((value) => finish(() => resolve(value)), (error) => finish(() => reject(error)));
+      if (signal?.aborted) cancelled();
+    });
+  }
+  function connecting(attempt, promise) {
+    return bounded(promise, attempt.deadline - env.now(), attempt.abort.signal);
+  }
+  async function pollDelay(attempt) {
+    let timer;
+    try {
+      await connecting(attempt, new Promise((resolve) => {
+        timer = env.setTimeout(resolve, POLL_INTERVAL_MS);
+      }));
+    } finally {
+      if (timer !== void 0) env.clearTimeout(timer);
+    }
+  }
+  function cleanupPeer(attempt) {
+    const peer = attempt.peer;
+    const channel = attempt.channel;
+    attempt.peer = void 0;
+    attempt.channel = void 0;
+    if (channel) {
+      channel.onmessage = null;
+      channel.onclose = null;
+      channel.onerror = null;
+      channel.close();
+    }
+    if (peer) {
+      peer.ontrack = null;
+      peer.onconnectionstatechange = null;
+      peer.oniceconnectionstatechange = null;
+      peer.close();
+    }
+    for (const track of attempt.stream?.getAudioTracks() ?? []) track.enabled = false;
+    for (const track of attempt.remote?.getTracks() ?? []) {
+      track.onended = null;
+      track.enabled = false;
+      track.stop();
+    }
+    for (const node of attempt.nodes) node.disconnect();
+    attempt.nodes = [];
+    if (attempt.audio) {
+      attempt.audio.pause();
+      attempt.audio.srcObject = null;
+    }
+    attempt.audio = void 0;
+    attempt.remote = void 0;
+    attempt.microphone = void 0;
+    attempt.speaker = void 0;
+    attempt.gain = void 0;
+  }
+  function cleanupLocal(attempt) {
+    if (attempt.localClosed) return;
+    attempt.localClosed = true;
+    attempt.abort.abort();
+    if (attempt.sampleTimer !== void 0) env.clearTimeout(attempt.sampleTimer);
+    if (attempt.silenceTimer !== void 0) env.clearTimeout(attempt.silenceTimer);
+    if (attempt.replacementTimer !== void 0) env.clearTimeout(attempt.replacementTimer);
+    if (attempt.recoveryTimer !== void 0) env.clearTimeout(attempt.recoveryTimer);
+    if (attempt.activityTimer !== void 0) env.clearTimeout(attempt.activityTimer);
+    attempt.activityDirty = false;
+    cleanupPeer(attempt);
+    for (const track of attempt.stream?.getTracks() ?? []) {
+      track.onended = null;
+      track.enabled = false;
+      track.stop();
+    }
+    if (attempt.context && attempt.context.state !== "closed") {
+      attempt.context.onstatechange = null;
+      void attempt.context.close().catch(() => {
+      });
+    }
+  }
+  function closeParams(attempt) {
+    return { identity: attempt.target.identity, request_id: attempt.requestId };
+  }
+  async function teardown(attempt) {
+    cleanupLocal(attempt);
+    if (!attempt.openSent) return;
+    if (attempt.teardown) return attempt.teardown;
+    attempt.teardown = (async () => {
+      const raw = await bounded(
+        env.rpc("mobkit/console/voice/close", closeParams(attempt), VOICE_TEARDOWN_TIMEOUT_MS),
+        VOICE_TEARDOWN_TIMEOUT_MS
+      );
+      const result = parseExperimentalLiveChannelStatus(raw);
+      if (result.phase !== "closed" && result.phase !== "revoked") {
+        throw new VoiceError("The gateway did not confirm voice closure.");
+      }
+      if (teardownBlock === attempt) teardownBlock = void 0;
+    })();
+    try {
+      await attempt.teardown;
+    } catch (error) {
+      attempt.teardown = void 0;
+      teardownBlock = attempt;
+      throw error;
+    }
+  }
+  async function stop(attempt, error = null, notice = null) {
+    cleanupLocal(attempt);
+    if (current === attempt) publish({ phase: "closing", error, notice });
+    try {
+      await teardown(attempt);
+      if (current === attempt) {
+        current = void 0;
+        publish({ phase: error ? "error" : "idle", target: error ? attempt.target : null, error, notice });
+      }
+    } catch {
+      if (current === attempt) {
+        publish({
+          phase: "error",
+          error: "Your microphone and speaker are off, but the gateway has not confirmed voice closure. Close again to retry before starting another session.",
+          notice: null
+        });
+      }
+    }
+  }
+  function fail(attempt, message) {
+    if (!owns(attempt)) return;
+    cleanupLocal(attempt);
+    void enqueue(() => stop(attempt, message));
+  }
+  function transportLost(attempt, peer, message) {
+    if (!owns(attempt) || attempt.peer !== peer) return;
+    if (snapshot.phase !== "active") {
+      fail(attempt, message);
+      return;
+    }
+    attempt.transportLoss = message;
+    attempt.recoveryDeadline = env.now() + VOICE_RECOVERY_TIMEOUT_MS;
+    if (attempt.sampleTimer !== void 0) env.clearTimeout(attempt.sampleTimer);
+    if (attempt.replacementTimer !== void 0) env.clearTimeout(attempt.replacementTimer);
+    cleanupPeer(attempt);
+    attempt.recoveryTimer = env.setTimeout(() => {
+      fail(attempt, RECOVERY_TIMEOUT_MESSAGE);
+    }, VOICE_RECOVERY_TIMEOUT_MS);
+    publish({ phase: "connecting" });
+    requestReplacement(attempt);
+  }
+  function activity(attempt) {
+    if (!owns(attempt) || snapshot.phase !== "active") return;
+    attempt.lastActivity = env.now();
+    scheduleSilence(attempt);
+    attempt.activityDirty = true;
+    flushActivity(attempt);
+  }
+  function flushActivity(attempt) {
+    if (!owns(attempt) || !attempt.activityDirty || attempt.activityReporting) return;
+    const delay = attempt.activityReportedAt === void 0 ? 0 : attempt.activityReportedAt + VOICE_ACTIVITY_REPORT_INTERVAL_MS - env.now();
+    if (delay > 0) {
+      if (attempt.activityTimer === void 0) {
+        attempt.activityTimer = env.setTimeout(() => {
+          attempt.activityTimer = void 0;
+          flushActivity(attempt);
+        }, delay);
+      }
+      return;
+    }
+    if (attempt.activityTimer !== void 0) env.clearTimeout(attempt.activityTimer);
+    attempt.activityTimer = void 0;
+    attempt.activityReportedAt = env.now();
+    attempt.activityDirty = false;
+    attempt.activityReporting = true;
+    void reportActivity(attempt);
+  }
+  async function reportActivity(attempt) {
+    try {
+      const result = await bounded(
+        env.rpc("mobkit/console/voice/activity", closeParams(attempt), VOICE_TEARDOWN_TIMEOUT_MS),
+        VOICE_TEARDOWN_TIMEOUT_MS,
+        attempt.abort.signal
+      );
+      assertOwns(attempt);
+      if (!result || typeof result !== "object" || Array.isArray(result) || result.accepted !== true) throw new VoiceError("The gateway did not accept voice activity.");
+    } catch (error) {
+      if (!(error instanceof Cancelled)) {
+        fail(attempt, "Voice activity could not be confirmed. Check your network and voice access, then start again.");
+      }
+    } finally {
+      attempt.activityReporting = false;
+      flushActivity(attempt);
+    }
+  }
+  function scheduleSilence(attempt) {
+    if (attempt.silenceTimer !== void 0) env.clearTimeout(attempt.silenceTimer);
+    attempt.silenceTimer = env.setTimeout(() => {
+      if (!owns(attempt)) return;
+      if (env.now() - attempt.lastActivity < VOICE_SILENCE_TIMEOUT_MS) {
+        scheduleSilence(attempt);
+        return;
+      }
+      cleanupLocal(attempt);
+      void enqueue(() => stop(attempt, null, "Voice closed after 15 minutes of silence."));
+    }, VOICE_SILENCE_TIMEOUT_MS - (env.now() - attempt.lastActivity));
+  }
+  function sampleActivity(attempt) {
+    const samples = new Float32Array(2048);
+    const hasSignal = (analyser, threshold) => {
+      if (!analyser) return false;
+      analyser.getFloatTimeDomainData(samples);
+      let power = 0;
+      for (const value of samples) power += value * value;
+      return power / samples.length > threshold * threshold;
+    };
+    const sample = () => {
+      if (!owns(attempt) || snapshot.phase !== "active") return;
+      if (!snapshot.microphoneMuted && hasSignal(attempt.microphone, 0.015) || hasSignal(attempt.speaker, 5e-3)) activity(attempt);
+      attempt.sampleTimer = env.setTimeout(sample, SAMPLE_INTERVAL_MS);
+    };
+    sample();
+  }
+  function gates(attempt) {
+    const active = owns(attempt) && snapshot.phase === "active" && !!attempt.active;
+    for (const track of attempt.stream?.getAudioTracks() ?? []) {
+      track.enabled = active && !snapshot.microphoneMuted;
+    }
+    if (attempt.gain) attempt.gain.gain.value = active && !snapshot.speakerMuted ? 1 : 0;
+  }
+  function consumeMessage(attempt, data) {
+    if (!owns(attempt) || typeof data !== "string") return;
+    let event;
+    try {
+      const parsed = JSON.parse(data);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+      event = parsed;
+    } catch {
+      return;
+    }
+    if (event.type === "error") {
+      fail(attempt, "The voice provider reported an error. Check gateway configuration and start voice again.");
+      return;
+    }
+    if (!attempt.active || snapshot.phase !== "active") return;
+    const type = event.type;
+    if (!snapshot.microphoneMuted && (type === "input_audio_buffer.speech_started" || type === "input_audio_buffer.speech_stopped")) activity(attempt);
+  }
+  function preparePeer(attempt) {
+    const context = attempt.context;
+    const stream = attempt.stream;
+    const peer = env.createPeerConnection();
+    attempt.peer = peer;
+    attempt.remote = env.createMediaStream();
+    attempt.audio = env.createAudioElement();
+    attempt.audio.autoplay = true;
+    attempt.audio.muted = true;
+    attempt.audio.srcObject = attempt.remote;
+    const gain = context.createGain();
+    gain.gain.value = 0;
+    gain.connect(context.destination);
+    attempt.gain = gain;
+    attempt.nodes.push(gain);
+    const microphone = context.createAnalyser();
+    microphone.fftSize = 2048;
+    const source = context.createMediaStreamSource(stream);
+    source.connect(microphone);
+    attempt.microphone = microphone;
+    attempt.nodes.push(source, microphone);
+    peer.ontrack = (event) => {
+      if (!owns(attempt) || attempt.peer !== peer) {
+        event.track.stop();
+        return;
+      }
+      if (event.track.kind !== "audio") {
+        event.track.stop();
+        return;
+      }
+      attempt.remote.addTrack(event.track);
+      event.track.onended = () => {
+        transportLost(attempt, peer, "The voice audio stream ended. Start voice again.");
+      };
+      if (!attempt.speaker) {
+        const speaker = context.createAnalyser();
+        speaker.fftSize = 2048;
+        const remoteSource = context.createMediaStreamSource(attempt.remote);
+        remoteSource.connect(speaker);
+        speaker.connect(gain);
+        attempt.speaker = speaker;
+        attempt.nodes.push(remoteSource, speaker);
+      }
+      void attempt.audio.play().catch(() => {
+        if (attempt.peer === peer) {
+          fail(attempt, "Audio playback was blocked. Allow audio in your browser and start voice again.");
+        }
+      });
+    };
+    const connectionChanged = () => {
+      if (attempt.peer !== peer) return;
+      if (["failed", "disconnected", "closed"].includes(peer.connectionState) || ["failed", "disconnected", "closed"].includes(peer.iceConnectionState)) transportLost(attempt, peer, "Voice connection was lost. Check your network and start voice again.");
+    };
+    peer.onconnectionstatechange = connectionChanged;
+    peer.oniceconnectionstatechange = connectionChanged;
+    const channel = peer.createDataChannel("oai-events");
+    attempt.channel = channel;
+    channel.onmessage = (event) => {
+      if (attempt.peer === peer) consumeMessage(attempt, event.data);
+    };
+    channel.onclose = () => {
+      transportLost(attempt, peer, "The voice data connection closed. Start voice again.");
+    };
+    channel.onerror = () => {
+      transportLost(attempt, peer, "The voice data connection failed. Start voice again.");
+    };
+    for (const track of stream.getAudioTracks()) {
+      track.enabled = false;
+      track.onended = () => {
+        if (attempt.peer === peer) {
+          fail(attempt, "Microphone access was lost. Check browser permissions and start voice again.");
+        }
+      };
+      peer.addTrack(track, stream);
+    }
+  }
+  async function activatePending(attempt, pending) {
+    assertOwns(attempt);
+    attempt.pending = pending;
+    if (pending.targetIdentity !== attempt.target.identity || pending.executionMode !== "client_context" || pending.transport.transport !== "webrtc" || pending.transport.answerMethod !== "live/webrtc/answer" || !pending.capabilities.audioIn || !pending.capabilities.audioOut) throw new VoiceError("The gateway returned an incompatible GPT Live voice session.");
+    preparePeer(attempt);
+    const offer = await connecting(attempt, attempt.peer.createOffer());
+    assertOwns(attempt);
+    await connecting(attempt, attempt.peer.setLocalDescription(offer));
+    assertOwns(attempt);
+    const sdp = attempt.peer.localDescription?.sdp;
+    if (!sdp?.trim()) throw new VoiceError("The browser could not create a voice connection offer.");
+    const readiness = parseLivePlaybackOwnerReadiness(await connecting(
+      attempt,
+      env.rpc("mobkit/live/playback_owner/register", {
+        identity: pending.targetIdentity,
+        channel_id: pending.channelId,
+        pending_receipt: pending.pendingReceipt
+      }, VOICE_CONNECT_TIMEOUT_MS)
+    ));
+    assertOwns(attempt);
+    if (readiness.channelId !== pending.channelId) throw new VoiceError("Voice playback authority did not match the session.");
+    attempt.readiness = readiness;
+    const answer = await connecting(attempt, env.rpc("live/webrtc/answer", {
+      identity: pending.targetIdentity,
+      channel_id: pending.channelId,
+      pending_receipt: pending.pendingReceipt,
+      readiness_receipt: readiness.readinessReceipt,
+      token: pending.transport.token,
+      offer_sdp: sdp
+    }, VOICE_CONNECT_TIMEOUT_MS));
+    assertOwns(attempt);
+    if (!answer || typeof answer !== "object" || typeof answer.answer_sdp !== "string" || !answer.answer_sdp.trim()) {
+      throw new VoiceError("The gateway returned an invalid voice connection answer.");
+    }
+    await connecting(attempt, attempt.peer.setRemoteDescription({
+      type: "answer",
+      sdp: answer.answer_sdp
+    }));
+    assertOwns(attempt);
+    const received = await connecting(attempt, env.rpc("mobkit/console/voice/answer_received", {
+      ...closeParams(attempt),
+      channel_id: pending.channelId
+    }, VOICE_CONNECT_TIMEOUT_MS));
+    assertOwns(attempt);
+    if (!received || typeof received !== "object" || Array.isArray(received) || received.accepted !== true) throw new VoiceError("The gateway did not acknowledge voice answer delivery. Start voice again.");
+    while (owns(attempt)) {
+      const status = parseExperimentalLiveChannelStatus(await connecting(
+        attempt,
+        env.rpc("mobkit/live/status", {
+          identity: pending.targetIdentity,
+          channel_id: pending.channelId,
+          pending_receipt: pending.pendingReceipt
+        }, VOICE_CONNECT_TIMEOUT_MS)
+      ));
+      assertOwns(attempt);
+      if (status.phase === "closed" || status.phase === "revoked") {
+        throw new VoiceError("The gateway closed voice before activation. Start voice again.");
+      }
+      if (status.phase === "active") {
+        if (status.handle.channelId !== pending.channelId || status.handle.targetIdentity !== pending.targetIdentity || status.handle.executionMode !== pending.executionMode) throw new VoiceError("Voice activation authority did not match the requested agent.");
+        if (attempt.peer.connectionState === "connected" && attempt.channel.readyState === "open") {
+          return status.handle;
+        }
+      }
+      await pollDelay(attempt);
+    }
+    throw new Cancelled();
+  }
+  function scheduleReplacement(attempt) {
+    if (!owns(attempt) || snapshot.phase !== "active" && !attempt.transportLoss) return;
+    if (attempt.replacementTimer !== void 0) env.clearTimeout(attempt.replacementTimer);
+    attempt.replacementTimer = env.setTimeout(() => {
+      attempt.replacementTimer = void 0;
+      requestReplacement(attempt);
+    }, VOICE_REPLACEMENT_POLL_INTERVAL_MS);
+  }
+  function requestReplacement(attempt) {
+    if (!owns(attempt) || attempt.replacementPolling) return;
+    attempt.replacementPolling = true;
+    void pollReplacement(attempt).finally(() => {
+      attempt.replacementPolling = false;
+    });
+  }
+  async function pollReplacement(attempt) {
+    try {
+      assertOwns(attempt);
+      if (snapshot.phase !== "active" && !attempt.transportLoss) return;
+      if (attempt.recoveryDeadline !== void 0 && env.now() >= attempt.recoveryDeadline) {
+        fail(attempt, RECOVERY_TIMEOUT_MESSAGE);
+        return;
+      }
+      const raw = await bounded(
+        env.rpc("mobkit/console/voice/replacement", closeParams(attempt), VOICE_TEARDOWN_TIMEOUT_MS),
+        VOICE_TEARDOWN_TIMEOUT_MS,
+        attempt.abort.signal
+      );
+      assertOwns(attempt);
+      if (attempt.recoveryDeadline !== void 0 && env.now() >= attempt.recoveryDeadline) {
+        fail(attempt, RECOVERY_TIMEOUT_MESSAGE);
+        return;
+      }
+      const pending = parseReplacement(raw);
+      if (pending) {
+        await enqueue(async () => {
+          try {
+            assertOwns(attempt);
+            if (pending.targetIdentity !== attempt.target.identity || pending.executionMode !== "client_context") {
+              throw new VoiceError("Voice recovery authority did not match the current agent.");
+            }
+            if (pending.channelId === attempt.active?.channelId) {
+              if (attempt.transportLoss) {
+                throw new VoiceError("Voice connection was lost without new recovery authority. Start voice again.");
+              }
+              if (pending.pendingReceipt !== attempt.pending?.pendingReceipt) {
+                throw new VoiceError("Voice recovery returned conflicting channel authority.");
+              }
+              return;
+            }
+            publish({ phase: "connecting" });
+            assertOwns(attempt);
+            if (attempt.sampleTimer !== void 0) env.clearTimeout(attempt.sampleTimer);
+            cleanupPeer(attempt);
+            attempt.active = void 0;
+            attempt.readiness = void 0;
+            attempt.deadline = attempt.recoveryDeadline ?? env.now() + VOICE_CONNECT_TIMEOUT_MS;
+            attempt.active = await activatePending(attempt, pending);
+            assertOwns(attempt);
+            if (attempt.recoveryDeadline !== void 0 && env.now() >= attempt.recoveryDeadline) {
+              throw new VoiceError(RECOVERY_TIMEOUT_MESSAGE);
+            }
+            if (attempt.recoveryTimer !== void 0) env.clearTimeout(attempt.recoveryTimer);
+            attempt.recoveryTimer = void 0;
+            attempt.recoveryDeadline = void 0;
+            attempt.transportLoss = void 0;
+            if (env.now() - attempt.lastActivity >= VOICE_SILENCE_TIMEOUT_MS) {
+              await stop(attempt, null, "Voice closed after 15 minutes of silence.");
+              return;
+            }
+            publish({ phase: "active" });
+            assertOwns(attempt);
+            gates(attempt);
+            scheduleSilence(attempt);
+            sampleActivity(attempt);
+          } catch (error) {
+            if (!(error instanceof Cancelled)) await stop(attempt, voiceError(error));
+          }
+        });
+      }
+      scheduleReplacement(attempt);
+    } catch (error) {
+      if (error instanceof Cancelled) return;
+      const kind = error?.rpcError?.data?.kind;
+      fail(attempt, kind === "voice_closed" ? "The gateway closed this voice session. Start voice again." : "Voice connection could not be verified. Check your network and voice access, then start again.");
+    }
+  }
+  async function connect(attempt, media, resumed) {
+    try {
+      assertOwns(attempt);
+      if (teardownBlock) {
+        throw new VoiceError("The previous voice session has not closed. Use Close to retry before starting another session.");
+      }
+      await connecting(attempt, resumed);
+      assertOwns(attempt);
+      if (attempt.context.state !== "running") {
+        throw new VoiceError("Browser audio is suspended. Allow audio playback and start voice again.");
+      }
+      attempt.context.onstatechange = () => {
+        if (attempt.context.state !== "running") {
+          fail(attempt, "Browser audio was interrupted. Check audio permissions and start voice again.");
+        }
+      };
+      attempt.stream = await connecting(attempt, media);
+      assertOwns(attempt);
+      if (attempt.stream.getAudioTracks().length === 0) {
+        throw new VoiceError("No microphone audio track was available. Check your microphone and try again.");
+      }
+      publish({ phase: "connecting" });
+      attempt.openSent = true;
+      const raw = await connecting(attempt, env.rpc("mobkit/console/voice/open", {
+        identity: attempt.target.identity,
+        request_id: attempt.requestId
+      }, VOICE_CONNECT_TIMEOUT_MS));
+      assertOwns(attempt);
+      attempt.active = await activatePending(attempt, parsePendingLiveChannelHandle(raw));
+      assertOwns(attempt);
+      attempt.lastActivity = env.now();
+      publish({ phase: "active" });
+      assertOwns(attempt);
+      gates(attempt);
+      scheduleSilence(attempt);
+      sampleActivity(attempt);
+      scheduleReplacement(attempt);
+    } catch (error) {
+      if (error instanceof Cancelled) {
+        await teardown(attempt).catch(() => {
+        });
+      } else {
+        await stop(attempt, voiceError(error));
+      }
+    }
+  }
+  const controller = {
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    getSnapshot: () => snapshot,
+    start(target) {
+      if (pageHidden) return Promise.resolve();
+      disposed = false;
+      if (current && owns(current) && current.target.identity === target.identity) return serial;
+      if (teardownBlock) {
+        publish({ phase: "error", error: "The previous voice session has not closed. Use Close to retry before starting another session." });
+        return Promise.resolve();
+      }
+      const previous = current;
+      if (previous) cleanupLocal(previous);
+      let requestId;
+      try {
+        requestId = env.randomId();
+      } catch {
+        publish({
+          phase: "error",
+          error: "Voice requires HTTPS or localhost and a browser with secure random identifiers."
+        });
+        return previous ? enqueue(() => stop(previous, snapshot.error)) : Promise.resolve();
+      }
+      const attempt = {
+        target: { ...target },
+        requestId,
+        abort: new AbortController(),
+        deadline: env.now() + VOICE_CONNECT_TIMEOUT_MS,
+        nodes: [],
+        openSent: false,
+        localClosed: false,
+        lastActivity: env.now()
+      };
+      current = attempt;
+      publish({
+        phase: "requesting",
+        target: attempt.target,
+        microphoneMuted: false,
+        speakerMuted: false,
+        error: null,
+        notice: null
+      });
+      if (!owns(attempt)) {
+        return enqueue(async () => {
+          if (previous) await teardown(previous).catch(() => {
+          });
+          await teardown(attempt).catch(() => {
+          });
+        });
+      }
+      let media;
+      let resumed;
+      try {
+        if (!target.identity.trim()) throw new VoiceError("Select an agent before starting voice.");
+        attempt.context = env.createAudioContext();
+        resumed = attempt.context.resume();
+        void resumed.catch(() => {
+        });
+        media = env.voiceAvailable(attempt.target.identity).then((available) => {
+          assertOwns(attempt);
+          if (available !== true) {
+            throw new VoiceError("Voice is unavailable. Ask your administrator to authenticate OpenAI and enable GPT Live.");
+          }
+          return env.getUserMedia();
+        }).then((stream) => {
+          for (const track of stream.getTracks()) track.enabled = false;
+          if (!owns(attempt)) {
+            for (const track of stream.getTracks()) track.stop();
+          } else {
+            attempt.stream = stream;
+          }
+          return stream;
+        });
+        void media.catch(() => {
+        });
+        removePagehide ?? (removePagehide = env.onPagehide(() => {
+          pageHidden = true;
+          const active = current ?? teardownBlock;
+          if (active?.openSent) env.pagehideClose(closeParams(active));
+          controller.dispose();
+        }));
+      } catch (error) {
+        cleanupLocal(attempt);
+        return enqueue(async () => {
+          if (previous) await stop(previous);
+          await stop(attempt, voiceError(error));
+        });
+      }
+      return enqueue(async () => {
+        if (previous) {
+          try {
+            await teardown(previous);
+          } catch {
+            await stop(attempt, "The previous voice session has not closed. Use Close to retry before starting another session.");
+            return;
+          }
+        }
+        await connect(attempt, media, resumed);
+      });
+    },
+    close() {
+      const attempt = current ?? teardownBlock;
+      if (!attempt) {
+        publish({ phase: "idle", target: null, error: null, notice: null });
+        return Promise.resolve();
+      }
+      current ?? (current = attempt);
+      cleanupLocal(attempt);
+      publish({ phase: "closing" });
+      return enqueue(async () => {
+        await stop(attempt);
+        if (teardownBlock && teardownBlock !== attempt) {
+          const blocked = teardownBlock;
+          current = blocked;
+          await stop(blocked);
+        }
+      });
+    },
+    toggleMicrophone() {
+      if (!current || !owns(current)) return;
+      publish({ microphoneMuted: !snapshot.microphoneMuted });
+      gates(current);
+    },
+    toggleSpeaker() {
+      if (!current || !owns(current)) return;
+      publish({ speakerMuted: !snapshot.speakerMuted });
+      gates(current);
+    },
+    sampleWaveform(source, samples) {
+      samples.fill(0);
+      if (!current || !owns(current) || snapshot.phase !== "active") return;
+      if (source === "microphone" && snapshot.microphoneMuted) return;
+      const analyser = source === "microphone" ? current.microphone : current.speaker;
+      analyser?.getFloatTimeDomainData(samples);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      removePagehide?.();
+      removePagehide = void 0;
+      listeners.clear();
+      void controller.close();
+    }
+  };
+  return controller;
+}
+
+// src/lib/use-voice-controller.ts
+var IDLE = {
+  phase: "idle",
+  target: null,
+  microphoneMuted: false,
+  speakerMuted: false,
+  error: null,
+  notice: null
+};
+var idleSnapshot = () => IDLE;
+var idleSubscribe = () => () => {
+};
+function useVoiceController(baseUrl) {
+  const [voice, setVoice] = import_react35.default.useState(null);
+  import_react35.default.useEffect(() => {
+    const owned = createVoiceSession(baseUrl);
+    setVoice(owned);
+    return () => owned.dispose();
+  }, [baseUrl]);
+  const state = import_react35.default.useSyncExternalStore(
+    voice?.subscribe ?? idleSubscribe,
+    voice?.getSnapshot ?? idleSnapshot,
+    idleSnapshot
+  );
+  return { voice, state };
+}
+
+// src/lib/use-voice-readiness.ts
+var import_react36 = __toESM(require("react"));
+var NO_READINESS = {};
+function useVoiceReadiness(baseUrl, focusedIdentity, voiceIdentity, enabled) {
+  const key = JSON.stringify([baseUrl, focusedIdentity, voiceIdentity, enabled]);
+  const [state, setState] = import_react36.default.useState({ key: "", values: NO_READINESS });
+  import_react36.default.useEffect(() => {
+    if (!enabled) return;
+    const identities = [...new Set([focusedIdentity, voiceIdentity].filter(
+      (identity) => Boolean(identity)
+    ))];
+    if (!identities.length) return;
+    let stopped = false;
+    let timer;
+    const refresh = async () => {
+      const entries = await Promise.all(identities.map(
+        async (identity) => [identity, await queryVoiceAvailability(baseUrl, identity)]
+      ));
+      if (stopped) return;
+      setState({ key, values: Object.fromEntries(entries) });
+      timer = setTimeout(() => void refresh(), 15e3);
+    };
+    void refresh();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [baseUrl, enabled, focusedIdentity, key, voiceIdentity]);
+  return enabled && state.key === key ? state.values : NO_READINESS;
+}
+
 // src/ConsoleApp.tsx
-var import_jsx_runtime44 = require("react/jsx-runtime");
+var import_jsx_runtime45 = require("react/jsx-runtime");
 function normalizeConsoleTheme(value) {
   return value === "dark" || value === "light" ? value : null;
 }
@@ -20652,47 +21923,52 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "server_tool_content"
 ]);
 function ConsoleApp({ baseUrl }) {
-  const consoleFetchTimeoutMsRef = import_react34.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2);
-  const consoleTransport = import_react34.default.useMemo(
+  const consoleFetchTimeoutMsRef = import_react37.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2);
+  const consoleTransport = import_react37.default.useMemo(
     () => createHttpConsoleTransport2({
       baseUrl,
       fetchTimeoutMs: () => consoleFetchTimeoutMsRef.current
     }),
     [baseUrl]
   );
-  const consoleController = import_react34.default.useMemo(
+  const consoleController = import_react37.default.useMemo(
     () => createMobKitConsoleController2({ transport: consoleTransport }),
     [consoleTransport]
   );
-  const [experience, setExperience] = import_react34.default.useState(
+  const { voice, state: voiceState } = useVoiceController(baseUrl);
+  const sampleVoiceWaveform = import_react37.default.useCallback(
+    (source, samples) => voice?.sampleWaveform(source, samples),
+    [voice]
+  );
+  const [experience, setExperience] = import_react37.default.useState(
     null
   );
-  const [agents, setAgents] = import_react34.default.useState([]);
-  const [draftByKey, setDraftByKey] = import_react34.default.useState(
+  const [agents, setAgents] = import_react37.default.useState([]);
+  const [draftByKey, setDraftByKey] = import_react37.default.useState(
     {}
   );
-  const [stagedAttachmentsByIdentity, setStagedAttachmentsByIdentity] = import_react34.default.useState({});
-  const [sendingPanels, setSendingPanels] = import_react34.default.useState(
+  const [stagedAttachmentsByIdentity, setStagedAttachmentsByIdentity] = import_react37.default.useState({});
+  const [sendingPanels, setSendingPanels] = import_react37.default.useState(
     /* @__PURE__ */ new Set()
   );
-  const [pinnedAgentIds, setPinnedAgentIds] = import_react34.default.useState(
+  const [pinnedAgentIds, setPinnedAgentIds] = import_react37.default.useState(
     /* @__PURE__ */ new Set()
   );
-  const [inspectByIdentity, setInspectByIdentity] = import_react34.default.useState({});
-  const [routingData, setRoutingData] = import_react34.default.useState({
+  const [inspectByIdentity, setInspectByIdentity] = import_react37.default.useState({});
+  const [routingData, setRoutingData] = import_react37.default.useState({
     routes: [],
     deliveries: []
   });
-  const [gatingData, setGatingData] = import_react34.default.useState({
+  const [gatingData, setGatingData] = import_react37.default.useState({
     pending: [],
     audit: []
   });
-  const [accessData, setAccessData] = import_react34.default.useState({
+  const [accessData, setAccessData] = import_react37.default.useState({
     status: null,
     config: null,
     error: null
   });
-  const [memoryData, setMemoryData] = import_react34.default.useState({
+  const [memoryData, setMemoryData] = import_react37.default.useState({
     records: [],
     realms: [],
     quarantineRecords: [],
@@ -20720,7 +21996,7 @@ function ConsoleApp({ baseUrl }) {
     auditVerdicts: [],
     auditVerdictsDenied: false
   });
-  const [workGraphData, setWorkGraphData] = import_react34.default.useState({
+  const [workGraphData, setWorkGraphData] = import_react37.default.useState({
     items: [],
     edges: [],
     attention: [],
@@ -20730,17 +22006,17 @@ function ConsoleApp({ baseUrl }) {
     denied: false,
     error: null
   });
-  const [topologyQueryResult, setTopologyQueryResult] = import_react34.default.useState(null);
-  const [topologyCapabilities, setTopologyCapabilities] = import_react34.default.useState(null);
-  const [topologyOperations, setTopologyOperations] = import_react34.default.useState([]);
-  const [topologyConnectionSourceId, setTopologyConnectionSourceId] = import_react34.default.useState(null);
-  const [activeActivityPresetId, setActiveActivityPresetId] = import_react34.default.useState("");
-  const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react34.default.useState("");
-  const [loading, setLoading] = import_react34.default.useState(true);
-  const [loadingHistory, setLoadingHistory] = import_react34.default.useState({});
-  const [error, setError] = import_react34.default.useState("");
-  const [actionError, setActionError] = import_react34.default.useState("");
-  const [theme, setTheme] = import_react34.default.useState(() => {
+  const [topologyQueryResult, setTopologyQueryResult] = import_react37.default.useState(null);
+  const [topologyCapabilities, setTopologyCapabilities] = import_react37.default.useState(null);
+  const [topologyOperations, setTopologyOperations] = import_react37.default.useState([]);
+  const [topologyConnectionSourceId, setTopologyConnectionSourceId] = import_react37.default.useState(null);
+  const [activeActivityPresetId, setActiveActivityPresetId] = import_react37.default.useState("");
+  const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react37.default.useState("");
+  const [loading, setLoading] = import_react37.default.useState(true);
+  const [loadingHistory, setLoadingHistory] = import_react37.default.useState({});
+  const [error, setError] = import_react37.default.useState("");
+  const [actionError, setActionError] = import_react37.default.useState("");
+  const [theme, setTheme] = import_react37.default.useState(() => {
     try {
       return localStorage.getItem("mobkit-console-theme") || "light";
     } catch {
@@ -20748,22 +22024,22 @@ function ConsoleApp({ baseUrl }) {
     }
   });
   const [variant, setVariant] = useConsoleVariant();
-  const sidebarStorageScope = import_react34.default.useMemo(
+  const sidebarStorageScope = import_react37.default.useMemo(
     () => sidebarPreferencesScope(baseUrl, experience),
     [baseUrl, experience]
   );
-  const sidebarStorageNamespace = import_react34.default.useMemo(
+  const sidebarStorageNamespace = import_react37.default.useMemo(
     () => sidebarPreferencesNamespace(baseUrl, experience),
     [baseUrl, experience]
   );
-  const sidebarPinsStorageKey = import_react34.default.useMemo(
+  const sidebarPinsStorageKey = import_react37.default.useMemo(
     () => sidebarStorageKey(SIDEBAR_PINS_STORAGE_PREFIX, sidebarStorageNamespace),
     [sidebarStorageNamespace]
   );
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     pruneStaleSidebarStorage(browserLocalStorage(), sidebarStorageScope, sidebarStorageNamespace);
   }, [sidebarStorageScope, sidebarStorageNamespace]);
-  const [sidebarCollapsed, setSidebarCollapsed] = import_react34.default.useState(
+  const [sidebarCollapsed, setSidebarCollapsed] = import_react37.default.useState(
     () => {
       try {
         return localStorage.getItem("mobkit-console-sidebar-collapsed") === "1";
@@ -20772,7 +22048,7 @@ function ConsoleApp({ baseUrl }) {
       }
     }
   );
-  const toggleSidebarCollapsed = import_react34.default.useCallback(() => {
+  const toggleSidebarCollapsed = import_react37.default.useCallback(() => {
     setSidebarCollapsed((c) => {
       const next = !c;
       try {
@@ -20785,14 +22061,14 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, []);
-  const [railCollapsed, setRailCollapsed] = import_react34.default.useState(() => {
+  const [railCollapsed, setRailCollapsed] = import_react37.default.useState(() => {
     try {
       return localStorage.getItem("mobkit-console-rail-collapsed") === "1";
     } catch {
       return false;
     }
   });
-  const toggleRailCollapsed = import_react34.default.useCallback(() => {
+  const toggleRailCollapsed = import_react37.default.useCallback(() => {
     setRailCollapsed((c) => {
       const next = !c;
       try {
@@ -20802,11 +22078,11 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, []);
-  const defaultPinnedAgentIdsKey = import_react34.default.useMemo(
+  const defaultPinnedAgentIdsKey = import_react37.default.useMemo(
     () => JSON.stringify(experience?.console_config?.agent_list?.default_pinned_agent_ids || []),
     [experience?.console_config?.agent_list?.default_pinned_agent_ids]
   );
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const defaults = new Set(experience?.console_config?.agent_list?.default_pinned_agent_ids || []);
     const stored = readSidebarStringSet(
       browserLocalStorage(),
@@ -20814,7 +22090,7 @@ function ConsoleApp({ baseUrl }) {
     );
     setPinnedAgentIds(stored ?? defaults);
   }, [defaultPinnedAgentIdsKey, experience?.console_config?.agent_list, sidebarPinsStorageKey]);
-  const togglePinnedAgent = import_react34.default.useCallback((agent, renderedFamilyPinIds) => {
+  const togglePinnedAgent = import_react37.default.useCallback((agent, renderedFamilyPinIds) => {
     const pinId = sidebarAgentPinId2(agent);
     setPinnedAgentIds((current) => {
       const next = new Set(current);
@@ -20833,13 +22109,13 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, [agents, sidebarPinsStorageKey]);
-  const [, setRenderTick] = import_react34.default.useState(0);
-  const forceRender = import_react34.default.useCallback(() => setRenderTick((n) => n + 1), []);
-  const stagedAttachmentsRef = import_react34.default.useRef(stagedAttachmentsByIdentity);
-  import_react34.default.useEffect(() => {
+  const [, setRenderTick] = import_react37.default.useState(0);
+  const forceRender = import_react37.default.useCallback(() => setRenderTick((n) => n + 1), []);
+  const stagedAttachmentsRef = import_react37.default.useRef(stagedAttachmentsByIdentity);
+  import_react37.default.useEffect(() => {
     stagedAttachmentsRef.current = stagedAttachmentsByIdentity;
   }, [stagedAttachmentsByIdentity]);
-  import_react34.default.useEffect(
+  import_react37.default.useEffect(
     () => () => {
       for (const items of Object.values(stagedAttachmentsRef.current)) {
         items.forEach((item) => URL.revokeObjectURL(item.previewUrl));
@@ -20888,11 +22164,11 @@ function ConsoleApp({ baseUrl }) {
       params
     })).result;
   }
-  const identityLogRef = import_react34.default.useRef({});
-  const timelineFetchInFlightRef = import_react34.default.useRef(
+  const identityLogRef = import_react37.default.useRef({});
+  const timelineFetchInFlightRef = import_react37.default.useRef(
     {}
   );
-  const optimisticUserByPanelKeyRef = import_react34.default.useRef({});
+  const optimisticUserByPanelKeyRef = import_react37.default.useRef({});
   function getOrCreateLog(identity) {
     let log = identityLogRef.current[identity];
     if (!log) {
@@ -21284,14 +22560,14 @@ function ConsoleApp({ baseUrl }) {
     void panelId;
     return frames;
   }
-  const activityRef = import_react34.default.useRef([]);
-  const liveFramesRef = import_react34.default.useRef([]);
-  const [liveFrames, setLiveFrames] = import_react34.default.useState([]);
+  const activityRef = import_react37.default.useRef([]);
+  const liveFramesRef = import_react37.default.useRef([]);
+  const [liveFrames, setLiveFrames] = import_react37.default.useState([]);
   function commitLiveFrames(frames) {
     liveFramesRef.current = frames;
     setLiveFrames(frames);
   }
-  const pendingStackRef = import_react34.default.useRef({});
+  const pendingStackRef = import_react37.default.useRef({});
   const PENDING_STACK_KEY_PREFIX = "mobkit-pending-stack:";
   const PENDING_DRAIN_CLAIM_TTL_MS = 15e3;
   const stackKeyFor = (identity) => `${PENDING_STACK_KEY_PREFIX}${identity}`;
@@ -21358,7 +22634,7 @@ function ConsoleApp({ baseUrl }) {
     persistPendingStack(identity, next);
     forceRender();
   }
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const onStorage = (e) => {
       if (!e.key || !e.key.startsWith(PENDING_STACK_KEY_PREFIX)) return;
       const identity = e.key.slice(PENDING_STACK_KEY_PREFIX.length);
@@ -21370,26 +22646,26 @@ function ConsoleApp({ baseUrl }) {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
-  const identityBusyRef = import_react34.default.useRef({});
-  const identityLifecycleRef = import_react34.default.useRef({});
+  const identityBusyRef = import_react37.default.useRef({});
+  const identityLifecycleRef = import_react37.default.useRef({});
   const isIdentityBusy = (identity) => identityBusyRef.current[identity] === true;
-  const phaseRef = import_react34.default.useRef({});
-  const phaseValueByKey = import_react34.default.useRef({});
-  const phaseSinceByKey = import_react34.default.useRef({});
-  const phaseTimerByKey = import_react34.default.useRef({});
-  const refreshTimersRef = import_react34.default.useRef({});
-  const experienceTimerRef = import_react34.default.useRef(null);
-  const experienceLoadInFlightRef = import_react34.default.useRef(
+  const phaseRef = import_react37.default.useRef({});
+  const phaseValueByKey = import_react37.default.useRef({});
+  const phaseSinceByKey = import_react37.default.useRef({});
+  const phaseTimerByKey = import_react37.default.useRef({});
+  const refreshTimersRef = import_react37.default.useRef({});
+  const experienceTimerRef = import_react37.default.useRef(null);
+  const experienceLoadInFlightRef = import_react37.default.useRef(
     null
   );
-  const agentsRef = import_react34.default.useRef([]);
-  import_react34.default.useEffect(() => {
+  const agentsRef = import_react37.default.useRef([]);
+  import_react37.default.useEffect(() => {
     agentsRef.current = agents;
   }, [agents]);
-  const initialTargetOpened = import_react34.default.useRef(false);
-  const dockLayoutHydrated = import_react34.default.useRef(false);
-  const dockLayoutRestored = import_react34.default.useRef(false);
-  const dockLayoutRestoring = import_react34.default.useRef(false);
+  const initialTargetOpened = import_react37.default.useRef(false);
+  const dockLayoutHydrated = import_react37.default.useRef(false);
+  const dockLayoutRestored = import_react37.default.useRef(false);
+  const dockLayoutRestoring = import_react37.default.useRef(false);
   const dock = useConsoleDockController({
     createPanelState: ({ target }) => ({
       id: createConsoleId("panel"),
@@ -21397,11 +22673,11 @@ function ConsoleApp({ baseUrl }) {
       mode: "console"
     })
   });
-  const currentDockLayoutStorageKey = import_react34.default.useMemo(
+  const currentDockLayoutStorageKey = import_react37.default.useMemo(
     () => dockLayoutStorageKey(baseUrl, experience),
     [baseUrl, experience?.runtime_id, experience?.console_config?.title]
   );
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     if (!experience || dockLayoutHydrated.current) return;
     dockLayoutHydrated.current = true;
     try {
@@ -21416,7 +22692,7 @@ function ConsoleApp({ baseUrl }) {
     } catch {
     }
   }, [currentDockLayoutStorageKey, experience]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     if (!experience || !dockLayoutHydrated.current) return;
     if (dockLayoutRestoring.current) {
       dockLayoutRestoring.current = false;
@@ -21524,7 +22800,7 @@ function ConsoleApp({ baseUrl }) {
         return false;
     }
   }
-  const dockRef = import_react34.default.useRef(dock);
+  const dockRef = import_react37.default.useRef(dock);
   dockRef.current = dock;
   function updatePhaseForIdentity(identity, frame) {
     let changed = false;
@@ -21581,7 +22857,7 @@ function ConsoleApp({ baseUrl }) {
     }
     return changed;
   }
-  const loadExperience = import_react34.default.useCallback(() => {
+  const loadExperience = import_react37.default.useCallback(() => {
     if (experienceLoadInFlightRef.current) {
       return experienceLoadInFlightRef.current;
     }
@@ -21611,7 +22887,7 @@ function ConsoleApp({ baseUrl }) {
     experienceLoadInFlightRef.current = request;
     return request;
   }, [consoleTransport]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     let mounted = true;
     setLoading(true);
     setError("");
@@ -21624,14 +22900,14 @@ function ConsoleApp({ baseUrl }) {
       mounted = false;
     };
   }, [loadExperience]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const timer = window.setInterval(() => {
       void loadExperience().catch(() => {
       });
     }, 15e3);
     return () => window.clearInterval(timer);
   }, [loadExperience]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const appearance = experience?.console_config?.appearance;
     if (!appearance) return;
     const configuredTheme = normalizeConsoleTheme(appearance.default_theme);
@@ -21655,7 +22931,7 @@ function ConsoleApp({ baseUrl }) {
       }
     }
   }, [experience?.console_config?.appearance, setVariant]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const configured = experience?.console_config?.layout?.sidebar_collapsed;
     if (typeof configured !== "boolean") return;
     try {
@@ -21665,7 +22941,7 @@ function ConsoleApp({ baseUrl }) {
     }
     setSidebarCollapsed(configured);
   }, [experience?.console_config?.layout?.sidebar_collapsed]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const configured = experience?.console_config?.rail?.collapsed;
     if (typeof configured !== "boolean") return;
     try {
@@ -21676,12 +22952,30 @@ function ConsoleApp({ baseUrl }) {
     setRailCollapsed(configured);
   }, [experience?.console_config?.rail?.collapsed]);
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
-  const frontendReadOnly = import_react34.default.useMemo(() => resolveConsoleReadOnlyOverride(), []);
+  const frontendReadOnly = import_react37.default.useMemo(() => resolveConsoleReadOnlyOverride(), []);
   const accessEnforcing = experience?.access?.enabled === true;
   const consoleReadOnly = frontendReadOnly || experience?.console_policy?.read_only === true || !accessEnforcing && experience?.runtime_capabilities?.can_send_messages === false;
-  const consoleReadOnlyRef = import_react34.default.useRef(false);
+  const consoleReadOnlyRef = import_react37.default.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
-  const normalizedTopology = import_react34.default.useMemo(
+  const hasVoiceHost = experience?.voice?.readiness_method === "mobkit/console/voice/readiness";
+  const voiceReadiness = useVoiceReadiness(
+    baseUrl,
+    dock.focusedTarget?.kind === "agent-chat" ? dock.focusedTarget.identity || dock.focusedTarget.memberId : null,
+    voiceState.target?.identity ?? null,
+    hasVoiceHost && !consoleReadOnly && voice !== null
+  );
+  import_react37.default.useEffect(() => {
+    const target = voiceState.target;
+    if (!experience || !voice || !target || !["requesting", "connecting", "active"].includes(voiceState.phase)) return;
+    const voiceAgent = agents.find(
+      (agent) => [agent.identity, agent.member_id, agent.agent_id].includes(target.identity)
+    );
+    if (!hasVoiceHost || voiceReadiness[target.identity] === false || consoleReadOnly || voiceAgent?.affordances?.can_send_message !== true) {
+      setActionError("Voice ended because OpenAI voice readiness or permission to message this agent could no longer be confirmed.");
+      void voice.close();
+    }
+  }, [agents, consoleReadOnly, experience, hasVoiceHost, voice, voiceReadiness, voiceState.phase, voiceState.target]);
+  const normalizedTopology = import_react37.default.useMemo(
     () => normalizeConsoleTopologyQuery(topologyQueryResult, {
       agents,
       fallbackNodes: experience?.topology?.live_snapshot?.nodes || [],
@@ -21700,7 +22994,7 @@ function ConsoleApp({ baseUrl }) {
       topologyQueryResult
     ]
   );
-  const visibleControls = import_react34.default.useMemo(() => {
+  const visibleControls = import_react37.default.useMemo(() => {
     const runtimeControls = hasMobControlSurface ? [
       "topology",
       "timeline",
@@ -21742,7 +23036,7 @@ function ConsoleApp({ baseUrl }) {
     experience?.workgraph?.can_view,
     hasMobControlSurface
   ]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     if (initialTargetOpened.current || dock.focusedTarget || !experience)
       return;
     if (!dockLayoutHydrated.current) return;
@@ -21776,7 +23070,7 @@ function ConsoleApp({ baseUrl }) {
     if (preset) dock.applyPreset(preset);
     dock.openTarget(target, "replace_focused");
   }, [agents, dock, experience, visibleControls]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const target = dock.focusedTarget;
     if (!target || target.kind !== "agent-chat" || agents.length === 0) return;
     const identity = target.identity || target.memberId;
@@ -21793,7 +23087,7 @@ function ConsoleApp({ baseUrl }) {
       dock.openTarget(buildControlTarget2("roster"), "replace_focused");
     }
   }, [agents, dock.focusedTarget]);
-  const refreshAccessData = import_react34.default.useCallback(async () => {
+  const refreshAccessData = import_react37.default.useCallback(async () => {
     const accessTarget = controlWorkbenchTarget("access");
     try {
       const status = await executeHeadlessCommand(
@@ -21813,7 +23107,7 @@ function ConsoleApp({ baseUrl }) {
       setAccessData((current) => ({ ...current, error: errorMessage(err) }));
     }
   }, [baseUrl]);
-  const refreshMemoryData = import_react34.default.useCallback(async () => {
+  const refreshMemoryData = import_react37.default.useCallback(async () => {
     const memoryTarget = controlWorkbenchTarget("memory");
     try {
       let records = [];
@@ -21954,8 +23248,8 @@ function ConsoleApp({ baseUrl }) {
       setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
     }
   }, [baseUrl, experience?.memory?.can_review_quarantine]);
-  const workGraphRefreshSequencerRef = import_react34.default.useRef(createWorkGraphRefreshSequencer());
-  const refreshWorkGraphData = import_react34.default.useCallback(async () => {
+  const workGraphRefreshSequencerRef = import_react37.default.useRef(createWorkGraphRefreshSequencer());
+  const refreshWorkGraphData = import_react37.default.useCallback(async () => {
     const workGraphTarget = controlWorkbenchTarget("workgraph");
     const isCurrent = workGraphRefreshSequencerRef.current.begin();
     try {
@@ -22006,7 +23300,7 @@ function ConsoleApp({ baseUrl }) {
       setWorkGraphData((current) => ({ ...current, error: errorMessage(err) }));
     }
   }, [baseUrl]);
-  const queryMemoryRecords = import_react34.default.useCallback(
+  const queryMemoryRecords = import_react37.default.useCallback(
     async (params) => {
       try {
         return await executeHeadlessCommand(
@@ -22023,7 +23317,7 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl]
   );
-  const loadMemoryEvidence = import_react34.default.useCallback(
+  const loadMemoryEvidence = import_react37.default.useCallback(
     async (identity, evidence) => {
       if (!evidence.session_id) return null;
       try {
@@ -22047,7 +23341,7 @@ function ConsoleApp({ baseUrl }) {
     },
     [consoleController]
   );
-  const loadMemoryRecordDetail = import_react34.default.useCallback(
+  const loadMemoryRecordDetail = import_react37.default.useCallback(
     async (realm, memoryId) => {
       setMemoryData((current) => ({ ...current, detail: null, detailLoading: true, error: null }));
       try {
@@ -22075,7 +23369,7 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl]
   );
-  const runAccessMutation = import_react34.default.useCallback(
+  const runAccessMutation = import_react37.default.useCallback(
     async (command, params) => {
       try {
         await executeHeadlessCommand(command, controlWorkbenchTarget("access"), params);
@@ -22090,7 +23384,7 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl, refreshAccessData, loadExperience]
   );
-  const refreshTopologyData = import_react34.default.useCallback(async () => {
+  const refreshTopologyData = import_react37.default.useCallback(async () => {
     try {
       const capabilities = await consoleTransport.capabilities();
       setTopologyCapabilities(capabilities.topologyControl || null);
@@ -22110,7 +23404,7 @@ function ConsoleApp({ baseUrl }) {
       throw error2;
     }
   }, [consoleTransport]);
-  const refreshPanelData = import_react34.default.useCallback(async () => {
+  const refreshPanelData = import_react37.default.useCallback(async () => {
     const openPanels = dock.viewState.panels.map((p) => p.target).filter(Boolean);
     const inspects = openPanels.filter(
       (t) => t.kind === "identity-inspect"
@@ -22163,11 +23457,11 @@ function ConsoleApp({ baseUrl }) {
       });
     }
   }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData, refreshMemoryData, refreshTopologyData, refreshWorkGraphData]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     void refreshPanelData().catch(() => {
     });
   }, [dock.viewState.panels, refreshPanelData]);
-  const scheduleExperienceRefresh = import_react34.default.useCallback(() => {
+  const scheduleExperienceRefresh = import_react37.default.useCallback(() => {
     if (experienceTimerRef.current !== null) return;
     experienceTimerRef.current = window.setTimeout(async () => {
       experienceTimerRef.current = null;
@@ -22177,7 +23471,7 @@ function ConsoleApp({ baseUrl }) {
       });
     }, 150);
   }, [loadExperience, refreshPanelData]);
-  const scheduleHistoryRefresh = import_react34.default.useCallback(
+  const scheduleHistoryRefresh = import_react37.default.useCallback(
     (identity) => {
       clearTimeout(refreshTimersRef.current[identity]);
       refreshTimersRef.current[identity] = window.setTimeout(async () => {
@@ -22195,7 +23489,7 @@ function ConsoleApp({ baseUrl }) {
     },
     [baseUrl, forceRender]
   );
-  const workGraphHydrationGateRef = import_react34.default.useRef(createWorkGraphHydrationGate());
+  const workGraphHydrationGateRef = import_react37.default.useRef(createWorkGraphHydrationGate());
   async function hydrateWorkGraphCardsForIdentity(identity) {
     const shouldFetch = workGraphHydrationGateRef.current.shouldFetch(identity, {
       workgraphAvailable: experience?.workgraph?.available === true,
@@ -22223,7 +23517,7 @@ function ConsoleApp({ baseUrl }) {
     } catch {
     }
   }
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     for (const panel of dock.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
@@ -22237,7 +23531,7 @@ function ConsoleApp({ baseUrl }) {
       });
     }
   }, [baseUrl, dock.viewState.panels, forceRender, experience?.workgraph?.available]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const refreshOpenChatPanels = async () => {
       const identities = /* @__PURE__ */ new Set();
       for (const panel of dock.viewState.panels) {
@@ -22288,25 +23582,25 @@ function ConsoleApp({ baseUrl }) {
     void refreshOpenChatPanels();
     return () => window.clearInterval(timer);
   }, [baseUrl, dock.viewState.panels, forceRender]);
-  const scheduleHistoryRefreshRef = import_react34.default.useRef(scheduleHistoryRefresh);
+  const scheduleHistoryRefreshRef = import_react37.default.useRef(scheduleHistoryRefresh);
   scheduleHistoryRefreshRef.current = scheduleHistoryRefresh;
-  const scheduleExperienceRefreshRef = import_react34.default.useRef(scheduleExperienceRefresh);
+  const scheduleExperienceRefreshRef = import_react37.default.useRef(scheduleExperienceRefresh);
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
-  const refreshMemoryDataRef = import_react34.default.useRef(refreshMemoryData);
+  const refreshMemoryDataRef = import_react37.default.useRef(refreshMemoryData);
   refreshMemoryDataRef.current = refreshMemoryData;
-  const memoryPanelDockedRef = import_react34.default.useRef(false);
+  const memoryPanelDockedRef = import_react37.default.useRef(false);
   memoryPanelDockedRef.current = dock.viewState.panels.some(
     (panel) => panel.target?.kind === "memory"
   );
-  const memoryRefreshTimerRef = import_react34.default.useRef(null);
-  const refreshWorkGraphDataRef = import_react34.default.useRef(refreshWorkGraphData);
+  const memoryRefreshTimerRef = import_react37.default.useRef(null);
+  const refreshWorkGraphDataRef = import_react37.default.useRef(refreshWorkGraphData);
   refreshWorkGraphDataRef.current = refreshWorkGraphData;
-  const workGraphPanelDockedRef = import_react34.default.useRef(false);
+  const workGraphPanelDockedRef = import_react37.default.useRef(false);
   workGraphPanelDockedRef.current = dock.viewState.panels.some(
     (panel) => panel.target?.kind === "workgraph"
   );
-  const workGraphRefreshTimerRef = import_react34.default.useRef(null);
-  import_react34.default.useEffect(() => {
+  const workGraphRefreshTimerRef = import_react37.default.useRef(null);
+  import_react37.default.useEffect(() => {
     const handleLiveFrame = (incomingFrame) => {
       const canonicalIdentity = canonicalConsoleIdentity(
         incomingFrame.identity,
@@ -22365,7 +23659,7 @@ function ConsoleApp({ baseUrl }) {
       unsubscribe?.();
     };
   }, [consoleController, consoleTransport]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     return () => {
       for (const timer of Object.values(phaseTimerByKey.current))
         window.clearTimeout(timer);
@@ -22550,7 +23844,7 @@ function ConsoleApp({ baseUrl }) {
   }
   const reducedMotion = typeof window !== "undefined" ? window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false : false;
   const animMs = (ms) => reducedMotion ? 0 : ms;
-  const pendingDrainOwnerRef = import_react34.default.useRef(
+  const pendingDrainOwnerRef = import_react37.default.useRef(
     `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   );
   function findChatTargetFor(identity) {
@@ -22806,7 +24100,7 @@ function ConsoleApp({ baseUrl }) {
     }
   }
   const canManageWorkGraph = experience?.workgraph?.can_manage === true && !consoleReadOnly;
-  const runWorkGraphCommand = import_react34.default.useCallback(
+  const runWorkGraphCommand = import_react37.default.useCallback(
     async (command, params, cardIdentity) => {
       if (consoleReadOnlyRef.current) return;
       const echoResultToCard = (result, failureMessage) => {
@@ -22863,12 +24157,12 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl, refreshWorkGraphData]
   );
-  const runWorkGraphQuery = import_react34.default.useCallback(
+  const runWorkGraphQuery = import_react37.default.useCallback(
     (command, params) => executeHeadlessCommand(command, controlWorkbenchTarget("workgraph"), params),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl]
   );
-  const makeWorkGraphOperatorHandlers = import_react34.default.useCallback(
+  const makeWorkGraphOperatorHandlers = import_react37.default.useCallback(
     (cardIdentity) => {
       const dispatch = (resolveRevision, send) => {
         void (async () => {
@@ -22943,7 +24237,7 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [runWorkGraphCommand, runWorkGraphQuery, experience?.access?.subject]
   );
-  const workGraphCardActions = import_react34.default.useCallback(
+  const workGraphCardActions = import_react37.default.useCallback(
     (cardIdentity) => {
       if (!canManageWorkGraph) return void 0;
       const { onAttentionReassign: _panelOnly, ...cardHandlers } = makeWorkGraphOperatorHandlers(cardIdentity);
@@ -23020,7 +24314,7 @@ function ConsoleApp({ baseUrl }) {
     window.addEventListener("pointercancel", cleanup);
   }
   if (loading)
-    return /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(
       "div",
       {
         "data-testid": "console-loading",
@@ -23034,16 +24328,16 @@ function ConsoleApp({ baseUrl }) {
           minHeight: "100vh"
         },
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {})
+          /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", {})
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { children: "Loading console\u2026" })
+          /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { children: "Loading console\u2026" })
         ]
       }
     );
-  if (error) return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { "data-testid": "console-error", children: error });
+  if (error) return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { "data-testid": "console-error", children: error });
   const focusedMemberId = dock.focusedTarget?.kind === "agent-chat" ? dock.focusedTarget.memberId : selectedRosterMemberId;
   const sidebarVS = buildSidebarViewState2({
     agents,
@@ -23072,6 +24366,16 @@ function ConsoleApp({ baseUrl }) {
     retire: actionVisible(actionConfig, "show_retire"),
     reset: actionVisible(actionConfig, "show_reset")
   };
+  const voiceBar = /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
+    VoiceBar,
+    {
+      state: voiceState,
+      sampleWaveform: sampleVoiceWaveform,
+      onClose: () => void voice?.close(),
+      onToggleMicrophone: () => voice?.toggleMicrophone(),
+      onToggleSpeaker: () => voice?.toggleSpeaker()
+    }
+  );
   function renderChatPanel(panel) {
     const target = panel.target;
     if (!target || target.kind !== "agent-chat") return null;
@@ -23125,7 +24429,7 @@ function ConsoleApp({ baseUrl }) {
     const canRetire = !consoleReadOnly && configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
     const stackItems = getPendingStack(identity);
     const agentBusy = isIdentityBusy(identity);
-    const stackSlot = stackItems.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+    const stackSlot = stackItems.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
       PendingStack3,
       {
         items: stackItems,
@@ -23141,7 +24445,7 @@ function ConsoleApp({ baseUrl }) {
         onToggleExpand: (itemId) => onStackToggleExpand(identity, itemId)
       }
     ) : null;
-    return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+    return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
       ChatPane,
       {
         agent,
@@ -23171,6 +24475,16 @@ function ConsoleApp({ baseUrl }) {
         loadingOlderHistory: identityLog.olderHistoryLoading === true,
         onLoadOlder: () => void loadOlderIdentityTimeline(identity),
         stackSlot,
+        voiceSlot: dock.viewState.focusedPanelId === panel.id ? voiceBar : null,
+        onVoiceToggle: voice && voiceReadiness[identity] === true && agent?.affordances?.can_send_message === true ? () => {
+          if (voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error") {
+            void voice.close();
+          } else {
+            void voice.start({ identity, label: target.title || agent?.label || identity });
+          }
+        } : void 0,
+        voiceActive: voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error",
+        voiceDisabled: voiceState.phase === "closing",
         workGraphActions: workGraphCardActions(identity)
       }
     );
@@ -23183,16 +24497,16 @@ function ConsoleApp({ baseUrl }) {
     const canRespawn = !consoleReadOnly && configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
     const canRetire = !consoleReadOnly && configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
     const canReset = !consoleReadOnly && configuredActionVisibility.reset && experience?.runtime_capabilities?.can_retire_members === true;
-    return /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(
       "div",
       {
         className: "console-panel",
         "data-testid": `inspect-panel:${target.identity}`,
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "console-panel__header", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("h3", { children: target.identity }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "console-panel__actions", children: [
-              canRespawn ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "console-panel__header", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("h3", { children: target.identity }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "console-panel__actions", children: [
+              canRespawn ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                 "button",
                 {
                   "data-testid": `inspect-action:${target.identity}:respawn`,
@@ -23201,7 +24515,7 @@ function ConsoleApp({ baseUrl }) {
                   children: configuredActionLabels.respawn
                 }
               ) : null,
-              canReset ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+              canReset ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                 "button",
                 {
                   "data-testid": `inspect-action:${target.identity}:reset`,
@@ -23210,7 +24524,7 @@ function ConsoleApp({ baseUrl }) {
                   children: configuredActionLabels.reset
                 }
               ) : null,
-              canRetire ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+              canRetire ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                 "button",
                 {
                   "data-testid": `inspect-action:${target.identity}:retire`,
@@ -23221,35 +24535,35 @@ function ConsoleApp({ baseUrl }) {
               ) : null
             ] })
           ] }),
-          !inspect ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("dl", { className: "console-panel__grid", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "State" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.state }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Role" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.role || "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Addressability" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.addressability }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Generation" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.continuity?.generation ?? "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Checkpoint" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.continuity?.checkpoint_version ?? "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Session" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.continuity?.session_id || "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Runtime" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.continuity?.agent_runtime_id || "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Lease Healthy" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: String(inspect.lease_healthy ?? inspect.lease?.healthy ?? false) }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Peers" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.topology_peers?.join(", ") || "none" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Output Preview" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.output_preview || "n/a" })
+          !inspect ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("dl", { className: "console-panel__grid", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "State" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.state }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Role" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.role || "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Addressability" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.addressability }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Generation" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.continuity?.generation ?? "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Checkpoint" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.continuity?.checkpoint_version ?? "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Session" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.continuity?.session_id || "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Runtime" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.continuity?.agent_runtime_id || "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Lease Healthy" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: String(inspect.lease_healthy ?? inspect.lease?.healthy ?? false) }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Peers" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.topology_peers?.join(", ") || "none" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Output Preview" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.output_preview || "n/a" })
           ] })
         ]
       }
     );
   }
   function renderHealthPanel(identities) {
-    return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("li", { "data-testid": `health-identity:${r2.identity}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("strong", { children: r2.display_name || r2.identity }),
+    return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("li", { "data-testid": `health-identity:${r2.identity}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("strong", { children: r2.display_name || r2.identity }),
       " \xB7 ",
       r2.state,
       " \xB7",
@@ -23290,17 +24604,17 @@ function ConsoleApp({ baseUrl }) {
   }
   function renderPanelBody(panel) {
     const target = panel.target;
-    if (!target) return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "console-panel", children: "No panel target" });
+    if (!target) return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "console-panel", children: "No panel target" });
     if (target.kind === "agent-chat") return renderChatPanel(panel);
     if (target.kind === "identity-inspect") {
       return renderInspectPanel(target);
     }
     if ((target.kind === "routing" || target.kind === "gating" || target.kind === "gates" || target.kind === "workgraph") && !hasMobControlSurface) {
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "console-panel", children: "This view requires a mob runtime control surface." });
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "console-panel", children: "This view requires a mob runtime control surface." });
     }
-    if (target.kind === "routing") return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(RoutingPanel, { data: routingData });
+    if (target.kind === "routing") return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(RoutingPanel, { data: routingData });
     if (target.kind === "gating")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
         GatingInboxPanel,
         {
           pending: gatingData.pending,
@@ -23310,7 +24624,7 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "topology")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
         TopologyPanel,
         {
           nodes: normalizedTopology?.nodes || experience?.topology?.live_snapshot?.nodes || [],
@@ -23328,9 +24642,9 @@ function ConsoleApp({ baseUrl }) {
         experience?.health_overview?.live_snapshot?.identities || []
       );
     if (target.kind === "timeline")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(TimelinePanel, { frames: activityRef.current });
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(TimelinePanel, { frames: activityRef.current });
     if (target.kind === "roster")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
         RosterPanel,
         {
           agents,
@@ -23350,7 +24664,7 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "gates")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
         GatingInboxPanel,
         {
           pending: gatingData.pending,
@@ -23360,9 +24674,9 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "logs")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(LogsPanel, { frames: activityRef.current });
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(LogsPanel, { frames: activityRef.current });
     if (target.kind === "access")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
         AccessPanel,
         {
           status: accessData.status,
@@ -23401,7 +24715,7 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "memory")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
         MemoryPanel,
         {
           records: memoryData.records,
@@ -23447,7 +24761,7 @@ function ConsoleApp({ baseUrl }) {
       );
     if (target.kind === "workgraph") {
       const workGraphPanelHandlers = makeWorkGraphOperatorHandlers();
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
         WorkGraphPanel,
         {
           data: workGraphData,
@@ -23463,9 +24777,9 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     }
-    return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
+    return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(
     "div",
     {
       className: "cc-theme-scope mobkit-shell",
@@ -23473,10 +24787,10 @@ function ConsoleApp({ baseUrl }) {
       "data-cc-variant": variant,
       "data-testid": "meerkat-console",
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(SpriteSheet, {}),
-        actionError && /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "mobkit-action-error", "data-testid": "console-action-error", role: "alert", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { children: actionError }),
-          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(SpriteSheet, {}),
+        actionError && /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "mobkit-action-error", "data-testid": "console-action-error", role: "alert", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { children: actionError }),
+          /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
             "button",
             {
               "aria-label": "Dismiss error",
@@ -23487,7 +24801,7 @@ function ConsoleApp({ baseUrl }) {
             }
           )
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
           Topbar,
           {
             mobName,
@@ -23505,7 +24819,7 @@ function ConsoleApp({ baseUrl }) {
             onToggleRail: toggleRailCollapsed
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(
           "div",
           {
             className: "shell",
@@ -23513,7 +24827,7 @@ function ConsoleApp({ baseUrl }) {
             "data-sidebar-collapsed": sidebarCollapsed ? "true" : "false",
             "data-rail-collapsed": railCollapsed ? "true" : "false",
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                 Sidebar,
                 {
                   agents,
@@ -23532,7 +24846,7 @@ function ConsoleApp({ baseUrl }) {
                   }
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                 "div",
                 {
                   className: "pane-resizer",
@@ -23541,28 +24855,31 @@ function ConsoleApp({ baseUrl }) {
                   onPointerDown: handleSidebarResize
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "main", children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
-                MobKitDock,
-                {
-                  viewState: dock.viewState,
-                  agents,
-                  renderPanelBody,
-                  visibleControls,
-                  onSelectTab: (id) => dock.selectTab(id),
-                  onCloseTab: (id) => dock.closeTab(id),
-                  onCreateTab: () => dock.createTab(),
-                  onFocusPanel: (id) => dock.focusPanel(id),
-                  onSplitPanel: (id, dir) => dock.splitPanel(id, dir),
-                  onClosePanel: (id) => dock.closePanel(id),
-                  onResizeSplit: (id, ratio) => dock.resizeSplit(id, ratio),
-                  onOpenTargetInPanel: (panelId, target) => {
-                    dock.focusPanel(panelId);
-                    openDockTarget(target);
+              /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "main", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
+                  MobKitDock,
+                  {
+                    viewState: dock.viewState,
+                    agents,
+                    renderPanelBody,
+                    visibleControls,
+                    onSelectTab: (id) => dock.selectTab(id),
+                    onCloseTab: (id) => dock.closeTab(id),
+                    onCreateTab: () => dock.createTab(),
+                    onFocusPanel: (id) => dock.focusPanel(id),
+                    onSplitPanel: (id, dir) => dock.splitPanel(id, dir),
+                    onClosePanel: (id) => dock.closePanel(id),
+                    onResizeSplit: (id, ratio) => dock.resizeSplit(id, ratio),
+                    onOpenTargetInPanel: (panelId, target) => {
+                      dock.focusPanel(panelId);
+                      openDockTarget(target);
+                    }
                   }
-                }
-              ) }),
-              railVisible ? /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(import_jsx_runtime44.Fragment, { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+                ),
+                dock.focusedTarget?.kind !== "agent-chat" ? voiceBar : null
+              ] }),
+              railVisible ? /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(import_jsx_runtime45.Fragment, { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                   "div",
                   {
                     className: "pane-resizer pane-resizer--activity",
@@ -23571,7 +24888,7 @@ function ConsoleApp({ baseUrl }) {
                     onPointerDown: handleActivityResize
                   }
                 ),
-                /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+                /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                   SignalsRail,
                   {
                     frames: activityRef.current,
@@ -23606,14 +24923,14 @@ function ConsoleApp({ baseUrl }) {
 }
 
 // src/index.tsx
-var import_jsx_runtime45 = require("react/jsx-runtime");
+var import_jsx_runtime46 = require("react/jsx-runtime");
 function createConsoleApp(target, options = {}) {
   if (!target) {
     throw new Error("target element is required");
   }
   const baseUrl = options.baseUrl || "";
   const root = (0, import_client.createRoot)(target);
-  root.render(/* @__PURE__ */ (0, import_jsx_runtime45.jsx)(ConsoleApp, { baseUrl }));
+  root.render(/* @__PURE__ */ (0, import_jsx_runtime46.jsx)(ConsoleApp, { baseUrl }));
   return {
     unmount() {
       root.unmount();

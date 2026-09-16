@@ -830,6 +830,11 @@ export class MobKitRuntime {
         this._config.openaiLiveConfig,
       );
     }
+    if (this._config.consoleVoiceConfig != null) {
+      runtimeOptions.console_voice = openAiLiveGatewayConfigToWire(
+        this._config.consoleVoiceConfig,
+      );
+    }
     params.runtime_options = runtimeOptions;
     if (this._config.persistentState) {
       params.persistent_state = this._config.persistentState;

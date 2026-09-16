@@ -126,6 +126,64 @@ The center area is a multi-panel tabbed workspace. Each panel contains a `Conver
 - Send button (↑) — also supports Enter to send, Shift+Enter for newline
 - Footer shows: target agent, member ID, profile, and status
 
+### Voice conversations
+
+When the gateway has an authenticated OpenAI Live configuration, a blue
+waveform button appears beside Send. Voice is not offered without OpenAI
+authentication, in a view-only console, or for an agent you cannot message.
+Microphone access requires HTTPS or localhost and your browser's permission.
+Source builds must enable the `openai-live` Cargo feature. Public GPT Live
+requires a compatible OpenAI API-key binding; a ChatGPT OAuth login alone
+does not enable this feature.
+
+Voice is an explicit gateway registration, not a setting in `console.toml`.
+For `mobkit_gateway`, supply `console_voice` in the init parameters alongside
+your `auth_config` and enable `persistent_sessions`:
+
+```json
+{
+  "persistent_sessions": true,
+  "console_voice": {
+    "principal": "alice@example.com",
+    "realm": "ops",
+    "auth_binding": { "realm": "ops", "binding": "openai" },
+    "voice": "marin"
+  }
+}
+```
+
+The binding must already be configured in the gateway's Meerkat host config.
+The principal must match the authenticated console subject. For an SDK-driven
+`rpc_gateway`, place the same `console_voice` registration under
+`runtime_options` and use the gateway's persistent session configuration.
+The SDK builders expose this as `.consoleVoice(config)` in TypeScript and
+`.console_voice(config)` in Python, using `OpenAiLiveGatewayConfig`.
+Credentials stay on the server. The console checks readiness for the selected
+agent before offering voice and checks it again before microphone capture;
+registration or model availability alone does not enable the button.
+
+Click the waveform button to start a `gpt-live-1` conversation with the
+selected agent as its background agent. Voice starts from a summary of that
+agent's context; it does not change the background agent's text model.
+The voice strip above the composer names the voice agent and shows separate
+waveforms for your microphone and the live model's audio.
+
+The microphone and speaker controls are independent. Muting speakers silences
+local playback, not the conversation; the model's output waveform continues
+to show incoming audio. End the conversation with the close button.
+
+Voice stays with its original agent when you select another chat, switch
+tabs, or open an operator panel. Starting voice on another agent ends the
+previous voice conversation before opening the new one. Text composers remain
+usable throughout, including for the agent currently in voice mode.
+
+Voice ends automatically after **15 minutes of silence**, not after 15
+minutes of total call time. Text messages do not extend that audio inactivity
+window. Ending voice or closing the console releases the browser's microphone
+and playback resources. If Meerkat provides a recovery connection, the console
+reconnects to the same voice agent without changing your mute settings;
+unrecoverable audio connection loss ends voice.
+
 ### Signals rail - event feed
 
 The right column shows user-meaningful signals: requests, assistant replies, peer messages, image events, relevant tool activity, and alert levels. Low-level transport envelopes, scaffold prompts, raw checksum tokens, and raw tool metadata are filtered out before reaching the user-facing view.

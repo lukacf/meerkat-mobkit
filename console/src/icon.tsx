@@ -29,6 +29,11 @@ export function SpriteSheet() {
       <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 10v6" /><path d="M12 7h.01" /></symbol>
       <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15.4 6.4" /><path d="M3 12A9 9 0 0 1 18.4 5.6" /><path d="M3 16v-4h4" /><path d="M21 8v4h-4" /></symbol>
       <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z" /><path d="M19 11a7 7 0 0 1-14 0" /><path d="M12 18v3" /><path d="M8 21h8" /></symbol>
+      <symbol id="i-voice" viewBox="0 0 24 24"><path d="M4 10v4M8 5v14M12 8v8M16 3v18M20 9v6" /></symbol>
+      <symbol id="i-mic-off" viewBox="0 0 24 24"><path d="m3 3 18 18M9 9v3a3 3 0 0 0 5.1 2.1M9 4.5A3 3 0 0 1 15 6v4M5 11a7 7 0 0 0 12 5M19 11a7 7 0 0 1-.5 2.6M12 18v3M8 21h8" /></symbol>
+      <symbol id="i-speaker" viewBox="0 0 24 24"><path d="m11 5-6 4H2v6h3l6 4zM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14" /></symbol>
+      <symbol id="i-speaker-off" viewBox="0 0 24 24"><path d="m11 5-6 4H2v6h3l6 4zM16 9l6 6M22 9l-6 6" /></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></symbol>
       <symbol id="i-ellipsis" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="19" cy="12" r="2" /></symbol>
       <symbol id="i-gear" viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8z" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.2 2.2M16.9 16.9l2.2 2.2M19.1 4.9l-2.2 2.2M7.1 16.9l-2.2 2.2" /></symbol>
       <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" /><path d="m20 20-4.35-4.35" /></symbol>

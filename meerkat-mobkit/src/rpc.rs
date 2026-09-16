@@ -5773,7 +5773,7 @@ fn experimental_live_target_preflight(
         })
 }
 
-async fn resolve_live_target(
+pub(crate) async fn resolve_live_target(
     handle: &meerkat_mob::MobHandle,
     identity_runtime: Option<&Arc<crate::identity_first::IdentityRuntime>>,
     identity_authoritative: bool,
