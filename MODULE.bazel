@@ -1,6 +1,6 @@
 module(
     name = "meerkat_mobkit",
-    version = "0.8.35",
+    version = "0.8.36",
 )
 
 bazel_dep(name = "rules_rust", version = "0.70.0")

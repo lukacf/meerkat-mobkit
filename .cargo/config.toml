@@ -8,41 +8,41 @@
 RUST_MIN_STACK = "16777216"
 
 # Development-only immutable Live owner-seam pin (not a published release).
-# Local source: validated checkpoint 0b36e303e85674ebe85b2a06160db292e3b1a636.
+# Local source: validated checkpoint bd7e62ea591218c24bad2b9b5af45422116c4f05.
 # Remove this table only when released dependencies include these owner seams.
 [patch.crates-io]
-meerkat-machine-derive = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-sqlite = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-core = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-models = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-capabilities = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-llm-core = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-auth-core = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-client = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-providers = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-anthropic = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-openai = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-gemini = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-copilot = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-schedule = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-jobs = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-workgraph = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-store = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-store-conformance = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-tools = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-mcp = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-comms = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-hooks = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-session = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-memory = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-contracts = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-skills = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-mob = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-mob-mcp = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-runtime = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-live = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-machine-schema = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-machine-kernels = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-machine-dsl-core = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
-meerkat-machine-dsl = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "0b36e303e85674ebe85b2a06160db292e3b1a636" }
+meerkat-machine-derive = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-sqlite = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-core = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-models = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-capabilities = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-llm-core = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-auth-core = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-client = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-providers = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-anthropic = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-openai = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-gemini = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-copilot = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-schedule = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-jobs = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-workgraph = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-store = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-store-conformance = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-tools = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-mcp = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-comms = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-hooks = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-session = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-memory = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-contracts = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-skills = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-mob = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-mob-mcp = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-runtime = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-live = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-machine-schema = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-machine-kernels = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-machine-dsl-core = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }
+meerkat-machine-dsl = { git = "file:///Users/luka/.copilot/session-state/f760343a-5dc5-4e49-a23a-7648416e1b11/files/consumer-checkpoint", rev = "bd7e62ea591218c24bad2b9b5af45422116c4f05" }

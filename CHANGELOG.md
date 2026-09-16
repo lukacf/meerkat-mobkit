@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Pin the Meerkat dependency family to published `0.8.39`: public GPT Live
+  playback now settles on the caller's `live/playback_complete` snapshot cut
+  instead of a quiet-period heuristic, reopen seeds the canonical dialogue as
+  native startup input, a new provider response no longer aborts the session
+  when it supersedes an unreported output, and every host binary runs on one
+  documented 8 MiB worker-stack budget.
+
 ### Added - public GPT Live (`gpt-live-1`)
 
 - New `openai-live` Cargo feature forwarding meerkat's public OpenAI Live

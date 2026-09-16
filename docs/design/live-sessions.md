@@ -1,9 +1,8 @@
 # Live (realtime) member sessions through the gateway
 
-Status: console HTTP integration is implemented against the frozen upstream
-Live owner-seam commit `0b36e303e85674ebe85b2a06160db292e3b1a636`.
-The intended released baseline is Meerkat 0.8.39 / MobKit 0.8.36;
-development bindings are not release pins.
+Status: console HTTP integration uses the Meerkat 0.8.39 / MobKit 0.8.36
+baseline with the reviewed upstream Live owner-seam development pin recorded
+in `Cargo.lock`. Development bindings are not release pins.
 Unconfigured gateways remain unavailable. Real-provider/browser audio operation
 must be distinguished from deterministic transport and shared-owner tests.
 The backend fixture crosses authenticated HTTP, a loopback provider HTTP/
@@ -326,22 +325,23 @@ and account secrets never cross that projection.
 
 ### Development pin and release rebinding
 
-The requested integration target is Meerkat **0.8.39** / MobKit **0.8.36**.
+The requested Meerkat **0.8.39** / MobKit **0.8.36** baseline is incorporated.
 On 2026-09-16, crates.io publishes Meerkat 0.8.39 from
 `ad39733a00743723c2227a43a7557cc3f2c6344f`, but that crate does not contain
-`LiveContextSummaryPolicy` or `ProviderManagedUnmeasured`. MobKit's crate,
-Python package, and TypeScript package still report 0.8.35. GitHub's latest
-release listings also still report Meerkat 0.8.38 / MobKit 0.8.35; release
-listings alone are not registry evidence.
+`LiveContextSummaryPolicy` or `ProviderManagedUnmeasured`. MobKit main now
+contains the 0.8.36 release commit. Registry publication and GitHub release
+listings can lag each other; version labels alone are not API evidence.
 Meerkat [lukacf/meerkat#1117](https://github.com/lukacf/meerkat/pull/1117), inspected at
 `890e3e71cc1b68bd0fe88198f2e1b6717dd2a76d`, changes playback settlement,
 cold runtime restoration, close draining, and canonical history replay through
 native `session.input`, but does not by itself provide the additional console
 owner seams.
 
-The frozen development commit `0b36e303e85674ebe85b2a06160db292e3b1a636`
-includes that base plus summary seeding, existing-member execution,
-authenticated readiness, and truthful unmeasured dialogue retention.
+The development lineage rooted at `0b36e303e85674ebe85b2a06160db292e3b1a636`
+adds summary seeding, existing-member execution, authenticated readiness, and
+truthful unmeasured dialogue retention. The reviewed descendant additionally
+fences explicit receipt-close against delayed replacement preparation and
+registration, without cancelling a fresh same-agent call.
 `.cargo/config.toml` temporarily patches the full Meerkat family to this
 immutable commit in a local Git checkpoint. These machine-local bindings are
 for development only, not registry publication or a portable release build.
