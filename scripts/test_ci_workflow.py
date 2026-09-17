@@ -80,7 +80,7 @@ class CiWorkflowTests(unittest.TestCase):
     def test_voice_feature_runs_real_host_tests_and_strict_lint(self):
         block = job_block("test-voice")
         self.assertIn("--locked --features openai-live", block)
-        self.assertIn("--test console_route_auth --test console_experience console_voice", block)
+        self.assertIn("--test console_route_auth --test console_experience --test never_executed_persistence --test swarm_integration console_voice", block)
         self.assertIn("gateway_openai_live_registration", block)
         self.assertIn("clippy -p meerkat-mobkit", block)
         self.assertIn("-- -D warnings", block)

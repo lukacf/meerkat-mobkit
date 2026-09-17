@@ -142,7 +142,9 @@ export function VoiceBar({
       : state.phase === "closing"
         ? "Ending voice"
         : active
-          ? state.microphoneMuted ? "Microphone muted" : "Listening"
+          ? state.reconnecting
+            ? "Reconnecting"
+            : state.microphoneMuted ? "Microphone muted" : "Listening"
           : "Voice ended";
   const preparation = state.contextPreparation;
   const contextLabel = !active || preparation === undefined ? null

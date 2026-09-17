@@ -1315,7 +1315,13 @@ async fn console_send_identity_first(
         } else {
             runtime_member_id
         };
-    tokio::spawn(async move {
+    // The dispatch runs detached; a panic or runtime abort inside it must
+    // still terminalize the accepted frame, otherwise every replay of this
+    // idempotency key reports Accepted for input that never reached the model.
+    let failed_aggregator = aggregator.clone();
+    let failed_frame_id = accepted.input_frame_id.clone();
+    let failed_identity = identity.clone();
+    let dispatch = tokio::spawn(async move {
         let send_result = identity_runtime
             .send_console_human_input_tracked(
                 &dispatch_identity,
@@ -1361,6 +1367,18 @@ async fn console_send_identity_first(
                     "console identity-first send was accepted but delivery failed"
                 );
             }
+        }
+    });
+    tokio::spawn(async move {
+        if let Err(join_error) = dispatch.await {
+            let _ = failed_aggregator
+                .mark_interaction_delivery_failed(&failed_frame_id)
+                .await;
+            tracing::error!(
+                identity = %failed_identity,
+                error = %join_error,
+                "console identity-first dispatch aborted before delivery settled; frame marked failed"
+            );
         }
     });
     Ok(accepted)

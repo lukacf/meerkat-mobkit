@@ -157,7 +157,7 @@ import { MobKitDock } from "./panels/MobKitDock";
 import { PendingStack, type PendingItem } from "./panels/PendingStack";
 import { VoiceBar } from "./panels/VoiceBar";
 import { useVoiceController } from "./lib/use-voice-controller";
-import { useVoiceReadiness } from "./lib/use-voice-readiness";
+import { useVoiceReadiness, voiceReadinessDenied } from "./lib/use-voice-readiness";
 
 interface ConsoleAppProps {
   baseUrl: string;
@@ -2049,7 +2049,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const voiceAgent = agents.find((agent) =>
       [agent.identity, agent.member_id, agent.agent_id].includes(target.identity),
     );
-    if (!hasVoiceHost || voiceReadiness[target.identity] === false || consoleReadOnly || voiceAgent?.affordances?.can_send_message !== true) {
+    // Only a definite gateway answer ends voice; a failed readiness poll keeps the last known state.
+    if (!hasVoiceHost || voiceReadinessDenied(voiceReadiness, target.identity) || consoleReadOnly || voiceAgent?.affordances?.can_send_message !== true) {
       setActionError("Voice ended because OpenAI voice readiness or permission to message this agent could no longer be confirmed.");
       void voice.close();
     }

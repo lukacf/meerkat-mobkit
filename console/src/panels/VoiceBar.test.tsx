@@ -53,6 +53,15 @@ describe("voice controls", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Reconnecting");
   });
 
+  it("shows a reconnect grace on an active call as Reconnecting without an error and with controls enabled", () => {
+    render(<VoiceBar state={{ ...activeState, reconnecting: true }} {...controls} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Reconnecting");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByTestId("voice-bar")).toHaveAttribute("data-phase", "active");
+    expect(screen.getByRole("button", { name: "Mute microphone" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "End voice conversation" })).toBeEnabled();
+  });
+
   it.each([
     ["capturing", "Reading context"],
     ["generating", "Preparing context"],

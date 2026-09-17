@@ -11,6 +11,11 @@ import {
   VOICE_TEARDOWN_TIMEOUT_MS,
   VOICE_REPLACEMENT_POLL_INTERVAL_MS,
   VOICE_ACTIVITY_REPORT_INTERVAL_MS,
+  VOICE_TRANSPORT_RECONNECT_GRACE_MS,
+  VOICE_RPC_FAILURE_TOLERANCE_MS,
+  VOICE_AUDIO_RESUME_TIMEOUT_MS,
+  isTransientRpcFailure,
+  type VoiceAvailability,
   type VoiceSessionEnvironment,
 } from "./voice-session";
 
@@ -147,7 +152,11 @@ class Peer {
     return Promise.resolve();
   }
   close() { this.connectionState = "closed"; this.iceConnectionState = "closed"; }
-  lose() { this.connectionState = "disconnected"; this.onconnectionstatechange?.(); }
+  /** Hard transport failure: ICE gave up. Terminal for this peer. */
+  fail() { this.connectionState = "failed"; this.onconnectionstatechange?.(); }
+  /** Transient ICE `disconnected`: the browser keeps probing and usually recovers. */
+  disconnect() { this.connectionState = "disconnected"; this.onconnectionstatechange?.(); }
+  reconnect() { this.connectionState = "connected"; this.onconnectionstatechange?.(); }
 }
 
 const target = { identity: "agent-a", label: "Agent A" };
@@ -211,13 +220,14 @@ function harness() {
   const calls: { method: string; params: Record<string, unknown> }[] = [];
   const pagehideCalls: Record<string, unknown>[] = [];
   let pagehide: (() => void) | undefined;
+  let pageshow: (() => void) | undefined;
   let requestId = 0;
   let getMedia: (() => Promise<Stream>) | undefined;
   let onRpc: ((method: string, params: Record<string, unknown>) => Promise<unknown> | undefined) | undefined;
   let onContext: ((context: Context) => void) | undefined;
   let onPeer: ((peer: Peer) => void) | undefined;
   const env: VoiceSessionEnvironment = {
-    voiceAvailable: () => Promise.resolve(true),
+    voiceAvailable: () => Promise.resolve("available" as const),
     createAudioContext: () => {
       const context = new Context();
       contexts.push(context);
@@ -275,6 +285,7 @@ function harness() {
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
     onPagehide: (listener) => { pagehide = listener; return () => { pagehide = undefined; }; },
+    onPageshow: (listener) => { pageshow = listener; return () => { pageshow = undefined; }; },
     pagehideClose: (params) => { pagehideCalls.push(params); },
   };
   const controller = createVoiceSession("", env);
@@ -285,6 +296,8 @@ function harness() {
     setContext: (fn: typeof onContext) => { onContext = fn; },
     setPeer: (fn: typeof onPeer) => { onPeer = fn; },
     pagehide: () => pagehide?.(),
+    pageshow: () => pageshow?.(),
+    hasPageshowListener: () => pageshow !== undefined,
   };
 }
 
@@ -875,7 +888,7 @@ test("unconfirmed teardown releases muted WebRTC at the deadline and remains ret
 
 test("RTC, data channel, input track, and remote track loss close local and remote voice", async () => {
   for (const lose of [
-    (h: ReturnType<typeof harness>) => h.peers[0].lose(),
+    (h: ReturnType<typeof harness>) => h.peers[0].fail(),
     (h: ReturnType<typeof harness>) => h.peers[0].channel.onclose?.(),
     (h: ReturnType<typeof harness>) => h.streams[0].tracks[0].end(),
     (h: ReturnType<typeof harness>) => h.peers[0].remoteTrack.end(),
@@ -889,6 +902,82 @@ test("RTC, data channel, input track, and remote track loss close local and remo
     assert.equal(h.streams[0].tracks[0].stopped, true);
     assert.equal(h.contexts[0].state, "closed");
     assert.equal(h.calls.at(-1)?.method, "mobkit/console/voice/close");
+    assert.equal(h.clock.timers.size, 0);
+  }
+});
+
+test("ICE disconnected enters a reconnect grace, keeps the peer alive, and heals without transport loss", async () => {
+  for (const [interrupt, restore] of [
+    [(peer: Peer) => peer.disconnect(), (peer: Peer) => peer.reconnect()],
+    [
+      (peer: Peer) => { peer.iceConnectionState = "disconnected"; peer.oniceconnectionstatechange?.(); },
+      (peer: Peer) => { peer.iceConnectionState = "completed"; peer.oniceconnectionstatechange?.(); },
+    ],
+  ] as const) {
+    const h = harness();
+    await h.controller.start(target);
+    const peer = h.peers[0];
+    interrupt(peer);
+    assert.equal(h.controller.getSnapshot().phase, "active");
+    assert.equal(h.controller.getSnapshot().reconnecting, true);
+    assert.notEqual(peer.connectionState, "closed", "the peer is not destroyed during the grace");
+    assert.equal(peer.remoteTrack.stopped, false);
+    assert.equal(h.streams[0].tracks[0].enabled, true, "microphone keeps flowing during the grace");
+    assert.equal(h.contexts[0].gains[0].gain.value, 1, "speaker keeps flowing during the grace");
+    await h.clock.advance(VOICE_TRANSPORT_RECONNECT_GRACE_MS - 1);
+    assert.equal(h.controller.getSnapshot().reconnecting, true);
+    restore(peer);
+    assert.equal(h.controller.getSnapshot().reconnecting, false);
+    assert.equal(h.controller.getSnapshot().phase, "active");
+    await h.clock.advance(VOICE_TRANSPORT_RECONNECT_GRACE_MS);
+    assert.equal(h.controller.getSnapshot().phase, "active");
+    assert.equal(h.peers.length, 1, "no recovery peer was opened");
+    assert.equal(h.calls.filter((call) => call.method.endsWith("/close")).length, 0);
+    await h.controller.close();
+    assert.equal(h.clock.timers.size, 0);
+  }
+});
+
+test("ICE disconnected that never heals becomes transport loss only when the grace expires", async () => {
+  const h = harness();
+  await h.controller.start(target);
+  const peer = h.peers[0];
+  // The owner only issues replacement authority once the browser has actually lost transport.
+  h.setRpc((method) => method !== "mobkit/console/voice/replacement" ? undefined
+    : Promise.resolve(h.clock.now >= VOICE_TRANSPORT_RECONNECT_GRACE_MS ? replacement() : { required: false }));
+  peer.disconnect();
+  await h.clock.advance(VOICE_TRANSPORT_RECONNECT_GRACE_MS - 1);
+  peer.disconnect();
+  assert.equal(h.controller.getSnapshot().phase, "active", "repeated disconnected events do not restart the grace");
+  assert.equal(h.controller.getSnapshot().reconnecting, true);
+  assert.equal(h.peers.length, 1);
+  assert.equal(h.streams[0].tracks[0].enabled, true);
+  await h.clock.advance(1);
+  // Grace expiry is the transport loss: the old peer closes and owner recovery takes over.
+  assert.equal(peer.connectionState, "closed");
+  assert.equal(h.controller.getSnapshot().reconnecting, false);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.equal(h.peers.length, 2);
+  assert.equal(h.calls.filter((call) => call.method.endsWith("/open")).length, 1);
+  await h.controller.close();
+  assert.equal(h.clock.timers.size, 0);
+});
+
+test("ICE failed and closed are terminal immediately, without a reconnect grace", async () => {
+  for (const lose of [
+    (peer: Peer) => peer.fail(),
+    (peer: Peer) => { peer.iceConnectionState = "failed"; peer.oniceconnectionstatechange?.(); },
+    (peer: Peer) => { peer.connectionState = "closed"; peer.onconnectionstatechange?.(); },
+  ]) {
+    const h = harness();
+    await h.controller.start(target);
+    lose(h.peers[0]);
+    assert.equal(h.controller.getSnapshot().phase, "connecting");
+    assert.equal(h.controller.getSnapshot().connectionStage, "recovery");
+    assert.equal(h.controller.getSnapshot().reconnecting, false);
+    assert.equal(h.streams[0].tracks[0].enabled, false);
+    assert.equal(h.peers[0].connectionState, "closed");
+    await h.controller.close();
     assert.equal(h.clock.timers.size, 0);
   }
 });
@@ -909,7 +998,7 @@ test("mismatched active authority fails closed without ungating media", async ()
   assert.equal(h.calls.at(-1)?.method, "mobkit/console/voice/close");
 });
 
-test("pagehide uses keepalive teardown, dispose is idempotent, and no subsequent start is admitted", async () => {
+test("pagehide uses keepalive teardown, dispose is idempotent, and no start is admitted while hidden", async () => {
   const h = harness();
   await h.controller.start(target);
   h.pagehide();
@@ -921,6 +1010,31 @@ test("pagehide uses keepalive teardown, dispose is idempotent, and no subsequent
   assert.equal(h.clock.timers.size, 0);
   await h.controller.start(other);
   assert.equal(h.calls.filter((call) => call.method.endsWith("/open")).length, 1);
+  assert.equal(h.controller.getSnapshot().phase, "idle");
+});
+
+test("pageshow after a bfcache restore re-admits an explicit start on the same controller", async () => {
+  const h = harness();
+  await h.controller.start(target);
+  h.pagehide();
+  await flush();
+  assert.ok(h.hasPageshowListener(), "pagehide arms a one-shot pageshow listener");
+  await h.controller.start(other);
+  assert.equal(h.calls.filter((call) => call.method.endsWith("/open")).length, 1, "still hidden");
+  h.pageshow();
+  assert.equal(h.hasPageshowListener(), false, "the pageshow listener is released once used");
+  await h.controller.start(other);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.equal(h.controller.getSnapshot().target?.identity, other.identity);
+  assert.equal(h.calls.filter((call) => call.method.endsWith("/open")).length, 2);
+  assert.equal(h.streams.length, 2, "the restored page captures a fresh microphone");
+  assert.equal(h.streams[0].tracks[0].stopped, true, "the pre-hide microphone stays released");
+  // The restored lifecycle is fully armed again: a second pagehide still tears down by keepalive.
+  h.pagehide();
+  await flush();
+  assert.equal(h.pagehideCalls.length, 2);
+  assert.equal(h.pagehideCalls[1].request_id, "request-2", "the hidden start never consumed a request id");
+  assert.equal(h.clock.timers.size, 0);
 });
 
 test("server errors never surface raw credentials or transport data", async () => {
@@ -1004,16 +1118,54 @@ test("failed replacement teardown blocks further opens until explicit retry clos
   await h.controller.close();
 });
 
-test("browser audio interruption closes media-owner authority", async () => {
+test("browser audio interruption is recoverable: resume is retried and running clears the bounded wait", async () => {
   const h = harness();
   await h.controller.start(target);
-  h.contexts[0].state = "suspended";
-  h.contexts[0].onstatechange?.();
+  const context = h.contexts[0];
+  let resumes = 0;
+  // Unlike the default fake, resume() does not flip the state by itself.
+  context.resume = () => { resumes++; return Promise.resolve(); };
+  context.state = "interrupted";
+  context.onstatechange?.();
   await flush();
-  assert.equal(h.controller.getSnapshot().phase, "error");
-  assert.match(h.controller.getSnapshot().error!, /audio was interrupted/);
-  assert.equal(h.streams[0].tracks[0].stopped, true);
-  assert.equal(h.calls.at(-1)?.method, "mobkit/console/voice/close");
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.equal(resumes, 1, "resume is attempted on the state change");
+  assert.equal(h.streams[0].tracks[0].stopped, false);
+  await h.clock.advance(VOICE_AUDIO_RESUME_TIMEOUT_MS - 1);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  // A user gesture (mute toggle) retries resume, and the context comes back.
+  h.controller.toggleMicrophone();
+  assert.equal(resumes, 2);
+  context.state = "running";
+  context.onstatechange?.();
+  await h.clock.advance(VOICE_AUDIO_RESUME_TIMEOUT_MS);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.equal(h.controller.getSnapshot().microphoneMuted, true);
+  assert.equal(h.calls.filter((call) => call.method.endsWith("/close")).length, 0);
+  await h.controller.close();
+  assert.equal(h.clock.timers.size, 0);
+});
+
+test("browser audio that stays suspended past the bounded wait closes media-owner authority", async () => {
+  for (const state of ["suspended", "interrupted"]) {
+    const h = harness();
+    await h.controller.start(target);
+    const context = h.contexts[0];
+    context.resume = () => Promise.reject(new Error("resume blocked"));
+    context.state = state;
+    context.onstatechange?.();
+    await flush();
+    assert.equal(h.controller.getSnapshot().phase, "active", state);
+    await h.clock.advance(VOICE_AUDIO_RESUME_TIMEOUT_MS - 1);
+    context.onstatechange?.();
+    assert.equal(h.controller.getSnapshot().phase, "active", `${state}: repeated notifications do not extend the wait`);
+    await h.clock.advance(1);
+    assert.equal(h.controller.getSnapshot().phase, "error", state);
+    assert.match(h.controller.getSnapshot().error!, /audio was interrupted/);
+    assert.equal(h.streams[0].tracks[0].stopped, true);
+    assert.equal(h.calls.at(-1)?.method, "mobkit/console/voice/close");
+    assert.equal(h.clock.timers.size, 0);
+  }
 });
 
 test("malformed data and transport keepalives are ignored; provider errors are sanitized and close voice", async () => {
@@ -1049,7 +1201,7 @@ test("synchronous observer close during requesting or activation cannot leak res
 test("unavailable, unauthenticated, missing, and failed gateway availability never request mic or open voice", async () => {
   for (const available of [false, undefined, null, "true", 1]) {
     const h = harness();
-    h.env.voiceAvailable = async () => available as boolean;
+    h.env.voiceAvailable = async () => available as VoiceAvailability;
     await h.controller.start(target);
     assert.equal(h.controller.getSnapshot().phase, "error");
     assert.match(h.controller.getSnapshot().error!, /authenticate OpenAI/);
@@ -1064,27 +1216,36 @@ test("unavailable, unauthenticated, missing, and failed gateway availability nev
   assert.equal(h.controller.getSnapshot().phase, "error");
   assert.equal(h.streams.length, 0);
   assert.equal(h.calls.length, 0);
+  // An unknown readiness (the poll failed) is not "unavailable": it names the network, not auth.
+  const unknown = harness();
+  unknown.env.voiceAvailable = () => Promise.resolve("unknown");
+  await unknown.controller.start(target);
+  assert.equal(unknown.controller.getSnapshot().phase, "error");
+  assert.match(unknown.controller.getSnapshot().error!, /could not be checked/);
+  assert.doesNotMatch(unknown.controller.getSnapshot().error!, /authenticate OpenAI/);
+  assert.equal(unknown.streams.length, 0);
+  assert.equal(unknown.calls.length, 0);
 });
 
 test("availability is checked freshly on every start and stale checks cannot prompt for microphone", async () => {
   const h = harness();
-  const availability = deferred<boolean>();
+  const availability = deferred<VoiceAvailability>();
   h.env.voiceAvailable = () => availability.promise;
   const start = h.controller.start(target);
   await flush();
   assert.equal(h.streams.length, 0);
   await h.controller.close();
-  availability.resolve(true);
+  availability.resolve("available");
   await start;
   await flush();
   assert.equal(h.streams.length, 0);
   assert.equal(h.calls.length, 0);
-  h.env.voiceAvailable = () => Promise.resolve(true);
+  h.env.voiceAvailable = () => Promise.resolve("available");
   await h.controller.start(target);
   assert.equal(h.controller.getSnapshot().phase, "active");
   await h.controller.close();
   const before = h.calls.length;
-  h.env.voiceAvailable = () => Promise.resolve(false);
+  h.env.voiceAvailable = () => Promise.resolve("unavailable");
   await h.controller.start(target);
   assert.equal(h.streams.length, 1);
   assert.equal(h.calls.length, before);
@@ -1109,7 +1270,7 @@ test("StrictMode disposal can be followed by a fresh explicit start on the memoi
   assert.equal(h.clock.timers.size, 0);
 });
 
-test("availability helper queries exact target readiness, accepts only explicit true, and fails closed", async () => {
+test("availability helper queries exact target readiness, accepts only explicit true, and separates definite from unknown", async () => {
   const originalFetch = globalThis.fetch;
   try {
     for (const body of [
@@ -1129,15 +1290,32 @@ test("availability helper queries exact target readiness, accepts only explicit 
       }) as typeof fetch;
       assert.equal(
         await queryVoiceAvailability("https://gateway.example", target.identity),
-        body.identity === target.identity && body.available === true,
+        body.identity === target.identity && body.available === true ? "available" : "unavailable",
       );
     }
-    globalThis.fetch = (async () => new Response("denied", { status: 403 })) as typeof fetch;
-    assert.equal(await queryVoiceAvailability("", target.identity), false);
+    // The gateway answered: unauthorized, forbidden, and typed JSON-RPC rejections are definite.
+    for (const status of [401, 403, 404]) {
+      globalThis.fetch = (async () => new Response("denied", { status })) as typeof fetch;
+      assert.equal(await queryVoiceAvailability("", target.identity), "unavailable", String(status));
+    }
+    globalThis.fetch = (async (_input, init) => {
+      const request = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "method not found" },
+      }), { status: 200 });
+    }) as typeof fetch;
+    assert.equal(await queryVoiceAvailability("", target.identity), "unavailable");
+    // The poll itself failed: nothing is known, so callers keep the last definite answer.
+    for (const status of [500, 502, 503, 429]) {
+      globalThis.fetch = (async () => new Response("busy", { status })) as typeof fetch;
+      assert.equal(await queryVoiceAvailability("", target.identity), "unknown", String(status));
+    }
     globalThis.fetch = (async () => { throw new Error("offline"); }) as typeof fetch;
-    assert.equal(await queryVoiceAvailability("", target.identity), false);
+    assert.equal(await queryVoiceAvailability("", target.identity), "unknown");
+    globalThis.fetch = (async () => { throw new TypeError("Failed to fetch"); }) as typeof fetch;
+    assert.equal(await queryVoiceAvailability("", target.identity), "unknown");
     globalThis.fetch = (async () => { assert.fail("Missing identity must not query readiness"); }) as typeof fetch;
-    assert.equal(await queryVoiceAvailability("", ""), false);
+    assert.equal(await queryVoiceAvailability("", ""), "unavailable");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1148,8 +1326,8 @@ test("readiness helper accepts the shared Rust HTTP golden contract for both ava
   let calls = 0;
   try {
     for (const [result, expected] of [
-      [voiceContract.readiness_available, true],
-      [voiceContract.readiness_unavailable, false],
+      [voiceContract.readiness_available, "available"],
+      [voiceContract.readiness_unavailable, "unavailable"],
     ] as const) {
       globalThis.fetch = (async (input, init) => {
         calls++;
@@ -1168,6 +1346,22 @@ test("readiness helper accepts the shared Rust HTTP golden contract for both ava
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("transient classification: network, timeout, 5xx and 429 retry; typed RPC errors and other HTTP rejections are definite", () => {
+  const annotated = (props: Record<string, unknown>) => Object.assign(new Error("gateway"), props);
+  assert.equal(isTransientRpcFailure(new Error("console rpc timeout after 5s")), true);
+  assert.equal(isTransientRpcFailure(new TypeError("Failed to fetch")), true);
+  for (const httpStatus of [500, 502, 503, 504, 429]) {
+    assert.equal(isTransientRpcFailure(annotated({ httpStatus })), true, String(httpStatus));
+  }
+  for (const httpStatus of [400, 401, 403, 404, 409]) {
+    assert.equal(isTransientRpcFailure(annotated({ httpStatus })), false, String(httpStatus));
+  }
+  assert.equal(isTransientRpcFailure(annotated({ rpcError: { code: -32030 } })), false);
+  assert.equal(isTransientRpcFailure(annotated({ rpcError: { data: { kind: "voice_closed" } } })), false);
+  assert.equal(isTransientRpcFailure(annotated({ rpcError: { code: -32603, message: "internal" } })), false,
+    "a JSON-RPC internal error is an answer from the gateway, not a lost poll");
 });
 
 test("production browser environment constructs an empty MediaStream with a valid overload", async () => {
@@ -1214,7 +1408,7 @@ test("fresh readiness receives the exact selected voice identity before any micr
   h.env.voiceAvailable = async (identity) => {
     checked.push(identity);
     assert.equal(h.streams.length, 0);
-    return false;
+    return "unavailable";
   };
   await h.controller.start(other);
   assert.deepEqual(checked, [other.identity]);
@@ -1384,11 +1578,49 @@ test("closed, denied or lost replacement polling fails closed and never imperson
     assert.equal(h.streams[0].tracks[0].stopped, true);
     assert.equal(h.calls.at(-1)?.method, "mobkit/console/voice/close");
   }
+});
+
+test("a stalled replacement poll keeps connected audio and only sustained failure closes voice at the tolerance", async () => {
   const h = harness();
   await h.controller.start(target);
   h.setRpc((method) => method === "mobkit/console/voice/replacement" ? new Promise(() => {}) : undefined);
   await h.clock.advance(VOICE_REPLACEMENT_POLL_INTERVAL_MS + VOICE_TEARDOWN_TIMEOUT_MS);
+  assert.equal(h.controller.getSnapshot().phase, "active", "one stalled poll does not end connected audio");
+  assert.equal(h.streams[0].tracks[0].enabled, true);
+  assert.equal(h.contexts[0].gains[0].gain.value, 1);
+  await h.clock.advance(VOICE_RPC_FAILURE_TOLERANCE_MS - 1);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.ok(h.calls.filter((call) => call.method.endsWith("/replacement")).length > 1, "polling retried with backoff");
+  await h.clock.advance(1);
   assert.equal(h.controller.getSnapshot().phase, "error");
+  assert.match(h.controller.getSnapshot().error!, /could not be verified/);
+  assert.equal(h.streams[0].tracks[0].stopped, true);
+  assert.equal(h.calls.at(-1)?.method, "mobkit/console/voice/close");
+  assert.equal(h.clock.timers.size, 0);
+});
+
+test("one failed replacement poll is retried with backoff and a later success disarms the tolerance", async () => {
+  const h = harness();
+  await h.controller.start(target);
+  let polls = 0;
+  h.setRpc((method) => {
+    if (method !== "mobkit/console/voice/replacement") return undefined;
+    polls++;
+    return polls <= 2 ? Promise.reject(new Error("network failed")) : Promise.resolve({ required: false });
+  });
+  await h.clock.advance(VOICE_REPLACEMENT_POLL_INTERVAL_MS);
+  assert.equal(polls, 1);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  await h.clock.advance(VOICE_REPLACEMENT_POLL_INTERVAL_MS);
+  assert.equal(polls, 2, "first retry after the base interval");
+  await h.clock.advance(VOICE_REPLACEMENT_POLL_INTERVAL_MS);
+  assert.equal(polls, 2, "second retry backs off");
+  await h.clock.advance(VOICE_REPLACEMENT_POLL_INTERVAL_MS);
+  assert.equal(polls, 3);
+  await h.clock.advance(VOICE_RPC_FAILURE_TOLERANCE_MS);
+  assert.equal(h.controller.getSnapshot().phase, "active", "the success disarmed the tolerance window");
+  assert.equal(h.streams[0].tracks[0].enabled, true);
+  await h.controller.close();
   assert.equal(h.clock.timers.size, 0);
 });
 
@@ -1485,7 +1717,7 @@ test("transport loss joins an in-flight request-owned replacement check instead 
   h.setRpc((method) => method === "mobkit/console/voice/replacement" ? result.promise : undefined);
   await h.clock.advance(VOICE_REPLACEMENT_POLL_INTERVAL_MS);
   const lateConnection = h.peers[0].onconnectionstatechange!;
-  h.peers[0].lose();
+  h.peers[0].fail();
   lateConnection();
   assert.equal(h.controller.getSnapshot().phase, "connecting");
   assert.equal(h.calls.filter((call) => call.method.endsWith("/replacement")).length, 1);
@@ -1499,24 +1731,41 @@ test("transport loss joins an in-flight request-owned replacement check instead 
   await h.controller.close();
 });
 
-test("lost transport fails closed on consumed authority or a stalled RPC without opening fresh", async () => {
-  for (const response of [
-    () => Promise.resolve(replacement("canonical_context", pending(target.identity, `channel-${target.identity}`))),
-    () => new Promise<unknown>(() => {}),
-  ]) {
-    const h = harness();
-    await h.controller.start(target);
-    h.setRpc((method) => method === "mobkit/console/voice/replacement" ? response() : undefined);
-    h.peers[0].lose();
-    assert.equal(h.streams[0].tracks[0].enabled, false);
-    await h.clock.advance(VOICE_TEARDOWN_TIMEOUT_MS);
-    assert.equal(h.controller.getSnapshot().phase, "error");
-    assert.equal(h.streams[0].tracks[0].stopped, true);
-    assert.equal(h.calls.filter((call) => call.method.endsWith("/replacement")).length, 1);
-    assert.equal(h.calls.filter((call) => call.method.endsWith("/open")).length, 1);
-    assert.equal(h.calls.at(-1)?.method, "mobkit/console/voice/close");
-    assert.equal(h.clock.timers.size, 0);
-  }
+test("lost transport fails closed on consumed authority without opening fresh", async () => {
+  const h = harness();
+  await h.controller.start(target);
+  h.setRpc((method) => method === "mobkit/console/voice/replacement"
+    ? Promise.resolve(replacement("canonical_context", pending(target.identity, `channel-${target.identity}`)))
+    : undefined);
+  h.peers[0].fail();
+  assert.equal(h.streams[0].tracks[0].enabled, false);
+  await h.clock.advance(VOICE_TEARDOWN_TIMEOUT_MS);
+  assert.equal(h.controller.getSnapshot().phase, "error");
+  assert.equal(h.streams[0].tracks[0].stopped, true);
+  assert.equal(h.calls.filter((call) => call.method.endsWith("/replacement")).length, 1);
+  assert.equal(h.calls.filter((call) => call.method.endsWith("/open")).length, 1);
+  assert.equal(h.calls.at(-1)?.method, "mobkit/console/voice/close");
+  assert.equal(h.clock.timers.size, 0);
+});
+
+test("lost transport with a stalled replacement poll keeps retrying until the fixed recovery deadline", async () => {
+  const h = harness();
+  await h.controller.start(target);
+  h.setRpc((method) => method === "mobkit/console/voice/replacement" ? new Promise<unknown>(() => {}) : undefined);
+  h.peers[0].fail();
+  assert.equal(h.streams[0].tracks[0].enabled, false);
+  await h.clock.advance(VOICE_TEARDOWN_TIMEOUT_MS);
+  assert.equal(h.controller.getSnapshot().phase, "connecting", "one stalled poll does not abandon recovery");
+  await h.clock.advance(VOICE_RECOVERY_TIMEOUT_MS - VOICE_TEARDOWN_TIMEOUT_MS - 1);
+  assert.equal(h.controller.getSnapshot().phase, "connecting");
+  await h.clock.advance(1);
+  assert.equal(h.controller.getSnapshot().phase, "error");
+  assert.match(h.controller.getSnapshot().error!, /recovery timed out/);
+  assert.ok(h.calls.filter((call) => call.method.endsWith("/replacement")).length > 1, "polling retried with backoff");
+  assert.equal(h.calls.filter((call) => call.method.endsWith("/open")).length, 1);
+  assert.equal(h.streams[0].tracks[0].stopped, true);
+  assert.equal(h.calls.at(-1)?.method, "mobkit/console/voice/close");
+  assert.equal(h.clock.timers.size, 0);
 });
 
 test("transport loss waits for delayed owner replacement while preserving target, mutes and silence", async () => {
@@ -1531,7 +1780,7 @@ test("transport loss waits for delayed owner replacement while preserving target
     polls++;
     return Promise.resolve(polls <= 3 ? { required: false } : replacement());
   });
-  h.peers[0].lose();
+  h.peers[0].fail();
   await flush();
   assert.equal(h.controller.getSnapshot().phase, "connecting");
   assert.equal(h.streams[0].tracks[0].enabled, false);
@@ -1572,7 +1821,7 @@ test("false replacement replies and repeated old-peer loss cannot extend the fix
     lateClose();
     return Promise.resolve({ required: false });
   });
-  old.lose();
+  old.fail();
   await h.clock.advance(VOICE_RECOVERY_TIMEOUT_MS - 1);
   assert.equal(h.controller.getSnapshot().phase, "connecting");
   assert.equal(h.streams[0].tracks[0].enabled, false);
@@ -1598,7 +1847,7 @@ test("late pending discovery cannot extend the recovery deadline with a new acti
     if (method === "mobkit/live/status" && params.channel_id === "recovery-channel") return new Promise(() => {});
     return undefined;
   });
-  h.peers[0].lose();
+  h.peers[0].fail();
   await h.clock.advance(VOICE_RECOVERY_TIMEOUT_MS - 1);
   assert.equal(h.peers.length, 2);
   assert.equal(h.controller.getSnapshot().phase, "connecting");
@@ -1619,7 +1868,7 @@ test("explicit cancel during delayed replacement discovery fences late pending w
     polls++;
     return polls <= 2 ? Promise.resolve({ required: false }) : late.promise;
   });
-  h.peers[0].lose();
+  h.peers[0].fail();
   await h.clock.advance(VOICE_REPLACEMENT_POLL_INTERVAL_MS * 2);
   assert.equal(polls, 3);
   assert.equal(h.controller.getSnapshot().phase, "connecting");
@@ -1637,7 +1886,7 @@ test("original audio silence deadline expires during false recovery replies befo
   const h = harness();
   await h.controller.start(target);
   await h.clock.advance(VOICE_SILENCE_TIMEOUT_MS - 2000);
-  h.peers[0].lose();
+  h.peers[0].fail();
   await h.clock.advance(1999);
   assert.equal(h.controller.getSnapshot().phase, "connecting");
   assert.equal(h.streams[0].tracks[0].enabled, false);
@@ -1662,7 +1911,7 @@ test("terminal authorization errors stop recovery waiting immediately", async ()
         rpcError: { code: -32030, data: { kind: "access_denied" } },
       }));
   });
-  h.peers[0].lose();
+  h.peers[0].fail();
   await h.clock.advance(VOICE_REPLACEMENT_POLL_INTERVAL_MS * 2);
   assert.equal(h.controller.getSnapshot().phase, "error");
   assert.equal(h.streams[0].tracks[0].stopped, true);
@@ -1675,7 +1924,7 @@ test("explicit close wins over a transport-loss recovery check and fences its la
   await h.controller.start(target);
   const result = deferred<unknown>();
   h.setRpc((method) => method === "mobkit/console/voice/replacement" ? result.promise : undefined);
-  h.peers[0].lose();
+  h.peers[0].fail();
   assert.equal(h.controller.getSnapshot().phase, "connecting");
   await h.controller.close();
   result.resolve(replacement());
@@ -1791,29 +2040,103 @@ test("muted mic, text and quiet frames never report activity; incoming model aud
   await h.controller.close();
 });
 
-test("activity reports never overlap; stalled confirmation fails closed instead of pretending alive", async () => {
+test("activity reports never overlap; a stalled confirmation retries and only sustained failure closes voice", async () => {
   const h = harness();
+  const reports = () => h.calls.filter((call) => call.method.endsWith("/activity")).length;
   h.setRpc((method) => method === "mobkit/console/voice/activity" ? new Promise(() => {}) : undefined);
   await h.controller.start(target);
   h.contexts[0].analysers[0].signal = 0.5;
   await h.clock.advance(100);
-  assert.equal(h.calls.filter((call) => call.method.endsWith("/activity")).length, 1);
+  assert.equal(reports(), 1);
   await h.clock.advance(VOICE_TEARDOWN_TIMEOUT_MS - 1);
   assert.equal(h.controller.getSnapshot().phase, "active");
-  assert.equal(h.calls.filter((call) => call.method.endsWith("/activity")).length, 1);
+  assert.equal(reports(), 1, "no overlapping report while one is in flight");
+  await h.clock.advance(1);
+  assert.equal(h.controller.getSnapshot().phase, "active", "one timed-out heartbeat does not end connected audio");
+  assert.equal(h.streams[0].tracks[0].enabled, true);
+  await h.clock.advance(VOICE_RPC_FAILURE_TOLERANCE_MS - 1);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.ok(reports() > 1, "the heartbeat was retried");
   await h.clock.advance(1);
   assert.equal(h.controller.getSnapshot().phase, "error");
   assert.match(h.controller.getSnapshot().error!, /activity could not be confirmed/);
-  assert.equal(h.calls.filter((call) => call.method.endsWith("/activity")).length, 1);
   assert.equal(h.streams[0].tracks[0].stopped, true);
+  assert.equal(h.calls.at(-1)?.method, "mobkit/console/voice/close");
   assert.equal(h.clock.timers.size, 0);
 });
 
-test("failed or invalid activity acceptance closes voice and clears its silence deadline", async () => {
+test("one failed activity heartbeat keeps audio flowing and a later success disarms the tolerance", async () => {
+  const h = harness();
+  let failing = true;
+  let reports = 0;
+  h.setRpc((method) => {
+    if (method !== "mobkit/console/voice/activity") return undefined;
+    reports++;
+    return failing ? Promise.reject(new Error("network failed")) : Promise.resolve({ accepted: true });
+  });
+  await h.controller.start(target);
+  h.contexts[0].analysers[1].signal = 0.5;
+  await h.clock.advance(100);
+  assert.equal(reports, 1);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.equal(h.contexts[0].gains[0].gain.value, 1, "speaker output keeps flowing");
+  assert.equal(h.streams[0].tracks[0].enabled, true);
+  failing = false;
+  await h.clock.advance(VOICE_ACTIVITY_REPORT_INTERVAL_MS);
+  assert.equal(reports, 2, "retried after the base interval");
+  await h.clock.advance(VOICE_RPC_FAILURE_TOLERANCE_MS);
+  assert.equal(h.controller.getSnapshot().phase, "active", "the success disarmed the tolerance window");
+  await h.controller.close();
+  assert.equal(h.clock.timers.size, 0);
+});
+
+test("sustained activity heartbeat failure closes voice at the tolerance deadline after bounded backoff", async () => {
+  const h = harness();
+  let reports = 0;
+  h.setRpc((method) => {
+    if (method !== "mobkit/console/voice/activity") return undefined;
+    reports++;
+    return Promise.reject(new Error("network failed"));
+  });
+  await h.controller.start(target);
+  h.contexts[0].analysers[1].signal = 0.5;
+  await h.clock.advance(100);
+  assert.equal(reports, 1);
+  await h.clock.advance(VOICE_RPC_FAILURE_TOLERANCE_MS - 1);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.ok(reports >= 4 && reports <= 6, `retries are backed off, not hammered: ${reports}`);
+  await h.clock.advance(1);
+  assert.equal(h.controller.getSnapshot().phase, "error");
+  assert.match(h.controller.getSnapshot().error!, /activity could not be confirmed/);
+  assert.equal(h.streams[0].tracks[0].stopped, true);
+  assert.equal(h.calls.at(-1)?.method, "mobkit/console/voice/close");
+  assert.equal(h.clock.timers.size, 0);
+});
+
+test("HTTP 5xx and 429 heartbeat rejections are transient; other HTTP statuses and typed RPC errors are definite", async () => {
+  for (const [annotation, transient] of [
+    [{ httpStatus: 503 }, true],
+    [{ httpStatus: 429 }, true],
+    [{ httpStatus: 403 }, false],
+    [{ rpcError: { code: -32030, data: { kind: "access_denied" } } }, false],
+  ] as const) {
+    const h = harness();
+    h.setRpc((method) => method === "mobkit/console/voice/activity"
+      ? Promise.reject(Object.assign(new Error("gateway"), annotation))
+      : undefined);
+    await h.controller.start(target);
+    h.contexts[0].analysers[0].signal = 0.5;
+    await h.clock.advance(100);
+    assert.equal(h.controller.getSnapshot().phase, transient ? "active" : "error", JSON.stringify(annotation));
+    await h.controller.close();
+    assert.equal(h.clock.timers.size, 0);
+  }
+});
+
+test("invalid activity acceptance is a definite gateway answer: it closes voice and clears its silence deadline", async () => {
   for (const response of [
     () => Promise.resolve({ accepted: false }),
     () => Promise.resolve({ accepted: "true" }),
-    () => Promise.reject(new Error("network failed")),
   ]) {
     const h = harness();
     h.setRpc((method) => method === "mobkit/console/voice/activity" ? response() : undefined);

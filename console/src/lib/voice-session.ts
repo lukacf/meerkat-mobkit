@@ -7,7 +7,7 @@ import {
   type PendingLiveChannelHandle,
 } from "../../../sdk/typescript/src/live";
 import { callConsoleRpc } from "./network";
-import { errorMessage, jsonRpcErrorCode } from "./errors";
+import { errorMessage, httpStatusCode, jsonRpcErrorCode } from "./errors";
 import { CONSOLE_RPC_PATHS } from "./contract";
 import { parseVoiceContextStatus, type VoiceContextPreparation } from "./voice-context";
 
@@ -17,11 +17,22 @@ export const VOICE_RECOVERY_TIMEOUT_MS = 30_000;
 export const VOICE_TEARDOWN_TIMEOUT_MS = 5_000;
 export const VOICE_REPLACEMENT_POLL_INTERVAL_MS = 1_000;
 export const VOICE_ACTIVITY_REPORT_INTERVAL_MS = 5_000;
+/** ICE `disconnected` is transient and usually self-heals; keep the peer alive this long first. */
+export const VOICE_TRANSPORT_RECONNECT_GRACE_MS = 8_000;
+/** Consecutive transient control-plane failures tolerated before a connected call is failed. */
+export const VOICE_RPC_FAILURE_TOLERANCE_MS = 30_000;
+export const VOICE_RPC_RETRY_BACKOFF_MAX_MS = 8_000;
+/** A suspended or interrupted AudioContext gets this long to return to `running`. */
+export const VOICE_AUDIO_RESUME_TIMEOUT_MS = 15_000;
 const CONTEXT_POLL_INTERVAL_MS = 1_000;
 const CONTEXT_RETRY_INTERVAL_MS = 5_000;
 const SAMPLE_INTERVAL_MS = 100;
 const POLL_INTERVAL_MS = 100;
 const RECOVERY_TIMEOUT_MESSAGE = "Voice recovery timed out. Check your network and voice access, then start again.";
+const ACTIVITY_UNCONFIRMED_MESSAGE = "Voice activity could not be confirmed. Check your network and voice access, then start again.";
+const REPLACEMENT_UNVERIFIED_MESSAGE = "Voice connection could not be verified. Check your network and voice access, then start again.";
+const TRANSPORT_LOST_MESSAGE = "Voice connection was lost. Check your network and start voice again.";
+const AUDIO_INTERRUPTED_MESSAGE = "Browser audio was interrupted. Check audio permissions and start voice again.";
 
 export interface VoiceTarget {
   readonly identity: string;
@@ -36,13 +47,21 @@ export interface VoiceSessionSnapshot {
   readonly error: string | null;
   readonly notice: string | null;
   readonly connectionStage?: "opening" | "transport" | "recovery";
+  /** Active call whose WebRTC transport reported `disconnected` and is inside the reconnect grace. */
+  readonly reconnecting?: boolean;
   readonly contextPreparation?: VoiceContextPreparation | null;
   readonly contextStatusError?: string | null;
 }
 
+/**
+ * Readiness is tri-state: the gateway answered positively, the gateway answered negatively
+ * (unavailable, unauthorized, unknown method), or the poll itself failed and nothing is known.
+ */
+export type VoiceAvailability = "available" | "unavailable" | "unknown";
+
 /** Browser seams are injectable so lifecycle tests require neither hardware nor credentials. */
 export interface VoiceSessionEnvironment {
-  voiceAvailable(identity: string): Promise<boolean>;
+  voiceAvailable(identity: string): Promise<VoiceAvailability>;
   createAudioContext(): AudioContext;
   getUserMedia(): Promise<MediaStream>;
   createPeerConnection(): RTCPeerConnection;
@@ -51,23 +70,45 @@ export interface VoiceSessionEnvironment {
   rpc(method: string, params: Record<string, unknown>, timeoutMs: number): Promise<unknown>;
   pagehideClose(params: Record<string, unknown>): void;
   onPagehide(listener: () => void): () => void;
+  /** Fires on `pageshow` or when the document becomes visible again (bfcache restore). */
+  onPageshow(listener: () => void): () => void;
   now(): number;
   randomId(): string;
   setTimeout(callback: () => void, milliseconds: number): ReturnType<typeof setTimeout>;
   clearTimeout(timer: ReturnType<typeof setTimeout>): void;
 }
 
-/** Require a fresh positive readiness result fenced to the exact requested target. */
-export async function queryVoiceAvailability(baseUrl: string, identity: string): Promise<boolean> {
-  if (!identity?.trim()) return false;
+/**
+ * Require a fresh positive readiness result fenced to the exact requested target.
+ * A gateway answer (positive, negative, or a typed rejection) is definite; a transport
+ * failure (network, timeout, 5xx, 429) is `unknown` so callers can keep the last known state.
+ */
+export async function queryVoiceAvailability(baseUrl: string, identity: string): Promise<VoiceAvailability> {
+  if (!identity?.trim()) return "unavailable";
+  let readiness: { identity?: unknown; available?: unknown } | null;
   try {
-    const readiness = await callConsoleRpc<{ identity?: unknown; available?: unknown }>(
+    readiness = await callConsoleRpc<{ identity?: unknown; available?: unknown } | null>(
       baseUrl, "mobkit/console/voice/readiness", { identity }, VOICE_TEARDOWN_TIMEOUT_MS,
     );
-    return readiness?.identity === identity && readiness.available === true;
-  } catch {
-    return false;
+  } catch (error) {
+    return isTransientRpcFailure(error) ? "unknown" : "unavailable";
   }
+  return readiness?.identity === identity && readiness.available === true ? "available" : "unavailable";
+}
+
+/**
+ * Classify a failed control-plane call. Anything the gateway actually answered (a JSON-RPC
+ * error, or a non-retryable HTTP status) is definite; network failures, timeouts, 5xx and 429
+ * are transient and worth retrying while media keeps flowing.
+ */
+export function isTransientRpcFailure(error: unknown): boolean {
+  if (error instanceof Cancelled) return false;
+  if (error instanceof VoiceTimeout || error instanceof TransientRpcFailure) return true;
+  if (error instanceof VoiceError) return false;
+  if ((error as { rpcError?: unknown } | null)?.rpcError !== undefined) return false;
+  const status = httpStatusCode(error);
+  if (status !== null) return status === 429 || status >= 500;
+  return true;
 }
 
 function browserEnvironment(baseUrl: string): VoiceSessionEnvironment {
@@ -107,6 +148,17 @@ function browserEnvironment(baseUrl: string): VoiceSessionEnvironment {
       window.addEventListener("pagehide", listener);
       return () => window.removeEventListener("pagehide", listener);
     },
+    onPageshow: (listener) => {
+      const visible = () => {
+        if (document.visibilityState === "visible") listener();
+      };
+      window.addEventListener("pageshow", listener);
+      document.addEventListener("visibilitychange", visible);
+      return () => {
+        window.removeEventListener("pageshow", listener);
+        document.removeEventListener("visibilitychange", visible);
+      };
+    },
     now: () => Date.now(),
     randomId: () => crypto.randomUUID(),
     setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
@@ -115,7 +167,17 @@ function browserEnvironment(baseUrl: string): VoiceSessionEnvironment {
 }
 
 class VoiceError extends Error {}
+/** A locally bounded wait expired; distinct from a protocol violation so it can be retried. */
+class VoiceTimeout extends VoiceError {}
+/** Tagged at the RPC boundary only, so local parse and protocol failures stay definite. */
+class TransientRpcFailure extends Error {}
 class Cancelled extends Error {}
+
+/** One loop's run of consecutive transient control-plane failures. */
+interface FailureWindow {
+  failures: number;
+  timer: ReturnType<typeof setTimeout>;
+}
 
 function parseReplacement(raw: unknown): PendingLiveChannelHandle | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -190,6 +252,9 @@ interface Attempt {
   silenceTimer?: ReturnType<typeof setTimeout>;
   replacementTimer?: ReturnType<typeof setTimeout>;
   replacementPolling?: boolean;
+  replacementFailure?: FailureWindow;
+  reconnectTimer?: ReturnType<typeof setTimeout>;
+  audioResumeTimer?: ReturnType<typeof setTimeout>;
   transportLoss?: string;
   recoveryDeadline?: number;
   recoveryTimer?: ReturnType<typeof setTimeout>;
@@ -197,6 +262,8 @@ interface Attempt {
   activityReporting?: boolean;
   activityDirty?: boolean;
   activityTimer?: ReturnType<typeof setTimeout>;
+  activityRetryAt?: number;
+  activityFailure?: FailureWindow;
   contextObservation?: { abort: AbortController; timer?: ReturnType<typeof setTimeout> };
   lastActivity: number;
 }
@@ -232,6 +299,7 @@ export function createVoiceSession(
   let disposed = false;
   let pageHidden = false;
   let removePagehide: (() => void) | undefined;
+  let removePageshow: (() => void) | undefined;
   let serial: Promise<void> = Promise.resolve();
   let teardownBlock: Attempt | undefined;
   const retainedAttempts = new Set<Attempt>();
@@ -266,11 +334,33 @@ export function createVoiceSession(
         action();
       };
       const cancelled = () => finish(() => reject(new Cancelled()));
-      const timer = env.setTimeout(() => finish(() => reject(new VoiceError(timeoutMessage))), Math.max(0, milliseconds));
+      const timer = env.setTimeout(() => finish(() => reject(new VoiceTimeout(timeoutMessage))), Math.max(0, milliseconds));
       signal?.addEventListener("abort", cancelled, { once: true });
       promise.then((value) => finish(() => resolve(value)), (error) => finish(() => reject(error)));
       if (signal?.aborted) cancelled();
     });
+  }
+
+  /**
+   * A steady-state control-plane call (heartbeat, replacement poll). Transport failures are
+   * tagged here, at the boundary, so the loops can retry them without mistaking a malformed
+   * gateway reply or a typed rejection for a network blip.
+   */
+  async function controlPlaneCall(
+    attempt: Attempt,
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    try {
+      return await bounded(
+        env.rpc(method, params, VOICE_TEARDOWN_TIMEOUT_MS),
+        VOICE_TEARDOWN_TIMEOUT_MS,
+        attempt.abort.signal,
+      );
+    } catch (error) {
+      if (isTransientRpcFailure(error)) throw new TransientRpcFailure(errorMessage(error));
+      throw error;
+    }
   }
 
   function connecting<T>(attempt: Attempt, promise: Promise<T>): Promise<T> {
@@ -299,6 +389,7 @@ export function createVoiceSession(
 
   function cleanupPeer(attempt: Attempt) {
     stopContextObservation(attempt);
+    clearReconnectGrace(attempt);
     const peer = attempt.peer;
     const channel = attempt.channel;
     attempt.peer = undefined;
@@ -342,6 +433,11 @@ export function createVoiceSession(
     if (attempt.replacementTimer !== undefined) env.clearTimeout(attempt.replacementTimer);
     if (attempt.recoveryTimer !== undefined) env.clearTimeout(attempt.recoveryTimer);
     if (attempt.activityTimer !== undefined) env.clearTimeout(attempt.activityTimer);
+    if (attempt.audioResumeTimer !== undefined) env.clearTimeout(attempt.audioResumeTimer);
+    attempt.audioResumeTimer = undefined;
+    clearReconnectGrace(attempt);
+    clearFailureWindow(attempt, "replacementFailure");
+    clearFailureWindow(attempt, "activityFailure");
     attempt.activityDirty = false;
     for (const track of attempt.stream?.getTracks() ?? []) track.enabled = false;
     if (attempt.gain) attempt.gain.gain.value = 0;
@@ -412,7 +508,7 @@ export function createVoiceSession(
         current = undefined;
         publish({
           phase: error ? "error" : "idle", target: error ? attempt.target : null, error, notice,
-          contextPreparation: undefined, contextStatusError: null,
+          reconnecting: false, contextPreparation: undefined, contextStatusError: null,
         });
       }
     } catch {
@@ -447,10 +543,61 @@ export function createVoiceSession(
       fail(attempt, RECOVERY_TIMEOUT_MESSAGE);
     }, VOICE_RECOVERY_TIMEOUT_MS);
     attempt.connectionStage = "recovery";
-    publish({ phase: "connecting", connectionStage: "recovery" });
+    publish({ phase: "connecting", connectionStage: "recovery", reconnecting: false });
     // The owner closes transport before preparing replacement credentials and summary.
     // Keep polling while gated, with one fixed deadline for discovery and activation.
     requestReplacement(attempt);
+  }
+
+  function clearReconnectGrace(attempt: Attempt) {
+    if (attempt.reconnectTimer === undefined) return;
+    env.clearTimeout(attempt.reconnectTimer);
+    attempt.reconnectTimer = undefined;
+    if (current === attempt && snapshot.reconnecting) publish({ reconnecting: false });
+  }
+
+  // ICE `disconnected` self-heals often enough that destroying the peer would turn a
+  // sub-second blip into a full owner-issued recovery. Hold the peer for a bounded grace.
+  function transportInterrupted(attempt: Attempt, peer: RTCPeerConnection, message: string) {
+    if (!owns(attempt) || attempt.peer !== peer || attempt.reconnectTimer !== undefined) return;
+    attempt.reconnectTimer = env.setTimeout(() => {
+      attempt.reconnectTimer = undefined;
+      transportLost(attempt, peer, message);
+    }, VOICE_TRANSPORT_RECONNECT_GRACE_MS);
+    if (snapshot.phase === "active") publish({ reconnecting: true });
+  }
+
+  function transportRestored(attempt: Attempt, peer: RTCPeerConnection) {
+    if (attempt.peer !== peer) return;
+    clearReconnectGrace(attempt);
+  }
+
+  /**
+   * Record one transient control-plane failure for a loop and return the retry delay.
+   * The first failure in a run arms one tolerance deadline; a later success disarms it.
+   */
+  function recordTransientFailure(
+    attempt: Attempt,
+    key: "replacementFailure" | "activityFailure",
+    message: string,
+  ): number {
+    const run = attempt[key] ?? (attempt[key] = {
+      failures: 0,
+      timer: env.setTimeout(() => {
+        attempt[key] = undefined;
+        fail(attempt, message);
+      }, VOICE_RPC_FAILURE_TOLERANCE_MS),
+    });
+    run.failures += 1;
+    const base = key === "activityFailure" ? VOICE_ACTIVITY_REPORT_INTERVAL_MS : VOICE_REPLACEMENT_POLL_INTERVAL_MS;
+    return Math.min(base * 2 ** (run.failures - 1), VOICE_RPC_RETRY_BACKOFF_MAX_MS);
+  }
+
+  function clearFailureWindow(attempt: Attempt, key: "replacementFailure" | "activityFailure") {
+    const run = attempt[key];
+    if (!run) return;
+    env.clearTimeout(run.timer);
+    attempt[key] = undefined;
   }
 
   function activity(attempt: Attempt) {
@@ -463,9 +610,11 @@ export function createVoiceSession(
 
   function flushActivity(attempt: Attempt) {
     if (!owns(attempt) || !attempt.activityDirty || attempt.activityReporting) return;
-    const delay = attempt.activityReportedAt === undefined
-      ? 0
-      : attempt.activityReportedAt + VOICE_ACTIVITY_REPORT_INTERVAL_MS - env.now();
+    const due = Math.max(
+      attempt.activityReportedAt === undefined ? 0 : attempt.activityReportedAt + VOICE_ACTIVITY_REPORT_INTERVAL_MS,
+      attempt.activityRetryAt ?? 0,
+    );
+    const delay = due - env.now();
     if (delay > 0) {
       if (attempt.activityTimer === undefined) {
         attempt.activityTimer = env.setTimeout(() => {
@@ -477,6 +626,7 @@ export function createVoiceSession(
     }
     if (attempt.activityTimer !== undefined) env.clearTimeout(attempt.activityTimer);
     attempt.activityTimer = undefined;
+    attempt.activityRetryAt = undefined;
     attempt.activityReportedAt = env.now();
     attempt.activityDirty = false;
     attempt.activityReporting = true;
@@ -485,20 +635,23 @@ export function createVoiceSession(
 
   async function reportActivity(attempt: Attempt) {
     try {
-      const result = await bounded(
-        env.rpc("mobkit/console/voice/activity", closeParams(attempt), VOICE_TEARDOWN_TIMEOUT_MS),
-        VOICE_TEARDOWN_TIMEOUT_MS,
-        attempt.abort.signal,
-      );
+      const result = await controlPlaneCall(attempt, "mobkit/console/voice/activity", closeParams(attempt));
       assertOwns(attempt);
       if (
         !result || typeof result !== "object" || Array.isArray(result) ||
         (result as Record<string, unknown>).accepted !== true
       ) throw new VoiceError("The gateway did not accept voice activity.");
+      clearFailureWindow(attempt, "activityFailure");
     } catch (error) {
-      if (!(error instanceof Cancelled)) {
-        fail(attempt, "Voice activity could not be confirmed. Check your network and voice access, then start again.");
+      if (error instanceof Cancelled || !owns(attempt)) return;
+      if (error instanceof TransientRpcFailure) {
+        // Audio keeps flowing; the heartbeat is re-sent with backoff inside one tolerance window.
+        const delay = recordTransientFailure(attempt, "activityFailure", ACTIVITY_UNCONFIRMED_MESSAGE);
+        attempt.activityDirty = true;
+        attempt.activityRetryAt = env.now() + delay;
+        return;
       }
+      fail(attempt, ACTIVITY_UNCONFIRMED_MESSAGE);
     } finally {
       attempt.activityReporting = false;
       flushActivity(attempt);
@@ -674,10 +827,17 @@ export function createVoiceSession(
     };
     const connectionChanged = () => {
       if (attempt.peer !== peer) return;
-      if (
-        ["failed", "disconnected", "closed"].includes(peer.connectionState) ||
-        ["failed", "disconnected", "closed"].includes(peer.iceConnectionState)
-      ) transportLost(attempt, peer, "Voice connection was lost. Check your network and start voice again.");
+      const states: string[] = [peer.connectionState, peer.iceConnectionState];
+      if (states.includes("failed") || states.includes("closed")) {
+        transportLost(attempt, peer, TRANSPORT_LOST_MESSAGE);
+      } else if (states.includes("disconnected")) {
+        transportInterrupted(attempt, peer, TRANSPORT_LOST_MESSAGE);
+      } else if (
+        peer.connectionState === "connected" &&
+        ["connected", "completed"].includes(peer.iceConnectionState)
+      ) {
+        transportRestored(attempt, peer);
+      }
     };
     peer.onconnectionstatechange = connectionChanged;
     peer.oniceconnectionstatechange = connectionChanged;
@@ -790,13 +950,13 @@ export function createVoiceSession(
     throw new Cancelled();
   }
 
-  function scheduleReplacement(attempt: Attempt) {
+  function scheduleReplacement(attempt: Attempt, delay = VOICE_REPLACEMENT_POLL_INTERVAL_MS) {
     if (!owns(attempt) || (snapshot.phase !== "active" && !attempt.transportLoss)) return;
     if (attempt.replacementTimer !== undefined) env.clearTimeout(attempt.replacementTimer);
     attempt.replacementTimer = env.setTimeout(() => {
       attempt.replacementTimer = undefined;
       requestReplacement(attempt);
-    }, VOICE_REPLACEMENT_POLL_INTERVAL_MS);
+    }, delay);
   }
 
   function requestReplacement(attempt: Attempt) {
@@ -813,17 +973,14 @@ export function createVoiceSession(
         fail(attempt, RECOVERY_TIMEOUT_MESSAGE);
         return;
       }
-      const raw = await bounded(
-        env.rpc("mobkit/console/voice/replacement", closeParams(attempt), VOICE_TEARDOWN_TIMEOUT_MS),
-        VOICE_TEARDOWN_TIMEOUT_MS,
-        attempt.abort.signal,
-      );
+      const raw = await controlPlaneCall(attempt, "mobkit/console/voice/replacement", closeParams(attempt));
       assertOwns(attempt);
       if (attempt.recoveryDeadline !== undefined && env.now() >= attempt.recoveryDeadline) {
         fail(attempt, RECOVERY_TIMEOUT_MESSAGE);
         return;
       }
       const pending = parseReplacement(raw);
+      clearFailureWindow(attempt, "replacementFailure");
       if (pending) {
         await enqueue(async () => {
           try {
@@ -873,12 +1030,47 @@ export function createVoiceSession(
       }
       scheduleReplacement(attempt);
     } catch (error) {
-      if (error instanceof Cancelled) return;
+      if (error instanceof Cancelled || !owns(attempt)) return;
+      if (error instanceof TransientRpcFailure) {
+        // One unreachable poll must not end connected audio; retry with backoff. During
+        // recovery the fixed recovery deadline still bounds the wait.
+        scheduleReplacement(attempt, recordTransientFailure(attempt, "replacementFailure", REPLACEMENT_UNVERIFIED_MESSAGE));
+        return;
+      }
       const kind = (error as { rpcError?: { data?: { kind?: string } } } | null)?.rpcError?.data?.kind;
       fail(attempt, kind === "voice_closed"
         ? "The gateway closed this voice session. Start voice again."
-        : "Voice connection could not be verified. Check your network and voice access, then start again.");
+        : REPLACEMENT_UNVERIFIED_MESSAGE);
     }
+  }
+
+  // `suspended`/`interrupted` (phone call, headset switch, autoplay policy) usually return to
+  // `running` on their own or on the next user gesture. Only a bounded stall is fatal.
+  function observeAudioContext(attempt: Attempt) {
+    const context = attempt.context!;
+    context.onstatechange = () => {
+      if (!owns(attempt) || attempt.context !== context) return;
+      if (context.state === "running") {
+        if (attempt.audioResumeTimer !== undefined) env.clearTimeout(attempt.audioResumeTimer);
+        attempt.audioResumeTimer = undefined;
+        return;
+      }
+      if (context.state === "closed") {
+        fail(attempt, AUDIO_INTERRUPTED_MESSAGE);
+        return;
+      }
+      attempt.audioResumeTimer ??= env.setTimeout(() => {
+        attempt.audioResumeTimer = undefined;
+        if (owns(attempt) && context.state !== "running") fail(attempt, AUDIO_INTERRUPTED_MESSAGE);
+      }, VOICE_AUDIO_RESUME_TIMEOUT_MS);
+      resumeAudio(attempt);
+    };
+  }
+
+  function resumeAudio(attempt: Attempt) {
+    const context = attempt.context;
+    if (!owns(attempt) || !context || context.state === "running" || context.state === "closed") return;
+    void context.resume().catch(() => {});
   }
 
   async function connect(attempt: Attempt, media: Promise<MediaStream>, resumed: Promise<void>) {
@@ -892,11 +1084,7 @@ export function createVoiceSession(
       if (attempt.context!.state !== "running") {
         throw new VoiceError("Browser audio is suspended. Allow audio playback and start voice again.");
       }
-      attempt.context!.onstatechange = () => {
-        if (attempt.context!.state !== "running") {
-          fail(attempt, "Browser audio was interrupted. Check audio permissions and start voice again.");
-        }
-      };
+      observeAudioContext(attempt);
       attempt.stream = await connecting(attempt, media);
       assertOwns(attempt);
       if (attempt.stream.getAudioTracks().length === 0) {
@@ -970,7 +1158,7 @@ export function createVoiceSession(
       publish({
         phase: "requesting", target: attempt.target,
         microphoneMuted: false, speakerMuted: false, error: null, notice: null,
-        connectionStage: undefined,
+        connectionStage: undefined, reconnecting: false,
         contextPreparation: undefined, contextStatusError: null,
       });
       if (!owns(attempt)) {
@@ -990,7 +1178,10 @@ export function createVoiceSession(
         void resumed.catch(() => {});
         media = env.voiceAvailable(attempt.target.identity).then((available) => {
           assertOwns(attempt);
-          if (available !== true) {
+          if (available === "unknown") {
+            throw new VoiceError("Voice readiness could not be checked. Check your network connection to the gateway, then start voice again.");
+          }
+          if (available !== "available") {
             throw new VoiceError("Voice is unavailable. Ask your administrator to authenticate OpenAI and enable GPT Live.");
           }
           return env.getUserMedia();
@@ -1006,6 +1197,14 @@ export function createVoiceSession(
         void media.catch(() => {});
         removePagehide ??= env.onPagehide(() => {
           pageHidden = true;
+          // A bfcache restore fires pageshow without re-running any effect; the one-shot
+          // listener deliberately outlives dispose() so an explicit later start is admitted.
+          removePageshow?.();
+          removePageshow = env.onPageshow(() => {
+            pageHidden = false;
+            removePageshow?.();
+            removePageshow = undefined;
+          });
           for (const retained of retainedAttempts) {
             cleanupLocal(retained);
             if (retained.openSent) env.pagehideClose(closeParams(retained));
@@ -1051,11 +1250,14 @@ export function createVoiceSession(
       if (!current || !owns(current)) return;
       publish({ microphoneMuted: !snapshot.microphoneMuted });
       gates(current);
+      // Mute toggles are user gestures, which is what a suspended AudioContext needs.
+      resumeAudio(current);
     },
     toggleSpeaker() {
       if (!current || !owns(current)) return;
       publish({ speakerMuted: !snapshot.speakerMuted });
       gates(current);
+      resumeAudio(current);
     },
     sampleWaveform(source, samples) {
       samples.fill(0);

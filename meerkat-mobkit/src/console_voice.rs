@@ -69,6 +69,12 @@ pub(crate) struct VoiceAnswerReceived {
     pub channel_id: String,
 }
 const MAX_REQUESTS: usize = 4096;
+/// Closed slots stay observable for this long so a delayed request for the
+/// same id sees the closed disposition instead of resurrecting old work.
+const CLOSED_RETENTION: Duration = Duration::from_mins(10);
+/// Closed slots one principal may retain at once. Beyond this the oldest are
+/// reaped first, so no principal can consume the shared capacity by itself.
+const MAX_CLOSED_PER_PRINCIPAL: usize = 32;
 const CLOSE_WAIT: Duration = Duration::from_secs(10);
 pub const CONSOLE_VOICE_SHUTDOWN_TIMEOUT: Duration = CLOSE_WAIT;
 
@@ -209,6 +215,55 @@ struct RequestState {
     last_activity: Option<tokio::time::Instant>,
     setup_deadline: Option<tokio::time::Instant>,
     activated: bool,
+    /// First moment the registry observed this slot closed; reaping is
+    /// measured from here, never from the close request itself.
+    retired_at: Option<tokio::time::Instant>,
+}
+
+/// Drop closed slots that are past retention, then enforce the per-principal
+/// and global bounds by dropping the oldest closed slots first. Live slots
+/// (opening, active, or failing to close) are never dropped here.
+async fn reap_closed_requests(
+    requests: &mut HashMap<RequestKey, Arc<RequestSlot>>,
+    now: tokio::time::Instant,
+) {
+    let mut closed: Vec<(RequestKey, tokio::time::Instant)> = Vec::new();
+    for (key, slot) in requests.iter() {
+        let mut state = slot.state.lock().await;
+        if !state.closed {
+            continue;
+        }
+        let retired_at = *state.retired_at.get_or_insert(now);
+        closed.push((key.clone(), retired_at));
+    }
+    closed.sort_by_key(|(_, retired_at)| *retired_at);
+    let mut retained = Vec::new();
+    for (key, retired_at) in closed {
+        if now.saturating_duration_since(retired_at) >= CLOSED_RETENTION {
+            requests.remove(&key);
+        } else {
+            retained.push(key);
+        }
+    }
+    // Per-principal bound, keeping each principal's newest closed slots.
+    let mut kept_per_principal: HashMap<&str, usize> = HashMap::new();
+    let mut surviving = Vec::with_capacity(retained.len());
+    for key in retained.iter().rev() {
+        let kept = kept_per_principal.entry(key.0.as_str()).or_insert(0);
+        if *kept >= MAX_CLOSED_PER_PRINCIPAL {
+            requests.remove(key);
+        } else {
+            *kept += 1;
+            surviving.push(key.clone());
+        }
+    }
+    // Global bound: closed slots yield, oldest first, before capacity refuses.
+    for key in surviving.iter().rev() {
+        if requests.len() < MAX_REQUESTS {
+            break;
+        }
+        requests.remove(key);
+    }
 }
 
 struct RequestSlot {
@@ -601,6 +656,7 @@ impl ConsoleVoiceController {
             }
             Arc::clone(slot)
         } else {
+            reap_closed_requests(&mut requests, tokio::time::Instant::now()).await;
             if requests.len() >= MAX_REQUESTS {
                 return Err(VoiceError::RequestCapacity);
             }
@@ -662,21 +718,27 @@ impl ConsoleVoiceController {
             }
             Arc::clone(slot)
         } else {
+            reap_closed_requests(&mut requests, tokio::time::Instant::now()).await;
             if requests.len() >= MAX_REQUESTS {
                 return Err(VoiceError::RequestCapacity);
             }
             // Retain cancellation even when close wins the race with open.
-            // Tombstones are never evicted: capacity refuses new requests
-            // instead of allowing a delayed request to resurrect old work.
+            // The tombstone stays for CLOSED_RETENTION (bounded per
+            // principal) so a delayed request cannot resurrect old work,
+            // and is reaped afterwards so capacity recovers.
             let slot = Arc::new(RequestSlot::new(
                 request.identity,
                 RequestState {
                     cancelled: true,
                     closed: true,
+                    retired_at: Some(tokio::time::Instant::now()),
                     ..RequestState::default()
                 },
             ));
             requests.insert(key, Arc::clone(&slot));
+            // The bound holds after this insertion as well, so a principal
+            // issuing closes for unknown ids never exceeds its share.
+            reap_closed_requests(&mut requests, tokio::time::Instant::now()).await;
             slot
         };
         drop(requests);
@@ -1286,6 +1348,68 @@ mod tests {
             .await
             .expect("owner close");
         assert_eq!(host.session.close_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn closed_requests_are_reaped_after_retention_and_capacity_recovers() {
+        let host = Host::new(true, false);
+        let controller = ConsoleVoiceController::new(host.clone());
+        controller.open("alice", request()).await.expect("open");
+        controller.close("alice", request()).await.expect("close");
+        assert_eq!(controller.requests.lock().await.len(), 1);
+        let mut foreign = request();
+        foreign.request_id = "bob-late-close".to_string();
+        controller.close("bob", foreign).await.expect("tombstone");
+        {
+            let mut requests = controller.requests.lock().await;
+            assert_eq!(requests.len(), 2, "closed slots are retained for a while");
+            let now = tokio::time::Instant::now();
+            reap_closed_requests(&mut requests, now).await;
+            assert_eq!(requests.len(), 2, "retention keeps recent closed slots");
+            reap_closed_requests(
+                &mut requests,
+                now + CLOSED_RETENTION + Duration::from_secs(1),
+            )
+            .await;
+            assert_eq!(requests.len(), 0, "expired closed slots are reaped");
+        }
+        let mut third = request();
+        third.request_id = "third-request".to_string();
+        // The fake host grants one open per permit; allow the reopen.
+        host.permit.add_permits(1);
+        controller
+            .open("alice", third)
+            .await
+            .expect("open after retention is not refused by capacity or busy");
+        let requests = controller.requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert!(requests.contains_key(&("alice".to_string(), "third-request".to_string())));
+    }
+
+    #[tokio::test]
+    async fn foreign_close_tombstones_are_bounded_per_principal() {
+        let host = Host::new(true, false);
+        let controller = ConsoleVoiceController::new(host.clone());
+        controller.open("alice", request()).await.expect("open");
+        for index in 0..(MAX_CLOSED_PER_PRINCIPAL * 3) {
+            let mut foreign = request();
+            foreign.request_id = format!("bob-{index}");
+            controller
+                .close("bob", foreign)
+                .await
+                .expect("foreign close leaves a bounded tombstone");
+        }
+        let requests = controller.requests.lock().await;
+        let bob = requests.keys().filter(|(owner, _)| owner == "bob").count();
+        assert!(
+            bob <= MAX_CLOSED_PER_PRINCIPAL,
+            "bob retains at most {MAX_CLOSED_PER_PRINCIPAL} closed slots, found {bob}"
+        );
+        assert!(
+            requests.contains_key(&("alice".to_string(), request().request_id)),
+            "the live call of another principal is untouched"
+        );
+        assert_eq!(host.session.close_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
