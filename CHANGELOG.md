@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `fork_off` children are retired on the idle default. Idle retirement was
+  registered only for `delegate` (implicit mobs) and for `mob_spawn_member`
+  with an explicit `idle_retire_secs`; a fork child seated in the caller's
+  mob was never a candidate and held one of the bounded sessions
+  (`max_sessions`, default 64) until the ceiling refused new work. `fork_off`
+  now accepts `idle_retire_secs` like `delegate` (integer overrides, `null`
+  disables) and opts the child into the runtime default when it is omitted;
+  `UnifiedRuntime::fork_member` registers the same default for RPC and
+  console forks.
+
 ### Changed
 
 - Pin the Meerkat dependency family to published `0.8.39`: public GPT Live

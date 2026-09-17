@@ -368,11 +368,27 @@ impl UnifiedRuntime {
         };
 
         match fork {
-            Ok(result) => Ok(ForkMemberOutcome {
-                source_member_alias: source_alias,
-                member_alias,
-                result,
-            }),
+            Ok(result) => {
+                // The child is seated in the primary mob, where idle
+                // retirement is opt-in. Opt it in on the runtime default so an
+                // RPC or console fork retires like a `fork_off` tool child
+                // instead of holding a bounded session until the ceiling.
+                if let Some(overrides) = self.mob_runtime().implicit_delegate_retirement_overrides()
+                {
+                    overrides
+                        .set(
+                            self.mob_handle().mob_id().to_string(),
+                            result.agent_identity.to_string(),
+                            crate::mob_handle_runtime::DelegateIdleRetireOverride::RuntimeDefault,
+                        )
+                        .await;
+                }
+                Ok(ForkMemberOutcome {
+                    source_member_alias: source_alias,
+                    member_alias,
+                    result,
+                })
+            }
             Err(error) => {
                 // Mirrors `UnifiedRuntime::spawn`: a fork that does not seat a
                 // member is a seat failure on the shared error hook. The typed

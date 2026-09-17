@@ -834,6 +834,12 @@ fn no_op_pre_build_hook() -> PreBuildHook {
 pub(crate) enum DelegateIdleRetireOverride {
     Disabled,
     Seconds(u64),
+    /// Opt the member into idle retirement on the runtime default timeout.
+    ///
+    /// Members seated in the primary mob are only swept when something opts
+    /// them in. `fork_off` children live in the caller's mob, so without this
+    /// they would stay live until the session ceiling refuses new work.
+    RuntimeDefault,
 }
 
 #[derive(Clone, Default)]
@@ -924,7 +930,7 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
             .tools()
             .iter()
             .map(|tool| {
-                if tool.name == "delegate" {
+                if tool.name == "delegate" || tool.name == "fork_off" {
                     Arc::new(delegate_tool_def_with_idle_retire_secs(tool))
                 } else if tool.name == "mob_spawn_member" {
                     Arc::new(mob_spawn_tool_def_with_idle_retire_secs(tool))
@@ -1017,6 +1023,9 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
         }
         if call.name == "mob_spawn_member" {
             return self.dispatch_mob_spawn_member(call, context).await;
+        }
+        if call.name == "fork_off" {
+            return self.dispatch_fork_off(call, context).await;
         }
         if crate::console_spawn::is_console_spawn_tool(call.name) {
             // Spawn variants this wrapper does not otherwise intercept
@@ -1194,6 +1203,39 @@ impl AutoWireParentMobToolDispatcher {
         let outcome = self.inner.dispatch_with_context(call, context).await?;
 
         self.register_idle_retire_override_from_outcome(&outcome, idle_retire_override, &[])
+            .await;
+        self.project_spawn_to_console(&name, &args_for_console, &outcome)
+            .await;
+
+        Ok(outcome)
+    }
+
+    /// `fork_off` seats the child in the caller's own mob, where idle
+    /// retirement is opt-in. A fork that nobody retires holds one of the
+    /// bounded sessions forever, so the child is opted in on the runtime
+    /// default unless the caller passes `idle_retire_secs` explicitly.
+    async fn dispatch_fork_off(
+        &self,
+        call: meerkat_core::types::ToolCallView<'_>,
+        context: &meerkat_core::ToolDispatchContext,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        let mut args = serde_json::from_str::<Value>(call.args.get()).map_err(|error| {
+            meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
+        })?;
+        let idle_retire_override = fork_off_idle_retire_override_from_args(call.name, &mut args)?;
+        let name = call.name.to_string();
+        let args_for_console = args.clone();
+        let args = serde_json::value::RawValue::from_string(args.to_string()).map_err(|error| {
+            meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
+        })?;
+        let call = meerkat_core::types::ToolCallView {
+            id: call.id,
+            name: call.name,
+            args: &args,
+        };
+        let outcome = self.inner.dispatch_with_context(call, context).await?;
+
+        self.register_idle_retire_override_from_outcome(&outcome, Some(idle_retire_override), &[])
             .await;
         self.project_spawn_to_console(&name, &args_for_console, &outcome)
             .await;
@@ -1480,6 +1522,17 @@ fn delegate_idle_retire_override_from_args(
                 "idle_retire_secs must be a non-negative integer or null",
             )
         })
+}
+
+/// `fork_off` idle policy: an explicit `idle_retire_secs` behaves exactly as
+/// for `delegate`; an omitted one opts the fork child into the runtime
+/// default instead of leaving it out of retirement.
+fn fork_off_idle_retire_override_from_args(
+    tool_name: &str,
+    args: &mut Value,
+) -> Result<DelegateIdleRetireOverride, meerkat_core::ToolError> {
+    Ok(delegate_idle_retire_override_from_args(tool_name, args)?
+        .unwrap_or(DelegateIdleRetireOverride::RuntimeDefault))
 }
 
 fn delegate_tool_def_with_idle_retire_secs(
@@ -9904,6 +9957,89 @@ mod tests {
     }
 
     #[test]
+    fn fork_off_tool_schema_exposes_idle_retire_secs_through_the_wrapper() {
+        struct ForkOffOnly;
+        #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+        impl meerkat_core::AgentToolDispatcher for ForkOffOnly {
+            fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+                vec![Arc::new(meerkat_core::types::ToolDef::new(
+                    "fork_off",
+                    "Fork the current transcript",
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {"task": {"type": "string"}},
+                        "required": ["task"]
+                    }),
+                ))]
+                .into()
+            }
+            async fn dispatch(
+                &self,
+                call: meerkat_core::types::ToolCallView<'_>,
+            ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+                Err(meerkat_core::ToolError::execution_failed(format!(
+                    "unexpected dispatch of {}",
+                    call.name
+                )))
+            }
+        }
+        let dispatcher = AutoWireParentMobToolDispatcher {
+            inner: Arc::new(ForkOffOnly),
+            implicit_delegate_retirement_overrides: ImplicitDelegateRetirementOverrides::default(),
+            console_spawn_sink: new_console_spawn_sink_slot(),
+            identity_runtime: Arc::new(std::sync::RwLock::new(None)),
+            protected_mob_id: "test-mob".to_string(),
+            spawner_comms_name: None,
+        };
+
+        let tools = meerkat_core::AgentToolDispatcher::tools(&dispatcher);
+        let fork_off = tools
+            .iter()
+            .find(|tool| tool.name == "fork_off")
+            .expect("fork_off stays exposed");
+        let idle_retire_secs = &fork_off.input_schema["properties"]["idle_retire_secs"];
+
+        assert!(fork_off.description.contains("IDLE RETIREMENT:"));
+        assert!(
+            fork_off
+                .description
+                .contains("Omit idle_retire_secs to use the runtime default")
+        );
+        assert_eq!(idle_retire_secs["anyOf"][0]["type"], "integer");
+        assert_eq!(idle_retire_secs["anyOf"][1]["type"], "null");
+    }
+
+    #[test]
+    fn fork_off_idle_retire_secs_defaults_to_the_runtime_default() {
+        let mut absent = serde_json::json!({"task": "inspect"});
+        assert_eq!(
+            fork_off_idle_retire_override_from_args("fork_off", &mut absent)
+                .expect("absent arg is valid"),
+            DelegateIdleRetireOverride::RuntimeDefault
+        );
+
+        let mut seconds = serde_json::json!({"task": "inspect", "idle_retire_secs": 42});
+        assert_eq!(
+            fork_off_idle_retire_override_from_args("fork_off", &mut seconds)
+                .expect("integer arg is valid"),
+            DelegateIdleRetireOverride::Seconds(42)
+        );
+        assert!(seconds.get("idle_retire_secs").is_none());
+
+        let mut disabled = serde_json::json!({"task": "inspect", "idle_retire_secs": null});
+        assert_eq!(
+            fork_off_idle_retire_override_from_args("fork_off", &mut disabled)
+                .expect("null arg is valid"),
+            DelegateIdleRetireOverride::Disabled
+        );
+        assert!(disabled.get("idle_retire_secs").is_none());
+
+        let mut invalid = serde_json::json!({"task": "inspect", "idle_retire_secs": "soon"});
+        assert!(fork_off_idle_retire_override_from_args("fork_off", &mut invalid).is_err());
+    }
+
+    #[test]
     fn mob_spawn_tool_schema_exposes_opt_in_idle_retire_secs() {
         let tool = meerkat_core::types::ToolDef::new(
             "mob_spawn_member",
@@ -10238,6 +10374,67 @@ mod tests {
             overrides.get("ob3", "review-worker-vibe-forward").await,
             Some(DelegateIdleRetireOverride::Seconds(900))
         );
+    }
+
+    /// A `fork_off` result carries `mob_id` and `agent_identity` (upstream
+    /// `ForkOffResult`), so the child registers on the runtime default with
+    /// no fallback targets and no new parsing.
+    #[tokio::test]
+    async fn fork_off_registration_opts_the_child_into_runtime_default_retirement() {
+        let overrides = ImplicitDelegateRetirementOverrides::default();
+        let dispatcher = wrapper_with_overrides(overrides.clone());
+        let fork_result = concat!(
+            r#"{"mob_id":"ob3","source_member_id":"lead","agent_identity":"lead-fork-1","#,
+            r#""member_ref":"opaque","fork_session_id":"s-child","turn_session_id":"s-child","#,
+            r#""cache_inheritance":{"status":"unavailable","message_count":4,"#,
+            r#""reason":"target_identity_unresolved"},"bounded_result":{},"usage":{},"#,
+            r#""turns":1,"tool_calls":0}"#
+        );
+        let outcome =
+            meerkat_core::ToolDispatchOutcome::sync_result(meerkat_core::types::ToolResult::new(
+                "fork-1".to_string(),
+                fork_result.to_string(),
+                false,
+            ));
+
+        dispatcher
+            .register_idle_retire_override_from_outcome(
+                &outcome,
+                Some(DelegateIdleRetireOverride::RuntimeDefault),
+                &[],
+            )
+            .await;
+        assert_eq!(
+            overrides.get("ob3", "lead-fork-1").await,
+            Some(DelegateIdleRetireOverride::RuntimeDefault)
+        );
+
+        // An explicit policy still wins, and a failed fork registers nothing.
+        dispatcher
+            .register_idle_retire_override_from_outcome(
+                &outcome,
+                Some(DelegateIdleRetireOverride::Disabled),
+                &[],
+            )
+            .await;
+        assert_eq!(
+            overrides.get("ob3", "lead-fork-1").await,
+            Some(DelegateIdleRetireOverride::Disabled)
+        );
+        let failed =
+            meerkat_core::ToolDispatchOutcome::sync_result(meerkat_core::types::ToolResult::new(
+                "fork-2".to_string(),
+                r#"{"mob_id":"ob3","agent_identity":"lead-fork-2"}"#.to_string(),
+                true,
+            ));
+        dispatcher
+            .register_idle_retire_override_from_outcome(
+                &failed,
+                Some(DelegateIdleRetireOverride::RuntimeDefault),
+                &[],
+            )
+            .await;
+        assert_eq!(overrides.get("ob3", "lead-fork-2").await, None);
     }
 
     #[test]
