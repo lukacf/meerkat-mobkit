@@ -1,6 +1,7 @@
 import { test, vi } from "vitest";
 import assert from "node:assert/strict";
 import voiceContract from "../../../meerkat-mobkit/tests/fixtures/console_voice_v1.json";
+import { parseVoiceContextStatus, voiceContextFailureMessage } from "./voice-context";
 import {
   createVoiceSession,
   queryVoiceAvailability,
@@ -171,6 +172,37 @@ function replacement(reason = "canonical_context", handle: unknown = pending(tar
   return { required: true, reason, replacement: handle, canonical_seed_cursor: 17 };
 }
 
+function contextStatus(params: Record<string, unknown>, preparation: Record<string, unknown> = { phase: "provider_acknowledged" }) {
+  return {
+    identity: params.identity,
+    request_id: params.request_id,
+    channel_id: params.channel_id,
+    context_preparation: preparation,
+  };
+}
+
+test("context status accepts every shared Rust phase and failure projection without changing their meaning", () => {
+  const request = voiceContract.context_status_request;
+  const scope = { identity: request.identity, requestId: request.request_id, channelId: request.channel_id };
+  for (const response of Object.values(voiceContract.context_status_responses)) {
+    assert.deepEqual(parseVoiceContextStatus(response, scope), response.context_preparation);
+  }
+  for (const reason of voiceContract.context_status_failure_reasons) {
+    const response = {
+      ...request,
+      context_preparation: { phase: "failed", reason },
+    };
+    const preparation = parseVoiceContextStatus(response, scope);
+    assert.deepEqual(preparation, response.context_preparation);
+    assert.equal(preparation.phase, "failed");
+    if (preparation.phase === "failed") {
+      const message = voiceContextFailureMessage(preparation.reason);
+      assert.match(message, /Voice remains connected/);
+      assert.doesNotMatch(message, /undefined/);
+    }
+  }
+});
+
 function harness() {
   const clock = new Clock();
   const streams: Stream[] = [];
@@ -216,6 +248,7 @@ function harness() {
       if (method === "mobkit/console/voice/replacement") return { required: false };
       if (method === "mobkit/console/voice/answer_received") return { accepted: true };
       if (method === "mobkit/console/voice/activity") return { accepted: true };
+      if (method === "mobkit/console/voice/context_status") return contextStatus(params);
       if (method === "mobkit/console/voice/open") {
         return pending(params.identity as string, `channel-${params.identity}`);
       }
@@ -255,6 +288,223 @@ function harness() {
   };
 }
 
+test("the context observer sends the exact shared Rust method and request shape", async () => {
+  const h = harness();
+  const request = voiceContract.context_status_request;
+  h.env.randomId = () => request.request_id;
+  h.setRpc((method) => {
+    if (method === "mobkit/console/voice/open") return Promise.resolve(pending(request.identity, request.channel_id));
+    if (method === voiceContract.context_status_method) return Promise.resolve(voiceContract.context_status_responses.generating);
+    return undefined;
+  });
+  await h.controller.start({ identity: request.identity, label: "Golden agent" });
+  await flush();
+  assert.deepEqual(
+    h.calls.find((call) => call.method === voiceContract.context_status_method)?.params,
+    request,
+  );
+  assert.deepEqual(h.controller.getSnapshot().contextPreparation,
+    voiceContract.context_status_responses.generating.context_preparation);
+  await h.controller.close();
+});
+
+test("voice activates before a 20-second context job and context acknowledgement stops polling", async () => {
+  const h = harness();
+  h.setRpc((method, params) => {
+    if (method === "mobkit/console/send") return Promise.resolve({ accepted: true });
+    if (method !== "mobkit/console/voice/context_status") return undefined;
+    return Promise.resolve(contextStatus(params, h.clock.now < 20_000
+      ? { phase: "preparing", stage: "generating" }
+      : { phase: "provider_acknowledged" }));
+  });
+  await h.controller.start(target);
+  await flush();
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.equal(h.streams[0].tracks[0].enabled, true);
+  assert.equal(h.contexts[0].gains[0].gain.value, 1);
+  assert.deepEqual(h.controller.getSnapshot().contextPreparation, { phase: "preparing", stage: "generating" });
+  assert.deepEqual(await h.env.rpc("mobkit/console/send", { identity: target.identity, message: "Newer facts" }, 5000), { accepted: true });
+  h.controller.toggleMicrophone();
+  h.controller.toggleSpeaker();
+  await h.clock.advance(19_999);
+  assert.deepEqual(h.controller.getSnapshot().contextPreparation, { phase: "preparing", stage: "generating" });
+  await h.clock.advance(1);
+  assert.deepEqual(h.controller.getSnapshot().contextPreparation, { phase: "provider_acknowledged" });
+  assert.equal(h.controller.getSnapshot().microphoneMuted, true);
+  assert.equal(h.controller.getSnapshot().speakerMuted, true);
+  const reads = h.calls.filter((call) => call.method.endsWith("/context_status")).length;
+  await h.clock.advance(30_000);
+  assert.equal(h.calls.filter((call) => call.method.endsWith("/context_status")).length, reads);
+  assert.equal(h.calls.filter((call) => call.method.endsWith("/activity")).length, 0);
+  await h.controller.close();
+  assert.equal(h.clock.timers.size, 0);
+});
+
+test("a hanging context status read never gates audio and retries with a visible sanitized error", async () => {
+  const h = harness();
+  const read = deferred<unknown>();
+  h.setRpc((method) => method.endsWith("/context_status") ? read.promise : undefined);
+  await h.controller.start(target);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.equal(h.controller.getSnapshot().contextPreparation, null);
+  await h.clock.advance(VOICE_TEARDOWN_TIMEOUT_MS);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.match(h.controller.getSnapshot().contextStatusError!, /context status/i);
+  assert.equal(h.streams[0].tracks[0].enabled, true);
+  h.setRpc(undefined);
+  await h.clock.advance(5000);
+  assert.deepEqual(h.controller.getSnapshot().contextPreparation, { phase: "provider_acknowledged" });
+  assert.equal(h.controller.getSnapshot().contextStatusError, null);
+  read.reject(new Error("late secret=sk-context-body"));
+  await flush();
+  assert.equal(h.controller.getSnapshot().contextStatusError, null);
+  await h.controller.close();
+  assert.equal(h.clock.timers.size, 0);
+});
+
+test.each(["not_requested", "failed"])("terminal context %s remains explicit without closing audio", async (phase) => {
+  const h = harness();
+  const preparation = phase === "failed" ? { phase, reason: "timed_out" } : { phase };
+  h.setRpc((method, params) => method.endsWith("/context_status")
+    ? Promise.resolve(contextStatus(params, preparation)) : undefined);
+  await h.controller.start(target);
+  await flush();
+  assert.deepEqual(h.controller.getSnapshot().contextPreparation, preparation);
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.equal(h.controller.getSnapshot().error, null);
+  await h.clock.advance(10_000);
+  assert.equal(h.calls.filter((call) => call.method.endsWith("/context_status")).length, 1);
+  await h.controller.close();
+});
+
+test.each([
+  null,
+  {},
+  { phase: "provider_acknowledged", reason: "timed_out" },
+  { phase: "preparing", stage: "invented" },
+  { phase: "failed", reason: "sk-secret-provider-body" },
+])("invalid context status %j cannot imply supplied context or interrupt audio", async (preparation) => {
+  const h = harness();
+  h.setRpc((method, params) => method.endsWith("/context_status")
+    ? Promise.resolve({ ...contextStatus(params), context_preparation: preparation }) : undefined);
+  await h.controller.start(target);
+  await flush();
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.equal(h.controller.getSnapshot().contextPreparation, null);
+  assert.match(h.controller.getSnapshot().contextStatusError!, /context status/i);
+  assert.doesNotMatch(JSON.stringify(h.controller.getSnapshot()), /sk-secret/);
+  await h.controller.close();
+});
+
+test.each(["identity", "request_id", "channel_id", "unexpected_field"])("context status rejects a mismatched %s", async (field) => {
+  const h = harness();
+  h.setRpc((method, params) => method.endsWith("/context_status")
+    ? Promise.resolve({ ...contextStatus(params), [field]: "different" }) : undefined);
+  await h.controller.start(target);
+  await flush();
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.equal(h.controller.getSnapshot().contextPreparation, null);
+  assert.match(h.controller.getSnapshot().contextStatusError!, /context status/i);
+  await h.controller.close();
+});
+
+test.each(["close", "dispose", "pagehide"])("%s fences late context status and releases its timers", async (operation) => {
+  const h = harness();
+  const read = deferred<unknown>();
+  h.setRpc((method) => method.endsWith("/context_status") ? read.promise : undefined);
+  await h.controller.start(target);
+  const request = h.calls.find((call) => call.method.endsWith("/context_status"))!;
+  assert.ok(request);
+  if (operation === "close") await h.controller.close();
+  else if (operation === "dispose") h.controller.dispose();
+  else h.pagehide();
+  await flush();
+  const snapshot = h.controller.getSnapshot();
+  read.resolve(contextStatus(request.params));
+  await flush();
+  assert.equal(h.controller.getSnapshot(), snapshot);
+  assert.equal(h.clock.timers.size, 0);
+});
+
+test("a previous agent's context reply cannot overwrite the new voice agent", async () => {
+  const h = harness();
+  const old = deferred<unknown>();
+  h.setRpc((method, params) => {
+    if (!method.endsWith("/context_status")) return undefined;
+    return params.identity === target.identity ? old.promise
+      : Promise.resolve(contextStatus(params, { phase: "preparing", stage: "generating" }));
+  });
+  await h.controller.start(target);
+  const request = h.calls.find((call) => call.method.endsWith("/context_status"))!;
+  assert.ok(request);
+  await h.controller.start(other);
+  await flush();
+  old.resolve(contextStatus(request.params));
+  await flush();
+  assert.deepEqual(h.controller.getSnapshot().target, other);
+  assert.deepEqual(h.controller.getSnapshot().contextPreparation, { phase: "preparing", stage: "generating" });
+  await h.controller.close();
+});
+
+test("recovery replaces the context observer even though its request and agent are unchanged", async () => {
+  const h = harness();
+  const old = deferred<unknown>();
+  let replace = false;
+  h.setRpc((method, params) => {
+    if (method.endsWith("/context_status")) return params.channel_id === "recovery-channel"
+      ? Promise.resolve(contextStatus(params, { phase: "preparing", stage: "delivering" })) : old.promise;
+    if (replace && method.endsWith("/replacement")) return Promise.resolve(replacement());
+    return undefined;
+  });
+  await h.controller.start(target);
+  const request = h.calls.find((call) => call.method.endsWith("/context_status"))!;
+  assert.ok(request);
+  replace = true;
+  await h.clock.advance(VOICE_REPLACEMENT_POLL_INTERVAL_MS);
+  old.resolve(contextStatus(request.params));
+  await flush();
+  assert.equal(h.controller.getSnapshot().phase, "active");
+  assert.deepEqual(h.controller.getSnapshot().contextPreparation, { phase: "preparing", stage: "delivering" });
+  const reads = h.calls.filter((call) => call.method.endsWith("/context_status"));
+  assert.equal(reads.at(-1)?.params.request_id, request.params.request_id);
+  assert.equal(reads.at(-1)?.params.channel_id, "recovery-channel");
+  await h.controller.close();
+  assert.equal(h.clock.timers.size, 0);
+});
+
+test("context preparation and acknowledgement never extend the 15-minute audio silence deadline", async () => {
+  const h = harness();
+  h.setRpc((method, params) => method.endsWith("/context_status")
+    ? Promise.resolve(contextStatus(params, h.clock.now < 800_000
+      ? { phase: "preparing", stage: "generating" } : { phase: "provider_acknowledged" })) : undefined);
+  await h.controller.start(target);
+  await h.clock.advance(800_000);
+  assert.deepEqual(h.controller.getSnapshot().contextPreparation, { phase: "provider_acknowledged" });
+  await h.clock.advance(VOICE_SILENCE_TIMEOUT_MS - 800_000);
+  assert.equal(h.controller.getSnapshot().phase, "idle");
+  assert.match(h.controller.getSnapshot().notice!, /15 minutes of silence/);
+  assert.equal(h.calls.filter((call) => call.method.endsWith("/activity")).length, 0);
+  assert.equal(h.clock.timers.size, 0);
+});
+
+test.each([null, "provider_acknowledged"])("observer close during context publication %j cannot leave polling behind", async (phase) => {
+  const h = harness();
+  let closing: Promise<void> | undefined;
+  h.controller.subscribe(() => {
+    const snapshot = h.controller.getSnapshot();
+    if (snapshot.phase === "active" && (phase === null
+      ? snapshot.contextPreparation === null : snapshot.contextPreparation?.phase === phase)) {
+      closing = h.controller.close();
+    }
+  });
+  await h.controller.start(target);
+  await flush();
+  await closing;
+  assert.equal(h.controller.getSnapshot().phase, "idle");
+  assert.equal(h.clock.timers.size, 0);
+  assert.equal(h.streams[0].tracks[0].stopped, true);
+});
+
 test("strict handshake installs output before offer, gates media until typed authority, and hides credentials", async () => {
   const h = harness();
   const status = deferred<unknown>();
@@ -279,6 +529,7 @@ test("strict handshake installs output before offer, gates media until typed aut
   assert.deepEqual(h.calls.map((call) => call.method), [
     "mobkit/console/voice/open", "mobkit/live/playback_owner/register",
     "live/webrtc/answer", "mobkit/console/voice/answer_received", "mobkit/live/status",
+    "mobkit/console/voice/context_status",
   ]);
   assert.doesNotMatch(JSON.stringify(h.controller.getSnapshot()), /secret|receipt|opaque-bootstrap|sdp/);
   await h.controller.close();
@@ -505,28 +756,28 @@ test("pending activation does not enable media and has a bounded deadline", asyn
   assert.equal(h.clock.timers.size, 0);
 });
 
-test("context preparation is distinct from media connection and its timeout does not blame microphone permission", async () => {
+test("open admission is distinct from media connection and its timeout does not blame microphone permission", async () => {
   const h = harness();
   h.setRpc(method => method === "mobkit/console/voice/open" ? new Promise(() => {}) : undefined);
   const start = h.controller.start(target);
   await flush();
-  assert.equal(h.controller.getSnapshot().connectionStage, "context");
+  assert.equal(h.controller.getSnapshot().connectionStage, "opening");
   assert.equal(h.peers.length, 0);
   await h.clock.advance(VOICE_CONNECT_TIMEOUT_MS);
   await start;
-  assert.match(h.controller.getSnapshot().error!, /voice context timed out/);
+  assert.match(h.controller.getSnapshot().error!, /Starting voice timed out/);
   assert.doesNotMatch(h.controller.getSnapshot().error!, /microphone permissions|your network/);
   assert.equal(h.streams[0].tracks[0].stopped, true);
 });
 
-test("summary failures identify gateway preparation without exposing its upstream response", async () => {
+test("open failures identify gateway admission without exposing its upstream response", async () => {
   const h = harness();
   h.setRpc(method => method === "mobkit/console/voice/open"
-    ? Promise.reject(new Error("summary rejected: Oversized private-source-data"))
+    ? Promise.reject(new Error("admission rejected: private-source-data"))
     : undefined);
   await h.controller.start(target);
-  assert.match(h.controller.getSnapshot().error!, /could not prepare.*voice context/);
-  assert.doesNotMatch(h.controller.getSnapshot().error!, /Oversized|private-source-data/);
+  assert.match(h.controller.getSnapshot().error!, /could not start voice/);
+  assert.doesNotMatch(h.controller.getSnapshot().error!, /private-source-data/);
 });
 
 test("permission denial, permission timeout, and late permission grants clean up without opening remote voice", async () => {
@@ -679,7 +930,7 @@ test("server errors never surface raw credentials or transport data", async () =
   await h.controller.start(target);
   assert.equal(h.controller.getSnapshot().phase, "error");
   assert.doesNotMatch(h.controller.getSnapshot().error!, /sk-real|credential|full-body/);
-  assert.match(h.controller.getSnapshot().error!, /prepare.*voice context/);
+  assert.match(h.controller.getSnapshot().error!, /could not start voice/);
 });
 
 test("every post-open handshake failure fences the remote request and stops media", async () => {

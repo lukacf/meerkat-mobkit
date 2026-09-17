@@ -16,9 +16,14 @@ use crate::live_contracts::PendingLiveChannelHandle;
 
 #[cfg(feature = "openai-live")]
 mod auth;
+mod context_status;
 #[cfg(feature = "openai-live")]
 mod live_host;
 mod summary;
+
+pub(crate) use context_status::{
+    VoiceContextPreparation, VoiceContextStatus, VoiceContextStatusRequest,
+};
 
 pub(crate) const VOICE_OPEN_METHOD: &str = "mobkit/console/voice/open";
 pub(crate) const VOICE_READINESS_METHOD: &str = "mobkit/console/voice/readiness";
@@ -26,6 +31,7 @@ pub(crate) const VOICE_CLOSE_METHOD: &str = "mobkit/console/voice/close";
 pub(crate) const VOICE_ANSWER_RECEIVED_METHOD: &str = "mobkit/console/voice/answer_received";
 pub(crate) const VOICE_REPLACEMENT_METHOD: &str = "mobkit/console/voice/replacement";
 pub(crate) const VOICE_ACTIVITY_METHOD: &str = "mobkit/console/voice/activity";
+pub(crate) const VOICE_CONTEXT_STATUS_METHOD: &str = "mobkit/console/voice/context_status";
 const SILENCE_LIMIT: Duration = Duration::from_mins(15);
 const PENDING_SETUP_LIMIT: Duration = Duration::from_mins(2);
 
@@ -107,6 +113,7 @@ pub(crate) enum VoiceError {
     Closed,
     Busy,
     HostFailed,
+    ContextReadFailed,
 }
 
 impl VoiceError {
@@ -137,6 +144,11 @@ impl VoiceError {
                 "Voice teardown is still pending; retry the same request",
             ),
             Self::HostFailed => (-32000, "voice_host_failed", "Voice host operation failed"),
+            Self::ContextReadFailed => (
+                -32000,
+                "voice_context_read_failed",
+                "Voice context status could not be read",
+            ),
         };
         crate::rpc::JsonRpcError {
             code,
@@ -163,6 +175,12 @@ pub(crate) trait ConsoleVoiceSession: Send + Sync {
         Err(VoiceError::Unavailable)
     }
     async fn replacement_required(&self) -> Result<serde_json::Value, VoiceError> {
+        Err(VoiceError::Unavailable)
+    }
+    async fn context_preparation(
+        &self,
+        _channel: &str,
+    ) -> Result<VoiceContextPreparation, VoiceError> {
         Err(VoiceError::Unavailable)
     }
 }
@@ -331,6 +349,51 @@ pub struct ConsoleVoiceController {
 }
 
 impl ConsoleVoiceController {
+    pub(crate) async fn context_status(
+        &self,
+        principal: &str,
+        request: VoiceContextStatusRequest,
+    ) -> Result<VoiceContextStatus, VoiceError> {
+        if !valid_request_atom(&request.channel_id) {
+            return Err(VoiceError::InvalidRequest);
+        }
+        let slot = self
+            .request_slot(
+                principal,
+                &VoiceRequest {
+                    identity: request.identity.clone(),
+                    request_id: request.request_id.clone(),
+                },
+            )
+            .await?;
+        let session = {
+            let state = slot.state.lock().await;
+            if state.cancelled || state.closed {
+                return Err(VoiceError::Closed);
+            }
+            state.session.clone().ok_or(VoiceError::Busy)?
+        };
+        if session.pending().channel_id != request.channel_id {
+            return Err(VoiceError::RequestConflict);
+        }
+        // Never hold the request lock over a custody read. Activation, audio
+        // activity and cancellation must proceed even if the read is delayed.
+        let context_preparation = session.context_preparation(&request.channel_id).await?;
+        let state = slot.state.lock().await;
+        if state.cancelled || state.closed {
+            return Err(VoiceError::Closed);
+        }
+        if session.pending().channel_id != request.channel_id {
+            return Err(VoiceError::RequestConflict);
+        }
+        Ok(VoiceContextStatus {
+            identity: request.identity,
+            request_id: request.request_id,
+            channel_id: request.channel_id,
+            context_preparation,
+        })
+    }
+
     pub async fn shutdown(&self) -> Result<(), String> {
         let drain = async {
             let requests = self.requests.lock().await;
@@ -637,13 +700,18 @@ mod tests {
     struct Session {
         close_calls: AtomicUsize,
         fail_close: AtomicBool,
+        fail_context_read: AtomicBool,
+        channel: std::sync::RwLock<String>,
+        block_context: AtomicBool,
+        context_started: Notify,
+        release_context: Notify,
     }
 
     #[async_trait]
     impl ConsoleVoiceSession for Session {
         fn pending(&self) -> PendingLiveChannelHandle {
             PendingLiveChannelHandle {
-                channel_id: "test-channel".to_string(),
+                channel_id: self.channel.read().expect("channel").clone(),
                 target_identity: "agent-a".to_string(),
                 execution_mode: crate::live_contracts::LiveExecutionMode::ClientContext,
                 pending_receipt: "opaque-pending".to_string(),
@@ -682,6 +750,23 @@ mod tests {
             }
             Ok(())
         }
+
+        async fn context_preparation(
+            &self,
+            channel: &str,
+        ) -> Result<VoiceContextPreparation, VoiceError> {
+            if self.fail_context_read.load(Ordering::SeqCst) {
+                return Err(VoiceError::ContextReadFailed);
+            }
+            if channel != self.pending().channel_id {
+                return Err(VoiceError::RequestConflict);
+            }
+            if self.block_context.load(Ordering::SeqCst) {
+                self.context_started.notify_one();
+                self.release_context.notified().await;
+            }
+            Ok(VoiceContextPreparation::NotRequested)
+        }
     }
 
     struct Host {
@@ -704,6 +789,11 @@ mod tests {
                 session: Arc::new(Session {
                     close_calls: AtomicUsize::new(0),
                     fail_close: AtomicBool::new(false),
+                    fail_context_read: AtomicBool::new(false),
+                    channel: std::sync::RwLock::new("test-channel".to_string()),
+                    block_context: AtomicBool::new(false),
+                    context_started: Notify::new(),
+                    release_context: Notify::new(),
                 }),
             })
         }
@@ -742,6 +832,155 @@ mod tests {
         SILENCE_LIMIT
             .checked_sub(Duration::from_secs(1))
             .expect("silence limit exceeds one second")
+    }
+
+    fn context_request() -> VoiceContextStatusRequest {
+        VoiceContextStatusRequest {
+            identity: "agent-a".to_string(),
+            request_id: "request-a".to_string(),
+            channel_id: "test-channel".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn context_read_errors_are_rpc_errors_not_preparation_failure_or_ack() {
+        let host = Host::new(true, false);
+        let controller = ConsoleVoiceController::new(host.clone());
+        controller.open("alice", request()).await.expect("open");
+        host.session.fail_context_read.store(true, Ordering::SeqCst);
+        let result = controller.context_status("alice", context_request()).await;
+        assert_eq!(result, Err(VoiceError::ContextReadFailed));
+        let error = VoiceError::ContextReadFailed.rpc_error();
+        assert_eq!(error.code, -32000);
+        assert_eq!(
+            error.data,
+            Some(serde_json::json!({"kind":"voice_context_read_failed"}))
+        );
+        controller.close("alice", request()).await.expect("close");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn context_status_is_exact_request_owned_and_does_not_extend_audio_activity() {
+        let host = Host::new(true, false);
+        let controller = ConsoleVoiceController::new(host);
+        controller.open("alice", request()).await.expect("pending");
+        let slot = controller
+            .request_slot("alice", &request())
+            .await
+            .expect("slot");
+        assert_eq!(
+            controller.context_status("", context_request()).await,
+            Err(VoiceError::Unauthorized)
+        );
+        assert_eq!(
+            controller.context_status("bob", context_request()).await,
+            Err(VoiceError::RequestConflict)
+        );
+        for request in [
+            VoiceContextStatusRequest {
+                identity: "agent-b".to_string(),
+                ..context_request()
+            },
+            VoiceContextStatusRequest {
+                request_id: "other".to_string(),
+                ..context_request()
+            },
+            VoiceContextStatusRequest {
+                channel_id: "other".to_string(),
+                ..context_request()
+            },
+        ] {
+            assert_eq!(
+                controller.context_status("alice", request).await,
+                Err(VoiceError::RequestConflict)
+            );
+        }
+
+        assert_eq!(
+            controller
+                .context_status("alice", context_request())
+                .await
+                .expect("read")
+                .context_preparation,
+            VoiceContextPreparation::NotRequested,
+        );
+        assert!(!slot.state.lock().await.activated);
+        assert!(slot.state.lock().await.last_activity.is_none());
+        controller
+            .answer_received("alice", request(), "test-channel")
+            .await
+            .expect("activate");
+        let activity = slot.state.lock().await.last_activity;
+        tokio::time::advance(before_silence_expiry()).await;
+        controller
+            .context_status("alice", context_request())
+            .await
+            .expect("active read");
+        assert_eq!(slot.state.lock().await.last_activity, activity);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        slot.wait_closed().await.expect("silence expiry");
+        assert_eq!(
+            controller.context_status("alice", context_request()).await,
+            Err(VoiceError::Closed)
+        );
+    }
+
+    #[tokio::test]
+    async fn delayed_context_read_does_not_block_activation_close_or_channel_fences() {
+        let host = Host::new(true, false);
+        let controller = ConsoleVoiceController::new(host.clone());
+        controller.open("alice", request()).await.expect("open");
+        host.session.block_context.store(true, Ordering::SeqCst);
+        let reader = controller.clone();
+        let pending =
+            tokio::spawn(async move { reader.context_status("alice", context_request()).await });
+        host.session.context_started.notified().await;
+        controller
+            .answer_received("alice", request(), "test-channel")
+            .await
+            .expect("activation while read pending");
+        *host.session.channel.write().expect("channel") = "replacement-channel".to_string();
+        host.session.release_context.notify_one();
+        assert_eq!(
+            pending.await.expect("read task"),
+            Err(VoiceError::RequestConflict)
+        );
+        assert_eq!(
+            controller.context_status("alice", context_request()).await,
+            Err(VoiceError::RequestConflict)
+        );
+        let reader = controller.clone();
+        let pending = tokio::spawn(async move {
+            reader
+                .context_status(
+                    "alice",
+                    VoiceContextStatusRequest {
+                        channel_id: "replacement-channel".to_string(),
+                        ..context_request()
+                    },
+                )
+                .await
+        });
+        host.session.context_started.notified().await;
+        controller
+            .close("alice", request())
+            .await
+            .expect("close while read pending");
+        host.session.release_context.notify_one();
+        assert_eq!(pending.await.expect("read task"), Err(VoiceError::Closed));
+    }
+
+    #[test]
+    fn context_status_rejects_extra_or_missing_scope_fields() {
+        for value in [
+            serde_json::json!({"identity":"agent-a","request_id":"request-a"}),
+            serde_json::json!({"identity":"agent-a","channel_id":"test-channel"}),
+            serde_json::json!({"request_id":"request-a","channel_id":"test-channel"}),
+            serde_json::json!({"identity":"agent-a","request_id":"request-a","channel_id":"test-channel",
+                "pending_receipt":"caller-cannot-supply-authority"}),
+        ] {
+            assert!(serde_json::from_value::<VoiceContextStatusRequest>(value).is_err());
+        }
     }
 
     #[tokio::test]

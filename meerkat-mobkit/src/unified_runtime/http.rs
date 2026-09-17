@@ -307,23 +307,31 @@ impl UnifiedRuntime {
                                         "identity event target lost authority before subscription: {agent_id}"
                                     ))
                                 })?;
-                            let operation_agent_id = agent_id.clone();
                             return crate::identity_first::IdentityRuntime::run_member_alias_targets_operation_tracked(
                                 vec![target],
                                 move || async move {
+                                    // The lifecycle guard pins both the authorized identity
+                                    // and its current alias. The core roster identity is not
+                                    // the runtime alias used to fence this subscription.
+                                    let expected_alias = authority_runtime
+                                        .status(&authority_identity)
+                                        .await
+                                        .map_err(|error| error.to_string())?
+                                        .agent_runtime_id
+                                        .ok_or_else(|| {
+                                            "identity event target has no current runtime alias"
+                                                .to_string()
+                                        })?
+                                        .to_string();
                                     let identity_events = authority_runtime
                                         .subscribe(&authority_identity)
                                         .await
                                         .map_err(|error| error.to_string())?;
                                     let member_id = resolve_agent_event_member_id(
                                         &handle,
-                                        &operation_agent_id,
+                                        authority_identity.as_str(),
                                     )
                                     .await;
-                                    let expected_alias = crate::member_comms_id::runtime_alias_str(
-                                        member_id.as_str(),
-                                    )
-                                    .into_owned();
                                     let event_stream = handle
                                         .subscribe_agent_events(&member_id)
                                         .await

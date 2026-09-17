@@ -118,6 +118,17 @@ struct SendRequest<'a> {
     handling_mode: HandlingMode,
     interaction_id: Option<&'a str>,
     commit_mode: SendCommitMode,
+    console_human: Option<ConsoleHumanSend<'a>>,
+}
+
+struct ConsoleHumanSend<'a> {
+    delivery_identity: &'a meerkat_mob::MobDeliveryIdentity,
+    expected_session: Option<&'a str>,
+}
+
+enum DeliveryPreparation {
+    Work(meerkat_mob::MobRuntimeMode),
+    ConsoleHuman,
 }
 
 /// Map errors observed before a completion-bearing receipt is available.
@@ -128,6 +139,7 @@ fn admission_phase_error(
 ) -> IdentityRuntimeError {
     let identity = identity.clone();
     match err {
+        BridgeAdmissionError::HostHumanInput(error) => IdentityRuntimeError::HostHumanInput(error),
         BridgeAdmissionError::CompletionUnsupported(reason) => {
             IdentityRuntimeError::CompletionUnavailable { identity, reason }
         }
@@ -208,6 +220,7 @@ fn admission_phase_error(
 fn ingress_phase_error(identity: &AgentIdentity, err: BridgeError) -> IdentityRuntimeError {
     let identity = identity.clone();
     match err {
+        BridgeError::HostHumanInput(error) => IdentityRuntimeError::HostHumanInput(error),
         BridgeError::ActorAdmissionTimeout {
             operation,
             waited,
@@ -325,6 +338,7 @@ fn turn_phase_error(identity: &AgentIdentity, err: BridgeTurnError) -> IdentityR
 /// Errors from identity-first runtime operations.
 #[derive(Debug)]
 pub enum IdentityRuntimeError {
+    HostHumanInput(super::bridge::HostHumanInputError),
     /// Target identity is not registered/active.
     UnknownIdentity(AgentIdentity),
     /// send() rejected: target is InternalOnly.
@@ -530,6 +544,7 @@ pub enum IdentityRuntimeError {
 impl std::fmt::Display for IdentityRuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::HostHumanInput(error) => write!(f, "{error}"),
             Self::UnknownIdentity(id) => write!(f, "unknown identity: {id}"),
             Self::NotAddressable(err) => write!(f, "{err}"),
             Self::CompletionUnavailable { identity, reason } => write!(
@@ -801,6 +816,7 @@ impl IdentityRuntimeError {
     /// Omitted execution/retry flags are not a nonexecution verdict.
     pub fn structured_data(&self) -> Option<serde_json::Value> {
         match self {
+            Self::HostHumanInput(error) => Some(error.structured_data()),
             Self::ActorAdmissionTimeout {
                 operation,
                 waited,
@@ -7696,6 +7712,7 @@ impl IdentityRuntime {
                 handling_mode,
                 interaction_id,
                 commit_mode: SendCommitMode::AwaitCommit,
+                console_human: None,
             },
         )
         .await
@@ -7726,6 +7743,7 @@ impl IdentityRuntime {
                 handling_mode,
                 interaction_id,
                 commit_mode: SendCommitMode::AwaitCommit,
+                console_human: None,
             },
         )
         .await
@@ -7862,6 +7880,56 @@ impl IdentityRuntime {
         .map(|admission| admission.fencing_token)
     }
 
+    /// Console-only dispatch, called ONCE by the owner of a fresh persisted
+    /// console reservation. HTTP replays return that original frame/status or
+    /// typed unknown fate after failure; they never re-prepare changed memory.
+    /// No replay cache (or eviction which could make an old key executable).
+    pub(crate) async fn send_console_human_input_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+        accepted: &crate::console_aggregator::ConsoleInteractionAccepted,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        let delivery_identity = meerkat_mob::MobDeliveryIdentity::new(
+            accepted.input_frame_id.clone(),
+            accepted.interaction_id.clone(),
+        )
+        .map_err(|error| {
+            IdentityRuntimeError::HostHumanInput(super::bridge::HostHumanInputError::Mob(Box::new(
+                error.into(),
+            )))
+        })?;
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.map(ToString::to_string);
+        let content = content.clone();
+        let interaction_id = accepted.interaction_id.clone();
+        let expected_session = accepted.session_id.clone();
+        self.run_tracked_foreground(async move {
+            runtime
+                .send_core(
+                    &identity,
+                    SendRequest {
+                        expected_alias: expected_alias.as_deref(),
+                        content: &content,
+                        system_prompt: None,
+                        handling_mode,
+                        interaction_id: Some(&interaction_id),
+                        commit_mode: SendCommitMode::Ingress,
+                        console_human: Some(ConsoleHumanSend {
+                            delivery_identity: &delivery_identity,
+                            expected_session: expected_session.as_deref(),
+                        }),
+                    },
+                )
+                .await
+                .map(|(token, _)| token)
+        })
+        .await
+    }
+
     /// [`Self::send_with_mode`] with a host-minted interaction id (meerkat
     /// 0.7.25 ask 15 addendum). The id rides `WorkSpec` into runtime
     /// admission, so the turn's live events and its committed transcript
@@ -7903,6 +7971,7 @@ impl IdentityRuntime {
                 handling_mode,
                 interaction_id,
                 commit_mode: SendCommitMode::Ingress,
+                console_human: None,
             },
         )
         .await
@@ -7926,6 +7995,7 @@ impl IdentityRuntime {
             handling_mode,
             interaction_id,
             commit_mode,
+            console_human,
         } = request;
         let should_materialize = {
             let entries = self.entries.read().await;
@@ -8002,6 +8072,8 @@ impl IdentityRuntime {
             memory_generation,
             bridge_interaction_id,
             memory_runtime_mode,
+            local_human,
+            human_session,
         ) = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -8017,10 +8089,23 @@ impl IdentityRuntime {
                 entry.continuity.as_ref().map(|c| c.generation.get()),
                 interaction_id_for_delivery(&entry.spec, interaction_id),
                 // Resolved as meerkat resolves it at spawn (override, profile,
-                // default); AutonomousHost cannot carry injected context.
+                // default). Generic autonomous work has no user context slot;
+                // the explicit human boundary does.
                 self.effective_runtime_mode(&entry.spec),
+                console_human.is_some() && !durable_spec_uses_external_binding(&entry.spec),
+                entry.continuity.as_ref().map(|c| c.session_id.clone()),
             )
         };
+        if local_human
+            && let Some(expected_session) = console_human
+                .as_ref()
+                .and_then(|human| human.expected_session)
+            && human_session.as_ref().map(ToString::to_string).as_deref() != Some(expected_session)
+        {
+            return Err(IdentityRuntimeError::HostHumanInput(
+                super::bridge::HostHumanInputError::BindingChanged,
+            ));
+        }
         let (content_to_deliver, injected_context) = self
             .prepare_member_delivery(
                 identity,
@@ -8028,7 +8113,11 @@ impl IdentityRuntime {
                 memory_session_key.as_deref(),
                 memory_generation,
                 handling_mode == HandlingMode::Steer,
-                memory_runtime_mode,
+                if local_human {
+                    DeliveryPreparation::ConsoleHuman
+                } else {
+                    DeliveryPreparation::Work(memory_runtime_mode)
+                },
             )
             .await?;
 
@@ -8039,9 +8128,14 @@ impl IdentityRuntime {
         // completion lane must NOT - silently taking the ingress path would
         // return success for a turn that was never awaited, which is the exact
         // false-success this API exists to remove.
-        if commit_mode == SendCommitMode::AwaitCommit
+        if (commit_mode == SendCommitMode::AwaitCommit || local_human)
             && (self.bridge.is_none() || runtime_id.is_none())
         {
+            if local_human {
+                return Err(IdentityRuntimeError::HostHumanInput(
+                    super::bridge::HostHumanInputError::BindingChanged,
+                ));
+            }
             return Err(IdentityRuntimeError::CompletionUnavailable {
                 identity: identity.clone(),
                 reason: if self.bridge.is_none() {
@@ -8062,17 +8156,41 @@ impl IdentityRuntime {
                     // matter.
                     let mut reload_attempted = false;
                     loop {
-                        let attempt = bridge
-                            .deliver_with_mode_context_and_system_prompt(
-                                rid,
-                                &content_to_deliver,
-                                system_prompt,
-                                &injected_context,
+                        let attempt = if local_human {
+                            let session = human_session.as_ref().ok_or(
+                                IdentityRuntimeError::HostHumanInput(
+                                    super::bridge::HostHumanInputError::BindingChanged,
+                                ),
+                            )?;
+                            let mut delivery = super::bridge::BridgeDelivery::new(
+                                content_to_deliver.clone(),
                                 handling_mode,
-                                bridge_interaction_id,
-                            )
-                            .await
-                            .map_err(|e| ingress_phase_error(identity, e));
+                            );
+                            delivery.system_prompt = system_prompt.map(ToString::to_string);
+                            delivery.injected_context = injected_context.clone();
+                            delivery.interaction_id =
+                                bridge_interaction_id.map(ToString::to_string);
+                            delivery.delivery_identity = console_human
+                                .as_ref()
+                                .map(|human| human.delivery_identity.clone());
+                            bridge
+                                .deliver_host_human_input(rid, session, delivery)
+                                .await
+                        } else {
+                            // External delivery keeps its established wire semantics.
+                            // It is not a claim of local canonical human authorship.
+                            bridge
+                                .deliver_with_mode_context_and_system_prompt(
+                                    rid,
+                                    &content_to_deliver,
+                                    system_prompt,
+                                    &injected_context,
+                                    handling_mode,
+                                    bridge_interaction_id,
+                                )
+                                .await
+                        }
+                        .map_err(|e| ingress_phase_error(identity, e));
                         match attempt {
                             Ok(delivered) => {
                                 self.record_delivery_success(identity).await;
@@ -8381,7 +8499,7 @@ impl IdentityRuntime {
         memory_session_key: Option<&str>,
         memory_generation: Option<u64>,
         steer: bool,
-        runtime_mode: meerkat_mob::MobRuntimeMode,
+        preparation: DeliveryPreparation,
     ) -> Result<(meerkat_core::ContentInput, Vec<meerkat_core::ContentInput>), IdentityRuntimeError>
     {
         if steer {
@@ -8396,12 +8514,15 @@ impl IdentityRuntime {
                     }
                 }
                 let defanged = injector.defang_inbound(identity, content);
-                // meerkat refuses injected context on autonomous-host members
+                // meerkat refuses injected context on generic autonomous work
                 // ("autonomous inbox delivery carries no user-channel work
                 // boundary"), and a refusal there is the WHOLE turn, not just the
                 // memory. Defang still runs - it is an inbound threat regardless of
                 // mode - but recall is skipped, typed, so the zero names itself.
-                if runtime_mode == meerkat_mob::MobRuntimeMode::AutonomousHost {
+                if matches!(
+                    preparation,
+                    DeliveryPreparation::Work(meerkat_mob::MobRuntimeMode::AutonomousHost)
+                ) {
                     injector.note_turn_skip(
                         identity,
                         crate::memory::coordinator::TurnInjectionSkip::RuntimeModeAutonomousHost,
@@ -8531,7 +8652,7 @@ impl IdentityRuntime {
                 memory_session_key.as_deref(),
                 memory_generation,
                 false,
-                memory_runtime_mode,
+                DeliveryPreparation::Work(memory_runtime_mode),
             )
             .await?;
         // Task #50 fail-closed matrix, validated BEFORE bridge admission:

@@ -47,7 +47,8 @@
 .voice-bar__titles { display: grid; gap: 2px; min-width: 0; }
 .voice-bar__name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .voice-bar__name strong { font-weight: 600; }
-.voice-bar__status { font-size: 11px; color: var(--ink-muted); }
+.voice-bar__status { display: flex; flex-wrap: wrap; gap: 2px 8px; font-size: 11px; color: var(--ink-muted); }
+.voice-bar__context { overflow-wrap: anywhere; }
 .voice-bar__indicator { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--ink-dim); }
 .voice-bar[data-phase="active"] .voice-bar__indicator { background: var(--voice-output); }
 .voice-bar[data-phase="error"] .voice-bar__indicator { background: var(--danger); }
@@ -79,6 +80,12 @@
   .voice-bar__separator { margin: 0 1px; }
   .voice-bar__channels { gap: 12px; }
   .voice-bar__channel-label { flex-wrap: wrap; gap: 2px 6px; }
+}
+
+@container (max-width: 260px) {
+  .voice-bar__header { flex-wrap: wrap; }
+  .voice-bar__heading { flex-basis: 100%; }
+  .voice-bar__controls { margin-inline-start: auto; }
 }
 
 @media (pointer: coarse) {

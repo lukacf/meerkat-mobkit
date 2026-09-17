@@ -9519,6 +9519,67 @@ pub async fn send_message_on_mob_with_mode(
     )))
 }
 
+/// Console-only local human submission pinned to the member snapshot resolved
+/// before accepting the request. External members retain the existing remote
+/// send protocol; that compatibility path makes no local transcript-role claim.
+pub(crate) async fn send_console_human_on_mob(
+    handle: &MobHandle,
+    member: &meerkat_mob::runtime::MobMemberListEntry,
+    content: meerkat_core::ContentInput,
+    handling_mode: meerkat_core::types::HandlingMode,
+    accepted: &crate::console_aggregator::ConsoleInteractionAccepted,
+) -> Result<String, MobRuntimeError> {
+    let (runtime_id, fence_token) = member.binding_atoms().ok_or(MobRuntimeError::InvalidInput(
+        "console human target has no current runtime binding",
+    ))?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = tokio::time::timeout_at(deadline, handle.member_status(&member.agent_identity))
+        .await
+        .map_err(|_| MobError::ActorCommandTimedOut {
+            command_kind: "MemberStatus",
+            stage: "console_human_target",
+        })??;
+    if status.external_member.is_some() {
+        // Keep remote work transport semantics, but use the original binding:
+        // a stale local snapshot must never become a send to a replacement peer.
+        handle
+            .submit_work_with_mode_bounded(
+                runtime_id,
+                fence_token,
+                meerkat_mob::WorkRef::new(),
+                meerkat_mob::WorkSpec::new(content, meerkat_mob::WorkOrigin::Internal),
+                handling_mode,
+                deadline.into_std(),
+            )
+            .await?;
+        return Ok(String::new());
+    }
+    let interaction = accepted
+        .interaction_id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| MobRuntimeError::InvalidInput("console interaction must be a UUID"))?;
+    let delivery = meerkat_mob::MobDeliveryIdentity::new(
+        accepted.input_frame_id.clone(),
+        interaction.to_string(),
+    )
+    .map_err(MobError::from)?;
+    // Addressability was already checked by the console policy. Internal
+    // origin preserves support for console-addressable internal workers.
+    let spec = meerkat_mob::WorkSpec::new(content, meerkat_mob::WorkOrigin::Internal)
+        .with_interaction_id(meerkat_core::interaction::InteractionId(interaction));
+    handle
+        .submit_host_human_input_bounded(
+            runtime_id,
+            fence_token,
+            spec,
+            handling_mode,
+            delivery,
+            deadline.into_std(),
+        )
+        .await?;
+    Ok(accepted.session_id.clone().unwrap_or_default())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {

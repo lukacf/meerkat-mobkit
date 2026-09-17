@@ -116,6 +116,66 @@ function finalText(frame) {
   return frame.kind === "interaction_complete" && frame.status === "completed" &&
     providerFinal && frame.payload?.is_error !== true ? text(frame.payload) : "";
 }
+function canonicalInputText(message) {
+  if (message.role === "system_notice") return typeof message.body === "string" ? message.body : null;
+  if (typeof message.content === "string") return message.content;
+  if (Array.isArray(message.content) &&
+    message.content.every(block => block.type === "text" && typeof block.text === "string")) {
+    return message.content.map(block => block.text).join("");
+  }
+  return null;
+}
+function assertCanonicalTypedUser(snapshot, sessionId, interactionId, content) {
+  assert.equal(snapshot.sessionId, sessionId, "Typed input must be persisted on the ORIGINAL canonical session");
+  assert.ok(typeof interactionId === "string" && interactionId.length > 0, "Console acceptance must name its exact interaction");
+  assert.ok(Array.isArray(snapshot.messages), "Committed canonical messages must be available");
+  const candidates = snapshot.messages.filter(message =>
+    ["user", "system_notice"].includes(message.role) &&
+    (canonicalInputText(message) === content || message.identity?.interaction_id === interactionId));
+  assert.equal(candidates.length, 1, "The typed request must occur exactly once as canonical input, not only as a visible send frame");
+  const message = candidates[0];
+  assert.equal(message.role, "user", "SystemNotice ExternalEvent cannot substitute for genuine canonical Message::User");
+  // Meerkat omits transcript_role for its serde-default Conversational role.
+  assert.ok(message.transcript_role === undefined || message.transcript_role === "conversational",
+    "Typed console input must be conversational, not injected context or a compaction summary");
+  assert.equal(message.identity?.interaction_id, interactionId, "Canonical User must carry the EXACT console interaction ID");
+  assert.equal(canonicalInputText(message), content, "Canonical User must preserve the complete typed request exactly");
+  return message;
+}
+function readCommittedTypedSource(directory, sessionId) {
+  // The timeline deliberately removes history twins of send frames. Read the
+  // fixture's committed whole-blob authority instead, never a provisional tail
+  // or the legacy runtime_session_snapshots compatibility table.
+  const database = path.join(directory, "state", "runtime.sqlite");
+  fs.accessSync(database, fs.constants.R_OK);
+  const result = spawnSync("python3", ["-c", `
+import json, sqlite3, sys
+from pathlib import Path
+database, session_id = sys.argv[1:]
+connection = sqlite3.connect(Path(database).as_uri() + "?mode=ro", uri=True, timeout=5)
+try:
+    rows = connection.execute("""
+        SELECT authority.store_revision, authority.blob_sha256, bodies.session_snapshot
+        FROM runtime_whole_blob_authority AS authority
+        JOIN runtime_whole_blob_bodies AS bodies ON bodies.blob_sha256 = authority.blob_sha256
+        WHERE authority.session_id = ?
+    """, (session_id,)).fetchall()
+    if len(rows) != 1:
+        raise RuntimeError("Expected exactly one committed whole-blob authority for the fixture session; no legacy/provisional fallback")
+    revision, digest, data = rows[0]
+    session = json.loads(data)
+    if session.get("id") != session_id or not isinstance(session.get("messages"), list):
+        raise RuntimeError("Committed session envelope identity/messages mismatch")
+    print(json.dumps({
+        "sessionId": session_id, "storeRevision": revision, "blobSha256": digest,
+        "messages": [message for message in session["messages"] if message.get("role") in ("user", "system_notice")]
+    }))
+finally:
+    connection.close()
+`, database, sessionId], { env: childEnv(), encoding: "utf8", timeout: 10_000, maxBuffer: 4 * 1024 * 1024 });
+  assert.equal(result.status, 0, `Read-only canonical-source probe failed: ${redact(result.error?.message ?? result.stderr)}`);
+  return JSON.parse(result.stdout);
+}
 function hasPendingResults(frames, expected) {
   return expected.some(value => !frames.some(frame => contains(finalText(frame), value)));
 }
@@ -212,13 +272,38 @@ function decodeAgentSse(identity, onEvent) {
   };
 }
 
-async function subscribeNativeAgent(url, memberId) {
+async function readSseErrorBody(response, limit = 8192) {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks = [];
+  let bytes = 0;
+  try {
+    while (bytes < limit) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = value.subarray(0, limit - bytes);
+      chunks.push(Buffer.from(chunk));
+      bytes += chunk.byteLength;
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  } finally {
+    await reader.cancel();
+    reader.releaseLock();
+  }
+}
+async function subscribeNativeAgent(url, identity, diagnostics) {
   const abort = new AbortController();
   const timeout = setTimeout(() => abort.abort(), 20_000);
   let response;
+  const requestPath = `/agents/${encodeURIComponent(identity)}/events`;
+  Object.assign(diagnostics, { identity, requestPath, startedAt: Date.now() });
   try {
-    response = await fetch(`${url}/agents/${encodeURIComponent(memberId)}/events`, { signal: abort.signal });
-    assert.equal(response.status, 200, `Native agent SSE subscription HTTP ${response.status}`);
+    response = await fetch(`${url}${requestPath}`, { signal: abort.signal });
+    diagnostics.status = response.status;
+    if (response.status !== 200) {
+      diagnostics.body = redact(await readSseErrorBody(response));
+      throw new Error(`Native agent SSE ${requestPath} HTTP ${response.status}: ${diagnostics.body}`);
+    }
     assert.ok(response.headers.get("content-type")?.startsWith("text/event-stream"));
   } catch (error) {
     abort.abort();
@@ -229,17 +314,20 @@ async function subscribeNativeAgent(url, memberId) {
   const events = [];
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  const consume = decodeAgentSse(memberId, event => events.push(event));
+  const consume = decodeAgentSse(identity, event => events.push(event));
   let stopping = false;
   let failure;
   const task = (async () => {
     for (;;) {
       const { value, done } = await reader.read();
-      if (done) throw new Error("Native agent event stream ended unexpectedly");
+      if (done) throw new Error(`Native agent event stream ${requestPath} ended unexpectedly`);
       consume(decoder.decode(value, { stream: true }));
     }
   })().catch(error => {
-    if (!stopping) failure = error;
+    if (!stopping) {
+      failure = error;
+      diagnostics.streamError = redact(error.message);
+    }
   }).finally(() => reader.releaseLock());
   return {
     events,
@@ -268,6 +356,13 @@ function assertReopenedScope(previous, current, requests, events, previousDelega
   assert.ok(!events.some(event => previousDelegations.includes(event.delegation_id) ||
     previousDelegations.includes(event.delegation?.id)), "New native events must not reference old-call delegation IDs");
   assert.ok(!events.some(event => event.type === "error"), "Late delivery must not cause a current-provider error");
+}
+function assertRetiredChannelGuard(response) {
+  assert.equal(response.result, undefined, "A retired console channel must not remain dispatchable");
+  assert.equal(response.error?.code, -32000);
+  assert.equal(response.error?.data?.kind, "voice_request_conflict",
+    "Only the exact retired-request custody guard is expected, not arbitrary status errors");
+  assert.equal(response.error.message, "Voice request conflicts with its existing owner");
 }
 
 // A transcript is not audio; RTP counters are not decoded audio; an old peak
@@ -339,6 +434,29 @@ function selfTest() {
   const event = { peer: 1, at: 1200, type: "session.output_transcript.delta", delta: "amber maple" };
   const samples = [1200, 1240, 1280, 1320].map(at => ({ peer: 1, at, kind: "speaker", rms: 0.02 }));
   const good = { observedAt: 12_000, events: [event], samples };
+  const typedContent = "CURRENT_VALUE amber maple jade birch";
+  const canonicalUser = { role: "user", content: [{ type: "text", text: typedContent }],
+    identity: { interaction_id: "exact-console-interaction" } };
+  const canonical = { sessionId: "original-session", messages: [canonicalUser] };
+  const checkCanonical = snapshot => assertCanonicalTypedUser(snapshot, "original-session", "exact-console-interaction", typedContent);
+  assert.equal(checkCanonical(canonical), canonicalUser);
+  assert.doesNotThrow(() => checkCanonical({ ...canonical, messages: [
+    { ...canonicalUser, content: typedContent, transcript_role: "conversational" },
+  ] }));
+  const externalNotice = { role: "system_notice", kind: "external_event", body: typedContent,
+    blocks: [{ type: "external_event", source: "rpc", body: typedContent }] };
+  assert.throws(() => checkCanonical({ ...canonical, messages: [externalNotice] }), /SystemNotice/);
+  assert.throws(() => checkCanonical({ ...canonical, messages: [
+    { ...canonicalUser, transcript_role: "injected_context" },
+  ] }), /conversational/);
+  assert.throws(() => checkCanonical({ ...canonical, messages: [{ ...canonicalUser, identity: undefined }] }), /EXACT/);
+  assert.throws(() => checkCanonical({ ...canonical, messages: [
+    { ...canonicalUser, identity: { interaction_id: "different-interaction" } },
+  ] }), /EXACT/);
+  assert.throws(() => checkCanonical({ ...canonical, messages: [canonicalUser, canonicalUser] }), /exactly once/);
+  assert.throws(() => checkCanonical({ ...canonical, messages: [canonicalUser, externalNotice] }), /exactly once/);
+  assert.throws(() => checkCanonical({ ...canonical, sessionId: "replacement-session" }), /ORIGINAL/);
+  assert.throws(() => checkCanonical({ ...canonical, messages: [{ ...canonicalUser, content: "only an echo" }] }), /complete typed request/);
   assert.ok(spokenEvidence(good, mark, "amber maple"));
   assert.equal(spokenEvidence({ ...good, samples: [] }, mark, "amber maple"), null);
   assert.equal(spokenEvidence({ ...good, samples: samples.map(s => ({ ...s, rms: 0 })) }, mark, "amber maple"), null);
@@ -419,6 +537,13 @@ function selfTest() {
   assert.throws(() => decodeAgentSse("keeper", () => {})(
     'id: wrong-member:2\nevent: tool_execution_started\ndata: {"type":"tool_execution_started"}\n\n'));
   assert.throws(() => decodeAgentSse("keeper", () => {})('id: keeper:2\nevent: tool_execution_started\ndata: not-json\n\n'));
+  const publicIdentityFrames = [];
+  decodeAgentSse(KEEPER, event => publicIdentityFrames.push(event))(
+    `id: ${KEEPER}:0\nevent: tool_execution_started\ndata: {"type":"tool_execution_started","id":"real-shell-call","name":"shell"}\n\n`);
+  assert.equal(publicIdentityFrames[0].id, "voice-keeper:0");
+  assert.throws(() => decodeAgentSse(KEEPER, () => {})(
+    `id: rt:${KEEPER}:0:0\nevent: tool_execution_started\ndata: {"type":"tool_execution_started","id":"real-shell-call","name":"shell"}\n\n`),
+  "The SSE prefix must match the public identity actually subscribed, not runtime bookkeeping");
   assert.equal(hasPendingResults([backgroundFinal], ["amber"]), false, "Already-completed work cannot prove close-under-load");
   assert.equal(hasPendingResults([backgroundFinal], ["amber", "jade"]), true);
   const readyIdentity = { identity: "primary", state: "active", response_phase: null, session_id: "canonical" };
@@ -467,6 +592,13 @@ function selfTest() {
   assert.throws(() => assertReopenedScope(oldScope, newScope, [],
     [{ type: "session.commentary.appended", delegation_id: "old-delegation" }], ["old-delegation"]));
   assert.throws(() => assertReopenedScope(oldScope, newScope, [], [{ type: "error" }], []));
+  const retiredGuard = { error: { code: -32000, data: { kind: "voice_request_conflict" },
+    message: "Voice request conflicts with its existing owner" } };
+  assert.doesNotThrow(() => assertRetiredChannelGuard(retiredGuard));
+  assert.throws(() => assertRetiredChannelGuard({ result: { phase: "closed" } }));
+  assert.throws(() => assertRetiredChannelGuard({ error: { ...retiredGuard.error, code: -32600 } }));
+  assert.throws(() => assertRetiredChannelGuard({ error: { ...retiredGuard.error, data: { kind: "voice_host_failed" } } }));
+  assert.throws(() => assertRetiredChannelGuard({ error: { ...retiredGuard.error, message: "Unexpected error" } }));
   for (const name of [...WORDS, ...Object.keys(PHRASES)]) wavInfo(fs.readFileSync(path.join(ASSETS, `${name}.wav`)));
   const manifest = JSON.parse(fs.readFileSync(path.join(ASSETS, "manifest.json")));
   assert.deepEqual(manifest.phrases, PHRASES);
@@ -537,6 +669,9 @@ async function startPeerGate(facts) {
 }
 
 async function selfTestPeerGate() {
+  assert.equal(await readSseErrorBody(new Response('{"error":"internal_server_error"}')),
+    '{"error":"internal_server_error"}');
+  assert.equal(await readSseErrorBody(new Response("bounded-error-body"), 7), "bounded");
   const facts = { voiceOperation: "offline-operation", oldVoice: "offline verified value" };
   const gate = await startPeerGate(facts);
   try {
@@ -1077,7 +1212,8 @@ async function runBrowser(url, facts, directory, gate) {
     if (method.startsWith("mobkit/live/") || method.startsWith("mobkit/console/voice/")) {
       observations.directControls.push({ method, at: Date.now(), identity: params.identity,
         channelId: params.channel_id, requestId: params.request_id, phase: data.result?.phase,
-        errorCode: data.error?.code, errorMessage: data.error && redact(data.error.message) });
+        errorCode: data.error?.code, errorKind: data.error?.data?.kind,
+        errorMessage: data.error && redact(data.error.message) });
     }
     return data;
   };
@@ -1179,8 +1315,12 @@ async function runBrowser(url, facts, directory, gate) {
     }, Math.max(1, 5000 - (Date.now() - start)), 25);
     const localMs = Date.now() - start;
     assert.equal(await page.getByTestId("voice-bar").count(), 0);
-    assert.equal((await status(active)).phase, "closed", "Exact old channel must remain server-closed");
-    log("closed", { serverMs: closed.ended - start, localMs });
+    const receipt = { requestId: active.requestId, phase: closed.result.phase, serverMs: closed.ended - start, localMs };
+    (observations.closes ??= []).push(receipt);
+    log("closed", receipt);
+    // Positive cleanup is proven above. The console releases channel custody
+    // after close, so the retired channel must now fail its exact owner guard.
+    assertRetiredChannelGuard(await rpcRaw("mobkit/live/status", controlParams(active)));
   };
   page.on("request", request => {
     if (!request.url().endsWith("/console/rpc")) return;
@@ -1306,6 +1446,10 @@ async function runBrowser(url, facts, directory, gate) {
     const content = `CURRENT_VALUE ${facts.typed}. Request nonce ${facts.nonce}-typed. Store this exact four-word value and confirm all four words once.`;
     const typed = await send(PRIMARY, content);
     await final(PRIMARY, beforeTyped, facts.typed);
+    const typedSource = readCommittedTypedSource(directory, original.session_id);
+    const canonicalTypedUser = assertCanonicalTypedUser(typedSource, original.session_id, typed.result.interaction_id, content);
+    observations.typedCanonicalSource = { sessionId: typedSource.sessionId, storeRevision: typedSource.storeRevision,
+      blobSha256: typedSource.blobSha256, interactionId: typed.result.interaction_id, message: canonicalTypedUser };
     await hear(typedMark, facts.typed, "typed exact value");
     const recall = await speak(page, ["recall"]);
     await inputHeard(recall, "current console value");
@@ -1313,6 +1457,8 @@ async function runBrowser(url, facts, directory, gate) {
     assert.equal(requests.filter(row => row.method === "mobkit/console/send" && row.params.content === content).length, 1);
     assert.equal((await frames(PRIMARY)).filter(frame => frame.kind === "user_input" &&
       frame.interaction_id === typed.result.interaction_id).length, 1, "Typed input must persist exactly once");
+    assertCanonicalTypedUser(readCommittedTypedSource(directory, original.session_id),
+      original.session_id, typed.result.interaction_id, content);
     await sameOriginal();
 
     log("phase-3", { case: "real peer holds reply until after initial background answer, then fresh Live update" });
@@ -1355,7 +1501,8 @@ async function runBrowser(url, facts, directory, gate) {
     const concurrentContent = `CURRENT_VALUE ${facts.overlapValue}. Request nonce ${facts.nonce}-concurrent-append. Replace the earlier console value and confirm these four words while the keeper checks finish.`;
     const concurrent = await send(PRIMARY, concurrentContent);
     await final(PRIMARY, overlapBefore, facts.overlapValue);
-    keeperObserver = await subscribeNativeAgent(url, records.find(record => record.identity === KEEPER).runtime_member_id);
+    observations.nativeKeeperSubscription = {};
+    keeperObserver = await subscribeNativeAgent(url, KEEPER, observations.nativeKeeperSubscription);
     observations.nativeKeeperEvents = keeperObserver.events;
     observations.nativeKeeperSubscribedAt = Date.now();
     await peerSend(`BEGIN EXTERNAL VERIFICATION ${facts.voiceOperation}. Execute this exact command once using shell, background=false, timeout_secs=250: ${gate.command}\nThe endpoint will return the verified result later. Wait for the real shell result, then send it once to the original requester. The launch and typed operations are unrelated.`);

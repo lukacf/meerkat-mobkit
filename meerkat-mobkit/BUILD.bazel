@@ -720,6 +720,7 @@ rust_test(
     ],
     srcs = [
         "tests/agent_events_identity_resolution.rs",
+        "tests/support/llm_usage.rs",
     ],
     visibility = ["//visibility:public"],
     rustc_env = {

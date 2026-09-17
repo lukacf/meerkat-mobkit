@@ -11,8 +11,8 @@ use meerkat::experimental_gpt_live::{
     PublicGptLiveOpenAuthorityConfig, PublicGptLivePlaybackPolicy,
 };
 use meerkat::session_runtime::live_summary::{
-    LiveContextSummarizer, LiveContextSummaryError, LiveContextSummaryPolicy,
-    LiveContextSummarySnapshot,
+    LiveContextBootstrapMode, LiveContextSummarizer, LiveContextSummaryError,
+    LiveContextSummaryPolicy, LiveContextSummarySnapshot,
 };
 use meerkat_core::{Config, SessionId, SessionLlmIdentity};
 use meerkat_session::{PersistentSessionService, SessionAgentBuilder};
@@ -20,7 +20,10 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use super::auth::{ConsoleLiveBindingAuthority, ConsoleLiveGrant};
-use super::{ConsoleVoiceController, ConsoleVoiceHost, ConsoleVoiceSession, VoiceError};
+use super::{
+    ConsoleVoiceController, ConsoleVoiceHost, ConsoleVoiceSession, VoiceContextPreparation,
+    VoiceError,
+};
 use crate::access::{ACTION_AGENT_SEND, ACTION_AGENT_VIEW, AccessController};
 use crate::live_contracts::{ExperimentalLiveChannelStatus, PendingLiveChannelHandle};
 use crate::live_wiring::{
@@ -201,7 +204,8 @@ impl ConsoleVoiceController {
                 Duration::from_mins(1),
             )
             .map_err(|error| error.to_string())?,
-        };
+        }
+        .with_bootstrap_mode(LiveContextBootstrapMode::Concurrent);
         let capability = LiveCapabilityProvider::public(
             Arc::new(factory),
             registration.realm,
@@ -254,6 +258,10 @@ mod tests {
         body: StdMutex<Option<Value>>,
         disconnect: tokio::sync::Notify,
         disconnected: tokio::sync::Notify,
+        thinking: StdMutex<Option<Value>>,
+        thinking_received: AtomicUsize,
+        thinking_acknowledged: AtomicUsize,
+        release_thinking: tokio::sync::Notify,
     }
 
     // Only the external provider is simulated. HTTP, WebSocket sideband,
@@ -301,7 +309,7 @@ mod tests {
                     }).to_string().into())).await.expect("session started");
                     loop {
                         let message = tokio::select! {
-                            _ = capture.disconnect.notified() => {
+                            () = capture.disconnect.notified() => {
                                 drop(socket);
                                 capture.disconnected.notify_one();
                                 return;
@@ -312,6 +320,16 @@ mod tests {
                         let SocketMessage::Text(text) = message else { continue; };
                         let event: Value = serde_json::from_str(&text).expect("provider command");
                         match event["type"].as_str() {
+                            Some("session.thinking.append") => {
+                                *capture.thinking.lock().expect("thinking capture") = Some(event.clone());
+                                capture.thinking_received.fetch_add(1, Ordering::SeqCst);
+                                capture.release_thinking.notified().await;
+                                socket.send(SocketMessage::Text(json!({
+                                    "type":"session.thinking.appended","event_id":"thinking-ack",
+                                    "client_event_id":event["event_id"],"start_ms":0.0,"end_ms":0.0
+                                }).to_string().into())).await.expect("thinking acknowledgement");
+                                capture.thinking_acknowledged.fetch_add(1, Ordering::SeqCst);
+                            }
                             Some("session.commentary.append") => {
                                 socket.send(SocketMessage::Text(json!({
                                     "type":"session.commentary.appended","event_id":"append-ack",
@@ -355,7 +373,32 @@ mod tests {
         }
     }
 
-    struct Summary(Arc<AtomicUsize>);
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum SummaryScenario {
+        Success,
+        Failure,
+        CancelWhileGenerating,
+    }
+
+    struct Summary {
+        calls: Arc<AtomicUsize>,
+        release: Arc<tokio::sync::Notify>,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+        scenario: SummaryScenario,
+    }
+
+    struct SummaryCancellation {
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+        finished: bool,
+    }
+
+    impl Drop for SummaryCancellation {
+        fn drop(&mut self) {
+            if !self.finished {
+                self.cancelled.store(true, Ordering::SeqCst);
+            }
+        }
+    }
 
     #[async_trait]
     impl LiveContextSummarizer for Summary {
@@ -364,8 +407,20 @@ mod tests {
             snapshot: LiveContextSummarySnapshot<'_>,
         ) -> Result<String, LiveContextSummaryError> {
             assert_eq!(snapshot.llm_identity().model, "gpt-5.5");
-            self.0.fetch_add(1, Ordering::SeqCst);
-            Ok("The background agent is configured for the test conversation.".to_string())
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut cancellation = SummaryCancellation {
+                cancelled: self.cancelled.clone(),
+                finished: false,
+            };
+            self.release.notified().await;
+            cancellation.finished = true;
+            if self.scenario == SummaryScenario::Failure {
+                Err(LiveContextSummaryError::Producer(
+                    "private fixture producer detail".to_string(),
+                ))
+            } else {
+                Ok("The background agent is configured for the test conversation.".to_string())
+            }
         }
     }
 
@@ -437,15 +492,43 @@ mod tests {
     #[tokio::test]
     async fn console_voice_actual_shared_host_opens_owned_pending_channel_without_mutating_background()
      {
-        exercise_shared_host(false).await;
+        exercise_shared_host(false, SummaryScenario::Success).await;
     }
 
     #[tokio::test]
     async fn console_voice_actual_shared_host_closes_after_provider_disconnect() {
-        exercise_shared_host(true).await;
+        exercise_shared_host(true, SummaryScenario::Success).await;
     }
 
-    async fn exercise_shared_host(disconnect_provider: bool) {
+    #[tokio::test]
+    async fn console_voice_concurrent_summary_failure_is_typed_and_does_not_gate_activation() {
+        exercise_shared_host(false, SummaryScenario::Failure).await;
+    }
+
+    #[tokio::test]
+    async fn console_voice_close_cancels_exact_pending_summary_and_fences_status() {
+        exercise_shared_host(false, SummaryScenario::CancelWhileGenerating).await;
+    }
+
+    async fn wait_context(
+        app: &axum::Router,
+        token: &str,
+        pending: &Value,
+        expected: Value,
+    ) -> Value {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let status = rpc(app, token, super::super::VOICE_CONTEXT_STATUS_METHOD, json!({
+                    "identity":"agent-a","request_id":"voice-request","channel_id":pending["channel_id"],
+                })).await;
+                assert!(status["error"].is_null(), "{status}");
+                if status["result"]["context_preparation"] == expected { break status; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("actual context preparation transition")
+    }
+
+    async fn exercise_shared_host(disconnect_provider: bool, scenario: SummaryScenario) {
         let _guard = SHARED_HOST_TEST_LOCK.lock().await;
         let contract: Value =
             serde_json::from_str(include_str!("../../tests/fixtures/console_voice_v1.json"))
@@ -562,13 +645,25 @@ mod tests {
             .await
             .expect("before");
         let calls = Arc::new(AtomicUsize::new(0));
+        let release_summary = Arc::new(tokio::sync::Notify::new());
+        let summary_cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let policy = LiveContextSummaryPolicy::new(
-            Arc::new(Summary(calls.clone())),
+            Arc::new(Summary {
+                calls: calls.clone(),
+                release: release_summary.clone(),
+                cancelled: summary_cancelled.clone(),
+                scenario,
+            }),
             4 * 1024 * 1024,
             4096,
-            Duration::from_secs(2),
+            Duration::from_secs(30),
         )
         .expect("summary policy");
+        assert_eq!(
+            policy.bootstrap_mode(),
+            LiveContextBootstrapMode::BeforeOpen,
+            "generic upstream policy remains unchanged; only console composition opts in"
+        );
         let registration = PublicLiveRegistration::parse(&json!({
             "principal":"voice@example.com","realm":"voice",
             "auth_binding":{"realm":"voice","binding":"openai"},"voice":"marin"
@@ -607,6 +702,11 @@ mod tests {
                 "iss":"http://127.0.0.1/mobkit-gateway","aud":"persistent-gateway",
                 "sub":"voice@example.com","email":"voice@example.com","exp":chrono::Utc::now().timestamp()+300
             }), &jsonwebtoken::EncodingKey::from_secret(b"console-test-signing")).expect("token");
+        let mut read_only_decisions = decisions.clone();
+        read_only_decisions.console.read_only = true;
+        let read_only_app = runtime
+            .build_reference_app_router(read_only_decisions)
+            .layer(axum::Extension(controller.clone()));
         let app = runtime
             .build_reference_app_router(decisions)
             .layer(axum::Extension(controller.clone()));
@@ -636,6 +736,66 @@ mod tests {
         assert_eq!(pending["target_identity"], "agent-a");
         assert_eq!(pending["capabilities"]["text_in"], false);
         assert_eq!(pending["capabilities"]["text_out"], false);
+        let context = wait_context(
+            &app,
+            &token,
+            pending,
+            json!({"phase":"preparing","stage":"generating"}),
+        )
+        .await;
+        assert_eq!(
+            context["result"],
+            json!({
+                "identity":"agent-a","request_id":"voice-request","channel_id":pending["channel_id"],
+                "context_preparation":{"phase":"preparing","stage":"generating"},
+            })
+        );
+        let read_only_context = rpc(&read_only_app, &token, super::super::VOICE_CONTEXT_STATUS_METHOD,
+            json!({"identity":"agent-a","request_id":"voice-request","channel_id":pending["channel_id"]})).await;
+        assert_eq!(
+            read_only_context["result"], context["result"],
+            "read-only console permits owned status reads"
+        );
+        for invalid in [
+            json!({"identity":"agent-a","request_id":"voice-request"}),
+            json!({"identity":"agent-a","request_id":"voice-request","channel_id":pending["channel_id"],"pending_receipt":pending["pending_receipt"]}),
+        ] {
+            let response = rpc(
+                &app,
+                &token,
+                super::super::VOICE_CONTEXT_STATUS_METHOD,
+                invalid,
+            )
+            .await;
+            assert_eq!(response["error"]["code"], -32602);
+        }
+        for mismatch in [
+            json!({"identity":"agent-a","request_id":"other-request","channel_id":pending["channel_id"]}),
+            json!({"identity":"other-agent","request_id":"voice-request","channel_id":pending["channel_id"]}),
+            json!({"identity":"agent-a","request_id":"voice-request","channel_id":"other-channel"}),
+        ] {
+            let response = rpc(
+                &app,
+                &token,
+                super::super::VOICE_CONTEXT_STATUS_METHOD,
+                mismatch,
+            )
+            .await;
+            assert_eq!(response["error"]["data"]["kind"], "voice_request_conflict");
+        }
+        assert_eq!(
+            controller
+                .context_status(
+                    "other@example.com",
+                    super::super::VoiceContextStatusRequest {
+                        identity: "agent-a".to_string(),
+                        request_id: "voice-request".to_string(),
+                        channel_id: pending["channel_id"].as_str().expect("channel").to_string(),
+                    }
+                )
+                .await,
+            Err(VoiceError::RequestConflict)
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(!opened.to_string().contains("sk-voice-test-only"));
         let registered = rpc(&app, &token, "mobkit/live/playback_owner/register", json!({
@@ -714,6 +874,91 @@ mod tests {
                 .as_str()
                 .is_some()
         );
+        wait_context(
+            &app,
+            &token,
+            pending,
+            json!({"phase":"preparing","stage":"generating"}),
+        )
+        .await;
+        assert_eq!(
+            provider.capture.thinking_received.load(Ordering::SeqCst),
+            0,
+            "Active can be reached before summary generation or thinking delivery"
+        );
+        if scenario != SummaryScenario::CancelWhileGenerating {
+            release_summary.notify_one();
+            if scenario == SummaryScenario::Failure {
+                let failed = wait_context(
+                    &app,
+                    &token,
+                    pending,
+                    json!({"phase":"failed","reason":"generation"}),
+                )
+                .await;
+                assert!(
+                    !failed
+                        .to_string()
+                        .contains("private fixture producer detail")
+                );
+                assert_eq!(provider.capture.thinking_received.load(Ordering::SeqCst), 0);
+            } else {
+                wait_context(
+                    &app,
+                    &token,
+                    pending,
+                    json!({"phase":"preparing","stage":"delivering"}),
+                )
+                .await;
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while provider.capture.thinking_received.load(Ordering::SeqCst) == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("actual thinking append");
+                assert_eq!(
+                    provider
+                        .capture
+                        .thinking_acknowledged
+                        .load(Ordering::SeqCst),
+                    0
+                );
+                wait_context(
+                    &app,
+                    &token,
+                    pending,
+                    json!({"phase":"preparing","stage":"delivering"}),
+                )
+                .await;
+                assert!(
+                    provider
+                        .capture
+                        .thinking
+                        .lock()
+                        .expect("thinking")
+                        .as_ref()
+                        .expect("append")
+                        .to_string()
+                        .contains("The background agent is configured for the test conversation.")
+                );
+                provider.capture.release_thinking.notify_one();
+                wait_context(
+                    &app,
+                    &token,
+                    pending,
+                    json!({"phase":"provider_acknowledged"}),
+                )
+                .await;
+                assert_eq!(
+                    provider
+                        .capture
+                        .thinking_acknowledged
+                        .load(Ordering::SeqCst),
+                    1
+                );
+            }
+        }
         let active_readiness = rpc(
             &app,
             &token,
@@ -744,8 +989,10 @@ mod tests {
             .expect("provider created");
         assert!(body["session"]["input"].is_array(), "{body}");
         assert!(
-            body.to_string()
-                .contains("The background agent is configured for the test conversation.")
+            !body
+                .to_string()
+                .contains("The background agent is configured for the test conversation."),
+            "concurrent context must not be required by the provider-create request"
         );
         assert!(body["session"]["tools"].is_null());
         if disconnect_provider {
@@ -764,6 +1011,20 @@ mod tests {
         .await
         .expect("exact close must complete within the browser teardown deadline");
         assert_eq!(closed["result"], json!({"phase":"closed"}), "{closed}");
+        if scenario == SummaryScenario::CancelWhileGenerating {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !summary_cancelled.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("close cancels the actual summarizer future");
+            assert_eq!(provider.capture.thinking_received.load(Ordering::SeqCst), 0);
+        }
+        let closed_context = rpc(&app, &token, super::super::VOICE_CONTEXT_STATUS_METHOD, json!({
+            "identity":"agent-a","request_id":"voice-request","channel_id":pending["channel_id"],
+        })).await;
+        assert_eq!(closed_context["error"]["data"]["kind"], "voice_closed");
         let closed_replacement = rpc(
             &app,
             &token,
@@ -798,6 +1059,14 @@ mod tests {
         )
         .await;
         assert!(reopened["error"].is_null(), "{reopened}");
+        assert_ne!(reopened["result"]["channel_id"], pending["channel_id"]);
+        let stale_context = rpc(&app, &token, super::super::VOICE_CONTEXT_STATUS_METHOD, json!({
+            "identity":"agent-a","request_id":"voice-reopened","channel_id":pending["channel_id"],
+        })).await;
+        assert_eq!(
+            stale_context["error"]["data"]["kind"],
+            "voice_request_conflict"
+        );
         let reclosed = rpc(
             &app,
             &token,
@@ -1143,6 +1412,58 @@ impl ConsoleVoiceSession for Session {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    async fn context_preparation(
+        &self,
+        channel: &str,
+    ) -> Result<VoiceContextPreparation, VoiceError> {
+        let pending = self.pending();
+        if pending.channel_id != channel {
+            return Err(VoiceError::RequestConflict);
+        }
+        if self.grant.revoked.load(Ordering::SeqCst) {
+            return Err(VoiceError::Closed);
+        }
+        let access = self
+            .shared
+            .access
+            .view_for_subject(Some(&self.grant.principal));
+        if !access.allows_agent(ACTION_AGENT_VIEW, &self.identity) {
+            return Err(VoiceError::Unauthorized);
+        }
+        let read = async {
+            use meerkat::experimental_gpt_live::ExperimentalLiveSessionBindingAuthority as _;
+            self.shared
+                .binding
+                .validate_live_durable_source_availability(&self.grant.session)
+                .await
+                .map_err(|_| VoiceError::ContextReadFailed)?;
+            let custody = self
+                .shared
+                .handler
+                .read_console_channel_custody(
+                    &self.grant.session,
+                    &meerkat_core::LiveChannelId::new(channel),
+                    &pending.pending_receipt,
+                )
+                .await
+                .map_err(|_| VoiceError::ContextReadFailed)?;
+            if matches!(
+                custody.phase(),
+                meerkat::surface::ExperimentalLiveChannelPhaseStatus::Closed
+                    | meerkat::surface::ExperimentalLiveChannelPhaseStatus::Revoked
+            ) {
+                return Err(VoiceError::Closed);
+            }
+            if self.pending().channel_id != channel {
+                return Err(VoiceError::RequestConflict);
+            }
+            Ok(VoiceContextPreparation::from(custody.context_preparation()))
+        };
+        tokio::time::timeout(Duration::from_secs(5), read)
+            .await
+            .map_err(|_| VoiceError::ContextReadFailed)?
     }
 
     async fn dispatch(&self, method: &str, params: Value) -> Result<Value, VoiceError> {

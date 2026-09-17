@@ -102,6 +102,13 @@ async function installConsoleFixture(page, { available = true } = {}) {
       }
       return respond(replacements.get(params.request_id) ?? { required: false });
     }
+    if (method === "mobkit/console/voice/context_status") {
+      const channel = channels.get(params.channel_id);
+      assert.ok(channel && !channel.closed && channel.identity === params.identity &&
+        channel.requestId === params.request_id && !cancelled.has(params.request_id),
+      "context status must address the current owned channel");
+      return respond({ ...params, context_preparation: channel.contextPreparation });
+    }
     if (method === "mobkit/console/voice/answer_received" || method === "mobkit/console/voice/activity") {
       const channel = [...channels.entries()].find(([channelId, candidate]) =>
         candidate.identity === params.identity && candidate.requestId === params.request_id &&
@@ -116,7 +123,10 @@ async function installConsoleFixture(page, { available = true } = {}) {
       assert.equal(available, true, "voice must not open without OpenAI auth");
       assert.equal(typeof params.request_id, "string");
       const channelId = `voice-${++sequence}`;
-      channels.set(channelId, { identity: params.identity, requestId: params.request_id, closed: false, answerAccepted: false });
+      channels.set(channelId, {
+        identity: params.identity, requestId: params.request_id, closed: false, answerAccepted: false,
+        contextPreparation: { phase: "preparing", stage: "generating" },
+      });
       return respond(pendingHandle(channelId, params.identity));
     }
     if (method === "mobkit/live/playback_owner/register") {
@@ -201,6 +211,11 @@ async function installConsoleFixture(page, { available = true } = {}) {
     requests,
     channels,
     setAvailable(value) { available = value; },
+    setContext(identity, preparation) {
+      const channel = [...channels.values()].find((candidate) => candidate.identity === identity && !candidate.closed);
+      assert.ok(channel, "context transition requires an active fixture channel");
+      channel.contextPreparation = preparation;
+    },
     prepareReplacement(identity) {
       const current = [...channels.entries()].find(([, channel]) => channel.identity === identity && !channel.closed);
       assert.ok(current);
@@ -212,7 +227,10 @@ async function installConsoleFixture(page, { available = true } = {}) {
         publish() {
           assert.equal(cancelled.has(previous.requestId), false, "recovery must not cancel a request while its replacement is preparing");
           const channelId = `voice-${++sequence}`;
-          channels.set(channelId, { identity, requestId: previous.requestId, closed: false, answerAccepted: false });
+          channels.set(channelId, {
+            identity, requestId: previous.requestId, closed: false, answerAccepted: false,
+            contextPreparation: { phase: "preparing", stage: "generating" },
+          });
           replacements.set(previous.requestId, {
             required: true,
             reason: "canonical_context",
@@ -250,6 +268,7 @@ async function waitForVoice(page, requests) {
 async function assertVoiceLayout(page) {
   const layout = await page.getByTestId("voice-bar").evaluate((bar) => {
     const bounds = bar.getBoundingClientRect();
+    const controls = bar.querySelector(".voice-bar__controls").getBoundingClientRect();
     return {
       width: bounds.width,
       right: bounds.right,
@@ -258,10 +277,21 @@ async function assertVoiceLayout(page) {
         const rect = button.getBoundingClientRect();
         return rect.left < bounds.left || rect.right > bounds.right;
       }).map((button) => button.getAttribute("aria-label")),
+      overflowingText: [...bar.querySelectorAll(".voice-bar__status, .voice-bar__message")].filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.left < bounds.left || rect.right > bounds.right || element.scrollWidth > element.clientWidth + 1;
+      }).map((element) => element.textContent),
+      overlappingHeaderText: [...bar.querySelectorAll(".voice-bar__name, .voice-bar__status > span")].filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.right > controls.left && rect.left < controls.right &&
+          rect.bottom > controls.top && rect.top < controls.bottom;
+      }).map((element) => element.textContent),
     };
   });
   assert.ok(layout.width > 0 && layout.right <= layout.viewport, JSON.stringify(layout));
   assert.deepEqual(layout.overflowingControls, [], JSON.stringify(layout));
+  assert.deepEqual(layout.overflowingText, [], JSON.stringify(layout));
+  assert.deepEqual(layout.overlappingHeaderText, [], JSON.stringify(layout));
 }
 
 async function main() {
@@ -291,6 +321,7 @@ async function main() {
     await page.getByRole("button", { name: "Start voice with Alpha" }).click();
     await waitForVoice(page, fixture.requests);
     await page.getByRole("region", { name: "Voice with Alpha" }).waitFor();
+    await page.getByText("Preparing context", { exact: true }).waitFor();
     assert.equal(await page.locator(".voice-waveform").count(), 2);
     await sendText(page, "identity:alpha", "Keep working while we talk");
     await page.locator('[data-testid="voice-bar"][data-phase="active"]').waitFor();
@@ -311,6 +342,10 @@ async function main() {
       }
       return false;
     });
+    assert.equal(await page.getByText("Preparing context", { exact: true }).count(), 1,
+      "native audio, text and mute controls must work before the context gate is released");
+    fixture.setContext("identity:alpha", { phase: "provider_acknowledged" });
+    await page.getByText("Context supplied", { exact: true }).waitFor();
     const capturesBeforeRecovery = await page.evaluate(() => window.voiceFixture.microphoneTracks.length);
     const replacement = fixture.prepareReplacement("identity:alpha");
     await page.evaluate(async (channelId) => {
@@ -358,6 +393,22 @@ async function main() {
     }
     await page.setViewportSize({ width: 1280, height: 900 });
 
+    fixture.setContext("identity:alpha", { phase: "failed", reason: "timed_out" });
+    await page.getByRole("alert").filter({ hasText: "Context preparation timed out." }).waitFor();
+    await waitForVoice(page, fixture.requests);
+    assert.equal(await page.getByRole("button", { name: "Unmute microphone" }).isEnabled(), true);
+    for (const [name, viewport] of [
+      ["desktop", { width: 1280, height: 900 }],
+      ["mobile", { width: 390, height: 844 }],
+    ]) {
+      await page.setViewportSize(viewport);
+      await assertVoiceLayout(page);
+      if (process.env.VOICE_SCREENSHOT_DIR) {
+        await page.screenshot({ path: path.join(process.env.VOICE_SCREENSHOT_DIR, `voice-context-error-${name}.png`) });
+      }
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
+
     await page.getByRole("button", { name: "Start voice with Beta" }).click();
     await page.getByRole("region", { name: "Voice with Beta" }).waitFor();
     await waitForVoice(page, fixture.requests);
@@ -385,7 +436,7 @@ async function main() {
     assert.equal(await unauthenticated.evaluate(() => window.voiceFixture.microphoneTracks.length), 0);
     assert.ok(!noAuth.requests.some((request) => request.method === "mobkit/console/voice/open"));
     await context.close();
-    console.log("Voice browser E2E passed: real WebRTC audio, mute, navigation, concurrent text, replacement, cleanup and auth gate.");
+    console.log("Voice browser E2E passed: real WebRTC audio before context release, context acknowledgement/failure, mute, navigation, concurrent text, replacement, cleanup and auth gate.");
   } finally {
     await browser?.close();
     server.closeAllConnections();

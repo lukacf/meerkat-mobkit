@@ -163,18 +163,26 @@ agent before offering voice and checks it again before microphone capture;
 registration or model availability alone does not enable the button.
 
 Click the waveform button to start a `gpt-live-1` conversation with the
-selected agent as its background agent. Voice starts from a summary of that
-agent's context; it does not change the background agent's text model.
+selected agent as its background agent. Audio connects without waiting for a
+summary of that agent's context; it does not change the background agent's text model.
 The voice strip above the composer names the voice agent and shows separate
 waveforms for your microphone and the live model's audio.
 
-Startup distinguishes **Preparing context** from **Connecting audio**. Context
-preparation is a separate, tool-free summary request using the background
+Startup distinguishes **Starting voice** from **Connecting audio**. Once audio
+is active, the strip separately shows **Reading context**, **Preparing context**,
+or **Sending context** while the initial summary is prepared and supplied.
+You can speak, mute, and send text during preparation. **Context supplied** means
+the provider acknowledged it, not that the model has recalled or spoken it.
+Context failures stay visible without disabling the connected audio; a failed
+status read is shown separately and retried.
+
+Context preparation is a separate, tool-free summary request using the background
 agent's model and credentials; it does not change that agent's model or
 reasoning settings. The summary targets compact notes rather than replaying
 logs, and uses low or disabled OpenAI reasoning where the model catalog supports
-it. Preparation timeouts identify the gateway stage rather than blaming
-microphone permission.
+it. Meerkat orders the captured history and newer conversation updates, and
+cancels or fences context work when the call closes or changes. A context job
+from an old call cannot update a replacement call.
 
 The microphone and speaker controls are independent. Muting speakers silences
 local playback, not the conversation; the model's output waveform continues
@@ -191,6 +199,9 @@ results are mirrored into the voice conversation. This follows
 [OpenAI's typed-input contract](https://developers.openai.com/api/docs/guides/live-delegation#accept-typed-input):
 typed text is user data for the backend, not a live-model instruction or a
 native spoken turn. Chats with other agents do not change the voice target.
+For local session-backed agents, console messages use explicit conversational
+user admission, preserving the console interaction identity in canonical
+history. Internal events and recalled memory are not relabeled as human input.
 
 Voice ends automatically after **15 minutes of silence**, not after 15
 minutes of total call time. Text messages do not extend that audio inactivity

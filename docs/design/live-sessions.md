@@ -366,13 +366,16 @@ registration, without cancelling a fresh same-agent call.
 The initial shared-owner pin was
 [`34838b2d0e5c63c9206b79c3cae48d9961e99e05`](https://github.com/lukacf/meerkat/commit/34838b2d0e5c63c9206b79c3cae48d9961e99e05),
 tracked by [lukacf/meerkat#1124](https://github.com/lukacf/meerkat/pull/1124).
-The current repair development pin is
+The published console repair checkpoint uses
 [`d7318919e4ce29ce96e05f8466bcbb8d4baabb0c`](https://github.com/lukacf/meerkat/commit/d7318919e4ce29ce96e05f8466bcbb8d4baabb0c),
 which adds failed-provider cleanup, per-message context provenance, and
 post-commit mirror notifications for RPC and mob-owned executors.
-`.cargo/config.toml` temporarily patches the full Meerkat family to this
-exact HTTPS Git revision. CI and other checkouts can fetch the same source;
-it is a development pin, not a claim that these APIs are registry-published.
+That checkpoint patches the full Meerkat family to this exact HTTPS Git
+revision. Subsequent human-input and concurrent-context work is qualified
+against isolated immutable development snapshots; those are not final
+distributable pins. Final changes must use one publicly available revision
+across the full family, not a mixture of crate revisions or local worktrees.
+Development pins do not claim that these APIs are registry-published.
 Remove the patch table and regenerate `Cargo.lock` only after the released
 dependencies contain these APIs and pass the console voice qualification;
 the version number alone is not sufficient evidence. Rebinding to the
@@ -381,13 +384,13 @@ development pin remains necessary pending a compatible upstream release.
 
 ### Additive upstream acceptance requirements
 
-The frozen shared-owner change provides these semantics for the HTTP
 composition; keep them as acceptance requirements when rebinding:
 
 1. **Summary seeding at an exact snapshot.** A host-supplied summary producer
    operates on the authoritative context snapshot while Meerkat retains the
-   projection lease and canonical cursor. Failure refuses the open, rather
-   than silently sending raw history. The summary does not rewrite or compact
+   projection lease and canonical cursor. The default `BeforeOpen` policy
+   refuses the open on failure, rather than silently sending raw history.
+   The summary does not rewrite or compact
    the background session. Reopen/recovery preserves the same summary policy;
    incremental canonical context is not accidentally omitted or replayed.
 2. **Existing-member execution strategy.** Client-context delegation selects
@@ -428,7 +431,39 @@ re-reading a potentially changed text model after acquiring the snapshot.
 `LiveContextSummaryPolicy` owns snapshot, timeout, and stale-input admission,
 including the exact body/rewrite/session/cursor witness and canonical System
 projection, not merely a message count.
-This helper is not yet evidence of a composed summary-seeded Live open.
+Summary-producer tests alone are not evidence of a composed summary-seeded
+Live open; actual shared-host and native-audio acceptance are separate gates.
+
+### Nonblocking console context bootstrap
+
+The console opts into `LiveContextBootstrapMode::Concurrent`. Audio admission
+and receipt activation do not await summary generation. Meerkat owns the
+captured canonical prefix separately from provider-delivered knowledge, orders
+its quiet context delivery with newer conversation updates, and fences or
+cancels jobs when their channel closes or is replaced. MobKit does not mint a
+delivered cursor, insert a synthetic user turn, or substitute instructions
+for summary authority. Non-console callers retain the `BeforeOpen` default.
+
+`mobkit/console/voice/context_status` reads the retained shared-owner custody
+with an exact `{identity, request_id, channel_id}` scope. Its response echoes
+that scope and projects `context_preparation` as `not_requested`,
+`preparing` with a `capturing`, `generating`, or `delivering` stage,
+`provider_acknowledged`, or `failed` with a typed reason. It does not change
+the strict pending/active handle schemas. Stale, foreign, closed, or replaced
+channel scopes refuse rather than reporting another call's context.
+`not_requested` means no concurrent preparation job, not proof that the
+provider has no preloaded history. Published Concurrent handles already have
+preparation staged; they cannot transiently return `not_requested` before
+their job starts.
+
+The browser observes preparation independently after audio activation.
+Preparation or failure never mutes an otherwise active channel. A status-read
+failure is visibly unknown and retried, not converted into provider success
+or summary failure. Each read is bounded; switching, closing, or recovery
+cancels the observer and ignores its late responses, including same-request
+channel replacements. Status reads and summary completion do not refresh the
+15-minute audio-silence deadline. Provider acknowledgement means acceptance
+of supplied context, not demonstrated recall or completed speech.
 
 ## Upstream shape (meerkat 0.7.25, surveyed)
 

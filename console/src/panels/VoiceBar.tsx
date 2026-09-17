@@ -1,10 +1,11 @@
 import React from "react";
 import { Icon } from "../icon";
 import type { VoiceSessionSnapshot } from "../lib/voice-session";
+import { voiceContextFailureMessage } from "../lib/voice-context";
 import "./voice-bar.css";
 
 type WaveformSource = "microphone" | "speaker";
-export type WaveformSampler = (source: WaveformSource, samples: Float32Array) => void;
+export type WaveformSampler = (source: WaveformSource, samples: Float32Array<ArrayBuffer>) => void;
 
 interface VoiceBarProps {
   state: VoiceSessionSnapshot;
@@ -133,8 +134,8 @@ export function VoiceBar({
   const status = state.phase === "requesting"
     ? "Allow microphone access"
     : state.phase === "connecting"
-      ? state.connectionStage === "context"
-        ? "Preparing context"
+      ? state.connectionStage === "opening"
+        ? "Starting voice"
         : state.connectionStage === "recovery"
           ? "Reconnecting"
           : "Connecting audio"
@@ -143,6 +144,17 @@ export function VoiceBar({
         : active
           ? state.microphoneMuted ? "Microphone muted" : "Listening"
           : "Voice ended";
+  const preparation = state.contextPreparation;
+  const contextLabel = !active || preparation === undefined ? null
+    : state.contextStatusError ? "Context status unavailable"
+      : preparation === null ? "Checking context"
+        : preparation.phase === "preparing"
+          ? { capturing: "Reading context", generating: "Preparing context", delivering: "Sending context" }[preparation.stage]
+          : preparation.phase === "provider_acknowledged" ? "Context supplied"
+            : preparation.phase === "not_requested" ? "No summary pending"
+              : "Context unavailable";
+  const contextMessage = !active ? null : state.contextStatusError ??
+    (preparation?.phase === "failed" ? voiceContextFailureMessage(preparation.reason) : null);
 
   return (
     <section
@@ -158,7 +170,19 @@ export function VoiceBar({
             <span className="voice-bar__name" title={state.target?.label}>
               {state.target ? <>Voice with <strong>{state.target.label}</strong></> : "Voice"}
             </span>
-            <span className="voice-bar__status" role="status">{status}</span>
+            <span className="voice-bar__status" role="status">
+              <span>{status}</span>
+              {contextLabel && (
+                <span
+                  className="voice-bar__context"
+                  title={preparation?.phase === "provider_acknowledged"
+                    ? "The voice provider acknowledged the initial context. This does not confirm recall or speech completion."
+                    : preparation?.phase === "not_requested"
+                      ? "No concurrent context preparation was requested for this call."
+                      : undefined}
+                >{contextLabel}</span>
+              )}
+            </span>
           </div>
         </div>
         <div className="voice-bar__controls">
@@ -210,6 +234,7 @@ export function VoiceBar({
         </div>
       )}
       {state.error && <p className="voice-bar__message voice-bar__message--error" role="alert">{state.error}</p>}
+      {contextMessage && <p className="voice-bar__message voice-bar__message--error" role="alert">{contextMessage}</p>}
       {state.notice && <p className="voice-bar__message" role="status">{state.notice}</p>}
     </section>
   );

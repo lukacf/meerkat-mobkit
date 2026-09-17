@@ -1,5 +1,64 @@
 {
   "readiness_request": { "identity": "agent-a" },
   "readiness_available": { "identity": "agent-a", "available": true },
-  "readiness_unavailable": { "identity": "agent-a", "available": false }
+  "readiness_unavailable": { "identity": "agent-a", "available": false },
+  "context_status_method": "mobkit/console/voice/context_status",
+  "context_status_request": {
+    "identity": "agent-a",
+    "request_id": "voice-request",
+    "channel_id": "voice-channel-a"
+  },
+  "context_status_responses": {
+    "not_requested": {
+      "identity": "agent-a",
+      "request_id": "voice-request",
+      "channel_id": "voice-channel-a",
+      "context_preparation": { "phase": "not_requested" }
+    },
+    "capturing": {
+      "identity": "agent-a",
+      "request_id": "voice-request",
+      "channel_id": "voice-channel-a",
+      "context_preparation": { "phase": "preparing", "stage": "capturing" }
+    },
+    "generating": {
+      "identity": "agent-a",
+      "request_id": "voice-request",
+      "channel_id": "voice-channel-a",
+      "context_preparation": { "phase": "preparing", "stage": "generating" }
+    },
+    "delivering": {
+      "identity": "agent-a",
+      "request_id": "voice-request",
+      "channel_id": "voice-channel-a",
+      "context_preparation": { "phase": "preparing", "stage": "delivering" }
+    },
+    "provider_acknowledged": {
+      "identity": "agent-a",
+      "request_id": "voice-request",
+      "channel_id": "voice-channel-a",
+      "context_preparation": { "phase": "provider_acknowledged" }
+    },
+    "failed": {
+      "identity": "agent-a",
+      "request_id": "voice-request",
+      "channel_id": "voice-channel-a",
+      "context_preparation": { "phase": "failed", "reason": "generation" }
+    }
+  },
+  "context_status_failure_reasons": [
+    "capture",
+    "generation",
+    "timed_out",
+    "input_too_large",
+    "output_too_large",
+    "empty",
+    "stale_snapshot",
+    "unsupported",
+    "source_read",
+    "producer_panicked",
+    "delivery_rejected",
+    "delivery_ambiguous",
+    "cancelled"
+  ]
 }

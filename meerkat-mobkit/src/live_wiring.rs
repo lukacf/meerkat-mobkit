@@ -2208,14 +2208,43 @@ impl LiveCapabilityProvider {
     }
 }
 
+/// Internal receipt-custody read retained from the same shared live host.
+#[cfg(feature = "openai-live")]
+type LiveCustodyRead = Arc<
+    dyn Fn(
+            LiveChannelId,
+            String,
+        ) -> futures::future::BoxFuture<
+            'static,
+            Result<meerkat::surface::ExperimentalLiveChannelCustodyStatus, String>,
+        > + Send
+        + Sync,
+>;
+
 /// Type-erased live RPC registration plus its fail-closed capability owner.
 #[derive(Clone)]
 pub struct LiveRpcHandler {
     dispatch: LiveRpcDispatch,
     capability_provider: LiveCapabilityProvider,
+    #[cfg(feature = "openai-live")]
+    custody_read: LiveCustodyRead,
 }
 
 impl LiveRpcHandler {
+    /// Console retains the original receipt; the caller supplies no custody.
+    /// This does not alter the strict public Pending/Active status wire shape.
+    #[cfg(feature = "openai-live")]
+    pub(crate) async fn read_console_channel_custody(
+        &self,
+        session: &SessionId,
+        channel: &LiveChannelId,
+        pending_receipt: &str,
+    ) -> Result<meerkat::surface::ExperimentalLiveChannelCustodyStatus, String> {
+        let custody = (self.custody_read)(channel.clone(), pending_receipt.to_string()).await?;
+        validate_strict_custody_target(&custody, session, channel).map_err(ToString::to_string)?;
+        Ok(custody)
+    }
+
     #[cfg(feature = "openai-live")]
     pub(crate) async fn pending_replacement(
         &self,
@@ -2350,6 +2379,15 @@ fn live_rpc_handler_with_policy<B: SessionAgentBuilder + 'static>(
         None => host,
     };
     let shared_live_host = Arc::new(host);
+    let custody_host = Arc::clone(&shared_live_host);
+    let custody_read: LiveCustodyRead = Arc::new(move |channel, receipt| {
+        let host = Arc::clone(&custody_host);
+        Box::pin(async move {
+            host.validate_experimental_live_channel_custody(&channel, &receipt)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    });
     #[cfg(feature = "openai-live")]
     let capability_provider = capability_provider.compose_for_host(
         Arc::clone(&machine),
@@ -2395,6 +2433,7 @@ fn live_rpc_handler_with_policy<B: SessionAgentBuilder + 'static>(
     LiveRpcHandler {
         dispatch,
         capability_provider,
+        custody_read,
     }
 }
 

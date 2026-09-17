@@ -622,7 +622,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   );
   const { voice, state: voiceState } = useVoiceController(baseUrl);
   const sampleVoiceWaveform = React.useCallback(
-    (source: "microphone" | "speaker", samples: Float32Array) => voice?.sampleWaveform(source, samples),
+    (source: "microphone" | "speaker", samples: Float32Array<ArrayBuffer>) => voice?.sampleWaveform(source, samples),
     [voice],
   );
 

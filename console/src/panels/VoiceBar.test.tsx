@@ -47,10 +47,69 @@ describe("voice controls", () => {
     expect(screen.getByRole("button", { name: "End voice conversation" })).toBeEnabled();
     view.rerender(<VoiceBar state={{ ...activeState, phase: "connecting" }} {...controls} />);
     expect(screen.getByRole("status")).toHaveTextContent("Connecting");
-    view.rerender(<VoiceBar state={{ ...activeState, phase: "connecting", connectionStage: "context" }} {...controls} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Preparing context");
+    view.rerender(<VoiceBar state={{ ...activeState, phase: "connecting", connectionStage: "opening" }} {...controls} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Starting voice");
     view.rerender(<VoiceBar state={{ ...activeState, phase: "connecting", connectionStage: "recovery" }} {...controls} />);
     expect(screen.getByRole("status")).toHaveTextContent("Reconnecting");
+  });
+
+  it.each([
+    ["capturing", "Reading context"],
+    ["generating", "Preparing context"],
+    ["delivering", "Sending context"],
+  ] as const)("keeps audio controls enabled while context is %s", (stage, label) => {
+    const view = render(<VoiceBar state={{
+      ...activeState, contextPreparation: { phase: "preparing", stage },
+    }} {...controls} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Listening");
+    expect(screen.getByRole("status")).toHaveTextContent(label);
+    expect(screen.getByRole("button", { name: "Mute microphone" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Mute speakers" })).toBeEnabled();
+    expect(view.container.querySelectorAll("canvas")).toHaveLength(2);
+  });
+
+  it("describes acknowledged context without claiming model recall or speech completion", () => {
+    render(<VoiceBar state={{
+      ...activeState, contextPreparation: { phase: "provider_acknowledged" },
+    }} {...controls} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Context supplied");
+    expect(screen.getByText("Context supplied")).toHaveAttribute(
+      "title", expect.stringContaining("does not confirm recall or speech completion"),
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("exposes context failures without hiding usable audio and clears them after voice ends", () => {
+    const view = render(<VoiceBar state={{
+      ...activeState, contextPreparation: { phase: "failed", reason: "timed_out" },
+    }} {...controls} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Listening");
+    expect(screen.getByRole("status")).toHaveTextContent("Context unavailable");
+    expect(screen.getByRole("alert")).toHaveTextContent("Context preparation timed out.");
+    expect(screen.getByRole("alert")).toHaveTextContent("End voice and start again to retry.");
+    expect(screen.getByRole("button", { name: "Mute microphone" })).toBeEnabled();
+    view.rerender(<VoiceBar state={{
+      ...activeState, phase: "closing", contextPreparation: { phase: "failed", reason: "timed_out" },
+    }} {...controls} />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("distinguishes an unknown status from missing or failed context", () => {
+    const view = render(<VoiceBar state={{ ...activeState, contextPreparation: null }} {...controls} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Checking context");
+    view.rerender(<VoiceBar state={{
+      ...activeState, contextPreparation: null, contextStatusError: "Agent context status is unavailable. Checking again automatically.",
+    }} {...controls} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Context status unavailable");
+    expect(screen.getByRole("alert")).toHaveTextContent("Checking again automatically");
+    view.rerender(<VoiceBar state={{
+      ...activeState, contextPreparation: { phase: "not_requested" },
+    }} {...controls} />);
+    expect(screen.getByRole("status")).toHaveTextContent("No summary pending");
+    expect(screen.getByText("No summary pending")).toHaveAttribute(
+      "title", "No concurrent context preparation was requested for this call.",
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("shows startup errors and silence termination as dismissible non-modal messages", () => {

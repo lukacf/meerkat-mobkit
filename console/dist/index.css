@@ -11345,8 +11345,14 @@ svg[data-svg=fit],
   font-weight: 600;
 }
 .voice-bar__status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
   font-size: 11px;
   color: var(--ink-muted);
+}
+.voice-bar__context {
+  overflow-wrap: anywhere;
 }
 .voice-bar__indicator {
   width: 6px;
@@ -11465,6 +11471,17 @@ svg[data-svg=fit],
   .voice-bar__channel-label {
     flex-wrap: wrap;
     gap: 2px 6px;
+  }
+}
+@container (max-width: 260px) {
+  .voice-bar__header {
+    flex-wrap: wrap;
+  }
+  .voice-bar__heading {
+    flex-basis: 100%;
+  }
+  .voice-bar__controls {
+    margin-inline-start: auto;
   }
 }
 @media (pointer: coarse) {

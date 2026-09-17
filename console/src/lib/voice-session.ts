@@ -9,6 +9,7 @@ import {
 import { callConsoleRpc } from "./network";
 import { errorMessage, jsonRpcErrorCode } from "./errors";
 import { CONSOLE_RPC_PATHS } from "./contract";
+import { parseVoiceContextStatus, type VoiceContextPreparation } from "./voice-context";
 
 export const VOICE_SILENCE_TIMEOUT_MS = 15 * 60 * 1000;
 export const VOICE_CONNECT_TIMEOUT_MS = 30_000;
@@ -16,6 +17,8 @@ export const VOICE_RECOVERY_TIMEOUT_MS = 30_000;
 export const VOICE_TEARDOWN_TIMEOUT_MS = 5_000;
 export const VOICE_REPLACEMENT_POLL_INTERVAL_MS = 1_000;
 export const VOICE_ACTIVITY_REPORT_INTERVAL_MS = 5_000;
+const CONTEXT_POLL_INTERVAL_MS = 1_000;
+const CONTEXT_RETRY_INTERVAL_MS = 5_000;
 const SAMPLE_INTERVAL_MS = 100;
 const POLL_INTERVAL_MS = 100;
 const RECOVERY_TIMEOUT_MESSAGE = "Voice recovery timed out. Check your network and voice access, then start again.";
@@ -32,7 +35,9 @@ export interface VoiceSessionSnapshot {
   readonly speakerMuted: boolean;
   readonly error: string | null;
   readonly notice: string | null;
-  readonly connectionStage?: "context" | "transport" | "recovery";
+  readonly connectionStage?: "opening" | "transport" | "recovery";
+  readonly contextPreparation?: VoiceContextPreparation | null;
+  readonly contextStatusError?: string | null;
 }
 
 /** Browser seams are injectable so lifecycle tests require neither hardware nor credentials. */
@@ -152,8 +157,8 @@ function voiceError(error: unknown, stage?: VoiceSessionSnapshot["connectionStag
   if (jsonRpcErrorCode(error) === -32601 || /not configured|unavailable|not supported/i.test(errorMessage(error))) {
     return "Voice is unavailable. Ask your administrator to enable OpenAI GPT Live on this gateway.";
   }
-  if (stage === "context") {
-    return "The gateway could not prepare the agent's voice context. Check the gateway log before trying again.";
+  if (stage === "opening") {
+    return "The gateway could not start voice for this agent. Check your voice access and the gateway log before trying again.";
   }
   // Never expose upstream response bodies, SDP, or bootstrap receipts in UI errors.
   return "Voice could not connect. Check your network and gateway configuration, then try again.";
@@ -192,6 +197,7 @@ interface Attempt {
   activityReporting?: boolean;
   activityDirty?: boolean;
   activityTimer?: ReturnType<typeof setTimeout>;
+  contextObservation?: { abort: AbortController; timer?: ReturnType<typeof setTimeout> };
   lastActivity: number;
 }
 
@@ -203,7 +209,7 @@ export interface VoiceSession {
   toggleMicrophone(): void;
   toggleSpeaker(): void;
   dispose(): void;
-  sampleWaveform(source: "microphone" | "speaker", target: Float32Array): void;
+  sampleWaveform(source: "microphone" | "speaker", target: Float32Array<ArrayBuffer>): void;
 }
 
 /**
@@ -272,8 +278,8 @@ export function createVoiceSession(
       promise,
       attempt.deadline - env.now(),
       attempt.abort.signal,
-      attempt.connectionStage === "context"
-        ? "Preparing the agent's voice context timed out. Check the gateway's summary service, then try again."
+      attempt.connectionStage === "opening"
+        ? "Starting voice timed out. Check your voice access and the gateway, then try again."
         : attempt.connectionStage === "transport"
           ? "The voice media connection timed out. Check the gateway and your network, then try again."
           : undefined,
@@ -292,6 +298,7 @@ export function createVoiceSession(
   }
 
   function cleanupPeer(attempt: Attempt) {
+    stopContextObservation(attempt);
     const peer = attempt.peer;
     const channel = attempt.channel;
     attempt.peer = undefined;
@@ -329,6 +336,7 @@ export function createVoiceSession(
 
   function quiesceLocal(attempt: Attempt) {
     attempt.abort.abort();
+    stopContextObservation(attempt);
     if (attempt.sampleTimer !== undefined) env.clearTimeout(attempt.sampleTimer);
     if (attempt.silenceTimer !== undefined) env.clearTimeout(attempt.silenceTimer);
     if (attempt.replacementTimer !== undefined) env.clearTimeout(attempt.replacementTimer);
@@ -402,7 +410,10 @@ export function createVoiceSession(
       await teardown(attempt);
       if (current === attempt) {
         current = undefined;
-        publish({ phase: error ? "error" : "idle", target: error ? attempt.target : null, error, notice });
+        publish({
+          phase: error ? "error" : "idle", target: error ? attempt.target : null, error, notice,
+          contextPreparation: undefined, contextStatusError: null,
+        });
       }
     } catch {
       if (current === attempt) {
@@ -533,6 +544,58 @@ export function createVoiceSession(
       track.enabled = active && !snapshot.microphoneMuted;
     }
     if (attempt.gain) attempt.gain.gain.value = active && !snapshot.speakerMuted ? 1 : 0;
+  }
+
+  function stopContextObservation(attempt: Attempt) {
+    const observation = attempt.contextObservation;
+    attempt.contextObservation = undefined;
+    observation?.abort.abort();
+    if (observation?.timer !== undefined) env.clearTimeout(observation.timer);
+  }
+
+  function observeContext(attempt: Attempt) {
+    stopContextObservation(attempt);
+    if (!owns(attempt) || !attempt.active || snapshot.phase !== "active") return;
+    const channelId = attempt.active.channelId;
+    const observation: NonNullable<Attempt["contextObservation"]> = { abort: new AbortController() };
+    attempt.contextObservation = observation;
+    const isCurrent = () => owns(attempt) && snapshot.phase === "active" &&
+      attempt.contextObservation === observation && attempt.active?.channelId === channelId;
+    publish({ contextPreparation: null, contextStatusError: null });
+    async function read() {
+      if (!isCurrent()) return;
+      let delay: number | undefined;
+      try {
+        const raw = await bounded(
+          env.rpc("mobkit/console/voice/context_status", {
+            ...closeParams(attempt), channel_id: channelId,
+          }, VOICE_TEARDOWN_TIMEOUT_MS),
+          VOICE_TEARDOWN_TIMEOUT_MS,
+          observation.abort.signal,
+        );
+        if (!isCurrent()) return;
+        const preparation = parseVoiceContextStatus(raw, {
+          identity: attempt.target.identity, requestId: attempt.requestId, channelId,
+        });
+        if (snapshot.contextStatusError || JSON.stringify(snapshot.contextPreparation) !== JSON.stringify(preparation)) {
+          publish({ contextPreparation: preparation, contextStatusError: null });
+        }
+        if (preparation.phase === "preparing") delay = CONTEXT_POLL_INTERVAL_MS;
+      } catch (error) {
+        if (error instanceof Cancelled || !isCurrent()) return;
+        publish({
+          contextStatusError: "Agent context status is unavailable. Voice remains connected; checking again automatically.",
+        });
+        delay = CONTEXT_RETRY_INTERVAL_MS;
+      }
+      if (isCurrent() && delay !== undefined) {
+        observation.timer = env.setTimeout(() => {
+          observation.timer = undefined;
+          void read();
+        }, delay);
+      }
+    }
+    void read();
   }
 
   function consumeMessage(attempt: Attempt, data: unknown) {
@@ -802,6 +865,7 @@ export function createVoiceSession(
             gates(attempt);
             scheduleSilence(attempt);
             sampleActivity(attempt);
+            observeContext(attempt);
           } catch (error) {
             if (!(error instanceof Cancelled)) await stop(attempt, voiceError(error, attempt.connectionStage));
           }
@@ -838,8 +902,8 @@ export function createVoiceSession(
       if (attempt.stream.getAudioTracks().length === 0) {
         throw new VoiceError("No microphone audio track was available. Check your microphone and try again.");
       }
-      attempt.connectionStage = "context";
-      publish({ phase: "connecting", connectionStage: "context" });
+      attempt.connectionStage = "opening";
+      publish({ phase: "connecting", connectionStage: "opening" });
       assertOwns(attempt);
       attempt.openSent = true;
       const raw = await connecting(attempt, env.rpc("mobkit/console/voice/open", {
@@ -855,6 +919,7 @@ export function createVoiceSession(
       scheduleSilence(attempt);
       sampleActivity(attempt);
       scheduleReplacement(attempt);
+      observeContext(attempt);
     } catch (error) {
       if (error instanceof Cancelled) {
         await teardown(attempt).catch(() => {});
@@ -906,6 +971,7 @@ export function createVoiceSession(
         phase: "requesting", target: attempt.target,
         microphoneMuted: false, speakerMuted: false, error: null, notice: null,
         connectionStage: undefined,
+        contextPreparation: undefined, contextStatusError: null,
       });
       if (!owns(attempt)) {
         return enqueue(async () => {
