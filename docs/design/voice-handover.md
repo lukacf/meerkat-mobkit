@@ -24,6 +24,11 @@ Emergency WIP checkpoint, 2026-09-17. The user requested immediate commit and
   Read [ASYNC_VOICE_CONTEXT_HANDOFF.md](https://github.com/lukacf/meerkat/blob/ddf52762e279f9e58cb4bf21e665dee46aa187ed/ASYNC_VOICE_CONTEXT_HANDOFF.md).
   The redacted failed-run log is committed there at
   `artifacts/evidence/s99-paid-73a0b869.log`.
+- Older original-workspace changes were also preserved, separately, at
+  `058ee571793a0169c1366cb71f9312e300c20749` on upstream branch
+  `wip/voice-legacy-original-workspace`. Its
+  `VOICE_LEGACY_WORKSPACE_HANDOFF.md` identifies it as a historical archive,
+  **not** the latest integration or a consumer pin. Do not merge it blindly.
 - Latest public release baseline checked: Meerkat **0.8.39**, MobKit **0.8.36**.
   These releases do not contain the complete new voice work. Recheck before
   selecting the next pair; do not republish either version.
