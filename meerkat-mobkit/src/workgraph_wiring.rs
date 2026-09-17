@@ -1952,7 +1952,6 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for AdmissionStoreProbe {
-        #[cfg(feature = "openai-live")]
         async fn commit_live_delegation_final_transcript(
             &self,
             _machine: &meerkat_runtime::MeerkatMachine,
@@ -2194,7 +2193,6 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for SwitchableStore {
-        #[cfg(feature = "openai-live")]
         async fn commit_live_delegation_final_transcript(
             &self,
             _machine: &meerkat_runtime::MeerkatMachine,

@@ -4885,7 +4885,6 @@ macro_rules! delegate_mob_session_service {
 
         #[async_trait]
         impl MobSessionService for $wrapper {
-            #[cfg(feature = "openai-live")]
             async fn commit_live_delegation_final_transcript(
                 &self,
                 machine: &meerkat_runtime::MeerkatMachine,
@@ -5903,7 +5902,6 @@ impl meerkat_core::service::SessionServiceHistoryExt for AfterCreateMobSessionSe
 
 #[async_trait]
 impl MobSessionService for AfterCreateMobSessionService {
-    #[cfg(feature = "openai-live")]
     async fn commit_live_delegation_final_transcript(
         &self,
         machine: &meerkat_runtime::MeerkatMachine,
@@ -12189,7 +12187,6 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
-        #[cfg(feature = "openai-live")]
         async fn commit_live_delegation_final_transcript(
             &self,
             _machine: &meerkat_runtime::MeerkatMachine,
@@ -12692,7 +12689,6 @@ comms = true
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
-        #[cfg(feature = "openai-live")]
         async fn commit_live_delegation_final_transcript(
             &self,
             machine: &meerkat_runtime::MeerkatMachine,
