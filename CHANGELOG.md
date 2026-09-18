@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Release gateway binaries build again on all five targets. Meerkat 0.8.40's
+  `openai-live` path compiles bundled Opus through CMake; the Linux release
+  container now installs CMake 3.x and every leg sets
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5` so CMake 4 on macOS and Windows accepts
+  Opus's 3.1 minimum.
 - The session-store-backed `RuntimeStore` decorator forwards Meerkat 0.8.40's new
   `load_head_canonical_metadata` (exact HeadCanonical boundary metadata without
   materializing transcript rows) instead of answering the trait default.
