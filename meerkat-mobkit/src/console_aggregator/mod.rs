@@ -10,18 +10,19 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::future::join_all;
 use meerkat_core::types::HandlingMode;
 use meerkat_core::{ContentInput, Message};
+use meerkat_mob::MobHandle;
 use meerkat_mob::ids::AgentIdentity;
 use meerkat_mob::runtime::MobMemberListEntry;
-use meerkat_mob::{MobError, MobHandle};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::{Semaphore, broadcast};
 
 use crate::blob_store::BinaryBlobStore;
 use crate::console_contracts::SYSTEM_EVENT_IDENTITY;
+#[cfg(test)]
+use crate::mob_handle_runtime::send_message_on_mob_with_mode;
 use crate::mob_handle_runtime::{
-    MobRuntime, MobRuntimeError, assert_member_accepts_images,
-    is_recoverable_lifecycle_cleanup_error, send_message_on_mob_with_mode,
+    MobRuntime, assert_member_accepts_images, is_recoverable_lifecycle_cleanup_error,
 };
 use crate::runtime::ConsoleMember;
 use crate::unified_runtime::{ConsoleEventStore, UnifiedRuntime};
@@ -1507,10 +1508,10 @@ impl MobKitConsoleAggregator {
                     request.idempotency_key,
                 ));
             }
-            return Ok(accepted_from_frame(&existing));
+            return accepted_replay_from_frame(&existing);
         }
 
-        let interaction_id = format!("console-interaction-{}", hash_short(&dedupe_key));
+        let interaction_id = identity_first_interaction_uuid(&dedupe_key);
         // Reserve under the DURABLE console identity with the runtime
         // incarnation as the mapping KEY - the same runtime-id -> identity
         // registration the spawn path makes. Reserving under the runtime
@@ -1560,7 +1561,7 @@ impl MobKitConsoleAggregator {
             }),
             source: ConsoleFrameSource {
                 kind: ConsoleFrameSourceKind::Send,
-                source_cursor: Some(request_fingerprint),
+                source_cursor: Some(request_fingerprint.clone()),
             },
             source_event_id: None,
             interaction_id: Some(interaction_id.clone()),
@@ -1584,7 +1585,12 @@ impl MobKitConsoleAggregator {
             .await
             .map_err(ConsoleSendError::Log)?;
         if outcome.disposition == AppendDisposition::Existing {
-            return Ok(accepted_from_frame(&outcome.frame));
+            if outcome.frame.source.source_cursor.as_deref() != Some(&request_fingerprint) {
+                return Err(ConsoleSendError::IdempotencyConflict(
+                    request.idempotency_key,
+                ));
+            }
+            return accepted_replay_from_frame(&outcome.frame);
         }
         let _ = self
             .inner
@@ -1668,9 +1674,9 @@ impl MobKitConsoleAggregator {
                     request.idempotency_key,
                 ));
             }
-            return Ok(IdentityFirstReservation::Existing(accepted_from_frame(
-                &existing,
-            )));
+            return Ok(IdentityFirstReservation::Existing(
+                accepted_replay_from_frame(&existing)?,
+            ));
         }
 
         let interaction_id = identity_first_interaction_uuid(&dedupe_key);
@@ -1692,7 +1698,7 @@ impl MobKitConsoleAggregator {
             }),
             source: ConsoleFrameSource {
                 kind: ConsoleFrameSourceKind::Send,
-                source_cursor: Some(request_fingerprint),
+                source_cursor: Some(request_fingerprint.clone()),
             },
             source_event_id: None,
             interaction_id: Some(interaction_id),
@@ -1708,11 +1714,16 @@ impl MobKitConsoleAggregator {
             .await
             .map_err(ConsoleSendError::Log)?;
         if outcome.disposition == AppendDisposition::Existing {
+            if outcome.frame.source.source_cursor.as_deref() != Some(&request_fingerprint) {
+                return Err(ConsoleSendError::IdempotencyConflict(
+                    request.idempotency_key,
+                ));
+            }
             // Lost the race with a concurrent identical send, which owns the
             // dispatch.
-            return Ok(IdentityFirstReservation::Existing(accepted_from_frame(
-                &outcome.frame,
-            )));
+            return Ok(IdentityFirstReservation::Existing(
+                accepted_replay_from_frame(&outcome.frame)?,
+            ));
         }
         let _ = self
             .inner
@@ -2990,67 +3001,51 @@ async fn dispatch_message_to_resolved_member(
     resolved: &ResolvedConsoleMember,
     content: ContentInput,
     handling_mode: meerkat_core::types::HandlingMode,
-    interaction_id: &str,
-) -> Result<String, String> {
+    accepted: &ConsoleInteractionAccepted,
+) -> Result<String, ConsoleSendError> {
     if let Some(identity_runtime) = resolved.entry.identity_runtime.as_ref()
         && let Some(identity) = identity_runtime
             .identity_for_member_mutation(&resolved.runtime_identity)
             .await
     {
         identity_runtime
-            .send_with_mode_and_interaction_member_alias_tracked(
+            .send_console_human_input_tracked(
                 &identity,
-                &resolved.runtime_identity,
+                Some(&resolved.runtime_identity),
                 &content,
                 handling_mode,
-                Some(interaction_id),
+                accepted,
             )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| ConsoleSendError::RuntimeOperation(Box::new(error)))?;
         return identity_runtime
             .status(&identity)
             .await
-            .map_err(|error| error.to_string())?
+            .map_err(|error| ConsoleSendError::RuntimeOperation(Box::new(error)))?
             .session_id
             .map(|session_id| session_id.to_string())
-            .ok_or_else(|| "identity has no bridge session after delivery".to_string());
+            .ok_or(ConsoleSendError::State(
+                "identity has no bridge session after delivery",
+            ));
     }
-    let mid = crate::member_comms_id::mob_member_id(resolved.runtime_identity.as_str());
-    match send_message_on_mob_with_mode(
+    crate::mob_handle_runtime::send_console_human_on_mob(
         &resolved.handle,
-        &resolved.runtime_identity,
-        content.clone(),
+        &resolved.member,
+        content,
         handling_mode,
+        accepted,
     )
     .await
-    {
-        Ok(session_id) => Ok(session_id),
-        Err(err) if is_not_externally_addressable(&err) => {
-            let member = resolved
-                .handle
-                .member(&mid)
-                .await
-                .map_err(|err| err.to_string())?;
-            let _receipt = member
-                .internal_turn(content)
-                .await
-                .map_err(|err| err.to_string())?;
-            resolved
-                .handle
-                .resolve_bridge_session_id_observation(&mid)
-                .await
-                .map(|sid| sid.to_string())
-                .ok_or_else(|| "member has no bridge session after internal turn".to_string())
+    .map_err(|err| match err {
+        crate::mob_handle_runtime::MobRuntimeError::Mob(error) => {
+            ConsoleSendError::RuntimeOperation(Box::new(
+                crate::identity_first::IdentityRuntimeError::HostHumanInput(
+                    crate::identity_first::bridge::HostHumanInputError::Mob(Box::new(error)),
+                ),
+            ))
         }
-        Err(err) => Err(err.to_string()),
-    }
-}
-
-fn is_not_externally_addressable(err: &MobRuntimeError) -> bool {
-    matches!(
-        err,
-        MobRuntimeError::Mob(MobError::NotExternallyAddressable(_))
-    )
+        error => ConsoleSendError::Dispatch(error.to_string()),
+    })
 }
 
 fn spawn_console_send_dispatch(
@@ -3067,7 +3062,7 @@ fn spawn_console_send_dispatch(
             &resolved,
             content,
             handling_mode,
-            &interaction_id,
+            &accepted_from_frame(&user_frame),
         )
         .await
         {
@@ -3123,7 +3118,7 @@ fn spawn_console_send_dispatch(
                     session_id: user_frame.session_id,
                     kind: "message_delivery_failed".to_string(),
                     status: ConsoleFrameStatus::DeliveryFailed,
-                    payload: json!({ "reason": err }),
+                    payload: json!({ "reason": err.to_string(), "data": err.structured_data() }),
                     source: ConsoleFrameSource {
                         kind: ConsoleFrameSourceKind::Synthetic,
                         source_cursor: None,
@@ -3246,6 +3241,23 @@ impl std::fmt::Display for ConsoleSendError {
 }
 
 impl std::error::Error for ConsoleSendError {}
+
+impl ConsoleSendError {
+    pub(crate) fn structured_data(&self) -> Option<Value> {
+        match self {
+            Self::ActorProbe(error) | Self::RuntimeOperation(error) => error.structured_data(),
+            Self::AdmissionTimeout {
+                operation,
+                waited,
+                command,
+                ..
+            } => Some(crate::identity_first::bridge::actor_timeout_data(
+                operation, *waited, *command,
+            )),
+            _ => None,
+        }
+    }
+}
 
 async fn backfill_session_history(
     inner: Arc<AggregatorInner>,
@@ -4292,7 +4304,11 @@ fn frames_from_session_history_message_with_namespace(
         .map(|id| id.0.to_string());
     let (kind, timestamp_ms, payload) = match &parsed {
         Message::User(user) => {
-            if session_history_user_message_is_scaffold(&message) {
+            // Ambient recall shares the user channel, not human authorship.
+            // Keep it in canonical history, never as a console human input.
+            if user.transcript_role == meerkat_core::types::TranscriptUserRole::InjectedContext
+                || session_history_user_message_is_scaffold(&message)
+            {
                 return Vec::new();
             }
             (
@@ -5408,6 +5424,22 @@ fn parse_handling_mode(
     }
 }
 
+fn accepted_replay_from_frame(
+    frame: &ConsoleFrame,
+) -> Result<ConsoleInteractionAccepted, ConsoleSendError> {
+    if frame.status == ConsoleFrameStatus::DeliveryFailed {
+        return Err(ConsoleSendError::RuntimeOperation(Box::new(
+            crate::identity_first::IdentityRuntimeError::HostHumanInput(
+                crate::identity_first::bridge::HostHumanInputError::ReplayUnavailable {
+                    interaction_id: frame.interaction_id.clone().unwrap_or_default(),
+                    input_frame_id: frame.id.clone(),
+                },
+            ),
+        )));
+    }
+    Ok(accepted_from_frame(frame))
+}
+
 fn accepted_from_frame(frame: &ConsoleFrame) -> ConsoleInteractionAccepted {
     ConsoleInteractionAccepted {
         interaction_id: frame
@@ -5903,6 +5935,23 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MobSessionService for DelayedHistorySessionService {
+        async fn commit_live_delegation_final_transcript(
+            &self,
+            machine: &meerkat_runtime::MeerkatMachine,
+            session_id: &meerkat_core::SessionId,
+            provisional: meerkat_core::ProvisionalLiveHandoff,
+            final_event: meerkat_core::RealtimeTranscriptEvent,
+        ) -> Result<meerkat_core::FinalLiveUserTranscriptCommitEvidence, SessionError> {
+            self.inner
+                .commit_live_delegation_final_transcript(
+                    machine,
+                    session_id,
+                    provisional,
+                    final_event,
+                )
+                .await
+        }
+
         // meerkat 0.8.30 made this REQUIRED. This double wraps an inner service
         // and owns no session authority of its own, so it forwards - the same
         // reasoning as `observe_session_resume_authority` above. Answering

@@ -793,6 +793,9 @@ fn build_console_experience_contract(
         "contract_version": MOBKIT_CONTRACT_VERSION,
         "runtime_id": live_snapshot.runtime_id,
         "console_config": console_config,
+        // HTTP has no authenticated, summary-seeded voice host yet. Generic
+        // live/model capabilities must never authorize microphone acquisition.
+        "voice": { "available": false },
         "runtime_capabilities": {
             "can_spawn_members": can_spawn_members,
             "can_send_messages": can_send_messages,

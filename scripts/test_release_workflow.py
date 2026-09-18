@@ -993,6 +993,8 @@ class ImmutableReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(set(re.findall(r"--bin (\w+)", script)),
                          {"mobkit_gateway", "rpc_gateway", "mobkit_repair"})
         self.assertIn("--locked --release --target", script)
+        self.assertRegex(script.replace("\\\n", " "),
+                         r"cargo build [^\n]*--features openai-live --locked")
         packaging = step_block("Package artifacts")
         self.assertIn("VERSION: ${{ needs.resolve_release.outputs.version }}", packaging)
         self.assertNotIn("GITHUB_REF", packaging)

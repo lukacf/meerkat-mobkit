@@ -219,6 +219,9 @@ fn delegate_member_idle_retire_after(
         Some(DelegateIdleRetireOverride::Seconds(seconds)) => {
             return Some(Duration::from_secs(seconds));
         }
+        // Opted in without a number: the runtime default decides, and a
+        // runtime with retirement disabled keeps it disabled.
+        Some(DelegateIdleRetireOverride::RuntimeDefault) => return default_idle_after,
         None => {}
     }
     match labels
@@ -281,7 +284,49 @@ mod tests {
             &no_labels,
             Some(DelegateIdleRetireOverride::Seconds(60)),
         ));
+        assert!(idle_retirement_candidate(
+            true,
+            false,
+            &no_labels,
+            Some(DelegateIdleRetireOverride::RuntimeDefault),
+        ));
         assert!(!idle_retirement_candidate(true, false, &no_labels, None,));
+    }
+
+    /// A fork child opted in on the runtime default follows that default
+    /// exactly: the configured timeout when there is one, and no retirement
+    /// when the runtime disabled it. A label never overrides the opt-in.
+    #[test]
+    fn runtime_default_override_follows_the_runtime_default() {
+        let no_labels = std::collections::BTreeMap::new();
+        assert_eq!(
+            delegate_member_idle_retire_after(
+                &no_labels,
+                Some(DelegateIdleRetireOverride::RuntimeDefault),
+                Some(Duration::from_mins(5))
+            ),
+            Some(Duration::from_mins(5))
+        );
+        assert_eq!(
+            delegate_member_idle_retire_after(
+                &no_labels,
+                Some(DelegateIdleRetireOverride::RuntimeDefault),
+                None
+            ),
+            None
+        );
+        let labels = std::collections::BTreeMap::from([(
+            DELEGATE_IDLE_RETIRE_SECS_LABEL.to_string(),
+            "12".to_string(),
+        )]);
+        assert_eq!(
+            delegate_member_idle_retire_after(
+                &labels,
+                Some(DelegateIdleRetireOverride::RuntimeDefault),
+                Some(Duration::from_mins(5))
+            ),
+            Some(Duration::from_mins(5))
+        );
     }
 
     #[test]

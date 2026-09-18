@@ -118,6 +118,18 @@ impl SessionServiceHistoryExt for NeverStartsActorRunService {
 
 #[async_trait::async_trait]
 impl MobSessionService for NeverStartsActorRunService {
+    async fn commit_live_delegation_final_transcript(
+        &self,
+        machine: &meerkat_runtime::MeerkatMachine,
+        session_id: &SessionId,
+        provisional: meerkat_core::ProvisionalLiveHandoff,
+        final_event: meerkat_core::RealtimeTranscriptEvent,
+    ) -> Result<meerkat_core::FinalLiveUserTranscriptCommitEvidence, SessionError> {
+        self.inner
+            .commit_live_delegation_final_transcript(machine, session_id, provisional, final_event)
+            .await
+    }
+
     async fn load_session_for_resume(
         &self,
         session_id: &SessionId,

@@ -67,7 +67,17 @@ type PersistentSessionServiceParts = (
     meerkat_mobkit::mob_handle_runtime::SessionWriteEpochsHandle,
     Arc<dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer>,
     Arc<dyn meerkat_runtime::RuntimeStore>,
+    ConsoleLiveInputs,
 );
+type ConsoleLiveInputs = (
+    Arc<PersistentSessionService<FactoryAgentBuilder>>,
+    Arc<meerkat_runtime::MeerkatMachine>,
+    AgentFactory,
+    Config,
+    AgentMobToolsSlot,
+);
+type AgentMobToolsSlot =
+    Arc<std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>>;
 
 #[derive(Debug, Deserialize)]
 struct InitParams {
@@ -77,6 +87,11 @@ struct InitParams {
     runtime_root: Option<PathBuf>,
     store_path: Option<PathBuf>,
     persistent_sessions: Option<bool>,
+    /// Explicit authenticated HTTP voice registration, using the shared
+    /// OpenAI profile shape. Requires persistent sessions and auth_config.
+    console_voice: Option<Value>,
+    /// Same explicit JWT console authentication contract as rpc_gateway.
+    auth_config: Option<Value>,
     realm: Option<String>,
     isolated: Option<bool>,
     surface: Option<String>,
@@ -126,8 +141,8 @@ struct InitParams {
     /// HTTP listener bind address, `HOST:PORT` (default `127.0.0.1:0`:
     /// loopback, ephemeral port). Wins over `--http-listen` and
     /// `MOBKIT_HTTP_LISTEN_ADDR`. A non-loopback address is refused unless
-    /// `allow_remote` acknowledges the exposure: this binary serves its
-    /// console open (no auth ingress), so loopback is its only boundary.
+    /// `allow_remote` acknowledges the exposure. Without auth_config the
+    /// console is open, so loopback remains the default protection.
     http_listen: Option<String>,
     /// Explicit acknowledgement that `http_listen` exposes the listener
     /// beyond this host; also `--allow-remote` or `MOBKIT_HTTP_ALLOW_REMOTE=1`.
@@ -620,6 +635,8 @@ fn build_persistent_session_service(
     }
 
     let config = gateway_agent_config(host_config, compaction)?;
+    let live_factory = factory.clone();
+    let live_config = config.clone();
     let mut builder = FactoryAgentBuilder::new(factory, config);
     builder.default_blob_store = Some(blob_store.clone());
     // Attach meerkat's per-session schedule tools so members whose profile sets
@@ -671,6 +688,7 @@ fn build_persistent_session_service(
                 ),
             ),
         };
+    let agent_mob_tools_slot = Arc::clone(&builder.default_mob_tools);
     let service = Arc::new(PersistentSessionService::new(
         builder,
         64,
@@ -726,6 +744,13 @@ fn build_persistent_session_service(
     let committed_boundary_recoverer: Arc<
         dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer,
     > = service.clone();
+    let voice_inputs = (
+        Arc::clone(&service),
+        Arc::clone(&adapter),
+        live_factory,
+        live_config,
+        agent_mob_tools_slot,
+    );
     Ok((
         service,
         adapter,
@@ -740,6 +765,7 @@ fn build_persistent_session_service(
         session_write_epochs,
         committed_boundary_recoverer,
         runtime_store,
+        voice_inputs,
     ))
 }
 
@@ -749,10 +775,9 @@ fn build_persistent_session_service(
 const TUX_BIGQUERY_DATASET: &str = "tux_local";
 const TUX_BIGQUERY_TABLE: &str = "runtime_events";
 
-/// The standalone console/admin gateway serves an explicitly open console: it
-/// has no `auth_config` ingress and binds loopback, so the host is the
-/// protection. Everything except the console policy and the session-store
-/// naming comes from the crate's single owner of the keyless snapshot.
+/// Default standalone console snapshot. Explicit auth_config replaces its
+/// authentication fields at launch; otherwise the loopback host is the
+/// protection. Shared non-auth defaults come from the keyless snapshot owner.
 fn runtime_decision_state(
     console_ui: ConsoleUiConfig,
     console_read_only: bool,
@@ -807,6 +832,24 @@ fn parse_init_request(line: &str) -> anyhow::Result<(Value, InitParams)> {
              arms nothing while looking deployed, and the only later evidence would be an absence \
              of denials, which is what an armed and fully granted policy also produces"
         ));
+    }
+    if let Some(auth) = parsed.auth_config.as_ref() {
+        meerkat_mobkit::console_auth_config::parse_console_auth_config(auth)
+            .map_err(|error| anyhow!("{error}"))?;
+    }
+    if let Some(voice) = parsed.console_voice.as_ref() {
+        if !cfg!(feature = "openai-live") {
+            return Err(anyhow!(
+                "console_voice requires a gateway built with openai-live"
+            ));
+        }
+        if !parsed.persistent_sessions.unwrap_or(false) || parsed.auth_config.is_none() {
+            return Err(anyhow!(
+                "console_voice requires persistent_sessions and auth_config"
+            ));
+        }
+        meerkat_mobkit::public_live_config::PublicLiveRegistration::parse(voice)
+            .map_err(|error| anyhow!("console_voice: {error}"))?;
     }
     Ok((raw.get("id").cloned().unwrap_or(Value::Null), parsed))
 }
@@ -1552,6 +1595,18 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
         declared_public_base_url.as_deref(),
         &paths,
     )?;
+    // A launch requesting authenticated voice must not resume an older open
+    // console just because its workspace/listener settings happen to match.
+    let key = if params.auth_config.is_some() || params.console_voice.is_some() {
+        let auth_shape = serde_json::to_vec(&(
+            &key,
+            params.auth_config.as_ref(),
+            params.console_voice.as_ref(),
+        ))?;
+        format!("{:x}", Sha256::digest(auth_shape))
+    } else {
+        key
+    };
     let registry_file = layout
         .registry_file()
         .ok_or_else(|| anyhow!("gateway storage layout carries no gateway home"))?;
@@ -1613,7 +1668,7 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
     let runtime_id = definition.id.to_string();
     let image_generation = mob_definition_may_use_image_generation(&definition);
 
-    let (session_spec, schedule_host_inputs, workgraph_service) = if persistent_sessions {
+    let session_bootstrap = if persistent_sessions {
         let (
             service,
             adapter,
@@ -1624,6 +1679,7 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
             session_write_epochs,
             committed_boundary_recoverer,
             runtime_store,
+            voice_inputs,
         ) = build_persistent_session_service(
             &layout,
             runtime_root.clone(),
@@ -1670,6 +1726,9 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
             .with_session_runtime_adapter(adapter.clone())
             .with_workgraph_service(workgraph_service.clone());
         spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
+        if params.console_voice.is_some() {
+            spec = spec.with_agent_mob_tools(Arc::clone(&voice_inputs.4));
+        }
         if let Some((_, admission_slot, state_dir)) = &workgraph {
             // Durable (cross-process shareable) store: register the tool-plane
             // admission slot and the sidecar lock beside the store.
@@ -1690,7 +1749,12 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
             ),
         );
         spec.resolved_storage = Some(resolved_storage);
-        (spec, schedule_host_inputs, workgraph_service)
+        (
+            spec,
+            schedule_host_inputs,
+            workgraph_service,
+            Some(voice_inputs),
+        )
     } else {
         // Build the ephemeral path manually to thread project/context roots
         // into AgentFactory (MobBootstrapSpec::ephemeral doesn't accept them).
@@ -1807,8 +1871,9 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
         );
         // Ephemeral sessions have no persistent service; the runtime-backed
         // schedule firing host (and thus schedule tools) is persistent-only.
-        (spec, None, workgraph_service)
+        (spec, None, workgraph_service, None)
     };
+    let (session_spec, schedule_host_inputs, workgraph_service, voice_inputs) = session_bootstrap;
     let mob_spec = session_spec.with_options(MobBootstrapOptions {
         allow_ephemeral_sessions: !persistent_sessions,
         notify_orchestrator_on_resume: true,
@@ -2073,6 +2138,44 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
     });
     save_registry(&registry_file, &registry)?;
 
+    let mut decisions = runtime_decision_state(console_ui, console_read_only);
+    if let Some(auth) = params.auth_config.as_ref() {
+        let configured = meerkat_mobkit::console_auth_config::parse_console_auth_config(auth)
+            .map_err(|error| anyhow!("{error}"))?;
+        decisions.auth = configured.auth;
+        decisions.trusted_oidc = configured.trusted_oidc;
+        decisions.console.require_app_auth = true;
+    }
+    #[cfg(feature = "openai-live")]
+    let controller = if let Some(registration) = params.console_voice.as_ref() {
+        let (service, machine, factory, config, _) =
+            voice_inputs.ok_or_else(|| anyhow!("console_voice requires persistent sessions"))?;
+        meerkat_mobkit::console_voice::ConsoleVoiceController::with_live_host(
+            runtime,
+            service,
+            machine,
+            factory,
+            config,
+            meerkat_mobkit::public_live_config::PublicLiveRegistration::parse(registration)
+                .map_err(|error| anyhow!("console_voice: {error}"))?,
+        )
+        .map_err(|error| anyhow!("console voice composition failed: {error}"))?
+    } else {
+        meerkat_mobkit::console_voice::ConsoleVoiceController::default()
+    };
+    #[cfg(not(feature = "openai-live"))]
+    let controller = {
+        let _ = voice_inputs;
+        meerkat_mobkit::console_voice::ConsoleVoiceController::default()
+    };
+    meerkat_mobkit::gateway_composition::warn_on_non_loopback_bind(
+        meerkat_mobkit::gateway_composition::GatewaySurface::MobkitGateway,
+        http_binding.local_addr(),
+        &decisions,
+    );
+    let app = runtime
+        .build_reference_app_router(decisions)
+        .layer(axum::Extension(controller.clone()));
     print_json_line(&init_response(
         request_id,
         &runtime_id,
@@ -2081,14 +2184,6 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
         control_listen_address.as_deref(),
         http_public_base_url.as_deref(),
     ));
-
-    let decisions = runtime_decision_state(console_ui, console_read_only);
-    meerkat_mobkit::gateway_composition::warn_on_non_loopback_bind(
-        meerkat_mobkit::gateway_composition::GatewaySurface::MobkitGateway,
-        http_binding.local_addr(),
-        &decisions,
-    );
-    let app = runtime.build_reference_app_router(decisions);
     let mut http_server = http_binding.serve(app);
 
     // `mobkit_gateway` serves the console/admin API over HTTP. It is NOT the
@@ -2218,7 +2313,11 @@ async fn run(launch: GatewayLaunchArgs) -> anyhow::Result<()> {
     let shutdown = composition
         .shutdown(
             http_server,
-            || async {},
+            || async {
+                if let Err(error) = controller.shutdown().await {
+                    tracing::warn!(%error, "console voice shutdown did not attest complete cleanup");
+                }
+            },
             || async {
                 let mut registry = load_registry(&registry_file);
                 registry.entries.retain(|entry| entry.key != key);
@@ -2288,6 +2387,38 @@ mod tests {
                 "dependency warnings must still pass"
             );
         });
+        Ok(())
+    }
+
+    #[test]
+    fn console_voice_init_requires_persistent_authenticated_host()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut params = json!({
+            "persistent_sessions":true,
+            "auth_config":{"provider":"jwt","shared_secret":"test-console-signing-key",
+                "email_allowlist":["voice@example.com"]},
+            "console_voice":{
+                "principal":"voice@example.com","realm":"voice",
+                "auth_binding":{"realm":"voice","binding":"openai"},"voice":"marin"
+            }
+        });
+        let parse = |params: &Value| {
+            parse_init_request(
+                &json!({
+                    "jsonrpc":"2.0","id":1,"method":"mobkit/init","params":params
+                })
+                .to_string(),
+            )
+        };
+        assert_eq!(parse(&params).is_ok(), cfg!(feature = "openai-live"));
+        params["persistent_sessions"] = json!(false);
+        assert!(parse(&params).is_err());
+        params["persistent_sessions"] = json!(true);
+        params
+            .as_object_mut()
+            .ok_or("params must be an object")?
+            .remove("auth_config");
+        assert!(parse(&params).is_err());
         Ok(())
     }
 

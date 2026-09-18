@@ -104,6 +104,38 @@ fn decision_state_with_console_policy(
 }
 
 #[test]
+fn console_voice_is_unavailable_without_an_authenticated_voice_host() {
+    for require_app_auth in [false, true] {
+        let state = decision_state(require_app_auth);
+        let response = handle_console_rest_json_route_with_snapshot(
+            &state,
+            &ConsoleRestJsonRequest {
+                method: "GET".to_string(),
+                path: "/console/experience".to_string(),
+                auth: require_app_auth.then(|| ConsoleAccessRequest {
+                    provider: AuthProvider::GoogleOAuth,
+                    email: "alice@example.com".to_string(),
+                }),
+            },
+            Some(&ConsoleLiveSnapshot {
+                runtime_id: Some("voice-test".to_string()),
+                running: true,
+                loaded_modules: vec![],
+                agents: vec![],
+                members: vec![],
+                has_mob_runtime: true,
+            }),
+        );
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            response.body["runtime_capabilities"]["can_send_messages"],
+            json!(true)
+        );
+        assert_eq!(response.body["voice"], json!({ "available": false }));
+    }
+}
+
+#[test]
 fn phase8_console_001_capability_driven_rendering_contract() {
     let state = decision_state(true);
     let authorized_auth = ConsoleAccessRequest {

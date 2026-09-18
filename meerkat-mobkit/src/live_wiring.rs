@@ -2058,6 +2058,7 @@ impl LiveCapabilityProvider {
         machine: Arc<MeerkatMachine>,
         shared_live_host: Arc<ServiceMemberLiveHost<B>>,
         live_adapter_host: Arc<LiveAdapterHost>,
+        execution_policy: meerkat_mob_mcp::live_delegation::LiveDelegationExecutionPolicy,
     ) -> Self {
         let Some(configured) = self.configured.as_ref() else {
             return Self::disabled();
@@ -2068,9 +2069,10 @@ impl LiveCapabilityProvider {
             return self.clone();
         };
         let downstream =
-            meerkat_mob_mcp::live_delegation::compose_experimental_live_delegation_coordinator(
+            meerkat_mob_mcp::live_delegation::compose_experimental_live_delegation_coordinator_with_policy(
                 Arc::clone(&machine),
                 Arc::clone(mob_mcp_state),
+                execution_policy,
             );
         let activator = meerkat::surface::ExperimentalGptLiveContextMirrorHost::new(
             machine,
@@ -2206,14 +2208,53 @@ impl LiveCapabilityProvider {
     }
 }
 
+/// Internal receipt-custody read retained from the same shared live host.
+#[cfg(feature = "openai-live")]
+type LiveCustodyRead = Arc<
+    dyn Fn(
+            LiveChannelId,
+            String,
+        ) -> futures::future::BoxFuture<
+            'static,
+            Result<meerkat::surface::ExperimentalLiveChannelCustodyStatus, String>,
+        > + Send
+        + Sync,
+>;
+
 /// Type-erased live RPC registration plus its fail-closed capability owner.
 #[derive(Clone)]
 pub struct LiveRpcHandler {
     dispatch: LiveRpcDispatch,
     capability_provider: LiveCapabilityProvider,
+    #[cfg(feature = "openai-live")]
+    custody_read: LiveCustodyRead,
 }
 
 impl LiveRpcHandler {
+    /// Console retains the original receipt; the caller supplies no custody.
+    /// This does not alter the strict public Pending/Active status wire shape.
+    #[cfg(feature = "openai-live")]
+    pub(crate) async fn read_console_channel_custody(
+        &self,
+        session: &SessionId,
+        channel: &LiveChannelId,
+        pending_receipt: &str,
+    ) -> Result<meerkat::surface::ExperimentalLiveChannelCustodyStatus, String> {
+        let custody = (self.custody_read)(channel.clone(), pending_receipt.to_string()).await?;
+        validate_strict_custody_target(&custody, session, channel).map_err(ToString::to_string)?;
+        Ok(custody)
+    }
+
+    #[cfg(feature = "openai-live")]
+    pub(crate) async fn pending_replacement(
+        &self,
+        session: &SessionId,
+    ) -> Option<meerkat::surface::ExperimentalLiveReplacementRequired> {
+        self.capability_provider
+            .pending_replacement_required(session)
+            .await
+    }
+
     #[must_use]
     pub fn feature_capabilities(&self) -> Vec<crate::live_contracts::FeatureCapability> {
         self.capability_provider.feature_capabilities()
@@ -2295,12 +2336,64 @@ pub fn live_rpc_handler_with_capabilities<B: SessionAgentBuilder + 'static>(
     machine: Arc<MeerkatMachine>,
     capability_provider: LiveCapabilityProvider,
 ) -> LiveRpcHandler {
-    let shared_live_host = Arc::new(shared_live_host(&ctx, &service, &machine));
+    live_rpc_handler_with_policy(
+        ctx,
+        service,
+        machine,
+        capability_provider,
+        None,
+        meerkat_mob_mcp::live_delegation::LiveDelegationExecutionPolicy::default(),
+    )
+}
+
+#[cfg(feature = "openai-live")]
+pub(crate) fn live_rpc_handler_with_console_policy<B: SessionAgentBuilder + 'static>(
+    ctx: Arc<GatewayLiveContext>,
+    service: Arc<PersistentSessionService<B>>,
+    machine: Arc<MeerkatMachine>,
+    capability_provider: LiveCapabilityProvider,
+    summary: meerkat::session_runtime::live_summary::LiveContextSummaryPolicy,
+) -> LiveRpcHandler {
+    live_rpc_handler_with_policy(
+        ctx,
+        service,
+        machine,
+        capability_provider,
+        Some(summary),
+        meerkat_mob_mcp::live_delegation::LiveDelegationExecutionPolicy::ExistingMember,
+    )
+}
+
+#[cfg(feature = "openai-live")]
+fn live_rpc_handler_with_policy<B: SessionAgentBuilder + 'static>(
+    ctx: Arc<GatewayLiveContext>,
+    service: Arc<PersistentSessionService<B>>,
+    machine: Arc<MeerkatMachine>,
+    capability_provider: LiveCapabilityProvider,
+    summary: Option<meerkat::session_runtime::live_summary::LiveContextSummaryPolicy>,
+    execution_policy: meerkat_mob_mcp::live_delegation::LiveDelegationExecutionPolicy,
+) -> LiveRpcHandler {
+    let host = shared_live_host(&ctx, &service, &machine);
+    let host = match summary {
+        Some(policy) => host.with_context_summary_policy(policy),
+        None => host,
+    };
+    let shared_live_host = Arc::new(host);
+    let custody_host = Arc::clone(&shared_live_host);
+    let custody_read: LiveCustodyRead = Arc::new(move |channel, receipt| {
+        let host = Arc::clone(&custody_host);
+        Box::pin(async move {
+            host.validate_experimental_live_channel_custody(&channel, &receipt)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    });
     #[cfg(feature = "openai-live")]
     let capability_provider = capability_provider.compose_for_host(
         Arc::clone(&machine),
         Arc::clone(&shared_live_host),
         Arc::clone(&ctx.host),
+        execution_policy,
     );
     let dispatch_capability_provider = capability_provider.clone();
     let dispatch =
@@ -2340,6 +2433,7 @@ pub fn live_rpc_handler_with_capabilities<B: SessionAgentBuilder + 'static>(
     LiveRpcHandler {
         dispatch,
         capability_provider,
+        custody_read,
     }
 }
 
@@ -3463,6 +3557,7 @@ async fn handle_live_replacement_required(
         Some(meerkat::surface::ExperimentalLiveReplacementRequired::CanonicalContext {
             open,
             canonical_seed_cursor,
+            ..
         }) => crate::live_contracts::LiveReplacementRequiredResult::required(
             crate::live_contracts::LiveReplacementReason::CanonicalContext,
             crate::live_contracts::LiveChannelHandle::from_open_result(target_identity, open),
@@ -3471,6 +3566,7 @@ async fn handle_live_replacement_required(
         Some(meerkat::surface::ExperimentalLiveReplacementRequired::DelegationResult {
             open,
             canonical_seed_cursor,
+            ..
         }) => crate::live_contracts::LiveReplacementRequiredResult::required(
             crate::live_contracts::LiveReplacementReason::DelegationResult,
             crate::live_contracts::LiveChannelHandle::from_open_result(target_identity, open),
@@ -4550,6 +4646,15 @@ fn experimental_live_open_error_response(
         ExperimentalLiveChannelOpenError::ExecutionProfile(_) => {
             live_error(rpc_id, crate::rpc::CAPABILITY_UNAVAILABLE_CODE, detail)
         }
+        ExperimentalLiveChannelOpenError::Summary(_) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: rpc_id,
+            result: None,
+            error: Some(
+                JsonRpcError::new(INTERNAL_ERROR_CODE, detail)
+                    .with_data(serde_json::json!({ "kind": "live_summary_rejected" })),
+            ),
+        },
         ExperimentalLiveChannelOpenError::Open(open_error) => {
             live_open_error_response(rpc_id, open_error)
         }
@@ -6273,6 +6378,7 @@ mod tests {
             pending: meerkat::surface::ExperimentalLiveReplacementRequired::CanonicalContext {
                 open: replacement_open_result("fresh-replacement-channel"),
                 canonical_seed_cursor: 17,
+                pending_receipt: "replacement-pending-receipt".to_string(),
             },
         });
         let provider = replacement_capability_provider(Arc::clone(&activator));

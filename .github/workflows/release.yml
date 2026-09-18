@@ -332,7 +332,7 @@ jobs:
           # that distinction concrete: adopters running a prebuilt gateway are
           # exposed by what is IN THE BINARY, not by what the lock says.
           cargo build -p meerkat-mobkit --bin mobkit_gateway --bin rpc_gateway --bin mobkit_repair \
-            --locked --release --target "${{ matrix.target }}"
+            --features openai-live --locked --release --target "${{ matrix.target }}"
 
       # The gate reads the produced binary, not the build environment: a
       # container or toolchain change that raised the floor would otherwise

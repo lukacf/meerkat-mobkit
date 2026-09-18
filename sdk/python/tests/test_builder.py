@@ -95,6 +95,23 @@ class TestBuilderChain:
 
         assert "experimental_live" not in params["runtime_options"]
         assert "openai_live" not in params["runtime_options"]
+        assert "console_voice" not in params["runtime_options"]
+
+    def test_console_voice_reaches_http_runtime_option_without_enabling_stdio_live(self):
+        config = OpenAiLiveGatewayConfig(
+            principal="alice@example.com",
+            realm="ops",
+            auth_binding=LiveAuthBindingRef(realm="ops", binding="openai"),
+            voice="marin",
+        )
+        builder = MobKit.builder()
+        assert builder.console_voice(config) is builder
+        params = MobKitRuntime(builder._config)._build_init_params()
+        assert params["runtime_options"]["console_voice"] == config.to_dict()
+        assert "openai_live" not in params["runtime_options"]
+        assert "experimental_live" not in params["runtime_options"]
+        with pytest.raises(TypeError, match="OpenAiLiveGatewayConfig"):
+            MobKit.builder().console_voice({"principal": "alice@example.com"})
 
     def test_openai_live_reaches_public_runtime_option(self):
         b = MobKit.builder().openai_live(

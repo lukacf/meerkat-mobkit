@@ -17,6 +17,7 @@ import {
   type WorkGraphCardActions,
 } from "@console-components";
 import type { ConsoleAgent } from "../types";
+import { VoiceButton } from "./VoiceBar";
 import {
   composerImageFileKey,
   consoleBlobReferencesFromText,
@@ -55,6 +56,10 @@ interface ChatPaneProps {
   /// composer. ConsoleApp owns the state + handlers; ChatPane just
   /// reserves the slot. Pass `null` (or omit) to suppress.
   stackSlot?: React.ReactNode;
+  voiceSlot?: React.ReactNode;
+  onVoiceToggle?: () => void;
+  voiceActive?: boolean;
+  voiceDisabled?: boolean;
   /// Operator actions for inline WorkGraph cards. ConsoleApp gates these on
   /// `experience.workgraph.can_manage` and read-only state; omitted callbacks
   /// render no buttons.
@@ -645,6 +650,10 @@ export function ChatPane({
   isLoadingHistory = false,
   onLoadOlder,
   stackSlot,
+  voiceSlot,
+  onVoiceToggle,
+  voiceActive = false,
+  voiceDisabled = false,
   workGraphActions = null,
 }: ChatPaneProps): React.JSX.Element {
   const bodyRef = React.useRef<HTMLDivElement>(null);
@@ -1142,6 +1151,7 @@ export function ChatPane({
       {turnRail}
       {stackSlot}
       <div className="composer">
+        {voiceSlot}
         <div
           className={`composer__shell${dragActive && canAttachImages ? " is-drag-active" : ""}`}
           onDragLeave={() => setDragActive(false)}
@@ -1194,7 +1204,9 @@ export function ChatPane({
                 ? "View-only console"
                 : sendWithheld
                   ? `You can view ${agentLabel} but not message it`
-                  : `Message ${agentLabel}…`
+                  : voiceActive
+                    ? `Message ${agentLabel} (background agent)…`
+                    : `Message ${agentLabel}…`
             }
             value={draft}
             disabled={readOnly || sendWithheld}
@@ -1208,6 +1220,14 @@ export function ChatPane({
           <div className="composer__row">
             <span className="composer__chip mono">{agent?.role || "agent"}</span>
             <span className="composer__spacer" />
+            {onVoiceToggle && !readOnly && !sendWithheld && (
+              <VoiceButton
+                agentLabel={agentLabel}
+                active={voiceActive}
+                disabled={voiceDisabled}
+                onClick={onVoiceToggle}
+              />
+            )}
             <button
               className="composer__send"
               disabled={
@@ -1226,6 +1246,7 @@ export function ChatPane({
         </div>
         <div className="composer__footer">
           <span>To: <b style={{ color: "var(--ink-muted)" }}>{agentLabel}</b></span>
+          {voiceActive && <span>· text to background agent</span>}
           <span>·</span>
           <span className="mono">{identity}</span>
           {agent?.role && (<>

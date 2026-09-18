@@ -141,6 +141,7 @@ export interface MobKitBuilderConfig {
   jobCredentialResolver: JobCredentialResolver | null;
   experimentalLiveConfig: ExperimentalLiveGatewayConfig | null;
   openaiLiveConfig: OpenAiLiveGatewayConfig | null;
+  consoleVoiceConfig?: OpenAiLiveGatewayConfig | null;
 }
 
 function defaultConfig(): MobKitBuilderConfig {
@@ -183,6 +184,7 @@ function defaultConfig(): MobKitBuilderConfig {
     jobCredentialResolver: null,
     experimentalLiveConfig: null,
     openaiLiveConfig: null,
+    consoleVoiceConfig: null,
   };
 }
 
@@ -310,6 +312,16 @@ export class MobKitBuilder {
    */
   openaiLive(config: OpenAiLiveGatewayConfig): this {
     this._config.openaiLiveConfig = config;
+    return this;
+  }
+
+  /**
+   * Register authenticated console voice (`runtime_options.console_voice`).
+   * Requires persistent sessions, console auth, and an `openai-live` gateway.
+   * The principal must match the authenticated console subject.
+   */
+  consoleVoice(config: OpenAiLiveGatewayConfig): this {
+    this._config.consoleVoiceConfig = config;
     return this;
   }
 

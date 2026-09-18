@@ -89,12 +89,13 @@ class LiveAuthBindingRef:
 class OpenAiLiveGatewayConfig:
     """Public OpenAI Live (``gpt-live-1``) host registration.
 
-    Serialized as ``runtime_options.openai_live``. The gateway fixes the
+    Serialized as ``runtime_options.openai_live`` by ``openai_live()`` or
+    ``runtime_options.console_voice`` by ``console_voice()``. The gateway fixes the
     execution identity (provider OpenAI, model ``gpt-live-1``, this configured
     API-key binding); the host names only the principal, realm, binding,
     voice, and optional trusted session instructions. Requires a gateway
-    compiled with ``openai-live``. Mutually exclusive with the deprecated
-    :class:`ExperimentalLiveGatewayConfig`.
+    compiled with ``openai-live``. The stdio registration is mutually exclusive
+    with the deprecated :class:`ExperimentalLiveGatewayConfig`.
     """
 
     principal: str

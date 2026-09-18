@@ -834,6 +834,12 @@ fn no_op_pre_build_hook() -> PreBuildHook {
 pub(crate) enum DelegateIdleRetireOverride {
     Disabled,
     Seconds(u64),
+    /// Opt the member into idle retirement on the runtime default timeout.
+    ///
+    /// Members seated in the primary mob are only swept when something opts
+    /// them in. `fork_off` children live in the caller's mob, so without this
+    /// they would stay live until the session ceiling refuses new work.
+    RuntimeDefault,
 }
 
 #[derive(Clone, Default)]
@@ -924,7 +930,7 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
             .tools()
             .iter()
             .map(|tool| {
-                if tool.name == "delegate" {
+                if tool.name == "delegate" || tool.name == "fork_off" {
                     Arc::new(delegate_tool_def_with_idle_retire_secs(tool))
                 } else if tool.name == "mob_spawn_member" {
                     Arc::new(mob_spawn_tool_def_with_idle_retire_secs(tool))
@@ -1017,6 +1023,9 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
         }
         if call.name == "mob_spawn_member" {
             return self.dispatch_mob_spawn_member(call, context).await;
+        }
+        if call.name == "fork_off" {
+            return self.dispatch_fork_off(call, context).await;
         }
         if crate::console_spawn::is_console_spawn_tool(call.name) {
             // Spawn variants this wrapper does not otherwise intercept
@@ -1194,6 +1203,39 @@ impl AutoWireParentMobToolDispatcher {
         let outcome = self.inner.dispatch_with_context(call, context).await?;
 
         self.register_idle_retire_override_from_outcome(&outcome, idle_retire_override, &[])
+            .await;
+        self.project_spawn_to_console(&name, &args_for_console, &outcome)
+            .await;
+
+        Ok(outcome)
+    }
+
+    /// `fork_off` seats the child in the caller's own mob, where idle
+    /// retirement is opt-in. A fork that nobody retires holds one of the
+    /// bounded sessions forever, so the child is opted in on the runtime
+    /// default unless the caller passes `idle_retire_secs` explicitly.
+    async fn dispatch_fork_off(
+        &self,
+        call: meerkat_core::types::ToolCallView<'_>,
+        context: &meerkat_core::ToolDispatchContext,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        let mut args = serde_json::from_str::<Value>(call.args.get()).map_err(|error| {
+            meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
+        })?;
+        let idle_retire_override = fork_off_idle_retire_override_from_args(call.name, &mut args)?;
+        let name = call.name.to_string();
+        let args_for_console = args.clone();
+        let args = serde_json::value::RawValue::from_string(args.to_string()).map_err(|error| {
+            meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
+        })?;
+        let call = meerkat_core::types::ToolCallView {
+            id: call.id,
+            name: call.name,
+            args: &args,
+        };
+        let outcome = self.inner.dispatch_with_context(call, context).await?;
+
+        self.register_idle_retire_override_from_outcome(&outcome, Some(idle_retire_override), &[])
             .await;
         self.project_spawn_to_console(&name, &args_for_console, &outcome)
             .await;
@@ -1480,6 +1522,17 @@ fn delegate_idle_retire_override_from_args(
                 "idle_retire_secs must be a non-negative integer or null",
             )
         })
+}
+
+/// `fork_off` idle policy: an explicit `idle_retire_secs` behaves exactly as
+/// for `delegate`; an omitted one opts the fork child into the runtime
+/// default instead of leaving it out of retirement.
+fn fork_off_idle_retire_override_from_args(
+    tool_name: &str,
+    args: &mut Value,
+) -> Result<DelegateIdleRetireOverride, meerkat_core::ToolError> {
+    Ok(delegate_idle_retire_override_from_args(tool_name, args)?
+        .unwrap_or(DelegateIdleRetireOverride::RuntimeDefault))
 }
 
 fn delegate_tool_def_with_idle_retire_secs(
@@ -3753,6 +3806,16 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await
     }
 
+    async fn load_head_canonical_metadata(
+        &self,
+        authority: &meerkat_runtime::store::HeadCanonicalStoreAuthority,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, meerkat_runtime::store::RuntimeStoreError>
+    {
+        // An exact store-issued boundary read: the inner store owns the
+        // authenticated metadata projection and the authority check.
+        self.inner.load_head_canonical_metadata(authority).await
+    }
+
     async fn discard_head_canonical_provisional_tail(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
@@ -4832,6 +4895,45 @@ macro_rules! delegate_mob_session_service {
 
         #[async_trait]
         impl MobSessionService for $wrapper {
+            async fn commit_live_delegation_final_transcript(
+                &self,
+                machine: &meerkat_runtime::MeerkatMachine,
+                session_id: &meerkat_core::SessionId,
+                provisional: meerkat_core::ProvisionalLiveHandoff,
+                final_event: meerkat_core::RealtimeTranscriptEvent,
+            ) -> Result<meerkat_core::FinalLiveUserTranscriptCommitEvidence, SessionError> {
+                self.inner
+                    .commit_live_delegation_final_transcript(machine, session_id, provisional, final_event)
+                    .await
+            }
+
+            #[cfg(feature = "openai-live")]
+            async fn validate_live_bridge_member_eligibility(
+                &self,
+                session_id: &meerkat_core::SessionId,
+            ) -> Result<(), SessionError> {
+                self.inner.validate_live_bridge_member_eligibility(session_id).await
+            }
+
+            #[cfg(feature = "openai-live")]
+            async fn capture_live_bridge_execution_snapshot(
+                &self,
+                session_id: &meerkat_core::SessionId,
+                agent_identity: &str,
+            ) -> Result<meerkat_mob::LiveBridgeExecutionSnapshot, SessionError> {
+                self.inner
+                    .capture_live_bridge_execution_snapshot(session_id, agent_identity)
+                    .await
+            }
+
+            #[cfg(feature = "openai-live")]
+            async fn start_live_bridge_member_operation(
+                &self,
+                request: meerkat_mob::LiveBridgeOperationRequest,
+                cancellation: meerkat_mob::LiveBridgeOperationCancellationSignal,
+            ) -> Result<meerkat_mob::LiveBridgeOperationTerminalFuture, meerkat_mob::LiveBridgeOperationStartError> {
+                self.inner.start_live_bridge_member_operation(request, cancellation).await
+            }
 
             async fn start_turn_with_admission_notification(
                 &self,
@@ -5810,6 +5912,53 @@ impl meerkat_core::service::SessionServiceHistoryExt for AfterCreateMobSessionSe
 
 #[async_trait]
 impl MobSessionService for AfterCreateMobSessionService {
+    async fn commit_live_delegation_final_transcript(
+        &self,
+        machine: &meerkat_runtime::MeerkatMachine,
+        session_id: &meerkat_core::SessionId,
+        provisional: meerkat_core::ProvisionalLiveHandoff,
+        final_event: meerkat_core::RealtimeTranscriptEvent,
+    ) -> Result<meerkat_core::FinalLiveUserTranscriptCommitEvidence, SessionError> {
+        self.inner
+            .commit_live_delegation_final_transcript(machine, session_id, provisional, final_event)
+            .await
+    }
+
+    #[cfg(feature = "openai-live")]
+    async fn validate_live_bridge_member_eligibility(
+        &self,
+        session_id: &meerkat_core::SessionId,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .validate_live_bridge_member_eligibility(session_id)
+            .await
+    }
+
+    #[cfg(feature = "openai-live")]
+    async fn capture_live_bridge_execution_snapshot(
+        &self,
+        session_id: &meerkat_core::SessionId,
+        agent_identity: &str,
+    ) -> Result<meerkat_mob::LiveBridgeExecutionSnapshot, SessionError> {
+        self.inner
+            .capture_live_bridge_execution_snapshot(session_id, agent_identity)
+            .await
+    }
+
+    #[cfg(feature = "openai-live")]
+    async fn start_live_bridge_member_operation(
+        &self,
+        request: meerkat_mob::LiveBridgeOperationRequest,
+        cancellation: meerkat_mob::LiveBridgeOperationCancellationSignal,
+    ) -> Result<
+        meerkat_mob::LiveBridgeOperationTerminalFuture,
+        meerkat_mob::LiveBridgeOperationStartError,
+    > {
+        self.inner
+            .start_live_bridge_member_operation(request, cancellation)
+            .await
+    }
+
     async fn start_turn_with_admission_notification(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -9431,6 +9580,67 @@ pub async fn send_message_on_mob_with_mode(
     )))
 }
 
+/// Console-only local human submission pinned to the member snapshot resolved
+/// before accepting the request. External members retain the existing remote
+/// send protocol; that compatibility path makes no local transcript-role claim.
+pub(crate) async fn send_console_human_on_mob(
+    handle: &MobHandle,
+    member: &meerkat_mob::runtime::MobMemberListEntry,
+    content: meerkat_core::ContentInput,
+    handling_mode: meerkat_core::types::HandlingMode,
+    accepted: &crate::console_aggregator::ConsoleInteractionAccepted,
+) -> Result<String, MobRuntimeError> {
+    let (runtime_id, fence_token) = member.binding_atoms().ok_or(MobRuntimeError::InvalidInput(
+        "console human target has no current runtime binding",
+    ))?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = tokio::time::timeout_at(deadline, handle.member_status(&member.agent_identity))
+        .await
+        .map_err(|_| MobError::ActorCommandTimedOut {
+            command_kind: "MemberStatus",
+            stage: "console_human_target",
+        })??;
+    if status.external_member.is_some() {
+        // Keep remote work transport semantics, but use the original binding:
+        // a stale local snapshot must never become a send to a replacement peer.
+        handle
+            .submit_work_with_mode_bounded(
+                runtime_id,
+                fence_token,
+                meerkat_mob::WorkRef::new(),
+                meerkat_mob::WorkSpec::new(content, meerkat_mob::WorkOrigin::Internal),
+                handling_mode,
+                deadline.into_std(),
+            )
+            .await?;
+        return Ok(String::new());
+    }
+    let interaction = accepted
+        .interaction_id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| MobRuntimeError::InvalidInput("console interaction must be a UUID"))?;
+    let delivery = meerkat_mob::MobDeliveryIdentity::new(
+        accepted.input_frame_id.clone(),
+        interaction.to_string(),
+    )
+    .map_err(MobError::from)?;
+    // Addressability was already checked by the console policy. Internal
+    // origin preserves support for console-addressable internal workers.
+    let spec = meerkat_mob::WorkSpec::new(content, meerkat_mob::WorkOrigin::Internal)
+        .with_interaction_id(meerkat_core::interaction::InteractionId(interaction));
+    handle
+        .submit_host_human_input_bounded(
+            runtime_id,
+            fence_token,
+            spec,
+            handling_mode,
+            delivery,
+            deadline.into_std(),
+        )
+        .await?;
+    Ok(accepted.session_id.clone().unwrap_or_default())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -9752,6 +9962,89 @@ mod tests {
         assert_eq!(idle_retire_secs["anyOf"][0]["type"], "integer");
         assert_eq!(idle_retire_secs["anyOf"][0]["minimum"], 0);
         assert_eq!(idle_retire_secs["anyOf"][1]["type"], "null");
+    }
+
+    #[test]
+    fn fork_off_tool_schema_exposes_idle_retire_secs_through_the_wrapper() {
+        struct ForkOffOnly;
+        #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+        impl meerkat_core::AgentToolDispatcher for ForkOffOnly {
+            fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+                vec![Arc::new(meerkat_core::types::ToolDef::new(
+                    "fork_off",
+                    "Fork the current transcript",
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {"task": {"type": "string"}},
+                        "required": ["task"]
+                    }),
+                ))]
+                .into()
+            }
+            async fn dispatch(
+                &self,
+                call: meerkat_core::types::ToolCallView<'_>,
+            ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+                Err(meerkat_core::ToolError::execution_failed(format!(
+                    "unexpected dispatch of {}",
+                    call.name
+                )))
+            }
+        }
+        let dispatcher = AutoWireParentMobToolDispatcher {
+            inner: Arc::new(ForkOffOnly),
+            implicit_delegate_retirement_overrides: ImplicitDelegateRetirementOverrides::default(),
+            console_spawn_sink: new_console_spawn_sink_slot(),
+            identity_runtime: Arc::new(std::sync::RwLock::new(None)),
+            protected_mob_id: "test-mob".to_string(),
+            spawner_comms_name: None,
+        };
+
+        let tools = meerkat_core::AgentToolDispatcher::tools(&dispatcher);
+        let fork_off = tools
+            .iter()
+            .find(|tool| tool.name == "fork_off")
+            .expect("fork_off stays exposed");
+        let idle_retire_secs = &fork_off.input_schema["properties"]["idle_retire_secs"];
+
+        assert!(fork_off.description.contains("IDLE RETIREMENT:"));
+        assert!(
+            fork_off
+                .description
+                .contains("Omit idle_retire_secs to use the runtime default")
+        );
+        assert_eq!(idle_retire_secs["anyOf"][0]["type"], "integer");
+        assert_eq!(idle_retire_secs["anyOf"][1]["type"], "null");
+    }
+
+    #[test]
+    fn fork_off_idle_retire_secs_defaults_to_the_runtime_default() {
+        let mut absent = serde_json::json!({"task": "inspect"});
+        assert_eq!(
+            fork_off_idle_retire_override_from_args("fork_off", &mut absent)
+                .expect("absent arg is valid"),
+            DelegateIdleRetireOverride::RuntimeDefault
+        );
+
+        let mut seconds = serde_json::json!({"task": "inspect", "idle_retire_secs": 42});
+        assert_eq!(
+            fork_off_idle_retire_override_from_args("fork_off", &mut seconds)
+                .expect("integer arg is valid"),
+            DelegateIdleRetireOverride::Seconds(42)
+        );
+        assert!(seconds.get("idle_retire_secs").is_none());
+
+        let mut disabled = serde_json::json!({"task": "inspect", "idle_retire_secs": null});
+        assert_eq!(
+            fork_off_idle_retire_override_from_args("fork_off", &mut disabled)
+                .expect("null arg is valid"),
+            DelegateIdleRetireOverride::Disabled
+        );
+        assert!(disabled.get("idle_retire_secs").is_none());
+
+        let mut invalid = serde_json::json!({"task": "inspect", "idle_retire_secs": "soon"});
+        assert!(fork_off_idle_retire_override_from_args("fork_off", &mut invalid).is_err());
     }
 
     #[test]
@@ -10089,6 +10382,67 @@ mod tests {
             overrides.get("ob3", "review-worker-vibe-forward").await,
             Some(DelegateIdleRetireOverride::Seconds(900))
         );
+    }
+
+    /// A `fork_off` result carries `mob_id` and `agent_identity` (upstream
+    /// `ForkOffResult`), so the child registers on the runtime default with
+    /// no fallback targets and no new parsing.
+    #[tokio::test]
+    async fn fork_off_registration_opts_the_child_into_runtime_default_retirement() {
+        let overrides = ImplicitDelegateRetirementOverrides::default();
+        let dispatcher = wrapper_with_overrides(overrides.clone());
+        let fork_result = concat!(
+            r#"{"mob_id":"ob3","source_member_id":"lead","agent_identity":"lead-fork-1","#,
+            r#""member_ref":"opaque","fork_session_id":"s-child","turn_session_id":"s-child","#,
+            r#""cache_inheritance":{"status":"unavailable","message_count":4,"#,
+            r#""reason":"target_identity_unresolved"},"bounded_result":{},"usage":{},"#,
+            r#""turns":1,"tool_calls":0}"#
+        );
+        let outcome =
+            meerkat_core::ToolDispatchOutcome::sync_result(meerkat_core::types::ToolResult::new(
+                "fork-1".to_string(),
+                fork_result.to_string(),
+                false,
+            ));
+
+        dispatcher
+            .register_idle_retire_override_from_outcome(
+                &outcome,
+                Some(DelegateIdleRetireOverride::RuntimeDefault),
+                &[],
+            )
+            .await;
+        assert_eq!(
+            overrides.get("ob3", "lead-fork-1").await,
+            Some(DelegateIdleRetireOverride::RuntimeDefault)
+        );
+
+        // An explicit policy still wins, and a failed fork registers nothing.
+        dispatcher
+            .register_idle_retire_override_from_outcome(
+                &outcome,
+                Some(DelegateIdleRetireOverride::Disabled),
+                &[],
+            )
+            .await;
+        assert_eq!(
+            overrides.get("ob3", "lead-fork-1").await,
+            Some(DelegateIdleRetireOverride::Disabled)
+        );
+        let failed =
+            meerkat_core::ToolDispatchOutcome::sync_result(meerkat_core::types::ToolResult::new(
+                "fork-2".to_string(),
+                r#"{"mob_id":"ob3","agent_identity":"lead-fork-2"}"#.to_string(),
+                true,
+            ));
+        dispatcher
+            .register_idle_retire_override_from_outcome(
+                &failed,
+                Some(DelegateIdleRetireOverride::RuntimeDefault),
+                &[],
+            )
+            .await;
+        assert_eq!(overrides.get("ob3", "lead-fork-2").await, None);
     }
 
     #[test]
@@ -11843,6 +12197,18 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+        async fn commit_live_delegation_final_transcript(
+            &self,
+            _machine: &meerkat_runtime::MeerkatMachine,
+            _session_id: &meerkat_core::SessionId,
+            _provisional: meerkat_core::ProvisionalLiveHandoff,
+            _final_event: meerkat_core::RealtimeTranscriptEvent,
+        ) -> Result<meerkat_core::FinalLiveUserTranscriptCommitEvidence, SessionError> {
+            Err(SessionError::Unsupported(
+                "absorber probe has no Live commit authority".into(),
+            ))
+        }
+
         // meerkat 0.8.30 made `enqueue_committed_parent_session_boundary_after_runtime_turn`
         // REQUIRED, deleting the default that returned `Unsupported` for a
         // persistent profile and `Ok(0)` otherwise. That default is exactly how
@@ -12136,6 +12502,14 @@ comms = true
     #[derive(Default)]
     struct ForwardingProbe {
         calls: Mutex<Vec<&'static str>>,
+        live_machine: Mutex<Option<Arc<meerkat_runtime::MeerkatMachine>>>,
+        live_commit: Mutex<
+            Option<(
+                meerkat_core::SessionId,
+                meerkat_core::ProvisionalLiveHandoff,
+                meerkat_core::RealtimeTranscriptEvent,
+            )>,
+        >,
         cancel_outcome: std::sync::atomic::AtomicU8,
         turn_request: Mutex<
             Option<(
@@ -12323,6 +12697,50 @@ comms = true
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        async fn commit_live_delegation_final_transcript(
+            &self,
+            machine: &meerkat_runtime::MeerkatMachine,
+            session_id: &meerkat_core::SessionId,
+            provisional: meerkat_core::ProvisionalLiveHandoff,
+            final_event: meerkat_core::RealtimeTranscriptEvent,
+        ) -> Result<meerkat_core::FinalLiveUserTranscriptCommitEvidence, SessionError> {
+            assert!(std::ptr::eq(
+                machine,
+                self.live_machine
+                    .lock()
+                    .expect("live machine")
+                    .as_deref()
+                    .expect("expected machine"),
+            ));
+            self.record("commit_live_delegation_final_transcript");
+            *self.live_commit.lock().expect("live commit") =
+                Some((session_id.clone(), provisional, final_event));
+            Err(SessionError::NotFound {
+                id: session_id.clone(),
+            })
+        }
+
+        #[cfg(feature = "openai-live")]
+        async fn validate_live_bridge_member_eligibility(
+            &self,
+            _session_id: &meerkat_core::SessionId,
+        ) -> Result<(), SessionError> {
+            self.record("validate_live_bridge_member_eligibility");
+            Ok(())
+        }
+
+        #[cfg(feature = "openai-live")]
+        async fn capture_live_bridge_execution_snapshot(
+            &self,
+            session_id: &meerkat_core::SessionId,
+            _agent_identity: &str,
+        ) -> Result<meerkat_mob::LiveBridgeExecutionSnapshot, SessionError> {
+            self.record("capture_live_bridge_execution_snapshot");
+            Err(SessionError::NotFound {
+                id: session_id.clone(),
+            })
+        }
+
         async fn start_turn_with_admission_notification(
             &self,
             session_id: &meerkat_core::types::SessionId,
@@ -12752,6 +13170,81 @@ comms = true
                 "enqueue_committed_parent_session_boundary_after_runtime_turn",
             ],
             "each wrapper must delegate exactly once and add no semantic step",
+        );
+    }
+
+    #[cfg(feature = "openai-live")]
+    #[tokio::test]
+    async fn console_voice_mob_session_wrappers_forward_transcript_commit_and_bridge_preflight() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let machine = Arc::new(meerkat_runtime::MeerkatMachine::ephemeral());
+        *probe.live_machine.lock().expect("live machine") = Some(machine.clone());
+        let pre_build: Arc<dyn MobSessionService> = Arc::new(PreBuildMobSessionService {
+            inner: probe.clone(),
+            hook: Arc::new(|_| panic!("live commit must not invoke a build hook")),
+            dispatch_taint: None,
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: None,
+            archived_terminal_authority: None,
+        });
+        let after_create: Arc<dyn MobSessionService> = Arc::new(AfterCreateMobSessionService {
+            inner: probe.clone(),
+            after_hook: Arc::new(|_, _| panic!("live commit must not invoke a create hook")),
+        });
+        let session_id = meerkat_core::SessionId::new();
+        let provisional = meerkat_core::ProvisionalLiveHandoff::new(
+            meerkat_core::LiveUserTurnCorrelation::new(
+                meerkat_core::LiveChannelId::new("voice-forwarding"),
+                meerkat_core::InteractionId::new(),
+                meerkat_core::OpaqueProviderCorrelation::new("delegation", "user-turn")
+                    .expect("provider correlation"),
+            )
+            .expect("turn correlation"),
+            "unchanged spoken request",
+            meerkat_core::LiveHandoffInputProvenance::NormalizedHandoff,
+        )
+        .expect("provisional input");
+        let final_event = meerkat_core::RealtimeTranscriptEvent::UserTranscriptFinal {
+            item_id: "user-turn".to_string(),
+            previous_item_id: Some("previous-turn".to_string()),
+            content_index: 2,
+            text: "unchanged final transcript".to_string(),
+        };
+        for wrapper in [pre_build, after_create] {
+            assert!(
+                matches!(
+                    wrapper                    .commit_live_delegation_final_transcript(
+                        &machine,
+                        &session_id, provisional.clone(), final_event.clone(),
+                    ).await,
+                    Err(SessionError::NotFound { id }) if id == session_id
+                ),
+                "the inner owner's result must replace the trait's Unsupported default"
+            );
+            assert_eq!(
+                probe.live_commit.lock().expect("live commit").take(),
+                Some((session_id.clone(), provisional.clone(), final_event.clone())),
+            );
+            wrapper
+                .validate_live_bridge_member_eligibility(&session_id)
+                .await
+                .expect("inner eligibility");
+            assert!(matches!(
+                wrapper.capture_live_bridge_execution_snapshot(&session_id, "agent-a").await,
+                Err(SessionError::NotFound { id }) if id == session_id
+            ));
+        }
+        assert_eq!(
+            probe.calls(),
+            [
+                "commit_live_delegation_final_transcript",
+                "validate_live_bridge_member_eligibility",
+                "capture_live_bridge_execution_snapshot",
+                "commit_live_delegation_final_transcript",
+                "validate_live_bridge_member_eligibility",
+                "capture_live_bridge_execution_snapshot",
+            ]
         );
     }
 

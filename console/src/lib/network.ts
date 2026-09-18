@@ -303,7 +303,9 @@ async function rpc<T>(
 
   if (!response.ok) {
     const preview = await responseErrorPreview(response);
-    throw new Error(`${method} request failed ${response.status}${preview ? `: ${preview}` : ""}`);
+    const error = new Error(`${method} request failed ${response.status}${preview ? `: ${preview}` : ""}`);
+    (error as Error & { httpStatus?: number }).httpStatus = response.status;
+    throw error;
   }
 
   const result = await response.json();

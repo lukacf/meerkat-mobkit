@@ -479,6 +479,7 @@ impl std::fmt::Display for ActorCallObservation {
 /// Errors from session bridge operations.
 #[derive(Debug)]
 pub enum BridgeError {
+    HostHumanInput(HostHumanInputError),
     /// The underlying mob operation failed.
     Mob(String),
     /// A required field was missing or invalid.
@@ -654,6 +655,7 @@ pub enum BridgeError {
 impl std::fmt::Display for BridgeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::HostHumanInput(error) => write!(f, "{error}"),
             Self::Mob(msg) => write!(f, "session bridge mob error: {msg}"),
             Self::CompletionFailed(msg) => write!(
                 f,
@@ -763,6 +765,7 @@ impl std::error::Error for BridgeError {}
 /// no receipt was observed. A missing receipt does not prove nonexecution.
 #[derive(Debug)]
 pub enum BridgeAdmissionError {
+    HostHumanInput(HostHumanInputError),
     /// The bridge cannot create completion-bearing receipts. Nothing was
     /// submitted.
     CompletionUnsupported(String),
@@ -839,6 +842,7 @@ pub enum BridgeAdmissionError {
 impl std::fmt::Display for BridgeAdmissionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::HostHumanInput(error) => write!(f, "{error}"),
             Self::CompletionUnsupported(msg) => write!(
                 f,
                 "session bridge does not support completion-bearing delivery: {msg}; \
@@ -930,6 +934,7 @@ impl std::error::Error for BridgeAdmissionError {}
 impl From<BridgeError> for BridgeAdmissionError {
     fn from(error: BridgeError) -> Self {
         match error {
+            BridgeError::HostHumanInput(error) => Self::HostHumanInput(error),
             BridgeError::CompletionUnsupported(detail) => Self::CompletionUnsupported(detail),
             BridgeError::Mob(detail) => Self::Mob(detail),
             BridgeError::InvalidInput(detail) => Self::InvalidInput(detail),
@@ -1012,6 +1017,7 @@ impl From<BridgeError> for BridgeAdmissionError {
 impl From<BridgeAdmissionError> for BridgeError {
     fn from(error: BridgeAdmissionError) -> Self {
         match error {
+            BridgeAdmissionError::HostHumanInput(error) => Self::HostHumanInput(error),
             BridgeAdmissionError::CompletionUnsupported(detail) => {
                 Self::CompletionUnsupported(detail)
             }
@@ -1675,6 +1681,8 @@ struct InternalBridgeWork<'a> {
     /// stable across lease-expiry reclaim, so a crash redelivery of the
     /// same identity resolves to the SAME work instead of a duplicate turn.
     delivery_identity: Option<&'a meerkat_mob::MobDeliveryIdentity>,
+    /// The leased local session, present only on the explicit human lane.
+    host_human_session: Option<&'a meerkat_core::SessionId>,
 }
 
 /// Which lane a submission runs in.
@@ -1721,14 +1729,78 @@ async fn submit_internal_bridge_work(
             handle.get_member(member_id),
         )
         .await?
-        .map_err(|err| BridgeError::Mob(err.to_string()))?
-        .ok_or_else(|| BridgeError::Mob(format!("member not found: {member_id}")))?;
+        .map_err(|err| {
+            if work.host_human_session.is_some() {
+                BridgeError::HostHumanInput(HostHumanInputError::Mob(Box::new(err)))
+            } else {
+                BridgeError::Mob(err.to_string())
+            }
+        })?
+        .ok_or_else(|| {
+            if work.host_human_session.is_some() {
+                BridgeError::HostHumanInput(HostHumanInputError::BindingChanged)
+            } else {
+                BridgeError::Mob(format!("member not found: {member_id}"))
+            }
+        })?;
     let spec = internal_bridge_work_spec(
         work.content,
         work.system_prompt,
         work.injected_context,
         work.interaction_id,
     );
+    if let Some(expected_session) = work.host_human_session {
+        if entry.bridge_session_id() != Some(expected_session) {
+            return Err(BridgeError::HostHumanInput(
+                HostHumanInputError::BindingChanged,
+            ));
+        }
+        let delivery_identity = work.delivery_identity.cloned().ok_or_else(|| {
+            BridgeError::HostHumanInput(HostHumanInputError::Unsupported(
+                "host human input requires a stable delivery identity".to_string(),
+            ))
+        })?;
+        let result = match mode {
+            BridgeSubmitMode::AdmissionOnly => deadline
+                .bound(
+                    "deliver.submit_host_human_input",
+                    member_id,
+                    handle.submit_host_human_input_bounded(
+                        entry.agent_runtime_id,
+                        entry.fence_token,
+                        spec,
+                        handling_mode,
+                        delivery_identity,
+                        deadline.deadline.into_std(),
+                    ),
+                )
+                .await?
+                .map(|_| None),
+            BridgeSubmitMode::CompletionBearing => deadline
+                .bound(
+                    "deliver.start_host_human_input",
+                    member_id,
+                    handle.start_host_human_input_bounded(
+                        entry.agent_runtime_id,
+                        entry.fence_token,
+                        spec,
+                        handling_mode,
+                        delivery_identity,
+                        deadline.deadline.into_std(),
+                    ),
+                )
+                .await?
+                .map(Some),
+        };
+        return result.map_err(|error| match error {
+            error @ (meerkat_mob::MobError::MemberReloadRequired { .. }
+            | meerkat_mob::MobError::MemberAdmissionBacklogFull { .. }
+            | meerkat_mob::MobError::ActorCommandTimedOut { .. }) => {
+                classify_submit_mob_error(member_id, error, deadline)
+            }
+            error => BridgeError::HostHumanInput(HostHumanInputError::Mob(Box::new(error))),
+        });
+    }
     if matches!(mode, BridgeSubmitMode::CompletionBearing) {
         let turn = match work.delivery_identity {
             Some(delivery_identity) => deadline
@@ -1960,6 +2032,101 @@ fn map_committed_boundary_recovery_error(
 // ---------------------------------------------------------------------------
 // SessionBridge trait
 // ---------------------------------------------------------------------------
+
+/// Human designation is trusted-host-only, never inferred from prompt text.
+/// Upstream strict replay and completion refusals retain their typed variants.
+#[derive(Debug)]
+pub enum HostHumanInputError {
+    Unsupported(String),
+    BindingChanged,
+    /// The console retained the spent reservation, but not an exact prepared
+    /// runtime payload. Re-preparing could change memory or the incarnation.
+    ReplayUnavailable {
+        interaction_id: String,
+        input_frame_id: String,
+    },
+    Mob(Box<meerkat_mob::MobError>),
+}
+
+impl std::fmt::Display for HostHumanInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported(reason) => write!(f, "host human input unsupported: {reason}"),
+            Self::BindingChanged => f.write_str(
+                "host human input binding changed or is missing; input was not retargeted",
+            ),
+            Self::ReplayUnavailable { .. } => f.write_str(
+                "host human input admission fate is unavailable; original reservation retained, \
+                 no retry was submitted",
+            ),
+            Self::Mob(error) => write!(f, "host human input: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for HostHumanInputError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Mob(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+impl HostHumanInputError {
+    pub fn structured_data(&self) -> serde_json::Value {
+        use meerkat_mob::MobError;
+        let kind = match self {
+            Self::ReplayUnavailable {
+                interaction_id,
+                input_frame_id,
+            } => {
+                return serde_json::json!({
+                    "kind": "host_human_input_replay_unavailable",
+                    "interaction_id": interaction_id,
+                    "input_frame_id": input_frame_id,
+                    "execution_fate": "unknown",
+                    "retry_submitted": false,
+                });
+            }
+            Self::Unsupported(_) => "host_human_input_unsupported",
+            Self::BindingChanged => "host_human_input_binding_changed",
+            Self::Mob(error) => match error.as_ref() {
+                MobError::WorkInputIdempotencyConflict {
+                    session_id,
+                    input_id,
+                } => {
+                    return serde_json::json!({
+                        "kind": "work_input_idempotency_conflict",
+                        "session_id": session_id, "input_id": input_id,
+                    });
+                }
+                MobError::WorkInputCompletionUnavailable {
+                    session_id,
+                    input_id,
+                } => {
+                    return serde_json::json!({
+                        "kind": "work_input_completion_unavailable",
+                        "session_id": session_id, "input_id": input_id,
+                    });
+                }
+                MobError::UnsupportedForMode { .. } => "host_human_input_unsupported",
+                MobError::InjectedContextUndeliverable { .. } => "injected_context_undeliverable",
+                MobError::ActorCommandTimedOut {
+                    command_kind,
+                    stage,
+                } => {
+                    return serde_json::json!({
+                        "kind": "admission_timeout", "command_kind": command_kind,
+                        "stage": stage, "execution_fate": "unknown",
+                    });
+                }
+                _ => "host_human_input_refused",
+            },
+        };
+        serde_json::json!({ "kind": kind })
+    }
+}
 
 /// One fully-admitted member delivery: everything a bridge needs to hand a
 /// turn to the mob work lane, as ONE typed request instead of a growing
@@ -2246,6 +2413,21 @@ pub trait SessionBridge: Send + Sync {
         runtime_id: &AgentRuntimeId,
         delivery: BridgeDelivery,
     ) -> Result<meerkat_core::types::SessionId, BridgeError>;
+
+    /// Explicit local human admission. Custom/remote bridges must opt in;
+    /// defaulting to generic work would silently erase conversational intent.
+    async fn deliver_host_human_input(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+        _expected_session: &meerkat_core::SessionId,
+        _delivery: BridgeDelivery,
+    ) -> Result<meerkat_core::SessionId, BridgeError> {
+        Err(BridgeError::HostHumanInput(
+            HostHumanInputError::Unsupported(
+                "this session bridge has no local host-human input seam".to_string(),
+            ),
+        ))
+    }
 
     /// Deliver content to an active mob member.
     async fn deliver(
@@ -5217,7 +5399,25 @@ impl SessionBridge for MobSessionBridge {
         // an immediate Ok and propagating the resolution result here drops
         // nothing. Identical to the pre-receipt behaviour.
         let receipt = self
-            .deliver_admitted_inner(runtime_id, delivery, BridgeSubmitMode::AdmissionOnly)
+            .deliver_admitted_inner(runtime_id, delivery, BridgeSubmitMode::AdmissionOnly, None)
+            .await
+            .map_err(BridgeError::from)?;
+        receipt.wait().await.map_err(BridgeError::from)
+    }
+
+    async fn deliver_host_human_input(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        expected_session: &meerkat_core::SessionId,
+        delivery: BridgeDelivery,
+    ) -> Result<meerkat_core::SessionId, BridgeError> {
+        let receipt = self
+            .deliver_admitted_inner(
+                runtime_id,
+                delivery,
+                BridgeSubmitMode::AdmissionOnly,
+                Some(expected_session),
+            )
             .await
             .map_err(BridgeError::from)?;
         receipt.wait().await.map_err(BridgeError::from)
@@ -5241,8 +5441,13 @@ impl SessionBridge for MobSessionBridge {
         delivery.system_prompt = system_prompt.map(ToString::to_string);
         delivery.injected_context = injected_context.to_vec();
         delivery.interaction_id = interaction_id.map(ToString::to_string);
-        self.deliver_admitted_inner(runtime_id, delivery, BridgeSubmitMode::CompletionBearing)
-            .await
+        self.deliver_admitted_inner(
+            runtime_id,
+            delivery,
+            BridgeSubmitMode::CompletionBearing,
+            None,
+        )
+        .await
     }
 
     async fn checkpoint_session(
@@ -5511,6 +5716,7 @@ impl MobSessionBridge {
         runtime_id: &AgentRuntimeId,
         delivery: BridgeDelivery,
         mode: BridgeSubmitMode,
+        host_human_session: Option<&meerkat_core::SessionId>,
     ) -> Result<BridgeTurnReceipt, BridgeAdmissionError> {
         let content = &delivery.content;
         let handling_mode = delivery.handling_mode;
@@ -5578,6 +5784,7 @@ impl MobSessionBridge {
                 injected_context,
                 interaction_id,
                 delivery_identity,
+                host_human_session,
             },
             handling_mode,
             &deadline,
@@ -5604,7 +5811,10 @@ impl MobSessionBridge {
             // Per-member backpressure: the member is healthy, its lane is full.
             // Retryable by the caller; never repair, never reload.
             Err(err @ BridgeError::AdmissionBacklogFull { .. }) => return Err(err.into()),
-            Err(err) if is_repairable_bridge_delivery_error(&err.to_string()) => {
+            Err(err)
+                if host_human_session.is_none()
+                    && is_repairable_bridge_delivery_error(&err.to_string()) =>
+            {
                 tracing::warn!(
                     runtime_id = %runtime_id,
                     error = %err,
@@ -5632,6 +5842,7 @@ impl MobSessionBridge {
                         injected_context,
                         interaction_id,
                         delivery_identity,
+                        host_human_session,
                     },
                     handling_mode,
                     &deadline,
@@ -5639,6 +5850,7 @@ impl MobSessionBridge {
                 )
                 .await?
             }
+            Err(err @ BridgeError::HostHumanInput(_)) => return Err(err.into()),
             Err(err) => return Err(BridgeAdmissionError::Mob(err.to_string())),
         };
 

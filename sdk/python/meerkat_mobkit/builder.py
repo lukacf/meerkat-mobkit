@@ -54,6 +54,7 @@ class MobKitBuilderConfig:
     identity_bootstrap_mode: IdentityBootstrapMode | None = None
     experimental_live_config: ExperimentalLiveGatewayConfig | None = None
     openai_live_config: OpenAiLiveGatewayConfig | None = None
+    console_voice_config: OpenAiLiveGatewayConfig | None = None
 
 
 class MobKitBuilder:
@@ -228,6 +229,18 @@ class MobKitBuilder:
             raise TypeError("openai_live requires OpenAiLiveGatewayConfig")
         config.to_dict()
         self._config.openai_live_config = config
+        return self
+
+    def console_voice(self, config: OpenAiLiveGatewayConfig) -> MobKitBuilder:
+        """Register authenticated console voice via ``runtime_options.console_voice``.
+
+        Requires persistent sessions, console auth, and an ``openai-live``
+        gateway. The principal must match the authenticated console subject.
+        """
+        if not isinstance(config, OpenAiLiveGatewayConfig):
+            raise TypeError("console_voice requires OpenAiLiveGatewayConfig")
+        config.to_dict()
+        self._config.console_voice_config = config
         return self
 
     def experimental_live(

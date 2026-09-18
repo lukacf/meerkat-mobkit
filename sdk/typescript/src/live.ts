@@ -33,7 +33,8 @@ export interface LiveAuthBindingRef {
 
 /**
  * Public OpenAI Live (`gpt-live-1`) host registration
- * (`runtime_options.openai_live`). The gateway fixes the execution identity
+ * (`runtime_options.openai_live` or `runtime_options.console_voice`, selected
+ * by the builder method). The gateway fixes the execution identity
  * (provider OpenAI, model `gpt-live-1`, this configured API-key binding); the
  * host names only the principal, realm, binding, voice, and optional trusted
  * session instructions. Requires a gateway compiled with `openai-live`.

@@ -220,6 +220,18 @@ impl SessionServiceHistoryExt for CheckpointerCancelProbeSessionService {
 
 #[async_trait::async_trait]
 impl MobSessionService for CheckpointerCancelProbeSessionService {
+    async fn commit_live_delegation_final_transcript(
+        &self,
+        machine: &meerkat_runtime::MeerkatMachine,
+        session_id: &meerkat_core::SessionId,
+        provisional: meerkat_core::ProvisionalLiveHandoff,
+        final_event: meerkat_core::RealtimeTranscriptEvent,
+    ) -> Result<meerkat_core::FinalLiveUserTranscriptCommitEvidence, SessionError> {
+        self.inner
+            .commit_live_delegation_final_transcript(machine, session_id, provisional, final_event)
+            .await
+    }
+
     // meerkat 0.8.30 made this REQUIRED, replacing a default that
     // answered "projected nothing" for any wrapper that did not
     // override it. This wrapper owns no session authority - it

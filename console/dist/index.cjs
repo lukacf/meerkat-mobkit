@@ -37,7 +37,7 @@ module.exports = __toCommonJS(index_exports);
 var import_client = require("react-dom/client");
 
 // src/ConsoleApp.tsx
-var import_react34 = __toESM(require("react"));
+var import_react37 = __toESM(require("react"));
 
 // node_modules/clsx/dist/clsx.mjs
 function r(e) {
@@ -161,16 +161,16 @@ var import_jsx_runtime3 = require("react/jsx-runtime");
 
 // ../packages/console-core/src/control-plane.ts
 function normalizeMemberProgress(value) {
-  const record = value && typeof value === "object" ? value : null;
-  if (!record) {
+  const record2 = value && typeof value === "object" ? value : null;
+  if (!record2) {
     return null;
   }
   return {
-    run_state: typeof record.run_state === "string" && record.run_state ? record.run_state : "unknown",
-    in_flight_work: typeof record.in_flight_work === "number" && Number.isFinite(record.in_flight_work) ? record.in_flight_work : 0,
-    last_progress_at_ms: typeof record.last_progress_at_ms === "number" && Number.isFinite(record.last_progress_at_ms) ? record.last_progress_at_ms : 0,
-    last_progress_event: typeof record.last_progress_event === "string" && record.last_progress_event ? record.last_progress_event : "unchanged",
-    health: typeof record.health === "string" && record.health ? record.health : "unknown"
+    run_state: typeof record2.run_state === "string" && record2.run_state ? record2.run_state : "unknown",
+    in_flight_work: typeof record2.in_flight_work === "number" && Number.isFinite(record2.in_flight_work) ? record2.in_flight_work : 0,
+    last_progress_at_ms: typeof record2.last_progress_at_ms === "number" && Number.isFinite(record2.last_progress_at_ms) ? record2.last_progress_at_ms : 0,
+    last_progress_event: typeof record2.last_progress_event === "string" && record2.last_progress_event ? record2.last_progress_event : "unchanged",
+    health: typeof record2.health === "string" && record2.health ? record2.health : "unknown"
   };
 }
 function trimString(value) {
@@ -216,34 +216,34 @@ function normalizeStringArray(value) {
   return normalized.length > 0 ? normalized : void 0;
 }
 function normalizeSidebarWatchFields(value) {
-  const record = value && typeof value === "object" ? value : {};
+  const record2 = value && typeof value === "object" ? value : {};
   const normalized = {};
-  if (typeof record.watched === "boolean") {
-    normalized.watched = record.watched;
+  if (typeof record2.watched === "boolean") {
+    normalized.watched = record2.watched;
   }
-  if (record.alertLevel === "elevated" || record.alertLevel === "critical" || record.alertLevel === null) {
-    normalized.alertLevel = record.alertLevel;
+  if (record2.alertLevel === "elevated" || record2.alertLevel === "critical" || record2.alertLevel === null) {
+    normalized.alertLevel = record2.alertLevel;
   }
-  if (typeof record.degraded === "boolean") {
-    normalized.degraded = record.degraded;
+  if (typeof record2.degraded === "boolean") {
+    normalized.degraded = record2.degraded;
   }
-  const degradedReason = trimString(record.degradedReason);
+  const degradedReason = trimString(record2.degradedReason);
   if (degradedReason) {
     normalized.degradedReason = degradedReason;
   }
   return normalized;
 }
 function normalizeIdentityStatusRow(value) {
-  const record = value && typeof value === "object" ? value : null;
-  if (!record) {
+  const record2 = value && typeof value === "object" ? value : null;
+  if (!record2) {
     return null;
   }
-  const identity = trimString(record.identity);
-  const state = trimString(record.state);
+  const identity = trimString(record2.identity);
+  const state = trimString(record2.state);
   if (!identity || !state) {
     return null;
   }
-  const addressability = record.addressability === "internal_only" ? "internal_only" : record.addressability === "addressable" ? "addressable" : null;
+  const addressability = record2.addressability === "internal_only" ? "internal_only" : record2.addressability === "addressable" ? "addressable" : null;
   if (!addressability) {
     return null;
   }
@@ -251,26 +251,26 @@ function normalizeIdentityStatusRow(value) {
     identity,
     state,
     addressability,
-    labels: stringRecord(record.labels),
-    ...trimString(record.display_name) ? { display_name: trimString(record.display_name) } : {},
-    ...trimString(record.role) ? { role: trimString(record.role) } : {},
-    ...typeof record.generation === "number" && Number.isFinite(record.generation) ? { generation: record.generation } : {},
-    ...typeof record.checkpoint_version === "number" && Number.isFinite(record.checkpoint_version) ? { checkpoint_version: record.checkpoint_version } : {},
-    ...typeof record.lease_healthy === "boolean" ? { lease_healthy: record.lease_healthy } : {},
+    labels: stringRecord(record2.labels),
+    ...trimString(record2.display_name) ? { display_name: trimString(record2.display_name) } : {},
+    ...trimString(record2.role) ? { role: trimString(record2.role) } : {},
+    ...typeof record2.generation === "number" && Number.isFinite(record2.generation) ? { generation: record2.generation } : {},
+    ...typeof record2.checkpoint_version === "number" && Number.isFinite(record2.checkpoint_version) ? { checkpoint_version: record2.checkpoint_version } : {},
+    ...typeof record2.lease_healthy === "boolean" ? { lease_healthy: record2.lease_healthy } : {},
     ...(() => {
-      const progress = normalizeMemberProgress(record.progress);
+      const progress = normalizeMemberProgress(record2.progress);
       return progress ? { progress } : {};
     })()
   };
 }
 function normalizeIdentityInspectViewState(value) {
-  const record = value && typeof value === "object" ? value : null;
+  const record2 = value && typeof value === "object" ? value : null;
   const statusRow = normalizeIdentityStatusRow(value);
-  if (!record || !statusRow) {
+  if (!record2 || !statusRow) {
     return null;
   }
-  const continuityRecord = record.continuity && typeof record.continuity === "object" ? record.continuity : {};
-  const leaseRecord = record.lease && typeof record.lease === "object" ? record.lease : record.lease === null ? null : void 0;
+  const continuityRecord = record2.continuity && typeof record2.continuity === "object" ? record2.continuity : {};
+  const leaseRecord = record2.lease && typeof record2.lease === "object" ? record2.lease : record2.lease === null ? null : void 0;
   return {
     ...statusRow,
     continuity: {
@@ -286,20 +286,20 @@ function normalizeIdentityInspectViewState(value) {
         healthy: leaseRecord.healthy
       }
     } : {},
-    ...trimString(record.output_preview) !== void 0 ? { output_preview: trimString(record.output_preview) ?? null } : {},
-    ...typeof record.is_final === "boolean" || record.is_final === null ? { is_final: record.is_final } : {},
-    ...normalizeFiniteNumber(record.peer_reachable_count) !== void 0 ? { peer_reachable_count: normalizeFiniteNumber(record.peer_reachable_count) } : record.peer_reachable_count === null ? { peer_reachable_count: null } : {},
-    ...normalizeStringArray(record.topology_peers) ? { topology_peers: normalizeStringArray(record.topology_peers) } : {},
-    ...Array.isArray(record.recent_tool_calls) ? { recent_tool_calls: record.recent_tool_calls } : {},
-    ...normalizeFiniteNumber(record.last_activity_ms) !== void 0 ? { last_activity_ms: normalizeFiniteNumber(record.last_activity_ms) } : record.last_activity_ms === null ? { last_activity_ms: null } : {}
+    ...trimString(record2.output_preview) !== void 0 ? { output_preview: trimString(record2.output_preview) ?? null } : {},
+    ...typeof record2.is_final === "boolean" || record2.is_final === null ? { is_final: record2.is_final } : {},
+    ...normalizeFiniteNumber(record2.peer_reachable_count) !== void 0 ? { peer_reachable_count: normalizeFiniteNumber(record2.peer_reachable_count) } : record2.peer_reachable_count === null ? { peer_reachable_count: null } : {},
+    ...normalizeStringArray(record2.topology_peers) ? { topology_peers: normalizeStringArray(record2.topology_peers) } : {},
+    ...Array.isArray(record2.recent_tool_calls) ? { recent_tool_calls: record2.recent_tool_calls } : {},
+    ...normalizeFiniteNumber(record2.last_activity_ms) !== void 0 ? { last_activity_ms: normalizeFiniteNumber(record2.last_activity_ms) } : record2.last_activity_ms === null ? { last_activity_ms: null } : {}
   };
 }
 function normalizeRoutingSectionView(value) {
-  const record = value && typeof value === "object" ? value : null;
-  if (!record) {
+  const record2 = value && typeof value === "object" ? value : null;
+  if (!record2) {
     return null;
   }
-  const routes = Array.isArray(record.routes) ? record.routes.map((entry) => {
+  const routes = Array.isArray(record2.routes) ? record2.routes.map((entry) => {
     const route = entry && typeof entry === "object" ? entry : null;
     if (!route) {
       return null;
@@ -322,7 +322,7 @@ function normalizeRoutingSectionView(value) {
       ...normalizeFiniteNumber(route.rate_limit_per_minute) !== void 0 ? { rate_limit_per_minute: normalizeFiniteNumber(route.rate_limit_per_minute) } : {}
     };
   }).filter((entry) => Boolean(entry)) : [];
-  const deliveries = Array.isArray(record.deliveries) ? record.deliveries.map((entry) => {
+  const deliveries = Array.isArray(record2.deliveries) ? record2.deliveries.map((entry) => {
     const delivery = entry && typeof entry === "object" ? entry : null;
     if (!delivery) {
       return null;
@@ -372,13 +372,13 @@ function normalizeRoutingSectionView(value) {
   return { routes, deliveries };
 }
 function normalizeReplayUnavailableError(value) {
-  const record = value && typeof value === "object" ? value : null;
-  if (!record || record.error !== "replay_unavailable" && record.type !== "replay_unavailable") {
+  const record2 = value && typeof value === "object" ? value : null;
+  if (!record2 || record2.error !== "replay_unavailable" && record2.type !== "replay_unavailable") {
     return null;
   }
-  const explicitStream = record.stream === "identity" || record.stream === "all_events" || record.stream === "timeline" ? record.stream : null;
-  const requested = trimString(record.requested_last_event_id) || trimString(record.requested_cursor);
-  const latest = trimString(record.latest_event_id) || trimString(record.latest_cursor);
+  const explicitStream = record2.stream === "identity" || record2.stream === "all_events" || record2.stream === "timeline" ? record2.stream : null;
+  const requested = trimString(record2.requested_last_event_id) || trimString(record2.requested_cursor);
+  const latest = trimString(record2.latest_event_id) || trimString(record2.latest_cursor);
   const stream = explicitStream || (requested?.startsWith("console:") || latest?.startsWith("console:") ? "timeline" : null);
   if (!stream || !requested || !latest) {
     return null;
@@ -391,12 +391,12 @@ function normalizeReplayUnavailableError(value) {
   };
 }
 function normalizeConsoleInteractionRejectedError(value) {
-  const record = value && typeof value === "object" ? value : null;
-  if (!record) {
+  const record2 = value && typeof value === "object" ? value : null;
+  if (!record2) {
     return null;
   }
-  const code = record.code;
-  const message = trimString(record.message);
+  const code = record2.code;
+  const message = trimString(record2.message);
   if (code !== -32001 && code !== -32002 && code !== -32003 && code !== -32004 && code !== -32602 && code !== -32603) {
     return null;
   }
@@ -4550,11 +4550,11 @@ function commsBlocksFromFrameData(data) {
   const blocks = [];
   for (const candidate of candidates) {
     if (!candidate || typeof candidate !== "object") continue;
-    const record = candidate;
-    const recordKind = textFromUnknown2(record.kind);
-    if (recordKind === "comms") blocks.push(record);
-    if (!Array.isArray(record.blocks)) continue;
-    for (const block of record.blocks) {
+    const record2 = candidate;
+    const recordKind = textFromUnknown2(record2.kind);
+    if (recordKind === "comms") blocks.push(record2);
+    if (!Array.isArray(record2.blocks)) continue;
+    for (const block of record2.blocks) {
       if (!block || typeof block !== "object") continue;
       const blockRecord = block;
       if (textFromUnknown2(blockRecord.type) === "comms") blocks.push(blockRecord);
@@ -6321,8 +6321,8 @@ function canonicalConsoleIdentity(identity, agents) {
   return normalized;
 }
 function normalizeModelCapabilities(entry) {
-  const record = entry && typeof entry === "object" ? entry : {};
-  const caps = record.model_capabilities && typeof record.model_capabilities === "object" ? record.model_capabilities : {};
+  const record2 = entry && typeof entry === "object" ? entry : {};
+  const caps = record2.model_capabilities && typeof record2.model_capabilities === "object" ? record2.model_capabilities : {};
   return { image_input: caps.image_input === true };
 }
 function normalizeAgents(experience, modules) {
@@ -6459,16 +6459,16 @@ function asNumber(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : void 0;
 }
 function frameToolName(frame) {
-  const record = asRecord(frame.data);
-  if (!record) return void 0;
-  return asString(record.name) || asString(record.tool_name);
+  const record2 = asRecord(frame.data);
+  if (!record2) return void 0;
+  return asString(record2.name) || asString(record2.tool_name);
 }
 function isCouncilToolFrame(frame) {
   if (!COUNCIL_TOOL_EVENTS.has(frame.event)) return false;
   return frameToolName(frame) === COUNCIL_TOOL_NAME;
 }
-function parseResultPayload(record) {
-  const raw = record.result;
+function parseResultPayload(record2) {
+  const raw = record2.result;
   if (typeof raw === "string") {
     try {
       return asRecord(JSON.parse(raw));
@@ -6478,15 +6478,15 @@ function parseResultPayload(record) {
   }
   return asRecord(raw);
 }
-function parseArgsPayload(record) {
-  if (typeof record.arguments === "string") {
+function parseArgsPayload(record2) {
+  if (typeof record2.arguments === "string") {
     try {
-      return asRecord(JSON.parse(record.arguments));
+      return asRecord(JSON.parse(record2.arguments));
     } catch {
       return null;
     }
   }
-  return asRecord(record.arguments) || asRecord(record.args);
+  return asRecord(record2.arguments) || asRecord(record2.args);
 }
 function councilStatusFromExitReason(reason) {
   if (!reason) return "pending";
@@ -6563,16 +6563,16 @@ function artifactClaimRows(merge) {
   });
 }
 function councilEntryFromFrame(frame, identity, argsByCallId) {
-  const record = asRecord(frame.data);
-  if (!record) return null;
-  const payload = parseResultPayload(record);
+  const record2 = asRecord(frame.data);
+  if (!record2) return null;
+  const payload = parseResultPayload(record2);
   if (!payload) return null;
   const result = asRecord(payload.result);
   if (!result) return null;
   const councilId = asString(result.council_id);
   if (!councilId) return null;
-  const callId = asString(record.tool_call_id) || asString(record.id);
-  const args = parseArgsPayload(record) || (callId ? argsByCallId?.get(callId) ?? null : null);
+  const callId = asString(record2.tool_call_id) || asString(record2.id);
+  const args = parseArgsPayload(record2) || (callId ? argsByCallId?.get(callId) ?? null : null);
   const exit = asRecord(result.exit_reason);
   const exitReason = exit ? asString(exit.reason) : void 0;
   const merge = asRecord(result.merge);
@@ -6622,11 +6622,11 @@ function councilArgsByCallId(frames) {
   const out = /* @__PURE__ */ new Map();
   for (const frame of frames) {
     if (!isCouncilToolFrame(frame)) continue;
-    const record = asRecord(frame.data);
-    if (!record) continue;
-    const callId = asString(record.tool_call_id) || asString(record.id);
+    const record2 = asRecord(frame.data);
+    if (!record2) continue;
+    const callId = asString(record2.tool_call_id) || asString(record2.id);
     if (!callId) continue;
-    const args = parseArgsPayload(record);
+    const args = parseArgsPayload(record2);
     if (args && !out.has(callId)) out.set(callId, args);
   }
   return out;
@@ -6640,12 +6640,12 @@ function nonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value : "";
 }
 function summarizeFailureData(data) {
-  const record = recordOf(data);
-  if (!record) return { message: "", reasonType: "" };
-  const report = recordOf(record.error_report);
-  const reason = recordOf(report?.reason) ?? recordOf(record.reason);
-  const reasonType = nonEmptyString(reason?.reason_type) || nonEmptyString(record.reason) || nonEmptyString(reason?.kind);
-  const message = nonEmptyString(report?.message) || nonEmptyString(record.error) || nonEmptyString(record.message);
+  const record2 = recordOf(data);
+  if (!record2) return { message: "", reasonType: "" };
+  const report = recordOf(record2.error_report);
+  const reason = recordOf(report?.reason) ?? recordOf(record2.reason);
+  const reasonType = nonEmptyString(reason?.reason_type) || nonEmptyString(record2.reason) || nonEmptyString(reason?.kind);
+  const message = nonEmptyString(report?.message) || nonEmptyString(record2.error) || nonEmptyString(record2.message);
   return { message, reasonType };
 }
 function describeFailure(data, fallback = "error") {
@@ -6936,15 +6936,15 @@ function summarizeFrameData(data) {
     return data;
   }
   if (typeof data === "object" && data !== null) {
-    const record = data;
-    if (typeof record.delta === "string") return record.delta;
-    if (typeof record.text === "string" && record.text.trim()) return record.text;
-    if (typeof record.result === "string") return record.result;
-    if (typeof record.message === "string" && record.message.trim()) return record.message;
-    if (typeof record.error === "string" && record.error.trim()) return record.error;
-    if (typeof record.reason === "string" && record.reason.trim()) return record.reason;
-    if (typeof record.kind === "string" && typeof record.event_type === "string") return "";
-    return JSON.stringify(record);
+    const record2 = data;
+    if (typeof record2.delta === "string") return record2.delta;
+    if (typeof record2.text === "string" && record2.text.trim()) return record2.text;
+    if (typeof record2.result === "string") return record2.result;
+    if (typeof record2.message === "string" && record2.message.trim()) return record2.message;
+    if (typeof record2.error === "string" && record2.error.trim()) return record2.error;
+    if (typeof record2.reason === "string" && record2.reason.trim()) return record2.reason;
+    if (typeof record2.kind === "string" && typeof record2.event_type === "string") return "";
+    return JSON.stringify(record2);
   }
   return String(data ?? "");
 }
@@ -6993,9 +6993,9 @@ function describeMemoryTimelineEvent2(event, data) {
     case "memory.quarantine.release_blocked": {
       const verdict = memoryString(data, "verdict");
       const action = verdict === "promote_pending_gate" ? "promotion" : verdict || "release";
-      const record = memoryString(data, "record_id");
+      const record2 = memoryString(data, "record_id");
       const cls = memoryString(data, "class");
-      return `Quarantine ${action} blocked${record ? ` for ${record}` : ""}${cls ? ` \u2014 matches secret pattern ${cls}` : ""}`;
+      return `Quarantine ${action} blocked${record2 ? ` for ${record2}` : ""}${cls ? ` \u2014 matches secret pattern ${cls}` : ""}`;
     }
     case "memory.conflict.signal": {
       const entity = memoryString(data, "entity");
@@ -7060,8 +7060,8 @@ function describeMemoryTimelineEvent2(event, data) {
 function isSteerDeliveryTerminalFrame(frame) {
   if (frame.event !== "interaction_complete") return false;
   if (!frame.data || typeof frame.data !== "object") return false;
-  const record = frame.data;
-  return record.reason === "steer_delivered";
+  const record2 = frame.data;
+  return record2.reason === "steer_delivered";
 }
 function eventSortRank(event) {
   switch (event) {
@@ -7189,12 +7189,12 @@ function textFromReasoningValue(value) {
     return value.map((item) => textFromReasoningValue(item)).filter(Boolean).join("\n\n").trim();
   }
   if (!value || typeof value !== "object") return "";
-  const record = value;
+  const record2 = value;
   const parts = [];
-  appendDistinctText(parts, textFromReasoningValue(record.summary));
-  appendDistinctText(parts, textFromReasoningValue(record.text));
-  appendDistinctText(parts, textFromReasoningValue(record.content));
-  appendDistinctText(parts, textFromReasoningValue(record.delta));
+  appendDistinctText(parts, textFromReasoningValue(record2.summary));
+  appendDistinctText(parts, textFromReasoningValue(record2.text));
+  appendDistinctText(parts, textFromReasoningValue(record2.content));
+  appendDistinctText(parts, textFromReasoningValue(record2.delta));
   return parts.join("\n\n").trim();
 }
 function reasoningBlockText(block) {
@@ -7232,42 +7232,42 @@ function isoFromTimestampMs(timestampMs) {
   return new Date(timestampMs).toISOString();
 }
 function parseToolCallId(frame) {
-  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const record2 = frame.data && typeof frame.data === "object" ? frame.data : null;
   if (frame.event === "server_tool_content") {
-    const content = record?.content && typeof record.content === "object" ? record.content : null;
+    const content = record2?.content && typeof record2.content === "object" ? record2.content : null;
     const type = typeof content?.type === "string" ? content.type : "";
     const isAnnotationPayload = type === "message_annotations" || Array.isArray(content?.annotations);
-    const id2 = isAnnotationPayload ? content?.item_id ?? record?.item_id ?? record?.tool_call_id : content?.item_id ?? content?.id ?? record?.item_id ?? record?.tool_call_id ?? record?.id;
+    const id2 = isAnnotationPayload ? content?.item_id ?? record2?.item_id ?? record2?.tool_call_id : content?.item_id ?? content?.id ?? record2?.item_id ?? record2?.tool_call_id ?? record2?.id;
     return typeof id2 === "string" && id2.trim() ? id2.trim() : null;
   }
-  const id = record?.tool_call_id ?? record?.id;
+  const id = record2?.tool_call_id ?? record2?.id;
   return typeof id === "string" && id.trim() ? id.trim() : null;
 }
 function parseToolName(frame) {
-  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const record2 = frame.data && typeof frame.data === "object" ? frame.data : null;
   if (frame.event === "server_tool_content") {
-    const content = record?.content && typeof record.content === "object" ? record.content : null;
-    const name = content?.name ?? record?.tool_name ?? record?.name;
+    const content = record2?.content && typeof record2.content === "object" ? record2.content : null;
+    const name = content?.name ?? record2?.tool_name ?? record2?.name;
     return typeof name === "string" && name.trim() ? name.trim() : "tool";
   }
-  return typeof record?.name === "string" && record.name.trim() ? record.name : "tool";
+  return typeof record2?.name === "string" && record2.name.trim() ? record2.name : "tool";
 }
 function parseToolArguments(frame) {
-  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const record2 = frame.data && typeof frame.data === "object" ? frame.data : null;
   if (frame.event === "server_tool_content") {
-    const content = record?.content && typeof record.content === "object" ? record.content : null;
+    const content = record2?.content && typeof record2.content === "object" ? record2.content : null;
     const action = content?.action && typeof content.action === "object" ? content.action : null;
     const queries = Array.isArray(action?.queries) ? action.queries.filter((query2) => typeof query2 === "string" && query2.trim().length > 0) : [];
     const query = queries.length > 0 ? queries.join("\n") : content?.query ?? content?.input ?? action?.query;
     return typeof query === "string" && query.trim() ? query.trim() : "";
   }
-  if (typeof record?.arguments === "string" && record.arguments.trim()) {
-    return record.arguments;
+  if (typeof record2?.arguments === "string" && record2.arguments.trim()) {
+    return record2.arguments;
   }
-  if ("args" in (record || {}) && record?.args !== void 0) {
-    return JSON.stringify(record.args);
+  if ("args" in (record2 || {}) && record2?.args !== void 0) {
+    return JSON.stringify(record2.args);
   }
-  return JSON.stringify(record || {});
+  return JSON.stringify(record2 || {});
 }
 function normalizeToolArgumentsForSignature(argumentsText) {
   const trimmed = (argumentsText || "").trim();
@@ -7360,16 +7360,16 @@ function summarizePeerPayload(value) {
     return parts.length ? parts.join(" ") : void 0;
   }
   if (value && typeof value === "object") {
-    const record = value;
-    const type = typeof record.type === "string" ? record.type : "";
+    const record2 = value;
+    const type = typeof record2.type === "string" ? record2.type : "";
     if (type === "image" || type === "image_ref" || type === "image_upload") {
-      return typeof record.alt === "string" && record.alt.trim() ? record.alt.trim() : type === "image_ref" ? "referenced image" : "attached image";
+      return typeof record2.alt === "string" && record2.alt.trim() ? record2.alt.trim() : type === "image_ref" ? "referenced image" : "attached image";
     }
     for (const key of PEER_PAYLOAD_TEXT_KEYS) {
-      const summary = summarizePeerPayload(record[key]);
+      const summary = summarizePeerPayload(record2[key]);
       if (summary) return summary;
     }
-    return JSON.stringify(record);
+    return JSON.stringify(record2);
   }
   return void 0;
 }
@@ -7403,33 +7403,33 @@ function peerTargetFromArgs(argsRecord, peerRegistry) {
   return registryName ? peerLastSegment2(registryName) : typeof argsRecord?.display_name === "string" && argsRecord.display_name.trim() ? peerLastSegment2(argsRecord.display_name.trim()) : typeof argsRecord?.to === "string" && argsRecord.to.trim() ? peerLastSegment2(argsRecord.to.trim()) : peerId ? peerId.slice(0, 8) : void 0;
 }
 function parseToolResult(frame) {
-  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const isError = Boolean(record?.is_error) || frame.event === "interaction_failed";
+  const record2 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const isError = Boolean(record2?.is_error) || frame.event === "interaction_failed";
   let result = "";
-  const toolName2 = typeof record?.name === "string" ? record.name : typeof record?.tool_name === "string" ? record.tool_name : void 0;
-  if (typeof record?.result === "string") {
-    const display = summarizeToolResultForDisplay(toolName2, record.result);
+  const toolName2 = typeof record2?.name === "string" ? record2.name : typeof record2?.tool_name === "string" ? record2.tool_name : void 0;
+  if (typeof record2?.result === "string") {
+    const display = summarizeToolResultForDisplay(toolName2, record2.result);
     if (display) {
       result = display;
     } else {
       try {
-        const parsed = JSON.parse(record.result);
+        const parsed = JSON.parse(record2.result);
         if (typeof parsed === "object" && parsed !== null) {
           const clean = { ...parsed };
           delete clean.source_event_type;
           delete clean.type;
           result = JSON.stringify(clean, null, 2);
         } else {
-          result = record.result;
+          result = record2.result;
         }
       } catch {
-        result = record.result;
+        result = record2.result;
       }
     }
-  } else if (typeof record?.result === "object" && record.result !== null) {
-    result = summarizeToolResultForDisplay(toolName2, record.result) || "";
+  } else if (typeof record2?.result === "object" && record2.result !== null) {
+    result = summarizeToolResultForDisplay(toolName2, record2.result) || "";
     if (!result) {
-      const clean = { ...record.result };
+      const clean = { ...record2.result };
       delete clean.source_event_type;
       delete clean.type;
       result = JSON.stringify(clean, null, 2);
@@ -7619,7 +7619,7 @@ function workGraphToolNameOf(frame, namesByCallId) {
 function workGraphString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : void 0;
 }
-function workGraphOwnerLabel(record) {
+function workGraphOwnerLabel(record2) {
   const fromOwner = (value) => {
     if (!value || typeof value !== "object") return void 0;
     const owner = value;
@@ -7628,14 +7628,14 @@ function workGraphOwnerLabel(record) {
     const key = owner.key && typeof owner.key === "object" ? owner.key : null;
     return workGraphString(key?.id);
   };
-  const direct = fromOwner(record.owner);
+  const direct = fromOwner(record2.owner);
   if (direct) return direct;
-  const claim = record.claim && typeof record.claim === "object" ? record.claim : null;
+  const claim = record2.claim && typeof record2.claim === "object" ? record2.claim : null;
   return fromOwner(claim?.owner);
 }
-function workGraphEvidenceLines(record) {
-  if (!Array.isArray(record.evidence_refs) || record.evidence_refs.length === 0) return void 0;
-  const lines = record.evidence_refs.map((value) => {
+function workGraphEvidenceLines(record2) {
+  if (!Array.isArray(record2.evidence_refs) || record2.evidence_refs.length === 0) return void 0;
+  const lines = record2.evidence_refs.map((value) => {
     if (!value || typeof value !== "object") return "";
     const evidence = value;
     const label = workGraphString(evidence.label) || workGraphString(evidence.summary);
@@ -7648,10 +7648,10 @@ function workGraphEvidenceLines(record) {
 }
 function foldWorkGraphItem(state, value, frameIso) {
   if (!value || typeof value !== "object") return null;
-  const record = value;
-  const itemId = workGraphString(record.id);
+  const record2 = value;
+  const itemId = workGraphString(record2.id);
   if (!itemId) return null;
-  const revision = typeof record.revision === "number" ? record.revision : void 0;
+  const revision = typeof record2.revision === "number" ? record2.revision : void 0;
   const existing = state.items.get(itemId);
   if (existing && existing.revision !== void 0 && (revision === void 0 || existing.revision > revision)) {
     if (frameIso) existing.lastEventAt = frameIso;
@@ -7659,26 +7659,26 @@ function foldWorkGraphItem(state, value, frameIso) {
   }
   state.items.set(itemId, {
     itemId,
-    title: workGraphString(record.title) || itemId,
-    status: workGraphString(record.status) || "open",
-    priority: workGraphString(record.priority),
-    ownerLabel: workGraphOwnerLabel(record),
+    title: workGraphString(record2.title) || itemId,
+    status: workGraphString(record2.status) || "open",
+    priority: workGraphString(record2.priority),
+    ownerLabel: workGraphOwnerLabel(record2),
     revision,
-    dueAt: workGraphString(record.due_at),
-    description: workGraphString(record.description),
-    labels: Array.isArray(record.labels) ? record.labels.filter((label) => typeof label === "string") : void 0,
-    evidence: workGraphEvidenceLines(record),
-    createdAt: workGraphString(record.created_at),
-    updatedAt: workGraphString(record.updated_at),
+    dueAt: workGraphString(record2.due_at),
+    description: workGraphString(record2.description),
+    labels: Array.isArray(record2.labels) ? record2.labels.filter((label) => typeof label === "string") : void 0,
+    evidence: workGraphEvidenceLines(record2),
+    createdAt: workGraphString(record2.created_at),
+    updatedAt: workGraphString(record2.updated_at),
     lastEventAt: frameIso || existing?.lastEventAt
   });
   return itemId;
 }
 function workGraphBindingStatus(value) {
-  const record = value && typeof value === "object" ? value : null;
-  const state = workGraphString(record?.state) || "active";
+  const record2 = value && typeof value === "object" ? value : null;
+  const state = workGraphString(record2?.state) || "active";
   if (state === "paused") {
-    const until = workGraphString(record?.until);
+    const until = workGraphString(record2?.until);
     return {
       label: until ? `paused until ${until.slice(0, 16).replace("T", " ")}` : "paused",
       active: false
@@ -7687,11 +7687,11 @@ function workGraphBindingStatus(value) {
   return { label: state, active: state === "active" };
 }
 function workGraphTargetLabel(value) {
-  const record = value && typeof value === "object" ? value : null;
-  if (!record) return void 0;
-  const sessionId = workGraphString(record.session_id);
+  const record2 = value && typeof value === "object" ? value : null;
+  if (!record2) return void 0;
+  const sessionId = workGraphString(record2.session_id);
   if (sessionId) return sessionId;
-  const ownerKey = record.owner_key && typeof record.owner_key === "object" ? record.owner_key : null;
+  const ownerKey = record2.owner_key && typeof record2.owner_key === "object" ? record2.owner_key : null;
   if (ownerKey) {
     const kind = workGraphString(ownerKey.kind);
     const id = workGraphString(ownerKey.id);
@@ -7701,35 +7701,35 @@ function workGraphTargetLabel(value) {
 }
 function foldWorkGraphBinding(state, value, frameIso) {
   if (!value || typeof value !== "object") return null;
-  const record = value;
-  const bindingId = workGraphString(record.binding_id);
+  const record2 = value;
+  const bindingId = workGraphString(record2.binding_id);
   if (!bindingId) return null;
-  const machineState = record.machine_state && typeof record.machine_state === "object" ? record.machine_state : null;
+  const machineState = record2.machine_state && typeof record2.machine_state === "object" ? record2.machine_state : null;
   const revision = typeof machineState?.revision === "number" ? machineState.revision : void 0;
   const existing = state.bindings.get(bindingId);
   if (existing && existing.revision !== void 0 && (revision === void 0 || existing.revision > revision)) {
     return bindingId;
   }
-  const workRef = record.work_ref && typeof record.work_ref === "object" ? record.work_ref : null;
-  const status = workGraphBindingStatus(record.status);
+  const workRef = record2.work_ref && typeof record2.work_ref === "object" ? record2.work_ref : null;
+  const status = workGraphBindingStatus(record2.status);
   state.bindings.set(bindingId, {
     bindingId,
-    mode: workGraphString(record.mode) || "pursue",
+    mode: workGraphString(record2.mode) || "pursue",
     statusLabel: status.label,
     active: status.active,
-    targetLabel: workGraphTargetLabel(record.target),
+    targetLabel: workGraphTargetLabel(record2.target),
     revision,
     itemId: workGraphString(workRef?.item_id) || existing?.itemId,
-    updatedAt: workGraphString(record.updated_at) || frameIso
+    updatedAt: workGraphString(record2.updated_at) || frameIso
   });
   return bindingId;
 }
 function foldWorkGraphEdge(state, value) {
   if (!value || typeof value !== "object") return;
-  const record = value;
-  if (workGraphString(record.kind) !== "parent") return;
-  const child = workGraphString(record.from_id);
-  const parent = workGraphString(record.to_id);
+  const record2 = value;
+  if (workGraphString(record2.kind) !== "parent") return;
+  const child = workGraphString(record2.from_id);
+  const parent = workGraphString(record2.to_id);
   if (!child || !parent || child === parent) return;
   const first = state.parents.get(child);
   if (first === void 0) {
@@ -7743,13 +7743,13 @@ function foldWorkGraphEdge(state, value) {
 }
 function foldWorkGraphEvent(state, value) {
   if (!value || typeof value !== "object") return;
-  const record = value;
-  const kind = workGraphString(record.kind);
+  const record2 = value;
+  const kind = workGraphString(record2.kind);
   if (!kind) return;
-  let dedupeKey = typeof record.seq === "number" ? `seq:${record.seq}` : "";
+  let dedupeKey = typeof record2.seq === "number" ? `seq:${record2.seq}` : "";
   if (!dedupeKey) {
     try {
-      dedupeKey = `content:${JSON.stringify(record)}`;
+      dedupeKey = `content:${JSON.stringify(record2)}`;
     } catch {
       dedupeKey = "";
     }
@@ -7758,11 +7758,11 @@ function foldWorkGraphEvent(state, value) {
     if (state.seenEventKeys.has(dedupeKey)) return;
     state.seenEventKeys.add(dedupeKey);
   }
-  const at = workGraphString(record.at);
+  const at = workGraphString(record2.at);
   const clock = at ? `${at.slice(11, 16)}` : "";
   state.events.push({
     at,
-    itemId: workGraphString(record.item_id),
+    itemId: workGraphString(record2.item_id),
     text: [kind.replace(/_/g, " "), clock].filter(Boolean).join(" \xB7 ")
   });
 }
@@ -7772,8 +7772,8 @@ function workGraphFailureLine(name, raw) {
   if (typeof raw === "string") {
     message = raw.trim();
   } else if (raw && typeof raw === "object") {
-    const record = raw;
-    message = workGraphString(record.message) || workGraphString(record.detail) || workGraphString(record.error) || "";
+    const record2 = raw;
+    message = workGraphString(record2.message) || workGraphString(record2.detail) || workGraphString(record2.error) || "";
     if (!message) {
       try {
         message = JSON.stringify(raw);
@@ -7790,9 +7790,9 @@ function workGraphFailureLine(name, raw) {
 var parsedWorkGraphResultCache = /* @__PURE__ */ new Map();
 var PARSED_WORKGRAPH_RESULT_CACHE_LIMIT = 4e3;
 function parseWorkGraphResult(frame) {
-  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
-  if (!record || record.is_error === true) return null;
-  const raw = record.result;
+  const record2 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  if (!record2 || record2.is_error === true) return null;
+  const raw = record2.result;
   if (raw && typeof raw === "object") return raw;
   if (typeof raw !== "string") return null;
   const cacheKey = `${frame.id}@${frame.frameVersion ?? 0}`;
@@ -7959,8 +7959,8 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
       bindingIds: [],
       outcome: void 0
     };
-    const record = frame.data && typeof frame.data === "object" ? frame.data : null;
-    const args = record?.args && typeof record.args === "object" ? record.args : null;
+    const record2 = frame.data && typeof frame.data === "object" ? frame.data : null;
+    const args = record2?.args && typeof record2.args === "object" ? record2.args : null;
     const toolCallId = parseToolCallId(frame);
     let argItemId = workGraphString(args?.id);
     let argBindingId = workGraphString(args?.binding_id);
@@ -7975,8 +7975,8 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     if (argBindingId) contribution.bindingIds.push(argBindingId);
     const isOperatorResult = frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT;
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || isOperatorResult) {
-      const failed = record?.is_error === true;
-      const isRefresh = record?.refresh === true;
+      const failed = record2?.is_error === true;
+      const isRefresh = record2?.refresh === true;
       if (!isRefresh) {
         contribution.outcome = failed ? "error" : "ok";
       }
@@ -7987,8 +7987,8 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
           itemId: argItemId || (argBindingId ? state.bindings.get(argBindingId)?.itemId : void 0),
           interactionId: contribution.interactionId,
           text: workGraphFailureLine(
-            isOperatorResult ? workGraphOperatorDisplayName(record?.method) : workGraphToolNameOf(frame, namesByCallId),
-            record?.result ?? record?.content
+            isOperatorResult ? workGraphOperatorDisplayName(record2?.method) : workGraphToolNameOf(frame, namesByCallId),
+            record2?.result ?? record2?.content
           )
         });
       }
@@ -8310,9 +8310,9 @@ function renderTerminalEntry(agent, frame, entryId, streamedText = "") {
 function terminalFrameVisibleText(frame) {
   if (isSteerDeliveryTerminalFrame(frame)) return "";
   if (frame.event === "text_complete") {
-    const record = frame.data && typeof frame.data === "object" ? frame.data : null;
-    if (typeof record?.content === "string") return record.content;
-    if (typeof record?.text === "string") return record.text;
+    const record2 = frame.data && typeof frame.data === "object" ? frame.data : null;
+    if (typeof record2?.content === "string") return record2.content;
+    if (typeof record2?.text === "string") return record2.text;
   }
   if (frame.event === "interaction_complete" || frame.event === "run_completed" || frame.event === "text_complete") {
     return summarizeFrameData(frame.data);
@@ -8437,10 +8437,10 @@ function conversationEntryVisibleText(entry) {
   if (!("blocks" in entry) || !Array.isArray(entry.blocks)) return "";
   return entry.blocks.map((block) => {
     if (!block || typeof block !== "object") return "";
-    const record = block;
-    if (record.type === "thinking") return "";
-    if (typeof record.text === "string") return record.text;
-    if (typeof record.peerBody === "string") return record.peerBody;
+    const record2 = block;
+    if (record2.type === "thinking") return "";
+    if (typeof record2.text === "string") return record2.text;
+    if (typeof record2.peerBody === "string") return record2.peerBody;
     return "";
   }).filter(Boolean).join("\n");
 }
@@ -8505,8 +8505,8 @@ function renderHistoryUserEntry(frame, entryId, blobBaseUrl) {
   if (typeof frame.data !== "object" || frame.data === null) {
     return null;
   }
-  const record = frame.data;
-  const content = record.content;
+  const record2 = frame.data;
+  const content = record2.content;
   if (Array.isArray(content)) {
     const blocks = contentToUserBlocks(content, blobBaseUrl);
     if (blocks.length === 0) return null;
@@ -8557,9 +8557,9 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
   if (frame.event !== "run_started" || typeof frame.data !== "object" || frame.data === null) {
     return [];
   }
-  const record = frame.data;
-  const promptBlocks = contentToUserBlocks(record.prompt, options.blobBaseUrl);
-  const prompt = extractPromptText(record.prompt).trim();
+  const record2 = frame.data;
+  const promptBlocks = contentToUserBlocks(record2.prompt, options.blobBaseUrl);
+  const prompt = extractPromptText(record2.prompt).trim();
   if (!prompt) {
     return [];
   }
@@ -8608,9 +8608,9 @@ function extractTextFromContentBlocks(blocks) {
   return blocks.map((block) => {
     if (typeof block === "string") return block;
     if (!block || typeof block !== "object") return "";
-    const record = block;
-    if (typeof record.text === "string") return record.text;
-    if (typeof record.content === "string") return record.content;
+    const record2 = block;
+    if (typeof record2.text === "string") return record2.text;
+    if (typeof record2.content === "string") return record2.content;
     return "";
   }).filter((value) => value.trim().length > 0).join("");
 }
@@ -8620,9 +8620,9 @@ function extractPromptText(prompt) {
   return prompt.map((block) => {
     if (typeof block === "string") return block;
     if (!block || typeof block !== "object") return "";
-    const record = block;
-    if (typeof record.text === "string") return record.text;
-    if (typeof record.content === "string") return record.content;
+    const record2 = block;
+    if (typeof record2.text === "string") return record2.text;
+    if (typeof record2.content === "string") return record2.content;
     return "";
   }).filter((value) => value.trim().length > 0).join("\n");
 }
@@ -8640,18 +8640,18 @@ function contentToUserBlocks(content, blobBaseUrl) {
       continue;
     }
     if (!block || typeof block !== "object") continue;
-    const record = block;
-    const type = typeof record.type === "string" ? record.type : "";
+    const record2 = block;
+    const type = typeof record2.type === "string" ? record2.type : "";
     if (type === "text") {
-      const text = typeof record.text === "string" ? record.text : typeof record.content === "string" ? record.content : "";
+      const text = typeof record2.text === "string" ? record2.text : typeof record2.content === "string" ? record2.content : "";
       blocks.push(...parseConversationRichBlocks(text, { displayNormalization: false }));
       continue;
     }
     if (type === "image" || type === "image_ref") {
-      const image = record.image && typeof record.image === "object" ? record.image : record;
+      const image = record2.image && typeof record2.image === "object" ? record2.image : record2;
       const blobRef = image.blob_ref && typeof image.blob_ref === "object" ? image.blob_ref : image.blobRef && typeof image.blobRef === "object" ? image.blobRef : null;
       const source = typeof image.source === "string" ? image.source : "";
-      const blobId = typeof record.blob_id === "string" ? record.blob_id : typeof image.blob_id === "string" ? image.blob_id : typeof record.blobId === "string" ? record.blobId : typeof image.blobId === "string" ? image.blobId : typeof blobRef?.blob_id === "string" ? blobRef.blob_id : typeof blobRef?.blobId === "string" ? blobRef.blobId : "";
+      const blobId = typeof record2.blob_id === "string" ? record2.blob_id : typeof image.blob_id === "string" ? image.blob_id : typeof record2.blobId === "string" ? record2.blobId : typeof image.blobId === "string" ? image.blobId : typeof blobRef?.blob_id === "string" ? blobRef.blob_id : typeof blobRef?.blobId === "string" ? blobRef.blobId : "";
       const mediaType = typeof image.media_type === "string" ? image.media_type : typeof image.mediaType === "string" ? image.mediaType : typeof blobRef?.media_type === "string" ? blobRef.media_type : typeof blobRef?.mediaType === "string" ? blobRef.mediaType : "image/png";
       const inlineData = typeof image.data === "string" ? image.data : typeof image.base64 === "string" ? image.base64 : "";
       const directSrc = typeof image.src === "string" && image.src.trim() ? image.src.trim() : typeof image.url === "string" && image.url.trim() ? image.url.trim() : "";
@@ -8690,8 +8690,8 @@ function summarizePeersResult(result) {
   const preview = [];
   for (const peer of peers) {
     if (!peer || typeof peer !== "object") continue;
-    const record = peer;
-    const rawName = typeof record.name === "string" && record.name.trim() ? record.name.trim() : typeof record.address?.endpoint === "string" ? String(record.address.endpoint).trim() : typeof record.peer_id === "string" ? record.peer_id.trim() : "";
+    const record2 = peer;
+    const rawName = typeof record2.name === "string" && record2.name.trim() ? record2.name.trim() : typeof record2.address?.endpoint === "string" ? String(record2.address.endpoint).trim() : typeof record2.peer_id === "string" ? record2.peer_id.trim() : "";
     if (!rawName) continue;
     const parts = rawName.split("/").filter(Boolean);
     const role = parts.length >= 2 ? parts[parts.length - 2] : "peer";
@@ -8714,18 +8714,18 @@ function summarizeToolResultForDisplay(toolName2, result) {
 }
 function formatServerToolAnnotations(annotations) {
   return annotations.map((annotation, index) => {
-    const record = annotation && typeof annotation === "object" ? annotation : null;
-    const title = typeof record?.title === "string" && record.title.trim() ? record.title.trim() : typeof record?.text === "string" && record.text.trim() ? record.text.trim() : `Source ${index + 1}`;
-    const url = typeof record?.url === "string" && record.url.trim() ? record.url.trim() : "";
+    const record2 = annotation && typeof annotation === "object" ? annotation : null;
+    const title = typeof record2?.title === "string" && record2.title.trim() ? record2.title.trim() : typeof record2?.text === "string" && record2.text.trim() ? record2.text.trim() : `Source ${index + 1}`;
+    const url = typeof record2?.url === "string" && record2.url.trim() ? record2.url.trim() : "";
     return url ? `${index + 1}. ${title}
 ${url}` : `${index + 1}. ${title}`;
   }).join("\n\n").trim();
 }
 function serverToolContentSummary(frame) {
-  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content = record?.content && typeof record.content === "object" ? record.content : null;
-  const type = typeof content?.type === "string" ? content.type : typeof record?.type === "string" ? record.type : "";
-  const status = typeof content?.status === "string" ? content.status : typeof record?.status === "string" ? record.status : "";
+  const record2 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content = record2?.content && typeof record2.content === "object" ? record2.content : null;
+  const type = typeof content?.type === "string" ? content.type : typeof record2?.type === "string" ? record2.type : "";
+  const status = typeof content?.status === "string" ? content.status : typeof record2?.status === "string" ? record2.status : "";
   if (type.includes(".failed") || type.includes(".error") || status === "failed" || status === "error") {
     return { status: "error" };
   }
@@ -8748,8 +8748,8 @@ function isActiveServerToolContentFrame(frame) {
   return serverToolContentSummary(frame)?.status === "pending";
 }
 function isTerminalServerToolContentFrame(frame) {
-  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content = record?.content && typeof record.content === "object" ? record.content : null;
+  const record2 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content = record2?.content && typeof record2.content === "object" ? record2.content : null;
   const type = typeof content?.type === "string" ? content.type : "";
   if (type === "message_annotations" || Array.isArray(content?.annotations)) return false;
   const status = serverToolContentSummary(frame)?.status;
@@ -8761,10 +8761,10 @@ function toolResultTextFromContent(content) {
   return content.map((block) => {
     if (typeof block === "string") return block;
     if (!block || typeof block !== "object") return "";
-    const record = block;
-    if (typeof record.text === "string") return record.text;
-    if (typeof record.content === "string") return record.content;
-    const data = record.data && typeof record.data === "object" ? record.data : null;
+    const record2 = block;
+    if (typeof record2.text === "string") return record2.text;
+    if (typeof record2.content === "string") return record2.content;
+    const data = record2.data && typeof record2.data === "object" ? record2.data : null;
     if (typeof data?.text === "string") return data.text;
     if (typeof data?.content === "string") return data.content;
     return "";
@@ -8898,9 +8898,9 @@ function stripBareCommsIntentBodyPrefix(text) {
 }
 function isExternalEventOnlySystemNotice(message) {
   if (!message || typeof message !== "object") return false;
-  const record = message;
-  if (textFromUnknown3(record.kind) === "external_event") return true;
-  const blocks = record.blocks;
+  const record2 = message;
+  if (textFromUnknown3(record2.kind) === "external_event") return true;
+  const blocks = record2.blocks;
   if (!Array.isArray(blocks)) return false;
   let sawExternalEventBlock = false;
   for (const block of blocks) {
@@ -8933,19 +8933,19 @@ function commsNoticeMessageRecord(frame) {
   }
   const message = frame.data.message;
   if (!message || typeof message !== "object") return null;
-  const record = message;
-  return textFromUnknown3(record.role) === "system_notice" ? record : null;
+  const record2 = message;
+  return textFromUnknown3(record2.role) === "system_notice" ? record2 : null;
 }
-function systemNoticeBlockRecords(record) {
-  const blocks = record.blocks;
+function systemNoticeBlockRecords(record2) {
+  const blocks = record2.blocks;
   if (!Array.isArray(blocks)) return [];
   return blocks.filter((block) => Boolean(block) && typeof block === "object");
 }
-function legacyPeerNoticeTextCandidates(record) {
+function legacyPeerNoticeTextCandidates(record2) {
   const candidates = [];
-  const body = textFromUnknown3(record.body).trim();
+  const body = textFromUnknown3(record2.body).trim();
   if (body) candidates.push(body);
-  for (const block of systemNoticeBlockRecords(record)) {
+  for (const block of systemNoticeBlockRecords(record2)) {
     const blockText = typedNoticeBlockText(block).trim();
     if (blockText) candidates.push(blockText);
     const content = block.content;
@@ -9086,9 +9086,9 @@ function commsKindFromText(text) {
   return match?.[1]?.toLowerCase() || "";
 }
 function systemNoticeCommsSignatures(frame) {
-  const record = commsNoticeMessageRecord(frame);
-  if (!record || isExternalEventOnlySystemNotice(record)) return [];
-  const isCommsNotice = textFromUnknown3(record.kind) === "comms" || systemNoticeBlockRecords(record).some((block) => textFromUnknown3(block.type) === "comms") || canUseLegacyPeerNoticeText(record) && legacyPeerNoticeTextCandidates(record).some(isLegacyPeerNoticeText);
+  const record2 = commsNoticeMessageRecord(frame);
+  if (!record2 || isExternalEventOnlySystemNotice(record2)) return [];
+  const isCommsNotice = textFromUnknown3(record2.kind) === "comms" || systemNoticeBlockRecords(record2).some((block) => textFromUnknown3(block.type) === "comms") || canUseLegacyPeerNoticeText(record2) && legacyPeerNoticeTextCandidates(record2).some(isLegacyPeerNoticeText);
   if (!isCommsNotice) return [];
   const signatures = [];
   const seenSignatures = /* @__PURE__ */ new Set();
@@ -9118,15 +9118,15 @@ function systemNoticeCommsSignatures(frame) {
       sourceKind: frame.sourceKind
     });
   };
-  const noticeOccurrenceId = textFromUnknown3(record.request_id) || textFromUnknown3(record.correlation_id) || textFromUnknown3(record.id);
-  const noticeBlocks = systemNoticeBlockRecords(record);
+  const noticeOccurrenceId = textFromUnknown3(record2.request_id) || textFromUnknown3(record2.correlation_id) || textFromUnknown3(record2.id);
+  const noticeBlocks = systemNoticeBlockRecords(record2);
   const typedCommsBlocks = noticeBlocks.filter((block) => textFromUnknown3(block.type) === "comms");
   if (!typedCommsBlocks.length) {
-    for (const candidate of legacyPeerNoticeTextCandidates(record)) {
+    for (const candidate of legacyPeerNoticeTextCandidates(record2)) {
       pushCandidate(candidate, [], noticeOccurrenceId);
     }
   }
-  const body = textFromUnknown3(record.body);
+  const body = textFromUnknown3(record2.body);
   if (body && !typedCommsBlocks.length) pushCandidate(body, [], noticeOccurrenceId);
   for (let index = 0; index < typedCommsBlocks.length; index++) {
     const block = typedCommsBlocks[index];
@@ -9271,8 +9271,8 @@ function commsNoticeDuplicateKey(key, frame, emitted) {
 function markCommsNoticeDedupeKey(key, frame, emitted) {
   emitted.set(key, { sourceKind: frame.sourceKind, timestampMs: frame.timestampMs });
 }
-function commsNoticeDedupeKeysFromBlock(record, fallbackBody, index) {
-  const type = textFromUnknown3(record.type);
+function commsNoticeDedupeKeysFromBlock(record2, fallbackBody, index) {
+  const type = textFromUnknown3(record2.type);
   const keys = [];
   const pushKey = (candidate, peerAliases = [], occurrenceId, kind, direction) => {
     const aliases = peerAliases.length ? peerAliases : normalizedPeerAliases(peerFromCommsText(candidate));
@@ -9290,29 +9290,29 @@ function commsNoticeDedupeKeysFromBlock(record, fallbackBody, index) {
     if (!keys.includes(key)) keys.push(key);
   };
   if (type === "comms") {
-    const peer = record.peer && typeof record.peer === "object" ? record.peer : {};
+    const peer = record2.peer && typeof record2.peer === "object" ? record2.peer : {};
     const peerAliases = normalizedPeerAliases(
       textFromUnknown3(peer.display_name),
       textFromUnknown3(peer.id)
     );
-    const contentText = typedNoticeContentBlocks(record.content).map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n");
-    const stableBodyText = typedCommsStableBodyText(record);
-    const occurrenceId = textFromUnknown3(record.request_id) || textFromUnknown3(record.correlation_id) || textFromUnknown3(record.id) || `${index}`;
+    const contentText = typedNoticeContentBlocks(record2.content).map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n");
+    const stableBodyText = typedCommsStableBodyText(record2);
+    const occurrenceId = textFromUnknown3(record2.request_id) || textFromUnknown3(record2.correlation_id) || textFromUnknown3(record2.id) || `${index}`;
     pushKey(
       contentText || stableBodyText || fallbackBody,
       peerAliases,
       occurrenceId,
-      textFromUnknown3(record.kind) || "message",
-      textFromUnknown3(record.direction) || "incoming"
+      textFromUnknown3(record2.kind) || "message",
+      textFromUnknown3(record2.direction) || "incoming"
     );
     return keys;
   }
   if (type && type !== "text") return keys;
-  const blockText = typedNoticeBlockText(record).trim();
+  const blockText = typedNoticeBlockText(record2).trim();
   if (blockText && isLegacyPeerNoticeText(blockText)) {
     pushKey(blockText);
   }
-  const content = record.content;
+  const content = record2.content;
   if (Array.isArray(content)) {
     for (const item of content) {
       if (!item || typeof item !== "object") continue;
@@ -9350,8 +9350,8 @@ function shouldSuppressDuplicateCommsNotice(frame, emitted) {
   if (duplicateCount === keys.length) {
     return true;
   }
-  const record = systemNoticeMessageRecord(frame);
-  const hasBlockLevelComms = record ? systemNoticeBlockRecords(record).some((block, index) => commsNoticeDedupeKeysFromBlock(block, textFromUnknown3(record.body), index).length > 0) : false;
+  const record2 = systemNoticeMessageRecord(frame);
+  const hasBlockLevelComms = record2 ? systemNoticeBlockRecords(record2).some((block, index) => commsNoticeDedupeKeysFromBlock(block, textFromUnknown3(record2.body), index).length > 0) : false;
   if (!hasBlockLevelComms) {
     for (const key of keys) {
       markCommsNoticeDedupeKey(key, frame, emitted);
@@ -9365,20 +9365,20 @@ function structuredCommsBodyShouldPreserveLeadingEnvelope(body, peerAliases) {
   }
   return peerAliases.some((alias) => alias && !alias.startsWith("implicit-"));
 }
-function canUseLegacyPeerNoticeText(record) {
-  const kind = textFromUnknown3(record.kind);
+function canUseLegacyPeerNoticeText(record2) {
+  const kind = textFromUnknown3(record2.kind);
   if (kind && kind !== "generic") return false;
-  const blockTypes = systemNoticeBlockRecords(record).map((block) => textFromUnknown3(block.type)).filter(Boolean);
+  const blockTypes = systemNoticeBlockRecords(record2).map((block) => textFromUnknown3(block.type)).filter(Boolean);
   return blockTypes.every((type) => type === "text");
 }
 function systemNoticeClearsBusyState2(frame) {
-  const record = systemNoticeMessageRecord(frame);
-  if (!record || isExternalEventOnlySystemNotice(record)) return false;
-  if (textFromUnknown3(record.kind) === "comms") return true;
-  const blocks = systemNoticeBlockRecords(record);
+  const record2 = systemNoticeMessageRecord(frame);
+  if (!record2 || isExternalEventOnlySystemNotice(record2)) return false;
+  if (textFromUnknown3(record2.kind) === "comms") return true;
+  const blocks = systemNoticeBlockRecords(record2);
   if (blocks.some((block) => textFromUnknown3(block.type) === "comms")) return true;
-  if (!canUseLegacyPeerNoticeText(record)) return false;
-  return legacyPeerNoticeTextCandidates(record).some(isLegacyPeerNoticeText);
+  if (!canUseLegacyPeerNoticeText(record2)) return false;
+  return legacyPeerNoticeTextCandidates(record2).some(isLegacyPeerNoticeText);
 }
 function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, consumeDuplicateCommsBlock) {
   const rich = [];
@@ -9391,28 +9391,28 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
   for (let index = 0; index < blocks.length; index++) {
     const block = blocks[index];
     if (!block || typeof block !== "object") continue;
-    const record = block;
-    const type = textFromUnknown3(record.type);
+    const record2 = block;
+    const type = textFromUnknown3(record2.type);
     if (type === "comms") {
-      const dedupeKeys = commsNoticeDedupeKeysFromBlock(record, bodyText, index);
+      const dedupeKeys = commsNoticeDedupeKeysFromBlock(record2, bodyText, index);
       if (consumeCommsNoticeBlockDedupeKeys(dedupeKeys, consumeDuplicateCommsBlock)) {
         consumedDuplicateCommsBlock = true;
         continue;
       }
-      const peer = record.peer && typeof record.peer === "object" ? record.peer : {};
+      const peer = record2.peer && typeof record2.peer === "object" ? record2.peer : {};
       const peerLabel = peerLastSegment2(textFromUnknown3(peer.display_name) || textFromUnknown3(peer.id) || "peer");
       const peerAliases = normalizedPeerAliases(
         textFromUnknown3(peer.display_name),
         textFromUnknown3(peer.id)
       );
-      const kind = textFromUnknown3(record.kind) || "message";
-      const direction = textFromUnknown3(record.direction);
-      const intent = textFromUnknown3(record.intent);
-      const requestId = textFromUnknown3(record.request_id) || `typed-comms:${peerLabel}:${kind}`;
-      const contentBlocks2 = typedNoticeContentBlocks(record.content, blobBaseUrl);
+      const kind = textFromUnknown3(record2.kind) || "message";
+      const direction = textFromUnknown3(record2.direction);
+      const intent = textFromUnknown3(record2.intent);
+      const requestId = textFromUnknown3(record2.request_id) || `typed-comms:${peerLabel}:${kind}`;
+      const contentBlocks2 = typedNoticeContentBlocks(record2.content, blobBaseUrl);
       const contentText = contentBlocks2.map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n").trim();
       const peerImages = contentBlocks2.filter((item) => item.type === "image");
-      const displayBodySource = stripPeerTransportScaffold(contentText) || stripPeerTransportScaffold(typedCommsStableBodyText(record)) || stripPeerTransportScaffold(bodyText);
+      const displayBodySource = stripPeerTransportScaffold(contentText) || stripPeerTransportScaffold(typedCommsStableBodyText(record2)) || stripPeerTransportScaffold(bodyText);
       const preserveStructuredContentEnvelope = structuredCommsBodyShouldPreserveLeadingEnvelope(
         displayBodySource,
         peerAliases
@@ -9425,7 +9425,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
         type: "tool-call",
         toolCallId: requestId,
         name: `peer_${kind}`,
-        arguments: JSON.stringify(record.payload ?? {}, null, 2),
+        arguments: JSON.stringify(record2.payload ?? {}, null, 2),
         status: "success",
         peerIncoming: direction !== "outgoing",
         peerTarget: peerLabel,
@@ -9435,7 +9435,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
       });
       continue;
     }
-    const legacyDedupeKeys = commsNoticeDedupeKeysFromBlock(record, bodyText, index);
+    const legacyDedupeKeys = commsNoticeDedupeKeysFromBlock(record2, bodyText, index);
     if (consumeCommsNoticeBlockDedupeKeys(legacyDedupeKeys, consumeDuplicateCommsBlock)) {
       consumedDuplicateCommsBlock = true;
       continue;
@@ -9444,23 +9444,23 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
       continue;
     }
     if (type === "tool_config" || type === "mcp") {
-      const payload = record.payload && typeof record.payload === "object" ? record.payload : record;
+      const payload = record2.payload && typeof record2.payload === "object" ? record2.payload : record2;
       const label = type === "mcp" ? "MCP" : "Tool config";
-      const text = bodyText || typedNoticeBlockText(payload) || typedNoticeBlockText(record) || label;
+      const text = bodyText || typedNoticeBlockText(payload) || typedNoticeBlockText(record2) || label;
       rich.push({ type: "divider", text });
       continue;
     }
     if (type === "background_job" || type === "auth" || type === "runtime_notice") {
-      const text = typedNoticeBlockText(record) || type.replace(/_/g, " ");
+      const text = typedNoticeBlockText(record2) || type.replace(/_/g, " ");
       rich.push({ type: "paragraph", text });
       continue;
     }
-    const contentBlocks = typedNoticeContentBlocks(record.content, blobBaseUrl);
+    const contentBlocks = typedNoticeContentBlocks(record2.content, blobBaseUrl);
     if (contentBlocks.length > 0) {
       rich.push(...contentBlocks);
       continue;
     }
-    rich.push({ type: "divider", text: typedNoticeBlockText(record) || "Runtime metadata" });
+    rich.push({ type: "divider", text: typedNoticeBlockText(record2) || "Runtime metadata" });
   }
   if (rich.length === 0 && bodyText && !consumedDuplicateCommsBlock) {
     rich.push({ type: "paragraph", text: bodyText });
@@ -9471,35 +9471,35 @@ function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults, sou
   if (!message || typeof message !== "object") {
     return { role: null, text: "" };
   }
-  const record = message;
-  const role = typeof record.role === "string" ? record.role : null;
+  const record2 = message;
+  const role = typeof record2.role === "string" ? record2.role : null;
   switch (role) {
     case "user": {
-      const text = extractTextFromContentBlocks(record.content);
+      const text = extractTextFromContentBlocks(record2.content);
       return { role: "user", text };
     }
     case "system_notice": {
       const blocks = typedSystemNoticeBlocksToRich(
-        record.blocks,
-        record.body,
+        record2.blocks,
+        record2.body,
         blobBaseUrl,
         sourceKind,
         consumeDuplicateCommsBlock
       );
       const duplicateCommsConsumed = Boolean(
-        consumeDuplicateCommsBlock && blocks.length === 0 && systemNoticeBlockRecords(record).some((block, index) => commsNoticeDedupeKeysFromBlock(
+        consumeDuplicateCommsBlock && blocks.length === 0 && systemNoticeBlockRecords(record2).some((block, index) => commsNoticeDedupeKeysFromBlock(
           block,
-          textFromUnknown3(record.body),
+          textFromUnknown3(record2.body),
           index
         ).length > 0)
       );
-      const text = duplicateCommsConsumed ? "" : typeof record.body === "string" ? record.body : blocks.map((block) => block.type === "paragraph" || block.type === "divider" ? block.text : "").filter(Boolean).join("\n");
+      const text = duplicateCommsConsumed ? "" : typeof record2.body === "string" ? record2.body : blocks.map((block) => block.type === "paragraph" || block.type === "divider" ? block.text : "").filter(Boolean).join("\n");
       return { role: "meta", text, ...blocks.length > 0 ? { blocks } : {} };
     }
     case "assistant":
-      return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
+      return { role: "assistant", text: typeof record2.content === "string" ? record2.content : "" };
     case "block_assistant": {
-      const blocks = Array.isArray(record.blocks) ? record.blocks : [];
+      const blocks = Array.isArray(record2.blocks) ? record2.blocks : [];
       const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults);
       const text = blocks.map((block) => {
         if (!block || typeof block !== "object") return "";
@@ -9515,16 +9515,16 @@ function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults, sou
       return { role: "assistant", text, ...richBlocks.length > 0 ? { blocks: richBlocks } : {} };
     }
     case "system":
-      return { role: "system", text: typeof record.content === "string" ? record.content : "" };
+      return { role: "system", text: typeof record2.content === "string" ? record2.content : "" };
     default:
       return { role: null, text: "" };
   }
 }
 function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = {}) {
   if (frame.sourceKind !== "session_history") return null;
-  const record = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const record2 = frame.data && typeof frame.data === "object" ? frame.data : {};
   const parsed = historyMessageText(
-    record.message,
+    record2.message,
     options.peerRegistry,
     options.blobBaseUrl,
     options.toolResults,
@@ -9570,14 +9570,14 @@ function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = 
 }
 function renderSystemNoticeEntry(frame, entryId, options = {}) {
   if (frame.event !== "system_notice") return null;
-  const record = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const rawMessage = record.message && typeof record.message === "object" ? record.message : null;
+  const record2 = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const rawMessage = record2.message && typeof record2.message === "object" ? record2.message : null;
   const message = rawMessage ? textFromUnknown3(rawMessage.role) ? rawMessage : { role: "system_notice", ...rawMessage } : {
     role: "system_notice",
-    kind: record.kind,
-    render_class: record.render_class,
-    body: record.body,
-    blocks: record.blocks
+    kind: record2.kind,
+    render_class: record2.render_class,
+    body: record2.body,
+    blocks: record2.blocks
   };
   if (isExternalEventOnlySystemNotice(message)) return null;
   const parsed = historyMessageText(
@@ -10372,6 +10372,10 @@ function jsonRpcErrorCode(error) {
   const rpcError = error?.rpcError;
   return typeof rpcError?.code === "number" ? rpcError.code : null;
 }
+function httpStatusCode(error) {
+  const status = error?.httpStatus;
+  return typeof status === "number" ? status : null;
+}
 
 // src/lib/contract.ts
 var CONSOLE_REST_PATHS2 = {
@@ -10447,9 +10451,9 @@ function unwrapConsoleEnvelope(eventName, data) {
   if (!data || typeof data !== "object") {
     return { data };
   }
-  const record = data;
-  if (typeof record.type === "string" && "frame" in record) {
-    const frame = timelineFrameToConsoleFrame(record.frame);
+  const record2 = data;
+  if (typeof record2.type === "string" && "frame" in record2) {
+    const frame = timelineFrameToConsoleFrame(record2.frame);
     const isUpdateEnvelope = eventName === "frame_updated";
     return {
       id: frame.id,
@@ -10475,45 +10479,45 @@ function timelineFrameToConsoleFrame(raw) {
   if (!raw || typeof raw !== "object") {
     return { id: "", event: "event", data: raw };
   }
-  const record = raw;
-  const cursor = typeof record.cursor === "string" ? record.cursor : void 0;
-  const payload = "payload" in record ? record.payload : record;
-  const source = record.source && typeof record.source === "object" ? record.source : null;
-  if (record.kind === "frame_updated" && payload && typeof payload === "object" && "frame" in payload) {
+  const record2 = raw;
+  const cursor = typeof record2.cursor === "string" ? record2.cursor : void 0;
+  const payload = "payload" in record2 ? record2.payload : record2;
+  const source = record2.source && typeof record2.source === "object" ? record2.source : null;
+  if (record2.kind === "frame_updated" && payload && typeof payload === "object" && "frame" in payload) {
     const updated = timelineFrameToConsoleFrame(payload.frame);
     return {
-      id: String(record.id || cursor || ""),
+      id: String(record2.id || cursor || ""),
       event: "frame_updated",
-      identity: typeof record.identity === "string" ? record.identity : updated.identity,
-      interactionId: typeof record.interaction_id === "string" ? record.interaction_id : updated.interactionId,
-      timestampMs: typeof record.timestamp_ms === "number" ? record.timestamp_ms : void 0,
+      identity: typeof record2.identity === "string" ? record2.identity : updated.identity,
+      interactionId: typeof record2.interaction_id === "string" ? record2.interaction_id : updated.interactionId,
+      timestampMs: typeof record2.timestamp_ms === "number" ? record2.timestamp_ms : void 0,
       cursor,
-      runtimeKey: typeof record.runtime_key === "string" ? record.runtime_key : updated.runtimeKey,
-      sessionId: typeof record.session_id === "string" ? record.session_id : updated.sessionId,
-      status: typeof record.status === "string" ? record.status : updated.status,
+      runtimeKey: typeof record2.runtime_key === "string" ? record2.runtime_key : updated.runtimeKey,
+      sessionId: typeof record2.session_id === "string" ? record2.session_id : updated.sessionId,
+      status: typeof record2.status === "string" ? record2.status : updated.status,
       sourceKind: source && typeof source.kind === "string" ? source.kind : updated.sourceKind,
-      frameVersion: typeof record.frame_version === "number" ? record.frame_version : updated.frameVersion,
-      updatedAtMs: typeof record.updated_at_ms === "number" ? record.updated_at_ms : updated.updatedAtMs,
-      turnId: typeof record.turn_id === "string" ? record.turn_id : updated.turnId,
-      runId: typeof record.run_id === "string" ? record.run_id : updated.runId,
+      frameVersion: typeof record2.frame_version === "number" ? record2.frame_version : updated.frameVersion,
+      updatedAtMs: typeof record2.updated_at_ms === "number" ? record2.updated_at_ms : updated.updatedAtMs,
+      turnId: typeof record2.turn_id === "string" ? record2.turn_id : updated.turnId,
+      runId: typeof record2.run_id === "string" ? record2.run_id : updated.runId,
       data: { frame: updated }
     };
   }
   return {
-    id: String(record.id || cursor || ""),
-    event: String(record.kind || "event"),
-    identity: typeof record.identity === "string" ? record.identity : void 0,
-    interactionId: typeof record.interaction_id === "string" ? record.interaction_id : void 0,
-    timestampMs: typeof record.timestamp_ms === "number" ? record.timestamp_ms : void 0,
+    id: String(record2.id || cursor || ""),
+    event: String(record2.kind || "event"),
+    identity: typeof record2.identity === "string" ? record2.identity : void 0,
+    interactionId: typeof record2.interaction_id === "string" ? record2.interaction_id : void 0,
+    timestampMs: typeof record2.timestamp_ms === "number" ? record2.timestamp_ms : void 0,
     cursor,
-    runtimeKey: typeof record.runtime_key === "string" ? record.runtime_key : void 0,
-    sessionId: typeof record.session_id === "string" ? record.session_id : void 0,
-    status: typeof record.status === "string" ? record.status : void 0,
+    runtimeKey: typeof record2.runtime_key === "string" ? record2.runtime_key : void 0,
+    sessionId: typeof record2.session_id === "string" ? record2.session_id : void 0,
+    status: typeof record2.status === "string" ? record2.status : void 0,
     sourceKind: source && typeof source.kind === "string" ? source.kind : void 0,
-    frameVersion: typeof record.frame_version === "number" ? record.frame_version : void 0,
-    updatedAtMs: typeof record.updated_at_ms === "number" ? record.updated_at_ms : void 0,
-    turnId: typeof record.turn_id === "string" ? record.turn_id : void 0,
-    runId: typeof record.run_id === "string" ? record.run_id : void 0,
+    frameVersion: typeof record2.frame_version === "number" ? record2.frame_version : void 0,
+    updatedAtMs: typeof record2.updated_at_ms === "number" ? record2.updated_at_ms : void 0,
+    turnId: typeof record2.turn_id === "string" ? record2.turn_id : void 0,
+    runId: typeof record2.run_id === "string" ? record2.run_id : void 0,
     data: payload
   };
 }
@@ -10609,9 +10613,9 @@ function responseTextErrorPreview(text) {
   try {
     const parsed = JSON.parse(trimmed);
     if (parsed && typeof parsed === "object") {
-      const record = parsed;
-      const message = typeof record.message === "string" ? record.message : void 0;
-      const error = record.error && typeof record.error === "object" ? record.error : null;
+      const record2 = parsed;
+      const message = typeof record2.message === "string" ? record2.message : void 0;
+      const error = record2.error && typeof record2.error === "object" ? record2.error : null;
       const errorMessage2 = error && typeof error.message === "string" ? error.message : void 0;
       const errorCode = error && (typeof error.code === "string" || typeof error.code === "number") ? String(error.code) : void 0;
       const selected = [
@@ -10657,7 +10661,9 @@ async function rpc(baseUrl, method, params, timeoutMs = DEFAULT_CONSOLE_FETCH_TI
   );
   if (!response.ok) {
     const preview = await responseErrorPreview(response);
-    throw new Error(`${method} request failed ${response.status}${preview ? `: ${preview}` : ""}`);
+    const error = new Error(`${method} request failed ${response.status}${preview ? `: ${preview}` : ""}`);
+    error.httpStatus = response.status;
+    throw error;
   }
   const result = await response.json();
   if (result.error) {
@@ -10769,14 +10775,14 @@ async function uploadConsoleBlobMultipart2(baseUrl, input, timeoutMs = DEFAULT_C
   if (result.error) {
     throw new Error(`${CONSOLE_RPC_METHODS2.blobUpload} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
-  const record = result.result && typeof result.result === "object" ? result.result : {};
-  const blobId = typeof record.blob_id === "string" ? record.blob_id : "";
+  const record2 = result.result && typeof result.result === "object" ? result.result : {};
+  const blobId = typeof record2.blob_id === "string" ? record2.blob_id : "";
   if (!blobId) {
     throw new Error(`${CONSOLE_RPC_METHODS2.blobUpload} returned an invalid blob payload`);
   }
   return {
     blob_id: blobId,
-    url: typeof record.url === "string" ? record.url : void 0
+    url: typeof record2.url === "string" ? record2.url : void 0
   };
 }
 var TERMINAL_SSE_EVENTS = /* @__PURE__ */ new Set([
@@ -10793,9 +10799,9 @@ function matchesCorrelation(candidate, correlation, allowUnscoped = true) {
   if (candidate === null || typeof candidate !== "object") {
     return allowUnscoped;
   }
-  const record = candidate;
-  const sessionId = record.session_id ?? record.sessionId;
-  const interactionId = record.interaction_id ?? record.interactionId;
+  const record2 = candidate;
+  const sessionId = record2.session_id ?? record2.sessionId;
+  const interactionId = record2.interaction_id ?? record2.interactionId;
   const hasScopedField = sessionId !== void 0 || interactionId !== void 0;
   if (!hasScopedField) {
     return allowUnscoped;
@@ -10809,8 +10815,8 @@ function matchesCorrelation(candidate, correlation, allowUnscoped = true) {
   return false;
 }
 function isTerminalTurnCompletedData(data) {
-  const record = data && typeof data === "object" ? data : {};
-  const stopReason = record.stop_reason ?? record.stopReason;
+  const record2 = data && typeof data === "object" ? data : {};
+  const stopReason = record2.stop_reason ?? record2.stopReason;
   return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
 }
 function isTerminalSseFrame(frame) {
@@ -10964,14 +10970,14 @@ async function queryTimeline2(baseUrl, target, limit = 400, timeoutMs = DEFAULT_
   if (!result || typeof result !== "object") {
     return { frames: [], available: false };
   }
-  const record = result;
-  const rawFrames = Array.isArray(record.frames) ? record.frames : [];
+  const record2 = result;
+  const rawFrames = Array.isArray(record2.frames) ? record2.frames : [];
   return {
     frames: rawFrames.map(timelineFrameToConsoleFrame),
-    nextCursor: typeof record.next_cursor === "string" ? record.next_cursor : void 0,
-    latestCursor: typeof record.latest_cursor === "string" ? record.latest_cursor : void 0,
-    exhausted: record.exhausted === true,
-    available: record.available !== false
+    nextCursor: typeof record2.next_cursor === "string" ? record2.next_cursor : void 0,
+    latestCursor: typeof record2.latest_cursor === "string" ? record2.latest_cursor : void 0,
+    exhausted: record2.exhausted === true,
+    available: record2.available !== false
   };
 }
 async function sendConsole2(baseUrl, identity, content, origin, idempotencyKey, handlingMode = "queue", timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2) {
@@ -10985,19 +10991,19 @@ async function sendConsole2(baseUrl, identity, content, origin, idempotencyKey, 
   if (!accepted || typeof accepted !== "object") {
     throw new Error(`${CONSOLE_RPC_METHODS2.send} returned an invalid acceptance payload`);
   }
-  const record = accepted;
-  return normalizeConsoleTimelineAccepted(record, identity);
+  const record2 = accepted;
+  return normalizeConsoleTimelineAccepted(record2, identity);
 }
 function normalizeConsoleTimelineAccepted(accepted, fallbackIdentity) {
-  const record = accepted && typeof accepted === "object" ? accepted : {};
+  const record2 = accepted && typeof accepted === "object" ? accepted : {};
   return {
-    interaction_id: String(record.interaction_id || ""),
-    identity: String(record.identity || fallbackIdentity),
-    conversation_id: typeof record.conversation_id === "string" ? record.conversation_id : void 0,
-    session_id: typeof record.session_id === "string" ? record.session_id : void 0,
-    input_frame_id: typeof record.input_frame_id === "string" ? record.input_frame_id : void 0,
-    cursor: typeof record.cursor === "string" ? record.cursor : void 0,
-    status: typeof record.status === "string" ? record.status : void 0
+    interaction_id: String(record2.interaction_id || ""),
+    identity: String(record2.identity || fallbackIdentity),
+    conversation_id: typeof record2.conversation_id === "string" ? record2.conversation_id : void 0,
+    session_id: typeof record2.session_id === "string" ? record2.session_id : void 0,
+    input_frame_id: typeof record2.input_frame_id === "string" ? record2.input_frame_id : void 0,
+    cursor: typeof record2.cursor === "string" ? record2.cursor : void 0,
+    status: typeof record2.status === "string" ? record2.status : void 0
   };
 }
 async function callConsoleRpc2(baseUrl, method, params = {}, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2) {
@@ -11588,15 +11594,15 @@ function createFactFactory() {
   };
 }
 function normalizeCapabilities(value) {
-  const record = value && typeof value === "object" ? value : {};
-  const methods = Array.isArray(record.methods) ? Array.from(new Set(record.methods.filter((method) => typeof method === "string" && method.trim().length > 0))) : [];
+  const record2 = value && typeof value === "object" ? value : {};
+  const methods = Array.isArray(record2.methods) ? Array.from(new Set(record2.methods.filter((method) => typeof method === "string" && method.trim().length > 0))) : [];
   return {
     methods,
-    version: typeof record.version === "string" ? record.version : void 0,
-    ...typeof record.read_only === "boolean" ? { readOnly: record.read_only } : {},
-    runtime_capabilities: record.runtime_capabilities,
-    method_capabilities: record.method_capabilities,
-    ...record.topology_control && typeof record.topology_control === "object" ? { topologyControl: record.topology_control } : {}
+    version: typeof record2.version === "string" ? record2.version : void 0,
+    ...typeof record2.read_only === "boolean" ? { readOnly: record2.read_only } : {},
+    runtime_capabilities: record2.runtime_capabilities,
+    method_capabilities: record2.method_capabilities,
+    ...record2.topology_control && typeof record2.topology_control === "object" ? { topologyControl: record2.topology_control } : {}
   };
 }
 function requireCapability(capabilities, method) {
@@ -12417,6 +12423,11 @@ function SpriteSheet() {
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "M12 18v3" }),
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "M8 21h8" })
     ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("symbol", { id: "i-voice", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "M4 10v4M8 5v14M12 8v8M16 3v18M20 9v6" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("symbol", { id: "i-mic-off", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "m3 3 18 18M9 9v3a3 3 0 0 0 5.1 2.1M9 4.5A3 3 0 0 1 15 6v4M5 11a7 7 0 0 0 12 5M19 11a7 7 0 0 1-.5 2.6M12 18v3M8 21h8" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("symbol", { id: "i-speaker", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "m11 5-6 4H2v6h3l6 4zM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("symbol", { id: "i-speaker-off", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "m11 5-6 4H2v6h3l6 4zM16 9l6 6M22 9l-6 6" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("symbol", { id: "i-close", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "m6 6 12 12M18 6 6 18" }) }),
     /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("symbol", { id: "i-ellipsis", viewBox: "0 0 24 24", children: [
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("circle", { cx: "5", cy: "12", r: "2" }),
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("circle", { cx: "12", cy: "12", r: "2" }),
@@ -13399,8 +13410,8 @@ function resolveMemoryTabAlias(tab) {
   if (tab === "quarantine") return "pipeline";
   return MEMORY_TABS.includes(tab) ? tab : null;
 }
-function realmOfRecord(record) {
-  return record.scope.realm;
+function realmOfRecord(record2) {
+  return record2.scope.realm;
 }
 function scopeGroupKey(scope) {
   switch (scope.scope) {
@@ -13440,19 +13451,19 @@ function scopeGroupRank(scope) {
 }
 function groupRecordsByScope(records) {
   const byKey = /* @__PURE__ */ new Map();
-  for (const record of records) {
-    const key = scopeGroupKey(record.scope);
+  for (const record2 of records) {
+    const key = scopeGroupKey(record2.scope);
     let group = byKey.get(key);
     if (!group) {
       group = {
         key,
-        label: scopeGroupLabel(record.scope),
-        scope: record.scope,
+        label: scopeGroupLabel(record2.scope),
+        scope: record2.scope,
         records: []
       };
       byKey.set(key, group);
     }
-    group.records.push(record);
+    group.records.push(record2);
   }
   return Array.from(byKey.values()).sort((a, b) => {
     const rankDelta = scopeGroupRank(a.scope) - scopeGroupRank(b.scope);
@@ -13689,16 +13700,16 @@ function createMemoryRecordsPager(deps) {
   return pager;
 }
 var DEAD_INJECTION_THRESHOLD = 3;
-function recordUtility(record) {
-  const injected = record.usage?.injected_count ?? 0;
-  const recalled = record.usage?.explicit_recall_count ?? 0;
-  const useful = record.usage?.judged_useful_count ?? 0;
+function recordUtility(record2) {
+  const injected = record2.usage?.injected_count ?? 0;
+  const recalled = record2.usage?.explicit_recall_count ?? 0;
+  const useful = record2.usage?.judged_useful_count ?? 0;
   return {
     injected,
     recalled,
     useful,
     ratio: injected > 0 ? useful / injected : null,
-    bytesSpent: injected * (record.body_bytes ?? 0),
+    bytesSpent: injected * (record2.body_bytes ?? 0),
     dead: injected >= DEAD_INJECTION_THRESHOLD && useful === 0
   };
 }
@@ -13713,8 +13724,8 @@ function sortRecordsByUtility(records) {
     return ub.bytesSpent - ua.bytesSpent;
   });
 }
-function utilityLine(record) {
-  const u = recordUtility(record);
+function utilityLine(record2) {
+  const u = recordUtility(record2);
   const ratio = u.ratio === null ? "\u2014" : u.ratio.toFixed(2);
   return `inj ${u.injected} \xB7 recall ${u.recalled} \xB7 useful ${u.useful} \xB7 ratio ${ratio} \xB7 ~${formatBytes(u.bytesSpent)} spent`;
 }
@@ -13728,27 +13739,27 @@ var LATTICE_WALK_MAX_RECORDS = 2e3;
 var LATTICE_WALK_PAGE_LIMIT = 200;
 function latticeInvariants(records, options) {
   const llmCeilingViolations = [];
-  const byId = new Map(records.map((record) => [record.id, record]));
-  for (const record of records) {
-    const author = record.provenance?.author?.author;
-    const rank = record.trust ? TRUST_RANK[record.trust] : void 0;
+  const byId = new Map(records.map((record2) => [record2.id, record2]));
+  for (const record2 of records) {
+    const author = record2.provenance?.author?.author;
+    const rank = record2.trust ? TRUST_RANK[record2.trust] : void 0;
     if ((author === "agent" || author === "distiller" || author === "steward") && typeof rank === "number" && rank > TRUST_RANK.agent_observed) {
-      llmCeilingViolations.push({ id: record.id, realm: realmOfRecord(record) });
+      llmCeilingViolations.push({ id: record2.id, realm: realmOfRecord(record2) });
     }
   }
   const chainViolations = /* @__PURE__ */ new Map();
-  for (const record of records) {
-    const path = /* @__PURE__ */ new Set([record.id]);
-    let cursor = record.supersedes;
+  for (const record2 of records) {
+    const path = /* @__PURE__ */ new Set([record2.id]);
+    let cursor = record2.supersedes;
     while (cursor) {
       if (path.has(cursor)) {
-        chainViolations.set(record.id, { id: record.id, realm: realmOfRecord(record) });
+        chainViolations.set(record2.id, { id: record2.id, realm: realmOfRecord(record2) });
         break;
       }
       const parent = byId.get(cursor);
       if (!parent) {
         if (options.complete) {
-          chainViolations.set(record.id, { id: record.id, realm: realmOfRecord(record) });
+          chainViolations.set(record2.id, { id: record2.id, realm: realmOfRecord(record2) });
         }
         break;
       }
@@ -13763,7 +13774,7 @@ function latticeInvariants(records, options) {
 }
 function latticeFingerprint(records, realms, baseCursor) {
   const rows = records.map(
-    (record) => `${record.id}:${record.supersedes || ""}:${record.trust}:${record.status?.status || ""}:${record.updated_at_ms || 0}`
+    (record2) => `${record2.id}:${record2.supersedes || ""}:${record2.trust}:${record2.status?.status || ""}:${record2.updated_at_ms || 0}`
   ).join("|");
   return `${realms.join(",")}#${baseCursor || ""}#${records.length}#${rows}`;
 }
@@ -13872,8 +13883,8 @@ function computeVerdictTiles(inputs) {
       targetTab: "records"
     });
   } else {
-    const dead = inputs.records.filter((record) => recordUtility(record).dead);
-    const deadBytes = dead.reduce((sum, record) => sum + recordUtility(record).bytesSpent, 0);
+    const dead = inputs.records.filter((record2) => recordUtility(record2).dead);
+    const deadBytes = dead.reduce((sum, record2) => sum + recordUtility(record2).bytesSpent, 0);
     tiles.push({
       id: "recall",
       label: "RECALL",
@@ -13960,11 +13971,11 @@ function scopeOverviewRows(records) {
     const counts = { active: 0, quarantined: 0, superseded: 0, tombstoned: 0 };
     let bytes = 0;
     const trustCounts = /* @__PURE__ */ new Map();
-    for (const record of group.records) {
-      const status = record.status?.status;
+    for (const record2 of group.records) {
+      const status = record2.status?.status;
       if (status && status in counts) counts[status] += 1;
-      bytes += record.body_bytes ?? 0;
-      const trust = trustLabel(record.trust);
+      bytes += record2.body_bytes ?? 0;
+      const trust = trustLabel(record2.trust);
       trustCounts.set(trust, (trustCounts.get(trust) || 0) + 1);
     }
     const trustMix = Array.from(trustCounts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([trust, count]) => `${count} ${trust}`).join(" \xB7 ");
@@ -14094,9 +14105,9 @@ function normalizeDreamRunDetail(detail) {
   return { phases, verdicts, skips, raw: null };
 }
 function lineageLane(chain, currentId) {
-  return [...chain].reverse().map((record) => ({
-    record,
-    current: record.id === currentId
+  return [...chain].reverse().map((record2) => ({
+    record: record2,
+    current: record2.id === currentId
   }));
 }
 function dreamRunsTouching(dreams, recordId) {
@@ -14125,8 +14136,8 @@ function evidenceExcerptLines(entries, range, maxLines = 30) {
 }
 function identityOptions(records) {
   const identities = /* @__PURE__ */ new Set();
-  for (const record of records) {
-    if (record.scope.scope === "identity") identities.add(record.scope.identity);
+  for (const record2 of records) {
+    if (record2.scope.scope === "identity") identities.add(record2.scope.identity);
   }
   return Array.from(identities).sort((a, b) => a.localeCompare(b));
 }
@@ -14136,26 +14147,26 @@ function knowledgeComposition(records, identity) {
     {
       label: `identity:${identity}`,
       count: count(
-        (record) => record.scope.scope === "identity" && record.scope.identity === identity
+        (record2) => record2.scope.scope === "identity" && record2.scope.identity === identity
       ),
       filter: { scope: "identity", key: identity },
       approximate: false
     },
     {
       label: "mob (all mobs)",
-      count: count((record) => record.scope.scope === "mob"),
+      count: count((record2) => record2.scope.scope === "mob"),
       filter: { scope: "mob" },
       approximate: true
     },
     {
       label: "operator",
-      count: count((record) => record.scope.scope === "operator"),
+      count: count((record2) => record2.scope.scope === "operator"),
       filter: { scope: "operator" },
       approximate: true
     },
     {
       label: "realm",
-      count: count((record) => record.scope.scope === "realm"),
+      count: count((record2) => record2.scope.scope === "realm"),
       filter: { scope: "realm" },
       approximate: true
     }
@@ -14194,28 +14205,28 @@ function SectionNote({
   return /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "memory-note", "data-testid": testid, children });
 }
 function RecordRow({
-  record,
+  record: record2,
   utilityMode,
   onSelect
 }) {
-  const utility = utilityMode ? recordUtility(record) : null;
+  const utility = utilityMode ? recordUtility(record2) : null;
   return /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)(
     "button",
     {
       type: "button",
       className: "memory-row",
-      "data-testid": `memory-record:${record.id}`,
+      "data-testid": `memory-record:${record2.id}`,
       onClick: onSelect,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "memory-row__title", children: record.title || record.id }),
+        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "memory-row__title", children: record2.title || record2.id }),
         /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("span", { className: "memory-row__meta", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: record.kind }),
-          /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: trustLabel(record.trust), tone: trustTone(record.trust) }),
-          /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: statusLabel(record.status), tone: statusTone(record.status) }),
+          /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: record2.kind }),
+          /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: trustLabel(record2.trust), tone: trustTone(record2.trust) }),
+          /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: statusLabel(record2.status), tone: statusTone(record2.status) }),
           utility?.dead ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: "DEAD", tone: "warning" }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "memory-row__age", children: relativeAge(record.updated_at_ms) })
+          /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "memory-row__age", children: relativeAge(record2.updated_at_ms) })
         ] }),
-        utility ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "memory-row__meta memory-row__utility", children: utilityLine(record) }) : null
+        utility ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "memory-row__meta memory-row__utility", children: utilityLine(record2) }) : null
       ]
     }
   );
@@ -14230,16 +14241,16 @@ function BiographyView({
   onSelectRecord,
   onLoadEvidence
 }) {
-  const { record, chain, injections } = detail;
-  const provenance = record.provenance;
+  const { record: record2, chain, injections } = detail;
+  const provenance = record2.provenance;
   const evidence = provenance?.evidence || [];
   const verification = provenance?.verification;
-  const usage = record.usage;
-  const lane = lineageLane(chain, record.id);
-  const touchingRuns = dreamRunsTouching(dreams, record.id);
+  const usage = record2.usage;
+  const lane = lineageLane(chain, record2.id);
+  const touchingRuns = dreamRunsTouching(dreams, record2.id);
   const [evidenceState, setEvidenceState] = import_react21.default.useState(null);
   const evidenceSeqRef = import_react21.default.useRef(0);
-  const recordIdentity = record.scope.scope === "identity" ? record.scope.identity : provenance?.author?.author === "agent" ? provenance.author.identity : void 0;
+  const recordIdentity = record2.scope.scope === "identity" ? record2.scope.identity : provenance?.author?.author === "agent" ? provenance.author.identity : void 0;
   async function openEvidence(ref, index) {
     if (!onLoadEvidence) return;
     const key = evidenceKey(ref, index);
@@ -14257,24 +14268,24 @@ function BiographyView({
   return /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "memory-detail", "data-testid": "memory-detail", children: [
     /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "memory-detail__head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("button", { type: "button", className: "memory-back", onClick: onBack, "data-testid": "memory-detail-back", children: "\u2190 Back" }),
-      /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("h3", { children: record.title || record.id }),
+      /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("h3", { children: record2.title || record2.id }),
       /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("span", { className: "memory-detail__chips", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: record.kind }),
-        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: trustLabel(record.trust), tone: trustTone(record.trust) }),
-        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: statusLabel(record.status), tone: statusTone(record.status) })
+        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: record2.kind }),
+        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: trustLabel(record2.trust), tone: trustTone(record2.trust) }),
+        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: statusLabel(record2.status), tone: statusTone(record2.status) })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
         CopyButton,
         {
-          text: JSON.stringify(record, null, 2),
+          text: JSON.stringify(record2, null, 2),
           label: "Copy record JSON",
           className: "memory-copy-json"
         }
       )
     ] }),
-    record.description ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("p", { className: "memory-detail__description", children: record.description }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("pre", { className: "memory-detail__body", "data-testid": "memory-detail-body", children: record.body }),
-    record.tags && record.tags.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "memory-detail__tags", children: record.tags.map((tag) => /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: tag, tone: "muted" }, tag)) }) : null,
+    record2.description ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("p", { className: "memory-detail__description", children: record2.description }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("pre", { className: "memory-detail__body", "data-testid": "memory-detail-body", children: record2.body }),
+    record2.tags && record2.tags.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "memory-detail__tags", children: record2.tags.map((tag) => /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: tag, tone: "muted" }, tag)) }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "memory-detail__section", "data-testid": "memory-detail-born", children: [
       /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "memory-detail__label", children: "Born" }),
       /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "memory-detail__line", children: authorLine(provenance?.author) }),
@@ -14892,23 +14903,23 @@ function MemoryPanel({
         pageLoading ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "gating__empty", children: "Loading records\u2026" }) : null,
         !pageLoading && listView.records.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "gating__empty", "data-testid": "memory-records-empty", children: recordsDenied || listView.denied ? "Records: no grant." : "No memory records yet." }) : null,
         !pageLoading && listView.denied && listView.records.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(SectionNote, { testid: "memory-records-denied-note", children: "Further pages: no grant \u2014 the continuation of this query was denied for this principal." }) : null,
-        !pageLoading && listView.records.length > 0 ? listView.mode === "flat" ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "memory-group", children: listView.records.map((record) => /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
+        !pageLoading && listView.records.length > 0 ? listView.mode === "flat" ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "memory-group", children: listView.records.map((record2) => /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
           RecordRow,
           {
-            record,
+            record: record2,
             utilityMode: sortMode === "utility",
-            onSelect: () => onSelectRecord(realmOfRecord(record), record.id)
+            onSelect: () => onSelectRecord(realmOfRecord(record2), record2.id)
           },
-          record.id
+          record2.id
         )) }) : listView.groups.map((group) => /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "memory-group", "data-testid": `memory-group:${group.key}`, children: [
           /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "memory-group__label", children: group.label }),
-          group.records.map((record) => /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
+          group.records.map((record2) => /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
             RecordRow,
             {
-              record,
-              onSelect: () => onSelectRecord(realmOfRecord(record), record.id)
+              record: record2,
+              onSelect: () => onSelectRecord(realmOfRecord(record2), record2.id)
             },
-            record.id
+            record2.id
           ))
         ] }, group.key)) : null,
         listView.cursor && onQueryRecords ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
@@ -15081,25 +15092,25 @@ function MemoryPanel({
           ] }) : null,
           quarantineRecords.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "memory-group", children: [
             /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "memory-group__label", children: "Quarantined records" }),
-            quarantineRecords.map((record) => {
-              const reason = record.status.status === "quarantined" ? record.status.reason : void 0;
+            quarantineRecords.map((record2) => {
+              const reason = record2.status.status === "quarantined" ? record2.status.reason : void 0;
               return /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)(
                 "button",
                 {
                   type: "button",
                   className: "memory-row",
-                  "data-testid": `memory-quarantine-record:${record.id}`,
-                  onClick: () => onSelectRecord(realmOfRecord(record), record.id),
+                  "data-testid": `memory-quarantine-record:${record2.id}`,
+                  onClick: () => onSelectRecord(realmOfRecord(record2), record2.id),
                   children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "memory-row__title", children: record.title || record.id }),
+                    /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "memory-row__title", children: record2.title || record2.id }),
                     /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("span", { className: "memory-row__meta", children: [
                       reason ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "memory-row__reason", children: reason }) : null,
-                      /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: trustLabel(record.trust), tone: trustTone(record.trust) }),
-                      /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "memory-row__age", children: relativeAge(record.created_at_ms) })
+                      /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Chip, { label: trustLabel(record2.trust), tone: trustTone(record2.trust) }),
+                      /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "memory-row__age", children: relativeAge(record2.created_at_ms) })
                     ] })
                   ]
                 },
-                record.id
+                record2.id
               );
             })
           ] }) : null
@@ -15274,8 +15285,8 @@ function stateLabel(state) {
 function displayPeer(peer) {
   if (typeof peer === "string") return peer.split("/").pop() || peer;
   if (peer && typeof peer === "object") {
-    const record = peer;
-    const value = record.label ?? record.display_name ?? record.name ?? record.identity ?? record.member_id ?? record.id;
+    const record2 = peer;
+    const value = record2.label ?? record2.display_name ?? record2.name ?? record2.identity ?? record2.member_id ?? record2.id;
     if (typeof value === "string") return value.split("/").pop() || value;
   }
   return "";
@@ -16405,8 +16416,8 @@ var HIDDEN_HISTORY_BLOCK_TYPES = /* @__PURE__ */ new Set([
 function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function historyBlockType(record) {
-  const raw = record.block_type ?? record.type;
+function historyBlockType(record2) {
+  const raw = record2.block_type ?? record2.type;
   return typeof raw === "string" ? raw : void 0;
 }
 function sanitizeLogValue(value) {
@@ -18197,8 +18208,8 @@ function textFromValue(value) {
     return value.map(textFromValue).filter(Boolean).join(" ").trim();
   }
   if (value && typeof value === "object") {
-    const record = value;
-    const direct = record.summary ?? record.message ?? record.text ?? record.body ?? record.reply ?? record.result ?? record.content ?? record.subject ?? record.request_subject ?? record.prompt ?? record.description ?? record.token;
+    const record2 = value;
+    const direct = record2.summary ?? record2.message ?? record2.text ?? record2.body ?? record2.reply ?? record2.result ?? record2.content ?? record2.subject ?? record2.request_subject ?? record2.prompt ?? record2.description ?? record2.token;
     const text = textFromValue(direct);
     if (text) return text;
   }
@@ -18232,11 +18243,11 @@ function sessionHistoryAssistantReply(frame, data) {
   }
   const blocks = Array.isArray(message.blocks) ? message.blocks : [];
   const text = blocks.map((block) => {
-    const record = recordOf2(block);
-    const blockType = typeof record.block_type === "string" ? record.block_type : typeof record.type === "string" ? record.type : "";
+    const record2 = recordOf2(block);
+    const blockType = typeof record2.block_type === "string" ? record2.block_type : typeof record2.type === "string" ? record2.type : "";
     if (blockType !== "text") return "";
-    const blockData = recordOf2(record.data);
-    return textFromValue(blockData.text ?? record.text);
+    const blockData = recordOf2(record2.data);
+    return textFromValue(blockData.text ?? record2.text);
   }).filter(Boolean).join(" ").trim();
   return text;
 }
@@ -18666,7 +18677,270 @@ function SignalsRail({
 }
 
 // src/panels/ChatPane.tsx
+var import_react32 = __toESM(require("react"));
+
+// src/panels/VoiceBar.tsx
 var import_react31 = __toESM(require("react"));
+
+// src/lib/voice-context.ts
+var failureMessages = {
+  capture: "The agent's history could not be captured.",
+  generation: "The context summary could not be generated.",
+  timed_out: "Context preparation timed out.",
+  input_too_large: "The agent's history exceeds the context limit.",
+  output_too_large: "The context summary exceeds the size limit.",
+  empty: "The context summary was empty.",
+  stale_snapshot: "The agent's history changed before context could be supplied.",
+  unsupported: "Initial context is not supported by this voice configuration.",
+  source_read: "The agent's history could not be read.",
+  producer_panicked: "The context summary service failed.",
+  delivery_rejected: "The voice provider rejected the initial context.",
+  delivery_ambiguous: "The voice provider did not confirm the initial context.",
+  cancelled: "Initial context preparation was cancelled."
+};
+function record(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Invalid voice context status.");
+  }
+  return raw;
+}
+function exactKeys(value, keys) {
+  if (Object.keys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key))) {
+    throw new Error("Invalid voice context status.");
+  }
+}
+function isFailure(value) {
+  return typeof value === "string" && Object.hasOwn(failureMessages, value);
+}
+function parseVoiceContextStatus(raw, scope) {
+  const result = record(raw);
+  exactKeys(result, ["identity", "request_id", "channel_id", "context_preparation"]);
+  if (result.identity !== scope.identity || result.request_id !== scope.requestId || result.channel_id !== scope.channelId) throw new Error("Voice context status does not match the active call.");
+  const preparation = record(result.context_preparation);
+  switch (preparation.phase) {
+    case "not_requested":
+    case "provider_acknowledged":
+      exactKeys(preparation, ["phase"]);
+      return { phase: preparation.phase };
+    case "preparing":
+      exactKeys(preparation, ["phase", "stage"]);
+      if (preparation.stage === "capturing" || preparation.stage === "generating" || preparation.stage === "delivering") {
+        return { phase: "preparing", stage: preparation.stage };
+      }
+      break;
+    case "failed":
+      exactKeys(preparation, ["phase", "reason"]);
+      if (isFailure(preparation.reason)) return { phase: "failed", reason: preparation.reason };
+      break;
+  }
+  throw new Error("Invalid voice context status.");
+}
+function voiceContextFailureMessage(reason) {
+  return `${failureMessages[reason]} Voice remains connected. End voice and start again to retry.`;
+}
+
+// src/panels/VoiceBar.tsx
+var import_jsx_runtime41 = require("react/jsx-runtime");
+function Glyph({ name }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "voice-glyph", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(Icon, { name }) });
+}
+function VoiceButton({
+  agentLabel,
+  active = false,
+  disabled = false,
+  onClick
+}) {
+  const label = active ? `End voice with ${agentLabel}` : `Start voice with ${agentLabel}`;
+  return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+    "button",
+    {
+      type: "button",
+      className: "composer__voice",
+      "aria-label": label,
+      "aria-pressed": active,
+      title: label,
+      disabled,
+      onClick,
+      "data-testid": "voice-start",
+      children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(Glyph, { name: "i-voice" })
+    }
+  );
+}
+function AudioWaveform({
+  source,
+  sampleWaveform,
+  active
+}) {
+  const canvasRef = import_react31.default.useRef(null);
+  import_react31.default.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const samples = new Float32Array(512);
+    const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let frame = 0;
+    let lastDraw = -Infinity;
+    let width = 0;
+    let height = 0;
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      width = rect.width;
+      height = rect.height;
+      const scale = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(width * scale);
+      canvas.height = Math.round(height * scale);
+      context.setTransform(scale, 0, 0, scale, 0, 0);
+    };
+    const draw = (now) => {
+      frame = window.requestAnimationFrame(draw);
+      if (document.hidden || now - lastDraw < (motionQuery.matches ? 125 : 33)) return;
+      lastDraw = now;
+      if (!width || !height) return;
+      samples.fill(0);
+      if (active) sampleWaveform(source, samples);
+      const color = getComputedStyle(canvas).color;
+      context.clearRect(0, 0, width, height);
+      const middle = height / 2;
+      context.strokeStyle = color;
+      context.globalAlpha = 0.18;
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(0, middle);
+      context.lineTo(width, middle);
+      context.stroke();
+      context.globalAlpha = 1;
+      context.lineWidth = 1.7;
+      context.lineJoin = "round";
+      context.beginPath();
+      for (let index = 0; index < samples.length; index += 1) {
+        const x = index * width / (samples.length - 1);
+        const amplitude = Math.max(-1, Math.min(1, samples[index] * 2.4));
+        const y = middle - amplitude * (middle - 3);
+        if (index === 0) context.moveTo(x, y);
+        else context.lineTo(x, y);
+      }
+      context.stroke();
+    };
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(canvas);
+    frame = window.requestAnimationFrame(draw);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [active, sampleWaveform, source]);
+  return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("canvas", { className: `voice-waveform voice-waveform--${source}`, ref: canvasRef, "aria-hidden": "true" });
+}
+function VoiceBar({
+  state,
+  sampleWaveform,
+  onClose,
+  onToggleMicrophone,
+  onToggleSpeaker
+}) {
+  if (!state.target && !state.error && !state.notice) return null;
+  const active = state.phase === "active";
+  const transitioning = state.phase === "requesting" || state.phase === "connecting";
+  const status = state.phase === "requesting" ? "Allow microphone access" : state.phase === "connecting" ? state.connectionStage === "opening" ? "Starting voice" : state.connectionStage === "recovery" ? "Reconnecting" : "Connecting audio" : state.phase === "closing" ? "Ending voice" : active ? state.reconnecting ? "Reconnecting" : state.microphoneMuted ? "Microphone muted" : "Listening" : "Voice ended";
+  const preparation = state.contextPreparation;
+  const contextLabel = !active || preparation === void 0 ? null : state.contextStatusError ? "Context status unavailable" : preparation === null ? "Checking context" : preparation.phase === "preparing" ? { capturing: "Reading context", generating: "Preparing context", delivering: "Sending context" }[preparation.stage] : preparation.phase === "provider_acknowledged" ? "Context supplied" : preparation.phase === "not_requested" ? "No summary pending" : "Context unavailable";
+  const contextMessage = !active ? null : state.contextStatusError ?? (preparation?.phase === "failed" ? voiceContextFailureMessage(preparation.reason) : null);
+  return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+    "section",
+    {
+      className: "voice-bar",
+      "aria-label": state.target ? `Voice with ${state.target.label}` : "Voice",
+      "data-testid": "voice-bar",
+      "data-phase": state.phase,
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__header", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__heading", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "voice-bar__indicator", "aria-hidden": "true" }),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__titles", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "voice-bar__name", title: state.target?.label, children: state.target ? /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
+                "Voice with ",
+                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("strong", { children: state.target.label })
+              ] }) : "Voice" }),
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "voice-bar__status", role: "status", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: status }),
+                contextLabel && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+                  "span",
+                  {
+                    className: "voice-bar__context",
+                    title: preparation?.phase === "provider_acknowledged" ? "The voice provider acknowledged the initial context. This does not confirm recall or speech completion." : preparation?.phase === "not_requested" ? "No concurrent context preparation was requested for this call." : void 0,
+                    children: contextLabel
+                  }
+                )
+              ] })
+            ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__controls", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+              "button",
+              {
+                className: "voice-bar__control",
+                type: "button",
+                "aria-label": state.microphoneMuted ? "Unmute microphone" : "Mute microphone",
+                title: state.microphoneMuted ? "Unmute microphone" : "Mute microphone",
+                "aria-pressed": state.microphoneMuted,
+                disabled: !active,
+                onClick: onToggleMicrophone,
+                children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(Glyph, { name: state.microphoneMuted ? "i-mic-off" : "i-mic" })
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+              "button",
+              {
+                className: "voice-bar__control",
+                type: "button",
+                "aria-label": state.speakerMuted ? "Unmute speakers" : "Mute speakers",
+                title: state.speakerMuted ? "Unmute speakers" : "Mute speakers",
+                "aria-pressed": state.speakerMuted,
+                disabled: !active,
+                onClick: onToggleSpeaker,
+                children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(Glyph, { name: state.speakerMuted ? "i-speaker-off" : "i-speaker" })
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "voice-bar__separator", "aria-hidden": "true" }),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+              "button",
+              {
+                className: "voice-bar__control voice-bar__control--close",
+                type: "button",
+                "aria-label": active || transitioning ? "End voice conversation" : "Dismiss voice",
+                title: active || transitioning ? "End voice conversation" : "Dismiss voice",
+                onClick: onClose,
+                disabled: state.phase === "closing",
+                children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(Glyph, { name: "i-close" })
+              }
+            )
+          ] })
+        ] }),
+        (active || transitioning) && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__channels", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__channel", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__channel-label", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "You" }),
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: state.microphoneMuted ? "Muted" : "Microphone" })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(AudioWaveform, { source: "microphone", sampleWaveform, active: active && !state.microphoneMuted })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__channel", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "voice-bar__channel-label", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "Agent" }),
+              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: state.speakerMuted ? "Speakers muted" : "Live audio" })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(AudioWaveform, { source: "speaker", sampleWaveform, active })
+          ] })
+        ] }),
+        state.error && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("p", { className: "voice-bar__message voice-bar__message--error", role: "alert", children: state.error }),
+        contextMessage && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("p", { className: "voice-bar__message voice-bar__message--error", role: "alert", children: contextMessage }),
+        state.notice && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("p", { className: "voice-bar__message", role: "status", children: state.notice })
+      ]
+    }
+  );
+}
 
 // src/lib/composer-attachment-text.ts
 function composerImageFileKey(file) {
@@ -18738,7 +19012,7 @@ function stripConsoleBlobReferencesFromText(value, references = consoleBlobRefer
 }
 
 // src/panels/ChatPane.tsx
-var import_jsx_runtime41 = require("react/jsx-runtime");
+var import_jsx_runtime42 = require("react/jsx-runtime");
 var ALLOWED_IMAGE_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 var MAX_ATTACHMENTS = 4;
 var MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -19082,9 +19356,9 @@ function CopyInlineButton({
   label,
   className = ""
 }) {
-  const [outcome, setOutcome] = import_react31.default.useState("idle");
-  const resetTimer = import_react31.default.useRef(null);
-  import_react31.default.useEffect(
+  const [outcome, setOutcome] = import_react32.default.useState("idle");
+  const resetTimer = import_react32.default.useRef(null);
+  import_react32.default.useEffect(
     () => () => {
       if (resetTimer.current) clearTimeout(resetTimer.current);
     },
@@ -19099,7 +19373,7 @@ function CopyInlineButton({
     resetTimer.current = setTimeout(() => setOutcome("idle"), 1400);
   }
   const title = outcome === "copied" ? "Copied" : outcome === "failed" ? "Copy failed" : label;
-  return /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
     "button",
     {
       "aria-label": title,
@@ -19143,25 +19417,29 @@ function ChatPane({
   isLoadingHistory = false,
   onLoadOlder,
   stackSlot,
+  voiceSlot,
+  onVoiceToggle,
+  voiceActive = false,
+  voiceDisabled = false,
   workGraphActions = null
 }) {
-  const bodyRef = import_react31.default.useRef(null);
-  const preserveOlderHistoryScrollRef = import_react31.default.useRef(false);
-  const olderHistoryScrollHeightRef = import_react31.default.useRef(0);
-  const olderHistoryScrollTopRef = import_react31.default.useRef(0);
-  const activeTurnFrameRef = import_react31.default.useRef(0);
-  const [visibleTurnIndexes, setVisibleTurnIndexes] = import_react31.default.useState([]);
-  const messages = import_react31.default.useMemo(() => {
+  const bodyRef = import_react32.default.useRef(null);
+  const preserveOlderHistoryScrollRef = import_react32.default.useRef(false);
+  const olderHistoryScrollHeightRef = import_react32.default.useRef(0);
+  const olderHistoryScrollTopRef = import_react32.default.useRef(0);
+  const activeTurnFrameRef = import_react32.default.useRef(0);
+  const [visibleTurnIndexes, setVisibleTurnIndexes] = import_react32.default.useState([]);
+  const messages = import_react32.default.useMemo(() => {
     return buildChatMessages(entries);
   }, [entries]);
-  const turns = import_react31.default.useMemo(() => buildChatTurns(messages), [messages]);
-  const lastAgentMessageId = import_react31.default.useMemo(() => {
+  const turns = import_react32.default.useMemo(() => buildChatTurns(messages), [messages]);
+  const lastAgentMessageId = import_react32.default.useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       if (messages[i].kind === "agent") return messages[i].id;
     }
     return null;
   }, [messages]);
-  const scrollSignature = import_react31.default.useMemo(() => {
+  const scrollSignature = import_react32.default.useMemo(() => {
     const last = messages[messages.length - 1];
     const lastTextLength = last?.text?.length ?? 0;
     const lastBlockLength = last?.blocks ? JSON.stringify(last.blocks).length : last?.workGraphEntry ? JSON.stringify(last.workGraphEntry).length : 0;
@@ -19174,7 +19452,7 @@ function ChatPane({
       phase ?? ""
     ].join(":");
   }, [identity, messages, phase]);
-  import_react31.default.useLayoutEffect(() => {
+  import_react32.default.useLayoutEffect(() => {
     if (preserveOlderHistoryScrollRef.current && bodyRef.current) {
       const node = bodyRef.current;
       const addedHeight = node.scrollHeight - olderHistoryScrollHeightRef.current;
@@ -19197,12 +19475,12 @@ function ChatPane({
       window.cancelAnimationFrame(secondFrame);
     };
   }, [scrollSignature]);
-  import_react31.default.useEffect(() => {
+  import_react32.default.useEffect(() => {
     if (!loadingOlderHistory && preserveOlderHistoryScrollRef.current) {
       preserveOlderHistoryScrollRef.current = false;
     }
   }, [loadingOlderHistory]);
-  const updateActiveTurn = import_react31.default.useCallback(() => {
+  const updateActiveTurn = import_react32.default.useCallback(() => {
     activeTurnFrameRef.current = 0;
     const body = bodyRef.current;
     if (!body || turns.length <= 1) {
@@ -19243,16 +19521,16 @@ function ChatPane({
       return nextIndexes;
     });
   }, [turns.length]);
-  const scheduleActiveTurnUpdate = import_react31.default.useCallback(() => {
+  const scheduleActiveTurnUpdate = import_react32.default.useCallback(() => {
     if (activeTurnFrameRef.current) {
       return;
     }
     activeTurnFrameRef.current = window.requestAnimationFrame(updateActiveTurn);
   }, [updateActiveTurn]);
-  import_react31.default.useEffect(() => {
+  import_react32.default.useEffect(() => {
     scheduleActiveTurnUpdate();
   }, [scheduleActiveTurnUpdate, scrollSignature]);
-  import_react31.default.useEffect(() => {
+  import_react32.default.useEffect(() => {
     updateActiveTurn();
     window.addEventListener("resize", scheduleActiveTurnUpdate);
     return () => {
@@ -19277,17 +19555,17 @@ function ChatPane({
     }
     onLoadOlder?.();
   }
-  const transcriptText = import_react31.default.useMemo(() => transcriptCopyText(messages), [messages]);
+  const transcriptText = import_react32.default.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
   const canAttachImages = !readOnly && agent?.model_capabilities?.image_input === true;
   const sendWithheld = accessEnforcing && agent?.affordances?.can_send_message === false;
-  const [dragActive, setDragActive] = import_react31.default.useState(false);
-  const [attachmentError, setAttachmentError] = import_react31.default.useState(null);
-  const resolvedDraftBlobRefs = import_react31.default.useRef("");
-  const railRef = import_react31.default.useRef(null);
-  const [railHeight, setRailHeight] = import_react31.default.useState(null);
-  import_react31.default.useEffect(() => {
+  const [dragActive, setDragActive] = import_react32.default.useState(false);
+  const [attachmentError, setAttachmentError] = import_react32.default.useState(null);
+  const resolvedDraftBlobRefs = import_react32.default.useRef("");
+  const railRef = import_react32.default.useRef(null);
+  const [railHeight, setRailHeight] = import_react32.default.useState(null);
+  import_react32.default.useEffect(() => {
     const nav = railRef.current;
     if (!nav || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries2) => {
@@ -19299,9 +19577,9 @@ function ChatPane({
     return () => observer.disconnect();
   }, [turns.length > 1]);
   const railWindow = windowTurnRail(turns.length, railHeight);
-  const turnRail = turns.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("nav", { className: "conv-turn-rail", "aria-label": "Conversation turns", ref: railRef, children: /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("ol", { className: "conv-turn-rail__list", children: [
-    railWindow.overflow > 0 && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("li", { className: "conv-turn-rail__item", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+  const turnRail = turns.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("nav", { className: "conv-turn-rail", "aria-label": "Conversation turns", ref: railRef, children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("ol", { className: "conv-turn-rail__list", children: [
+    railWindow.overflow > 0 && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("li", { className: "conv-turn-rail__item", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
         "button",
         {
           "aria-label": `Jump to the ${railWindow.overflow} earlier turns`,
@@ -19314,7 +19592,7 @@ function ChatPane({
             }
           },
           type: "button",
-          children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+          children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
             "span",
             {
               className: "conv-turn-rail__tick conv-turn-rail__tick--overflow",
@@ -19323,20 +19601,20 @@ function ChatPane({
           )
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "conv-turn-preview__title", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv-turn-preview__title", children: [
           railWindow.overflow,
           " earlier turns"
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "conv-turn-preview__body", children: "Jump to the start of the visible history." })
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "conv-turn-preview__body", children: "Jump to the start of the visible history." })
       ] })
     ] }, "rail-overflow"),
     turns.slice(railWindow.start).map((turn, railIndex) => {
       const turnIndex = railWindow.start + railIndex;
       const preview = chatTurnPreview(turn);
       const isVisibleTurn = visibleTurnIndexes.includes(turnIndex);
-      return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("li", { className: "conv-turn-rail__item", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("li", { className: "conv-turn-rail__item", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
           "button",
           {
             "aria-current": isVisibleTurn ? "true" : void 0,
@@ -19350,12 +19628,12 @@ function ChatPane({
               }
             },
             type: "button",
-            children: /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "conv-turn-rail__tick", "aria-hidden": "true" })
+            children: /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "conv-turn-rail__tick", "aria-hidden": "true" })
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "conv-turn-preview__title", children: preview.title }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "conv-turn-preview__body", children: preview.body })
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "conv-turn-preview__title", children: preview.title }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "conv-turn-preview__body", children: preview.body })
         ] })
       ] }, turn.id);
     })
@@ -19408,7 +19686,7 @@ function ChatPane({
       return current.filter((item) => item.id !== id);
     });
   }
-  import_react31.default.useEffect(() => {
+  import_react32.default.useEffect(() => {
     if (!canAttachImages) return;
     const refs = consoleBlobReferencesFromText(draft);
     if (refs.length === 0) {
@@ -19466,23 +19744,23 @@ function ChatPane({
       setAttachmentError("send failed; images retained");
     }
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "conv__head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "conv__avatar", children: initial }),
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { style: { minWidth: 0 }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "conv__title", children: agentLabel }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "conv__identity", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "conv__avatar", children: initial }),
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { style: { minWidth: 0 }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "conv__title", children: agentLabel }),
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv__identity", children: [
           identity,
           agent?.role ? ` \xB7 ${agent.role}` : ""
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "conv__actions", children: [
-        onInspect ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("button", { className: "conv__action", onClick: onInspect, "data-testid": "conv-action:details", children: inspectLabel }) : null,
-        agent?.affordances?.can_respawn && onRespawn ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("button", { className: "conv__action", onClick: onRespawn, "data-testid": "conv-action:respawn", children: respawnLabel }) : null,
-        agent?.affordances?.can_retire && onRetire ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", children: retireLabel }) : null
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "conv__actions", children: [
+        onInspect ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "conv__action", onClick: onInspect, "data-testid": "conv-action:details", children: inspectLabel }) : null,
+        agent?.affordances?.can_respawn && onRespawn ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "conv__action", onClick: onRespawn, "data-testid": "conv-action:respawn", children: respawnLabel }) : null,
+        agent?.affordances?.can_retire && onRetire ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", children: retireLabel }) : null
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
       "div",
       {
         className: "conv__body",
@@ -19497,7 +19775,7 @@ function ChatPane({
         },
         ref: bodyRef,
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
             CopyInlineButton,
             {
               className: "msg__copy--transcript",
@@ -19505,7 +19783,7 @@ function ChatPane({
               text: transcriptText
             }
           ),
-          hasOlderHistory && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+          hasOlderHistory && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
             "button",
             {
               className: "conv__history",
@@ -19515,7 +19793,7 @@ function ChatPane({
               children: loadingOlderHistory ? "Loading history" : "Load older history"
             }
           ),
-          messages.length === 0 && isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+          messages.length === 0 && isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
             "div",
             {
               className: "msg msg--origin",
@@ -19523,50 +19801,50 @@ function ChatPane({
               "aria-live": "polite",
               "aria-busy": "true",
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "msg__time" }),
-                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "msg__typing", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {})
+                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time" }),
+                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {})
                   ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "msg__typing-label", children: "Loading conversation\u2026" })
+                  /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__typing-label", children: "Loading conversation\u2026" })
                 ] }) })
               ]
             }
           ),
-          messages.length === 0 && !isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "msg msg--origin", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "msg__time" }),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "msg__text", children: [
+          messages.length === 0 && !isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "msg msg--origin", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time" }),
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__text", children: [
               "No messages yet. Say hello to ",
               agentLabel,
               "."
             ] }) })
           ] }),
-          turns.map((turn, turnIndex) => /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+          turns.map((turn, turnIndex) => /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
             "div",
             {
               "aria-label": `Turn ${turnIndex + 1}`,
               className: "conv-turn",
               "data-chat-turn-index": turnIndex,
               "data-testid": `chat-turn:${identity}:${turnIndex}`,
-              children: turn.messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "msg__time", children: m.time }),
-                /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "msg__bubble", children: [
-                  (m.kind === "user" || m.kind === "agent") && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(CopyInlineButton, { label: `Copy ${m.kind === "user" ? "message" : "turn"}`, text: msgCopyText(m) }),
+              children: turn.messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time", children: m.time }),
+                /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "msg__bubble", children: [
+                  (m.kind === "user" || m.kind === "agent") && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(CopyInlineButton, { label: `Copy ${m.kind === "user" ? "message" : "turn"}`, text: msgCopyText(m) }),
                   m.kind === "council" && m.councilEntry ? (
                     // No actions prop: council participants are destroyed
                     // before the tool returns, so the card is observational
                     // by construction.
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(CouncilCard, { entry: m.councilEntry })
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(CouncilCard, { entry: m.councilEntry })
                   ) : null,
-                  m.kind === "workgraph" && m.workGraphEntry ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(WorkGraphCard, { entry: m.workGraphEntry, actions: workGraphActions }) : m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(ConversationRichContent, { blocks: m.blocks, displayNormalization: false }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "msg__text", children: m.text }),
-                  m.workedFor && !(phase && m.id === lastAgentMessageId) && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "msg__worked", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { children: [
+                  m.kind === "workgraph" && m.workGraphEntry ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(WorkGraphCard, { entry: m.workGraphEntry, actions: workGraphActions }) : m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(ConversationRichContent, { blocks: m.blocks, displayNormalization: false }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__text", children: m.text }),
+                  m.workedFor && !(phase && m.id === lastAgentMessageId) && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "msg__worked", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { children: [
                       "Worked for ",
                       m.workedFor
                     ] }),
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
                       CopyInlineButton,
                       {
                         className: "msg__copy--inline",
@@ -19580,7 +19858,7 @@ function ChatPane({
             },
             turn.id
           )),
-          phase && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+          phase && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
             "div",
             {
               className: "msg msg--typing",
@@ -19588,14 +19866,14 @@ function ChatPane({
               "aria-live": "polite",
               "aria-label": `${agentLabel} is ${phaseLabel(phase)}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "msg__time" }),
-                /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "msg__typing", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", {})
+                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__time" }),
+                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {})
                   ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase) })
+                  /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase) })
                 ] }) })
               ]
             }
@@ -19605,8 +19883,9 @@ function ChatPane({
     ),
     turnRail,
     stackSlot,
-    /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "composer", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "composer", children: [
+      voiceSlot,
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
         "div",
         {
           className: `composer__shell${dragActive && canAttachImages ? " is-drag-active" : ""}`,
@@ -19644,14 +19923,14 @@ function ChatPane({
             }
           },
           children: [
-            staged.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { className: "composer__attachments", children: staged.map((item) => /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "composer__attachment", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("img", { alt: "", src: item.previewUrl }),
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("button", { "aria-label": "Remove attachment", onClick: () => removeAttachment(item.id), type: "button", children: "\xD7" })
+            staged.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "composer__attachments", children: staged.map((item) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "composer__attachment", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("img", { alt: "", src: item.previewUrl }),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("button", { "aria-label": "Remove attachment", onClick: () => removeAttachment(item.id), type: "button", children: "\xD7" })
             ] }, item.id)) }),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
               "textarea",
               {
-                placeholder: readOnly ? "View-only console" : sendWithheld ? `You can view ${agentLabel} but not message it` : `Message ${agentLabel}\u2026`,
+                placeholder: readOnly ? "View-only console" : sendWithheld ? `You can view ${agentLabel} but not message it` : voiceActive ? `Message ${agentLabel} (background agent)\u2026` : `Message ${agentLabel}\u2026`,
                 value: draft,
                 disabled: readOnly || sendWithheld,
                 onChange: (e) => {
@@ -19667,10 +19946,19 @@ function ChatPane({
                 "data-testid": `chat-composer:${identity}`
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "composer__row", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "composer__chip mono", children: agent?.role || "agent" }),
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "composer__spacer" }),
-              /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(
+            /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "composer__row", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "composer__chip mono", children: agent?.role || "agent" }),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "composer__spacer" }),
+              onVoiceToggle && !readOnly && !sendWithheld && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+                VoiceButton,
+                {
+                  agentLabel,
+                  active: voiceActive,
+                  disabled: voiceDisabled,
+                  onClick: onVoiceToggle
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
                 "button",
                 {
                   className: "composer__send",
@@ -19687,41 +19975,42 @@ function ChatPane({
           ]
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("div", { className: "composer__footer", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)("span", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "composer__footer", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("span", { children: [
           "To: ",
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("b", { style: { color: "var(--ink-muted)" }, children: agentLabel })
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("b", { style: { color: "var(--ink-muted)" }, children: agentLabel })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "mono", children: identity }),
-        agent?.role && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: agent.role })
+        voiceActive && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7 text to background agent" }),
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "mono", children: identity }),
+        agent?.role && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: agent.role })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { className: "dot", style: {
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "dot", style: {
           background: state === "active" || state === "running" ? "var(--ok)" : state.includes("degrade") ? "var(--warn)" : state === "retired" ? "var(--ink-faint)" : "var(--ink-dim)"
         } }),
-        /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: state }),
-        phase && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { style: { color: "var(--accent)" }, children: phase })
+        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: state }),
+        phase && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { style: { color: "var(--accent)" }, children: phase })
         ] }),
-        readOnly && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "view only" })
+        readOnly && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "view only" })
         ] }),
-        !readOnly && sendWithheld && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "send not permitted" })
+        !readOnly && sendWithheld && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "send not permitted" })
         ] }),
-        !readOnly && !canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "model cannot see images" })
+        !readOnly && !canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "model cannot see images" })
         ] }),
-        attachmentError && /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { style: { color: "var(--bad)" }, children: attachmentError })
+        attachmentError && /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { style: { color: "var(--bad)" }, children: attachmentError })
         ] })
       ] })
     ] })
@@ -19729,8 +20018,8 @@ function ChatPane({
 }
 
 // src/panels/MobKitDock.tsx
-var import_react32 = __toESM(require("react"));
-var import_jsx_runtime42 = require("react/jsx-runtime");
+var import_react33 = __toESM(require("react"));
+var import_jsx_runtime43 = require("react/jsx-runtime");
 function tabPanelCount(node) {
   if (!node) return 0;
   if (node.kind === "panel") return 1;
@@ -19751,7 +20040,7 @@ function MobKitDock({
   onOpenTargetInPanel
 }) {
   const activeTab = viewState.tabs.find((t) => t.id === viewState.activeTabId) || viewState.tabs[0];
-  import_react32.default.useEffect(() => {
+  import_react33.default.useEffect(() => {
     function onKey(e) {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
@@ -19786,22 +20075,22 @@ function MobKitDock({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [viewState, onSplitPanel, onClosePanel, onCreateTab, onSelectTab]);
-  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "mkdock", "data-testid": "mkdock", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "wstabs", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "mkdock", "data-testid": "mkdock", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "wstabs", children: [
       viewState.tabs.map((t) => {
         const isActive = t.id === activeTab?.id;
         const count = tabPanelCount(t.layout);
-        return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+        return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
           "div",
           {
             className: `wstab ${isActive ? "is-active" : ""}`,
             onClick: () => onSelectTab(t.id),
             "data-testid": `wstab:${t.id}`,
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "wstab__mark" }),
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "wstab__name", children: t.title || "untitled" }),
-              count > 1 && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "wstab__count", children: count }),
-              viewState.tabs.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "wstab__mark" }),
+              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "wstab__name", children: t.title || "untitled" }),
+              count > 1 && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "wstab__count", children: count }),
+              viewState.tabs.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
                 "button",
                 {
                   className: "wstab__close",
@@ -19819,7 +20108,7 @@ function MobKitDock({
           t.id
         );
       }),
-      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
         "button",
         {
           className: "wstab__add",
@@ -19831,7 +20120,7 @@ function MobKitDock({
         }
       )
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "dock", children: activeTab && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "dock", children: activeTab && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
       DockLayout,
       {
         node: activeTab.layout,
@@ -19851,9 +20140,9 @@ function MobKitDock({
 function DockLayout(props) {
   const { node } = props;
   if (node.kind === "panel") {
-    return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(PaneView, { panelId: node.panelId, ...props });
+    return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(PaneView, { panelId: node.panelId, ...props });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(SplitView, { node, ...props });
+  return /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(SplitView, { node, ...props });
 }
 function SplitView(props) {
   const { node } = props;
@@ -19861,7 +20150,7 @@ function SplitView(props) {
   const ratio = typeof node.ratio === "number" ? Math.max(0.1, Math.min(0.9, node.ratio)) : 0.5;
   const direction = node.direction;
   const style = direction === "horizontal" ? { gridTemplateColumns: `${ratio * 100}% 6px ${(1 - ratio) * 100}%` } : { gridTemplateRows: `${ratio * 100}% 6px ${(1 - ratio) * 100}%` };
-  const hostRef = import_react32.default.useRef(null);
+  const hostRef = import_react33.default.useRef(null);
   function startDrag(e) {
     e.preventDefault();
     const host = hostRef.current;
@@ -19881,15 +20170,15 @@ function SplitView(props) {
     window.addEventListener("pointerup", end);
     window.addEventListener("pointercancel", end);
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
     "div",
     {
       ref: hostRef,
       className: `split split--${direction === "horizontal" ? "h" : "v"}`,
       style,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(DockLayout, { ...props, node: node.first }),
-        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(DockLayout, { ...props, node: node.first }),
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
           "div",
           {
             className: `split__handle split__handle--${direction === "horizontal" ? "h" : "v"}`,
@@ -19897,7 +20186,7 @@ function SplitView(props) {
             "data-testid": `split-handle:${node.id}`
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(DockLayout, { ...props, node: node.second })
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(DockLayout, { ...props, node: node.second })
       ]
     }
   );
@@ -19919,16 +20208,16 @@ function PaneView({
   const title = panel.title || panel.target?.title || "untitled";
   const target = panel.target;
   const subId = target?.kind === "agent-chat" ? target.identity || target.memberId : target?.kind === "identity-inspect" ? target.identity : void 0;
-  const [menuOpen, setMenuOpen] = import_react32.default.useState(false);
-  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+  const [menuOpen, setMenuOpen] = import_react33.default.useState(false);
+  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
     "div",
     {
       className: `pane ${isFocused ? "is-focused" : ""}`,
       onMouseDown: () => onFocusPanel(panelId),
       "data-testid": `pane:${panelId}`,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "pane__bar", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "pane__bar", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
             "button",
             {
               className: "pane__title",
@@ -19940,14 +20229,14 @@ function PaneView({
               "data-testid": `pane-title:${panelId}`,
               title: "Retarget pane",
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "pane__title-text", children: title }),
-                /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "pane__caret", children: "\u25BE" })
+                /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "pane__title-text", children: title }),
+                /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "pane__caret", children: "\u25BE" })
               ]
             }
           ),
-          subId && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "pane__id", children: subId }),
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "pane__spacer" }),
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+          subId && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "pane__id", children: subId }),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "pane__spacer" }),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
             "button",
             {
               className: "pane__btn",
@@ -19960,7 +20249,7 @@ function PaneView({
               children: "\u25E8"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
             "button",
             {
               className: "pane__btn",
@@ -19973,7 +20262,7 @@ function PaneView({
               children: "\u2B13"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
             "button",
             {
               className: "pane__btn pane__close",
@@ -19986,7 +20275,7 @@ function PaneView({
               children: "\xD7"
             }
           ),
-          menuOpen && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+          menuOpen && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
             PaneMenu,
             {
               agents,
@@ -19999,7 +20288,7 @@ function PaneView({
             }
           )
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "pane__body", children: renderPanelBody({ id: panelId, target }) })
+        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "pane__body", children: renderPanelBody({ id: panelId, target }) })
       ]
     }
   );
@@ -20014,27 +20303,27 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
     ["logs", "Logs"],
     ["health", "Health"]
   ].filter(([kind]) => !visibleControls || visibleControls.includes(kind));
-  return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "pane-menu__scrim", onMouseDown: onClose }),
-    /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { className: "pane-menu", onMouseDown: (e) => e.stopPropagation(), children: [
-      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "pane-menu__label", children: "Views" }),
-      controls.map(([kind, label]) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(import_jsx_runtime43.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "pane-menu__scrim", onMouseDown: onClose }),
+    /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "pane-menu", onMouseDown: (e) => e.stopPropagation(), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "pane-menu__label", children: "Views" }),
+      controls.map(([kind, label]) => /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
         "button",
         {
           className: "pane-menu__item",
           onClick: () => onPick(buildControlTarget2(kind)),
           "data-testid": `pane-menu-view:${kind}`,
           children: [
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: label }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "pane-menu__id", children: "view" })
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { children: label }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "pane-menu__id", children: "view" })
           ]
         },
         kind
       )),
-      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "pane-menu__sep" }),
-      /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "pane-menu__label", children: "Agents" }),
-      agents.slice(0, 14).map((a) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "pane-menu__sep" }),
+      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { className: "pane-menu__label", children: "Agents" }),
+      agents.slice(0, 14).map((a) => /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
         "button",
         {
           className: "pane-menu__item",
@@ -20042,9 +20331,9 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
           onClick: () => onPick(buildDockTarget2(a)),
           "data-testid": `pane-menu-agent:${a.member_id}`,
           children: [
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "agent__dot" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { children: a.label }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { className: "pane-menu__id", children: a.identity || a.member_id })
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "agent__dot" }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { children: a.label }),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "pane-menu__id", children: a.identity || a.member_id })
           ]
         },
         a.member_id
@@ -20054,8 +20343,8 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
 }
 
 // src/panels/PendingStack.tsx
-var import_react33 = __toESM(require("react"));
-var import_jsx_runtime43 = require("react/jsx-runtime");
+var import_react34 = __toESM(require("react"));
+var import_jsx_runtime44 = require("react/jsx-runtime");
 function StackHead({
   count,
   agentBusy,
@@ -20063,8 +20352,8 @@ function StackHead({
   onToggleCollapsed,
   onClear
 }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "stack__head", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "stack__head", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
       "button",
       {
         type: "button",
@@ -20073,18 +20362,18 @@ function StackHead({
         "aria-expanded": !collapsed,
         "aria-label": collapsed ? "Expand pending queue" : "Collapse pending queue",
         title: collapsed ? "Expand queue" : "Collapse queue",
-        children: /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stack__head-chev", children: collapsed ? "\u25B8" : "\u25BE" })
+        children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stack__head-chev", children: collapsed ? "\u25B8" : "\u25BE" })
       }
     ),
-    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { children: "Queue" }),
-    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stack__head-count", children: String(count).padStart(2, "0") }),
-    !collapsed && count > 1 && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stack__head-hint", children: "\xB7 drains top \u2192 bottom" }),
-    /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stack__head-spacer" }),
-    /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { className: `stack__head-phase ${agentBusy ? "" : "is-idle"}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("b", {}),
+    /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { children: "Queue" }),
+    /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stack__head-count", children: String(count).padStart(2, "0") }),
+    !collapsed && count > 1 && /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stack__head-hint", children: "\xB7 drains top \u2192 bottom" }),
+    /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stack__head-spacer" }),
+    /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("span", { className: `stack__head-phase ${agentBusy ? "" : "is-idle"}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("b", {}),
       agentBusy ? "Agent busy" : "Agent idle \xB7 draining"
     ] }),
-    count > 0 && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+    count > 0 && /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
       "button",
       {
         type: "button",
@@ -20122,9 +20411,9 @@ function StackItem({
   onDrop,
   onDragEnd
 }) {
-  const taRef = import_react33.default.useRef(null);
-  const [draft, setDraft] = import_react33.default.useState(item.text);
-  import_react33.default.useEffect(() => {
+  const taRef = import_react34.default.useRef(null);
+  const [draft, setDraft] = import_react34.default.useState(item.text);
+  import_react34.default.useEffect(() => {
     if (item.editing && taRef.current) {
       taRef.current.focus();
       const len = taRef.current.value.length;
@@ -20133,7 +20422,7 @@ function StackItem({
       taRef.current.style.height = taRef.current.scrollHeight + "px";
     }
   }, [item.editing]);
-  import_react33.default.useEffect(() => {
+  import_react34.default.useEffect(() => {
     setDraft(item.text);
   }, [item.text, item.editing]);
   const handleEditKey = (e) => {
@@ -20158,7 +20447,7 @@ function StackItem({
     dropHint === "below" ? "drop-target drop-below" : ""
   ].filter(Boolean).join(" ");
   const longText = item.text.length > 90 || /\n/.test(item.text);
-  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
     "li",
     {
       className: cls,
@@ -20180,19 +20469,19 @@ function StackItem({
         }
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "stk-item__lead", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { className: "stk-item__grip", "aria-label": "Drag to reorder", title: "Drag to reorder", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", {})
+        /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "stk-item__lead", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("span", { className: "stk-item__grip", "aria-label": "Drag to reorder", title: "Drag to reorder", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {})
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-item__queue-glyph", "aria-hidden": "true", children: "\u2935" })
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-item__queue-glyph", "aria-hidden": "true", children: "\u2935" })
         ] }),
-        item.editing ? /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "stk-item__edit", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+        item.editing ? /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "stk-item__edit", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
             "textarea",
             {
               ref: taRef,
@@ -20208,19 +20497,19 @@ function StackItem({
               "data-testid": `pending-item-edit:${item.id}`
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "stk-item__edit-row", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-kbd", children: "Esc" }),
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "stk-item__edit-row", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("span", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-kbd", children: "Esc" }),
               " cancel"
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("span", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-kbd", children: "\u21B5" }),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("span", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-kbd", children: "\u21B5" }),
               " save \xB7 ",
-              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-kbd", children: "\u21E7\u21B5" }),
+              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-kbd", children: "\u21E7\u21B5" }),
               " newline"
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-item__edit-spacer" }),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-item__edit-spacer" }),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
               "button",
               {
                 type: "button",
@@ -20229,7 +20518,7 @@ function StackItem({
                 children: "Cancel"
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
               "button",
               {
                 type: "button",
@@ -20239,8 +20528,8 @@ function StackItem({
               }
             )
           ] })
-        ] }) : /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "stk-item__body", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "stk-item__body", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
             "div",
             {
               className: `stk-item__text ${item.expanded ? "stk-item__text--expanded" : ""}`,
@@ -20250,14 +20539,14 @@ function StackItem({
               children: item.text
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "stk-item__meta", children: [
-            isHead && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-item__head-tag", children: "Next" }),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { children: timeAgo(item.addedAt) }),
-            item.status === "promoting" && /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-item__sending", children: "SENDING\u2026" })
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "stk-item__meta", children: [
+            isHead && /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-item__head-tag", children: "Next" }),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { children: timeAgo(item.addedAt) }),
+            item.status === "promoting" && /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-item__sending", children: "SENDING\u2026" })
           ] })
         ] }),
-        !item.editing && /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { className: "stk-item__actions", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
+        !item.editing && /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "stk-item__actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
             "button",
             {
               type: "button",
@@ -20268,12 +20557,12 @@ function StackItem({
               title: "Send now and interrupt at the next cooperative pause",
               "data-testid": `pending-steer:${item.id}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-btn__glyph", children: "\u21AA" }),
+                /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-btn__glyph", children: "\u21AA" }),
                 " Steer"
               ]
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
             "button",
             {
               type: "button",
@@ -20282,10 +20571,10 @@ function StackItem({
               "aria-label": "Edit message",
               title: "Edit message",
               "data-testid": `pending-edit:${item.id}`,
-              children: /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-btn__glyph", children: "\u270E" })
+              children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-btn__glyph", children: "\u270E" })
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
             "button",
             {
               type: "button",
@@ -20294,7 +20583,7 @@ function StackItem({
               "aria-label": "Remove from queue",
               title: "Remove from queue",
               "data-testid": `pending-trash:${item.id}`,
-              children: /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { className: "stk-btn__glyph", children: "\xD7" })
+              children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { className: "stk-btn__glyph", children: "\xD7" })
             }
           )
         ] })
@@ -20315,16 +20604,16 @@ function PendingStack3({
   onClearAll,
   onToggleExpand
 }) {
-  const [, setTick] = import_react33.default.useState(0);
-  import_react33.default.useEffect(() => {
+  const [, setTick] = import_react34.default.useState(0);
+  import_react34.default.useEffect(() => {
     const t = window.setInterval(() => setTick((n) => n + 1), 1e4);
     return () => window.clearInterval(t);
   }, []);
-  const [dragId, setDragId] = import_react33.default.useState(null);
-  const [dropTarget, setDropTarget] = import_react33.default.useState({ id: null, where: null });
-  const [collapsed, setCollapsed] = import_react33.default.useState(false);
-  const lastCount = import_react33.default.useRef(0);
-  import_react33.default.useEffect(() => {
+  const [dragId, setDragId] = import_react34.default.useState(null);
+  const [dropTarget, setDropTarget] = import_react34.default.useState({ id: null, where: null });
+  const [collapsed, setCollapsed] = import_react34.default.useState(false);
+  const lastCount = import_react34.default.useRef(0);
+  import_react34.default.useEffect(() => {
     if (items.length > lastCount.current) setCollapsed(false);
     lastCount.current = items.length;
   }, [items.length]);
@@ -20364,14 +20653,14 @@ function PendingStack3({
     setDragId(null);
     setDropTarget({ id: null, where: null });
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
     "section",
     {
       className: `stack ${collapsed ? "is-collapsed" : ""} ${reducedMotion ? "reduced-motion" : ""}`,
       "aria-label": "Pending message queue",
       "data-testid": "pending-stack",
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
           StackHead,
           {
             count: items.length,
@@ -20381,7 +20670,7 @@ function PendingStack3({
             onClear: onClearAll
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("ol", { className: "stack__list", role: "list", children: items.map((item, i) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("ol", { className: "stack__list", role: "list", children: items.map((item, i) => /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
           StackItem,
           {
             item,
@@ -20407,8 +20696,1328 @@ function PendingStack3({
   );
 }
 
+// src/lib/use-voice-controller.ts
+var import_react35 = __toESM(require("react"));
+
+// ../sdk/typescript/src/live.ts
+function asRecord3(value, context) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError(`${context} must be an object`);
+  }
+  return value;
+}
+function assertExactKeys(value, allowed, context) {
+  const unknown = Object.keys(value).find((key) => !allowed.includes(key));
+  if (unknown !== void 0) {
+    throw new TypeError(`${context} contains unknown field ${unknown}`);
+  }
+}
+function requireString(value, context) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new TypeError(`${context} must be a non-empty string`);
+  }
+  return value;
+}
+function requireBoolean(value, context) {
+  if (typeof value !== "boolean") {
+    throw new TypeError(`${context} must be a boolean`);
+  }
+  return value;
+}
+function parseExecutionMode(raw, context) {
+  const mode = requireString(raw, `${context}.execution_mode`);
+  if (mode !== "function_bridge" && mode !== "client_context") {
+    throw new TypeError(`${context}.execution_mode is unknown`);
+  }
+  return mode;
+}
+function parsePendingLiveChannelHandle(raw) {
+  const d = asRecord3(raw, "pending live channel handle");
+  assertExactKeys(
+    d,
+    [
+      "channel_id",
+      "target_identity",
+      "execution_mode",
+      "pending_receipt",
+      "transport",
+      "capabilities",
+      "continuity"
+    ],
+    "pending live channel handle"
+  );
+  return {
+    channelId: requireString(d.channel_id, "pending live channel handle.channel_id"),
+    targetIdentity: requireString(
+      d.target_identity,
+      "pending live channel handle.target_identity"
+    ),
+    executionMode: parseExecutionMode(d.execution_mode, "pending live channel handle"),
+    pendingReceipt: requireString(
+      d.pending_receipt,
+      "pending live channel handle.pending_receipt"
+    ),
+    transport: parseTransport(d.transport),
+    capabilities: parseCapabilities(d.capabilities),
+    continuity: parseContinuity(d.continuity)
+  };
+}
+function parseActiveLiveChannelHandle(raw) {
+  const d = asRecord3(raw, "active live channel handle");
+  assertExactKeys(
+    d,
+    ["channel_id", "target_identity", "execution_mode", "activation_receipt"],
+    "active live channel handle"
+  );
+  return {
+    channelId: requireString(d.channel_id, "active live channel handle.channel_id"),
+    targetIdentity: requireString(
+      d.target_identity,
+      "active live channel handle.target_identity"
+    ),
+    executionMode: parseExecutionMode(d.execution_mode, "active live channel handle"),
+    activationReceipt: requireString(
+      d.activation_receipt,
+      "active live channel handle.activation_receipt"
+    )
+  };
+}
+function parseLivePlaybackOwnerReadiness(raw) {
+  const d = asRecord3(raw, "playback owner readiness");
+  assertExactKeys(d, ["channel_id", "readiness_receipt"], "playback owner readiness");
+  return {
+    channelId: requireString(d.channel_id, "playback owner readiness.channel_id"),
+    readinessReceipt: requireString(
+      d.readiness_receipt,
+      "playback owner readiness.readiness_receipt"
+    )
+  };
+}
+function parseExperimentalLiveChannelStatus(raw) {
+  const d = asRecord3(raw, "experimental live channel status");
+  const phase = requireString(d.phase, "experimental live channel status.phase");
+  if (phase === "pending" || phase === "revoked" || phase === "closed") {
+    assertExactKeys(d, ["phase"], "experimental live channel status");
+    return { phase };
+  }
+  if (phase === "active") {
+    assertExactKeys(d, ["phase", "handle"], "experimental live channel status");
+    return { phase, handle: parseActiveLiveChannelHandle(d.handle) };
+  }
+  throw new TypeError("experimental live channel status.phase is unknown");
+}
+function parseTransport(raw) {
+  const d = asRecord3(raw, "transport");
+  const kind = requireString(d.transport, "transport.transport");
+  if (kind === "websocket") {
+    assertExactKeys(d, ["transport", "url", "token"], "websocket transport");
+    return {
+      transport: "websocket",
+      url: requireString(d.url, "transport.url"),
+      token: requireString(d.token, "transport.token")
+    };
+  }
+  if (kind === "webrtc") {
+    assertExactKeys(d, ["transport", "token", "answer_method", "http_url"], "webrtc transport");
+    const result = {
+      transport: "webrtc",
+      token: requireString(d.token, "transport.token"),
+      answerMethod: requireString(d.answer_method, "transport.answer_method")
+    };
+    if (d.http_url !== void 0) result.httpUrl = requireString(d.http_url, "transport.http_url");
+    return result;
+  }
+  if (kind === "unknown") {
+    assertExactKeys(d, ["transport", "debug"], "unknown transport");
+    return { transport: "unknown", debug: requireString(d.debug, "transport.debug") };
+  }
+  throw new TypeError(`unknown live transport ${kind}`);
+}
+function parseCapabilities(raw) {
+  const d = asRecord3(raw, "capabilities");
+  const keys = [
+    "audio_in",
+    "audio_out",
+    "text_in",
+    "text_out",
+    "image_in",
+    "video_in",
+    "transcript_supported",
+    "barge_in_supported",
+    "provider_native_resume"
+  ];
+  assertExactKeys(d, keys, "capabilities");
+  return {
+    audioIn: requireBoolean(d.audio_in, "capabilities.audio_in"),
+    audioOut: requireBoolean(d.audio_out, "capabilities.audio_out"),
+    textIn: requireBoolean(d.text_in, "capabilities.text_in"),
+    textOut: requireBoolean(d.text_out, "capabilities.text_out"),
+    imageIn: requireBoolean(d.image_in, "capabilities.image_in"),
+    videoIn: requireBoolean(d.video_in, "capabilities.video_in"),
+    transcriptSupported: requireBoolean(d.transcript_supported, "capabilities.transcript_supported"),
+    bargeInSupported: requireBoolean(d.barge_in_supported, "capabilities.barge_in_supported"),
+    providerNativeResume: requireBoolean(d.provider_native_resume, "capabilities.provider_native_resume")
+  };
+}
+function parseContinuity(raw) {
+  const d = asRecord3(raw, "continuity");
+  const mode = requireString(d.mode, "continuity.mode");
+  if (mode === "fresh" || mode === "transcript_only" || mode === "degraded") {
+    assertExactKeys(d, ["mode"], "continuity");
+    return { mode };
+  }
+  if (mode === "provider_native_resume") {
+    assertExactKeys(d, ["mode", "provider_session_id"], "continuity");
+    return {
+      mode,
+      providerSessionId: requireString(d.provider_session_id, "continuity.provider_session_id")
+    };
+  }
+  if (mode === "unknown") {
+    assertExactKeys(d, ["mode", "debug"], "continuity");
+    return { mode, debug: requireString(d.debug, "continuity.debug") };
+  }
+  throw new TypeError(`unknown live continuity mode ${mode}`);
+}
+
+// src/lib/voice-session.ts
+var VOICE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
+var VOICE_CONNECT_TIMEOUT_MS = 3e4;
+var VOICE_RECOVERY_TIMEOUT_MS = 3e4;
+var VOICE_TEARDOWN_TIMEOUT_MS = 5e3;
+var VOICE_REPLACEMENT_POLL_INTERVAL_MS = 1e3;
+var VOICE_ACTIVITY_REPORT_INTERVAL_MS = 5e3;
+var VOICE_TRANSPORT_RECONNECT_GRACE_MS = 8e3;
+var VOICE_RPC_FAILURE_TOLERANCE_MS = 3e4;
+var VOICE_RPC_RETRY_BACKOFF_MAX_MS = 8e3;
+var VOICE_AUDIO_RESUME_TIMEOUT_MS = 15e3;
+var CONTEXT_POLL_INTERVAL_MS = 1e3;
+var CONTEXT_RETRY_INTERVAL_MS = 5e3;
+var SAMPLE_INTERVAL_MS = 100;
+var POLL_INTERVAL_MS = 100;
+var RECOVERY_TIMEOUT_MESSAGE = "Voice recovery timed out. Check your network and voice access, then start again.";
+var ACTIVITY_UNCONFIRMED_MESSAGE = "Voice activity could not be confirmed. Check your network and voice access, then start again.";
+var REPLACEMENT_UNVERIFIED_MESSAGE = "Voice connection could not be verified. Check your network and voice access, then start again.";
+var TRANSPORT_LOST_MESSAGE = "Voice connection was lost. Check your network and start voice again.";
+var AUDIO_INTERRUPTED_MESSAGE = "Browser audio was interrupted. Check audio permissions and start voice again.";
+async function queryVoiceAvailability(baseUrl, identity) {
+  if (!identity?.trim()) return "unavailable";
+  let readiness;
+  try {
+    readiness = await callConsoleRpc2(
+      baseUrl,
+      "mobkit/console/voice/readiness",
+      { identity },
+      VOICE_TEARDOWN_TIMEOUT_MS
+    );
+  } catch (error) {
+    return isTransientRpcFailure(error) ? "unknown" : "unavailable";
+  }
+  return readiness?.identity === identity && readiness.available === true ? "available" : "unavailable";
+}
+function isTransientRpcFailure(error) {
+  if (error instanceof Cancelled) return false;
+  if (error instanceof VoiceTimeout || error instanceof TransientRpcFailure) return true;
+  if (error instanceof VoiceError) return false;
+  if (error?.rpcError !== void 0) return false;
+  const status = httpStatusCode(error);
+  if (status !== null) return status === 429 || status >= 500;
+  return true;
+}
+function browserEnvironment(baseUrl) {
+  return {
+    voiceAvailable: (identity) => queryVoiceAvailability(baseUrl, identity),
+    createAudioContext: () => {
+      if (typeof AudioContext === "undefined") {
+        throw new VoiceError("Voice requires a browser with Web Audio and WebRTC support.");
+      }
+      return new AudioContext();
+    },
+    getUserMedia: () => {
+      if (!globalThis.navigator?.mediaDevices?.getUserMedia) {
+        throw new VoiceError("Microphone access requires HTTPS or localhost and a supported browser.");
+      }
+      return navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false
+      });
+    },
+    createPeerConnection: () => new RTCPeerConnection(),
+    createMediaStream: (tracks) => new MediaStream(tracks ?? []),
+    createAudioElement: () => document.createElement("audio"),
+    rpc: (method, params, timeoutMs) => callConsoleRpc2(baseUrl, method, params, timeoutMs),
+    pagehideClose: (params) => {
+      void fetch(`${baseUrl}${CONSOLE_RPC_PATHS2.jsonRpc}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "voice-pagehide",
+          method: "mobkit/console/voice/close",
+          params
+        }),
+        keepalive: true
+      }).catch(() => {
+      });
+    },
+    onPagehide: (listener) => {
+      window.addEventListener("pagehide", listener);
+      return () => window.removeEventListener("pagehide", listener);
+    },
+    onPageshow: (listener) => {
+      const visible = () => {
+        if (document.visibilityState === "visible") listener();
+      };
+      window.addEventListener("pageshow", listener);
+      document.addEventListener("visibilitychange", visible);
+      return () => {
+        window.removeEventListener("pageshow", listener);
+        document.removeEventListener("visibilitychange", visible);
+      };
+    },
+    now: () => Date.now(),
+    randomId: () => crypto.randomUUID(),
+    setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
+    clearTimeout: (timer) => clearTimeout(timer)
+  };
+}
+var VoiceError = class extends Error {
+};
+var VoiceTimeout = class extends VoiceError {
+};
+var TransientRpcFailure = class extends Error {
+};
+var Cancelled = class extends Error {
+};
+function parseReplacement(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new VoiceError("The gateway returned an invalid voice recovery response.");
+  }
+  const result = raw;
+  const keys = result.required === false ? ["required"] : ["required", "reason", "replacement", "canonical_seed_cursor"];
+  if (Object.keys(result).some((key) => !keys.includes(key))) {
+    throw new VoiceError("The gateway returned an invalid voice recovery response.");
+  }
+  if (result.required === false) return null;
+  if (result.required !== true || !["canonical_context", "delegation_result"].includes(String(result.reason)) || typeof result.canonical_seed_cursor !== "number" || !Number.isSafeInteger(result.canonical_seed_cursor) || result.canonical_seed_cursor < 0) throw new VoiceError("The gateway returned an invalid voice recovery response.");
+  return parsePendingLiveChannelHandle(result.replacement);
+}
+function voiceError(error, stage) {
+  if (error instanceof VoiceError) return error.message;
+  const name = error instanceof Error ? error.name : "";
+  if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+    return "Microphone permission was denied. Allow microphone access in your browser, then start voice again.";
+  }
+  if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+    return "No microphone was found. Connect a microphone and start voice again.";
+  }
+  if (name === "NotReadableError") {
+    return "The microphone is unavailable or in use. Check your device and browser settings.";
+  }
+  if (jsonRpcErrorCode(error) === -32030) {
+    return "You do not have permission to start voice for this agent.";
+  }
+  if (jsonRpcErrorCode(error) === -32601 || /not configured|unavailable|not supported/i.test(errorMessage(error))) {
+    return "Voice is unavailable. Ask your administrator to enable OpenAI GPT Live on this gateway.";
+  }
+  if (stage === "opening") {
+    return "The gateway could not start voice for this agent. Check your voice access and the gateway log before trying again.";
+  }
+  return "Voice could not connect. Check your network and gateway configuration, then try again.";
+}
+function createVoiceSession(baseUrl, environment) {
+  const env = environment ?? browserEnvironment(baseUrl);
+  const listeners = /* @__PURE__ */ new Set();
+  let snapshot = {
+    phase: "idle",
+    target: null,
+    microphoneMuted: false,
+    speakerMuted: false,
+    error: null,
+    notice: null
+  };
+  let current;
+  let disposed = false;
+  let pageHidden = false;
+  let removePagehide;
+  let removePageshow;
+  let serial = Promise.resolve();
+  let teardownBlock;
+  const retainedAttempts = /* @__PURE__ */ new Set();
+  const publish = (patch) => {
+    snapshot = { ...snapshot, ...patch };
+    for (const listener of listeners) listener();
+  };
+  const owns = (attempt) => current === attempt && !attempt.abort.signal.aborted && !disposed;
+  const assertOwns = (attempt) => {
+    if (!owns(attempt)) throw new Cancelled();
+  };
+  const enqueue = (operation) => {
+    const next = serial.then(operation, operation);
+    serial = next.catch(() => {
+    });
+    return serial;
+  };
+  function bounded(promise, milliseconds, signal, timeoutMessage = "Voice connection timed out. Check microphone permissions and your network, then try again.") {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (action) => {
+        if (settled) return;
+        settled = true;
+        env.clearTimeout(timer);
+        signal?.removeEventListener("abort", cancelled);
+        action();
+      };
+      const cancelled = () => finish(() => reject(new Cancelled()));
+      const timer = env.setTimeout(() => finish(() => reject(new VoiceTimeout(timeoutMessage))), Math.max(0, milliseconds));
+      signal?.addEventListener("abort", cancelled, { once: true });
+      promise.then((value) => finish(() => resolve(value)), (error) => finish(() => reject(error)));
+      if (signal?.aborted) cancelled();
+    });
+  }
+  async function controlPlaneCall(attempt, method, params) {
+    try {
+      return await bounded(
+        env.rpc(method, params, VOICE_TEARDOWN_TIMEOUT_MS),
+        VOICE_TEARDOWN_TIMEOUT_MS,
+        attempt.abort.signal
+      );
+    } catch (error) {
+      if (isTransientRpcFailure(error)) throw new TransientRpcFailure(errorMessage(error));
+      throw error;
+    }
+  }
+  function connecting(attempt, promise) {
+    return bounded(
+      promise,
+      attempt.deadline - env.now(),
+      attempt.abort.signal,
+      attempt.connectionStage === "opening" ? "Starting voice timed out. Check your voice access and the gateway, then try again." : attempt.connectionStage === "transport" ? "The voice media connection timed out. Check the gateway and your network, then try again." : void 0
+    );
+  }
+  async function pollDelay(attempt) {
+    let timer;
+    try {
+      await connecting(attempt, new Promise((resolve) => {
+        timer = env.setTimeout(resolve, POLL_INTERVAL_MS);
+      }));
+    } finally {
+      if (timer !== void 0) env.clearTimeout(timer);
+    }
+  }
+  function cleanupPeer(attempt) {
+    stopContextObservation(attempt);
+    clearReconnectGrace(attempt);
+    const peer = attempt.peer;
+    const channel = attempt.channel;
+    attempt.peer = void 0;
+    attempt.channel = void 0;
+    if (channel) {
+      channel.onmessage = null;
+      channel.onclose = null;
+      channel.onerror = null;
+      channel.close();
+    }
+    if (peer) {
+      peer.ontrack = null;
+      peer.onconnectionstatechange = null;
+      peer.oniceconnectionstatechange = null;
+      peer.close();
+    }
+    for (const track of attempt.stream?.getAudioTracks() ?? []) track.enabled = false;
+    for (const track of attempt.remote?.getTracks() ?? []) {
+      track.onended = null;
+      track.enabled = false;
+      track.stop();
+    }
+    for (const node of attempt.nodes) node.disconnect();
+    attempt.nodes = [];
+    if (attempt.audio) {
+      attempt.audio.pause();
+      attempt.audio.srcObject = null;
+    }
+    attempt.audio = void 0;
+    attempt.remote = void 0;
+    attempt.microphone = void 0;
+    attempt.speaker = void 0;
+    attempt.gain = void 0;
+  }
+  function quiesceLocal(attempt) {
+    attempt.abort.abort();
+    stopContextObservation(attempt);
+    if (attempt.sampleTimer !== void 0) env.clearTimeout(attempt.sampleTimer);
+    if (attempt.silenceTimer !== void 0) env.clearTimeout(attempt.silenceTimer);
+    if (attempt.replacementTimer !== void 0) env.clearTimeout(attempt.replacementTimer);
+    if (attempt.recoveryTimer !== void 0) env.clearTimeout(attempt.recoveryTimer);
+    if (attempt.activityTimer !== void 0) env.clearTimeout(attempt.activityTimer);
+    if (attempt.audioResumeTimer !== void 0) env.clearTimeout(attempt.audioResumeTimer);
+    attempt.audioResumeTimer = void 0;
+    clearReconnectGrace(attempt);
+    clearFailureWindow(attempt, "replacementFailure");
+    clearFailureWindow(attempt, "activityFailure");
+    attempt.activityDirty = false;
+    for (const track of attempt.stream?.getTracks() ?? []) track.enabled = false;
+    if (attempt.gain) attempt.gain.gain.value = 0;
+    attempt.audio?.pause();
+  }
+  function cleanupLocal(attempt) {
+    if (attempt.localClosed) return;
+    quiesceLocal(attempt);
+    attempt.localClosed = true;
+    cleanupPeer(attempt);
+    for (const track of attempt.stream?.getTracks() ?? []) {
+      track.onended = null;
+      track.enabled = false;
+      track.stop();
+    }
+    if (attempt.context && attempt.context.state !== "closed") {
+      attempt.context.onstatechange = null;
+      void attempt.context.close().catch(() => {
+      });
+    }
+  }
+  function closeParams(attempt) {
+    return { identity: attempt.target.identity, request_id: attempt.requestId };
+  }
+  async function teardown(attempt) {
+    quiesceLocal(attempt);
+    if (!attempt.openSent) {
+      cleanupLocal(attempt);
+      retainedAttempts.delete(attempt);
+      return;
+    }
+    if (attempt.teardown) return attempt.teardown;
+    attempt.teardown = (async () => {
+      try {
+        const raw = await bounded(
+          env.rpc("mobkit/console/voice/close", closeParams(attempt), VOICE_TEARDOWN_TIMEOUT_MS),
+          VOICE_TEARDOWN_TIMEOUT_MS
+        );
+        const result = parseExperimentalLiveChannelStatus(raw);
+        if (result.phase !== "closed" && result.phase !== "revoked") {
+          throw new VoiceError("The gateway did not confirm voice closure.");
+        }
+        if (teardownBlock === attempt) teardownBlock = void 0;
+        retainedAttempts.delete(attempt);
+      } finally {
+        cleanupLocal(attempt);
+      }
+    })();
+    try {
+      await attempt.teardown;
+    } catch (error) {
+      attempt.teardown = void 0;
+      teardownBlock = attempt;
+      throw error;
+    }
+  }
+  async function stop(attempt, error = null, notice = null) {
+    quiesceLocal(attempt);
+    if (current === attempt) publish({ phase: "closing", error, notice });
+    try {
+      await teardown(attempt);
+      if (current === attempt) {
+        current = void 0;
+        publish({
+          phase: error ? "error" : "idle",
+          target: error ? attempt.target : null,
+          error,
+          notice,
+          reconnecting: false,
+          contextPreparation: void 0,
+          contextStatusError: null
+        });
+      }
+    } catch {
+      if (current === attempt) {
+        publish({
+          phase: "error",
+          error: `${error ? `${error} ` : ""}Your microphone and speaker are off, but the gateway has not confirmed voice closure. Close again to retry before starting another session.`,
+          notice: null
+        });
+      }
+    }
+  }
+  function fail(attempt, message) {
+    if (!owns(attempt)) return;
+    quiesceLocal(attempt);
+    void enqueue(() => stop(attempt, message));
+  }
+  function transportLost(attempt, peer, message) {
+    if (!owns(attempt) || attempt.peer !== peer) return;
+    if (snapshot.phase !== "active") {
+      fail(attempt, message);
+      return;
+    }
+    attempt.transportLoss = message;
+    attempt.recoveryDeadline = env.now() + VOICE_RECOVERY_TIMEOUT_MS;
+    if (attempt.sampleTimer !== void 0) env.clearTimeout(attempt.sampleTimer);
+    if (attempt.replacementTimer !== void 0) env.clearTimeout(attempt.replacementTimer);
+    cleanupPeer(attempt);
+    attempt.recoveryTimer = env.setTimeout(() => {
+      fail(attempt, RECOVERY_TIMEOUT_MESSAGE);
+    }, VOICE_RECOVERY_TIMEOUT_MS);
+    attempt.connectionStage = "recovery";
+    publish({ phase: "connecting", connectionStage: "recovery", reconnecting: false });
+    requestReplacement(attempt);
+  }
+  function clearReconnectGrace(attempt) {
+    if (attempt.reconnectTimer === void 0) return;
+    env.clearTimeout(attempt.reconnectTimer);
+    attempt.reconnectTimer = void 0;
+    if (current === attempt && snapshot.reconnecting) publish({ reconnecting: false });
+  }
+  function transportInterrupted(attempt, peer, message) {
+    if (!owns(attempt) || attempt.peer !== peer || attempt.reconnectTimer !== void 0) return;
+    attempt.reconnectTimer = env.setTimeout(() => {
+      attempt.reconnectTimer = void 0;
+      transportLost(attempt, peer, message);
+    }, VOICE_TRANSPORT_RECONNECT_GRACE_MS);
+    if (snapshot.phase === "active") publish({ reconnecting: true });
+  }
+  function transportRestored(attempt, peer) {
+    if (attempt.peer !== peer) return;
+    clearReconnectGrace(attempt);
+  }
+  function recordTransientFailure(attempt, key, message) {
+    const run = attempt[key] ?? (attempt[key] = {
+      failures: 0,
+      timer: env.setTimeout(() => {
+        attempt[key] = void 0;
+        fail(attempt, message);
+      }, VOICE_RPC_FAILURE_TOLERANCE_MS)
+    });
+    run.failures += 1;
+    const base = key === "activityFailure" ? VOICE_ACTIVITY_REPORT_INTERVAL_MS : VOICE_REPLACEMENT_POLL_INTERVAL_MS;
+    return Math.min(base * 2 ** (run.failures - 1), VOICE_RPC_RETRY_BACKOFF_MAX_MS);
+  }
+  function clearFailureWindow(attempt, key) {
+    const run = attempt[key];
+    if (!run) return;
+    env.clearTimeout(run.timer);
+    attempt[key] = void 0;
+  }
+  function activity(attempt) {
+    if (!owns(attempt) || snapshot.phase !== "active") return;
+    attempt.lastActivity = env.now();
+    scheduleSilence(attempt);
+    attempt.activityDirty = true;
+    flushActivity(attempt);
+  }
+  function flushActivity(attempt) {
+    if (!owns(attempt) || !attempt.activityDirty || attempt.activityReporting) return;
+    const due = Math.max(
+      attempt.activityReportedAt === void 0 ? 0 : attempt.activityReportedAt + VOICE_ACTIVITY_REPORT_INTERVAL_MS,
+      attempt.activityRetryAt ?? 0
+    );
+    const delay = due - env.now();
+    if (delay > 0) {
+      if (attempt.activityTimer === void 0) {
+        attempt.activityTimer = env.setTimeout(() => {
+          attempt.activityTimer = void 0;
+          flushActivity(attempt);
+        }, delay);
+      }
+      return;
+    }
+    if (attempt.activityTimer !== void 0) env.clearTimeout(attempt.activityTimer);
+    attempt.activityTimer = void 0;
+    attempt.activityRetryAt = void 0;
+    attempt.activityReportedAt = env.now();
+    attempt.activityDirty = false;
+    attempt.activityReporting = true;
+    void reportActivity(attempt);
+  }
+  async function reportActivity(attempt) {
+    try {
+      const result = await controlPlaneCall(attempt, "mobkit/console/voice/activity", closeParams(attempt));
+      assertOwns(attempt);
+      if (!result || typeof result !== "object" || Array.isArray(result) || result.accepted !== true) throw new VoiceError("The gateway did not accept voice activity.");
+      clearFailureWindow(attempt, "activityFailure");
+    } catch (error) {
+      if (error instanceof Cancelled || !owns(attempt)) return;
+      if (error instanceof TransientRpcFailure) {
+        const delay = recordTransientFailure(attempt, "activityFailure", ACTIVITY_UNCONFIRMED_MESSAGE);
+        attempt.activityDirty = true;
+        attempt.activityRetryAt = env.now() + delay;
+        return;
+      }
+      fail(attempt, ACTIVITY_UNCONFIRMED_MESSAGE);
+    } finally {
+      attempt.activityReporting = false;
+      flushActivity(attempt);
+    }
+  }
+  function scheduleSilence(attempt) {
+    if (attempt.silenceTimer !== void 0) env.clearTimeout(attempt.silenceTimer);
+    attempt.silenceTimer = env.setTimeout(() => {
+      if (!owns(attempt)) return;
+      if (env.now() - attempt.lastActivity < VOICE_SILENCE_TIMEOUT_MS) {
+        scheduleSilence(attempt);
+        return;
+      }
+      quiesceLocal(attempt);
+      void enqueue(() => stop(attempt, null, "Voice closed after 15 minutes of silence."));
+    }, VOICE_SILENCE_TIMEOUT_MS - (env.now() - attempt.lastActivity));
+  }
+  function sampleActivity(attempt) {
+    const samples = new Float32Array(2048);
+    const hasSignal = (analyser, threshold) => {
+      if (!analyser) return false;
+      analyser.getFloatTimeDomainData(samples);
+      let power = 0;
+      for (const value of samples) power += value * value;
+      return power / samples.length > threshold * threshold;
+    };
+    const sample = () => {
+      if (!owns(attempt) || snapshot.phase !== "active") return;
+      if (!snapshot.microphoneMuted && hasSignal(attempt.microphone, 0.015) || hasSignal(attempt.speaker, 5e-3)) activity(attempt);
+      attempt.sampleTimer = env.setTimeout(sample, SAMPLE_INTERVAL_MS);
+    };
+    sample();
+  }
+  function gates(attempt) {
+    const active = owns(attempt) && snapshot.phase === "active" && !!attempt.active;
+    for (const track of attempt.stream?.getAudioTracks() ?? []) {
+      track.enabled = active && !snapshot.microphoneMuted;
+    }
+    if (attempt.gain) attempt.gain.gain.value = active && !snapshot.speakerMuted ? 1 : 0;
+  }
+  function stopContextObservation(attempt) {
+    const observation = attempt.contextObservation;
+    attempt.contextObservation = void 0;
+    observation?.abort.abort();
+    if (observation?.timer !== void 0) env.clearTimeout(observation.timer);
+  }
+  function observeContext(attempt) {
+    stopContextObservation(attempt);
+    if (!owns(attempt) || !attempt.active || snapshot.phase !== "active") return;
+    const channelId = attempt.active.channelId;
+    const observation = { abort: new AbortController() };
+    attempt.contextObservation = observation;
+    const isCurrent = () => owns(attempt) && snapshot.phase === "active" && attempt.contextObservation === observation && attempt.active?.channelId === channelId;
+    publish({ contextPreparation: null, contextStatusError: null });
+    async function read() {
+      if (!isCurrent()) return;
+      let delay;
+      try {
+        const raw = await bounded(
+          env.rpc("mobkit/console/voice/context_status", {
+            ...closeParams(attempt),
+            channel_id: channelId
+          }, VOICE_TEARDOWN_TIMEOUT_MS),
+          VOICE_TEARDOWN_TIMEOUT_MS,
+          observation.abort.signal
+        );
+        if (!isCurrent()) return;
+        const preparation = parseVoiceContextStatus(raw, {
+          identity: attempt.target.identity,
+          requestId: attempt.requestId,
+          channelId
+        });
+        if (snapshot.contextStatusError || JSON.stringify(snapshot.contextPreparation) !== JSON.stringify(preparation)) {
+          publish({ contextPreparation: preparation, contextStatusError: null });
+        }
+        if (preparation.phase === "preparing") delay = CONTEXT_POLL_INTERVAL_MS;
+      } catch (error) {
+        if (error instanceof Cancelled || !isCurrent()) return;
+        publish({
+          contextStatusError: "Agent context status is unavailable. Voice remains connected; checking again automatically."
+        });
+        delay = CONTEXT_RETRY_INTERVAL_MS;
+      }
+      if (isCurrent() && delay !== void 0) {
+        observation.timer = env.setTimeout(() => {
+          observation.timer = void 0;
+          void read();
+        }, delay);
+      }
+    }
+    void read();
+  }
+  function consumeMessage(attempt, data) {
+    if (!owns(attempt) || typeof data !== "string") return;
+    let event;
+    try {
+      const parsed = JSON.parse(data);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+      event = parsed;
+    } catch {
+      return;
+    }
+    if (event.type === "error") {
+      fail(attempt, "The voice provider reported an error. Check gateway configuration and start voice again.");
+      return;
+    }
+    if (!attempt.active || snapshot.phase !== "active") return;
+    const type = event.type;
+    if (!snapshot.microphoneMuted && (type === "input_audio_buffer.speech_started" || type === "input_audio_buffer.speech_stopped")) activity(attempt);
+  }
+  function preparePeer(attempt) {
+    const context = attempt.context;
+    const stream = attempt.stream;
+    const peer = env.createPeerConnection();
+    attempt.peer = peer;
+    attempt.remote = env.createMediaStream();
+    attempt.audio = env.createAudioElement();
+    attempt.audio.autoplay = true;
+    attempt.audio.muted = true;
+    attempt.audio.srcObject = attempt.remote;
+    const gain = context.createGain();
+    gain.gain.value = 0;
+    gain.connect(context.destination);
+    attempt.gain = gain;
+    attempt.nodes.push(gain);
+    const microphone = context.createAnalyser();
+    microphone.fftSize = 2048;
+    const source = context.createMediaStreamSource(stream);
+    source.connect(microphone);
+    attempt.microphone = microphone;
+    attempt.nodes.push(source, microphone);
+    peer.ontrack = (event) => {
+      if (!owns(attempt) || attempt.peer !== peer) {
+        event.track.stop();
+        return;
+      }
+      if (event.track.kind !== "audio") {
+        event.track.stop();
+        return;
+      }
+      attempt.remote.addTrack(event.track);
+      event.track.onended = () => {
+        transportLost(attempt, peer, "The voice audio stream ended. Start voice again.");
+      };
+      if (!attempt.speaker) {
+        const speaker = context.createAnalyser();
+        speaker.fftSize = 2048;
+        const remoteSource = context.createMediaStreamSource(attempt.remote);
+        remoteSource.connect(speaker);
+        speaker.connect(gain);
+        attempt.speaker = speaker;
+        attempt.nodes.push(remoteSource, speaker);
+      }
+      void attempt.audio.play().catch(() => {
+        if (attempt.peer === peer) {
+          fail(attempt, "Audio playback was blocked. Allow audio in your browser and start voice again.");
+        }
+      });
+    };
+    const connectionChanged = () => {
+      if (attempt.peer !== peer) return;
+      const states = [peer.connectionState, peer.iceConnectionState];
+      if (states.includes("failed") || states.includes("closed")) {
+        transportLost(attempt, peer, TRANSPORT_LOST_MESSAGE);
+      } else if (states.includes("disconnected")) {
+        transportInterrupted(attempt, peer, TRANSPORT_LOST_MESSAGE);
+      } else if (peer.connectionState === "connected" && ["connected", "completed"].includes(peer.iceConnectionState)) {
+        transportRestored(attempt, peer);
+      }
+    };
+    peer.onconnectionstatechange = connectionChanged;
+    peer.oniceconnectionstatechange = connectionChanged;
+    const channel = peer.createDataChannel("oai-events");
+    attempt.channel = channel;
+    channel.onmessage = (event) => {
+      if (attempt.peer === peer) consumeMessage(attempt, event.data);
+    };
+    channel.onclose = () => {
+      transportLost(attempt, peer, "The voice data connection closed. Start voice again.");
+    };
+    channel.onerror = () => {
+      transportLost(attempt, peer, "The voice data connection failed. Start voice again.");
+    };
+    for (const track of stream.getAudioTracks()) {
+      track.enabled = false;
+      track.onended = () => {
+        if (attempt.peer === peer) {
+          fail(attempt, "Microphone access was lost. Check browser permissions and start voice again.");
+        }
+      };
+      peer.addTrack(track, stream);
+    }
+  }
+  async function activatePending(attempt, pending) {
+    assertOwns(attempt);
+    attempt.pending = pending;
+    if (pending.targetIdentity !== attempt.target.identity || pending.executionMode !== "client_context" || pending.transport.transport !== "webrtc" || pending.transport.answerMethod !== "live/webrtc/answer" || !pending.capabilities.audioIn || !pending.capabilities.audioOut) throw new VoiceError("The gateway returned an incompatible GPT Live voice session.");
+    attempt.connectionStage = "transport";
+    publish({ connectionStage: "transport" });
+    assertOwns(attempt);
+    preparePeer(attempt);
+    const offer = await connecting(attempt, attempt.peer.createOffer());
+    assertOwns(attempt);
+    await connecting(attempt, attempt.peer.setLocalDescription(offer));
+    assertOwns(attempt);
+    const sdp = attempt.peer.localDescription?.sdp;
+    if (!sdp?.trim()) throw new VoiceError("The browser could not create a voice connection offer.");
+    const readiness = parseLivePlaybackOwnerReadiness(await connecting(
+      attempt,
+      env.rpc("mobkit/live/playback_owner/register", {
+        identity: pending.targetIdentity,
+        channel_id: pending.channelId,
+        pending_receipt: pending.pendingReceipt
+      }, VOICE_CONNECT_TIMEOUT_MS)
+    ));
+    assertOwns(attempt);
+    if (readiness.channelId !== pending.channelId) throw new VoiceError("Voice playback authority did not match the session.");
+    attempt.readiness = readiness;
+    const answer = await connecting(attempt, env.rpc("live/webrtc/answer", {
+      identity: pending.targetIdentity,
+      channel_id: pending.channelId,
+      pending_receipt: pending.pendingReceipt,
+      readiness_receipt: readiness.readinessReceipt,
+      token: pending.transport.token,
+      offer_sdp: sdp
+    }, VOICE_CONNECT_TIMEOUT_MS));
+    assertOwns(attempt);
+    if (!answer || typeof answer !== "object" || typeof answer.answer_sdp !== "string" || !answer.answer_sdp.trim()) {
+      throw new VoiceError("The gateway returned an invalid voice connection answer.");
+    }
+    await connecting(attempt, attempt.peer.setRemoteDescription({
+      type: "answer",
+      sdp: answer.answer_sdp
+    }));
+    assertOwns(attempt);
+    const received = await connecting(attempt, env.rpc("mobkit/console/voice/answer_received", {
+      ...closeParams(attempt),
+      channel_id: pending.channelId
+    }, VOICE_CONNECT_TIMEOUT_MS));
+    assertOwns(attempt);
+    if (!received || typeof received !== "object" || Array.isArray(received) || received.accepted !== true) throw new VoiceError("The gateway did not acknowledge voice answer delivery. Start voice again.");
+    while (owns(attempt)) {
+      const status = parseExperimentalLiveChannelStatus(await connecting(
+        attempt,
+        env.rpc("mobkit/live/status", {
+          identity: pending.targetIdentity,
+          channel_id: pending.channelId,
+          pending_receipt: pending.pendingReceipt
+        }, VOICE_CONNECT_TIMEOUT_MS)
+      ));
+      assertOwns(attempt);
+      if (status.phase === "closed" || status.phase === "revoked") {
+        throw new VoiceError("The gateway closed voice before activation. Start voice again.");
+      }
+      if (status.phase === "active") {
+        if (status.handle.channelId !== pending.channelId || status.handle.targetIdentity !== pending.targetIdentity || status.handle.executionMode !== pending.executionMode) throw new VoiceError("Voice activation authority did not match the requested agent.");
+        if (attempt.peer.connectionState === "connected" && attempt.channel.readyState === "open") {
+          return status.handle;
+        }
+      }
+      await pollDelay(attempt);
+    }
+    throw new Cancelled();
+  }
+  function scheduleReplacement(attempt, delay = VOICE_REPLACEMENT_POLL_INTERVAL_MS) {
+    if (!owns(attempt) || snapshot.phase !== "active" && !attempt.transportLoss) return;
+    if (attempt.replacementTimer !== void 0) env.clearTimeout(attempt.replacementTimer);
+    attempt.replacementTimer = env.setTimeout(() => {
+      attempt.replacementTimer = void 0;
+      requestReplacement(attempt);
+    }, delay);
+  }
+  function requestReplacement(attempt) {
+    if (!owns(attempt) || attempt.replacementPolling) return;
+    attempt.replacementPolling = true;
+    void pollReplacement(attempt).finally(() => {
+      attempt.replacementPolling = false;
+    });
+  }
+  async function pollReplacement(attempt) {
+    try {
+      assertOwns(attempt);
+      if (snapshot.phase !== "active" && !attempt.transportLoss) return;
+      if (attempt.recoveryDeadline !== void 0 && env.now() >= attempt.recoveryDeadline) {
+        fail(attempt, RECOVERY_TIMEOUT_MESSAGE);
+        return;
+      }
+      const raw = await controlPlaneCall(attempt, "mobkit/console/voice/replacement", closeParams(attempt));
+      assertOwns(attempt);
+      if (attempt.recoveryDeadline !== void 0 && env.now() >= attempt.recoveryDeadline) {
+        fail(attempt, RECOVERY_TIMEOUT_MESSAGE);
+        return;
+      }
+      const pending = parseReplacement(raw);
+      clearFailureWindow(attempt, "replacementFailure");
+      if (pending) {
+        await enqueue(async () => {
+          try {
+            assertOwns(attempt);
+            if (pending.targetIdentity !== attempt.target.identity || pending.executionMode !== "client_context") {
+              throw new VoiceError("Voice recovery authority did not match the current agent.");
+            }
+            if (pending.channelId === attempt.active?.channelId) {
+              if (attempt.transportLoss) {
+                throw new VoiceError("Voice connection was lost without new recovery authority. Start voice again.");
+              }
+              if (pending.pendingReceipt !== attempt.pending?.pendingReceipt) {
+                throw new VoiceError("Voice recovery returned conflicting channel authority.");
+              }
+              return;
+            }
+            publish({ phase: "connecting" });
+            assertOwns(attempt);
+            if (attempt.sampleTimer !== void 0) env.clearTimeout(attempt.sampleTimer);
+            cleanupPeer(attempt);
+            attempt.active = void 0;
+            attempt.readiness = void 0;
+            attempt.deadline = attempt.recoveryDeadline ?? env.now() + VOICE_CONNECT_TIMEOUT_MS;
+            attempt.active = await activatePending(attempt, pending);
+            assertOwns(attempt);
+            if (attempt.recoveryDeadline !== void 0 && env.now() >= attempt.recoveryDeadline) {
+              throw new VoiceError(RECOVERY_TIMEOUT_MESSAGE);
+            }
+            if (attempt.recoveryTimer !== void 0) env.clearTimeout(attempt.recoveryTimer);
+            attempt.recoveryTimer = void 0;
+            attempt.recoveryDeadline = void 0;
+            attempt.transportLoss = void 0;
+            if (env.now() - attempt.lastActivity >= VOICE_SILENCE_TIMEOUT_MS) {
+              await stop(attempt, null, "Voice closed after 15 minutes of silence.");
+              return;
+            }
+            publish({ phase: "active" });
+            assertOwns(attempt);
+            gates(attempt);
+            scheduleSilence(attempt);
+            sampleActivity(attempt);
+            observeContext(attempt);
+          } catch (error) {
+            if (!(error instanceof Cancelled)) await stop(attempt, voiceError(error, attempt.connectionStage));
+          }
+        });
+      }
+      scheduleReplacement(attempt);
+    } catch (error) {
+      if (error instanceof Cancelled || !owns(attempt)) return;
+      if (error instanceof TransientRpcFailure) {
+        scheduleReplacement(attempt, recordTransientFailure(attempt, "replacementFailure", REPLACEMENT_UNVERIFIED_MESSAGE));
+        return;
+      }
+      const kind = error?.rpcError?.data?.kind;
+      fail(attempt, kind === "voice_closed" ? "The gateway closed this voice session. Start voice again." : REPLACEMENT_UNVERIFIED_MESSAGE);
+    }
+  }
+  function observeAudioContext(attempt) {
+    const context = attempt.context;
+    context.onstatechange = () => {
+      if (!owns(attempt) || attempt.context !== context) return;
+      if (context.state === "running") {
+        if (attempt.audioResumeTimer !== void 0) env.clearTimeout(attempt.audioResumeTimer);
+        attempt.audioResumeTimer = void 0;
+        return;
+      }
+      if (context.state === "closed") {
+        fail(attempt, AUDIO_INTERRUPTED_MESSAGE);
+        return;
+      }
+      attempt.audioResumeTimer ?? (attempt.audioResumeTimer = env.setTimeout(() => {
+        attempt.audioResumeTimer = void 0;
+        if (owns(attempt) && context.state !== "running") fail(attempt, AUDIO_INTERRUPTED_MESSAGE);
+      }, VOICE_AUDIO_RESUME_TIMEOUT_MS));
+      resumeAudio(attempt);
+    };
+  }
+  function resumeAudio(attempt) {
+    const context = attempt.context;
+    if (!owns(attempt) || !context || context.state === "running" || context.state === "closed") return;
+    void context.resume().catch(() => {
+    });
+  }
+  async function connect(attempt, media, resumed) {
+    try {
+      assertOwns(attempt);
+      if (teardownBlock) {
+        throw new VoiceError("The previous voice session has not closed. Use Close to retry before starting another session.");
+      }
+      await connecting(attempt, resumed);
+      assertOwns(attempt);
+      if (attempt.context.state !== "running") {
+        throw new VoiceError("Browser audio is suspended. Allow audio playback and start voice again.");
+      }
+      observeAudioContext(attempt);
+      attempt.stream = await connecting(attempt, media);
+      assertOwns(attempt);
+      if (attempt.stream.getAudioTracks().length === 0) {
+        throw new VoiceError("No microphone audio track was available. Check your microphone and try again.");
+      }
+      attempt.connectionStage = "opening";
+      publish({ phase: "connecting", connectionStage: "opening" });
+      assertOwns(attempt);
+      attempt.openSent = true;
+      const raw = await connecting(attempt, env.rpc("mobkit/console/voice/open", {
+        identity: attempt.target.identity,
+        request_id: attempt.requestId
+      }, VOICE_CONNECT_TIMEOUT_MS));
+      assertOwns(attempt);
+      attempt.active = await activatePending(attempt, parsePendingLiveChannelHandle(raw));
+      assertOwns(attempt);
+      attempt.lastActivity = env.now();
+      publish({ phase: "active" });
+      assertOwns(attempt);
+      gates(attempt);
+      scheduleSilence(attempt);
+      sampleActivity(attempt);
+      scheduleReplacement(attempt);
+      observeContext(attempt);
+    } catch (error) {
+      if (error instanceof Cancelled) {
+        await teardown(attempt).catch(() => {
+        });
+      } else {
+        await stop(attempt, voiceError(error, attempt.connectionStage));
+      }
+    }
+  }
+  const controller = {
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    getSnapshot: () => snapshot,
+    start(target) {
+      if (pageHidden) return Promise.resolve();
+      disposed = false;
+      if (current && owns(current) && current.target.identity === target.identity) return serial;
+      if (teardownBlock) {
+        publish({ phase: "error", error: "The previous voice session has not closed. Use Close to retry before starting another session." });
+        return Promise.resolve();
+      }
+      const previous = current;
+      if (previous) quiesceLocal(previous);
+      let requestId;
+      try {
+        requestId = env.randomId();
+      } catch {
+        publish({
+          phase: "error",
+          error: "Voice requires HTTPS or localhost and a browser with secure random identifiers."
+        });
+        return previous ? enqueue(() => stop(previous, snapshot.error)) : Promise.resolve();
+      }
+      const attempt = {
+        target: { ...target },
+        requestId,
+        abort: new AbortController(),
+        deadline: env.now() + VOICE_CONNECT_TIMEOUT_MS,
+        nodes: [],
+        openSent: false,
+        localClosed: false,
+        lastActivity: env.now()
+      };
+      retainedAttempts.add(attempt);
+      current = attempt;
+      publish({
+        phase: "requesting",
+        target: attempt.target,
+        microphoneMuted: false,
+        speakerMuted: false,
+        error: null,
+        notice: null,
+        connectionStage: void 0,
+        reconnecting: false,
+        contextPreparation: void 0,
+        contextStatusError: null
+      });
+      if (!owns(attempt)) {
+        return enqueue(async () => {
+          if (previous) await teardown(previous).catch(() => {
+          });
+          await teardown(attempt).catch(() => {
+          });
+        });
+      }
+      let media;
+      let resumed;
+      try {
+        if (!target.identity.trim()) throw new VoiceError("Select an agent before starting voice.");
+        attempt.context = env.createAudioContext();
+        resumed = attempt.context.resume();
+        void resumed.catch(() => {
+        });
+        media = env.voiceAvailable(attempt.target.identity).then((available) => {
+          assertOwns(attempt);
+          if (available === "unknown") {
+            throw new VoiceError("Voice readiness could not be checked. Check your network connection to the gateway, then start voice again.");
+          }
+          if (available !== "available") {
+            throw new VoiceError("Voice is unavailable. Ask your administrator to authenticate OpenAI and enable GPT Live.");
+          }
+          return env.getUserMedia();
+        }).then((stream) => {
+          for (const track of stream.getTracks()) track.enabled = false;
+          if (!owns(attempt)) {
+            for (const track of stream.getTracks()) track.stop();
+          } else {
+            attempt.stream = stream;
+          }
+          return stream;
+        });
+        void media.catch(() => {
+        });
+        removePagehide ?? (removePagehide = env.onPagehide(() => {
+          pageHidden = true;
+          removePageshow?.();
+          removePageshow = env.onPageshow(() => {
+            pageHidden = false;
+            removePageshow?.();
+            removePageshow = void 0;
+          });
+          for (const retained of retainedAttempts) {
+            cleanupLocal(retained);
+            if (retained.openSent) env.pagehideClose(closeParams(retained));
+          }
+          controller.dispose();
+        }));
+      } catch (error) {
+        cleanupLocal(attempt);
+        return enqueue(async () => {
+          if (previous) await stop(previous);
+          await stop(attempt, voiceError(error));
+        });
+      }
+      return enqueue(async () => {
+        if (previous) {
+          try {
+            await teardown(previous);
+          } catch {
+            await stop(attempt, "The previous voice session has not closed. Use Close to retry before starting another session.");
+            return;
+          }
+        }
+        await connect(attempt, media, resumed);
+      });
+    },
+    close() {
+      const attempt = current ?? teardownBlock;
+      if (!attempt) {
+        publish({ phase: "idle", target: null, error: null, notice: null });
+        return Promise.resolve();
+      }
+      current ?? (current = attempt);
+      quiesceLocal(attempt);
+      publish({ phase: "closing" });
+      return enqueue(async () => {
+        await stop(attempt);
+        if (teardownBlock && teardownBlock !== attempt) {
+          const blocked = teardownBlock;
+          current = blocked;
+          await stop(blocked);
+        }
+      });
+    },
+    toggleMicrophone() {
+      if (!current || !owns(current)) return;
+      publish({ microphoneMuted: !snapshot.microphoneMuted });
+      gates(current);
+      resumeAudio(current);
+    },
+    toggleSpeaker() {
+      if (!current || !owns(current)) return;
+      publish({ speakerMuted: !snapshot.speakerMuted });
+      gates(current);
+      resumeAudio(current);
+    },
+    sampleWaveform(source, samples) {
+      samples.fill(0);
+      if (!current || !owns(current) || snapshot.phase !== "active") return;
+      if (source === "microphone" && snapshot.microphoneMuted) return;
+      const analyser = source === "microphone" ? current.microphone : current.speaker;
+      analyser?.getFloatTimeDomainData(samples);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      removePagehide?.();
+      removePagehide = void 0;
+      listeners.clear();
+      for (const attempt of retainedAttempts) cleanupLocal(attempt);
+      void controller.close();
+    }
+  };
+  return controller;
+}
+
+// src/lib/use-voice-controller.ts
+var IDLE = {
+  phase: "idle",
+  target: null,
+  microphoneMuted: false,
+  speakerMuted: false,
+  error: null,
+  notice: null
+};
+var idleSnapshot = () => IDLE;
+var idleSubscribe = () => () => {
+};
+function useVoiceController(baseUrl) {
+  const [voice, setVoice] = import_react35.default.useState(null);
+  import_react35.default.useEffect(() => {
+    const owned = createVoiceSession(baseUrl);
+    setVoice(owned);
+    return () => owned.dispose();
+  }, [baseUrl]);
+  const state = import_react35.default.useSyncExternalStore(
+    voice?.subscribe ?? idleSubscribe,
+    voice?.getSnapshot ?? idleSnapshot,
+    idleSnapshot
+  );
+  return { voice, state };
+}
+
+// src/lib/use-voice-readiness.ts
+var import_react36 = __toESM(require("react"));
+var NO_READINESS = {};
+var READINESS_REFRESH_INTERVAL_MS = 15e3;
+function mergeVoiceReadiness(previous, results) {
+  const values = {};
+  for (const [identity, availability] of results) {
+    if (availability === "unknown") {
+      if (identity in previous) values[identity] = previous[identity];
+    } else {
+      values[identity] = availability === "available";
+    }
+  }
+  return values;
+}
+function voiceReadinessDenied(readiness, identity) {
+  return readiness[identity] === false;
+}
+function useVoiceReadiness(baseUrl, focusedIdentity, voiceIdentity, enabled) {
+  const key = JSON.stringify([baseUrl, focusedIdentity, voiceIdentity, enabled]);
+  const [state, setState] = import_react36.default.useState({ key: "", baseUrl: "", values: NO_READINESS });
+  import_react36.default.useEffect(() => {
+    if (!enabled) return;
+    const identities = [...new Set([focusedIdentity, voiceIdentity].filter(
+      (identity) => Boolean(identity)
+    ))];
+    if (!identities.length) return;
+    let stopped = false;
+    let timer;
+    const refresh = async () => {
+      const entries = await Promise.all(identities.map(
+        async (identity) => [identity, await queryVoiceAvailability(baseUrl, identity)]
+      ));
+      if (stopped) return;
+      setState((previous) => ({
+        key,
+        baseUrl,
+        // Known values never transfer across gateways, even for the same identity.
+        values: mergeVoiceReadiness(previous.baseUrl === baseUrl ? previous.values : NO_READINESS, entries)
+      }));
+      timer = setTimeout(() => void refresh(), READINESS_REFRESH_INTERVAL_MS);
+    };
+    void refresh();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [baseUrl, enabled, focusedIdentity, key, voiceIdentity]);
+  return enabled && state.key === key ? state.values : NO_READINESS;
+}
+
 // src/ConsoleApp.tsx
-var import_jsx_runtime44 = require("react/jsx-runtime");
+var import_jsx_runtime45 = require("react/jsx-runtime");
 function normalizeConsoleTheme(value) {
   return value === "dark" || value === "light" ? value : null;
 }
@@ -20427,21 +22036,21 @@ function actionVisible(actions, key) {
 }
 function richBlockHasVisibleContent(block) {
   if (!block || typeof block !== "object") return false;
-  const record = block;
+  const record2 = block;
   const scalarText = [
-    typeof record.text === "string" ? record.text : "",
-    typeof record.label === "string" ? record.label : "",
-    typeof record.result === "string" ? record.result : "",
-    typeof record.body === "string" ? record.body : "",
-    typeof record.title === "string" ? record.title : "",
-    typeof record.name === "string" ? record.name : ""
+    typeof record2.text === "string" ? record2.text : "",
+    typeof record2.label === "string" ? record2.label : "",
+    typeof record2.result === "string" ? record2.result : "",
+    typeof record2.body === "string" ? record2.body : "",
+    typeof record2.title === "string" ? record2.title : "",
+    typeof record2.name === "string" ? record2.name : ""
   ].join(" ").trim();
   if (scalarText.length > 0) return true;
-  if (record.type === "image" && (typeof record.src === "string" || typeof record.blobId === "string"))
+  if (record2.type === "image" && (typeof record2.src === "string" || typeof record2.blobId === "string"))
     return true;
-  if (Array.isArray(record.headers) && record.headers.some((v) => String(v || "").trim().length > 0))
+  if (Array.isArray(record2.headers) && record2.headers.some((v) => String(v || "").trim().length > 0))
     return true;
-  if (Array.isArray(record.rows) && record.rows.some(
+  if (Array.isArray(record2.rows) && record2.rows.some(
     (row) => Array.isArray(row) && row.some((v) => String(v || "").trim().length > 0)
   ))
     return true;
@@ -20467,8 +22076,8 @@ function sanitizeConversationEntries(entries) {
 function normalizeConsoleInspectResult(value) {
   const direct = normalizeIdentityInspectViewState(value);
   if (direct) return direct;
-  const record = value && typeof value === "object" ? value : {};
-  const identityRecord = record.identity && typeof record.identity === "object" ? record.identity : null;
+  const record2 = value && typeof value === "object" ? value : {};
+  const identityRecord = record2.identity && typeof record2.identity === "object" ? record2.identity : null;
   if (!identityRecord) return null;
   return normalizeIdentityInspectViewState({
     identity: identityRecord.identity,
@@ -20482,7 +22091,7 @@ function normalizeConsoleInspectResult(value) {
       session_id: identityRecord.session_id,
       agent_runtime_id: identityRecord.runtime_member_id
     },
-    topology_peers: Array.isArray(record.peers) ? record.peers : [],
+    topology_peers: Array.isArray(record2.peers) ? record2.peers : [],
     lease: null
   });
 }
@@ -20561,9 +22170,9 @@ function isTerminalTurnCompletedFrame(frame) {
 }
 function isActiveServerToolContentFrame2(frame) {
   if (frame.event !== "server_tool_content") return false;
-  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content = record?.content && typeof record.content === "object" ? record.content : null;
-  const type = typeof content?.type === "string" ? content.type : typeof record?.type === "string" ? record.type : "";
+  const record2 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content = record2?.content && typeof record2.content === "object" ? record2.content : null;
+  const type = typeof content?.type === "string" ? content.type : typeof record2?.type === "string" ? record2.type : "";
   if (type === "message_annotations" || Array.isArray(content?.annotations) || type.includes(".completed") || type.includes(".done") || type.includes(".failed") || type.includes(".error")) {
     return false;
   }
@@ -20571,10 +22180,10 @@ function isActiveServerToolContentFrame2(frame) {
 }
 function isTerminalServerToolContentFrame2(frame) {
   if (frame.event !== "server_tool_content") return false;
-  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const content = record?.content && typeof record.content === "object" ? record.content : null;
-  const type = typeof content?.type === "string" ? content.type : typeof record?.type === "string" ? record.type : "";
-  const status = typeof content?.status === "string" ? content.status : typeof record?.status === "string" ? record.status : "";
+  const record2 = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content = record2?.content && typeof record2.content === "object" ? record2.content : null;
+  const type = typeof content?.type === "string" ? content.type : typeof record2?.type === "string" ? record2.type : "";
+  const status = typeof content?.status === "string" ? content.status : typeof record2?.status === "string" ? record2.status : "";
   if (type === "message_annotations" || Array.isArray(content?.annotations)) {
     return false;
   }
@@ -20652,47 +22261,52 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "server_tool_content"
 ]);
 function ConsoleApp({ baseUrl }) {
-  const consoleFetchTimeoutMsRef = import_react34.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2);
-  const consoleTransport = import_react34.default.useMemo(
+  const consoleFetchTimeoutMsRef = import_react37.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2);
+  const consoleTransport = import_react37.default.useMemo(
     () => createHttpConsoleTransport2({
       baseUrl,
       fetchTimeoutMs: () => consoleFetchTimeoutMsRef.current
     }),
     [baseUrl]
   );
-  const consoleController = import_react34.default.useMemo(
+  const consoleController = import_react37.default.useMemo(
     () => createMobKitConsoleController2({ transport: consoleTransport }),
     [consoleTransport]
   );
-  const [experience, setExperience] = import_react34.default.useState(
+  const { voice, state: voiceState } = useVoiceController(baseUrl);
+  const sampleVoiceWaveform = import_react37.default.useCallback(
+    (source, samples) => voice?.sampleWaveform(source, samples),
+    [voice]
+  );
+  const [experience, setExperience] = import_react37.default.useState(
     null
   );
-  const [agents, setAgents] = import_react34.default.useState([]);
-  const [draftByKey, setDraftByKey] = import_react34.default.useState(
+  const [agents, setAgents] = import_react37.default.useState([]);
+  const [draftByKey, setDraftByKey] = import_react37.default.useState(
     {}
   );
-  const [stagedAttachmentsByIdentity, setStagedAttachmentsByIdentity] = import_react34.default.useState({});
-  const [sendingPanels, setSendingPanels] = import_react34.default.useState(
+  const [stagedAttachmentsByIdentity, setStagedAttachmentsByIdentity] = import_react37.default.useState({});
+  const [sendingPanels, setSendingPanels] = import_react37.default.useState(
     /* @__PURE__ */ new Set()
   );
-  const [pinnedAgentIds, setPinnedAgentIds] = import_react34.default.useState(
+  const [pinnedAgentIds, setPinnedAgentIds] = import_react37.default.useState(
     /* @__PURE__ */ new Set()
   );
-  const [inspectByIdentity, setInspectByIdentity] = import_react34.default.useState({});
-  const [routingData, setRoutingData] = import_react34.default.useState({
+  const [inspectByIdentity, setInspectByIdentity] = import_react37.default.useState({});
+  const [routingData, setRoutingData] = import_react37.default.useState({
     routes: [],
     deliveries: []
   });
-  const [gatingData, setGatingData] = import_react34.default.useState({
+  const [gatingData, setGatingData] = import_react37.default.useState({
     pending: [],
     audit: []
   });
-  const [accessData, setAccessData] = import_react34.default.useState({
+  const [accessData, setAccessData] = import_react37.default.useState({
     status: null,
     config: null,
     error: null
   });
-  const [memoryData, setMemoryData] = import_react34.default.useState({
+  const [memoryData, setMemoryData] = import_react37.default.useState({
     records: [],
     realms: [],
     quarantineRecords: [],
@@ -20720,7 +22334,7 @@ function ConsoleApp({ baseUrl }) {
     auditVerdicts: [],
     auditVerdictsDenied: false
   });
-  const [workGraphData, setWorkGraphData] = import_react34.default.useState({
+  const [workGraphData, setWorkGraphData] = import_react37.default.useState({
     items: [],
     edges: [],
     attention: [],
@@ -20730,17 +22344,17 @@ function ConsoleApp({ baseUrl }) {
     denied: false,
     error: null
   });
-  const [topologyQueryResult, setTopologyQueryResult] = import_react34.default.useState(null);
-  const [topologyCapabilities, setTopologyCapabilities] = import_react34.default.useState(null);
-  const [topologyOperations, setTopologyOperations] = import_react34.default.useState([]);
-  const [topologyConnectionSourceId, setTopologyConnectionSourceId] = import_react34.default.useState(null);
-  const [activeActivityPresetId, setActiveActivityPresetId] = import_react34.default.useState("");
-  const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react34.default.useState("");
-  const [loading, setLoading] = import_react34.default.useState(true);
-  const [loadingHistory, setLoadingHistory] = import_react34.default.useState({});
-  const [error, setError] = import_react34.default.useState("");
-  const [actionError, setActionError] = import_react34.default.useState("");
-  const [theme, setTheme] = import_react34.default.useState(() => {
+  const [topologyQueryResult, setTopologyQueryResult] = import_react37.default.useState(null);
+  const [topologyCapabilities, setTopologyCapabilities] = import_react37.default.useState(null);
+  const [topologyOperations, setTopologyOperations] = import_react37.default.useState([]);
+  const [topologyConnectionSourceId, setTopologyConnectionSourceId] = import_react37.default.useState(null);
+  const [activeActivityPresetId, setActiveActivityPresetId] = import_react37.default.useState("");
+  const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react37.default.useState("");
+  const [loading, setLoading] = import_react37.default.useState(true);
+  const [loadingHistory, setLoadingHistory] = import_react37.default.useState({});
+  const [error, setError] = import_react37.default.useState("");
+  const [actionError, setActionError] = import_react37.default.useState("");
+  const [theme, setTheme] = import_react37.default.useState(() => {
     try {
       return localStorage.getItem("mobkit-console-theme") || "light";
     } catch {
@@ -20748,22 +22362,22 @@ function ConsoleApp({ baseUrl }) {
     }
   });
   const [variant, setVariant] = useConsoleVariant();
-  const sidebarStorageScope = import_react34.default.useMemo(
+  const sidebarStorageScope = import_react37.default.useMemo(
     () => sidebarPreferencesScope(baseUrl, experience),
     [baseUrl, experience]
   );
-  const sidebarStorageNamespace = import_react34.default.useMemo(
+  const sidebarStorageNamespace = import_react37.default.useMemo(
     () => sidebarPreferencesNamespace(baseUrl, experience),
     [baseUrl, experience]
   );
-  const sidebarPinsStorageKey = import_react34.default.useMemo(
+  const sidebarPinsStorageKey = import_react37.default.useMemo(
     () => sidebarStorageKey(SIDEBAR_PINS_STORAGE_PREFIX, sidebarStorageNamespace),
     [sidebarStorageNamespace]
   );
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     pruneStaleSidebarStorage(browserLocalStorage(), sidebarStorageScope, sidebarStorageNamespace);
   }, [sidebarStorageScope, sidebarStorageNamespace]);
-  const [sidebarCollapsed, setSidebarCollapsed] = import_react34.default.useState(
+  const [sidebarCollapsed, setSidebarCollapsed] = import_react37.default.useState(
     () => {
       try {
         return localStorage.getItem("mobkit-console-sidebar-collapsed") === "1";
@@ -20772,7 +22386,7 @@ function ConsoleApp({ baseUrl }) {
       }
     }
   );
-  const toggleSidebarCollapsed = import_react34.default.useCallback(() => {
+  const toggleSidebarCollapsed = import_react37.default.useCallback(() => {
     setSidebarCollapsed((c) => {
       const next = !c;
       try {
@@ -20785,14 +22399,14 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, []);
-  const [railCollapsed, setRailCollapsed] = import_react34.default.useState(() => {
+  const [railCollapsed, setRailCollapsed] = import_react37.default.useState(() => {
     try {
       return localStorage.getItem("mobkit-console-rail-collapsed") === "1";
     } catch {
       return false;
     }
   });
-  const toggleRailCollapsed = import_react34.default.useCallback(() => {
+  const toggleRailCollapsed = import_react37.default.useCallback(() => {
     setRailCollapsed((c) => {
       const next = !c;
       try {
@@ -20802,11 +22416,11 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, []);
-  const defaultPinnedAgentIdsKey = import_react34.default.useMemo(
+  const defaultPinnedAgentIdsKey = import_react37.default.useMemo(
     () => JSON.stringify(experience?.console_config?.agent_list?.default_pinned_agent_ids || []),
     [experience?.console_config?.agent_list?.default_pinned_agent_ids]
   );
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const defaults = new Set(experience?.console_config?.agent_list?.default_pinned_agent_ids || []);
     const stored = readSidebarStringSet(
       browserLocalStorage(),
@@ -20814,7 +22428,7 @@ function ConsoleApp({ baseUrl }) {
     );
     setPinnedAgentIds(stored ?? defaults);
   }, [defaultPinnedAgentIdsKey, experience?.console_config?.agent_list, sidebarPinsStorageKey]);
-  const togglePinnedAgent = import_react34.default.useCallback((agent, renderedFamilyPinIds) => {
+  const togglePinnedAgent = import_react37.default.useCallback((agent, renderedFamilyPinIds) => {
     const pinId = sidebarAgentPinId2(agent);
     setPinnedAgentIds((current) => {
       const next = new Set(current);
@@ -20833,13 +22447,13 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, [agents, sidebarPinsStorageKey]);
-  const [, setRenderTick] = import_react34.default.useState(0);
-  const forceRender = import_react34.default.useCallback(() => setRenderTick((n) => n + 1), []);
-  const stagedAttachmentsRef = import_react34.default.useRef(stagedAttachmentsByIdentity);
-  import_react34.default.useEffect(() => {
+  const [, setRenderTick] = import_react37.default.useState(0);
+  const forceRender = import_react37.default.useCallback(() => setRenderTick((n) => n + 1), []);
+  const stagedAttachmentsRef = import_react37.default.useRef(stagedAttachmentsByIdentity);
+  import_react37.default.useEffect(() => {
     stagedAttachmentsRef.current = stagedAttachmentsByIdentity;
   }, [stagedAttachmentsByIdentity]);
-  import_react34.default.useEffect(
+  import_react37.default.useEffect(
     () => () => {
       for (const items of Object.values(stagedAttachmentsRef.current)) {
         items.forEach((item) => URL.revokeObjectURL(item.previewUrl));
@@ -20888,11 +22502,11 @@ function ConsoleApp({ baseUrl }) {
       params
     })).result;
   }
-  const identityLogRef = import_react34.default.useRef({});
-  const timelineFetchInFlightRef = import_react34.default.useRef(
+  const identityLogRef = import_react37.default.useRef({});
+  const timelineFetchInFlightRef = import_react37.default.useRef(
     {}
   );
-  const optimisticUserByPanelKeyRef = import_react34.default.useRef({});
+  const optimisticUserByPanelKeyRef = import_react37.default.useRef({});
   function getOrCreateLog(identity) {
     let log = identityLogRef.current[identity];
     if (!log) {
@@ -20944,8 +22558,8 @@ function ConsoleApp({ baseUrl }) {
   function clearOptimisticUserByContent(identity, frame) {
     if (frame.event !== "interaction_started" && frame.event !== "user_input" && frame.event !== "run_started")
       return false;
-    const record = frame.data && typeof frame.data === "object" ? frame.data : {};
-    const contentValue = frame.event === "run_started" ? record.prompt : record.content;
+    const record2 = frame.data && typeof frame.data === "object" ? frame.data : {};
+    const contentValue = frame.event === "run_started" ? record2.prompt : record2.content;
     const content = typeof contentValue === "string" ? contentValue.trim() : "";
     if (!content) return false;
     const clearedPanelKeys = [];
@@ -21284,14 +22898,14 @@ function ConsoleApp({ baseUrl }) {
     void panelId;
     return frames;
   }
-  const activityRef = import_react34.default.useRef([]);
-  const liveFramesRef = import_react34.default.useRef([]);
-  const [liveFrames, setLiveFrames] = import_react34.default.useState([]);
+  const activityRef = import_react37.default.useRef([]);
+  const liveFramesRef = import_react37.default.useRef([]);
+  const [liveFrames, setLiveFrames] = import_react37.default.useState([]);
   function commitLiveFrames(frames) {
     liveFramesRef.current = frames;
     setLiveFrames(frames);
   }
-  const pendingStackRef = import_react34.default.useRef({});
+  const pendingStackRef = import_react37.default.useRef({});
   const PENDING_STACK_KEY_PREFIX = "mobkit-pending-stack:";
   const PENDING_DRAIN_CLAIM_TTL_MS = 15e3;
   const stackKeyFor = (identity) => `${PENDING_STACK_KEY_PREFIX}${identity}`;
@@ -21358,7 +22972,7 @@ function ConsoleApp({ baseUrl }) {
     persistPendingStack(identity, next);
     forceRender();
   }
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const onStorage = (e) => {
       if (!e.key || !e.key.startsWith(PENDING_STACK_KEY_PREFIX)) return;
       const identity = e.key.slice(PENDING_STACK_KEY_PREFIX.length);
@@ -21370,26 +22984,26 @@ function ConsoleApp({ baseUrl }) {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
-  const identityBusyRef = import_react34.default.useRef({});
-  const identityLifecycleRef = import_react34.default.useRef({});
+  const identityBusyRef = import_react37.default.useRef({});
+  const identityLifecycleRef = import_react37.default.useRef({});
   const isIdentityBusy = (identity) => identityBusyRef.current[identity] === true;
-  const phaseRef = import_react34.default.useRef({});
-  const phaseValueByKey = import_react34.default.useRef({});
-  const phaseSinceByKey = import_react34.default.useRef({});
-  const phaseTimerByKey = import_react34.default.useRef({});
-  const refreshTimersRef = import_react34.default.useRef({});
-  const experienceTimerRef = import_react34.default.useRef(null);
-  const experienceLoadInFlightRef = import_react34.default.useRef(
+  const phaseRef = import_react37.default.useRef({});
+  const phaseValueByKey = import_react37.default.useRef({});
+  const phaseSinceByKey = import_react37.default.useRef({});
+  const phaseTimerByKey = import_react37.default.useRef({});
+  const refreshTimersRef = import_react37.default.useRef({});
+  const experienceTimerRef = import_react37.default.useRef(null);
+  const experienceLoadInFlightRef = import_react37.default.useRef(
     null
   );
-  const agentsRef = import_react34.default.useRef([]);
-  import_react34.default.useEffect(() => {
+  const agentsRef = import_react37.default.useRef([]);
+  import_react37.default.useEffect(() => {
     agentsRef.current = agents;
   }, [agents]);
-  const initialTargetOpened = import_react34.default.useRef(false);
-  const dockLayoutHydrated = import_react34.default.useRef(false);
-  const dockLayoutRestored = import_react34.default.useRef(false);
-  const dockLayoutRestoring = import_react34.default.useRef(false);
+  const initialTargetOpened = import_react37.default.useRef(false);
+  const dockLayoutHydrated = import_react37.default.useRef(false);
+  const dockLayoutRestored = import_react37.default.useRef(false);
+  const dockLayoutRestoring = import_react37.default.useRef(false);
   const dock = useConsoleDockController({
     createPanelState: ({ target }) => ({
       id: createConsoleId("panel"),
@@ -21397,11 +23011,11 @@ function ConsoleApp({ baseUrl }) {
       mode: "console"
     })
   });
-  const currentDockLayoutStorageKey = import_react34.default.useMemo(
+  const currentDockLayoutStorageKey = import_react37.default.useMemo(
     () => dockLayoutStorageKey(baseUrl, experience),
     [baseUrl, experience?.runtime_id, experience?.console_config?.title]
   );
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     if (!experience || dockLayoutHydrated.current) return;
     dockLayoutHydrated.current = true;
     try {
@@ -21416,7 +23030,7 @@ function ConsoleApp({ baseUrl }) {
     } catch {
     }
   }, [currentDockLayoutStorageKey, experience]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     if (!experience || !dockLayoutHydrated.current) return;
     if (dockLayoutRestoring.current) {
       dockLayoutRestoring.current = false;
@@ -21524,7 +23138,7 @@ function ConsoleApp({ baseUrl }) {
         return false;
     }
   }
-  const dockRef = import_react34.default.useRef(dock);
+  const dockRef = import_react37.default.useRef(dock);
   dockRef.current = dock;
   function updatePhaseForIdentity(identity, frame) {
     let changed = false;
@@ -21581,7 +23195,7 @@ function ConsoleApp({ baseUrl }) {
     }
     return changed;
   }
-  const loadExperience = import_react34.default.useCallback(() => {
+  const loadExperience = import_react37.default.useCallback(() => {
     if (experienceLoadInFlightRef.current) {
       return experienceLoadInFlightRef.current;
     }
@@ -21611,7 +23225,7 @@ function ConsoleApp({ baseUrl }) {
     experienceLoadInFlightRef.current = request;
     return request;
   }, [consoleTransport]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     let mounted = true;
     setLoading(true);
     setError("");
@@ -21624,14 +23238,14 @@ function ConsoleApp({ baseUrl }) {
       mounted = false;
     };
   }, [loadExperience]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const timer = window.setInterval(() => {
       void loadExperience().catch(() => {
       });
     }, 15e3);
     return () => window.clearInterval(timer);
   }, [loadExperience]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const appearance = experience?.console_config?.appearance;
     if (!appearance) return;
     const configuredTheme = normalizeConsoleTheme(appearance.default_theme);
@@ -21655,7 +23269,7 @@ function ConsoleApp({ baseUrl }) {
       }
     }
   }, [experience?.console_config?.appearance, setVariant]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const configured = experience?.console_config?.layout?.sidebar_collapsed;
     if (typeof configured !== "boolean") return;
     try {
@@ -21665,7 +23279,7 @@ function ConsoleApp({ baseUrl }) {
     }
     setSidebarCollapsed(configured);
   }, [experience?.console_config?.layout?.sidebar_collapsed]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const configured = experience?.console_config?.rail?.collapsed;
     if (typeof configured !== "boolean") return;
     try {
@@ -21676,12 +23290,30 @@ function ConsoleApp({ baseUrl }) {
     setRailCollapsed(configured);
   }, [experience?.console_config?.rail?.collapsed]);
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
-  const frontendReadOnly = import_react34.default.useMemo(() => resolveConsoleReadOnlyOverride(), []);
+  const frontendReadOnly = import_react37.default.useMemo(() => resolveConsoleReadOnlyOverride(), []);
   const accessEnforcing = experience?.access?.enabled === true;
   const consoleReadOnly = frontendReadOnly || experience?.console_policy?.read_only === true || !accessEnforcing && experience?.runtime_capabilities?.can_send_messages === false;
-  const consoleReadOnlyRef = import_react34.default.useRef(false);
+  const consoleReadOnlyRef = import_react37.default.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
-  const normalizedTopology = import_react34.default.useMemo(
+  const hasVoiceHost = experience?.voice?.readiness_method === "mobkit/console/voice/readiness";
+  const voiceReadiness = useVoiceReadiness(
+    baseUrl,
+    dock.focusedTarget?.kind === "agent-chat" ? dock.focusedTarget.identity || dock.focusedTarget.memberId : null,
+    voiceState.target?.identity ?? null,
+    hasVoiceHost && !consoleReadOnly && voice !== null
+  );
+  import_react37.default.useEffect(() => {
+    const target = voiceState.target;
+    if (!experience || !voice || !target || !["requesting", "connecting", "active"].includes(voiceState.phase)) return;
+    const voiceAgent = agents.find(
+      (agent) => [agent.identity, agent.member_id, agent.agent_id].includes(target.identity)
+    );
+    if (!hasVoiceHost || voiceReadinessDenied(voiceReadiness, target.identity) || consoleReadOnly || voiceAgent?.affordances?.can_send_message !== true) {
+      setActionError("Voice ended because OpenAI voice readiness or permission to message this agent could no longer be confirmed.");
+      void voice.close();
+    }
+  }, [agents, consoleReadOnly, experience, hasVoiceHost, voice, voiceReadiness, voiceState.phase, voiceState.target]);
+  const normalizedTopology = import_react37.default.useMemo(
     () => normalizeConsoleTopologyQuery(topologyQueryResult, {
       agents,
       fallbackNodes: experience?.topology?.live_snapshot?.nodes || [],
@@ -21700,7 +23332,7 @@ function ConsoleApp({ baseUrl }) {
       topologyQueryResult
     ]
   );
-  const visibleControls = import_react34.default.useMemo(() => {
+  const visibleControls = import_react37.default.useMemo(() => {
     const runtimeControls = hasMobControlSurface ? [
       "topology",
       "timeline",
@@ -21742,7 +23374,7 @@ function ConsoleApp({ baseUrl }) {
     experience?.workgraph?.can_view,
     hasMobControlSurface
   ]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     if (initialTargetOpened.current || dock.focusedTarget || !experience)
       return;
     if (!dockLayoutHydrated.current) return;
@@ -21776,7 +23408,7 @@ function ConsoleApp({ baseUrl }) {
     if (preset) dock.applyPreset(preset);
     dock.openTarget(target, "replace_focused");
   }, [agents, dock, experience, visibleControls]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const target = dock.focusedTarget;
     if (!target || target.kind !== "agent-chat" || agents.length === 0) return;
     const identity = target.identity || target.memberId;
@@ -21793,7 +23425,7 @@ function ConsoleApp({ baseUrl }) {
       dock.openTarget(buildControlTarget2("roster"), "replace_focused");
     }
   }, [agents, dock.focusedTarget]);
-  const refreshAccessData = import_react34.default.useCallback(async () => {
+  const refreshAccessData = import_react37.default.useCallback(async () => {
     const accessTarget = controlWorkbenchTarget("access");
     try {
       const status = await executeHeadlessCommand(
@@ -21813,7 +23445,7 @@ function ConsoleApp({ baseUrl }) {
       setAccessData((current) => ({ ...current, error: errorMessage(err) }));
     }
   }, [baseUrl]);
-  const refreshMemoryData = import_react34.default.useCallback(async () => {
+  const refreshMemoryData = import_react37.default.useCallback(async () => {
     const memoryTarget = controlWorkbenchTarget("memory");
     try {
       let records = [];
@@ -21954,8 +23586,8 @@ function ConsoleApp({ baseUrl }) {
       setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
     }
   }, [baseUrl, experience?.memory?.can_review_quarantine]);
-  const workGraphRefreshSequencerRef = import_react34.default.useRef(createWorkGraphRefreshSequencer());
-  const refreshWorkGraphData = import_react34.default.useCallback(async () => {
+  const workGraphRefreshSequencerRef = import_react37.default.useRef(createWorkGraphRefreshSequencer());
+  const refreshWorkGraphData = import_react37.default.useCallback(async () => {
     const workGraphTarget = controlWorkbenchTarget("workgraph");
     const isCurrent = workGraphRefreshSequencerRef.current.begin();
     try {
@@ -22006,7 +23638,7 @@ function ConsoleApp({ baseUrl }) {
       setWorkGraphData((current) => ({ ...current, error: errorMessage(err) }));
     }
   }, [baseUrl]);
-  const queryMemoryRecords = import_react34.default.useCallback(
+  const queryMemoryRecords = import_react37.default.useCallback(
     async (params) => {
       try {
         return await executeHeadlessCommand(
@@ -22023,7 +23655,7 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl]
   );
-  const loadMemoryEvidence = import_react34.default.useCallback(
+  const loadMemoryEvidence = import_react37.default.useCallback(
     async (identity, evidence) => {
       if (!evidence.session_id) return null;
       try {
@@ -22047,7 +23679,7 @@ function ConsoleApp({ baseUrl }) {
     },
     [consoleController]
   );
-  const loadMemoryRecordDetail = import_react34.default.useCallback(
+  const loadMemoryRecordDetail = import_react37.default.useCallback(
     async (realm, memoryId) => {
       setMemoryData((current) => ({ ...current, detail: null, detailLoading: true, error: null }));
       try {
@@ -22075,7 +23707,7 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl]
   );
-  const runAccessMutation = import_react34.default.useCallback(
+  const runAccessMutation = import_react37.default.useCallback(
     async (command, params) => {
       try {
         await executeHeadlessCommand(command, controlWorkbenchTarget("access"), params);
@@ -22090,7 +23722,7 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl, refreshAccessData, loadExperience]
   );
-  const refreshTopologyData = import_react34.default.useCallback(async () => {
+  const refreshTopologyData = import_react37.default.useCallback(async () => {
     try {
       const capabilities = await consoleTransport.capabilities();
       setTopologyCapabilities(capabilities.topologyControl || null);
@@ -22110,7 +23742,7 @@ function ConsoleApp({ baseUrl }) {
       throw error2;
     }
   }, [consoleTransport]);
-  const refreshPanelData = import_react34.default.useCallback(async () => {
+  const refreshPanelData = import_react37.default.useCallback(async () => {
     const openPanels = dock.viewState.panels.map((p) => p.target).filter(Boolean);
     const inspects = openPanels.filter(
       (t) => t.kind === "identity-inspect"
@@ -22163,11 +23795,11 @@ function ConsoleApp({ baseUrl }) {
       });
     }
   }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData, refreshMemoryData, refreshTopologyData, refreshWorkGraphData]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     void refreshPanelData().catch(() => {
     });
   }, [dock.viewState.panels, refreshPanelData]);
-  const scheduleExperienceRefresh = import_react34.default.useCallback(() => {
+  const scheduleExperienceRefresh = import_react37.default.useCallback(() => {
     if (experienceTimerRef.current !== null) return;
     experienceTimerRef.current = window.setTimeout(async () => {
       experienceTimerRef.current = null;
@@ -22177,7 +23809,7 @@ function ConsoleApp({ baseUrl }) {
       });
     }, 150);
   }, [loadExperience, refreshPanelData]);
-  const scheduleHistoryRefresh = import_react34.default.useCallback(
+  const scheduleHistoryRefresh = import_react37.default.useCallback(
     (identity) => {
       clearTimeout(refreshTimersRef.current[identity]);
       refreshTimersRef.current[identity] = window.setTimeout(async () => {
@@ -22195,7 +23827,7 @@ function ConsoleApp({ baseUrl }) {
     },
     [baseUrl, forceRender]
   );
-  const workGraphHydrationGateRef = import_react34.default.useRef(createWorkGraphHydrationGate());
+  const workGraphHydrationGateRef = import_react37.default.useRef(createWorkGraphHydrationGate());
   async function hydrateWorkGraphCardsForIdentity(identity) {
     const shouldFetch = workGraphHydrationGateRef.current.shouldFetch(identity, {
       workgraphAvailable: experience?.workgraph?.available === true,
@@ -22223,7 +23855,7 @@ function ConsoleApp({ baseUrl }) {
     } catch {
     }
   }
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     for (const panel of dock.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
@@ -22237,7 +23869,7 @@ function ConsoleApp({ baseUrl }) {
       });
     }
   }, [baseUrl, dock.viewState.panels, forceRender, experience?.workgraph?.available]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     const refreshOpenChatPanels = async () => {
       const identities = /* @__PURE__ */ new Set();
       for (const panel of dock.viewState.panels) {
@@ -22288,25 +23920,25 @@ function ConsoleApp({ baseUrl }) {
     void refreshOpenChatPanels();
     return () => window.clearInterval(timer);
   }, [baseUrl, dock.viewState.panels, forceRender]);
-  const scheduleHistoryRefreshRef = import_react34.default.useRef(scheduleHistoryRefresh);
+  const scheduleHistoryRefreshRef = import_react37.default.useRef(scheduleHistoryRefresh);
   scheduleHistoryRefreshRef.current = scheduleHistoryRefresh;
-  const scheduleExperienceRefreshRef = import_react34.default.useRef(scheduleExperienceRefresh);
+  const scheduleExperienceRefreshRef = import_react37.default.useRef(scheduleExperienceRefresh);
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
-  const refreshMemoryDataRef = import_react34.default.useRef(refreshMemoryData);
+  const refreshMemoryDataRef = import_react37.default.useRef(refreshMemoryData);
   refreshMemoryDataRef.current = refreshMemoryData;
-  const memoryPanelDockedRef = import_react34.default.useRef(false);
+  const memoryPanelDockedRef = import_react37.default.useRef(false);
   memoryPanelDockedRef.current = dock.viewState.panels.some(
     (panel) => panel.target?.kind === "memory"
   );
-  const memoryRefreshTimerRef = import_react34.default.useRef(null);
-  const refreshWorkGraphDataRef = import_react34.default.useRef(refreshWorkGraphData);
+  const memoryRefreshTimerRef = import_react37.default.useRef(null);
+  const refreshWorkGraphDataRef = import_react37.default.useRef(refreshWorkGraphData);
   refreshWorkGraphDataRef.current = refreshWorkGraphData;
-  const workGraphPanelDockedRef = import_react34.default.useRef(false);
+  const workGraphPanelDockedRef = import_react37.default.useRef(false);
   workGraphPanelDockedRef.current = dock.viewState.panels.some(
     (panel) => panel.target?.kind === "workgraph"
   );
-  const workGraphRefreshTimerRef = import_react34.default.useRef(null);
-  import_react34.default.useEffect(() => {
+  const workGraphRefreshTimerRef = import_react37.default.useRef(null);
+  import_react37.default.useEffect(() => {
     const handleLiveFrame = (incomingFrame) => {
       const canonicalIdentity = canonicalConsoleIdentity(
         incomingFrame.identity,
@@ -22365,7 +23997,7 @@ function ConsoleApp({ baseUrl }) {
       unsubscribe?.();
     };
   }, [consoleController, consoleTransport]);
-  import_react34.default.useEffect(() => {
+  import_react37.default.useEffect(() => {
     return () => {
       for (const timer of Object.values(phaseTimerByKey.current))
         window.clearTimeout(timer);
@@ -22550,7 +24182,7 @@ function ConsoleApp({ baseUrl }) {
   }
   const reducedMotion = typeof window !== "undefined" ? window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false : false;
   const animMs = (ms) => reducedMotion ? 0 : ms;
-  const pendingDrainOwnerRef = import_react34.default.useRef(
+  const pendingDrainOwnerRef = import_react37.default.useRef(
     `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   );
   function findChatTargetFor(identity) {
@@ -22806,7 +24438,7 @@ function ConsoleApp({ baseUrl }) {
     }
   }
   const canManageWorkGraph = experience?.workgraph?.can_manage === true && !consoleReadOnly;
-  const runWorkGraphCommand = import_react34.default.useCallback(
+  const runWorkGraphCommand = import_react37.default.useCallback(
     async (command, params, cardIdentity) => {
       if (consoleReadOnlyRef.current) return;
       const echoResultToCard = (result, failureMessage) => {
@@ -22863,12 +24495,12 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl, refreshWorkGraphData]
   );
-  const runWorkGraphQuery = import_react34.default.useCallback(
+  const runWorkGraphQuery = import_react37.default.useCallback(
     (command, params) => executeHeadlessCommand(command, controlWorkbenchTarget("workgraph"), params),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl]
   );
-  const makeWorkGraphOperatorHandlers = import_react34.default.useCallback(
+  const makeWorkGraphOperatorHandlers = import_react37.default.useCallback(
     (cardIdentity) => {
       const dispatch = (resolveRevision, send) => {
         void (async () => {
@@ -22943,7 +24575,7 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [runWorkGraphCommand, runWorkGraphQuery, experience?.access?.subject]
   );
-  const workGraphCardActions = import_react34.default.useCallback(
+  const workGraphCardActions = import_react37.default.useCallback(
     (cardIdentity) => {
       if (!canManageWorkGraph) return void 0;
       const { onAttentionReassign: _panelOnly, ...cardHandlers } = makeWorkGraphOperatorHandlers(cardIdentity);
@@ -23020,7 +24652,7 @@ function ConsoleApp({ baseUrl }) {
     window.addEventListener("pointercancel", cleanup);
   }
   if (loading)
-    return /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(
       "div",
       {
         "data-testid": "console-loading",
@@ -23034,16 +24666,16 @@ function ConsoleApp({ baseUrl }) {
           minHeight: "100vh"
         },
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", {})
+          /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", {})
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { children: "Loading console\u2026" })
+          /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { children: "Loading console\u2026" })
         ]
       }
     );
-  if (error) return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { "data-testid": "console-error", children: error });
+  if (error) return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { "data-testid": "console-error", children: error });
   const focusedMemberId = dock.focusedTarget?.kind === "agent-chat" ? dock.focusedTarget.memberId : selectedRosterMemberId;
   const sidebarVS = buildSidebarViewState2({
     agents,
@@ -23072,6 +24704,16 @@ function ConsoleApp({ baseUrl }) {
     retire: actionVisible(actionConfig, "show_retire"),
     reset: actionVisible(actionConfig, "show_reset")
   };
+  const voiceBar = /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
+    VoiceBar,
+    {
+      state: voiceState,
+      sampleWaveform: sampleVoiceWaveform,
+      onClose: () => void voice?.close(),
+      onToggleMicrophone: () => voice?.toggleMicrophone(),
+      onToggleSpeaker: () => voice?.toggleSpeaker()
+    }
+  );
   function renderChatPanel(panel) {
     const target = panel.target;
     if (!target || target.kind !== "agent-chat") return null;
@@ -23125,7 +24767,7 @@ function ConsoleApp({ baseUrl }) {
     const canRetire = !consoleReadOnly && configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
     const stackItems = getPendingStack(identity);
     const agentBusy = isIdentityBusy(identity);
-    const stackSlot = stackItems.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+    const stackSlot = stackItems.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
       PendingStack3,
       {
         items: stackItems,
@@ -23141,7 +24783,7 @@ function ConsoleApp({ baseUrl }) {
         onToggleExpand: (itemId) => onStackToggleExpand(identity, itemId)
       }
     ) : null;
-    return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+    return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
       ChatPane,
       {
         agent,
@@ -23171,6 +24813,16 @@ function ConsoleApp({ baseUrl }) {
         loadingOlderHistory: identityLog.olderHistoryLoading === true,
         onLoadOlder: () => void loadOlderIdentityTimeline(identity),
         stackSlot,
+        voiceSlot: dock.viewState.focusedPanelId === panel.id ? voiceBar : null,
+        onVoiceToggle: voice && voiceReadiness[identity] === true && agent?.affordances?.can_send_message === true ? () => {
+          if (voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error") {
+            void voice.close();
+          } else {
+            void voice.start({ identity, label: target.title || agent?.label || identity });
+          }
+        } : void 0,
+        voiceActive: voiceState.target?.identity === identity && voiceState.phase !== "idle" && voiceState.phase !== "error",
+        voiceDisabled: voiceState.phase === "closing",
         workGraphActions: workGraphCardActions(identity)
       }
     );
@@ -23183,16 +24835,16 @@ function ConsoleApp({ baseUrl }) {
     const canRespawn = !consoleReadOnly && configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
     const canRetire = !consoleReadOnly && configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
     const canReset = !consoleReadOnly && configuredActionVisibility.reset && experience?.runtime_capabilities?.can_retire_members === true;
-    return /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(
       "div",
       {
         className: "console-panel",
         "data-testid": `inspect-panel:${target.identity}`,
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "console-panel__header", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("h3", { children: target.identity }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "console-panel__actions", children: [
-              canRespawn ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "console-panel__header", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("h3", { children: target.identity }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "console-panel__actions", children: [
+              canRespawn ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                 "button",
                 {
                   "data-testid": `inspect-action:${target.identity}:respawn`,
@@ -23201,7 +24853,7 @@ function ConsoleApp({ baseUrl }) {
                   children: configuredActionLabels.respawn
                 }
               ) : null,
-              canReset ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+              canReset ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                 "button",
                 {
                   "data-testid": `inspect-action:${target.identity}:reset`,
@@ -23210,7 +24862,7 @@ function ConsoleApp({ baseUrl }) {
                   children: configuredActionLabels.reset
                 }
               ) : null,
-              canRetire ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+              canRetire ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                 "button",
                 {
                   "data-testid": `inspect-action:${target.identity}:retire`,
@@ -23221,35 +24873,35 @@ function ConsoleApp({ baseUrl }) {
               ) : null
             ] })
           ] }),
-          !inspect ? /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("dl", { className: "console-panel__grid", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "State" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.state }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Role" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.role || "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Addressability" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.addressability }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Generation" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.continuity?.generation ?? "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Checkpoint" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.continuity?.checkpoint_version ?? "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Session" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.continuity?.session_id || "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Runtime" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.continuity?.agent_runtime_id || "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Lease Healthy" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: String(inspect.lease_healthy ?? inspect.lease?.healthy ?? false) }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Peers" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.topology_peers?.join(", ") || "none" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dt", { children: "Output Preview" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("dd", { children: inspect.output_preview || "n/a" })
+          !inspect ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("dl", { className: "console-panel__grid", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "State" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.state }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Role" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.role || "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Addressability" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.addressability }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Generation" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.continuity?.generation ?? "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Checkpoint" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.continuity?.checkpoint_version ?? "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Session" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.continuity?.session_id || "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Runtime" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.continuity?.agent_runtime_id || "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Lease Healthy" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: String(inspect.lease_healthy ?? inspect.lease?.healthy ?? false) }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Peers" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.topology_peers?.join(", ") || "none" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dt", { children: "Output Preview" }),
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("dd", { children: inspect.output_preview || "n/a" })
           ] })
         ]
       }
     );
   }
   function renderHealthPanel(identities) {
-    return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("li", { "data-testid": `health-identity:${r2.identity}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("strong", { children: r2.display_name || r2.identity }),
+    return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("li", { "data-testid": `health-identity:${r2.identity}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("strong", { children: r2.display_name || r2.identity }),
       " \xB7 ",
       r2.state,
       " \xB7",
@@ -23290,17 +24942,17 @@ function ConsoleApp({ baseUrl }) {
   }
   function renderPanelBody(panel) {
     const target = panel.target;
-    if (!target) return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "console-panel", children: "No panel target" });
+    if (!target) return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "console-panel", children: "No panel target" });
     if (target.kind === "agent-chat") return renderChatPanel(panel);
     if (target.kind === "identity-inspect") {
       return renderInspectPanel(target);
     }
     if ((target.kind === "routing" || target.kind === "gating" || target.kind === "gates" || target.kind === "workgraph") && !hasMobControlSurface) {
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "console-panel", children: "This view requires a mob runtime control surface." });
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "console-panel", children: "This view requires a mob runtime control surface." });
     }
-    if (target.kind === "routing") return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(RoutingPanel, { data: routingData });
+    if (target.kind === "routing") return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(RoutingPanel, { data: routingData });
     if (target.kind === "gating")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
         GatingInboxPanel,
         {
           pending: gatingData.pending,
@@ -23310,7 +24962,7 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "topology")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
         TopologyPanel,
         {
           nodes: normalizedTopology?.nodes || experience?.topology?.live_snapshot?.nodes || [],
@@ -23328,9 +24980,9 @@ function ConsoleApp({ baseUrl }) {
         experience?.health_overview?.live_snapshot?.identities || []
       );
     if (target.kind === "timeline")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(TimelinePanel, { frames: activityRef.current });
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(TimelinePanel, { frames: activityRef.current });
     if (target.kind === "roster")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
         RosterPanel,
         {
           agents,
@@ -23350,7 +25002,7 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "gates")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
         GatingInboxPanel,
         {
           pending: gatingData.pending,
@@ -23360,9 +25012,9 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "logs")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(LogsPanel, { frames: activityRef.current });
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(LogsPanel, { frames: activityRef.current });
     if (target.kind === "access")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
         AccessPanel,
         {
           status: accessData.status,
@@ -23401,7 +25053,7 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "memory")
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
         MemoryPanel,
         {
           records: memoryData.records,
@@ -23447,7 +25099,7 @@ function ConsoleApp({ baseUrl }) {
       );
     if (target.kind === "workgraph") {
       const workGraphPanelHandlers = makeWorkGraphOperatorHandlers();
-      return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
         WorkGraphPanel,
         {
           data: workGraphData,
@@ -23463,9 +25115,9 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     }
-    return /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
+    return /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(
     "div",
     {
       className: "cc-theme-scope mobkit-shell",
@@ -23473,10 +25125,10 @@ function ConsoleApp({ baseUrl }) {
       "data-cc-variant": variant,
       "data-testid": "meerkat-console",
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(SpriteSheet, {}),
-        actionError && /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "mobkit-action-error", "data-testid": "console-action-error", role: "alert", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { children: actionError }),
-          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(SpriteSheet, {}),
+        actionError && /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "mobkit-action-error", "data-testid": "console-action-error", role: "alert", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { children: actionError }),
+          /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
             "button",
             {
               "aria-label": "Dismiss error",
@@ -23487,7 +25139,7 @@ function ConsoleApp({ baseUrl }) {
             }
           )
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
           Topbar,
           {
             mobName,
@@ -23505,7 +25157,7 @@ function ConsoleApp({ baseUrl }) {
             onToggleRail: toggleRailCollapsed
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(
           "div",
           {
             className: "shell",
@@ -23513,7 +25165,7 @@ function ConsoleApp({ baseUrl }) {
             "data-sidebar-collapsed": sidebarCollapsed ? "true" : "false",
             "data-rail-collapsed": railCollapsed ? "true" : "false",
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                 Sidebar,
                 {
                   agents,
@@ -23532,7 +25184,7 @@ function ConsoleApp({ baseUrl }) {
                   }
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                 "div",
                 {
                   className: "pane-resizer",
@@ -23541,28 +25193,31 @@ function ConsoleApp({ baseUrl }) {
                   onPointerDown: handleSidebarResize
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { className: "main", children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
-                MobKitDock,
-                {
-                  viewState: dock.viewState,
-                  agents,
-                  renderPanelBody,
-                  visibleControls,
-                  onSelectTab: (id) => dock.selectTab(id),
-                  onCloseTab: (id) => dock.closeTab(id),
-                  onCreateTab: () => dock.createTab(),
-                  onFocusPanel: (id) => dock.focusPanel(id),
-                  onSplitPanel: (id, dir) => dock.splitPanel(id, dir),
-                  onClosePanel: (id) => dock.closePanel(id),
-                  onResizeSplit: (id, ratio) => dock.resizeSplit(id, ratio),
-                  onOpenTargetInPanel: (panelId, target) => {
-                    dock.focusPanel(panelId);
-                    openDockTarget(target);
+              /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)("div", { className: "main", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
+                  MobKitDock,
+                  {
+                    viewState: dock.viewState,
+                    agents,
+                    renderPanelBody,
+                    visibleControls,
+                    onSelectTab: (id) => dock.selectTab(id),
+                    onCloseTab: (id) => dock.closeTab(id),
+                    onCreateTab: () => dock.createTab(),
+                    onFocusPanel: (id) => dock.focusPanel(id),
+                    onSplitPanel: (id, dir) => dock.splitPanel(id, dir),
+                    onClosePanel: (id) => dock.closePanel(id),
+                    onResizeSplit: (id, ratio) => dock.resizeSplit(id, ratio),
+                    onOpenTargetInPanel: (panelId, target) => {
+                      dock.focusPanel(panelId);
+                      openDockTarget(target);
+                    }
                   }
-                }
-              ) }),
-              railVisible ? /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(import_jsx_runtime44.Fragment, { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+                ),
+                dock.focusedTarget?.kind !== "agent-chat" ? voiceBar : null
+              ] }),
+              railVisible ? /* @__PURE__ */ (0, import_jsx_runtime45.jsxs)(import_jsx_runtime45.Fragment, { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                   "div",
                   {
                     className: "pane-resizer pane-resizer--activity",
@@ -23571,7 +25226,7 @@ function ConsoleApp({ baseUrl }) {
                     onPointerDown: handleActivityResize
                   }
                 ),
-                /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+                /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
                   SignalsRail,
                   {
                     frames: activityRef.current,
@@ -23606,14 +25261,14 @@ function ConsoleApp({ baseUrl }) {
 }
 
 // src/index.tsx
-var import_jsx_runtime45 = require("react/jsx-runtime");
+var import_jsx_runtime46 = require("react/jsx-runtime");
 function createConsoleApp(target, options = {}) {
   if (!target) {
     throw new Error("target element is required");
   }
   const baseUrl = options.baseUrl || "";
   const root = (0, import_client.createRoot)(target);
-  root.render(/* @__PURE__ */ (0, import_jsx_runtime45.jsx)(ConsoleApp, { baseUrl }));
+  root.render(/* @__PURE__ */ (0, import_jsx_runtime46.jsx)(ConsoleApp, { baseUrl }));
   return {
     unmount() {
       root.unmount();
