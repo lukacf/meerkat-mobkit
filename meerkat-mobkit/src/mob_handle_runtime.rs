@@ -3806,6 +3806,16 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await
     }
 
+    async fn load_head_canonical_metadata(
+        &self,
+        authority: &meerkat_runtime::store::HeadCanonicalStoreAuthority,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, meerkat_runtime::store::RuntimeStoreError>
+    {
+        // An exact store-issued boundary read: the inner store owns the
+        // authenticated metadata projection and the authority check.
+        self.inner.load_head_canonical_metadata(authority).await
+    }
+
     async fn discard_head_canonical_provisional_tail(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,

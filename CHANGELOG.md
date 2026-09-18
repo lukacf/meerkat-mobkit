@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The session-store-backed `RuntimeStore` decorator forwards Meerkat 0.8.40's new
+  `load_head_canonical_metadata` (exact HeadCanonical boundary metadata without
+  materializing transcript rows) instead of answering the trait default.
 - `MobSessionService::commit_live_delegation_final_transcript` implementations no
   longer gate the method on MobKit's `openai-live` feature. Meerkat 0.8.40 declares
   the trait method unconditionally, so a default-feature build against it failed

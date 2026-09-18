@@ -312,7 +312,18 @@ comms = true
     }
 
     async fn stop(self) {
-        self.unified.mob_handle().stop().await.unwrap();
+        // Production teardown: a member whose runtime is still mid-kickoff
+        // (`Runtime not ready: attached`, e.g. the reset successor before
+        // its first turn) refuses a raw `MobHandle::stop`. The unified
+        // runtime waits that readiness window out and degrades it typed
+        // instead of failing teardown; every other refusal still fails.
+        match self.unified.stop_mob_for_teardown().await {
+            crate::unified_runtime::MobStopOutcome::Stopped
+            | crate::unified_runtime::MobStopOutcome::ProceededWithoutInterrupt { .. } => {}
+            crate::unified_runtime::MobStopOutcome::Failed(error) => {
+                panic!("mob teardown failed: {error}");
+            }
+        }
     }
 }
 

@@ -258,10 +258,20 @@ mod tests {
         body: StdMutex<Option<Value>>,
         disconnect: tokio::sync::Notify,
         disconnected: tokio::sync::Notify,
-        thinking: StdMutex<Option<Value>>,
+        /// The concurrent bootstrap summary. Meerkat 0.8.40 delivers it on
+        /// the provider's instructions lane (recalled knowledge), never as
+        /// spoken commentary and no longer as quiet thinking.
+        /// Wire fragments (500 chars each) concatenated in arrival order.
+        summary_append: StdMutex<Option<String>>,
+        /// Fragments received so far.
+        summary_received: AtomicUsize,
+        /// Fragments acknowledged so far; acks are held until the test
+        /// releases them, then every received fragment is acknowledged.
+        summary_acknowledged: AtomicUsize,
+        release_summary_append: tokio::sync::Notify,
+        /// Quiet causal-tail reassertions still travel on the thinking lane;
+        /// the fixture acknowledges them immediately and only counts them.
         thinking_received: AtomicUsize,
-        thinking_acknowledged: AtomicUsize,
-        release_thinking: tokio::sync::Notify,
     }
 
     // Only the external provider is simulated. HTTP, WebSocket sideband,
@@ -307,6 +317,8 @@ mod tests {
                     socket.send(SocketMessage::Text(json!({
                         "type":"session.started","event_id":"started","session":session
                     }).to_string().into())).await.expect("session started");
+                    let mut held_summary_acks: Vec<Value> = Vec::new();
+                    let mut summary_released = false;
                     loop {
                         let message = tokio::select! {
                             () = capture.disconnect.notified() => {
@@ -314,21 +326,52 @@ mod tests {
                                 capture.disconnected.notify_one();
                                 return;
                             }
+                            () = capture.release_summary_append.notified(), if !summary_released => {
+                                summary_released = true;
+                                for client_event_id in held_summary_acks.drain(..) {
+                                    socket.send(SocketMessage::Text(json!({
+                                        "type":"session.instructions.appended","event_id":"instructions-ack",
+                                        "client_event_id":client_event_id,"start_ms":0.0,"end_ms":0.0
+                                    }).to_string().into())).await.expect("instructions acknowledgement");
+                                    capture.summary_acknowledged.fetch_add(1, Ordering::SeqCst);
+                                }
+                                continue;
+                            }
                             message = socket.recv() => message,
                         };
                         let Some(Ok(message)) = message else { break; };
                         let SocketMessage::Text(text) = message else { continue; };
                         let event: Value = serde_json::from_str(&text).expect("provider command");
                         match event["type"].as_str() {
+                            Some("session.instructions.append") => {
+                                // The bootstrap summary arrives as pipelined
+                                // 500-char fragments; the ack of each is held
+                                // until the test releases the lane so the
+                                // "delivering" stage stays observable.
+                                let fragment = event["content"].as_str().unwrap_or_default().to_string();
+                                capture
+                                    .summary_append
+                                    .lock()
+                                    .expect("summary capture")
+                                    .get_or_insert_with(String::new)
+                                    .push_str(&fragment);
+                                capture.summary_received.fetch_add(1, Ordering::SeqCst);
+                                if summary_released {
+                                    socket.send(SocketMessage::Text(json!({
+                                        "type":"session.instructions.appended","event_id":"instructions-ack",
+                                        "client_event_id":event["event_id"],"start_ms":0.0,"end_ms":0.0
+                                    }).to_string().into())).await.expect("instructions acknowledgement");
+                                    capture.summary_acknowledged.fetch_add(1, Ordering::SeqCst);
+                                } else {
+                                    held_summary_acks.push(event["event_id"].clone());
+                                }
+                            }
                             Some("session.thinking.append") => {
-                                *capture.thinking.lock().expect("thinking capture") = Some(event.clone());
                                 capture.thinking_received.fetch_add(1, Ordering::SeqCst);
-                                capture.release_thinking.notified().await;
                                 socket.send(SocketMessage::Text(json!({
                                     "type":"session.thinking.appended","event_id":"thinking-ack",
                                     "client_event_id":event["event_id"],"start_ms":0.0,"end_ms":0.0
                                 }).to_string().into())).await.expect("thinking acknowledgement");
-                                capture.thinking_acknowledged.fetch_add(1, Ordering::SeqCst);
                             }
                             Some("session.commentary.append") => {
                                 socket.send(SocketMessage::Text(json!({
@@ -882,9 +925,9 @@ mod tests {
         )
         .await;
         assert_eq!(
-            provider.capture.thinking_received.load(Ordering::SeqCst),
+            provider.capture.summary_received.load(Ordering::SeqCst),
             0,
-            "Active can be reached before summary generation or thinking delivery"
+            "Active can be reached before summary generation or summary delivery"
         );
         if scenario != SummaryScenario::CancelWhileGenerating {
             release_summary.notify_one();
@@ -901,7 +944,7 @@ mod tests {
                         .to_string()
                         .contains("private fixture producer detail")
                 );
-                assert_eq!(provider.capture.thinking_received.load(Ordering::SeqCst), 0);
+                assert_eq!(provider.capture.summary_received.load(Ordering::SeqCst), 0);
             } else {
                 wait_context(
                     &app,
@@ -911,17 +954,14 @@ mod tests {
                 )
                 .await;
                 tokio::time::timeout(Duration::from_secs(5), async {
-                    while provider.capture.thinking_received.load(Ordering::SeqCst) == 0 {
+                    while provider.capture.summary_received.load(Ordering::SeqCst) == 0 {
                         tokio::task::yield_now().await;
                     }
                 })
                 .await
-                .expect("actual thinking append");
+                .expect("actual summary append on the instructions lane");
                 assert_eq!(
-                    provider
-                        .capture
-                        .thinking_acknowledged
-                        .load(Ordering::SeqCst),
+                    provider.capture.summary_acknowledged.load(Ordering::SeqCst),
                     0
                 );
                 wait_context(
@@ -931,18 +971,19 @@ mod tests {
                     json!({"phase":"preparing","stage":"delivering"}),
                 )
                 .await;
+                let summary_append = provider
+                    .capture
+                    .summary_append
+                    .lock()
+                    .expect("summary append")
+                    .clone()
+                    .expect("append");
                 assert!(
-                    provider
-                        .capture
-                        .thinking
-                        .lock()
-                        .expect("thinking")
-                        .as_ref()
-                        .expect("append")
-                        .to_string()
-                        .contains("The background agent is configured for the test conversation.")
+                    summary_append
+                        .contains("The background agent is configured for the test conversation."),
+                    "the instructions-lane append must carry the generated summary: {summary_append}"
                 );
-                provider.capture.release_thinking.notify_one();
+                provider.capture.release_summary_append.notify_one();
                 wait_context(
                     &app,
                     &token,
@@ -950,12 +991,21 @@ mod tests {
                     json!({"phase":"provider_acknowledged"}),
                 )
                 .await;
+                let fragments = provider.capture.summary_received.load(Ordering::SeqCst);
+                assert!(
+                    fragments >= 1,
+                    "the summary must have arrived in at least one fragment"
+                );
                 assert_eq!(
-                    provider
-                        .capture
-                        .thinking_acknowledged
-                        .load(Ordering::SeqCst),
-                    1
+                    provider.capture.thinking_received.load(Ordering::SeqCst),
+                    0,
+                    "the summary travels on the instructions lane; without native speech no \
+                     causal-tail reassertion should reach the thinking lane"
+                );
+                assert_eq!(
+                    provider.capture.summary_acknowledged.load(Ordering::SeqCst),
+                    fragments,
+                    "every summary fragment must be acknowledged exactly once"
                 );
             }
         }
@@ -1019,7 +1069,7 @@ mod tests {
             })
             .await
             .expect("close cancels the actual summarizer future");
-            assert_eq!(provider.capture.thinking_received.load(Ordering::SeqCst), 0);
+            assert_eq!(provider.capture.summary_received.load(Ordering::SeqCst), 0);
         }
         let closed_context = rpc(&app, &token, super::super::VOICE_CONTEXT_STATUS_METHOD, json!({
             "identity":"agent-a","request_id":"voice-request","channel_id":pending["channel_id"],
