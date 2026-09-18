@@ -293,6 +293,31 @@ jobs:
           # Windows keys are unchanged.
           key: release-${{ contains(matrix.target, 'unknown-linux-gnu') && 'bullseye-' || '' }}${{ matrix.target }}
 
+      # Meerkat 0.8.40's `openai-live` path pulls `opus` -> `audiopus_sys`,
+      # whose build script falls back to compiling bundled Opus with CMake when
+      # no system libopus is found (true on every runner here). The Bullseye
+      # container ships no cmake at all; install Bullseye's 3.x and assert
+      # that lane instead of inheriting an undeclared host tool. actions/
+      # checkout marks the workspace safe for the host user, and the container
+      # user differs, so plain cargo's first git query otherwise fails with
+      # "detected dubious ownership".
+      - name: Prepare Linux release container
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          apt-get -o Acquire::Retries=3 update
+          DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install --yes --no-install-recommends cmake
+          cmake_version="$(cmake --version | awk 'NR == 1 { print $3 }')"
+          case "${cmake_version}" in
+            3.*) ;;
+            *)
+              echo "Linux release container requires CMake 3.x, found ${cmake_version}" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Apply release build profile overrides
         shell: bash
         # These established build-profile overrides are part of candidate
@@ -317,6 +342,13 @@ jobs:
           # OOM-killed (surfacing as "runner received a shutdown signal",
           # exit 143) — v0.7.22's first matrix run lost 3/5 legs to this.
           CARGO_BUILD_JOBS: "2"
+          # The bundled Opus that audiopus_sys compiles declares
+          # cmake_minimum_required(VERSION 3.1). The macOS and Windows runners
+          # carry CMake 4, which refuses anything below 3.5 unless this floor
+          # is supplied; cmake >= 3.31 reads it from the environment and the
+          # cmake crate passes the environment through. Harmless on the 3.x
+          # Linux lane.
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: |
           set -euo pipefail
           # Build BOTH gateways for this target with plain cargo. (The repo-cargo
