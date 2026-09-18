@@ -12492,9 +12492,7 @@ comms = true
     #[derive(Default)]
     struct ForwardingProbe {
         calls: Mutex<Vec<&'static str>>,
-        #[cfg(feature = "openai-live")]
         live_machine: Mutex<Option<Arc<meerkat_runtime::MeerkatMachine>>>,
-        #[cfg(feature = "openai-live")]
         live_commit: Mutex<
             Option<(
                 meerkat_core::SessionId,

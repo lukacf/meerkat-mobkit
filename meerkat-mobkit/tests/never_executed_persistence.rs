@@ -118,7 +118,6 @@ impl SessionServiceHistoryExt for NeverStartsActorRunService {
 
 #[async_trait::async_trait]
 impl MobSessionService for NeverStartsActorRunService {
-    #[cfg(feature = "openai-live")]
     async fn commit_live_delegation_final_transcript(
         &self,
         machine: &meerkat_runtime::MeerkatMachine,

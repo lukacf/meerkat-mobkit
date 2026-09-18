@@ -220,7 +220,6 @@ impl SessionServiceHistoryExt for CheckpointerCancelProbeSessionService {
 
 #[async_trait::async_trait]
 impl MobSessionService for CheckpointerCancelProbeSessionService {
-    #[cfg(feature = "openai-live")]
     async fn commit_live_delegation_final_transcript(
         &self,
         machine: &meerkat_runtime::MeerkatMachine,

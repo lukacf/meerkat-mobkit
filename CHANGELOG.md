@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `MobSessionService::commit_live_delegation_final_transcript` implementations no
+  longer gate the method on MobKit's `openai-live` feature. Meerkat 0.8.40 declares
+  the trait method unconditionally, so a default-feature build against it failed
+  with "not all trait items implemented".
 - `fork_off` children are retired on the idle default. Idle retirement was
   registered only for `delegate` (implicit mobs) and for `mob_spawn_member`
   with an explicit `idle_retire_secs`; a fork child seated in the caller's
@@ -20,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   console forks.
 
 ### Changed
+
+- Pin the Meerkat dependency family to published `0.8.40`: concurrent voice
+  context bootstrap with the summary on the provider's knowledge lane, the
+  quiet causal-tail replay, spoken owner context that waits for the user's
+  turn to end, a close that cannot stay stuck on an unconfirmed provider, and
+  the observation provenance that ends post-acknowledgement echo. All
+  Meerkat crates are consumed from crates.io again; no Git bindings remain.
 
 - Pin the Meerkat dependency family to published `0.8.39`: public GPT Live
   playback now settles on the caller's `live/playback_complete` snapshot cut
