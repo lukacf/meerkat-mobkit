@@ -296,20 +296,44 @@ jobs:
       # Meerkat 0.8.40's `openai-live` path pulls `opus` -> `audiopus_sys`,
       # whose build script falls back to compiling bundled Opus with CMake when
       # no system libopus is found (true on every runner here). The Bullseye
-      # container ships no cmake at all; install Bullseye's 3.x and assert
-      # that lane instead of inheriting an undeclared host tool. actions/
-      # checkout marks the workspace safe for the host user, and the container
-      # user differs, so plain cargo's first git query otherwise fails with
-      # "detected dubious ownership".
+      # container ships no cmake at all, and installing it from Bullseye apt
+      # failed twice on 2026-09-18 when bullseye-security's pool dropped a
+      # dependency the CDN-cached index still listed (404 on both arches), so
+      # the container gets a pinned Kitware CMake 3.x tarball verified by
+      # sha256 instead. CMake 4 rejects bundled Opus's 3.1 minimum, hence 3.x.
+      # actions/checkout marks the workspace safe for the host user, and the
+      # container user differs, so plain cargo's first git query otherwise
+      # fails with "detected dubious ownership".
       - name: Prepare Linux release container
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
-          apt-get -o Acquire::Retries=3 update
-          DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install --yes --no-install-recommends cmake
-          cmake_version="$(cmake --version | awk 'NR == 1 { print $3 }')"
+          cmake_version_pin="3.31.12"
+          case "$(uname -m)" in
+            x86_64)
+              cmake_arch="linux-x86_64"
+              cmake_sha256="0dc2e9a6860f06bf10bd8fadc03e35d9eeb4df46e33763a7e480e987758f385c"
+              ;;
+            aarch64)
+              cmake_arch="linux-aarch64"
+              cmake_sha256="83f8fd91d2038a56556e1400390fcfe42f79602940c494f6c6f1cdae7f9e7f40"
+              ;;
+            *)
+              echo "Linux release container has no pinned CMake for $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          cmake_tarball="cmake-${cmake_version_pin}-${cmake_arch}.tar.gz"
+          curl --fail --location --retry 5 --retry-delay 5 --silent --show-error \
+            --output "/tmp/${cmake_tarball}" \
+            "https://github.com/Kitware/CMake/releases/download/v${cmake_version_pin}/${cmake_tarball}"
+          echo "${cmake_sha256}  /tmp/${cmake_tarball}" | sha256sum --check --strict
+          mkdir -p /opt/cmake
+          tar --extract --gzip --file "/tmp/${cmake_tarball}" --directory /opt/cmake --strip-components=1
+          echo "/opt/cmake/bin" >> "${GITHUB_PATH}"
+          cmake_version="$(/opt/cmake/bin/cmake --version | awk 'NR == 1 { print $3 }')"
           case "${cmake_version}" in
             3.*) ;;
             *)
@@ -317,6 +341,7 @@ jobs:
               exit 1
               ;;
           esac
+          echo "Linux release container CMake: ${cmake_version} (${cmake_arch})"
 
       - name: Apply release build profile overrides
         shell: bash
