@@ -6,4 +6,3 @@
 # worker stacks inside meerkat-runtime's DSL apply path.
 [env]
 RUST_MIN_STACK = "16777216"
-
