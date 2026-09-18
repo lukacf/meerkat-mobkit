@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The Linux release container installs a pinned Kitware CMake 3.31.12 (sha256
+  verified) instead of Bullseye's apt package. The apt install failed on both
+  Linux release legs when bullseye-security's pool dropped a dependency the
+  CDN-cached index still listed, which no retry can fix.
 - Release gateway binaries build again on all five targets. Meerkat 0.8.40's
   `openai-live` path compiles bundled Opus through CMake; the Linux release
   container now installs CMake 3.x and every leg sets
