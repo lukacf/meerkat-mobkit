@@ -59,6 +59,17 @@ export interface VoiceSessionSnapshot {
  */
 export type VoiceAvailability = "available" | "unavailable" | "unknown";
 
+/**
+ * The gateway's readiness answer with its typed detail. `reason` is present only when voice is
+ * unavailable because another owner holds the gateway's single live voice path; `holder` then
+ * names that owner. Plain unavailability (no host, no credential, unauthorized) has no reason.
+ */
+export interface VoiceReadinessDetail {
+  readonly availability: VoiceAvailability;
+  readonly reason?: "external_live_active";
+  readonly holder?: { readonly identity: string; readonly channelId?: string };
+}
+
 /** Browser seams are injectable so lifecycle tests require neither hardware nor credentials. */
 export interface VoiceSessionEnvironment {
   voiceAvailable(identity: string): Promise<VoiceAvailability>;
@@ -84,17 +95,44 @@ export interface VoiceSessionEnvironment {
  * failure (network, timeout, 5xx, 429) is `unknown` so callers can keep the last known state.
  */
 export async function queryVoiceAvailability(baseUrl: string, identity: string): Promise<VoiceAvailability> {
-  if (!identity?.trim()) return "unavailable";
-  let readiness: { identity?: unknown; available?: unknown } | null;
+  return (await queryVoiceReadiness(baseUrl, identity)).availability;
+}
+
+type ReadinessWire = {
+  identity?: unknown;
+  available?: unknown;
+  reason?: unknown;
+  holder?: { identity?: unknown; channel_id?: unknown } | null;
+} | null;
+
+/** Like {@link queryVoiceAvailability}, keeping the typed reason and holder when the gateway sends them. */
+export async function queryVoiceReadiness(baseUrl: string, identity: string): Promise<VoiceReadinessDetail> {
+  if (!identity?.trim()) return { availability: "unavailable" };
+  let readiness: ReadinessWire;
   try {
-    readiness = await callConsoleRpc<{ identity?: unknown; available?: unknown } | null>(
+    readiness = await callConsoleRpc<ReadinessWire>(
       baseUrl, "mobkit/console/voice/readiness", { identity }, VOICE_TEARDOWN_TIMEOUT_MS,
     );
   } catch (error) {
-    return isTransientRpcFailure(error) ? "unknown" : "unavailable";
+    return { availability: isTransientRpcFailure(error) ? "unknown" : "unavailable" };
   }
-  return readiness?.identity === identity && readiness.available === true ? "available" : "unavailable";
+  if (readiness?.identity !== identity) return { availability: "unavailable" };
+  if (readiness.available === true) return { availability: "available" };
+  if (readiness.reason !== "external_live_active") return { availability: "unavailable" };
+  const holderIdentity = readiness.holder?.identity;
+  const channelId = readiness.holder?.channel_id;
+  return {
+    availability: "unavailable",
+    reason: "external_live_active",
+    ...(typeof holderIdentity === "string"
+      ? { holder: { identity: holderIdentity, ...(typeof channelId === "string" ? { channelId } : {}) } }
+      : {}),
+  };
 }
+
+/** Message for a call the gateway closed because another live owner took the voice path. */
+export const VOICE_SUPERSEDED_MESSAGE =
+  "Voice moved to the external live channel. Start voice again to take it back.";
 
 /**
  * Classify a failed control-plane call. Anything the gateway actually answered (a JSON-RPC
@@ -1038,9 +1076,11 @@ export function createVoiceSession(
         return;
       }
       const kind = (error as { rpcError?: { data?: { kind?: string } } } | null)?.rpcError?.data?.kind;
-      fail(attempt, kind === "voice_closed"
-        ? "The gateway closed this voice session. Start voice again."
-        : REPLACEMENT_UNVERIFIED_MESSAGE);
+      fail(attempt, kind === "voice_superseded"
+        ? VOICE_SUPERSEDED_MESSAGE
+        : kind === "voice_closed"
+          ? "The gateway closed this voice session. Start voice again."
+          : REPLACEMENT_UNVERIFIED_MESSAGE);
     }
   }
 

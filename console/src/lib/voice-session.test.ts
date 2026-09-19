@@ -5,6 +5,7 @@ import { parseVoiceContextStatus, voiceContextFailureMessage } from "./voice-con
 import {
   createVoiceSession,
   queryVoiceAvailability,
+  queryVoiceReadiness,
   VOICE_CONNECT_TIMEOUT_MS,
   VOICE_RECOVERY_TIMEOUT_MS,
   VOICE_SILENCE_TIMEOUT_MS,
@@ -1328,6 +1329,7 @@ test("readiness helper accepts the shared Rust HTTP golden contract for both ava
     for (const [result, expected] of [
       [voiceContract.readiness_available, "available"],
       [voiceContract.readiness_unavailable, "unavailable"],
+      [voiceContract.readiness_external_live_active, "unavailable"],
     ] as const) {
       globalThis.fetch = (async (input, init) => {
         calls++;
@@ -1342,7 +1344,38 @@ test("readiness helper accepts the shared Rust HTTP golden contract for both ava
         expected,
       );
     }
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("readiness detail carries the typed holder when the external live channel owns the voice path", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (_input, init) => {
+      const request = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0", id: request.id, result: voiceContract.readiness_external_live_active,
+      }));
+    }) as typeof fetch;
+    const detail = await queryVoiceReadiness("https://gateway.example", voiceContract.readiness_request.identity);
+    assert.deepEqual(detail, {
+      availability: "unavailable",
+      reason: "external_live_active",
+      holder: {
+        identity: voiceContract.readiness_external_live_active.holder.identity,
+        channelId: voiceContract.readiness_external_live_active.holder.channel_id,
+      },
+    });
+    globalThis.fetch = (async (_input, init) => {
+      const request = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: voiceContract.readiness_unavailable }));
+    }) as typeof fetch;
+    assert.deepEqual(
+      await queryVoiceReadiness("https://gateway.example", voiceContract.readiness_request.identity),
+      { availability: "unavailable" },
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1566,15 +1599,18 @@ test("malformed, legacy, conflicting or cross-target replacement authority fails
   }
 });
 
-test("closed, denied or lost replacement polling fails closed and never impersonates no replacement", async () => {
-  for (const kind of ["voice_closed", "access_denied", "transport_lost"]) {
+test("closed, superseded, denied or lost replacement polling fails closed and never impersonates no replacement", async () => {
+  for (const kind of ["voice_closed", "voice_superseded", "access_denied", "transport_lost"]) {
     const h = harness();
     await h.controller.start(target);
-    const error = Object.assign(new Error("internal detail"), { rpcError: { data: { kind } } });
+    const error = Object.assign(new Error("internal detail"), {
+      rpcError: kind === "voice_superseded" ? voiceContract.superseded_error : { data: { kind } },
+    });
     h.setRpc((method) => method === "mobkit/console/voice/replacement" ? Promise.reject(error) : undefined);
     await h.clock.advance(VOICE_REPLACEMENT_POLL_INTERVAL_MS);
     assert.equal(h.controller.getSnapshot().phase, "error");
     if (kind === "voice_closed") assert.match(h.controller.getSnapshot().error!, /gateway closed/);
+    if (kind === "voice_superseded") assert.match(h.controller.getSnapshot().error!, /moved to the external live channel/);
     assert.equal(h.streams[0].tracks[0].stopped, true);
     assert.equal(h.calls.at(-1)?.method, "mobkit/console/voice/close");
   }
