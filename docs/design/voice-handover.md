@@ -64,6 +64,14 @@ New work in this checkpoint:
   request/channel-fenced. Failures are visible without muting connected audio.
   Replacement/close/dispose cancel observers; late replies cannot affect a new
   call. Context updates never refresh the silence clock.
+- Shared live owner (later addition): `console_voice` and `live: true` compose
+  one `GatewayLiveContext`; `live_wiring::LiveOwnerArbiter` arbitrates the two
+  doors "latest engaged wins" with typed reasons
+  (`superseded_by_console_voice`, `superseded_by_external_live`), the console
+  error kind `voice_superseded`, readiness `reason: external_live_active` with
+  a `holder`, `close_reason` on external status/close, and the stdio
+  notification `mobkit/live/superseded`. See docs/design/live-sessions.md,
+  "One shared live owner".
 
 Important files: `console/src/lib/voice-{session,context}.ts`,
 `console/src/panels/VoiceBar.tsx`, `meerkat-mobkit/src/console_voice{.rs,/}`,
