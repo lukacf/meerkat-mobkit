@@ -739,14 +739,24 @@ mod tests {
             .expect("external member session");
 
         // ONE live context for both doors, exactly as the gateway composes it.
-        let ctx = Arc::new(crate::live_wiring::attach_live(
+        // The external door's provider open goes through the context's
+        // realtime session factory, which in production resolves a real
+        // credential; unit fixtures must never negotiate with the provider,
+        // so the shared context carries the scripted factory instead (the
+        // console door negotiates through the fixture provider above).
+        let realtime =
+            Arc::new(meerkat::test_fixtures::realtime::ScriptedRealtimeSessionFactory::new());
+        let mut shared = crate::live_wiring::attach_live(
             Arc::clone(&service),
             Arc::clone(&machine),
             &factory,
             config,
             "ws://127.0.0.1/shared-owner".to_string(),
             None,
-        ));
+        );
+        shared.session_factory = Arc::clone(&realtime)
+            as Arc<dyn meerkat_client::realtime_session::RealtimeSessionFactory>;
+        let ctx = Arc::new(shared);
         let notifications: Arc<StdMutex<Vec<(String, Value)>>> = Arc::default();
         let sink = Arc::clone(&notifications);
         ctx.arbiter.set_notifier(Arc::new(move |method, params| {
@@ -860,6 +870,11 @@ mod tests {
         assert_eq!(
             external_result["superseded"],
             json!({"owner":"console_voice","identity":"agent-a","channel_id":console_channel}),
+        );
+        assert_eq!(
+            realtime.open_count(),
+            1,
+            "the external door opened through the scripted realtime factory"
         );
         let replacement = rpc(
             &app,
@@ -1064,6 +1079,11 @@ mod tests {
         assert_eq!(
             ctx.arbiter.holder().await.map(|owner| owner.kind()),
             Some("console_voice")
+        );
+        assert_eq!(
+            realtime.open_count(),
+            3,
+            "every external open in this test went through the scripted factory"
         );
         controller.shutdown().await.expect("voice shutdown");
         runtime.shutdown().await;
