@@ -4576,7 +4576,7 @@ actions = ["agent.view"]
 
     #[cfg(feature = "openai-live")]
     #[test]
-    fn console_voice_registration_requires_authenticated_exclusive_composition() {
+    fn console_voice_registration_requires_authenticated_composition_and_shares_live() {
         let registration = json!({
             "principal":"voice@example.com", "realm":"voice",
             "auth_binding":{"realm":"voice","binding":"openai"}, "voice":"marin"
@@ -4591,11 +4591,18 @@ actions = ["agent.view"]
         assert!(parsed.console_voice.is_some());
         assert!(parsed.openai_live.is_none());
         assert!(parsed.strict_live_registered());
+        // Console voice and the external live channel coexist under one shared
+        // live owner; the gateway arbitrates them, it does not refuse them.
+        let mut with_live = options.clone();
+        with_live["live"] = json!(true);
+        let shared = parse_gateway_runtime_options(&json!({"runtime_options":with_live}), None)
+            .expect("console voice beside the external live channel");
+        assert!(shared.console_voice.is_some());
+        assert!(matches!(shared.live, GatewayLiveOption::Enabled { .. }));
         for (field, value) in [
             ("auth_config", Value::Null),
             ("console_require_app_auth", json!(false)),
             ("openai_live", registration.clone()),
-            ("live", json!(true)),
         ] {
             let mut invalid = options.clone();
             if value.is_null() {
@@ -6189,8 +6196,13 @@ fn parse_gateway_runtime_options(
             GatewayOpenAiLiveOption::parse(value)
                 .map_err(|error| format!("runtime_options.console_voice: {error}"))?,
         );
-        if parsed.openai_live.is_some() || !matches!(parsed.live, GatewayLiveOption::Disabled) {
-            return Err("console_voice is exclusive with openai_live and live; one shared live owner is required".to_string());
+        if parsed.openai_live.is_some() {
+            return Err(
+                "console_voice is exclusive with openai_live (both register the same public \
+                 GPT Live door); pair console_voice with `live: true` to expose the external \
+                 live channel beside console voice"
+                    .to_string(),
+            );
         }
         #[cfg(feature = "experimental-gpt-live")]
         if parsed.experimental_live.is_some() {
@@ -13292,87 +13304,117 @@ external_addressable = true
         );
     }
     let app = runtime.build_reference_app_router(decision_state);
+    // Live (realtime) transport: ONE live context per gateway (one adapter
+    // host, one WS state, one provider registration) serves every live door.
+    // Console voice and the external `mobkit/live/*` surface share it and
+    // take turns on its voice-path arbiter ("latest engaged wins"). The WS
+    // router mounts on the SAME HTTP listener the console uses (no second
+    // port; a LAN client or the host's reverse proxy reaches it at
+    // {base}/live/ws), and the live/* RPC handler is erased over the
+    // gateway's concrete session-builder type for the stdin dispatch loop.
+    let ws_base_url = match &gateway_options.live {
+        GatewayLiveOption::Enabled {
+            public_base_url: Some(public),
+            ..
+        } => public.trim_end_matches('/').to_string(),
+        _ => format!("ws://{http_reachable_addr}"),
+    };
+    let live_seed_max_chars = match &gateway_options.live {
+        GatewayLiveOption::Enabled { seed_max_chars, .. } => *seed_max_chars,
+        GatewayLiveOption::Disabled => None,
+    };
+    // The same host config every other agent-build door starts from:
+    // `EnvRealtimeConfigSource` reads `[realm]` / `[self_hosted]` off it,
+    // so `Config::default()` here would drop a declared host config on
+    // the live door alone, with no diagnostic.
+    let live_ctx = live_inputs.as_ref().map(|(service, machine, factory)| {
+        Arc::new(meerkat_mobkit::live_wiring::attach_live(
+            Arc::clone(service),
+            Arc::clone(machine),
+            factory,
+            gateway_agent_config(&gateway_options),
+            ws_base_url.clone(),
+            live_seed_max_chars,
+        ))
+    });
     #[cfg(feature = "openai-live")]
-    let (live_inputs, console_voice_controller) =
-        if let Some(registration) = gateway_options.console_voice.clone() {
-            let Some((service, machine, factory)) = live_inputs else {
-                fail_init(
-                    &request_id,
-                    -32602,
-                    "console_voice requires persistent sessions".to_string(),
-                );
-            };
-            let controller = meerkat_mobkit::console_voice::ConsoleVoiceController::with_live_host(
-                &runtime,
-                service,
-                machine,
-                factory,
-                gateway_agent_config(&gateway_options),
-                registration,
-            )
-            .unwrap_or_else(|error| {
-                fail_init(
-                    &request_id,
-                    -32602,
-                    format!("console_voice composition failed: {error}"),
-                )
-            });
-            (None, controller)
-        } else {
-            (
-                live_inputs,
-                meerkat_mobkit::console_voice::ConsoleVoiceController::default(),
-            )
+    if let Some(live_ctx) = live_ctx.as_ref() {
+        // Preempted owners learn immediately over stdio, not on their next
+        // poll: `mobkit/live/superseded {owner, identity, channel_id, reason}`.
+        let notifier_bridge = bridge.clone();
+        live_ctx
+            .arbiter
+            .set_notifier(Arc::new(move |method, params| {
+                notifier_bridge.notify(method, params);
+            }));
+    }
+    #[cfg(feature = "openai-live")]
+    let console_voice_controller = if let Some(registration) = gateway_options.console_voice.clone()
+    {
+        let (Some(live_ctx), Some((service, machine, factory))) =
+            (live_ctx.as_ref(), live_inputs.as_ref())
+        else {
+            fail_init(
+                &request_id,
+                -32602,
+                "console_voice requires persistent sessions".to_string(),
+            );
         };
+        meerkat_mobkit::console_voice::ConsoleVoiceController::with_shared_live_context(
+            &runtime,
+            Arc::clone(live_ctx),
+            Arc::clone(service),
+            Arc::clone(machine),
+            factory.clone(),
+            registration,
+        )
+        .unwrap_or_else(|error| {
+            fail_init(
+                &request_id,
+                -32602,
+                format!("console_voice composition failed: {error}"),
+            )
+        })
+    } else {
+        meerkat_mobkit::console_voice::ConsoleVoiceController::default()
+    };
     #[cfg(not(feature = "openai-live"))]
     let console_voice_controller = meerkat_mobkit::console_voice::ConsoleVoiceController::default();
-    // Live (realtime) transport: mount the live WebSocket router on the SAME
-    // HTTP listener the console uses (no second port — a LAN client or the
-    // host's reverse proxy reaches it at {base}/live/ws), and erase the
-    // live/* RPC handler over the gateway's concrete session-builder type
-    // for the stdin dispatch loop.
-    let (app, live_rpc) = if let Some((live_service, live_machine, live_agent_factory)) =
-        live_inputs
-    {
-        let ws_base_url = match &gateway_options.live {
-            GatewayLiveOption::Enabled {
-                public_base_url: Some(public),
-                ..
-            } => public.trim_end_matches('/').to_string(),
-            _ => format!("ws://{http_reachable_addr}"),
-        };
-        let live_seed_max_chars = match &gateway_options.live {
-            GatewayLiveOption::Enabled { seed_max_chars, .. } => *seed_max_chars,
-            GatewayLiveOption::Disabled => None,
-        };
-        // The same host config every other agent-build door starts from:
-        // `EnvRealtimeConfigSource` reads `[realm]` / `[self_hosted]` off it,
-        // so `Config::default()` here would drop a declared host config on
-        // the live door alone, with no diagnostic.
-        let live_ctx = Arc::new(meerkat_mobkit::live_wiring::attach_live(
-            Arc::clone(&live_service),
-            Arc::clone(&live_machine),
-            &live_agent_factory,
-            gateway_agent_config(&gateway_options),
-            ws_base_url,
-            live_seed_max_chars,
-        ));
-        let app = if matches!(gateway_options.live, GatewayLiveOption::Enabled { .. }) {
-            app.merge(meerkat_live::live_ws_router(Arc::clone(&live_ctx.ws_state)))
-        } else {
-            app
-        };
-        #[cfg(feature = "openai-live")]
-        let capability_provider = {
-            // Shared strict-registration inputs: the owning Mob MCP state, the
-            // durable-session binding authority scoped to the registered
-            // principal and exact configured binding, the sealed WebRTC
-            // transport, and the stdio public-observation publisher. Both
-            // strict paths compose these identically; only the open authority
-            // and its admission differ.
-            let strict_live_inputs =
-                |option_name: &str, principal: &str, binding: &meerkat_core::AuthBindingRef| {
-                    let mob_mcp_state = runtime
+    // The external live door (WS router + stdio `mobkit/live/*`) mounts when
+    // `live` is enabled, or when a strict registration other than console
+    // voice asked for it. Console voice alone keeps its channels private to
+    // the authenticated console, exactly as before.
+    #[cfg(feature = "openai-live")]
+    let console_voice_registered = gateway_options.console_voice.is_some();
+    #[cfg(not(feature = "openai-live"))]
+    let console_voice_registered = false;
+    let external_live_door = live_inputs.is_some()
+        && (matches!(gateway_options.live, GatewayLiveOption::Enabled { .. })
+            || !console_voice_registered);
+    let (app, live_rpc) =
+        if let (true, Some(live_ctx), Some((live_service, live_machine, live_agent_factory))) =
+            (external_live_door, live_ctx, live_inputs)
+        {
+            // Only the strict (openai-live) capability providers build from the
+            // factory here; the ordinary door reads everything from `live_ctx`.
+            #[cfg(not(feature = "openai-live"))]
+            let _ = &live_agent_factory;
+            let app = if matches!(gateway_options.live, GatewayLiveOption::Enabled { .. }) {
+                app.merge(meerkat_live::live_ws_router(Arc::clone(&live_ctx.ws_state)))
+            } else {
+                app
+            };
+            #[cfg(feature = "openai-live")]
+            let capability_provider = {
+                // Shared strict-registration inputs: the owning Mob MCP state, the
+                // durable-session binding authority scoped to the registered
+                // principal and exact configured binding, the sealed WebRTC
+                // transport, and the stdio public-observation publisher. Both
+                // strict paths compose these identically; only the open authority
+                // and its admission differ.
+                let strict_live_inputs =
+                    |option_name: &str, principal: &str, binding: &meerkat_core::AuthBindingRef| {
+                        let mob_mcp_state = runtime
                     .mob_runtime()
                     .agent_mob_mcp_state()
                     .unwrap_or_else(|| {
@@ -13384,38 +13426,41 @@ external_addressable = true
                             ),
                         )
                     });
-                    let access = gateway_options
-                        .access
-                        .clone()
-                        .unwrap_or_else(meerkat_mobkit::AccessController::disabled);
-                    let binding_authority =
-                        Arc::new(GatewayExperimentalLiveSessionBindingAuthority {
-                            handle: runtime.mob_handle(),
-                            machine: Arc::clone(&live_machine),
-                            access,
-                            principal: principal.to_string(),
-                            allowed_binding: binding.clone(),
-                        });
-                    let transport = Arc::new(
-                        meerkat::experimental_gpt_live::ExperimentalGptLiveWebrtcTransport::new(),
-                    );
-                    let publisher = Arc::new(StdioExperimentalLivePublicObservationPublisher::new(
-                        Arc::clone(&live_machine),
-                        bridge.clone(),
-                    ));
-                    (mob_mcp_state, binding_authority, transport, publisher)
-                };
-            let mut capability_provider: Option<
-                meerkat_mobkit::live_wiring::LiveCapabilityProvider,
-            > = None;
-            #[cfg(feature = "experimental-gpt-live")]
-            if let Some(experimental) = gateway_options.experimental_live.as_ref() {
-                let (mob_mcp_state, binding_authority, transport, publisher) = strict_live_inputs(
-                    "experimental_live",
-                    &experimental.principal,
-                    &experimental.binding,
-                );
-                let open_authority = Arc::new(
+                        let access = gateway_options
+                            .access
+                            .clone()
+                            .unwrap_or_else(meerkat_mobkit::AccessController::disabled);
+                        let binding_authority =
+                            Arc::new(GatewayExperimentalLiveSessionBindingAuthority {
+                                handle: runtime.mob_handle(),
+                                machine: Arc::clone(&live_machine),
+                                access,
+                                principal: principal.to_string(),
+                                allowed_binding: binding.clone(),
+                            });
+                        let transport = Arc::new(
+                            meerkat::experimental_gpt_live::ExperimentalGptLiveWebrtcTransport::new(
+                            ),
+                        );
+                        let publisher =
+                            Arc::new(StdioExperimentalLivePublicObservationPublisher::new(
+                                Arc::clone(&live_machine),
+                                bridge.clone(),
+                            ));
+                        (mob_mcp_state, binding_authority, transport, publisher)
+                    };
+                let mut capability_provider: Option<
+                    meerkat_mobkit::live_wiring::LiveCapabilityProvider,
+                > = None;
+                #[cfg(feature = "experimental-gpt-live")]
+                if let Some(experimental) = gateway_options.experimental_live.as_ref() {
+                    let (mob_mcp_state, binding_authority, transport, publisher) =
+                        strict_live_inputs(
+                            "experimental_live",
+                            &experimental.principal,
+                            &experimental.binding,
+                        );
+                    let open_authority = Arc::new(
                     meerkat::experimental_gpt_live::ExperimentalGptLiveOpenAuthority::new(
                         meerkat::experimental_gpt_live::ExperimentalGptLiveOpenAuthorityConfig {
                             agent_factory: live_agent_factory.clone(),
@@ -13444,24 +13489,24 @@ external_addressable = true
                         )
                     }),
                 );
-                capability_provider = Some(
-                    meerkat_mobkit::live_wiring::LiveCapabilityProvider::experimental(
-                        Arc::new(live_agent_factory.clone()),
-                        experimental.realm.clone(),
-                        experimental.factory.clone(),
-                        open_authority,
-                        transport,
-                        mob_mcp_state,
-                        publisher,
-                    ),
-                );
-            }
-            // Parsing rejects both registrations at once, so this never
-            // overrides an experimental provider.
-            if let Some(public) = gateway_options.openai_live.as_ref() {
-                let (mob_mcp_state, binding_authority, transport, publisher) =
-                    strict_live_inputs("openai_live", &public.principal, &public.binding);
-                let open_authority = Arc::new(
+                    capability_provider = Some(
+                        meerkat_mobkit::live_wiring::LiveCapabilityProvider::experimental(
+                            Arc::new(live_agent_factory.clone()),
+                            experimental.realm.clone(),
+                            experimental.factory.clone(),
+                            open_authority,
+                            transport,
+                            mob_mcp_state,
+                            publisher,
+                        ),
+                    );
+                }
+                // Parsing rejects both registrations at once, so this never
+                // overrides an experimental provider.
+                if let Some(public) = gateway_options.openai_live.as_ref() {
+                    let (mob_mcp_state, binding_authority, transport, publisher) =
+                        strict_live_inputs("openai_live", &public.principal, &public.binding);
+                    let open_authority = Arc::new(
                     meerkat::experimental_gpt_live::ExperimentalGptLiveOpenAuthority::new_public(
                         meerkat::experimental_gpt_live::PublicGptLiveOpenAuthorityConfig {
                             agent_factory: live_agent_factory.clone(),
@@ -13488,33 +13533,33 @@ external_addressable = true
                         )
                     }),
                 );
-                capability_provider =
-                    Some(meerkat_mobkit::live_wiring::LiveCapabilityProvider::public(
-                        Arc::new(live_agent_factory.clone()),
-                        public.realm.clone(),
-                        open_authority,
-                        transport,
-                        mob_mcp_state,
-                        publisher,
-                    ));
-            }
-            capability_provider
-                .unwrap_or_else(meerkat_mobkit::live_wiring::LiveCapabilityProvider::disabled)
+                    capability_provider =
+                        Some(meerkat_mobkit::live_wiring::LiveCapabilityProvider::public(
+                            Arc::new(live_agent_factory.clone()),
+                            public.realm.clone(),
+                            open_authority,
+                            transport,
+                            mob_mcp_state,
+                            publisher,
+                        ));
+                }
+                capability_provider
+                    .unwrap_or_else(meerkat_mobkit::live_wiring::LiveCapabilityProvider::disabled)
+            };
+            #[cfg(feature = "openai-live")]
+            let handler = meerkat_mobkit::live_wiring::live_rpc_handler_with_capabilities(
+                live_ctx,
+                live_service,
+                live_machine,
+                capability_provider,
+            );
+            #[cfg(not(feature = "openai-live"))]
+            let handler =
+                meerkat_mobkit::live_wiring::live_rpc_handler(live_ctx, live_service, live_machine);
+            (app, Some(handler))
+        } else {
+            (app, None)
         };
-        #[cfg(feature = "openai-live")]
-        let handler = meerkat_mobkit::live_wiring::live_rpc_handler_with_capabilities(
-            live_ctx,
-            live_service,
-            live_machine,
-            capability_provider,
-        );
-        #[cfg(not(feature = "openai-live"))]
-        let handler =
-            meerkat_mobkit::live_wiring::live_rpc_handler(live_ctx, live_service, live_machine);
-        (app, Some(handler))
-    } else {
-        (app, None)
-    };
     let http_server =
         http_binding.serve(app.layer(axum::Extension(console_voice_controller.clone())));
 

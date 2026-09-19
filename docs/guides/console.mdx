@@ -193,6 +193,16 @@ tabs, or open an operator panel. Starting voice on another agent ends the
 previous voice conversation before opening the new one. Text composers remain
 usable throughout, including for the agent currently in voice mode.
 
+A gateway may also register `live: true` beside `console_voice` so an external
+client (for example an embodiment daemon opening `mobkit/live/open` over
+`{base}/live/ws`) shares the same live host. The two take turns: the newest
+engagement wins. When the external client opens a channel, the console call
+ends with "Voice moved to the external live channel", and readiness for the
+console reports `available: false` with `reason: "external_live_active"` and
+the holder until that channel closes. Starting voice again from the console
+takes the path back and closes the external channel with a typed
+`superseded_by_console_voice` reason.
+
 With GPT Live client delegation, typed messages go to the background agent;
 the composer labels that destination during voice. Its canonical context and
 results are mirrored into the voice conversation. This follows

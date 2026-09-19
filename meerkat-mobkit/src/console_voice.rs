@@ -13,6 +13,9 @@ use serde::Deserialize;
 use tokio::sync::{Mutex, Notify};
 
 use crate::live_contracts::PendingLiveChannelHandle;
+use crate::live_wiring::{
+    LiveOwner, LiveOwnerArbiter, LiveOwnerCloser, LiveOwnerLease, LiveSupersededReason,
+};
 
 #[cfg(feature = "openai-live")]
 mod auth;
@@ -120,6 +123,9 @@ pub(crate) enum VoiceError {
     Busy,
     HostFailed,
     ContextReadFailed,
+    /// The gateway's single live voice path was taken by another owner
+    /// ("latest engaged wins"); this call was closed for that reason.
+    Superseded(LiveSupersededReason),
 }
 
 impl VoiceError {
@@ -155,11 +161,20 @@ impl VoiceError {
                 "voice_context_read_failed",
                 "Voice context status could not be read",
             ),
+            Self::Superseded(_) => (
+                -32000,
+                "voice_superseded",
+                "Voice conversation was superseded by another live owner",
+            ),
         };
+        let mut data = serde_json::json!({ "kind": kind });
+        if let Self::Superseded(reason) = self {
+            data["reason"] = serde_json::Value::String(reason.as_str().to_string());
+        }
         crate::rpc::JsonRpcError {
             code,
             message: message.to_string(),
-            data: Some(serde_json::json!({ "kind": kind })),
+            data: Some(data),
         }
     }
 }
@@ -218,6 +233,11 @@ struct RequestState {
     /// First moment the registry observed this slot closed; reaping is
     /// measured from here, never from the close request itself.
     retired_at: Option<tokio::time::Instant>,
+    /// Set when the voice-path arbiter closed this call for another owner.
+    /// Every later request for the slot reports it instead of a bare close.
+    superseded: Option<LiveSupersededReason>,
+    /// The slot's engagement of the gateway's live voice path.
+    lease: Option<LiveOwnerLease>,
 }
 
 /// Drop closed slots that are past retention, then enforce the per-principal
@@ -270,6 +290,7 @@ struct RequestSlot {
     identity: String,
     state: Mutex<RequestState>,
     changed: Notify,
+    arbiter: Option<Arc<LiveOwnerArbiter>>,
 }
 
 impl RequestSlot {
@@ -313,12 +334,49 @@ impl RequestSlot {
         });
     }
 
-    fn new(identity: String, state: RequestState) -> Self {
+    fn new(identity: String, state: RequestState, arbiter: Option<Arc<LiveOwnerArbiter>>) -> Self {
         Self {
             identity,
             state: Mutex::new(state),
             changed: Notify::new(),
+            arbiter,
         }
+    }
+
+    /// The typed error a closed slot reports: a supersession when the
+    /// arbiter closed it for another live owner, otherwise `fallback`.
+    fn closed_error(state: &RequestState, fallback: VoiceError) -> VoiceError {
+        state.superseded.map_or(fallback, VoiceError::Superseded)
+    }
+
+    /// The close the voice-path arbiter runs when another owner wins: mark
+    /// the reason, cancel through the ordinary teardown path, and wait for it.
+    fn owner_closer(self: &Arc<Self>) -> LiveOwnerCloser {
+        let slot = Arc::clone(self);
+        Arc::new(move |reason, _channel| {
+            let slot = Arc::clone(&slot);
+            Box::pin(async move {
+                let has_channel = {
+                    let mut state = slot.state.lock().await;
+                    state.superseded = Some(reason);
+                    state.session.is_some() || !state.opening
+                };
+                // `cancel` marks the slot and spawns the teardown that closes
+                // whatever the provider open yields, now or later.
+                slot.cancel().await;
+                if !has_channel {
+                    // Nothing is live yet: the in-flight open will find the
+                    // slot cancelled and close its own channel on completion.
+                    // Waiting here would block the winner on the loser's
+                    // provider handshake.
+                    return Ok(());
+                }
+                tokio::time::timeout(CLOSE_WAIT, slot.wait_closed())
+                    .await
+                    .map_err(|_| "console voice teardown is still pending".to_string())?
+                    .map_err(|error| format!("console voice close failed: {error:?}"))
+            })
+        })
     }
 
     async fn result(&self) -> Result<PendingLiveChannelHandle, VoiceError> {
@@ -326,7 +384,7 @@ impl RequestSlot {
             let changed = self.changed.notified();
             let state = self.state.lock().await;
             if state.cancelled {
-                return Err(VoiceError::Cancelled);
+                return Err(Self::closed_error(&state, VoiceError::Cancelled));
             }
             if let Some(error) = state.open_error {
                 return Err(error);
@@ -382,14 +440,25 @@ impl RequestSlot {
             };
             let mut state = slot.state.lock().await;
             state.closing = false;
-            match result {
+            let released_lease = match result {
                 Ok(()) => {
                     state.closed = true;
                     state.session = None;
+                    state.lease.take()
                 }
-                Err(error) => state.close_error = Some(error),
-            }
+                Err(error) => {
+                    state.close_error = Some(error);
+                    None
+                }
+            };
             slot.changed.notify_waiters();
+            drop(state);
+            // Only after the slot is observably closed: the arbiter may be
+            // mid-engagement waiting on exactly that, and a stale lease is
+            // ignored, so this can never evict the owner that replaced us.
+            if let (Some(arbiter), Some(lease)) = (slot.arbiter.as_ref(), released_lease) {
+                arbiter.release(lease);
+            }
         });
     }
 }
@@ -401,6 +470,41 @@ pub struct ConsoleVoiceController {
     host: Option<Arc<dyn ConsoleVoiceHost>>,
     requests: Arc<Mutex<HashMap<RequestKey, Arc<RequestSlot>>>>,
     stopped: Arc<AtomicBool>,
+    /// The gateway's single live voice path, shared with the external
+    /// `mobkit/live/*` door when both are registered. `None` means console
+    /// voice is the only door and needs no arbitration.
+    arbiter: Option<Arc<LiveOwnerArbiter>>,
+}
+
+/// What `mobkit/console/voice/readiness` reports for one target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VoiceReadinessReport {
+    pub available: bool,
+    /// Typed reason when unavailable because another owner holds the live
+    /// path. Plain unavailability (no host, no credential, unauthorized
+    /// target) carries no reason, as before.
+    pub reason: Option<&'static str>,
+    /// The owner holding the live path, when `reason` names one.
+    pub holder: Option<LiveOwner>,
+}
+
+impl VoiceReadinessReport {
+    pub(crate) const EXTERNAL_LIVE_ACTIVE: &'static str = "external_live_active";
+
+    pub(crate) fn to_wire(&self, identity: &str) -> serde_json::Value {
+        let mut wire = serde_json::json!({ "identity": identity, "available": self.available });
+        if let Some(reason) = self.reason {
+            wire["reason"] = serde_json::Value::String(reason.to_string());
+        }
+        if let Some(holder) = self.holder.as_ref() {
+            let mut holder_wire = serde_json::json!({ "identity": holder.identity() });
+            if let Some(channel_id) = holder.channel_id() {
+                holder_wire["channel_id"] = serde_json::Value::String(channel_id.to_string());
+            }
+            wire["holder"] = holder_wire;
+        }
+        wire
+    }
 }
 
 impl ConsoleVoiceController {
@@ -424,7 +528,7 @@ impl ConsoleVoiceController {
         let session = {
             let state = slot.state.lock().await;
             if state.cancelled || state.closed {
-                return Err(VoiceError::Closed);
+                return Err(RequestSlot::closed_error(&state, VoiceError::Closed));
             }
             state.session.clone().ok_or(VoiceError::Busy)?
         };
@@ -436,7 +540,7 @@ impl ConsoleVoiceController {
         let context_preparation = session.context_preparation(&request.channel_id).await?;
         let state = slot.state.lock().await;
         if state.cancelled || state.closed {
-            return Err(VoiceError::Closed);
+            return Err(RequestSlot::closed_error(&state, VoiceError::Closed));
         }
         if session.pending().channel_id != request.channel_id {
             return Err(VoiceError::RequestConflict);
@@ -486,7 +590,7 @@ impl ConsoleVoiceController {
             .await?;
         let mut state = slot.state.lock().await;
         if state.cancelled || state.closed {
-            return Err(VoiceError::Cancelled);
+            return Err(RequestSlot::closed_error(&state, VoiceError::Cancelled));
         }
         if state.session.is_none() || !state.activated {
             return Err(VoiceError::Busy);
@@ -513,6 +617,43 @@ impl ConsoleVoiceController {
         }
     }
 
+    /// Readiness with the typed reason and holder when the external live
+    /// channel holds the gateway's voice path. Never opens a provider.
+    pub(crate) async fn readiness(
+        &self,
+        principal: &str,
+        identity: &str,
+    ) -> Result<VoiceReadinessReport, VoiceError> {
+        validate_identity(identity)?;
+        if principal.trim().is_empty() {
+            return Err(VoiceError::Unauthorized);
+        }
+        let holder = match self.arbiter.as_ref() {
+            Some(arbiter) => arbiter.holder().await,
+            None => None,
+        };
+        if let Some(holder @ LiveOwner::ExternalLive { .. }) = holder {
+            return Ok(VoiceReadinessReport {
+                available: false,
+                reason: Some(VoiceReadinessReport::EXTERNAL_LIVE_ACTIVE),
+                holder: Some(holder),
+            });
+        }
+        Ok(VoiceReadinessReport {
+            available: self.ready(principal, identity).await?,
+            reason: None,
+            holder: None,
+        })
+    }
+
+    /// Share the gateway's live voice path with the external live door.
+    #[cfg_attr(not(feature = "openai-live"), allow(dead_code))]
+    #[must_use]
+    pub(crate) fn with_arbiter(mut self, arbiter: Arc<LiveOwnerArbiter>) -> Self {
+        self.arbiter = Some(arbiter);
+        self
+    }
+
     pub(crate) fn configured(&self) -> bool {
         self.host.is_some() && !self.stopped.load(Ordering::SeqCst)
     }
@@ -525,7 +666,7 @@ impl ConsoleVoiceController {
         let slot = self.request_slot(principal, request).await?;
         let state = slot.state.lock().await;
         if state.cancelled || state.closed {
-            return Err(VoiceError::Closed);
+            return Err(RequestSlot::closed_error(&state, VoiceError::Closed));
         }
         state.session.clone().ok_or(VoiceError::Busy)
     }
@@ -543,7 +684,7 @@ impl ConsoleVoiceController {
         let slot = self.request_slot(principal, &request).await?;
         let mut state = slot.state.lock().await;
         if state.cancelled || state.closed {
-            return Err(VoiceError::Closed);
+            return Err(RequestSlot::closed_error(&state, VoiceError::Closed));
         }
         if !state.activated {
             state.activated = true;
@@ -627,6 +768,7 @@ impl ConsoleVoiceController {
             host: Some(host),
             requests: Arc::default(),
             stopped: Arc::default(),
+            arbiter: None,
         }
     }
 }
@@ -672,6 +814,7 @@ impl ConsoleVoiceController {
                     opening: true,
                     ..RequestState::default()
                 },
+                self.arbiter.clone(),
             ));
             requests.insert(key, Arc::clone(&slot));
             slot.supervise();
@@ -679,16 +822,74 @@ impl ConsoleVoiceController {
             let owner = principal.to_string();
             let pending = Arc::clone(&slot);
             tokio::spawn(async move {
+                // Take the gateway's live voice path first ("latest engaged
+                // wins"): an active external channel is closed with a typed
+                // reason before this call opens. A close that fails keeps the
+                // external owner and fails this call closed.
+                let lease = if let Some(arbiter) = pending.arbiter.as_ref() {
+                    let engaged = arbiter
+                        .engage(
+                            LiveOwner::ConsoleVoice {
+                                principal: owner.clone(),
+                                identity: request.identity.clone(),
+                                channel_id: None,
+                            },
+                            pending.owner_closer(),
+                        )
+                        .await;
+                    match engaged {
+                        Ok((lease, preempted)) => {
+                            if let Some(previous) = preempted {
+                                tracing::info!(
+                                    identity = %request.identity,
+                                    superseded = ?previous,
+                                    "console voice took the live voice path"
+                                );
+                            }
+                            Some(lease)
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "console voice could not take the live voice path");
+                            let mut state = pending.state.lock().await;
+                            state.opening = false;
+                            state.open_error = Some(VoiceError::HostFailed);
+                            state.closed = true;
+                            pending.changed.notify_waiters();
+                            return;
+                        }
+                    }
+                } else {
+                    None
+                };
                 let result = host.open(&owner, &request.identity).await;
                 let mut state = pending.state.lock().await;
                 state.opening = false;
                 match result {
                     Ok(session) => {
+                        let mut lost_to = None;
+                        if let (Some(arbiter), Some(lease)) = (pending.arbiter.as_ref(), lease) {
+                            arbiter.bind_channel(lease, &session.pending().channel_id);
+                            lost_to = arbiter.take_superseded(lease);
+                        }
+                        state.lease = lease;
                         state.session = Some(session);
                         state.setup_deadline =
                             Some(tokio::time::Instant::now() + PENDING_SETUP_LIMIT);
+                        if let Some(reason) = lost_to {
+                            // Another owner took the path while this open was
+                            // in flight. The channel just opened must not stay
+                            // live beside the winner: close it through the
+                            // ordinary teardown and report the reason.
+                            state.superseded = Some(reason);
+                            drop(state);
+                            pending.cancel().await;
+                            return;
+                        }
                     }
                     Err(error) => {
+                        if let (Some(arbiter), Some(lease)) = (pending.arbiter.as_ref(), lease) {
+                            arbiter.release(lease);
+                        }
                         state.open_error = Some(error);
                         state.closed = true;
                     }
@@ -734,6 +935,7 @@ impl ConsoleVoiceController {
                     retired_at: Some(tokio::time::Instant::now()),
                     ..RequestState::default()
                 },
+                None,
             ));
             requests.insert(key, Arc::clone(&slot));
             // The bound holds after this insertion as well, so a principal
@@ -902,6 +1104,300 @@ mod tests {
             request_id: "request-a".to_string(),
             channel_id: "test-channel".to_string(),
         }
+    }
+
+    fn external_owner(identity: &str) -> LiveOwner {
+        LiveOwner::ExternalLive {
+            identity: identity.to_string(),
+            channel_id: Some(format!("{identity}-channel")),
+        }
+    }
+
+    fn noop_closer() -> LiveOwnerCloser {
+        Arc::new(|_, _| Box::pin(async { Ok(()) }))
+    }
+
+    #[tokio::test]
+    async fn external_live_engagement_supersedes_the_console_call_with_a_typed_reason() {
+        let host = Host::new(true, false);
+        let arbiter = Arc::new(LiveOwnerArbiter::default());
+        let controller =
+            ConsoleVoiceController::new(host.clone()).with_arbiter(Arc::clone(&arbiter));
+        controller.open("alice", request()).await.expect("open");
+        assert_eq!(
+            arbiter.holder().await,
+            Some(LiveOwner::ConsoleVoice {
+                principal: "alice".to_string(),
+                identity: "agent-a".to_string(),
+                channel_id: Some("test-channel".to_string()),
+            }),
+            "the console call binds its channel to its engagement"
+        );
+
+        // The external live door takes the path: the console call is closed
+        // through its ordinary teardown and every later request says why.
+        let (_, preempted) = arbiter
+            .engage(external_owner("agent-b"), noop_closer())
+            .await
+            .expect("external engagement");
+        assert_eq!(preempted.map(|owner| owner.kind()), Some("console_voice"));
+        assert_eq!(host.session.close_calls.load(Ordering::SeqCst), 1);
+        let superseded = VoiceError::Superseded(LiveSupersededReason::SupersededByExternalLive);
+        assert_eq!(
+            controller.context_status("alice", context_request()).await,
+            Err(superseded)
+        );
+        assert_eq!(
+            controller.replacement_required("alice", request()).await,
+            Err(superseded)
+        );
+        assert_eq!(
+            controller
+                .note_activity(
+                    "alice",
+                    VoiceActivity {
+                        identity: "agent-a".to_string(),
+                        request_id: "request-a".to_string(),
+                    },
+                )
+                .await,
+            Err(superseded)
+        );
+        let error = superseded.rpc_error();
+        assert_eq!(error.code, -32000);
+        assert_eq!(
+            error.data,
+            Some(serde_json::json!({
+                "kind": "voice_superseded",
+                "reason": "superseded_by_external_live",
+            }))
+        );
+        // Closing the superseded call is still an ordinary, idempotent close.
+        controller
+            .close("alice", request())
+            .await
+            .expect("close superseded");
+        assert_eq!(host.session.close_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            arbiter.holder().await.map(|owner| owner.kind()),
+            Some("external_live"),
+            "a superseded console close never evicts the owner that replaced it"
+        );
+    }
+
+    #[tokio::test]
+    async fn console_open_takes_the_voice_path_back_from_an_external_channel() {
+        let host = Host::new(true, false);
+        let arbiter = Arc::new(LiveOwnerArbiter::default());
+        let controller =
+            ConsoleVoiceController::new(host.clone()).with_arbiter(Arc::clone(&arbiter));
+        let closes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&closes);
+        let closer: LiveOwnerCloser = Arc::new(move |reason, channel| {
+            let recorder = Arc::clone(&recorder);
+            Box::pin(async move {
+                recorder.lock().expect("closes").push((reason, channel));
+                Ok(())
+            })
+        });
+        arbiter
+            .engage(external_owner("agent-b"), closer)
+            .await
+            .expect("external engagement");
+
+        let readiness = controller
+            .readiness("alice", "agent-a")
+            .await
+            .expect("readiness");
+        assert!(!readiness.available);
+        assert_eq!(readiness.reason, Some("external_live_active"));
+        assert_eq!(
+            readiness.to_wire("agent-a"),
+            serde_json::json!({
+                "identity": "agent-a",
+                "available": false,
+                "reason": "external_live_active",
+                "holder": { "identity": "agent-b", "channel_id": "agent-b-channel" },
+            })
+        );
+        assert!(
+            host.checked_identities.lock().await.is_empty(),
+            "readiness held by the external channel must not probe the console host"
+        );
+
+        controller
+            .open("alice", request())
+            .await
+            .expect("open preempts");
+        assert_eq!(
+            closes.lock().expect("closes").as_slice(),
+            &[(
+                LiveSupersededReason::SupersededByConsoleVoice,
+                Some("agent-b-channel".to_string())
+            )]
+        );
+        assert_eq!(
+            arbiter.close_reason("agent-b-channel"),
+            Some(LiveSupersededReason::SupersededByConsoleVoice)
+        );
+        assert_eq!(
+            arbiter.holder().await.map(|owner| owner.kind()),
+            Some("console_voice")
+        );
+        let readiness = controller
+            .readiness("alice", "agent-a")
+            .await
+            .expect("readiness");
+        assert!(readiness.available);
+        assert_eq!(
+            readiness.to_wire("agent-a"),
+            serde_json::json!({"identity":"agent-a","available":true})
+        );
+
+        // Ending the call frees the path again.
+        controller.close("alice", request()).await.expect("close");
+        assert!(arbiter.holder().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_console_open_that_loses_the_race_while_opening_closes_what_it_opened() {
+        // The host blocks inside open until the test releases it.
+        let host = Host::new(true, true);
+        let arbiter = Arc::new(LiveOwnerArbiter::default());
+        let controller =
+            ConsoleVoiceController::new(host.clone()).with_arbiter(Arc::clone(&arbiter));
+        let opening = {
+            let controller = controller.clone();
+            tokio::spawn(async move { controller.open("alice", request()).await })
+        };
+        host.started.notified().await;
+        assert_eq!(
+            arbiter.holder().await,
+            Some(LiveOwner::ConsoleVoice {
+                principal: "alice".to_string(),
+                identity: "agent-a".to_string(),
+                channel_id: None,
+            }),
+            "the console engaged before its provider open completed"
+        );
+        // The external door wins while the console open is still in flight.
+        let (_, preempted) = arbiter
+            .engage(external_owner("agent-b"), noop_closer())
+            .await
+            .expect("external engagement");
+        assert_eq!(preempted.map(|owner| owner.kind()), Some("console_voice"));
+        assert_eq!(
+            host.session.close_calls.load(Ordering::SeqCst),
+            0,
+            "nothing to close yet"
+        );
+        // The console open now completes: its channel must not stay live
+        // beside the external owner.
+        host.permit.add_permits(1);
+        let result = opening.await.expect("open task");
+        assert_eq!(
+            result,
+            Err(VoiceError::Superseded(
+                LiveSupersededReason::SupersededByExternalLive
+            ))
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.session.close_calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the late console channel is closed");
+        assert_eq!(
+            arbiter.holder().await.map(|owner| owner.kind()),
+            Some("external_live")
+        );
+        assert_eq!(
+            controller.replacement_required("alice", request()).await,
+            Err(VoiceError::Superseded(
+                LiveSupersededReason::SupersededByExternalLive
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dead_external_channel_never_locks_the_console_out() {
+        let host = Host::new(true, false);
+        let arbiter = Arc::new(LiveOwnerArbiter::default());
+        let live: Arc<std::sync::Mutex<std::collections::HashSet<String>>> = Arc::default();
+        let probe = Arc::clone(&live);
+        arbiter.set_liveness(Arc::new(move |channel| {
+            let probe = Arc::clone(&probe);
+            Box::pin(async move { probe.lock().expect("live").contains(&channel) })
+        }));
+        let controller =
+            ConsoleVoiceController::new(host.clone()).with_arbiter(Arc::clone(&arbiter));
+        // The console's own channel is live once it opens.
+        live.lock()
+            .expect("live")
+            .insert("test-channel".to_string());
+        // The external closer fails the way the real one would for a channel
+        // the machine no longer knows.
+        let failing: LiveOwnerCloser =
+            Arc::new(|_, _| Box::pin(async { Err("BindingMismatch".to_string()) }));
+        arbiter
+            .engage(external_owner("agent-b"), failing)
+            .await
+            .expect("external engagement");
+        live.lock()
+            .expect("live")
+            .insert("agent-b-channel".to_string());
+        assert_eq!(
+            controller
+                .readiness("alice", "agent-a")
+                .await
+                .expect("readiness")
+                .reason,
+            Some("external_live_active")
+        );
+        // reachyd's socket drops; meerkat-live closes the channel by itself.
+        live.lock().expect("live").remove("agent-b-channel");
+        let readiness = controller
+            .readiness("alice", "agent-a")
+            .await
+            .expect("readiness");
+        assert!(readiness.available, "{readiness:?}");
+        assert!(readiness.reason.is_none());
+        controller
+            .open("alice", request())
+            .await
+            .expect("console open over a dead channel");
+        assert_eq!(
+            arbiter.holder().await.map(|owner| owner.kind()),
+            Some("console_voice")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_external_close_fails_the_console_open_closed() {
+        let host = Host::new(true, false);
+        let arbiter = Arc::new(LiveOwnerArbiter::default());
+        let controller =
+            ConsoleVoiceController::new(host.clone()).with_arbiter(Arc::clone(&arbiter));
+        let failing: LiveOwnerCloser =
+            Arc::new(|_, _| Box::pin(async { Err("provider close hung".to_string()) }));
+        arbiter
+            .engage(external_owner("agent-b"), failing)
+            .await
+            .expect("external engagement");
+        assert_eq!(
+            controller.open("alice", request()).await,
+            Err(VoiceError::HostFailed)
+        );
+        assert_eq!(
+            host.opens.load(Ordering::SeqCst),
+            0,
+            "no provider open behind a live owner"
+        );
+        assert_eq!(
+            arbiter.holder().await.map(|owner| owner.kind()),
+            Some("external_live")
+        );
     }
 
     #[tokio::test]

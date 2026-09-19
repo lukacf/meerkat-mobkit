@@ -112,6 +112,8 @@ impl meerkat::experimental_gpt_live::ExperimentalLivePublicObservationPublisher
 impl ConsoleVoiceController {
     /// Compose one console-only public Live registration. A gateway must not
     /// simultaneously install a different live context-mirror owner.
+    /// Console voice as the gateway's only live door: composes its own live
+    /// context over `service`/`machine` and needs no arbitration.
     pub fn with_live_host<B: SessionAgentBuilder + 'static>(
         runtime: &Arc<UnifiedRuntime>,
         service: Arc<PersistentSessionService<B>>,
@@ -120,23 +122,38 @@ impl ConsoleVoiceController {
         config: Config,
         registration: PublicLiveRegistration,
     ) -> Result<Self, String> {
-        Self::compose_live_host(
-            runtime,
-            service,
-            machine,
-            factory,
+        let ctx = Arc::new(crate::live_wiring::attach_live(
+            Arc::clone(&service),
+            Arc::clone(&machine),
+            &factory,
             config,
-            registration,
+            String::new(),
             None,
-        )
+        ));
+        Self::compose_live_host(runtime, ctx, service, machine, factory, registration, None)
+    }
+
+    /// Console voice beside the external live channel: both doors open
+    /// member channels through `ctx` (one adapter host, one provider
+    /// registration) and take turns on its voice-path arbiter, newest
+    /// engagement first.
+    pub fn with_shared_live_context<B: SessionAgentBuilder + 'static>(
+        runtime: &Arc<UnifiedRuntime>,
+        ctx: Arc<crate::live_wiring::GatewayLiveContext>,
+        service: Arc<PersistentSessionService<B>>,
+        machine: Arc<meerkat_runtime::MeerkatMachine>,
+        factory: meerkat::AgentFactory,
+        registration: PublicLiveRegistration,
+    ) -> Result<Self, String> {
+        Self::compose_live_host(runtime, ctx, service, machine, factory, registration, None)
     }
 
     fn compose_live_host<B: SessionAgentBuilder + 'static>(
         runtime: &Arc<UnifiedRuntime>,
+        ctx: Arc<crate::live_wiring::GatewayLiveContext>,
         service: Arc<PersistentSessionService<B>>,
         machine: Arc<meerkat_runtime::MeerkatMachine>,
         factory: meerkat::AgentFactory,
-        config: Config,
         registration: PublicLiveRegistration,
         summary_override: Option<(LiveContextSummaryPolicy, String)>,
     ) -> Result<Self, String> {
@@ -150,14 +167,7 @@ impl ConsoleVoiceController {
             access.clone(),
             registration.binding.clone(),
         ));
-        let ctx = Arc::new(crate::live_wiring::attach_live(
-            Arc::clone(&service),
-            Arc::clone(&machine),
-            &factory,
-            config.clone(),
-            String::new(),
-            None,
-        ));
+        let arbiter = Arc::clone(&ctx.arbiter);
         let transport =
             Arc::new(meerkat::experimental_gpt_live::ExperimentalGptLiveWebrtcTransport::new());
         let authority =
@@ -196,7 +206,7 @@ impl ConsoleVoiceController {
             None => LiveContextSummaryPolicy::new(
                 Arc::new(FactorySummarizer {
                     factory: factory.clone(),
-                    config,
+                    config: ctx.config_source.config().clone(),
                     machine: Arc::clone(&machine),
                 }),
                 4 * 1024 * 1024,
@@ -234,7 +244,8 @@ impl ConsoleVoiceController {
                 selection,
             })))),
             ..Self::default()
-        })
+        }
+        .with_arbiter(arbiter))
     }
 }
 
@@ -571,58 +582,67 @@ mod tests {
         }).await.expect("actual context preparation transition")
     }
 
-    async fn exercise_shared_host(disconnect_provider: bool, scenario: SummaryScenario) {
-        let _guard = SHARED_HOST_TEST_LOCK.lock().await;
-        let contract: Value =
-            serde_json::from_str(include_str!("../../tests/fixtures/console_voice_v1.json"))
-                .expect("shared voice contract");
-        let provider = ProviderFixture::start().await;
-        std::fs::create_dir_all(".rct").expect("test state parent");
-        let directory = tempfile::Builder::new()
-            .prefix("console-voice-")
-            .tempdir_in(".rct")
-            .expect("test state");
-        let store: Arc<dyn meerkat::SessionStore> = Arc::new(
-            meerkat_store::SqliteSessionStore::open(directory.path().join("sessions.sqlite"))
-                .expect("session store"),
-        );
-        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
-            meerkat_runtime::store::SqliteRuntimeStore::new(
-                directory.path().join("runtime.sqlite"),
-            )
-            .expect("runtime store"),
-        );
-        let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
-        let blobs: Arc<dyn meerkat_core::BlobStore> =
-            Arc::new(Base64BlobStoreAdapter::new(binary.clone()));
-        let machine = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            runtime_store.clone(),
-            blobs.clone(),
-        ));
-        let factory = meerkat::AgentFactory::new(directory.path())
-            .session_store(store.clone())
-            .runtime_root(directory.path())
-            .project_root(directory.path())
-            .builtins(false)
-            .mob(true)
-            .comms(true);
-        let config = config();
-        let client = Arc::new(meerkat_client::TestClient::for_provider(
-            meerkat_core::Provider::OpenAI,
-        ));
-        let mut builder = meerkat::FactoryAgentBuilder::new(factory.clone(), config.clone());
-        builder.default_llm_client = Some(client.clone());
-        builder.default_blob_store = Some(blobs.clone());
-        let mob_tools = Arc::clone(&builder.default_mob_tools);
-        let service = Arc::new(PersistentSessionService::new(
-            builder,
-            16,
-            store,
-            runtime_store,
-            blobs,
-        ));
-        let definition = meerkat_mob::MobDefinition::from_toml(&format!(
-            r#"
+    /// Everything a real-host test needs: a fixture provider, SQLite stores,
+    /// the persistent service, the machine, the factory and a bootstrapped
+    /// runtime with member `agent-a` spawned.
+    struct RealRuntime {
+        _directory: tempfile::TempDir,
+        provider: ProviderFixture,
+        runtime: Arc<UnifiedRuntime>,
+        service: Arc<PersistentSessionService<meerkat::FactoryAgentBuilder>>,
+        machine: Arc<meerkat_runtime::MeerkatMachine>,
+        factory: meerkat::AgentFactory,
+        config: Config,
+    }
+    impl RealRuntime {
+        async fn start(suffix: &str) -> Self {
+            let provider = ProviderFixture::start().await;
+            std::fs::create_dir_all(".rct").expect("test state parent");
+            let directory = tempfile::Builder::new()
+                .prefix("console-voice-")
+                .tempdir_in(".rct")
+                .expect("test state");
+            let store: Arc<dyn meerkat::SessionStore> = Arc::new(
+                meerkat_store::SqliteSessionStore::open(directory.path().join("sessions.sqlite"))
+                    .expect("session store"),
+            );
+            let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+                meerkat_runtime::store::SqliteRuntimeStore::new(
+                    directory.path().join("runtime.sqlite"),
+                )
+                .expect("runtime store"),
+            );
+            let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+            let blobs: Arc<dyn meerkat_core::BlobStore> =
+                Arc::new(Base64BlobStoreAdapter::new(binary.clone()));
+            let machine = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+                runtime_store.clone(),
+                blobs.clone(),
+            ));
+            let factory = meerkat::AgentFactory::new(directory.path())
+                .session_store(store.clone())
+                .runtime_root(directory.path())
+                .project_root(directory.path())
+                .builtins(false)
+                .mob(true)
+                .comms(true);
+            let config = config();
+            let client = Arc::new(meerkat_client::TestClient::for_provider(
+                meerkat_core::Provider::OpenAI,
+            ));
+            let mut builder = meerkat::FactoryAgentBuilder::new(factory.clone(), config.clone());
+            builder.default_llm_client = Some(client.clone());
+            builder.default_blob_store = Some(blobs.clone());
+            let mob_tools = Arc::clone(&builder.default_mob_tools);
+            let service = Arc::new(PersistentSessionService::new(
+                builder,
+                16,
+                store,
+                runtime_store,
+                blobs,
+            ));
+            let definition = meerkat_mob::MobDefinition::from_toml(&format!(
+                r#"
     [mob]
     id = "console-voice-{suffix}"
     [profiles.agent]
@@ -631,53 +651,442 @@ mod tests {
     [profiles.agent.tools]
     comms = true
     "#,
-            suffix = if disconnect_provider {
-                "disconnect"
-            } else {
-                "normal"
-            },
-        ))
-        .expect("definition");
-        let mut spec = MobBootstrapSpec::new(
-            definition,
-            meerkat_mob::MobStorage::in_memory(),
-            service.clone(),
-        )
-        .with_session_runtime_adapter(machine.clone())
-        .with_options(MobBootstrapOptions {
-            allow_ephemeral_sessions: false,
-            notify_orchestrator_on_resume: true,
-            default_llm_client: Some(client),
-        });
-        spec = spec.with_agent_mob_tools(mob_tools);
-        spec.runtime_adapter = Some(machine.clone());
-        spec.binary_blob_store = Some(binary);
-        let runtime = Arc::new(
-            UnifiedRuntime::bootstrap(
-                spec,
-                MobKitConfig {
-                    modules: vec![],
-                    pre_spawn: vec![],
-                    discovery: DiscoverySpec {
-                        namespace: "voice-test".to_string(),
-                        modules: vec![],
-                    },
-                },
-                Duration::from_secs(2),
+            ))
+            .expect("definition");
+            let mut spec = MobBootstrapSpec::new(
+                definition,
+                meerkat_mob::MobStorage::in_memory(),
+                service.clone(),
             )
-            .await
-            .expect("runtime"),
-        );
+            .with_session_runtime_adapter(machine.clone())
+            .with_options(MobBootstrapOptions {
+                allow_ephemeral_sessions: false,
+                notify_orchestrator_on_resume: true,
+                default_llm_client: Some(client),
+            });
+            spec = spec.with_agent_mob_tools(mob_tools);
+            spec.runtime_adapter = Some(machine.clone());
+            spec.binary_blob_store = Some(binary);
+            let runtime = Arc::new(
+                UnifiedRuntime::bootstrap(
+                    spec,
+                    MobKitConfig {
+                        modules: vec![],
+                        pre_spawn: vec![],
+                        discovery: DiscoverySpec {
+                            namespace: "voice-test".to_string(),
+                            modules: vec![],
+                        },
+                    },
+                    Duration::from_secs(2),
+                )
+                .await
+                .expect("runtime"),
+            );
+            runtime
+                .spawn(meerkat_mob::SpawnMemberSpec::from_wire(
+                    "agent".to_string(),
+                    "agent-a".to_string(),
+                    None,
+                    None,
+                    None,
+                ))
+                .await
+                .expect("member");
+            Self {
+                _directory: directory,
+                provider,
+                runtime,
+                service,
+                machine,
+                factory,
+                config,
+            }
+        }
+    }
+    /// Console voice and the external `mobkit/live/*` door share one live
+    /// context and take turns on its voice-path arbiter, newest engagement
+    /// first, each loser closed through its own sequence with a typed reason.
+    #[tokio::test]
+    async fn console_voice_and_external_live_take_turns_on_the_shared_voice_path() {
+        let _guard = SHARED_HOST_TEST_LOCK.lock().await;
+        let contract: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/console_voice_v1.json"))
+                .expect("shared voice contract");
+        let RealRuntime {
+            _directory,
+            provider,
+            runtime,
+            service,
+            machine,
+            factory,
+            config,
+        } = RealRuntime::start("shared-owner").await;
         runtime
             .spawn(meerkat_mob::SpawnMemberSpec::from_wire(
                 "agent".to_string(),
-                "agent-a".to_string(),
+                "agent-b".to_string(),
                 None,
                 None,
                 None,
             ))
             .await
-            .expect("member");
+            .expect("external member");
+        let session_b = runtime
+            .mob_handle()
+            .resolve_bridge_session_id(&meerkat_mob::AgentIdentity::from("agent-b"))
+            .await
+            .expect("external member session");
+
+        // ONE live context for both doors, exactly as the gateway composes it.
+        let ctx = Arc::new(crate::live_wiring::attach_live(
+            Arc::clone(&service),
+            Arc::clone(&machine),
+            &factory,
+            config,
+            "ws://127.0.0.1/shared-owner".to_string(),
+            None,
+        ));
+        let notifications: Arc<StdMutex<Vec<(String, Value)>>> = Arc::default();
+        let sink = Arc::clone(&notifications);
+        ctx.arbiter.set_notifier(Arc::new(move |method, params| {
+            sink.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((method.to_string(), params));
+        }));
+        let release_summary = Arc::new(tokio::sync::Notify::new());
+        release_summary.notify_one();
+        let policy = LiveContextSummaryPolicy::new(
+            Arc::new(Summary {
+                calls: Arc::new(AtomicUsize::new(0)),
+                release: Arc::clone(&release_summary),
+                cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                scenario: SummaryScenario::Success,
+            }),
+            4 * 1024 * 1024,
+            4096,
+            Duration::from_secs(30),
+        )
+        .expect("summary policy");
+        let registration = PublicLiveRegistration::parse(&json!({
+            "principal":"voice@example.com","realm":"voice",
+            "auth_binding":{"realm":"voice","binding":"openai"},"voice":"marin"
+        }))
+        .expect("registration");
+        let controller = ConsoleVoiceController::compose_live_host(
+            &runtime,
+            Arc::clone(&ctx),
+            service.clone(),
+            Arc::clone(&machine),
+            factory.clone(),
+            registration,
+            Some((policy, provider.url.clone())),
+        )
+        .expect("console host");
+        let external = crate::live_wiring::live_rpc_handler_with_capabilities(
+            Arc::clone(&ctx),
+            service.clone(),
+            Arc::clone(&machine),
+            crate::live_wiring::LiveCapabilityProvider::disabled(),
+        );
+        let external_open = |rpc_id: &str| {
+            external.dispatch(
+                crate::live_wiring::LiveSurfaceAuthority::host_trusted_stdio(),
+                Some(session_b.clone()),
+                Some("agent-b".to_string()),
+                "mobkit/live/open".to_string(),
+                // The member's text model is not realtime-capable; reachyd
+                // selects the realtime lane per open exactly like this.
+                json!({"identity":"agent-b", "model":"gpt-realtime-2"}),
+                json!(rpc_id),
+            )
+        };
+        let external_call = |method: &str, params: Value, rpc_id: &str| {
+            external.dispatch(
+                crate::live_wiring::LiveSurfaceAuthority::host_trusted_stdio(),
+                Some(session_b.clone()),
+                Some("agent-b".to_string()),
+                method.to_string(),
+                params,
+                json!(rpc_id),
+            )
+        };
+        let decisions = crate::console_auth_config::parse_console_auth_config(&json!({
+            "shared_secret":"console-test-signing", "email_allowlist":["voice@example.com"]
+        }))
+        .expect("auth");
+        let token = jsonwebtoken::encode(&jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256), &json!({
+                "iss":"http://127.0.0.1/mobkit-gateway","aud":"persistent-gateway",
+                "sub":"voice@example.com","email":"voice@example.com","exp":chrono::Utc::now().timestamp()+300
+            }), &jsonwebtoken::EncodingKey::from_secret(b"console-test-signing")).expect("token");
+        let app = runtime
+            .build_reference_app_router(decisions)
+            .layer(axum::Extension(controller.clone()));
+
+        // Phase 1: the console holds the path. Its channel is bound to the
+        // engagement, so the external door knows exactly what it preempts.
+        let opened = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/open",
+            json!({"identity":"agent-a","request_id":"voice-first"}),
+        )
+        .await;
+        assert!(opened["error"].is_null(), "{opened}");
+        let console_channel = opened["result"]["channel_id"]
+            .as_str()
+            .expect("console channel")
+            .to_string();
+        assert_eq!(
+            ctx.arbiter.holder().await,
+            Some(crate::live_wiring::LiveOwner::ConsoleVoice {
+                principal: "voice@example.com".to_string(),
+                identity: "agent-a".to_string(),
+                channel_id: Some(console_channel.clone()),
+            })
+        );
+
+        // Phase 2: an external open preempts the console call. The open
+        // result names what it superseded; the console learns why through
+        // its own replacement poll; readiness names the new holder; the
+        // stdio notification fires at once.
+        let external_first = external_open("external-first").await;
+        assert!(external_first.error.is_none(), "{external_first:?}");
+        let external_result = external_first.result.clone().expect("external open result");
+        let external_channel = external_result["channel_id"]
+            .as_str()
+            .expect("external channel")
+            .to_string();
+        assert_eq!(
+            external_result["superseded"],
+            json!({"owner":"console_voice","identity":"agent-a","channel_id":console_channel}),
+        );
+        let replacement = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/replacement",
+            json!({"identity":"agent-a","request_id":"voice-first"}),
+        )
+        .await;
+        assert_eq!(
+            replacement["error"], contract["superseded_error"],
+            "{replacement}"
+        );
+        let readiness = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/readiness",
+            json!({"identity":"agent-a"}),
+        )
+        .await;
+        let mut expected_readiness = contract["readiness_external_live_active"].clone();
+        expected_readiness["holder"]["channel_id"] = json!(external_channel);
+        assert_eq!(readiness["result"], expected_readiness, "{readiness}");
+        {
+            let notified = notifications
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(notified.len(), 1, "{notified:?}");
+            assert_eq!(notified[0].0, "mobkit/live/superseded");
+            assert_eq!(notified[0].1["owner"], "console_voice");
+            assert_eq!(notified[0].1["identity"], "agent-a");
+            assert_eq!(notified[0].1["channel_id"], console_channel);
+            assert_eq!(notified[0].1["reason"], "superseded_by_external_live");
+            assert_eq!(notified[0].1["superseded_by"]["owner"], "external_live");
+        }
+        // The console's own close of the superseded call is idempotent.
+        let closed = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/close",
+            json!({"identity":"agent-a","request_id":"voice-first"}),
+        )
+        .await;
+        assert_eq!(closed["result"], json!({"phase":"closed"}), "{closed}");
+        assert_eq!(
+            ctx.arbiter.holder().await.map(|owner| owner.kind()),
+            Some("external_live"),
+            "a superseded console close never evicts the external owner"
+        );
+
+        // Phase 3: a console open takes the path back. The external channel is
+        // closed through the external door's own sequence and its status
+        // reports the typed reason; the notification names the console.
+        let reopened = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/open",
+            json!({"identity":"agent-a","request_id":"voice-second"}),
+        )
+        .await;
+        assert!(reopened["error"].is_null(), "{reopened}");
+        let second_console_channel = reopened["result"]["channel_id"]
+            .as_str()
+            .expect("second console channel")
+            .to_string();
+        let status = external_call(
+            "mobkit/live/status",
+            json!({"identity":"agent-b","channel_id":external_channel}),
+            "external-status",
+        )
+        .await;
+        assert!(status.error.is_none(), "{status:?}");
+        let status = status.result.expect("status result");
+        assert_eq!(status["status"], json!({"status":"closed"}), "{status}");
+        assert_eq!(
+            status["close_reason"], "superseded_by_console_voice",
+            "{status}"
+        );
+        {
+            let notified = notifications
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(notified.len(), 2, "{notified:?}");
+            assert_eq!(notified[1].1["owner"], "external_live");
+            assert_eq!(notified[1].1["identity"], "agent-b");
+            assert_eq!(notified[1].1["channel_id"], external_channel);
+            assert_eq!(notified[1].1["reason"], "superseded_by_console_voice");
+            assert_eq!(notified[1].1["superseded_by"]["owner"], "console_voice");
+        }
+        let readiness = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/readiness",
+            json!({"identity":"agent-a"}),
+        )
+        .await;
+        assert_eq!(
+            readiness["result"], contract["readiness_available"],
+            "{readiness}"
+        );
+
+        // Phase 4: the external door wins again, then closes on its own. An
+        // ordinary close frees the path and carries no close reason.
+        let external_second = external_open("external-second").await;
+        assert!(external_second.error.is_none(), "{external_second:?}");
+        let external_result = external_second.result.expect("second external open");
+        assert_eq!(
+            external_result["superseded"],
+            json!({"owner":"console_voice","identity":"agent-a","channel_id":second_console_channel}),
+        );
+        let second_external_channel = external_result["channel_id"]
+            .as_str()
+            .expect("second external channel")
+            .to_string();
+        let replacement = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/replacement",
+            json!({"identity":"agent-a","request_id":"voice-second"}),
+        )
+        .await;
+        assert_eq!(
+            replacement["error"], contract["superseded_error"],
+            "{replacement}"
+        );
+        let closed = external_call(
+            "mobkit/live/close",
+            json!({"identity":"agent-b","channel_id":second_external_channel}),
+            "external-close",
+        )
+        .await;
+        assert!(closed.error.is_none(), "{closed:?}");
+        let closed = closed.result.expect("close result");
+        assert_eq!(closed["status"], "closed", "{closed}");
+        assert!(closed.get("close_reason").is_none(), "{closed}");
+        assert!(ctx.arbiter.holder().await.is_none());
+        let readiness = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/readiness",
+            json!({"identity":"agent-a"}),
+        )
+        .await;
+        assert_eq!(
+            readiness["result"], contract["readiness_available"],
+            "{readiness}"
+        );
+
+        // Phase 5: the external channel ends inside meerkat-live (its socket
+        // dropped) without passing through the door. The stale holder must
+        // not lock the console out: readiness is available and the console
+        // opens without preempting anything.
+        let external_third = external_open("external-third").await;
+        assert!(external_third.error.is_none(), "{external_third:?}");
+        let third_external_channel =
+            external_third.result.expect("third external open")["channel_id"]
+                .as_str()
+                .expect("third external channel")
+                .to_string();
+        assert_eq!(
+            ctx.arbiter.holder().await.map(|owner| owner.kind()),
+            Some("external_live")
+        );
+        let direct_host = crate::live_wiring::member_live_host_for_test(&ctx, &service, &machine);
+        direct_host
+            .close_live_channel(
+                None,
+                &meerkat_core::LiveChannelId::new(&third_external_channel),
+            )
+            .await
+            .expect("meerkat-side close of the external channel");
+        let readiness = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/readiness",
+            json!({"identity":"agent-a"}),
+        )
+        .await;
+        assert_eq!(
+            readiness["result"], contract["readiness_available"],
+            "a dead external channel must not hold the path: {readiness}"
+        );
+        let notifications_before = notifications
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        let third_console = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/open",
+            json!({"identity":"agent-a","request_id":"voice-third"}),
+        )
+        .await;
+        assert!(third_console["error"].is_null(), "{third_console}");
+        assert_eq!(
+            notifications
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            notifications_before,
+            "opening over a dead holder supersedes nobody"
+        );
+        assert_eq!(
+            ctx.arbiter.holder().await.map(|owner| owner.kind()),
+            Some("console_voice")
+        );
+        controller.shutdown().await.expect("voice shutdown");
+        runtime.shutdown().await;
+    }
+    async fn exercise_shared_host(disconnect_provider: bool, scenario: SummaryScenario) {
+        let _guard = SHARED_HOST_TEST_LOCK.lock().await;
+        let contract: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/console_voice_v1.json"))
+                .expect("shared voice contract");
+        let RealRuntime {
+            _directory,
+            provider,
+            runtime,
+            service,
+            machine,
+            factory,
+            config,
+        } = RealRuntime::start(if disconnect_provider {
+            "disconnect"
+        } else {
+            "normal"
+        })
+        .await;
         let session = runtime
             .mob_handle()
             .resolve_bridge_session_id(&meerkat_mob::AgentIdentity::from("agent-a"))
@@ -712,12 +1121,20 @@ mod tests {
             "auth_binding":{"realm":"voice","binding":"openai"},"voice":"marin"
         }))
         .expect("registration");
+        let ctx = Arc::new(crate::live_wiring::attach_live(
+            Arc::clone(&service),
+            Arc::clone(&machine),
+            &factory,
+            config,
+            String::new(),
+            None,
+        ));
         let controller = ConsoleVoiceController::compose_live_host(
             &runtime,
+            ctx,
             service.clone(),
             machine,
             factory,
-            config,
             registration,
             Some((policy, provider.url.clone())),
         )

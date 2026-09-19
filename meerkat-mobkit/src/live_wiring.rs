@@ -97,6 +97,24 @@ const INVALID_PARAMS_CODE: i64 = -32602;
 const METHOD_NOT_FOUND_CODE: i64 = -32601;
 const INTERNAL_ERROR_CODE: i64 = -32000;
 
+/// One live voice path per gateway, arbitrated "latest engaged wins" between
+/// console voice and the external live channel.
+pub mod owner;
+pub use owner::{
+    LiveOwner, LiveOwnerArbiter, LiveOwnerArbiterError, LiveOwnerCloser, LiveOwnerLease,
+    LiveOwnerNotifier, LiveSupersededReason,
+};
+
+/// Which door a `LiveRpcHandler` serves. The external door arbitrates the
+/// gateway's voice path at the RPC layer; the console door does not, because
+/// the console controller engages the arbiter itself before dispatching.
+#[cfg(feature = "openai-live")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LiveDoor {
+    Console,
+    External,
+}
+
 #[cfg(not(feature = "openai-live"))]
 mod ordinary_compat {
     use super::*;
@@ -1316,6 +1334,12 @@ impl EnvRealtimeConfigSource {
     pub fn new(config: Config) -> Self {
         Self { config }
     }
+
+    /// The exact current-Config snapshot this source answers with.
+    #[must_use]
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
 }
 
 #[async_trait]
@@ -1355,6 +1379,10 @@ pub struct GatewayLiveContext {
     /// (docs/design/upstream-asks.md): the provider caps live instructions at
     /// 65,536 tokens and long member transcripts overflow the projected seed.
     pub seed_max_chars: Option<usize>,
+    /// The single live voice path this context serves. Console voice and the
+    /// external `mobkit/live/*` door both engage it; the newest engagement
+    /// wins and the loser is closed with a typed reason.
+    pub arbiter: Arc<LiveOwnerArbiter>,
 }
 
 impl GatewayLiveContext {
@@ -1423,7 +1451,25 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
         session_factory,
         ws_base_url,
         seed_max_chars,
+        arbiter: Arc::new(live_owner_arbiter_for(&machine)),
     }
+}
+
+/// The voice-path arbiter with its channel liveness bound to `machine`, so a
+/// holder whose channel ended outside both doors is released, never trusted.
+fn live_owner_arbiter_for(machine: &Arc<MeerkatMachine>) -> LiveOwnerArbiter {
+    let arbiter = LiveOwnerArbiter::default();
+    let machine = Arc::clone(machine);
+    arbiter.set_liveness(Arc::new(move |channel: String| {
+        let machine = Arc::clone(&machine);
+        Box::pin(async move {
+            machine
+                .live_session_for_active_channel(&LiveChannelId::new(&channel))
+                .await
+                .is_some()
+        })
+    }));
+    arbiter
 }
 
 /// Compose the preexisting ordinary websocket live stack against the
@@ -1441,7 +1487,7 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
 ) -> GatewayLiveContext {
     let sink = Arc::new(GatewayLiveProjectionSink::new(
         Arc::clone(&service),
-        machine,
+        Arc::clone(&machine),
     ));
     let dispatcher: Arc<dyn LiveToolDispatcher> = Arc::new(GatewayLiveToolDispatcher::new(service));
     let host = Arc::new(
@@ -1465,6 +1511,7 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
         session_factory,
         ws_base_url,
         seed_max_chars,
+        arbiter: Arc::new(live_owner_arbiter_for(&machine)),
     }
 }
 
@@ -2343,6 +2390,7 @@ pub fn live_rpc_handler_with_capabilities<B: SessionAgentBuilder + 'static>(
         capability_provider,
         None,
         meerkat_mob_mcp::live_delegation::LiveDelegationExecutionPolicy::default(),
+        LiveDoor::External,
     )
 }
 
@@ -2361,6 +2409,7 @@ pub(crate) fn live_rpc_handler_with_console_policy<B: SessionAgentBuilder + 'sta
         capability_provider,
         Some(summary),
         meerkat_mob_mcp::live_delegation::LiveDelegationExecutionPolicy::ExistingMember,
+        LiveDoor::Console,
     )
 }
 
@@ -2372,6 +2421,7 @@ fn live_rpc_handler_with_policy<B: SessionAgentBuilder + 'static>(
     capability_provider: LiveCapabilityProvider,
     summary: Option<meerkat::session_runtime::live_summary::LiveContextSummaryPolicy>,
     execution_policy: meerkat_mob_mcp::live_delegation::LiveDelegationExecutionPolicy,
+    door: LiveDoor,
 ) -> LiveRpcHandler {
     let host = shared_live_host(&ctx, &service, &machine);
     let host = match summary {
@@ -2419,6 +2469,7 @@ fn live_rpc_handler_with_policy<B: SessionAgentBuilder + 'static>(
                         &machine,
                         &shared_live_host,
                         &capability_provider,
+                        door,
                         authority,
                         resolved_session,
                         canonical_target_identity,
@@ -2479,6 +2530,17 @@ pub fn live_rpc_handler_with_capabilities<B: SessionAgentBuilder + 'static>(
         dispatch,
         capability_provider: LiveCapabilityProvider::disabled(),
     }
+}
+
+/// Test-only: a member live host over `ctx`, so a test can end a channel the
+/// way meerkat-live does when a WebSocket drops (without either RPC door).
+#[cfg(all(test, feature = "openai-live"))]
+pub(crate) fn member_live_host_for_test<B: SessionAgentBuilder + 'static>(
+    ctx: &GatewayLiveContext,
+    service: &Arc<PersistentSessionService<B>>,
+    machine: &Arc<MeerkatMachine>,
+) -> ServiceMemberLiveHost<B> {
+    shared_live_host(ctx, service, machine)
 }
 
 // Ungated: the DEFAULT build now needs a `ServiceMemberLiveHost` too, to reach
@@ -2566,6 +2628,7 @@ pub async fn handle_live_method<B: SessionAgentBuilder + 'static>(
         machine,
         &shared_live_host,
         &capability_provider,
+        LiveDoor::External,
         authority,
         resolved_session,
         None,
@@ -2645,6 +2708,7 @@ async fn handle_live_method_with_host<B: SessionAgentBuilder + 'static>(
     machine: &Arc<MeerkatMachine>,
     shared_live_host: &Arc<ServiceMemberLiveHost<B>>,
     capability_provider: &LiveCapabilityProvider,
+    door: LiveDoor,
     authority: LiveSurfaceAuthority,
     resolved_session: Option<SessionId>,
     canonical_target_identity: Option<String>,
@@ -2686,6 +2750,7 @@ async fn handle_live_method_with_host<B: SessionAgentBuilder + 'static>(
         return response;
     }
     if let Some(response) = reject_missing_receipt_for_strict_channel(
+        ctx,
         shared_live_host,
         machine,
         resolved_session.as_ref(),
@@ -2707,16 +2772,36 @@ async fn handle_live_method_with_host<B: SessionAgentBuilder + 'static>(
                      (identity, member_id, or session_id)",
                 );
             };
-            handle_live_open(
-                ctx,
-                shared_live_host,
-                capability_provider,
-                &session_id,
-                canonical_target_identity,
-                params,
-                rpc_id,
-            )
-            .await
+            match door {
+                // The console controller already engaged the voice path for
+                // this call; arbitrating again here would make the console
+                // supersede itself.
+                LiveDoor::Console => {
+                    handle_live_open(
+                        ctx,
+                        shared_live_host,
+                        capability_provider,
+                        &session_id,
+                        canonical_target_identity,
+                        params,
+                        rpc_id,
+                    )
+                    .await
+                }
+                LiveDoor::External => {
+                    handle_live_open_arbitrated(
+                        ctx,
+                        machine,
+                        shared_live_host,
+                        capability_provider,
+                        &session_id,
+                        canonical_target_identity,
+                        params,
+                        rpc_id,
+                    )
+                    .await
+                }
+            }
         }
         #[cfg(feature = "openai-live")]
         "mobkit/live/replacement_required" => {
@@ -2738,7 +2823,7 @@ async fn handle_live_method_with_host<B: SessionAgentBuilder + 'static>(
         }
         "mobkit/live/status" => handle_live_status(ctx, machine, params, rpc_id).await,
         "mobkit/live/close" => {
-            handle_live_close(
+            let response = handle_live_close(
                 ctx,
                 machine,
                 shared_live_host,
@@ -2746,7 +2831,8 @@ async fn handle_live_method_with_host<B: SessionAgentBuilder + 'static>(
                 params,
                 rpc_id,
             )
-            .await
+            .await;
+            release_live_owner_after_close(ctx, params, response)
         }
         "mobkit/live/refresh" => handle_live_refresh(ctx, service, machine, params, rpc_id).await,
         "mobkit/live/send_input" => handle_live_send_input(ctx, machine, params, rpc_id).await,
@@ -2830,6 +2916,7 @@ async fn strict_custody_by_activation<B: SessionAgentBuilder + 'static>(
 
 #[cfg(feature = "openai-live")]
 async fn reject_missing_receipt_for_strict_channel<B: SessionAgentBuilder + 'static>(
+    ctx: &GatewayLiveContext,
     shared_live_host: &ServiceMemberLiveHost<B>,
     machine: &MeerkatMachine,
     resolved_session: Option<&SessionId>,
@@ -2852,6 +2939,14 @@ async fn reject_missing_receipt_for_strict_channel<B: SessionAgentBuilder + 'sta
             .live_active_channel_for_session(resolved_session?)
             .await?
     };
+    // A channel the voice-path arbiter already closed carries no live
+    // authority left to protect; its owner asking why it closed must get the
+    // typed reason from status/close rather than a receipt demand.
+    if matches!(method, "mobkit/live/status" | "mobkit/live/close")
+        && ctx.arbiter.close_reason(channel_id.as_str()).is_some()
+    {
+        return None;
+    }
     match shared_live_host
         .experimental_live_channel_phase(&channel_id)
         .await
@@ -4366,6 +4461,166 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     }
 }
 
+/// Take the gateway's single live voice path for this member before opening,
+/// closing whichever other door held it ("latest engaged wins"), then bind the
+/// opened channel to the engagement. A loser that was preempted while its own
+/// open was still in flight closes what it opened and reports the reason.
+#[cfg(feature = "openai-live")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors handle_live_open's explicit authority inputs plus the machine the closer probes"
+)]
+async fn handle_live_open_arbitrated<B: SessionAgentBuilder + 'static>(
+    ctx: &GatewayLiveContext,
+    ctx_machine: &Arc<MeerkatMachine>,
+    shared_live_host: &Arc<ServiceMemberLiveHost<B>>,
+    capability_provider: &LiveCapabilityProvider,
+    session_id: &SessionId,
+    canonical_target_identity: Option<String>,
+    params: &Value,
+    rpc_id: Value,
+) -> JsonRpcResponse {
+    let identity = canonical_target_identity
+        .clone()
+        .or_else(|| {
+            params
+                .get("identity")
+                .or_else(|| params.get("member_id"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+        })
+        .unwrap_or_else(|| session_id.to_string());
+    let closer: LiveOwnerCloser = {
+        let host = Arc::clone(shared_live_host);
+        let machine = Arc::clone(ctx_machine);
+        let authority = capability_provider.open_authority_arc();
+        Arc::new(move |_reason, channel| {
+            let host = Arc::clone(&host);
+            let machine = Arc::clone(&machine);
+            let authority = authority.clone();
+            Box::pin(async move {
+                let Some(channel) = channel else {
+                    return Ok(());
+                };
+                let channel = LiveChannelId::new(&channel);
+                // A dropped WebSocket closes the channel inside meerkat-live
+                // without passing through this door; nothing is left to close.
+                if machine
+                    .live_session_for_active_channel(&channel)
+                    .await
+                    .is_none()
+                {
+                    return Ok(());
+                }
+                host.close_live_channel(authority.as_deref(), &channel)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+        })
+    };
+    let (lease, preempted) = match ctx
+        .arbiter
+        .engage(
+            LiveOwner::ExternalLive {
+                identity,
+                channel_id: None,
+            },
+            closer,
+        )
+        .await
+    {
+        Ok(engaged) => engaged,
+        Err(error) => {
+            return live_error(
+                rpc_id,
+                INTERNAL_ERROR_CODE,
+                format!("live open could not take the voice path: {error}"),
+            );
+        }
+    };
+    let mut response = handle_live_open(
+        ctx,
+        shared_live_host,
+        capability_provider,
+        session_id,
+        canonical_target_identity,
+        params,
+        rpc_id.clone(),
+    )
+    .await;
+    let opened_channel = response
+        .result
+        .as_ref()
+        .filter(|_| response.error.is_none())
+        .and_then(|value| value.get("channel_id"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let Some(channel_id) = opened_channel else {
+        ctx.arbiter.release(lease);
+        return response;
+    };
+    ctx.arbiter.bind_channel(lease, &channel_id);
+    if let Some(reason) = ctx.arbiter.take_superseded(lease) {
+        // Another door won the race while this open was in flight. Close the
+        // channel we just opened through our own sequence and say why.
+        let channel = LiveChannelId::new(&channel_id);
+        if let Err(error) = shared_live_host
+            .close_live_channel(capability_provider.open_authority(), &channel)
+            .await
+        {
+            tracing::warn!(
+                channel_id = %channel_id,
+                error = %error,
+                "superseded live open could not close its own channel"
+            );
+        }
+        ctx.arbiter.record_close_reason(&channel_id, reason);
+        return JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: rpc_id,
+            result: None,
+            error: Some(
+                JsonRpcError::new(
+                    INTERNAL_ERROR_CODE,
+                    "live open was superseded before it activated",
+                )
+                .with_data(
+                    serde_json::json!({ "kind": "live_superseded", "reason": reason.as_str() }),
+                ),
+            ),
+        };
+    }
+    if let (Some(previous), Some(result)) = (preempted, response.result.as_mut()) {
+        result["superseded"] = previous.to_wire();
+    }
+    response
+}
+
+/// After a `mobkit/live/close`, free the voice path if the closed channel held
+/// it, and report the typed reason when the arbiter closed that channel.
+#[cfg(feature = "openai-live")]
+fn release_live_owner_after_close(
+    ctx: &GatewayLiveContext,
+    params: &Value,
+    mut response: JsonRpcResponse,
+) -> JsonRpcResponse {
+    let Some(channel_id) = params.get("channel_id").and_then(Value::as_str) else {
+        return response;
+    };
+    if response.error.is_none() {
+        ctx.arbiter.release_channel(channel_id);
+    }
+    if let (Some(reason), Some(result)) = (
+        ctx.arbiter.close_reason(channel_id),
+        response.result.as_mut(),
+    ) {
+        result["close_reason"] = Value::String(reason.as_str().to_string());
+    }
+    response
+}
+
 #[cfg(feature = "openai-live")]
 #[allow(clippy::too_many_lines)]
 async fn handle_live_open<B: SessionAgentBuilder + 'static>(
@@ -5006,7 +5261,21 @@ async fn handle_live_status(
     let channel_id = LiveChannelId::new(&parsed.channel_id);
 
     let request_kind = meerkat_runtime::meerkat_machine::dsl::LiveChannelRequestPublicKind::Status;
+    // A channel the voice-path arbiter closed may already be unbound from
+    // its session. Its owner still deserves the typed reason, so report the
+    // closed status with it instead of an unbound-channel error.
+    let superseded = ctx.arbiter.close_reason(&parsed.channel_id);
     let Some(session_id) = machine.live_session_for_status_channel(&channel_id).await else {
+        if let Some(reason) = superseded {
+            return live_success(
+                rpc_id,
+                serde_json::json!({
+                    "channel_id": parsed.channel_id,
+                    "status": WireLiveAdapterStatus::Closed,
+                    "close_reason": reason.as_str(),
+                }),
+            );
+        }
         return live_unbound_channel_request_error_response(
             rpc_id,
             machine,
@@ -5037,7 +5306,12 @@ async fn handle_live_status(
                     Err(error) => return live_error(rpc_id, INTERNAL_ERROR_CODE, error),
                 };
             match serde_json::to_value(result) {
-                Ok(value) => live_success(rpc_id, value),
+                Ok(mut value) => {
+                    if let Some(reason) = superseded {
+                        value["close_reason"] = Value::String(reason.as_str().to_string());
+                    }
+                    live_success(rpc_id, value)
+                }
                 Err(err) => live_error(
                     rpc_id,
                     INTERNAL_ERROR_CODE,
