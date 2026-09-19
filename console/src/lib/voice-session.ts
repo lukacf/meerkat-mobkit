@@ -133,6 +133,16 @@ export async function queryVoiceReadiness(baseUrl: string, identity: string): Pr
 /** Message for a call the gateway closed because another live owner took the voice path. */
 export const VOICE_SUPERSEDED_MESSAGE =
   "Voice moved to the external live channel. Start voice again to take it back.";
+/** The same, when another console call took it. */
+export const VOICE_SUPERSEDED_BY_CONSOLE_MESSAGE =
+  "Voice moved to another console call. Start voice again to take it back.";
+
+/** Pick the supersession message from the gateway's typed `data.reason`. */
+export function voiceSupersededMessage(reason: unknown): string {
+  return reason === "superseded_by_console_voice" || reason === "replaced_by_same_owner"
+    ? VOICE_SUPERSEDED_BY_CONSOLE_MESSAGE
+    : VOICE_SUPERSEDED_MESSAGE;
+}
 
 /**
  * Classify a failed control-plane call. Anything the gateway actually answered (a JSON-RPC
@@ -1075,10 +1085,10 @@ export function createVoiceSession(
         scheduleReplacement(attempt, recordTransientFailure(attempt, "replacementFailure", REPLACEMENT_UNVERIFIED_MESSAGE));
         return;
       }
-      const kind = (error as { rpcError?: { data?: { kind?: string } } } | null)?.rpcError?.data?.kind;
-      fail(attempt, kind === "voice_superseded"
-        ? VOICE_SUPERSEDED_MESSAGE
-        : kind === "voice_closed"
+      const data = (error as { rpcError?: { data?: { kind?: string; reason?: string } } } | null)?.rpcError?.data;
+      fail(attempt, data?.kind === "voice_superseded"
+        ? voiceSupersededMessage(data.reason)
+        : data?.kind === "voice_closed"
           ? "The gateway closed this voice session. Start voice again."
           : REPLACEMENT_UNVERIFIED_MESSAGE);
     }

@@ -27,8 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `superseded`. `mobkit/console/voice/readiness` answers `available: false,
   reason: external_live_active, holder: {identity, channel_id}` while the
   external door holds the path. The browser ends a superseded call with
-  "Voice moved to the external live channel". `voice_busy` stays reserved and
-  unused for arbitration. Shared contract: `tests/fixtures/console_voice_v1.json`.
+  "Voice moved to the external live channel" (or "another console call" when
+  the reason says so). A holder whose channel already ended outside both doors
+  is released rather than trusted, and a same-owner reopen closes its previous
+  channel as `replaced_by_same_owner`, so neither a dropped socket nor a
+  reopen can leave two audio owners or lock a door out. `voice_busy` stays
+  reserved and unused for arbitration. Shared contract:
+  `tests/fixtures/console_voice_v1.json`.
 
 ### Fixed
 

@@ -1611,6 +1611,18 @@ test("closed, superseded, denied or lost replacement polling fails closed and ne
     assert.equal(h.controller.getSnapshot().phase, "error");
     if (kind === "voice_closed") assert.match(h.controller.getSnapshot().error!, /gateway closed/);
     if (kind === "voice_superseded") assert.match(h.controller.getSnapshot().error!, /moved to the external live channel/);
+  }
+  // The reason selects the wording: another console call is not "the external live channel".
+  {
+    const h = harness();
+    await h.controller.start(target);
+    const error = Object.assign(new Error("internal detail"), {
+      rpcError: { data: { kind: "voice_superseded", reason: "superseded_by_console_voice" } },
+    });
+    h.setRpc((method) => method === "mobkit/console/voice/replacement" ? Promise.reject(error) : undefined);
+    await h.clock.advance(VOICE_REPLACEMENT_POLL_INTERVAL_MS);
+    assert.equal(h.controller.getSnapshot().phase, "error");
+    assert.match(h.controller.getSnapshot().error!, /moved to another console call/);
     assert.equal(h.streams[0].tracks[0].stopped, true);
     assert.equal(h.calls.at(-1)?.method, "mobkit/console/voice/close");
   }

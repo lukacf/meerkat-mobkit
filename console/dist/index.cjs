@@ -20928,6 +20928,10 @@ async function queryVoiceReadiness(baseUrl, identity) {
   };
 }
 var VOICE_SUPERSEDED_MESSAGE = "Voice moved to the external live channel. Start voice again to take it back.";
+var VOICE_SUPERSEDED_BY_CONSOLE_MESSAGE = "Voice moved to another console call. Start voice again to take it back.";
+function voiceSupersededMessage(reason) {
+  return reason === "superseded_by_console_voice" || reason === "replaced_by_same_owner" ? VOICE_SUPERSEDED_BY_CONSOLE_MESSAGE : VOICE_SUPERSEDED_MESSAGE;
+}
 function isTransientRpcFailure(error) {
   if (error instanceof Cancelled) return false;
   if (error instanceof VoiceTimeout || error instanceof TransientRpcFailure) return true;
@@ -21705,8 +21709,8 @@ function createVoiceSession(baseUrl, environment) {
         scheduleReplacement(attempt, recordTransientFailure(attempt, "replacementFailure", REPLACEMENT_UNVERIFIED_MESSAGE));
         return;
       }
-      const kind = error?.rpcError?.data?.kind;
-      fail(attempt, kind === "voice_superseded" ? VOICE_SUPERSEDED_MESSAGE : kind === "voice_closed" ? "The gateway closed this voice session. Start voice again." : REPLACEMENT_UNVERIFIED_MESSAGE);
+      const data = error?.rpcError?.data;
+      fail(attempt, data?.kind === "voice_superseded" ? voiceSupersededMessage(data.reason) : data?.kind === "voice_closed" ? "The gateway closed this voice session. Start voice again." : REPLACEMENT_UNVERIFIED_MESSAGE);
     }
   }
   function observeAudioContext(attempt) {

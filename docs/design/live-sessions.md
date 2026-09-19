@@ -175,9 +175,19 @@ opens, carrying the close sequence it would use on itself:
   {identity, channel_id}}` while the external door holds the path. Plain
   unavailability keeps the old two-field shape.
 - The same door re-engaging for the same member (a console reopen, reachyd
-  reopening) replaces its own engagement without closing anything. The console
-  switching to another agent is a different owner and closes the previous call,
-  matching the browser's close-before-switch.
+  reopening) is not a preemption and announces nothing, but it never leaves two
+  channels live: a previous channel still bound is closed as
+  `replaced_by_same_owner` (reported through `close_reason` and the console's
+  `voice_superseded` error) before the new open proceeds, and an open still in
+  flight closes its own channel when it completes. The console switching to
+  another agent is a different owner and closes the previous call, matching the
+  browser's close-before-switch.
+- A holder whose bound channel already ended outside both doors (a dropped
+  external WebSocket, which meerkat-live closes by itself; a console call that
+  died with its provider) is released, not trusted: readiness and the next
+  engagement ask the machine whether the channel is still active before they
+  report or close it, so a path nobody is using can never lock the other door
+  out until a restart.
 - A loser's close that fails leaves that owner in place and fails the newcomer
   closed (`voice_host_failed` on the console side, an internal error on the
   external side). There is never a silent double owner.
