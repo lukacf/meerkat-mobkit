@@ -135,11 +135,65 @@ server-side `shared_secret`, optional issuer/audience, and `email_allowlist`).
 JWT authentication and OpenAI authentication are separate gates; neither
 credential is sent to the browser by the voice endpoints.
 
-`rpc_gateway` rejects combining `console_voice` with `openai_live`,
-`experimental_live`, or ordinary `live` configuration. This keeps one shared
-context-mirror owner while preserving the existing stdin durable-fork behavior
-for applications that select those registrations instead. Console voice does
-not alter ordinary agent text RPCs.
+`rpc_gateway` rejects combining `console_voice` with `openai_live` or
+`experimental_live`: those are alternative strict registrations of the same
+public GPT Live door. Ordinary `live: true` may be registered beside
+`console_voice`; see the next section. Console voice does not alter ordinary
+agent text RPCs.
+
+### One shared live owner: console voice beside the external live channel
+
+A gateway that registers both `runtime_options.console_voice` and
+`runtime_options.live` composes ONE live context (one adapter host, one WS
+state, one provider registration) and mounts two doors onto it: the
+authenticated console voice controller and the external door (the live
+WebSocket router at `{base}/live/ws` plus the stdio `mobkit/live/*` RPCs).
+Meerkat keeps channels per session and couples nothing across members, so the
+policy that only one voice path is active per gateway is MobKit's:
+`live_wiring::LiveOwnerArbiter`, held by the shared `GatewayLiveContext`.
+
+Arbitration is "latest engaged wins". Each door engages the arbiter before it
+opens, carrying the close sequence it would use on itself:
+
+- A console `mobkit/console/voice/open` closes an active external channel
+  through the external host's generated close. The external client sees its
+  socket end; `mobkit/live/status` and `mobkit/live/close` for that channel
+  answer `"close_reason": "superseded_by_console_voice"` (a closed channel the
+  arbiter ended reports `status: closed` with the reason instead of demanding
+  a phase receipt), and the stdio gateway emits
+  `mobkit/live/superseded {owner, identity, channel_id, reason, superseded_by}`
+  immediately.
+- An external `mobkit/live/open` closes an active console call through the
+  console slot's ordinary teardown. Every later console request for that call
+  (`replacement`, `context_status`, `activity`) fails with kind
+  `voice_superseded` and `data.reason = "superseded_by_external_live"`; the
+  browser ends the call with "Voice moved to the external live channel". The
+  open result carries `"superseded": {"owner": "console_voice", "identity",
+  "channel_id"}`.
+- `mobkit/console/voice/readiness` answers
+  `{identity, available: false, reason: "external_live_active", holder:
+  {identity, channel_id}}` while the external door holds the path. Plain
+  unavailability keeps the old two-field shape.
+- The same door re-engaging for the same member (a console reopen, reachyd
+  reopening) is not a preemption and announces nothing, but it never leaves two
+  channels live: a previous channel still bound is closed as
+  `replaced_by_same_owner` (reported through `close_reason` and the console's
+  `voice_superseded` error) before the new open proceeds, and an open still in
+  flight closes its own channel when it completes. The console switching to
+  another agent is a different owner and closes the previous call, matching the
+  browser's close-before-switch.
+- A holder whose bound channel already ended outside both doors (a dropped
+  external WebSocket, which meerkat-live closes by itself; a console call that
+  died with its provider) is released, not trusted: readiness and the next
+  engagement ask the machine whether the channel is still active before they
+  report or close it, so a path nobody is using can never lock the other door
+  out until a restart.
+- A loser's close that fails leaves that owner in place and fails the newcomer
+  closed (`voice_host_failed` on the console side, an internal error on the
+  external side). There is never a silent double owner.
+
+Neither door refuses. `voice_busy` remains reserved for a pending teardown of
+the same console request and is not used for cross-owner arbitration.
 
 Library embedders constructing a `MobBootstrapSpec::new` must install the
 builder's shared `default_mob_tools` slot with `with_agent_mob_tools`, after

@@ -2,6 +2,17 @@
   "readiness_request": { "identity": "agent-a" },
   "readiness_available": { "identity": "agent-a", "available": true },
   "readiness_unavailable": { "identity": "agent-a", "available": false },
+  "readiness_external_live_active": {
+    "identity": "agent-a",
+    "available": false,
+    "reason": "external_live_active",
+    "holder": { "identity": "agent-b", "channel_id": "live-channel-b" }
+  },
+  "superseded_error": {
+    "code": -32000,
+    "message": "Voice conversation was superseded by another live owner",
+    "data": { "kind": "voice_superseded", "reason": "superseded_by_external_live" }
+  },
   "context_status_method": "mobkit/console/voice/context_status",
   "context_status_request": {
     "identity": "agent-a",

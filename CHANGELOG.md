@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Console voice and the external live channel coexist under one shared live
+  owner. `rpc_gateway` accepts `runtime_options.console_voice` together with
+  `runtime_options.live` (still exclusive with `openai_live` and
+  `experimental_live`), composes one live context, and mounts the live
+  WebSocket router and the stdio `mobkit/live/*` RPCs beside the console voice
+  controller. `live_wiring::LiveOwnerArbiter` arbitrates the two doors "latest
+  engaged wins": a console `voice/open` closes an active external channel and
+  an external `mobkit/live/open` closes an active console call, each through
+  the loser's own close sequence, failing the newcomer closed if that close
+  fails. Losers learn why: console requests answer kind `voice_superseded`
+  with `reason: superseded_by_external_live`; external `mobkit/live/status`
+  and `mobkit/live/close` answer `close_reason: superseded_by_console_voice`
+  (without demanding a phase receipt for a channel the arbiter closed); the
+  stdio gateway emits `mobkit/live/superseded {owner, identity, channel_id,
+  reason, superseded_by}` at once; `mobkit/live/open` reports what it
+  `superseded`. `mobkit/console/voice/readiness` answers `available: false,
+  reason: external_live_active, holder: {identity, channel_id}` while the
+  external door holds the path. The browser ends a superseded call with
+  "Voice moved to the external live channel" (or "another console call" when
+  the reason says so). A holder whose channel already ended outside both doors
+  is released rather than trusted, and a same-owner reopen closes its previous
+  channel as `replaced_by_same_owner`, so neither a dropped socket nor a
+  reopen can leave two audio owners or lock a door out. `voice_busy` stays
+  reserved and unused for arbitration. Shared contract:
+  `tests/fixtures/console_voice_v1.json`.
+
 ### Fixed
 
 - The Linux release container installs a pinned Kitware CMake 3.31.12 (sha256

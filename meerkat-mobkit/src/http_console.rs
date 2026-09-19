@@ -766,16 +766,15 @@ async fn handle_console_voice_rpc(
         };
         return match tokio::time::timeout(
             Duration::from_secs(5),
-            controller.ready(principal, &parsed.identity),
+            controller.readiness(principal, &parsed.identity),
         )
         .await
-        .unwrap_or(Ok(false))
-        {
-            Ok(available) => response_value(
-                id,
-                Some(json!({"identity":parsed.identity,"available":available})),
-                None,
-            ),
+        .unwrap_or(Ok(crate::console_voice::VoiceReadinessReport {
+            available: false,
+            reason: None,
+            holder: None,
+        })) {
+            Ok(report) => response_value(id, Some(report.to_wire(&parsed.identity)), None),
             Err(failure) => error(failure),
         };
     }

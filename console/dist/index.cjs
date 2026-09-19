@@ -20901,7 +20901,10 @@ var REPLACEMENT_UNVERIFIED_MESSAGE = "Voice connection could not be verified. Ch
 var TRANSPORT_LOST_MESSAGE = "Voice connection was lost. Check your network and start voice again.";
 var AUDIO_INTERRUPTED_MESSAGE = "Browser audio was interrupted. Check audio permissions and start voice again.";
 async function queryVoiceAvailability(baseUrl, identity) {
-  if (!identity?.trim()) return "unavailable";
+  return (await queryVoiceReadiness(baseUrl, identity)).availability;
+}
+async function queryVoiceReadiness(baseUrl, identity) {
+  if (!identity?.trim()) return { availability: "unavailable" };
   let readiness;
   try {
     readiness = await callConsoleRpc2(
@@ -20911,9 +20914,23 @@ async function queryVoiceAvailability(baseUrl, identity) {
       VOICE_TEARDOWN_TIMEOUT_MS
     );
   } catch (error) {
-    return isTransientRpcFailure(error) ? "unknown" : "unavailable";
+    return { availability: isTransientRpcFailure(error) ? "unknown" : "unavailable" };
   }
-  return readiness?.identity === identity && readiness.available === true ? "available" : "unavailable";
+  if (readiness?.identity !== identity) return { availability: "unavailable" };
+  if (readiness.available === true) return { availability: "available" };
+  if (readiness.reason !== "external_live_active") return { availability: "unavailable" };
+  const holderIdentity = readiness.holder?.identity;
+  const channelId = readiness.holder?.channel_id;
+  return {
+    availability: "unavailable",
+    reason: "external_live_active",
+    ...typeof holderIdentity === "string" ? { holder: { identity: holderIdentity, ...typeof channelId === "string" ? { channelId } : {} } } : {}
+  };
+}
+var VOICE_SUPERSEDED_MESSAGE = "Voice moved to the external live channel. Start voice again to take it back.";
+var VOICE_SUPERSEDED_BY_CONSOLE_MESSAGE = "Voice moved to another console call. Start voice again to take it back.";
+function voiceSupersededMessage(reason) {
+  return reason === "superseded_by_console_voice" || reason === "replaced_by_same_owner" ? VOICE_SUPERSEDED_BY_CONSOLE_MESSAGE : VOICE_SUPERSEDED_MESSAGE;
 }
 function isTransientRpcFailure(error) {
   if (error instanceof Cancelled) return false;
@@ -21692,8 +21709,8 @@ function createVoiceSession(baseUrl, environment) {
         scheduleReplacement(attempt, recordTransientFailure(attempt, "replacementFailure", REPLACEMENT_UNVERIFIED_MESSAGE));
         return;
       }
-      const kind = error?.rpcError?.data?.kind;
-      fail(attempt, kind === "voice_closed" ? "The gateway closed this voice session. Start voice again." : REPLACEMENT_UNVERIFIED_MESSAGE);
+      const data = error?.rpcError?.data;
+      fail(attempt, data?.kind === "voice_superseded" ? voiceSupersededMessage(data.reason) : data?.kind === "voice_closed" ? "The gateway closed this voice session. Start voice again." : REPLACEMENT_UNVERIFIED_MESSAGE);
     }
   }
   function observeAudioContext(attempt) {
