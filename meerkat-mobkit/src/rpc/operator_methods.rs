@@ -1191,6 +1191,22 @@ mod tests {
         }
 
         /// Drive one member turn to completion through the identity runtime.
+        /// Stop the mob the way production teardown does. A member that is
+        /// still runtime-attached (mid-kickoff after a restore, or a turn
+        /// admitted a moment ago) refuses a raw `MobHandle::stop` with
+        /// `Runtime not ready: attached`; the unified runtime waits that
+        /// readiness window out and degrades it to a typed outcome instead of
+        /// failing teardown. Every other refusal still fails the test.
+        async fn teardown(&self) {
+            match self.runtime.stop_mob_for_teardown().await {
+                crate::unified_runtime::MobStopOutcome::Stopped
+                | crate::unified_runtime::MobStopOutcome::ProceededWithoutInterrupt { .. } => {}
+                crate::unified_runtime::MobStopOutcome::Failed(error) => {
+                    panic!("mob teardown failed: {error}");
+                }
+            }
+        }
+
         async fn run_turn(&self, text: String) {
             let admission = self
                 .identity_runtime
@@ -1322,6 +1338,52 @@ mod tests {
             .expect("read durable transcript")
             .messages
             .len()
+    }
+
+    /// Wait until a turn seeded with `user_text` is durable end to end: its
+    /// input row (user row or queue-mode system notice) is in the durable
+    /// transcript and the transcript ends on an assistant row. A turn's completion cursor advances before the turn's
+    /// rows are durable in the session store, and under full-suite contention
+    /// that lag exceeded the stability window `settled_transcript_len` uses
+    /// (the seed turn's two rows landed after three stable 100 ms reads, so
+    /// the fixture seeded below them and every derived index was off by two).
+    /// Naming the rows that must exist turns the wait into a real condition.
+    async fn wait_for_durable_turn(
+        service: &Arc<dyn crate::memory::hygienist::TranscriptEditSessionService>,
+        session_id: &meerkat_core::types::SessionId,
+        user_text: &str,
+    ) {
+        crate::test_wait::poll_until(
+            &format!("turn {user_text:?} is durable (user row present, assistant row last)"),
+            crate::test_wait::STRUCTURAL_BACKSTOP,
+            async || {
+                let page = service
+                    .read_history(
+                        session_id,
+                        meerkat_core::service::SessionHistoryQuery {
+                            offset: 0,
+                            limit: None,
+                        },
+                    )
+                    .await
+                    .expect("read durable transcript");
+                // Queue-mode text through the identity runtime lands as a
+                // system notice row; a direct user turn lands as a user row.
+                // Either is the turn's input row.
+                let has_input = page.messages.iter().any(|message| match message {
+                    Message::User(user) => user.content.iter().any(|block| {
+                        matches!(block, meerkat_core::types::ContentBlock::Text { text } if text == user_text)
+                    }),
+                    Message::SystemNotice(notice) => notice
+                        .body
+                        .as_deref()
+                        .is_some_and(|body| body.contains(user_text)),
+                    _ => false,
+                });
+                has_input && matches!(page.messages.last(), Some(Message::BlockAssistant(_)))
+            },
+        )
+        .await;
     }
 
     /// [`transcript_len`], but only once the durable transcript has stopped
@@ -1711,7 +1773,7 @@ comms = true
             "an unowned identity must surface the typed unknown-identity refusal: {response:#?}"
         );
 
-        let _ = harness.runtime.mob_handle().stop().await;
+        harness.teardown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1860,7 +1922,7 @@ comms = true
             async || harness.transcript_facts().await.0 > before,
         )
         .await;
-        harness.runtime.mob_handle().stop().await.expect("stop mob");
+        harness.teardown().await;
     }
 
     async fn held_compaction_harness(name: &str) -> Arc<OperatorVerbHarness> {
@@ -1964,7 +2026,7 @@ comms = true
         harness
             .run_exact_probe("after pending-owner settlement")
             .await;
-        harness.runtime.mob_handle().stop().await.expect("stop");
+        harness.teardown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1993,7 +2055,7 @@ comms = true
             crate::identity_first::IdentityLifecycleState::Active
         );
         harness.run_exact_probe("after caller dropped").await;
-        harness.runtime.mob_handle().stop().await.expect("stop");
+        harness.teardown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2027,7 +2089,7 @@ comms = true
             .expect("status");
         assert_eq!(after.session_id, before.session_id);
         assert_eq!(after.agent_runtime_id, before.agent_runtime_id);
-        harness.runtime.mob_handle().stop().await.expect("stop");
+        harness.teardown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2063,7 +2125,7 @@ comms = true
         assert!(harness.floors.get(&harness.identity).is_none());
         assert_eq!(after.session_id, retired.session_id);
         assert_eq!(after.agent_runtime_id, retired.agent_runtime_id);
-        harness.runtime.mob_handle().stop().await.expect("stop");
+        harness.teardown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2100,7 +2162,7 @@ comms = true
             crate::identity_first::IdentityLifecycleState::Retiring
         );
         assert!(harness.floors.get(&harness.identity).is_none());
-        harness.runtime.mob_handle().stop().await.expect("stop");
+        harness.teardown().await;
     }
 
     struct FailingCompletionObserver {
@@ -2213,7 +2275,7 @@ comms = true
         );
         assert!(harness.floors.get(&harness.identity).is_none());
         harness.run_exact_probe("after lost admission reply").await;
-        harness.runtime.mob_handle().stop().await.expect("stop");
+        harness.teardown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2255,8 +2317,8 @@ comms = true
                 .expect("owner"),
             before,
         );
-        harness.runtime.mob_handle().stop().await.expect("stop");
-        other.runtime.mob_handle().stop().await.expect("stop other");
+        harness.teardown().await;
+        other.teardown().await;
     }
 
     #[async_trait::async_trait]
@@ -2327,7 +2389,7 @@ comms = true
         );
         assert!(harness.floors.get(&harness.identity).is_none());
         harness.run_exact_probe("after observer outage").await;
-        harness.runtime.mob_handle().stop().await.expect("stop");
+        harness.teardown().await;
     }
 
     /// Honest timeout semantics: when the maintenance-turn wait gives up, the
@@ -2417,7 +2479,7 @@ comms = true
         )
         .await;
 
-        let _ = harness.runtime.mob_handle().stop().await;
+        harness.teardown().await;
     }
 
     /// `mobkit/bound_member_transcript` on an idle member session whose tool
@@ -2436,9 +2498,8 @@ comms = true
         // validation admits the adjacent pair). The turn just finished, so a
         // still-draining runtime admission can answer Busy briefly; that is
         // the documented posture, retried here rather than raced.
-        harness
-            .run_turn("seed one committed turn".to_string())
-            .await;
+        const SEED_TURN: &str = "seed one committed turn";
+        harness.run_turn(SEED_TURN.to_string()).await;
         let session_id = harness
             .identity_runtime
             .status(&harness.identity)
@@ -2446,6 +2507,9 @@ comms = true
             .expect("identity status")
             .session_id
             .expect("identity session");
+        // The seed turn's rows must be durable before any index is derived
+        // from the transcript; completion alone does not promise that.
+        wait_for_durable_turn(&service, &session_id, SEED_TURN).await;
         // Every index below is derived from this length, so it must be read
         // off a SETTLED transcript. `run_turn` waits on the identity's
         // completion cursor, which advances when the turn completes - not when
@@ -2550,7 +2614,7 @@ comms = true
             "the straddled tool pair must survive whole"
         );
 
-        let _ = harness.runtime.mob_handle().stop().await;
+        harness.teardown().await;
     }
 
     /// `mobkit/bound_member_transcript` while the member is mid-turn: the
@@ -2626,7 +2690,7 @@ comms = true
             .await
             .expect("held turn completed after release");
 
-        let _ = harness.runtime.mob_handle().stop().await;
+        harness.teardown().await;
     }
 
     #[test]
