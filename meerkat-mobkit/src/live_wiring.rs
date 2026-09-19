@@ -1451,8 +1451,25 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
         session_factory,
         ws_base_url,
         seed_max_chars,
-        arbiter: Arc::new(LiveOwnerArbiter::default()),
+        arbiter: Arc::new(live_owner_arbiter_for(&machine)),
     }
+}
+
+/// The voice-path arbiter with its channel liveness bound to `machine`, so a
+/// holder whose channel ended outside both doors is released, never trusted.
+fn live_owner_arbiter_for(machine: &Arc<MeerkatMachine>) -> LiveOwnerArbiter {
+    let arbiter = LiveOwnerArbiter::default();
+    let machine = Arc::clone(machine);
+    arbiter.set_liveness(Arc::new(move |channel: String| {
+        let machine = Arc::clone(&machine);
+        Box::pin(async move {
+            machine
+                .live_session_for_active_channel(&LiveChannelId::new(&channel))
+                .await
+                .is_some()
+        })
+    }));
+    arbiter
 }
 
 /// Compose the preexisting ordinary websocket live stack against the
@@ -1470,7 +1487,7 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
 ) -> GatewayLiveContext {
     let sink = Arc::new(GatewayLiveProjectionSink::new(
         Arc::clone(&service),
-        machine,
+        Arc::clone(&machine),
     ));
     let dispatcher: Arc<dyn LiveToolDispatcher> = Arc::new(GatewayLiveToolDispatcher::new(service));
     let host = Arc::new(
@@ -1494,7 +1511,7 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
         session_factory,
         ws_base_url,
         seed_max_chars,
-        arbiter: Arc::new(LiveOwnerArbiter::default()),
+        arbiter: Arc::new(live_owner_arbiter_for(&machine)),
     }
 }
 
@@ -2515,6 +2532,17 @@ pub fn live_rpc_handler_with_capabilities<B: SessionAgentBuilder + 'static>(
     }
 }
 
+/// Test-only: a member live host over `ctx`, so a test can end a channel the
+/// way meerkat-live does when a WebSocket drops (without either RPC door).
+#[cfg(all(test, feature = "openai-live"))]
+pub(crate) fn member_live_host_for_test<B: SessionAgentBuilder + 'static>(
+    ctx: &GatewayLiveContext,
+    service: &Arc<PersistentSessionService<B>>,
+    machine: &Arc<MeerkatMachine>,
+) -> ServiceMemberLiveHost<B> {
+    shared_live_host(ctx, service, machine)
+}
+
 // Ungated: the DEFAULT build now needs a `ServiceMemberLiveHost` too, to reach
 // the stock truncate owner seam. The only experimental-specific line in the
 // body already carries its own inner cfg.
@@ -2763,6 +2791,7 @@ async fn handle_live_method_with_host<B: SessionAgentBuilder + 'static>(
                 LiveDoor::External => {
                     handle_live_open_arbitrated(
                         ctx,
+                        machine,
                         shared_live_host,
                         capability_provider,
                         &session_id,
@@ -4437,8 +4466,13 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
 /// opened channel to the engagement. A loser that was preempted while its own
 /// open was still in flight closes what it opened and reports the reason.
 #[cfg(feature = "openai-live")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors handle_live_open's explicit authority inputs plus the machine the closer probes"
+)]
 async fn handle_live_open_arbitrated<B: SessionAgentBuilder + 'static>(
     ctx: &GatewayLiveContext,
+    ctx_machine: &Arc<MeerkatMachine>,
     shared_live_host: &Arc<ServiceMemberLiveHost<B>>,
     capability_provider: &LiveCapabilityProvider,
     session_id: &SessionId,
@@ -4459,15 +4493,27 @@ async fn handle_live_open_arbitrated<B: SessionAgentBuilder + 'static>(
         .unwrap_or_else(|| session_id.to_string());
     let closer: LiveOwnerCloser = {
         let host = Arc::clone(shared_live_host);
+        let machine = Arc::clone(ctx_machine);
         let authority = capability_provider.open_authority_arc();
         Arc::new(move |_reason, channel| {
             let host = Arc::clone(&host);
+            let machine = Arc::clone(&machine);
             let authority = authority.clone();
             Box::pin(async move {
                 let Some(channel) = channel else {
                     return Ok(());
                 };
-                host.close_live_channel(authority.as_deref(), &LiveChannelId::new(&channel))
+                let channel = LiveChannelId::new(&channel);
+                // A dropped WebSocket closes the channel inside meerkat-live
+                // without passing through this door; nothing is left to close.
+                if machine
+                    .live_session_for_active_channel(&channel)
+                    .await
+                    .is_none()
+                {
+                    return Ok(());
+                }
+                host.close_live_channel(authority.as_deref(), &channel)
                     .await
                     .map(|_| ())
                     .map_err(|error| error.to_string())

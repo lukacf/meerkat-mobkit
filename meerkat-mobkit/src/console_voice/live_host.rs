@@ -838,7 +838,7 @@ mod tests {
             .expect("console channel")
             .to_string();
         assert_eq!(
-            ctx.arbiter.holder(),
+            ctx.arbiter.holder().await,
             Some(crate::live_wiring::LiveOwner::ConsoleVoice {
                 principal: "voice@example.com".to_string(),
                 identity: "agent-a".to_string(),
@@ -904,7 +904,7 @@ mod tests {
         .await;
         assert_eq!(closed["result"], json!({"phase":"closed"}), "{closed}");
         assert_eq!(
-            ctx.arbiter.holder().map(|owner| owner.kind()),
+            ctx.arbiter.holder().await.map(|owner| owner.kind()),
             Some("external_live"),
             "a superseded console close never evicts the external owner"
         );
@@ -994,7 +994,7 @@ mod tests {
         let closed = closed.result.expect("close result");
         assert_eq!(closed["status"], "closed", "{closed}");
         assert!(closed.get("close_reason").is_none(), "{closed}");
-        assert!(ctx.arbiter.holder().is_none());
+        assert!(ctx.arbiter.holder().await.is_none());
         let readiness = rpc(
             &app,
             &token,
@@ -1005,6 +1005,65 @@ mod tests {
         assert_eq!(
             readiness["result"], contract["readiness_available"],
             "{readiness}"
+        );
+
+        // Phase 5: the external channel ends inside meerkat-live (its socket
+        // dropped) without passing through the door. The stale holder must
+        // not lock the console out: readiness is available and the console
+        // opens without preempting anything.
+        let external_third = external_open("external-third").await;
+        assert!(external_third.error.is_none(), "{external_third:?}");
+        let third_external_channel =
+            external_third.result.expect("third external open")["channel_id"]
+                .as_str()
+                .expect("third external channel")
+                .to_string();
+        assert_eq!(
+            ctx.arbiter.holder().await.map(|owner| owner.kind()),
+            Some("external_live")
+        );
+        let direct_host = crate::live_wiring::member_live_host_for_test(&ctx, &service, &machine);
+        direct_host
+            .close_live_channel(
+                None,
+                &meerkat_core::LiveChannelId::new(&third_external_channel),
+            )
+            .await
+            .expect("meerkat-side close of the external channel");
+        let readiness = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/readiness",
+            json!({"identity":"agent-a"}),
+        )
+        .await;
+        assert_eq!(
+            readiness["result"], contract["readiness_available"],
+            "a dead external channel must not hold the path: {readiness}"
+        );
+        let notifications_before = notifications
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        let third_console = rpc(
+            &app,
+            &token,
+            "mobkit/console/voice/open",
+            json!({"identity":"agent-a","request_id":"voice-third"}),
+        )
+        .await;
+        assert!(third_console["error"].is_null(), "{third_console}");
+        assert_eq!(
+            notifications
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            notifications_before,
+            "opening over a dead holder supersedes nobody"
+        );
+        assert_eq!(
+            ctx.arbiter.holder().await.map(|owner| owner.kind()),
+            Some("console_voice")
         );
         controller.shutdown().await.expect("voice shutdown");
         runtime.shutdown().await;

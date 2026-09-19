@@ -35,6 +35,10 @@ pub enum LiveSupersededReason {
     SupersededByConsoleVoice,
     /// An external `mobkit/live/open` took the live path.
     SupersededByExternalLive,
+    /// The same owner opened again for the same member while its previous
+    /// channel was still bound; the previous channel was closed so the new
+    /// one is the only live audio owner.
+    ReplacedBySameOwner,
 }
 
 impl LiveSupersededReason {
@@ -45,6 +49,7 @@ impl LiveSupersededReason {
         match self {
             Self::SupersededByConsoleVoice => "superseded_by_console_voice",
             Self::SupersededByExternalLive => "superseded_by_external_live",
+            Self::ReplacedBySameOwner => "replaced_by_same_owner",
         }
     }
 }
@@ -158,6 +163,13 @@ pub type LiveOwnerCloser = Arc<
 /// installs its stdout writer here, HTTP-only hosts leave it empty.
 pub type LiveOwnerNotifier = Arc<dyn Fn(&str, Value) + Send + Sync>;
 
+/// Whether a bound channel is still active on the machine. A channel can end
+/// without passing through either door (a dropped external WebSocket closes
+/// it inside meerkat-live; a console call can die with its provider), so the
+/// arbiter asks before it trusts a holder or tries to close one.
+pub type LiveOwnerLiveness =
+    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
+
 /// Handle to one engagement. Releasing or binding a stale lease is a no-op,
 /// so a slow loser can never disturb the owner that replaced it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -219,6 +231,7 @@ pub struct LiveOwnerArbiter {
     ledger: StdMutex<Ledger>,
     next_lease: AtomicU64,
     notifier: StdMutex<Option<LiveOwnerNotifier>>,
+    liveness: StdMutex<Option<LiveOwnerLiveness>>,
 }
 
 impl Default for LiveOwnerArbiter {
@@ -228,6 +241,7 @@ impl Default for LiveOwnerArbiter {
             ledger: StdMutex::new(Ledger::default()),
             next_lease: AtomicU64::new(1),
             notifier: StdMutex::new(None),
+            liveness: StdMutex::new(None),
         }
     }
 }
@@ -235,7 +249,7 @@ impl Default for LiveOwnerArbiter {
 impl std::fmt::Debug for LiveOwnerArbiter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiveOwnerArbiter")
-            .field("holder", &self.holder())
+            .field("holder", &self.recorded_holder())
             .finish_non_exhaustive()
     }
 }
@@ -255,21 +269,67 @@ impl LiveOwnerArbiter {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(notifier);
     }
 
-    /// The owner currently holding the live path, if any.
+    /// Install the channel liveness probe (see [`LiveOwnerLiveness`]).
+    pub fn set_liveness(&self, liveness: LiveOwnerLiveness) {
+        *self
+            .liveness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(liveness);
+    }
+
+    /// The owner currently holding the live path, if any, without asking the
+    /// machine whether its channel still exists. Prefer [`Self::holder`].
     #[must_use]
-    pub fn holder(&self) -> Option<LiveOwner> {
+    pub fn recorded_holder(&self) -> Option<LiveOwner> {
         self.ledger()
             .current
             .as_ref()
             .map(|engagement| engagement.owner.clone())
     }
 
-    /// Take the live path for `owner`, closing a different active owner first.
+    /// The owner currently holding the live path, if any. A holder whose
+    /// bound channel is no longer active on the machine (its socket dropped,
+    /// its provider ended the call) is released here and not reported, so a
+    /// path nobody is using can never lock the other door out.
+    pub async fn holder(&self) -> Option<LiveOwner> {
+        let holder = self.recorded_holder()?;
+        if self.channel_is_live(&holder).await {
+            return Some(holder);
+        }
+        if let Some(channel) = holder.channel_id() {
+            self.release_channel(channel);
+        }
+        None
+    }
+
+    /// `true` when the owner has no bound channel yet (its open is in flight)
+    /// or its bound channel is still active; `false` only for a bound channel
+    /// the machine no longer knows.
+    async fn channel_is_live(&self, owner: &LiveOwner) -> bool {
+        let Some(channel) = owner.channel_id() else {
+            return true;
+        };
+        let probe = self
+            .liveness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        match probe {
+            Some(probe) => probe(channel.to_string()).await,
+            None => true,
+        }
+    }
+
+    /// Take the live path for `owner`, closing whatever held it first.
     ///
-    /// Returns the lease and the owner that was preempted, if any. The same
-    /// door re-engaging for the same member replaces its own engagement
-    /// without closing anything. Runs the loser's closer with no lock held
-    /// other than the engagement serializer.
+    /// Returns the lease and the owner that was preempted, if any. Runs the
+    /// loser's closer with no lock held other than the engagement serializer.
+    /// A holder whose bound channel already ended outside both doors is
+    /// simply released. The same door re-engaging for the same member is not
+    /// a preemption (nothing is reported as superseded): with no channel
+    /// bound yet it replaces its own engagement, and with one bound the old
+    /// channel is closed as `replaced_by_same_owner` so the new open is the
+    /// only live audio owner even if it later fails.
     pub async fn engage(
         &self,
         owner: LiveOwner,
@@ -283,14 +343,18 @@ impl LiveOwnerArbiter {
                 Arc::clone(&engagement.closer),
             )
         });
-        let reason = owner.supersedes_with();
         let mut preempted = None;
-        if let Some((lease, previous_owner, previous_closer)) = previous
-            && !previous_owner.same_door(&owner)
-        {
-            if let Err(error) =
-                previous_closer(reason, previous_owner.channel_id().map(ToString::to_string)).await
-            {
+        if let Some((lease, previous_owner, previous_closer)) = previous {
+            let same_door = previous_owner.same_door(&owner);
+            let bound = previous_owner.channel_id().map(ToString::to_string);
+            let alive = self.channel_is_live(&previous_owner).await;
+            let needs_close = alive && !(same_door && bound.is_none());
+            let reason = if same_door {
+                LiveSupersededReason::ReplacedBySameOwner
+            } else {
+                owner.supersedes_with()
+            };
+            if needs_close && let Err(error) = previous_closer(reason, bound.clone()).await {
                 return Err(LiveOwnerArbiterError::CloseFailed {
                     kind: previous_owner.kind(),
                     identity: previous_owner.identity().to_string(),
@@ -301,7 +365,7 @@ impl LiveOwnerArbiter {
                 let mut ledger = self.ledger();
                 // A different engagement may have replaced the loser while
                 // its close ran (it released and someone re-engaged). Only
-                // retire the exact engagement we closed.
+                // retire the exact engagement we handled.
                 if ledger
                     .current
                     .as_ref()
@@ -309,17 +373,26 @@ impl LiveOwnerArbiter {
                 {
                     ledger.current = None;
                 }
-                if let Some(channel) = previous_owner.channel_id() {
-                    remember_close_reason(&mut ledger, channel, reason);
-                } else {
-                    ledger.superseded_leases.push_back((lease, reason));
-                    while ledger.superseded_leases.len() > SUPERSEDED_LEASE_CAPACITY {
-                        ledger.superseded_leases.pop_front();
+                match bound.as_deref() {
+                    Some(channel) if needs_close => {
+                        remember_close_reason(&mut ledger, channel, reason);
+                    }
+                    // Already dead on the machine: nothing was closed here.
+                    Some(_) => {}
+                    // Still opening: the owner learns on bind that it lost and
+                    // closes what it opened, whichever door it belongs to.
+                    None => {
+                        ledger.superseded_leases.push_back((lease, reason));
+                        while ledger.superseded_leases.len() > SUPERSEDED_LEASE_CAPACITY {
+                            ledger.superseded_leases.pop_front();
+                        }
                     }
                 }
             }
-            self.notify_superseded(&previous_owner, reason, &owner);
-            preempted = Some(previous_owner);
+            if !same_door && alive {
+                self.notify_superseded(&previous_owner, reason, &owner);
+                preempted = Some(previous_owner);
+            }
         }
         let lease = LiveOwnerLease(self.next_lease.fetch_add(1, Ordering::Relaxed));
         self.ledger().current = Some(Engagement {
@@ -497,6 +570,7 @@ mod tests {
         assert_eq!(
             arbiter
                 .holder()
+                .await
                 .and_then(|owner| owner.channel_id().map(ToString::to_string)),
             Some("console-channel".to_string())
         );
@@ -520,29 +594,30 @@ mod tests {
             Some(LiveSupersededReason::SupersededByExternalLive)
         );
         assert_eq!(
-            arbiter.holder().map(|owner| owner.kind()),
+            arbiter.holder().await.map(|owner| owner.kind()),
             Some("external_live")
         );
-        let notified = notified.lock().expect("notified");
-        assert_eq!(notified.len(), 1);
-        assert_eq!(notified[0].0, "mobkit/live/superseded");
-        assert_eq!(notified[0].1["reason"], "superseded_by_external_live");
-        assert_eq!(notified[0].1["channel_id"], "console-channel");
-        assert_eq!(notified[0].1["superseded_by"]["owner"], "external_live");
-        drop(notified);
+        {
+            let notified = notified.lock().expect("notified");
+            assert_eq!(notified.len(), 1);
+            assert_eq!(notified[0].0, "mobkit/live/superseded");
+            assert_eq!(notified[0].1["reason"], "superseded_by_external_live");
+            assert_eq!(notified[0].1["channel_id"], "console-channel");
+            assert_eq!(notified[0].1["superseded_by"]["owner"], "external_live");
+        }
 
         // A stale release from the loser must not evict the winner.
         arbiter.release(console_lease);
         assert_eq!(
-            arbiter.holder().map(|owner| owner.kind()),
+            arbiter.holder().await.map(|owner| owner.kind()),
             Some("external_live")
         );
         arbiter.release(external_lease);
-        assert!(arbiter.holder().is_none());
+        assert!(arbiter.holder().await.is_none());
     }
 
     #[tokio::test]
-    async fn same_door_reengaging_for_the_same_member_never_closes_itself() {
+    async fn same_door_reengaging_is_never_reported_as_a_preemption() {
         let arbiter = LiveOwnerArbiter::default();
         let closes = Arc::new(StdMutex::new(Vec::new()));
         let (first, _) = arbiter
@@ -557,11 +632,19 @@ mod tests {
             .engage(console("agent-a"), noop_closer())
             .await
             .expect("reopen");
-        assert!(preempted.is_none());
-        assert!(closes.lock().expect("closes").is_empty());
+        assert!(preempted.is_none(), "a reopen supersedes nobody");
         assert_ne!(first, second);
+        // ... but the previous call's channel is closed rather than left live.
+        assert_eq!(
+            closes.lock().expect("closes").as_slice(),
+            &[(
+                LiveSupersededReason::ReplacedBySameOwner,
+                Some("channel-1".to_string())
+            )]
+        );
         // The console switching to ANOTHER agent is a different owner and
         // closes the previous call, matching the browser's close-before-switch.
+        arbiter.bind_channel(second, "channel-2");
         let (_, preempted) = arbiter
             .engage(console("agent-b"), noop_closer())
             .await
@@ -569,6 +652,10 @@ mod tests {
         assert_eq!(
             preempted.map(|owner| owner.identity().to_string()),
             Some("agent-a".to_string())
+        );
+        assert_eq!(
+            arbiter.close_reason("channel-2"),
+            Some(LiveSupersededReason::SupersededByConsoleVoice)
         );
     }
 
@@ -596,7 +683,7 @@ mod tests {
             }
         ));
         assert_eq!(
-            arbiter.holder().map(|owner| owner.kind()),
+            arbiter.holder().await.map(|owner| owner.kind()),
             Some("external_live")
         );
         assert!(arbiter.close_reason("external-channel").is_none());
@@ -622,7 +709,7 @@ mod tests {
         // Binding after the loss must not overwrite the winner.
         arbiter.bind_channel(opening, "late-channel");
         assert_eq!(
-            arbiter.holder().map(|owner| owner.kind()),
+            arbiter.holder().await.map(|owner| owner.kind()),
             Some("console_voice")
         );
     }
@@ -636,9 +723,150 @@ mod tests {
             .expect("engage");
         arbiter.bind_channel(lease, "channel-a");
         arbiter.release_channel("channel-other");
-        assert!(arbiter.holder().is_some());
+        assert!(arbiter.holder().await.is_some());
         arbiter.release_channel("channel-a");
-        assert!(arbiter.holder().is_none());
+        assert!(arbiter.holder().await.is_none());
+    }
+
+    /// A liveness probe backed by a set of channel ids the "machine" knows.
+    fn liveness(live: Arc<StdMutex<std::collections::HashSet<String>>>) -> LiveOwnerLiveness {
+        Arc::new(move |channel| {
+            let live = Arc::clone(&live);
+            Box::pin(async move { live.lock().expect("live").contains(&channel) })
+        })
+    }
+
+    #[tokio::test]
+    async fn a_holder_whose_channel_ended_outside_the_doors_is_released_not_trusted() {
+        let arbiter = LiveOwnerArbiter::default();
+        let live = Arc::new(StdMutex::new(std::collections::HashSet::new()));
+        arbiter.set_liveness(liveness(Arc::clone(&live)));
+        let closes = Arc::new(StdMutex::new(Vec::new()));
+        let (lease, _) = arbiter
+            .engage(
+                external("agent-a"),
+                recording_closer(Arc::clone(&closes), Err("BindingMismatch".to_string())),
+            )
+            .await
+            .expect("engage");
+        arbiter.bind_channel(lease, "dropped-socket");
+        live.lock()
+            .expect("live")
+            .insert("dropped-socket".to_string());
+        assert_eq!(
+            arbiter.holder().await.map(|owner| owner.kind()),
+            Some("external_live")
+        );
+
+        // The WebSocket drops: meerkat-live closes the channel itself and
+        // neither door hears about it.
+        live.lock().expect("live").clear();
+        assert!(
+            arbiter.holder().await.is_none(),
+            "a dead holder is not reported"
+        );
+        assert!(arbiter.recorded_holder().is_none(), "and it is released");
+
+        // The reverse order: engage while the dead holder is still recorded.
+        let (lease, _) = arbiter
+            .engage(
+                external("agent-a"),
+                recording_closer(Arc::clone(&closes), Err("BindingMismatch".to_string())),
+            )
+            .await
+            .expect("engage again");
+        arbiter.bind_channel(lease, "dropped-again");
+        let (_, preempted) = arbiter
+            .engage(console("agent-b"), noop_closer())
+            .await
+            .expect("console engages over a dead external holder");
+        assert!(preempted.is_none(), "nothing live was preempted");
+        assert!(
+            closes.lock().expect("closes").is_empty(),
+            "a closer that would fail on a gone channel is never run"
+        );
+        assert_eq!(
+            arbiter.holder().await.map(|owner| owner.kind()),
+            Some("console_voice")
+        );
+    }
+
+    #[tokio::test]
+    async fn same_owner_reopening_with_a_bound_channel_closes_the_old_one_first() {
+        let arbiter = LiveOwnerArbiter::default();
+        let notified = Arc::new(StdMutex::new(Vec::<(String, Value)>::new()));
+        let sink = Arc::clone(&notified);
+        arbiter.set_notifier(Arc::new(move |method, params| {
+            sink.lock()
+                .expect("notified")
+                .push((method.to_string(), params));
+        }));
+        let closes = Arc::new(StdMutex::new(Vec::new()));
+        let (first, _) = arbiter
+            .engage(
+                external("agent-a"),
+                recording_closer(Arc::clone(&closes), Ok(())),
+            )
+            .await
+            .expect("first");
+        arbiter.bind_channel(first, "channel-1");
+        let (second, preempted) = arbiter
+            .engage(external("agent-a"), noop_closer())
+            .await
+            .expect("reopen");
+        assert!(
+            preempted.is_none(),
+            "a self-replacement is not a preemption"
+        );
+        assert_eq!(
+            closes.lock().expect("closes").as_slice(),
+            &[(
+                LiveSupersededReason::ReplacedBySameOwner,
+                Some("channel-1".to_string())
+            )],
+            "the previous channel is closed so two audio owners never coexist"
+        );
+        assert_eq!(
+            arbiter.close_reason("channel-1"),
+            Some(LiveSupersededReason::ReplacedBySameOwner)
+        );
+        assert!(
+            notified.lock().expect("notified").is_empty(),
+            "no supersession is announced"
+        );
+        // If the reopen then fails and releases, nothing live is left behind,
+        // so a console open finds the path free and preempts nothing.
+        arbiter.release(second);
+        let (_, preempted) = arbiter
+            .engage(console("agent-b"), noop_closer())
+            .await
+            .expect("console after failed reopen");
+        assert!(preempted.is_none());
+    }
+
+    #[tokio::test]
+    async fn same_owner_reopening_before_binding_replaces_without_closing() {
+        let arbiter = LiveOwnerArbiter::default();
+        let closes = Arc::new(StdMutex::new(Vec::new()));
+        let (first, _) = arbiter
+            .engage(
+                external("agent-a"),
+                recording_closer(Arc::clone(&closes), Ok(())),
+            )
+            .await
+            .expect("first");
+        let (second, preempted) = arbiter
+            .engage(external("agent-a"), noop_closer())
+            .await
+            .expect("reopen while the first is still opening");
+        assert!(preempted.is_none());
+        assert!(closes.lock().expect("closes").is_empty());
+        assert_ne!(first, second);
+        assert_eq!(
+            arbiter.take_superseded(first),
+            Some(LiveSupersededReason::ReplacedBySameOwner),
+            "the first open learns on bind that it must close what it opened"
+        );
     }
 
     #[tokio::test]
@@ -678,6 +906,6 @@ mod tests {
             max_seen.load(Ordering::SeqCst) <= 1,
             "closers ran concurrently"
         );
-        assert!(arbiter.holder().is_some());
+        assert!(arbiter.holder().await.is_some());
     }
 }

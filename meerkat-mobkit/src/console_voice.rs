@@ -356,8 +356,21 @@ impl RequestSlot {
         Arc::new(move |reason, _channel| {
             let slot = Arc::clone(&slot);
             Box::pin(async move {
-                slot.state.lock().await.superseded = Some(reason);
+                let has_channel = {
+                    let mut state = slot.state.lock().await;
+                    state.superseded = Some(reason);
+                    state.session.is_some() || !state.opening
+                };
+                // `cancel` marks the slot and spawns the teardown that closes
+                // whatever the provider open yields, now or later.
                 slot.cancel().await;
+                if !has_channel {
+                    // Nothing is live yet: the in-flight open will find the
+                    // slot cancelled and close its own channel on completion.
+                    // Waiting here would block the winner on the loser's
+                    // provider handshake.
+                    return Ok(());
+                }
                 tokio::time::timeout(CLOSE_WAIT, slot.wait_closed())
                     .await
                     .map_err(|_| "console voice teardown is still pending".to_string())?
@@ -615,9 +628,11 @@ impl ConsoleVoiceController {
         if principal.trim().is_empty() {
             return Err(VoiceError::Unauthorized);
         }
-        if let Some(holder @ LiveOwner::ExternalLive { .. }) =
-            self.arbiter.as_ref().and_then(|arbiter| arbiter.holder())
-        {
+        let holder = match self.arbiter.as_ref() {
+            Some(arbiter) => arbiter.holder().await,
+            None => None,
+        };
+        if let Some(holder @ LiveOwner::ExternalLive { .. }) = holder {
             return Ok(VoiceReadinessReport {
                 available: false,
                 reason: Some(VoiceReadinessReport::EXTERNAL_LIVE_ACTIVE),
@@ -851,13 +866,25 @@ impl ConsoleVoiceController {
                 state.opening = false;
                 match result {
                     Ok(session) => {
+                        let mut lost_to = None;
                         if let (Some(arbiter), Some(lease)) = (pending.arbiter.as_ref(), lease) {
                             arbiter.bind_channel(lease, &session.pending().channel_id);
+                            lost_to = arbiter.take_superseded(lease);
                         }
                         state.lease = lease;
                         state.session = Some(session);
                         state.setup_deadline =
                             Some(tokio::time::Instant::now() + PENDING_SETUP_LIMIT);
+                        if let Some(reason) = lost_to {
+                            // Another owner took the path while this open was
+                            // in flight. The channel just opened must not stay
+                            // live beside the winner: close it through the
+                            // ordinary teardown and report the reason.
+                            state.superseded = Some(reason);
+                            drop(state);
+                            pending.cancel().await;
+                            return;
+                        }
                     }
                     Err(error) => {
                         if let (Some(arbiter), Some(lease)) = (pending.arbiter.as_ref(), lease) {
@@ -1098,7 +1125,7 @@ mod tests {
             ConsoleVoiceController::new(host.clone()).with_arbiter(Arc::clone(&arbiter));
         controller.open("alice", request()).await.expect("open");
         assert_eq!(
-            arbiter.holder(),
+            arbiter.holder().await,
             Some(LiveOwner::ConsoleVoice {
                 principal: "alice".to_string(),
                 identity: "agent-a".to_string(),
@@ -1152,7 +1179,7 @@ mod tests {
             .expect("close superseded");
         assert_eq!(host.session.close_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
-            arbiter.holder().map(|owner| owner.kind()),
+            arbiter.holder().await.map(|owner| owner.kind()),
             Some("external_live"),
             "a superseded console close never evicts the owner that replaced it"
         );
@@ -1214,7 +1241,7 @@ mod tests {
             Some(LiveSupersededReason::SupersededByConsoleVoice)
         );
         assert_eq!(
-            arbiter.holder().map(|owner| owner.kind()),
+            arbiter.holder().await.map(|owner| owner.kind()),
             Some("console_voice")
         );
         let readiness = controller
@@ -1229,7 +1256,121 @@ mod tests {
 
         // Ending the call frees the path again.
         controller.close("alice", request()).await.expect("close");
-        assert!(arbiter.holder().is_none());
+        assert!(arbiter.holder().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_console_open_that_loses_the_race_while_opening_closes_what_it_opened() {
+        // The host blocks inside open until the test releases it.
+        let host = Host::new(true, true);
+        let arbiter = Arc::new(LiveOwnerArbiter::default());
+        let controller =
+            ConsoleVoiceController::new(host.clone()).with_arbiter(Arc::clone(&arbiter));
+        let opening = {
+            let controller = controller.clone();
+            tokio::spawn(async move { controller.open("alice", request()).await })
+        };
+        host.started.notified().await;
+        assert_eq!(
+            arbiter.holder().await,
+            Some(LiveOwner::ConsoleVoice {
+                principal: "alice".to_string(),
+                identity: "agent-a".to_string(),
+                channel_id: None,
+            }),
+            "the console engaged before its provider open completed"
+        );
+        // The external door wins while the console open is still in flight.
+        let (_, preempted) = arbiter
+            .engage(external_owner("agent-b"), noop_closer())
+            .await
+            .expect("external engagement");
+        assert_eq!(preempted.map(|owner| owner.kind()), Some("console_voice"));
+        assert_eq!(
+            host.session.close_calls.load(Ordering::SeqCst),
+            0,
+            "nothing to close yet"
+        );
+        // The console open now completes: its channel must not stay live
+        // beside the external owner.
+        host.permit.add_permits(1);
+        let result = opening.await.expect("open task");
+        assert_eq!(
+            result,
+            Err(VoiceError::Superseded(
+                LiveSupersededReason::SupersededByExternalLive
+            ))
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.session.close_calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the late console channel is closed");
+        assert_eq!(
+            arbiter.holder().await.map(|owner| owner.kind()),
+            Some("external_live")
+        );
+        assert_eq!(
+            controller.replacement_required("alice", request()).await,
+            Err(VoiceError::Superseded(
+                LiveSupersededReason::SupersededByExternalLive
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dead_external_channel_never_locks_the_console_out() {
+        let host = Host::new(true, false);
+        let arbiter = Arc::new(LiveOwnerArbiter::default());
+        let live: Arc<std::sync::Mutex<std::collections::HashSet<String>>> = Arc::default();
+        let probe = Arc::clone(&live);
+        arbiter.set_liveness(Arc::new(move |channel| {
+            let probe = Arc::clone(&probe);
+            Box::pin(async move { probe.lock().expect("live").contains(&channel) })
+        }));
+        let controller =
+            ConsoleVoiceController::new(host.clone()).with_arbiter(Arc::clone(&arbiter));
+        // The console's own channel is live once it opens.
+        live.lock()
+            .expect("live")
+            .insert("test-channel".to_string());
+        // The external closer fails the way the real one would for a channel
+        // the machine no longer knows.
+        let failing: LiveOwnerCloser =
+            Arc::new(|_, _| Box::pin(async { Err("BindingMismatch".to_string()) }));
+        arbiter
+            .engage(external_owner("agent-b"), failing)
+            .await
+            .expect("external engagement");
+        live.lock()
+            .expect("live")
+            .insert("agent-b-channel".to_string());
+        assert_eq!(
+            controller
+                .readiness("alice", "agent-a")
+                .await
+                .expect("readiness")
+                .reason,
+            Some("external_live_active")
+        );
+        // reachyd's socket drops; meerkat-live closes the channel by itself.
+        live.lock().expect("live").remove("agent-b-channel");
+        let readiness = controller
+            .readiness("alice", "agent-a")
+            .await
+            .expect("readiness");
+        assert!(readiness.available, "{readiness:?}");
+        assert!(readiness.reason.is_none());
+        controller
+            .open("alice", request())
+            .await
+            .expect("console open over a dead channel");
+        assert_eq!(
+            arbiter.holder().await.map(|owner| owner.kind()),
+            Some("console_voice")
+        );
     }
 
     #[tokio::test]
@@ -1254,7 +1395,7 @@ mod tests {
             "no provider open behind a live owner"
         );
         assert_eq!(
-            arbiter.holder().map(|owner| owner.kind()),
+            arbiter.holder().await.map(|owner| owner.kind()),
             Some("external_live")
         );
     }
