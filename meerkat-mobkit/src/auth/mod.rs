@@ -63,6 +63,9 @@ pub enum JwtValidationError {
 pub struct ValidatedJwt {
     pub subject: Option<String>,
     pub email: Option<String>,
+    /// The `email_verified` claim when present as a boolean; `None` when
+    /// absent or not a boolean.
+    pub email_verified: Option<bool>,
     pub provider: Option<String>,
     pub actor_type: Option<String>,
     pub issuer: Option<String>,
@@ -393,6 +396,7 @@ fn validate_claims(
             .get("email")
             .and_then(Value::as_str)
             .map(ToString::to_string),
+        email_verified: claims.get("email_verified").and_then(Value::as_bool),
         provider: claims
             .get("provider")
             .and_then(Value::as_str)

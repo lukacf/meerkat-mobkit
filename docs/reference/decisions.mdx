@@ -145,6 +145,7 @@ let decisions = build_runtime_decision_state(RuntimeDecisionInputs {
         discovery_json: discovery_json,          // must carry issuer and jwks_uri
         jwks_json: jwks_json,                    // at least one key
         audience: "my-console".into(),
+        require_verified_email: false,
     },
     console: ConsolePolicy::default(),           // require_app_auth: true
     ops: RuntimeOpsPolicy::default(),

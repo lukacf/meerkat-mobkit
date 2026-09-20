@@ -74,6 +74,7 @@ pub fn parse_console_auth_config(value: &Value) -> Result<RuntimeDecisionState, 
             "k":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret.as_bytes())}]})
         .to_string(),
         audience: audience.to_string(),
+        require_verified_email: false,
     };
     Ok(decisions)
 }
@@ -101,7 +102,7 @@ fn parse_oidc_auth_config(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or("auth_config.audience must be a non-empty string for provider \"oidc\"")?;
-    let jwks_json = match (object.get("jwks_json"), object.get("jwks_uri")) {
+    let (jwks_json, jwks_uri) = match (object.get("jwks_json"), object.get("jwks_uri")) {
         (Some(_), Some(_)) => {
             return Err("auth_config accepts exactly one of jwks_json or jwks_uri".to_string());
         }
@@ -112,7 +113,7 @@ fn parse_oidc_auth_config(
                 other => other.clone(),
             };
             validate_jwks_document(&document)?;
-            document.to_string()
+            (document.to_string(), OIDC_INLINE_JWKS_MARKER.to_string())
         }
         (None, Some(uri)) => {
             let uri = uri
@@ -122,7 +123,7 @@ fn parse_oidc_auth_config(
                 .ok_or("auth_config.jwks_uri must be an https URL")?;
             let document = fetch_jwks_snapshot(uri)?;
             validate_jwks_document(&document)?;
-            document.to_string()
+            (document.to_string(), uri.to_string())
         }
         (None, None) => {
             return Err(
@@ -166,15 +167,23 @@ fn parse_oidc_auth_config(
         default_provider: AuthProvider::GenericOidc,
         email_allowlist: allowlist,
     };
+    // The discovery document records the real key source: the fetched
+    // `jwks_uri`, or an `inline` marker for `jwks_json`. Console ingress keys
+    // its HS256 development gate off the issuer and JWKS hosts, so this must
+    // describe the truth: a public issuer's host must never read as a
+    // development host, and provider "oidc" refuses symmetric keys anyway.
     decisions.trusted_oidc = crate::TrustedOidcRuntimeConfig {
-        discovery_json:
-            json!({"issuer": issuer, "jwks_uri": format!("{}/jwks", issuer.trim_end_matches('/'))})
-                .to_string(),
+        discovery_json: json!({"issuer": issuer, "jwks_uri": jwks_uri}).to_string(),
         jwks_json,
         audience: audience.to_string(),
+        require_verified_email: true,
     };
     Ok(decisions)
 }
+
+/// `jwks_uri` value recorded in the discovery document when the JWKS was
+/// supplied inline; there is no URL to fetch and none is invented.
+pub const OIDC_INLINE_JWKS_MARKER: &str = "inline";
 
 fn validate_jwks_document(document: &Value) -> Result<(), String> {
     let keys = document

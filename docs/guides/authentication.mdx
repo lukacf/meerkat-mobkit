@@ -128,6 +128,15 @@ bound; any error fails configuration closed) or `jwks_json` (the JWKS document
 inline, as an object or a string). Symmetric (`oct`) keys are refused under
 `provider: "oidc"`; use `provider: "jwt"` for a shared secret.
 
+Under `provider: "oidc"` the console admits a token only when its
+`email_verified` claim is the boolean `true` (a missing claim counts as
+unverified, refused as `email_not_verified`) and never lets `sub` stand in
+for a missing `email`: a public issuer mints tokens for unverified addresses
+too, and the allowlist compares addresses. The `jwt` development path keeps
+its historical behaviour. The recorded discovery document names the real key
+source (the fetched `jwks_uri`, or `inline` for `jwks_json`), so a public
+issuer's host can never read as the HS256 development host.
+
 The result is the fixed trusted snapshot described next: the console does not
 refetch the JWKS, so an issuer key rotation needs a restart of the host (or a
 refreshable `JwksCache` on the host's own front, see below). Google rotates its
@@ -145,6 +154,7 @@ TrustedOidcRuntimeConfig {
     discovery_json: discovery_json_text,
     jwks_json: jwks_json_text,
     audience: "meerkat-console".to_string(),
+    require_verified_email: false,
 }
 ```
 

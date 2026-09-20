@@ -1224,10 +1224,23 @@ fn resolve_console_auth_from_token(
     )
     .map_err(|_| ConsoleAuthResolutionError::InvalidToken)?;
 
-    let principal = claims
-        .email
-        .or(claims.subject)
-        .ok_or(ConsoleAuthResolutionError::MissingTokenIdentity)?;
+    let principal = if decisions.trusted_oidc.require_verified_email {
+        // A public issuer mints tokens for unverified addresses too, and the
+        // allowlist compares addresses: require the claim and never let a
+        // `sub` stand in for one.
+        let email = claims
+            .email
+            .ok_or(ConsoleAuthResolutionError::MissingTokenIdentity)?;
+        if claims.email_verified != Some(true) {
+            return Err(ConsoleAuthResolutionError::EmailNotVerified);
+        }
+        email
+    } else {
+        claims
+            .email
+            .or(claims.subject)
+            .ok_or(ConsoleAuthResolutionError::MissingTokenIdentity)?
+    };
     let provider =
         if claims.actor_type.as_deref() == Some("service") || principal.starts_with("svc:") {
             AuthProvider::ServiceIdentity
@@ -1255,6 +1268,7 @@ enum ConsoleAuthResolutionError {
     InvalidToken,
     MissingTokenIdentity,
     Hs256NotAllowed,
+    EmailNotVerified,
 }
 
 fn console_auth_error_reason(error: &ConsoleAuthResolutionError) -> &'static str {
@@ -1266,6 +1280,7 @@ fn console_auth_error_reason(error: &ConsoleAuthResolutionError) -> &'static str
         ConsoleAuthResolutionError::InvalidToken => "invalid_token",
         ConsoleAuthResolutionError::MissingTokenIdentity => "missing_token_identity",
         ConsoleAuthResolutionError::Hs256NotAllowed => "hs256_not_allowed",
+        ConsoleAuthResolutionError::EmailNotVerified => "email_not_verified",
     }
 }
 
