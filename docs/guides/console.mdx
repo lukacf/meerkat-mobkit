@@ -158,6 +158,12 @@ The principal must match the authenticated console subject. For an SDK-driven
 `runtime_options` and use the gateway's persistent session configuration.
 The SDK builders expose this as `.consoleVoice(config)` in TypeScript and
 `.console_voice(config)` in Python, using `OpenAiLiveGatewayConfig`.
+A Rust host that embeds `UnifiedRuntime` through its builder registers the
+same thing with `.console_voice(PublicLiveRegistration)` (plus `.live(...)`
+for the external channel) and serves
+`build_reference_app_router_with_live(decisions)`; the decision state must
+require app auth, for example `parse_console_auth_config` with
+`provider: "oidc"` for a Google-fronted console. See the Unified Runtime guide.
 Credentials stay on the server. The console checks readiness for the selected
 agent before offering voice and checks it again before microphone capture;
 registration or model availability alone does not enable the button.

@@ -491,6 +491,7 @@ impl RuntimeDecisionState {
                 discovery_json: LOCAL_CONSOLE_DISCOVERY_JSON.to_string(),
                 jwks_json: LOCAL_CONSOLE_JWKS_JSON.to_string(),
                 audience: LOCAL_CONSOLE_AUDIENCE.to_string(),
+                require_verified_email: false,
             },
             console,
             ops: RuntimeOpsPolicy::default(),
@@ -522,6 +523,14 @@ pub struct TrustedOidcRuntimeConfig {
     pub discovery_json: String,
     pub jwks_json: String,
     pub audience: String,
+    /// Admit only tokens whose `email_verified` claim is `true` and never
+    /// fall back to `sub` as the allowlist principal. Set by
+    /// `provider: "oidc"` configurations: a public issuer such as Google
+    /// mints tokens for unverified addresses too, and the allowlist compares
+    /// addresses. Off (the historical behaviour) for the HS256 development
+    /// issuer and hand-built states.
+    #[serde(default)]
+    pub require_verified_email: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1609,6 +1618,7 @@ mod decision_state_tests {
             discovery_json: "{}".to_string(),
             jwks_json: r#"{"keys":[]}"#.to_string(),
             audience: String::new(),
+            require_verified_email: false,
         }
     }
 
@@ -1617,6 +1627,7 @@ mod decision_state_tests {
             discovery_json: VALID_DISCOVERY_JSON.to_string(),
             jwks_json: ONE_KEY_JWKS_JSON.to_string(),
             audience: "tests".to_string(),
+            require_verified_email: false,
         }
     }
 

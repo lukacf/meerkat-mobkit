@@ -124,6 +124,9 @@ pub struct UnifiedRuntimeBuilder {
     persistent_metadata: Option<Arc<dyn PersistentMetadataStore>>,
     access_controller: Option<crate::access::AccessController>,
     topology_control_policy: crate::topology_control::TopologyControlPolicy,
+    live: Option<super::live_compose::LiveOptions>,
+    #[cfg(feature = "openai-live")]
+    console_voice: Option<crate::public_live_config::PublicLiveRegistration>,
 }
 
 impl UnifiedRuntimeBuilder {
@@ -546,6 +549,42 @@ impl UnifiedRuntimeBuilder {
     /// cursor-based history replay) with otherwise ephemeral mob state.
     pub fn with_console_log_store(mut self, store: Arc<dyn ConsoleLogStore>) -> Self {
         self.console_log_store = Some(store);
+        self
+    }
+
+    /// Register the external live channel (`mobkit/live/*` over the live
+    /// WebSocket router), the builder-path equivalent of the gateway's
+    /// `runtime_options.live`.
+    ///
+    /// Requires a persistent session store ([`Self::session_store`] or
+    /// [`Self::continuity_from_state_dir`]); `build()` fails closed with
+    /// [`UnifiedRuntimeBuilderError::LiveCompose`] otherwise. The doors are
+    /// composed by [`UnifiedRuntime::compose_live`] after the runtime is
+    /// shared; [`UnifiedRuntime::build_reference_app_router`] does that and
+    /// mounts the WebSocket router, so an embedder serving that router on
+    /// its own listener gets `/live/ws` beside the console.
+    pub fn live(mut self, options: super::live_compose::LiveOptions) -> Self {
+        self.live = Some(options);
+        self
+    }
+
+    /// Register console voice (gpt-live-1 through the authenticated console),
+    /// the builder-path equivalent of the gateway's
+    /// `runtime_options.console_voice`.
+    ///
+    /// Same persistent-store requirement as [`Self::live`]. The composed
+    /// controller serves only authenticated console principals, so the
+    /// decision state handed to [`UnifiedRuntime::build_reference_app_router`]
+    /// must have `console.require_app_auth = true`; the router refuses to
+    /// build otherwise. With [`Self::live`] registered as well, the two doors
+    /// share one live context and take turns on its voice-path arbiter
+    /// ("latest engaged wins"), exactly as in the gateway binaries.
+    #[cfg(feature = "openai-live")]
+    pub fn console_voice(
+        mut self,
+        registration: crate::public_live_config::PublicLiveRegistration,
+    ) -> Self {
+        self.console_voice = Some(registration);
         self
     }
 
@@ -1105,6 +1144,7 @@ impl UnifiedRuntimeBuilder {
         // member build (including bootstrap members built before the stack
         // attaches - their decorators read the slot per call).
         let dispatch_taint_slot = mob_spec.dispatch_taint_slot();
+        let live_plan = self.live_plan(&mut mob_spec)?;
         let runtime = Box::pin(UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
@@ -1304,6 +1344,7 @@ impl UnifiedRuntimeBuilder {
             console_log_store,
             ..runtime
         };
+        runtime.set_live_plan(live_plan);
         // The error hook lives in a late-bound shared slot created at
         // construction (runtime-owned tasks already hold it), so a
         // builder-supplied hook installs into the slot rather than
@@ -1754,6 +1795,50 @@ impl UnifiedRuntimeBuilder {
         clippy::unused_async_trait_impl,
         reason = "preserve the awaitable builder resolution seam used throughout the build pipeline"
     )]
+    /// Turn the registered live doors into a plan, taking the typed inputs
+    /// the spec retained. Fails closed when a door is registered but the
+    /// session service is not persistent: live channels need the durable
+    /// session owner, and silently composing nothing would leave the console
+    /// reporting voice unavailable with no diagnostic.
+    fn live_plan(
+        &self,
+        mob_spec: &mut MobBootstrapSpec,
+    ) -> Result<Option<super::live_compose::LivePlan>, UnifiedRuntimeBuilderError> {
+        #[cfg(feature = "openai-live")]
+        let requested = self.live.is_some() || self.console_voice.is_some();
+        #[cfg(not(feature = "openai-live"))]
+        let requested = self.live.is_some();
+        if !requested {
+            return Ok(None);
+        }
+        if self
+            .live
+            .as_ref()
+            .is_some_and(|options| options.public_base_url.trim().is_empty())
+        {
+            return Err(UnifiedRuntimeBuilderError::LiveCompose(
+                super::live_compose::LiveComposeError::LiveRequiresPublicBaseUrl,
+            ));
+        }
+        let inputs =
+            mob_spec
+                .live_compose_inputs
+                .take()
+                .ok_or(UnifiedRuntimeBuilderError::LiveCompose(
+                    super::live_compose::LiveComposeError::LiveRequiresPersistentSessions,
+                ))?;
+        Ok(Some(super::live_compose::LivePlan {
+            inputs,
+            live: self.live.clone(),
+            #[cfg(feature = "openai-live")]
+            console_voice: self.console_voice.clone(),
+            #[cfg(all(test, feature = "openai-live"))]
+            summary_override: None,
+            #[cfg(test)]
+            session_factory_override: None,
+        }))
+    }
+
     async fn resolve_mob_spec(&self) -> Result<MobBootstrapSpec, UnifiedRuntimeBuilderError> {
         let mut caps = self.capability_flags;
         // Resolved once for all three storage arms: the agent config every

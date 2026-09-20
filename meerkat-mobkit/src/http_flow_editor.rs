@@ -658,6 +658,7 @@ mod tests {
                 discovery_json: r#"{"issuer":"https://noop.example.com"}"#.to_string(),
                 jwks_json: r#"{"keys":[]}"#.to_string(),
                 audience: "flow-editor-tests".to_string(),
+                require_verified_email: false,
             },
             console: crate::decisions::ConsolePolicy {
                 require_app_auth: false,

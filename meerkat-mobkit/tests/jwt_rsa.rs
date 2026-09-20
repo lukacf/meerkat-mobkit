@@ -150,6 +150,7 @@ fn build_state(
             discovery_json: json!({"issuer":issuer,"jwks_uri":jwks_uri}).to_string(),
             jwks_json: jwks_json.to_string(),
             audience: AUDIENCE.to_string(),
+            require_verified_email: false,
         },
         console: ConsolePolicy {
             require_app_auth: true,
@@ -494,4 +495,181 @@ fn phase_e_req_e_003_allowlist_and_service_identity_are_preserved_in_console_flo
         denied_service_response.body,
         json!({"error":"unauthorized","reason":"service_identity_not_allowlisted"})
     );
+}
+
+// ---------------------------------------------------------------------------
+// provider: "oidc" console auth configuration (library embedders fronting the
+// console with a real issuer such as Google)
+// ---------------------------------------------------------------------------
+
+/// Claims the way an external issuer such as Google mints them: no
+/// MobKit-specific `provider` claim (console ingress maps its absence to
+/// `GenericOidc`, which the oidc policy expects).
+fn external_issuer_claims(issuer: &str, audience: &str, email: &str) -> Value {
+    json!({
+        "sub": format!("sub-{email}"),
+        "email": email,
+        "email_verified": true,
+        "iss": issuer,
+        "aud": audience,
+        "exp": 4_000_000_000_u64,
+        "nbf": 1_700_000_000_u64
+    })
+}
+
+fn oidc_config(jwks: Value) -> Value {
+    json!({
+        "provider": "oidc",
+        "issuer": PROD_ISSUER,
+        "audience": AUDIENCE,
+        "jwks_json": jwks,
+        "email_allowlist": ["alice@example.com"],
+    })
+}
+
+#[test]
+fn oidc_auth_config_accepts_an_rs256_token_from_the_inline_jwks() {
+    let state = meerkat_mobkit::console_auth_config::parse_console_auth_config(&oidc_config(
+        json!({"keys":[rsa_jwk("rsa-current", "RS256", RSA_A_N)]}),
+    ))
+    .expect("oidc auth config");
+    assert!(state.console.require_app_auth);
+    assert!(state.trusted_oidc.require_verified_email);
+    let discovery: Value =
+        serde_json::from_str(&state.trusted_oidc.discovery_json).expect("discovery json");
+    assert_eq!(discovery["issuer"], PROD_ISSUER);
+    assert_eq!(
+        discovery["jwks_uri"],
+        meerkat_mobkit::console_auth_config::OIDC_INLINE_JWKS_MARKER,
+        "an inline JWKS must not invent a fetch URL"
+    );
+    let token = sign_rs256(
+        "rsa-current",
+        &external_issuer_claims(PROD_ISSUER, AUDIENCE, "alice@example.com"),
+        RSA_A_PRIVATE_PEM,
+    );
+    assert_eq!(route_with_token(&state, &token).status, 200);
+    // An allowlisted address on an UNVERIFIED account is not the person.
+    let mut unverified = external_issuer_claims(PROD_ISSUER, AUDIENCE, "alice@example.com");
+    unverified["email_verified"] = json!(false);
+    let denied = route_with_token(
+        &state,
+        &sign_rs256("rsa-current", &unverified, RSA_A_PRIVATE_PEM),
+    );
+    assert_eq!(denied.status, 401);
+    assert_eq!(denied.body["reason"], "email_not_verified");
+    let mut missing_flag = external_issuer_claims(PROD_ISSUER, AUDIENCE, "alice@example.com");
+    missing_flag
+        .as_object_mut()
+        .expect("object")
+        .remove("email_verified");
+    let denied = route_with_token(
+        &state,
+        &sign_rs256("rsa-current", &missing_flag, RSA_A_PRIVATE_PEM),
+    );
+    assert_eq!(denied.status, 401);
+    assert_eq!(denied.body["reason"], "email_not_verified");
+    // No email claim at all: `sub` must not stand in for the allowlist.
+    let sub_only = json!({"sub":"alice@example.com","email_verified":true,"iss":PROD_ISSUER,
+        "aud":AUDIENCE,"exp":4_000_000_000_u64,"nbf":1_700_000_000_u64});
+    let denied = route_with_token(
+        &state,
+        &sign_rs256("rsa-current", &sub_only, RSA_A_PRIVATE_PEM),
+    );
+    assert_eq!(denied.status, 401);
+    assert_eq!(denied.body["reason"], "missing_token_identity");
+    let not_allowlisted = sign_rs256(
+        "rsa-current",
+        &external_issuer_claims(PROD_ISSUER, AUDIENCE, "mallory@example.com"),
+        RSA_A_PRIVATE_PEM,
+    );
+    let denied = route_with_token(&state, &not_allowlisted);
+    assert_eq!(denied.status, 401);
+    assert_eq!(denied.body["reason"], "email_not_allowlisted");
+}
+
+#[test]
+fn oidc_auth_config_rejects_a_wrong_audience_and_a_foreign_issuer() {
+    // The JWKS may also arrive as a string (for example from an environment
+    // variable).
+    let mut config = oidc_config(Value::Null);
+    config["jwks_json"] =
+        Value::String(json!({"keys":[rsa_jwk("rsa-current", "RS256", RSA_A_N)]}).to_string());
+    let state = meerkat_mobkit::console_auth_config::parse_console_auth_config(&config)
+        .expect("oidc auth config from a JWKS string");
+    let wrong_audience = sign_rs256(
+        "rsa-current",
+        &external_issuer_claims(PROD_ISSUER, "some-other-client-id", "alice@example.com"),
+        RSA_A_PRIVATE_PEM,
+    );
+    assert_eq!(route_with_token(&state, &wrong_audience).status, 401);
+    let foreign_issuer = sign_rs256(
+        "rsa-current",
+        &external_issuer_claims(
+            "https://accounts.example.net",
+            AUDIENCE,
+            "alice@example.com",
+        ),
+        RSA_A_PRIVATE_PEM,
+    );
+    assert_eq!(route_with_token(&state, &foreign_issuer).status, 401);
+    let hs256_forgery = sign_hs256(
+        "rsa-current",
+        &external_issuer_claims(PROD_ISSUER, AUDIENCE, "alice@example.com"),
+        "guessable",
+    );
+    assert_eq!(route_with_token(&state, &hs256_forgery).status, 401);
+}
+
+#[test]
+fn oidc_auth_config_fails_closed_on_incomplete_or_symmetric_input() {
+    let parse = meerkat_mobkit::console_auth_config::parse_console_auth_config;
+    let rsa = json!({"keys":[rsa_jwk("k", "RS256", RSA_A_N)]});
+    let mut missing_audience = oidc_config(rsa.clone());
+    missing_audience
+        .as_object_mut()
+        .expect("object")
+        .remove("audience");
+    assert!(parse(&missing_audience).unwrap_err().contains("audience"));
+    let mut missing_allowlist = oidc_config(rsa.clone());
+    missing_allowlist
+        .as_object_mut()
+        .expect("object")
+        .remove("email_allowlist");
+    assert!(
+        parse(&missing_allowlist)
+            .unwrap_err()
+            .contains("email_allowlist")
+    );
+    let mut both_sources = oidc_config(rsa.clone());
+    both_sources["jwks_uri"] = json!("https://accounts.google.com/.well-known/jwks");
+    assert!(parse(&both_sources).unwrap_err().contains("exactly one"));
+    let mut neither = oidc_config(Value::Null);
+    neither.as_object_mut().expect("object").remove("jwks_json");
+    assert!(
+        parse(&neither)
+            .unwrap_err()
+            .contains("jwks_json or jwks_uri")
+    );
+    let mut plain_http = oidc_config(Value::Null);
+    plain_http
+        .as_object_mut()
+        .expect("object")
+        .remove("jwks_json");
+    plain_http["jwks_uri"] = json!("http://accounts.google.com/certs");
+    assert!(parse(&plain_http).unwrap_err().contains("https"));
+    let symmetric = oidc_config(json!({"keys":[hs_jwk("dev", "console-test-signing")]}));
+    assert!(parse(&symmetric).unwrap_err().contains("symmetric"));
+    let empty = oidc_config(json!({"keys":[]}));
+    assert!(parse(&empty).unwrap_err().contains("no keys"));
+}
+
+#[test]
+fn jwt_development_provider_keeps_its_historical_principal_fallback() {
+    let state = meerkat_mobkit::console_auth_config::parse_console_auth_config(&json!({
+        "shared_secret": "console-test-signing",
+        "email_allowlist": ["alice@example.com"],
+    }))
+    .expect("jwt auth config");
+    assert!(!state.trusted_oidc.require_verified_email);
 }

@@ -78,6 +78,7 @@ fn trusted_oidc() -> TrustedOidcRuntimeConfig {
         jwks_json: r#"{"keys":[{"kid":"kid-current","kty":"oct","alg":"HS256","k":"cGhhc2U3LXRydXN0ZWQtY3VycmVudC1zZWNyZXQ"}]}"#
             .to_string(),
         audience: "meerkat-console".to_string(),
+        require_verified_email: false,
     }
 }
 

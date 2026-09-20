@@ -235,6 +235,52 @@ impl UnifiedRuntime {
         )
     }
 
+    /// The reference router plus the live doors the builder registered.
+    ///
+    /// Composes the live doors once ([`UnifiedRuntime::compose_live`]), then
+    /// mounts them beside the console: the console voice controller as the
+    /// request extension the console RPC reads, and the live WebSocket
+    /// router (`/live/ws`) when the external channel is registered. An
+    /// embedder that serves this router on its own listener gets the same
+    /// surface the gateway binaries expose.
+    ///
+    /// Fails closed when console voice is composed but
+    /// `decisions.console.require_app_auth` is false: the controller serves
+    /// only authenticated principals, and an open console would report voice
+    /// as unavailable with no diagnostic. Without a registered live door the
+    /// result equals [`Self::build_reference_app_router`].
+    pub async fn build_reference_app_router_with_live(
+        self: &Arc<Self>,
+        decisions: RuntimeDecisionState,
+    ) -> Result<Router, super::live_compose::LiveComposeError> {
+        let composition = self.compose_live().await?;
+        #[cfg(feature = "openai-live")]
+        if composition
+            .as_ref()
+            .is_some_and(|composition| composition.console_voice().is_some())
+            && !decisions.console.require_app_auth
+        {
+            return Err(super::live_compose::LiveComposeError::ConsoleVoiceRequiresAppAuth);
+        }
+        let router = self.build_reference_app_router(decisions);
+        let Some(composition) = composition else {
+            return Ok(router);
+        };
+        let router = if composition.external_handler().is_some() {
+            router.merge(meerkat_live::live_ws_router(Arc::clone(
+                &composition.context().ws_state,
+            )))
+        } else {
+            router
+        };
+        #[cfg(feature = "openai-live")]
+        let router = match composition.console_voice() {
+            Some(controller) => router.layer(axum::Extension(controller.clone())),
+            None => router,
+        };
+        Ok(router)
+    }
+
     pub fn build_reference_app_router_with_console_visibility_policy(
         &self,
         decisions: RuntimeDecisionState,
