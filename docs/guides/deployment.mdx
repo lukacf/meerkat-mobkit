@@ -178,6 +178,29 @@ stall to inactive work. A mixed report retains unresolved evidence alongside
 any known active backlog. Executor owner and fencing-token observations explain
 an active backlog only; they never grant firing authority.
 
+## Building with `openai-live`: link the system Opus
+
+The `openai-live` feature pulls Meerkat's WebRTC transport, whose `opus`
+dependency builds bundled Opus with CMake when `pkg-config` finds no system
+library. Install the system library in the build stage so the build links it
+and never runs CMake (which also avoids the CMake 4 incompatibility of the
+bundled sources):
+
+```dockerfile
+# build stage
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libopus-dev pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+
+# runtime stage (dynamic link)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libopus0 \
+ && rm -rf /var/lib/apt/lists/*
+```
+
+For a static link with no runtime package, set `OPUS_STATIC=1` in the build
+stage alongside `libopus-dev`.
+
 ## Docker sketch
 
 ```yaml

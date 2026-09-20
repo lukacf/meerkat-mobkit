@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Library embedders can register console voice and the external live
+  channel through the builder: `UnifiedRuntimeBuilder::console_voice(
+  PublicLiveRegistration)` and `UnifiedRuntimeBuilder::live(LiveOptions)`.
+  The builder retains the typed persistent session service, machine, and
+  agent factory it already creates, and `UnifiedRuntime::compose_live`
+  composes one shared live context with the console voice controller and the
+  `mobkit/live/*` handler over it (the same shared-owner arbitration as the
+  gateway binaries). `build_reference_app_router_with_live(decisions)` mounts
+  both beside the console and refuses an open console when voice is composed
+  (`LiveComposeError::ConsoleVoiceRequiresAppAuth`); a live door on an
+  ephemeral runtime fails `build()` closed
+  (`UnifiedRuntimeBuilderError::LiveCompose(LiveRequiresPersistentSessions)`).
+  Accessors: `console_voice_controller()`, `live_context()`,
+  `live_rpc_handler()`.
+- `parse_console_auth_config` accepts `provider: "oidc"` with `issuer`,
+  `audience`, and exactly one of `jwks_json` or `jwks_uri` (fetched once,
+  HTTPS only, failing closed), trusting an external issuer's RS256/ES256 keys
+  such as Google's. `provider: "jwt"` (HS256 shared secret) is unchanged.
+- Deployment guide: build stages with `openai-live` install `libopus-dev` and
+  `pkg-config` so bundled Opus is never compiled through CMake.
 - Console voice and the external live channel coexist under one shared live
   owner. `rpc_gateway` accepts `runtime_options.console_voice` together with
   `runtime_options.live` (still exclusive with `openai_live` and
