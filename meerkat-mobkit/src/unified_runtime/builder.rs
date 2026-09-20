@@ -1811,6 +1811,15 @@ impl UnifiedRuntimeBuilder {
         if !requested {
             return Ok(None);
         }
+        if self
+            .live
+            .as_ref()
+            .is_some_and(|options| options.public_base_url.trim().is_empty())
+        {
+            return Err(UnifiedRuntimeBuilderError::LiveCompose(
+                super::live_compose::LiveComposeError::LiveRequiresPublicBaseUrl,
+            ));
+        }
         let inputs =
             mob_spec
                 .live_compose_inputs

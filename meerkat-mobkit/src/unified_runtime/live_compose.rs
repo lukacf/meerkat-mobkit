@@ -20,15 +20,27 @@ use super::UnifiedRuntime;
 
 /// External live channel options for the builder path. Mirrors the gateway's
 /// `runtime_options.live` object.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveOptions {
-    /// Public WebSocket base URL advertised to live clients (for example
-    /// `wss://gateway.example.com`). `None` advertises a loopback placeholder;
-    /// an embedder that fronts MobKit behind a proxy should set it.
-    pub public_base_url: Option<String>,
+    /// Public WebSocket base URL advertised to live clients in open results
+    /// (for example `wss://gateway.example.com`). Required: the gateway
+    /// binaries substitute their bound address, but a library embedder serves
+    /// the router on its own listener, so only it knows the public origin.
+    /// `build()` fails closed when this is empty.
+    pub public_base_url: String,
     /// Upper bound for the canonical dialogue seed replayed into a fresh
     /// provider session. `None` keeps the wiring default.
     pub seed_max_chars: Option<usize>,
+}
+
+impl LiveOptions {
+    /// Options advertising `public_base_url` with the default seed bound.
+    pub fn new(public_base_url: impl Into<String>) -> Self {
+        Self {
+            public_base_url: public_base_url.into(),
+            seed_max_chars: None,
+        }
+    }
 }
 
 /// What the builder asked for, retained on the runtime until composition.
@@ -91,6 +103,10 @@ pub enum LiveComposeError {
     LiveRequiresPersistentSessions,
     /// The console voice controller refused the registration.
     ConsoleVoice(String),
+    /// `live(...)` was registered with an empty `public_base_url`. The
+    /// builder path cannot learn the bound address, so an empty value would
+    /// advertise a loopback placeholder to live clients.
+    LiveRequiresPublicBaseUrl,
     /// Console voice is composed but the decision state leaves the console
     /// open (`console.require_app_auth = false`). The controller serves only
     /// authenticated principals, so the router refuses to build rather than
@@ -108,6 +124,11 @@ impl std::fmt::Display for LiveComposeError {
                  before registering a live door"
             ),
             Self::ConsoleVoice(error) => write!(f, "console_voice composition failed: {error}"),
+            Self::LiveRequiresPublicBaseUrl => write!(
+                f,
+                "live requires a public_base_url: the builder path serves the router on the \
+                 embedder's listener and cannot learn the public WebSocket origin itself"
+            ),
             Self::ConsoleVoiceRequiresAppAuth => write!(
                 f,
                 "console_voice requires an authenticated console: build the router with a \
@@ -120,27 +141,9 @@ impl std::fmt::Display for LiveComposeError {
 
 impl std::error::Error for LiveComposeError {}
 
-/// Placeholder advertised when `LiveOptions.public_base_url` is unset. The
-/// gateway substitutes its bound address; a library embedder that serves
-/// the router itself should set the option to its public origin.
-pub const LIVE_WS_BASE_URL_PLACEHOLDER: &str = "ws://127.0.0.1";
-
 impl UnifiedRuntime {
     pub(crate) fn set_live_plan(&mut self, plan: Option<LivePlan>) {
         self.live_plan = plan;
-    }
-
-    /// Whether the builder registered any live door.
-    pub fn has_live_plan(&self) -> bool {
-        self.live_plan.is_some()
-    }
-
-    /// Whether the builder registered console voice.
-    #[cfg(feature = "openai-live")]
-    pub fn console_voice_planned(&self) -> bool {
-        self.live_plan
-            .as_ref()
-            .is_some_and(|plan| plan.console_voice.is_some())
     }
 
     /// Test-only: install fixture overrides on the plan before composition.
@@ -162,8 +165,10 @@ impl UnifiedRuntime {
     /// Compose the live doors the builder registered, once.
     ///
     /// Takes `&Arc<Self>` because the console voice controller binds the
-    /// shared runtime (its mob handle and identity runtime). Idempotent: a
-    /// second call returns the same composition. Returns `Ok(None)` when the
+    /// shared runtime (its mob handle and identity runtime). A successful
+    /// composition is bound once and returned by every later call; errors
+    /// are not cached, so a failing registration is retried (including a
+    /// fresh `attach_live`) on the next call. Returns `Ok(None)` when the
     /// builder registered no live door.
     pub async fn compose_live(
         self: &Arc<Self>,
@@ -218,12 +223,14 @@ fn compose(
         factory,
         config,
     } = plan.inputs;
+    // Console voice alone negotiates its transport over WebRTC and never
+    // advertises a WebSocket origin, so an empty base URL is correct there;
+    // `live(...)` is validated non-empty at build.
     let ws_base_url = plan
         .live
         .as_ref()
-        .and_then(|options| options.public_base_url.as_deref())
-        .map(|url| url.trim_end_matches('/').to_string())
-        .unwrap_or_else(|| LIVE_WS_BASE_URL_PLACEHOLDER.to_string());
+        .map(|options| options.public_base_url.trim_end_matches('/').to_string())
+        .unwrap_or_default();
     let seed_max_chars = plan
         .live
         .as_ref()
@@ -378,10 +385,7 @@ comms = true
             .meerkat_config(config())
             .console_voice(registration());
         if with_live {
-            builder = builder.live(LiveOptions {
-                public_base_url: Some(format!("ws://127.0.0.1/{id}")),
-                seed_max_chars: None,
-            });
+            builder = builder.live(LiveOptions::new(format!("ws://127.0.0.1/{id}")));
         }
         let mut runtime = Box::pin(builder.build()).await.expect("runtime builds");
         // Point the console summarizer and the external realtime lane at
@@ -570,5 +574,34 @@ comms = true
         assert_eq!(busy["result"]["reason"], "external_live_active");
         assert_eq!(busy["result"]["holder"]["identity"], "agent-b");
         runtime.mob_handle().stop().await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn live_without_a_public_base_url_fails_the_build_closed() {
+        let _guard = BUILDER_LIVE_TEST_LOCK.lock().await;
+        let directory = tempfile::Builder::new()
+            .prefix("builder-live-url-")
+            .tempdir_in(".rct")
+            .expect("test state");
+        let store: Arc<dyn meerkat::SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(directory.path().join("sessions.sqlite"))
+                .expect("session store"),
+        );
+        let Err(error) = Box::pin(
+            UnifiedRuntime::builder()
+                .definition(definition("builder-live-url"))
+                .session_store(store)
+                .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+                .live(LiveOptions::new("   "))
+                .build(),
+        )
+        .await
+        else {
+            unreachable!("an empty public_base_url cannot be advertised");
+        };
+        assert!(matches!(
+            error,
+            UnifiedRuntimeBuilderError::LiveCompose(LiveComposeError::LiveRequiresPublicBaseUrl)
+        ));
     }
 }
