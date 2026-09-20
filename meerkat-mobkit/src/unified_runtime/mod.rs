@@ -38,6 +38,7 @@ pub mod event_log;
 pub mod http;
 pub(crate) mod implicit_delegate_retirement;
 pub mod lifecycle;
+pub mod live_compose;
 pub mod mob_events;
 pub mod mob_ops;
 pub mod module_ops;
@@ -230,6 +231,14 @@ pub struct UnifiedRuntime {
         tokio::sync::Mutex<Option<crate::mob_handle_runtime::PendingMobActivation>>,
     event_log: Option<event_log::EventLogHandle>,
     console_log_store: Arc<dyn ConsoleLogStore>,
+    /// What the builder asked the live doors to be (console voice and/or
+    /// the external `mobkit/live/*` channel) plus the typed inputs retained
+    /// from a persistent session service. `None` when the builder registered
+    /// no live door; the runtime then behaves exactly as before.
+    live_plan: Option<live_compose::LivePlan>,
+    /// The one live composition per runtime, bound by
+    /// [`UnifiedRuntime::compose_live`] after the runtime is shared.
+    live_composition: tokio::sync::OnceCell<live_compose::LiveComposition>,
     console_events: ConsoleEventStore,
     mob_events: MobEventsStore,
     mob_events_subscriber_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
@@ -494,6 +503,8 @@ impl UnifiedRuntime {
             pending_mob_activation: tokio::sync::Mutex::new(None),
             event_log: None,
             console_log_store: Arc::new(InMemoryConsoleLogStore::new()),
+            live_plan: None,
+            live_composition: tokio::sync::OnceCell::new(),
             console_events,
             mob_events: mob_events_store,
             mob_events_subscriber_task: tokio::sync::Mutex::new(mob_events_task),

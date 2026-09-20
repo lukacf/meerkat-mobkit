@@ -104,6 +104,9 @@ pub enum UnifiedRuntimeBuilderError {
     /// A storage provider failed to open the realm's store set, or the
     /// fail-closed durability rule refused it (M4).
     StorageProvider(crate::storage_provider::MobKitStorageProviderError),
+    /// A live door (console voice or the external live channel) was
+    /// registered but could not be composed.
+    LiveCompose(super::live_compose::LiveComposeError),
 }
 
 impl From<crate::storage_layout::StorageLayoutError> for UnifiedRuntimeBuilderError {
@@ -136,6 +139,7 @@ impl Display for UnifiedRuntimeBuilderError {
             Self::ConflictingConfiguration(msg) => write!(f, "conflicting configuration: {msg}"),
             Self::StorageLayout(err) => write!(f, "{err}"),
             Self::StorageProvider(err) => write!(f, "{err}"),
+            Self::LiveCompose(err) => write!(f, "{err}"),
         }
     }
 }

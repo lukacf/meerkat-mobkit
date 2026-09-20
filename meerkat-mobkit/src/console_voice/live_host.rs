@@ -148,7 +148,7 @@ impl ConsoleVoiceController {
         Self::compose_live_host(runtime, ctx, service, machine, factory, registration, None)
     }
 
-    fn compose_live_host<B: SessionAgentBuilder + 'static>(
+    pub(crate) fn compose_live_host<B: SessionAgentBuilder + 'static>(
         runtime: &Arc<UnifiedRuntime>,
         ctx: Arc<crate::live_wiring::GatewayLiveContext>,
         service: Arc<PersistentSessionService<B>>,
@@ -251,7 +251,7 @@ impl ConsoleVoiceController {
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{
         Base64BlobStoreAdapter, BinaryBlobStore, DiscoverySpec, MobBootstrapOptions,
@@ -264,7 +264,7 @@ mod tests {
     static SHARED_HOST_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
     #[derive(Default)]
-    struct ProviderCapture {
+    pub(crate) struct ProviderCapture {
         creates: AtomicUsize,
         body: StdMutex<Option<Value>>,
         disconnect: tokio::sync::Notify,
@@ -287,9 +287,9 @@ mod tests {
 
     // Only the external provider is simulated. HTTP, WebSocket sideband,
     // shared Meerkat custody and activation are exercised through real owners.
-    struct ProviderFixture {
-        url: String,
-        capture: Arc<ProviderCapture>,
+    pub(crate) struct ProviderFixture {
+        pub(crate) url: String,
+        pub(crate) capture: Arc<ProviderCapture>,
         server: tokio::task::JoinHandle<()>,
     }
 
@@ -300,7 +300,7 @@ mod tests {
     }
 
     impl ProviderFixture {
-        async fn start() -> Self {
+        pub(crate) async fn start() -> Self {
             use axum::extract::State;
             use axum::extract::ws::{Message as SocketMessage, WebSocketUpgrade};
             use axum::response::IntoResponse as _;
@@ -428,17 +428,17 @@ mod tests {
     }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
-    enum SummaryScenario {
+    pub(crate) enum SummaryScenario {
         Success,
         Failure,
         CancelWhileGenerating,
     }
 
-    struct Summary {
-        calls: Arc<AtomicUsize>,
-        release: Arc<tokio::sync::Notify>,
-        cancelled: Arc<std::sync::atomic::AtomicBool>,
-        scenario: SummaryScenario,
+    pub(crate) struct Summary {
+        pub(crate) calls: Arc<AtomicUsize>,
+        pub(crate) release: Arc<tokio::sync::Notify>,
+        pub(crate) cancelled: Arc<std::sync::atomic::AtomicBool>,
+        pub(crate) scenario: SummaryScenario,
     }
 
     struct SummaryCancellation {
@@ -478,7 +478,7 @@ mod tests {
         }
     }
 
-    fn config() -> Config {
+    pub(crate) fn config() -> Config {
         let mut config = Config::default();
         let mut realm = meerkat_core::RealmConfigSection::default();
         realm.backend.insert(
@@ -518,7 +518,7 @@ mod tests {
         config
     }
 
-    async fn rpc(app: &axum::Router, token: &str, method: &str, params: Value) -> Value {
+    pub(crate) async fn rpc(app: &axum::Router, token: &str, method: &str, params: Value) -> Value {
         let response = app
             .clone()
             .oneshot(

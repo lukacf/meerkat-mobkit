@@ -6468,6 +6468,21 @@ impl MobSessionService for AfterCreateMobSessionService {
 }
 
 /// Specification for bootstrapping a mob runtime from a definition, storage, and session service.
+/// Typed live-composition inputs retained beside the erased session service.
+///
+/// `ConsoleVoiceController` and `live_wiring::attach_live` take the concrete
+/// `PersistentSessionService`, the agent factory, and the host config. The
+/// gateway binaries build their own service and hand these over directly;
+/// the builder path retains them here so `UnifiedRuntime::compose_live` can
+/// do the same composition for library embedders.
+#[derive(Clone)]
+pub(crate) struct LiveComposeInputs {
+    pub(crate) service: Arc<meerkat_session::PersistentSessionService<FactoryAgentBuilder>>,
+    pub(crate) machine: Arc<meerkat_runtime::MeerkatMachine>,
+    pub(crate) factory: AgentFactory,
+    pub(crate) config: Config,
+}
+
 pub struct MobBootstrapSpec {
     pub definition: MobDefinition,
     pub storage: MobStorage,
@@ -6498,6 +6513,12 @@ pub struct MobBootstrapSpec {
     /// upstream adapter cache is weak, so an installed host would otherwise be
     /// lost before bootstrap asks the service for its adapter again.
     pub runtime_adapter: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+    /// The concrete inputs a live door (console voice, `mobkit/live/*`)
+    /// composes over, retained only when the launch path built a
+    /// persistent session service. The erased `session_service` above stays
+    /// the mob's authority; this is the typed view the live wiring needs and
+    /// that library embedders could not otherwise reach.
+    pub(crate) live_compose_inputs: Option<LiveComposeInputs>,
     /// Pre-build customizer applied to every mob member spawn (classic-path
     /// agent memory rides here — see `crate::memory::spawn_customizer`).
     /// Forwarded to `MobBuilder::with_spawn_member_customizer`.
@@ -6620,6 +6641,7 @@ impl MobBootstrapSpec {
                 default_llm_client: None,
             },
             runtime_adapter: None,
+            live_compose_inputs: None,
             spawn_member_customizer: None,
             tool_consequence_policy_registry: None,
             default_external_tools_provider: None,
@@ -7815,8 +7837,11 @@ impl MobBootstrapSpec {
                 definition.id.as_str(),
             )
         };
+        let mut live_compose_inputs: Option<LiveComposeInputs> = None;
         let session_service: Arc<dyn MobSessionService> =
             if let Some(custom_session_store) = custom_session_store {
+                let live_factory = builder.factory().clone();
+                let live_config = builder.config().clone();
                 let concrete_session_service =
                     Arc::new(meerkat_session::PersistentSessionService::new(
                         builder,
@@ -7829,6 +7854,12 @@ impl MobBootstrapSpec {
                 dyn meerkat::session_runtime::llm_reconfigure::SessionRuntimeLlmReconfigureService,
             > = concrete_session_service.clone();
                 session_llm_reconfigure_blueprint.install(&runtime_adapter, reconfigure_service);
+                live_compose_inputs = Some(LiveComposeInputs {
+                    service: Arc::clone(&concrete_session_service),
+                    machine: Arc::clone(&runtime_adapter),
+                    factory: live_factory,
+                    config: live_config,
+                });
                 concrete_session_service
             } else {
                 let concrete_session_service = Arc::new(
@@ -7904,6 +7935,7 @@ impl MobBootstrapSpec {
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.identity_runtime_slot = Some(identity_runtime_slot);
         spec.runtime_adapter = Some(runtime_adapter);
+        spec.live_compose_inputs = live_compose_inputs;
         spec.binary_blob_store = Some(binary_blob_store);
         spec.workgraph_service = Some(workgraph_service);
         spec.workgraph_admission_slots
