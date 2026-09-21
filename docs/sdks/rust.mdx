@@ -277,9 +277,14 @@ fn parse_jwks_json(json: &str) -> Result<JwksDocument, OidcContractError>
 ### Governance
 
 ```rust
-fn validate_governance_state(state: &str) -> Result<(), GovernanceValidationError>
-fn validate_traceability_statuses(statuses: &[&str]) -> Result<(), GovernanceValidationError>
+fn validate_governance_state(file_name: &str, content: &str) -> Result<(), GovernanceValidationError>
+fn validate_traceability_statuses(markdown: &str) -> Result<(), GovernanceValidationError>
 ```
+
+The state validator reads a `governance_state:` declaration from document
+content. The traceability validator accepts a Markdown table or YAML document,
+including evidence fields, rather than a list of statuses; see
+[Governance](/reference/governance#validation).
 
 ## HTTP routers
 
@@ -309,12 +314,28 @@ the default posture (loopback, ephemeral port) and
 `GatewayHttpBinding::bind(addr)` takes any `SocketAddr`; `http_base_url()`
 always returns the same-host form (`127.0.0.1` for `0.0.0.0` and `::`
 binds) and `with_advertised_base_url(..)` carries a proxy-facing base for
-your init reply. Run `validate_http_bind_policy("my-host", addr,
-HttpBindPolicy::for_gateway(allow_remote, &decisions))` before binding to
-get the gateways' fail-closed rule (non-loopback needs enforced console auth
-or the `allow_remote` acknowledgement) and `warn_on_non_loopback_bind` for
-their WARN line; all four live in `meerkat_mobkit::gateway_composition`. See
-[Deployment](/guides/deployment).
+your init reply. Before binding, check the host's `addr`, `allow_remote`, and
+decision state with:
+
+```rust
+use meerkat_mobkit::gateway_composition::{
+    GatewaySurface, HttpBindPolicy, validate_http_bind_policy,
+};
+
+validate_http_bind_policy(
+    GatewaySurface::RpcGateway,
+    addr,
+    HttpBindPolicy::for_gateway(allow_remote, &decisions),
+)?;
+```
+
+`GatewaySurface` identifies a bundled gateway for diagnostics, not an
+arbitrary host label: this example uses the SDK-facing `RpcGateway` variant;
+`MobkitGateway` names the standalone console/admin surface. The fail-closed
+rule is unchanged: non-loopback needs enforced console auth or the
+`allow_remote` acknowledgement. Use `warn_on_non_loopback_bind` for the
+non-loopback WARN line. These helpers live in
+`meerkat_mobkit::gateway_composition`; see [Deployment](/guides/deployment).
 
 ## See also
 
