@@ -84,6 +84,31 @@ Key facts:
 - Anti-lockout invariant: enabling requires non-empty `admins`; validation lives in `access/model.rs`.
 - Tests: `meerkat-mobkit/tests/access_control.rs`, unit tests in `src/access/*`, console helper tests in `console/src/panels/AccessPanel.test.ts`. Docs: `docs/concepts/access-control.mdx`.
 
+## Decision Services
+
+Meerkat's optional `meerkat-decision` crate owns the batched semantic decision
+contracts (binary / choose_one / grade), the shared `DecisionService`, the
+session-LLM and Jev backends, and the agent-callable `decide` tool (composed
+by the Meerkat facade when the realm config sets `tools.decision_enabled`).
+MobKit composes it in `meerkat-mobkit/src/decision/`:
+
+- `decision/memory.rs` — `MemoryApplicabilityPolicy`, installed through
+  `UnifiedRuntimeBuilder::memory_applicability` + `decision_service`, runs in
+  `RecallCoordinator::inject_for_turn_classified` between candidate recall and
+  packing. Thresholds, abstention policy, and the failure baseline live here;
+  the outcome rides `TurnInjection::Injected { applicability }`.
+- `decision/work.rs` — evidence/commitment/rubric/work-fit request builders,
+  interpreters, and `WorkDecisionHelpers`. Judgments never complete or confirm
+  WorkGraph items.
+- `rpc/decision_methods.rs` — `mobkit/decision/evaluate` on the unified stdin
+  RPC (SDK transport); console exposure is not wired yet.
+- SDKs: Python `MobHandle.decide` + question builders; TypeScript `mob.decide`
+  + `binaryQuestion`/`chooseOneQuestion`/`gradeQuestion`.
+
+Docs: `docs/concepts/decision-services.mdx`. Local builds against an
+unreleased Meerkat use a `[patch.crates-io]` in the repo-cargo `CARGO_HOME`
+config, never in the committed manifests.
+
 ## Console Configuration
 
 The stock console can be shaped by `config/console.toml` in the conventional workspace layout. The runtime projects the parsed config through `GET /console/experience` as `console_config`, so embedders and the bundled React console share the same contract.
