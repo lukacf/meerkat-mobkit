@@ -329,6 +329,9 @@ pub enum TurnInjectionSkip {
     /// Records were recalled but nothing new fit: all already injected this
     /// session, or none fit the remaining budget.
     NothingRenderable,
+    /// Records were recalled but the applicability policy excluded every one
+    /// (or applied its inject-nothing baseline after a failed assessment).
+    NoApplicableRecords,
     /// The member runs as an autonomous host, and meerkat refuses injected
     /// context on that mode ("autonomous inbox delivery carries no user-channel
     /// work boundary"). MobKit skips before delivery so the turn proceeds
@@ -345,6 +348,7 @@ impl TurnInjectionSkip {
             Self::BudgetExhausted => "budget_exhausted",
             Self::NoRecords => "no_records",
             Self::NothingRenderable => "nothing_renderable",
+            Self::NoApplicableRecords => "no_applicable_records",
             Self::RuntimeModeAutonomousHost => "runtime_mode_autonomous_host",
         }
     }
@@ -353,7 +357,13 @@ impl TurnInjectionSkip {
 /// Typed outcome of a per-turn injection attempt.
 #[derive(Debug)]
 pub enum TurnInjection {
-    Injected(Vec<meerkat_core::ContentInput>),
+    Injected {
+        bodies: Vec<meerkat_core::ContentInput>,
+        /// Present when an applicability policy assessed the candidates. A
+        /// degraded assessment (baseline applied) is a typed marker here, not
+        /// only a log line.
+        applicability: Option<crate::decision::ApplicabilityOutcome>,
+    },
     Skipped(TurnInjectionSkip),
 }
 
@@ -380,6 +390,9 @@ pub struct RecallCoordinator {
     // §7.2 identity→mob binding: consulted per composition. None (the
     // default) keeps mob scope out of read composition.
     mob_resolver: Option<Arc<dyn MobScopeResolver>>,
+    // Optional applicability policy applied between candidate recall and
+    // final packing. None (the default) keeps the lexical path unchanged.
+    applicability: Option<Arc<crate::decision::MemoryApplicabilityPolicy>>,
 }
 
 impl RecallCoordinator {
@@ -392,7 +405,20 @@ impl RecallCoordinator {
             nonces: Arc::new(Mutex::new(HashMap::new())),
             operator_resolver: None,
             mob_resolver: None,
+            applicability: None,
         }
+    }
+
+    /// Install the decision-backed applicability policy. Assessed candidates
+    /// are judged after authorized recall and before dedup/packing; the
+    /// policy's declared baseline governs failed assessments. No policy —
+    /// the default — leaves recall untouched.
+    pub fn with_applicability_policy(
+        mut self,
+        policy: Option<Arc<crate::decision::MemoryApplicabilityPolicy>>,
+    ) -> Self {
+        self.applicability = policy;
+        self
     }
 
     /// Install the §7.2 provisional operator resolver. Effective only when
@@ -512,7 +538,7 @@ impl RecallCoordinator {
             .inject_for_turn_classified(identity, session_key, content)
             .await?
         {
-            TurnInjection::Injected(bodies) => Ok(bodies),
+            TurnInjection::Injected { bodies, .. } => Ok(bodies),
             TurnInjection::Skipped(reason) => {
                 self.note_skip(identity, reason);
                 Ok(Vec::new())
@@ -614,7 +640,7 @@ impl RecallCoordinator {
                 AgentMemoryRecallRequest {
                     identity: identity.clone(),
                     realm: self.config.realm.clone(),
-                    query_text: (!query_text.is_empty()).then_some(query_text),
+                    query_text: (!query_text.is_empty()).then_some(query_text.clone()),
                     query_terms,
                     selection: self.config.selection.clone(),
                     max_entries: self.config.max_entries,
@@ -624,6 +650,22 @@ impl RecallCoordinator {
         );
         if records.is_empty() {
             return Ok(TurnInjection::Skipped(TurnInjectionSkip::NoRecords));
+        }
+        // Applicability sits between authorized candidate recall (above,
+        // before the final cap) and the coordinator's dedup/packing (below).
+        // Scope, status, and provenance were applied by recall and survive
+        // untouched; the policy only decides inclusion and reports how.
+        let (records, applicability) = match self.applicability.as_ref() {
+            Some(policy) => {
+                let assessment = policy.assess(&query_text, records).await;
+                (assessment.included, Some(assessment.outcome))
+            }
+            None => (records, None),
+        };
+        if records.is_empty() {
+            return Ok(TurnInjection::Skipped(
+                TurnInjectionSkip::NoApplicableRecords,
+            ));
         }
         let nonce = self.nonce_for(identity, session_key);
         let Some(rendered) = render_injection_annotated(
@@ -662,9 +704,10 @@ impl RecallCoordinator {
         // (meerkat stamps ContentInput in `injected_context` as the typed
         // InjectedContext role → excluded from compaction indexing). The
         // user's message text is never touched.
-        Ok(TurnInjection::Injected(vec![
-            meerkat_core::ContentInput::Text(rendered.text),
-        ]))
+        Ok(TurnInjection::Injected {
+            bodies: vec![meerkat_core::ContentInput::Text(rendered.text)],
+            applicability,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -2300,7 +2343,7 @@ mod tests {
         let first = coordinator
             .inject_for_turn_classified(&id, Some("s"), &content)
             .await?;
-        assert!(matches!(first, TurnInjection::Injected(ref bodies) if !bodies.is_empty()));
+        assert!(matches!(first, TurnInjection::Injected { ref bodies, .. } if !bodies.is_empty()));
         let second = coordinator
             .inject_for_turn_classified(&id, Some("s"), &content)
             .await?;

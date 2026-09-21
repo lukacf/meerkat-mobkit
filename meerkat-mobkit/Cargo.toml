@@ -64,6 +64,9 @@ meerkat-mob = { version = "=0.8.40" }
 meerkat-mob-mcp = { version = "=0.8.40" }
 meerkat-mcp = { version = "=0.8.40" }
 meerkat-models = { version = "=0.8.40" }
+# Shared semantic decision service (contracts, service, backends). MobKit composes
+# the memory applicability policy, work/evidence helpers, and the SDK RPC over it.
+meerkat-decision = { version = "=0.8.40" }
 # Meerkat split session memory out of `memory-store` (which now only maps
 # to meerkat-store/memory); explicit `memory` enables need `memory-store-session`.
 meerkat = { version = "=0.8.40", features = ["comms", "skills", "mcp", "memory-store", "memory-store-session", "jsonl-store", "session-store", "sqlite-store", "live", "openai-realtime"] }

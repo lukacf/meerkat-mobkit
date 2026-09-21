@@ -2341,3 +2341,143 @@ class WorkGraphEventEntry:
             at=str(data.get("at", "")),
             payload=data.get("payload"),
         )
+
+
+# ---------------------------------------------------------------------------
+# Decision service (`mobkit/decision/evaluate`)
+# ---------------------------------------------------------------------------
+
+
+def binary_question(
+    question_id: str,
+    instructions: str | dict[str, Any] | list[Any],
+    *,
+    criteria: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a ``binary`` decision question (yes / no / abstain).
+
+    ``criteria`` optionally carries ``{"yes": ..., "no": ...}`` descriptions.
+    The id is a correlation key returned with the judgment, never an
+    instruction.
+    """
+    question: dict[str, Any] = {
+        "kind": "binary",
+        "id": question_id,
+        "instructions": instructions,
+    }
+    if criteria is not None:
+        question["criteria"] = criteria
+    return question
+
+
+def choose_one_question(
+    question_id: str,
+    instructions: str | dict[str, Any] | list[Any],
+    options: dict[str, str | dict[str, Any] | list[Any]],
+) -> dict[str, Any]:
+    """Build a ``choose_one`` question over supplied ``options`` (id -> description).
+
+    A relative winner is not proof of adequacy; pair it with a binary
+    predicate where sufficiency matters.
+    """
+    return {
+        "kind": "choose_one",
+        "id": question_id,
+        "instructions": instructions,
+        "options": [
+            {"id": option_id, "description": description}
+            for option_id, description in options.items()
+        ],
+    }
+
+
+def grade_question(
+    question_id: str,
+    instructions: str | dict[str, Any] | list[Any],
+    levels: list[str | dict[str, Any] | list[Any]],
+) -> dict[str, Any]:
+    """Build a ``grade`` question over ordered, self-contained ``levels``."""
+    return {
+        "kind": "grade",
+        "id": question_id,
+        "instructions": instructions,
+        "levels": [{"description": level} for level in levels],
+    }
+
+
+@dataclass(frozen=True)
+class DecisionJudgment:
+    """One typed judgment plus retained native signals.
+
+    ``kind`` is ``binary`` / ``choice`` / ``grade``; ``form`` names the shape
+    the backend actually supplied (``categorical``, ``native_probability``,
+    ``selected``, ``abstain``, ``level``, ``native_weighted``). The typed
+    fields are populated per form; ``raw`` keeps the full wire judgment.
+    Native probabilities and weighted positions are returned unthresholded —
+    the caller owns that policy.
+    """
+
+    kind: str
+    form: str
+    answer: str | None
+    option: str | None
+    level_index: int | None
+    probability_yes: float | None
+    weighted_position: float | None
+    native_signals: list[dict[str, Any]]
+    raw: dict[str, Any]
+
+    @property
+    def is_abstain(self) -> bool:
+        return self.form == "abstain" or self.answer == "abstain"
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DecisionJudgment:
+        judgment = data.get("judgment") or {}
+        level = judgment.get("index")
+        return cls(
+            kind=str(judgment.get("kind", "")),
+            form=str(judgment.get("form", "")),
+            answer=judgment.get("answer"),
+            option=judgment.get("option"),
+            level_index=_coerce_int(level) if level is not None else None,
+            probability_yes=judgment.get("yes"),
+            weighted_position=judgment.get("position"),
+            native_signals=list(data.get("native_signals") or []),
+            raw=dict(judgment),
+        )
+
+
+@dataclass(frozen=True)
+class DecisionResult:
+    """Typed result of ``mobkit/decision/evaluate``.
+
+    ``route`` is the exact backend route that served the call (``backend``
+    plus provider/model or endpoint/model). ``accounting`` is either
+    ``{"kind": "measured", ...}`` or ``{"kind": "unmeasured"}``; ``budget``
+    reports how the call participated in the owner's token budget
+    (``charged`` / ``unmeasured`` / ``not_issued``). Absence is reported,
+    never substituted with zero.
+    """
+
+    contract: str
+    route: dict[str, Any]
+    judgments: dict[str, DecisionJudgment]
+    accounting: dict[str, Any]
+    budget: dict[str, Any]
+    attempts: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DecisionResult:
+        judgments = data.get("judgments") or {}
+        return cls(
+            contract=str(data.get("contract", "")),
+            route=dict(data.get("route") or {}),
+            judgments={
+                str(question_id): DecisionJudgment.from_dict(judgment)
+                for question_id, judgment in judgments.items()
+            },
+            accounting=dict(data.get("accounting") or {}),
+            budget=dict(data.get("budget") or {}),
+            attempts=_coerce_int(data.get("attempts", 0)),
+        )

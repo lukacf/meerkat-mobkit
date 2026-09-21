@@ -24,6 +24,7 @@ use crate::runtime::{
 use crate::unified_runtime::{EventQuery, UnifiedRuntime};
 
 mod console_ingress;
+pub mod decision_methods;
 mod gating_methods;
 pub(crate) mod memory_methods;
 pub(crate) mod mob_methods;
@@ -1948,6 +1949,7 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/gating/audit",
                 "mobkit/call_tool",
                 "mobkit/models/catalog",
+                decision_methods::DECISION_EVALUATE_METHOD,
                 "mobkit/blob/get",
                 "mobkit/send_message",
                 "mobkit/find_members",
@@ -3158,6 +3160,40 @@ async fn handle_unified_rpc_json_inner(
             result: Some(build_models_catalog_result()),
             error: None,
         },
+        // Batched semantic decision evaluation over the host-composed
+        // decision service. Pure evaluation: no business write capability,
+        // no thresholds, no route election here.
+        decision_methods::DECISION_EVALUATE_METHOD => {
+            let outcome = match runtime.decision_service() {
+                None => Err(decision_methods::decision_service_unavailable_error()),
+                Some(service) => {
+                    match decision_methods::parse_decision_evaluate_params(&request.params) {
+                        Ok(decision_request) => {
+                            decision_methods::evaluate_decision(&service, decision_request).await
+                        }
+                        Err(reason) => Err(JsonRpcError {
+                            code: -32602,
+                            message: format!("Invalid params: {reason}"),
+                            data: None,
+                        }),
+                    }
+                }
+            };
+            match outcome {
+                Ok(result) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(result),
+                    error: None,
+                },
+                Err(error) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(error),
+                },
+            }
+        }
         // Read-only state-directory diagnosis with the live H1/H2 durability
         // census attached. `state_dir` is explicit until the M2 layout
         // authority gives the runtime a reportable state directory.
@@ -6746,6 +6782,172 @@ shell = true
         assert!(runtime.mob_handle().list_members().await.is_empty());
 
         let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+    #[tokio::test]
+    async fn unified_decision_evaluate_is_unavailable_without_a_composed_service()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-decision-unavailable-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+
+        let response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": super::decision_methods::DECISION_EVALUATE_METHOD,
+                    "params": {
+                        "state": "x",
+                        "questions": [{"kind": "binary", "id": "q", "instructions": "y"}]
+                    }
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                None,
+            )
+            .await,
+        )?;
+        assert_eq!(
+            response["error"]["code"],
+            json!(super::CAPABILITY_UNAVAILABLE_CODE)
+        );
+        assert_eq!(
+            response["error"]["data"]["kind"],
+            json!("decision_service_unavailable")
+        );
+
+        let capabilities: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({"jsonrpc": "2.0", "id": 2, "method": "mobkit/capabilities"}).to_string(),
+                Duration::from_secs(1),
+                None,
+                None,
+            )
+            .await,
+        )?;
+        let methods = capabilities["result"]["methods"]
+            .as_array()
+            .expect("methods array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(methods.contains(&super::decision_methods::DECISION_EVALUATE_METHOD));
+        runtime.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unified_decision_evaluate_serves_a_composed_service_with_typed_errors()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let service = crate::decision::memory::tests::service_with(vec![
+            Ok(vec![(
+                "is_urgent".to_string(),
+                meerkat_decision::RawAnswer::BinaryCategorical(meerkat_decision::BinaryAnswer::Yes),
+            )]),
+            Err(meerkat_decision::BackendFailure::RateLimited),
+        ]);
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-decision-evaluate-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .decision_service(service)
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+
+        let evaluate = |id: u64, params: Value| {
+            let runtime = &runtime;
+            async move {
+                serde_json::from_str::<Value>(
+                    &handle_unified_rpc_json(
+                        runtime,
+                        &json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "method": super::decision_methods::DECISION_EVALUATE_METHOD,
+                            "params": params,
+                        })
+                        .to_string(),
+                        Duration::from_secs(5),
+                        None,
+                        None,
+                    )
+                    .await,
+                )
+            }
+        };
+
+        let ok = evaluate(
+            1,
+            json!({
+                "task": "Triage",
+                "state": "Help! My payouts have been failing for 3 days.",
+                "questions": [
+                    {"kind": "binary", "id": "is_urgent", "instructions": "Does this convey urgency?"}
+                ]
+            }),
+        )
+        .await?;
+        assert!(ok["error"].is_null(), "{ok:#?}");
+        assert_eq!(ok["result"]["contract"], json!("v1"));
+        assert_eq!(
+            ok["result"]["judgments"]["is_urgent"]["judgment"]["answer"],
+            json!("yes")
+        );
+        assert_eq!(ok["result"]["budget"]["kind"], json!("not_issued"));
+        assert_eq!(ok["result"]["route"]["backend"], json!("session_llm"));
+
+        let backend_failure = evaluate(
+            2,
+            json!({
+                "state": "x",
+                "questions": [{"kind": "binary", "id": "q", "instructions": "y"}]
+            }),
+        )
+        .await?;
+        assert_eq!(backend_failure["error"]["code"], json!(-32000));
+        assert_eq!(
+            backend_failure["error"]["data"]["code"],
+            json!("backend_failure")
+        );
+        assert_eq!(
+            backend_failure["error"]["data"]["reason"],
+            json!("rate_limited")
+        );
+
+        let invalid = evaluate(3, json!({"state": "x", "questions": []})).await?;
+        assert_eq!(invalid["error"]["code"], json!(-32602));
+        assert_eq!(invalid["error"]["data"]["code"], json!("invalid_request"));
+
+        let malformed = evaluate(4, json!("not an object")).await?;
+        assert_eq!(malformed["error"]["code"], json!(-32602));
+        runtime.shutdown().await;
         Ok(())
     }
 

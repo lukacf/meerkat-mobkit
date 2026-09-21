@@ -33,6 +33,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `email_not_verified`). `provider: "jwt"` (HS256 shared secret) is unchanged.
 - Deployment guide: build stages with `openai-live` install `libopus-dev` and
   `pkg-config` so bundled Opus is never compiled through CMake.
+- Decision services: MobKit composes Meerkat's optional `meerkat-decision`
+  service. `UnifiedRuntimeBuilder::decision_service` installs a host-composed
+  service (see `meerkat::build_decision_service`) and the unified stdin RPC
+  serves `mobkit/decision/evaluate`, consumed by `MobHandle.decide(...)` in the
+  Python SDK (`binary_question` / `choose_one_question` / `grade_question`,
+  `DecisionResult`, `DecisionJudgment`) and `mob.decide(...)` in the TypeScript
+  SDK (`binaryQuestion` / `chooseOneQuestion` / `gradeQuestion`,
+  `DecisionResult`, `DecisionJudgment`). A runtime without a composed service
+  answers the reserved capability-unavailable code; decision failures keep
+  their typed class in `error.data`. `UnifiedRuntimeBuilder::memory_applicability`
+  installs `decision::MemoryApplicabilityPolicy` on the per-turn recall path:
+  independent relevance and contradiction predicates per candidate between
+  authorized recall and final packing, contradicting records preserved,
+  unassessed candidates kept, a declared `pass_through` / `inject_nothing`
+  baseline on failure with a typed degradation marker on
+  `TurnInjection::Injected { applicability }`, and a new
+  `TurnInjectionSkip::NoApplicableRecords`. `decision::work` adds
+  per-requirement evidence, commitment applicability, rubric dimensions with
+  non-compensating `aggregate_rubric`, and `work_fit` helpers that keep
+  relative choice and sufficiency separate. Members get the agent-callable
+  `decide` tool from the Meerkat facade when the effective realm config sets
+  `tools.decision_enabled = true`. Docs: `docs/concepts/decision-services.mdx`.
+  Requires the Meerkat release that ships `meerkat-decision`.
+
 - Console voice and the external live channel coexist under one shared live
   owner. `rpc_gateway` accepts `runtime_options.console_voice` together with
   `runtime_options.live` (still exclusive with `openai_live` and

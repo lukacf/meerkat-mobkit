@@ -24,6 +24,7 @@ pub(crate) mod console_spawn;
 pub mod console_voice;
 pub mod contact_directory;
 pub mod council_wiring;
+pub mod decision;
 pub mod decisions;
 pub mod fork;
 pub mod gateway_composition;
@@ -118,6 +119,10 @@ pub use console_config::{
 pub use console_contracts::{
     ConsoleIdentityEventEnvelope, ConsoleInteractionRejectedError, ReplayUnavailableError,
 };
+pub use decision::{
+    ApplicabilityBaseline, ApplicabilityDegradation, ApplicabilityOutcome,
+    MemoryApplicabilityConfig, MemoryApplicabilityPolicy, RecordDisposition, WorkDecisionHelpers,
+};
 pub use decisions::{
     AuthPolicy, AuthProvider, BigQueryNaming, ConsoleAccessRequest, ConsolePolicy,
     DecisionPolicyError, MetricsPolicy, REQUIRED_RELEASE_TARGETS, ReleaseMetadata,
@@ -192,6 +197,7 @@ pub use mobpack::{
 pub use mocks::{MockModuleProcess, MockProcessError};
 pub use process::{ProcessBoundaryError, run_process_json_line};
 pub use protocol::{ProtocolParseError, parse_module_event_line, parse_unified_event_line};
+pub use rpc::decision_methods::DECISION_EVALUATE_METHOD;
 pub use rpc::{
     CAPABILITY_UNAVAILABLE_CODE, CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE, IdentityFirstContext,
     JsonRpcError, JsonRpcRequest, JsonRpcResponse, MEMORY_BACKEND_UNAVAILABLE_CODE,
